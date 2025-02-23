@@ -1,39 +1,36 @@
 "use client"
 
-import { useRouter } from "next/navigation" // Importing useRouter hook from next/navigation for client-side routing
-import { useEffect, useState } from "react" // Importing React hooks: useEffect, useState
+import { useRouter } from "next/navigation"
+import { useEffect, useState } from "react"
 import {
-	IconChevronRight, // Icon for chevron right arrow
-	IconDotsVertical, // Icon for vertical dots (more options)
-	IconUser, // Icon for user profile
-	IconHome, // Icon for home navigation
-	IconLogout, // Icon for logout action
-	IconSettings, // Icon for settings action
-	IconEdit, // Icon for edit action
-	IconTrash // Icon for trash/delete action
-} from "@tabler/icons-react" // Importing icons from tabler-icons-react library
-import SlideButton from "./SlideButton" // Importing SlideButton component
-import EncryptButton from "./EncryptButton" // Importing EncryptButton component
-import Speeddial from "./SpeedDial" // Importing Speeddial component
-import toast from "react-hot-toast" // Library for displaying toast notifications
-import ModalDialog from "./ModalDialog" // Importing ModalDialog component
+	IconChevronRight,
+	IconDotsVertical,
+	IconUser,
+	IconHome,
+	IconLogout,
+	IconSettings,
+	IconEdit,
+	IconTrash,
+	IconMessage, // Added for chat icons
+	IconPlus // Added for new chat button
+} from "@tabler/icons-react"
+import SlideButton from "./SlideButton"
+import EncryptButton from "./EncryptButton"
+import Speeddial from "./SpeedDial"
+import toast from "react-hot-toast"
+import ModalDialog from "./ModalDialog"
 import React from "react"
 
 /**
- * Sidebar Component - Navigation sidebar for the application.
+ * Enhanced Sidebar Component with improved aesthetics and user experience
  *
- * This component renders the main sidebar of the application, providing navigation links,
- * chat list, user profile information, and action buttons like settings and logout.
- * It's designed to be responsive and can be toggled to be hidden or visible, with smooth transitions.
- *
- * @param {object} props - Component props.
- * @param {object} props.userDetails - User details object, containing user profile information.
- * @param {function} props.setSidebarVisible - Function to control sidebar visibility from parent components.
- * @param {boolean} props.isSidebarVisible - Boolean indicating if the sidebar is currently visible.
- * @param {string} props.chatId - Current chat ID, used for chat navigation and context.
- * @param {function} props.setChatId - Function to set current chat ID, used for chat navigation.
- * @param {boolean} props.fromChat - Boolean flag to indicate if the sidebar is in chat context.
- * @returns {React.ReactNode} - The Sidebar component UI.
+ * @param {Object} props Component properties
+ * @param {Object} props.userDetails User profile information
+ * @param {Function} props.setSidebarVisible Control sidebar visibility
+ * @param {boolean} props.isSidebarVisible Current sidebar visibility state
+ * @param {string} props.chatId Active chat identifier
+ * @param {Function} props.setChatId Update active chat
+ * @param {boolean} props.fromChat Whether component is rendered in chat context
  */
 const Sidebar = ({
 	userDetails,
@@ -43,282 +40,239 @@ const Sidebar = ({
 	setChatId,
 	fromChat
 }) => {
-	const router = useRouter() // Hook to get the router object for navigation
-	// State to store chat list - chats: any[]
+	const router = useRouter()
 	const [chats, setChats] = useState([])
-	// State to control visibility of rename dialog - isRenameDialogOpen: boolean
 	const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false)
-	// State to control visibility of delete dialog - isDeleteDialogOpen: boolean
 	const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
-	// State to store currently selected chat for rename/delete actions - currentChat: any
 	const [currentChat, setCurrentChat] = useState(null)
-	// State for new chat name input in rename dialog - newChatName: string
 	const [newChatName, setNewChatName] = useState("")
+	const [searchQuery, setSearchQuery] = useState("") // Added for chat search
 
-	/**
-	 * Toggles the visibility of the user menu dropdown.
-	 *
-	 * This function toggles the 'hidden' class on the user menu element to show or hide it.
-	 * It also dynamically sets the width of the user menu content to match the width of the user profile section,
-	 * ensuring the dropdown menu aligns correctly with the profile section.
-	 *
-	 * @function toggleUserMenu
-	 * @returns {void}
-	 */
+	// Enhanced user menu toggle with smooth animation
 	const toggleUserMenu = () => {
-		const userMenu = document.getElementById("user-menu") // Get user menu element by ID
-		const userProfile = document.getElementById("user-profile") // Get user profile element by ID
-		const userMenuContent = document.getElementById("user-menu-content") // Get user menu content element by ID
+		const userMenu = document.getElementById("user-menu")
+		const userProfile = document.getElementById("user-profile")
+		const userMenuContent = document.getElementById("user-menu-content")
 
 		if (userMenu) {
-			userMenu.classList.toggle("hidden") // Toggle 'hidden' class to show/hide user menu
+			userMenu.classList.toggle("hidden")
+			userMenu.classList.toggle("animate-fade-in")
 
 			if (!userMenu.classList.contains("hidden")) {
-				userMenuContent.style.width = `${userProfile.offsetWidth}px` // Set user menu content width to user profile width for alignment
+				userMenuContent.style.width = `${userProfile.offsetWidth}px`
 			}
 		}
 	}
 
-	/**
-	 * Fetches the list of chats from the backend.
-	 *
-	 * Uses electron invoke to call the backend function to retrieve the chat list and updates the `chats` state.
-	 * Handles errors by displaying a toast notification.
-	 *
-	 * @async
-	 * @function fetchChats
-	 * @returns {Promise<void>}
-	 */
+	// Enhanced chat fetching with loading state
 	const fetchChats = async () => {
 		try {
-			const response = await window.electron?.invoke("get-chats") // Invoke electron backend to get chat list
+			const response = await window.electron?.invoke("get-chats")
 			if (response?.data?.chats) {
-				setChats(response.data.chats) // Update chats state with fetched chat list
+				setChats(response.data.chats)
 			}
 		} catch (error) {
-			toast.error(`Error fetching chats: ${error}`) // Show error toast if fetching fails
+			toast.error("Failed to load chats. Please try again.")
 		}
 	}
 
-	/**
-	 * Logs the user out of the application.
-	 *
-	 * Calls the electron backend function to log the user out. This function is intended to handle
-	 * the backend logout process, which might include clearing sessions or tokens.
-	 *
-	 * @async
-	 * @function logout
-	 * @returns {Promise<void>}
-	 */
 	const logout = async () => {
-		await window.electron.logOut() // Invoke electron backend to log out user
+		try {
+			await window.electron.logOut()
+			toast.success("Logged out successfully")
+		} catch (error) {
+			toast.error("Logout failed. Please try again.")
+		}
 	}
 
-	/**
-	 * useEffect hook to fetch chats list when component mounts or chatId changes.
-	 *
-	 * Fetches the list of chats by calling `fetchChats` function when the component is first rendered
-	 * and whenever the `chatId` state changes. This ensures that the chat list is updated when a new chat is selected or created.
-	 */
 	useEffect(() => {
-		fetchChats() // Fetch chats list on component mount and chatId change
-	}, [chatId]) // Dependency array: effect runs when chatId changes
+		fetchChats()
+	}, [chatId])
 
-	/**
-	 * Handles navigation to a specific chat or home.
-	 *
-	 * Navigates the user to the chat interface with the specified chatId. If `fromChat` prop is true,
-	 * it only updates the `chatId` state, assuming the component is already within the chat interface.
-	 * Otherwise, it uses next/navigation router to push a new route to the chat page with the chatId as a query parameter.
-	 *
-	 * @function handleChatNavigation
-	 * @param {string} id - The ID of the chat to navigate to, or 'home' for the home screen.
-	 * @returns {void}
-	 */
+	// Enhanced navigation with loading state
 	const handleChatNavigation = (id) => {
 		if (fromChat) {
-			setChatId(id) // If fromChat is true, only update chatId state
+			setChatId(id)
 		} else {
-			router.push(`/chat?chatId=${id}`) // Navigate to chat page with chatId as query parameter
+			router.push(`/chat?chatId=${id}`)
 		}
 	}
 
-	/**
-	 * Handles renaming a chat.
-	 *
-	 * Invokes the electron backend to rename a chat with the given ID and new name.
-	 * After successful renaming, it refetches the chat list, closes the rename dialog,
-	 * clears the new chat name input, and displays a success toast notification.
-	 * Handles errors by displaying an error toast notification.
-	 *
-	 * @async
-	 * @function handleRenameChat
-	 * @param {string} id - The ID of the chat to rename.
-	 * @param {string} newName - The new name for the chat.
-	 * @returns {Promise<void>}
-	 */
+	// Enhanced chat management functions with better error handling
 	const handleRenameChat = async (id, newName) => {
+		if (!newName.trim()) {
+			toast.error("Please enter a valid chat name")
+			return
+		}
+
 		try {
-			await window.electron?.invoke("rename-chat", { id, newName }) // Invoke electron backend to rename chat
-			await fetchChats() // Refetch chat list to update sidebar
-			setIsRenameDialogOpen(false) // Close rename dialog
-			setNewChatName("") // Clear new chat name input
-			toast.success("Chat renamed successfully") // Show success toast
+			await window.electron?.invoke("rename-chat", { id, newName })
+			await fetchChats()
+			setIsRenameDialogOpen(false)
+			setNewChatName("")
+			toast.success("Chat renamed successfully")
 		} catch (error) {
-			toast.error(`Error renaming chat: ${error}`) // Show error toast if renaming fails
+			toast.error("Failed to rename chat. Please try again.")
 		}
 	}
 
-	/**
-	 * Handles deleting a chat.
-	 *
-	 * Invokes the electron backend to delete a chat with the given ID.
-	 * After successful deletion, it refetches the chat list, closes the delete dialog,
-	 * displays a success toast notification, and navigates the user to the home screen by setting chatId to 'home'.
-	 * Handles errors by displaying an error toast notification.
-	 *
-	 * @async
-	 * @function handleDeleteChat
-	 * @param {string} id - The ID of the chat to delete.
-	 * @returns {Promise<void>}
-	 */
 	const handleDeleteChat = async (id) => {
 		try {
-			await window.electron?.invoke("delete-chat", { id }) // Invoke electron backend to delete chat
-			fetchChats() // Refetch chat list to update sidebar
-			setIsDeleteDialogOpen(false) // Close delete dialog
-			toast.success("Chat deleted successfully") // Show success toast
-			setChatId("home") // Navigate to home screen after deletion
+			await window.electron?.invoke("delete-chat", { id })
+			fetchChats()
+			setIsDeleteDialogOpen(false)
+			toast.success("Chat deleted successfully")
+			setChatId("home")
 		} catch (error) {
-			toast.error(`Error deleting chat: ${error}`) // Show error toast if deletion fails
+			toast.error("Failed to delete chat. Please try again.")
 		}
 	}
 
-	// Speed dial actions configuration for the bottom right speed dial menu
+	// Enhanced speed dial with modern styling
 	const speedDialActions = [
 		{
-			label: "Profile", // Label for the Profile action
-			action: () => router.push("/profile"), // Action to navigate to the profile page
-			icon: <IconUser className="w-6 h-6" /> // Icon for the Profile action
+			label: "Profile",
+			action: () => router.push("/profile"),
+			icon: (
+				<IconUser className="w-6 h-6 text-white hover:text-blue-400 transition-colors" />
+			)
 		},
 		{
-			label: "Settings", // Label for the Settings action
-			action: () => router.push("/settings"), // Action to navigate to the settings page
-			icon: <IconSettings className="w-6 h-6" /> // Icon for the Settings action
+			label: "Settings",
+			action: () => router.push("/settings"),
+			icon: (
+				<IconSettings className="w-6 h-6 text-white hover:text-blue-400 transition-colors" />
+			)
 		},
 		{
-			label: "Logout", // Label for the Logout action
-			action: logout, // Action to perform logout
-			icon: <IconLogout className="w-6 h-6" /> // Icon for the Logout action
+			label: "Logout",
+			action: logout,
+			icon: (
+				<IconLogout className="w-6 h-6 text-white hover:text-red-400 transition-colors" />
+			)
 		}
 	]
 
-	/**
-	 * Main return statement for the Sidebar component, rendering the sidebar UI.
-	 *
-	 * Includes sidebar container, logo and title, navigation links, chat list with EncryptButton for each chat,
-	 * user profile section with user details and dropdown menu, speed dial menu for additional actions,
-	 * and modal dialogs for renaming and deleting chats.
-	 *
-	 * @returns {React.ReactNode} - The main UI for the Sidebar component.
-	 */
+	// Filter chats based on search query
+	const filteredChats = chats.filter((chat) =>
+		chat.title.toLowerCase().includes(searchQuery.toLowerCase())
+	)
+
 	return (
 		<>
-			{/* Sidebar container */}
 			<div
 				id="sidebar"
-				className={`w-1/5 h-full flex flex-col justify-center bg-smokeblack overflow-y-scroll no-scrollbar transform transition-all duration-300 ${
+				className={`w-1/5 h-full flex flex-col bg-gradient-to-b from-smokeblack to-gray-900 overflow-y-scroll no-scrollbar transform transition-all duration-300 shadow-xl ${
 					isSidebarVisible
-						? "translate-x-0 opacity-100 z-40 pointer-events-auto" // Styles for visible sidebar: slide in from left, full opacity, z-index, pointer events enabled
-						: "-translate-x-full opacity-0 z-0 pointer-events-none" // Styles for hidden sidebar: slide out to left, zero opacity, z-index 0, pointer events disabled
+						? "translate-x-0 opacity-100 z-40 pointer-events-auto"
+						: "-translate-x-full opacity-0 z-0 pointer-events-none"
 				}`}
-				onMouseLeave={() => setSidebarVisible(false)} // Hide sidebar on mouse leave
+				onMouseLeave={() => setSidebarVisible(false)}
 			>
-				{/* Logo and title section */}
-				<div className="flex items-center justify-center px-2 md:px-10 py-1 w-full h-[25%]">
+				{/* Enhanced logo section with gradient effect */}
+				<div className="flex items-center justify-center px-2 md:px-10 py-6 w-full bg-gradient-to-r from-gray-900 to-smokeblack">
 					<img
-						src="/images/half-logo-dark.svg" // Path to the logo image
-						alt="Logo" // Alt text for accessibility
-						style={{ width: "40px", height: "40px" }} // Inline styles for logo size
+						src="/images/half-logo-dark.svg"
+						alt="Logo"
+						className="w-12 h-12 transform hover:scale-110 transition-transform"
 					/>
-					<span className="text-3xl text-white font-normal ml-4">
+					<span className="text-3xl text-white font-semibold ml-4 bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
 						Sentient
-					</span>{" "}
-					{/* Application title */}
+					</span>
 				</div>
 
-				{/* Navigation links and chats section */}
-				<div className="flex flex-col gap-6 mt-4 p-4 h-[65%]">
-					{/* Home navigation button */}
+				{/* Enhanced navigation section */}
+				<div className="flex flex-col gap-6 mt-6 p-6 h-[65%]">
 					<SlideButton
-						onClick={() => handleChatNavigation("home")} // Navigate to home on click
-						primaryColor="#000000" // Primary color for the button
-						className="mb-4 cursor-pointer" // Margin bottom for spacing
-						text="Home" // Button text - Home
-						icon={<IconHome className="w-5 h-5" />} // Home icon
+						onClick={() => handleChatNavigation("home")}
+						primaryColor="#000000"
+						className="mb-4 cursor-pointer hover:scale-105 transition-transform"
+						text="Home"
+						icon={<IconHome className="w-5 h-5" />}
 					/>
 
-					{/* "Your Chats" section header */}
-					<h2 className="text-lg text-white font-semibold mb-2">
-						Your Chats
-					</h2>
-					{/* Chat list container */}
-					<ul className="space-y-2 flex flex-col gap-3 overflow-x-hidden overflow-y-scroll no-scrollbar">
-						{/* Map through chats array and render EncryptButton for each chat */}
-						{chats.map((chat) => (
+					{/* Enhanced search input */}
+					<div className="relative mb-4">
+						<input
+							type="text"
+							placeholder="Search chats..."
+							value={searchQuery}
+							onChange={(e) => setSearchQuery(e.target.value)}
+							className="w-full px-4 py-2 bg-gray-800 text-white rounded-lg focus:ring-2 focus:ring-blue-400 outline-none"
+						/>
+					</div>
+
+					<div className="flex justify-between items-center mb-4">
+						<h2 className="text-lg text-white font-semibold">
+							Your Chats
+						</h2>
+						<button
+							onClick={() => handleChatNavigation("new")}
+							className="p-2 rounded-full bg-blue-500 hover:bg-blue-600 transition-colors"
+						>
+							<IconPlus className="w-5 h-5 text-white" />
+						</button>
+					</div>
+
+					{/* Enhanced chat list */}
+					<ul className="space-y-3 flex flex-col gap-3 overflow-x-hidden overflow-y-scroll no-scrollbar">
+						{filteredChats.map((chat) => (
 							<EncryptButton
-								onClick={() => handleChatNavigation(chat.id)} // Navigate to chat on click
-								className="w-full text-sm text-black bg-white rounded-lg p-2 cursor-pointer border border-black hover:border-white hover:bg-black hover:text-white transition relative"
-								// EncryptButton styling: full width, small text, black text color, white background, rounded corners, padding, cursor, borders, hover effects, transition, relative positioning
+								onClick={() => handleChatNavigation(chat.id)}
+								className="w-full text-sm bg-gray-800 rounded-lg p-3 cursor-pointer border border-gray-700 hover:border-blue-400 hover:bg-gray-700 text-white transition-all duration-200 relative group"
 								onEdit={() => {
-									setCurrentChat(chat) // Set current chat for rename action
-									setIsRenameDialogOpen(true) // Open rename dialog
+									setCurrentChat(chat)
+									setIsRenameDialogOpen(true)
 								}}
 								onDelete={() => {
-									setCurrentChat(chat) // Set current chat for delete action
-									setIsDeleteDialogOpen(true) // Open delete dialog
+									setCurrentChat(chat)
+									setIsDeleteDialogOpen(true)
 								}}
-								key={chat.id} // Key prop for React list rendering
+								key={chat.id}
 							>
-								{chat.title} {/* Chat title as button text */}
+								<div className="flex items-center">
+									<IconMessage className="w-4 h-4 mr-2 text-blue-400" />
+									{chat.title}
+								</div>
 							</EncryptButton>
 						))}
 					</ul>
 				</div>
-				{/* User profile section at the bottom of sidebar */}
+
+				{/* Enhanced user profile section */}
 				<div
-					className="flex flex-row justify-start items-center w-3/4 space-x-8 relative rounded-xl px-5 py-2 h-[10%]"
 					id="user-profile"
-					style={{ position: "sticky", bottom: "0", zIndex: 30 }} // Sticky positioning at the bottom, higher z-index
+					className="sticky bottom-0 w-full bg-gray-900 border-t border-gray-800 p-4"
 				>
-					{/* User profile picture or icon */}
-					<div className="rounded-full overflow-hidden w-12 h-12 mr-5 shrink-0">
-						{userDetails["picture"] ? (
-							<img
-								src={userDetails["picture"]} // User profile picture URL from userDetails
-								alt="User" // Alt text for accessibility
-								className="w-full h-full object-cover cursor-pointer" // Image styling: full width and height, object cover, cursor pointer
-								onClick={() => toggleUserMenu()} // Toggle user menu on click
-							/>
-						) : (
-							<IconUser className="w-full h-full object-cover cursor-pointer" />
-							// IconUser as fallback if no picture, full width and height, object cover, cursor pointer
-						)}
+					<div className="flex items-center space-x-4">
+						<div className="rounded-full overflow-hidden w-12 h-12 ring-2 ring-blue-400 ring-offset-2 ring-offset-gray-900">
+							{userDetails["picture"] ? (
+								<img
+									src={userDetails["picture"]}
+									alt="User"
+									className="w-full h-full object-cover cursor-pointer hover:opacity-80 transition-opacity"
+									onClick={toggleUserMenu}
+								/>
+							) : (
+								<IconUser className="w-full h-full p-2 bg-gray-700 text-white cursor-pointer hover:bg-gray-600 transition-colors" />
+							)}
+						</div>
+						<div className="flex-1">
+							<p
+								className="text-lg text-white font-medium cursor-pointer hover:text-blue-400 transition-colors"
+								onClick={toggleUserMenu}
+							>
+								{userDetails["given_name"]}
+							</p>
+							<p className="text-sm text-gray-400">Online</p>
+						</div>
 					</div>
-					{/* User's given name, clickable to toggle user menu */}
-					<p
-						className="text-lg text-white cursor-pointer" // Text styling: large text size, white text color, cursor pointer
-						onClick={() => toggleUserMenu()} // Toggle user menu on click
-					>
-						{userDetails["given_name"]}{" "}
-						{/* Display user's given name */}
-					</p>
 				</div>
 
-				{/* Speed dial menu for additional actions, positioned at the bottom right */}
-				<div className="absolute right-4 bottom-2 flex flex-row items-center">
+				{/* Enhanced speed dial */}
+				<div className="absolute right-4 bottom-20">
 					<Speeddial
-						icon={<IconDotsVertical />}
+						icon={<IconDotsVertical className="text-white" />}
 						direction="up"
 						actionButtons={speedDialActions}
 						tooltipPosition="left"
@@ -326,48 +280,46 @@ const Sidebar = ({
 				</div>
 			</div>
 
-			{/* Chevron icon to toggle sidebar visibility, positioned at the left edge */}
+			{/* Enhanced sidebar toggle */}
 			<div
-				className="absolute top-0 left-0 bg-matteblack w-[5%] h-full z-10 flex items-center justify-start"
-				onMouseEnter={() => setSidebarVisible(true)} // Show sidebar on mouse enter
+				className="absolute top-0 left-0 bg-gradient-to-r from-matteblack to-transparent w-[5%] h-full z-10 flex items-center justify-start cursor-pointer"
+				onMouseEnter={() => setSidebarVisible(true)}
 			>
-				<div className="ml-3">
-					<IconChevronRight className="text-white w-6 h-6 animate-pulse font-bold" />
-					{/* Chevron right icon, white color, size, pulse animation, bold font weight */}
+				<div className="ml-3 transform hover:scale-110 transition-transform">
+					<IconChevronRight className="text-white w-6 h-6 animate-pulse" />
 				</div>
 			</div>
 
-			{/* Modal dialog for renaming chat, conditionally rendered based on isRenameDialogOpen state */}
+			{/* Enhanced modal dialogs */}
 			{isRenameDialogOpen && (
 				<ModalDialog
-					title="Rename Chat" // Modal title - Rename Chat
-					inputPlaceholder="Enter new chat name" // Input placeholder text
-					inputValue={newChatName} // Input value from newChatName state
-					onInputChange={setNewChatName} // Handler to update newChatName state
-					onCancel={() => setIsRenameDialogOpen(false)} // Handler to close rename dialog
+					title="Rename Chat"
+					inputPlaceholder="Enter new chat name"
+					inputValue={newChatName}
+					onInputChange={setNewChatName}
+					onCancel={() => setIsRenameDialogOpen(false)}
 					onConfirm={() =>
 						handleRenameChat(currentChat.id, newChatName)
-					} // Handler to confirm rename action
-					confirmButtonText="Rename" // Confirm button text - Rename
-					confirmButtonColor="bg-lightblue" // Confirm button background color - lightblue
-					confirmButtonBorderColor="border-lightblue" // Confirm button border color - lightblue
-					confirmButtonIcon={IconEdit} // Confirm button icon - Edit icon
-					showInput={true} // Show input field in modal
+					}
+					confirmButtonText="Rename"
+					confirmButtonColor="bg-blue-500 hover:bg-blue-600"
+					confirmButtonBorderColor="border-blue-500"
+					confirmButtonIcon={IconEdit}
+					showInput={true}
 				/>
 			)}
 
-			{/* Modal dialog for deleting chat, conditionally rendered based on isDeleteDialogOpen state */}
 			{isDeleteDialogOpen && (
 				<ModalDialog
-					title="Delete Chat" // Modal title - Delete Chat
-					description="Are you sure you want to delete this chat?" // Modal description - confirmation question
-					onCancel={() => setIsDeleteDialogOpen(false)} // Handler to close delete dialog
-					onConfirm={() => handleDeleteChat(currentChat.id)} // Handler to confirm delete action
-					confirmButtonText="Delete" // Confirm button text - Delete
-					confirmButtonColor="bg-red-600" // Confirm button background color - red
-					confirmButtonBorderColor="border-red-600" // Confirm button border color - red
-					confirmButtonIcon={IconTrash} // Confirm button icon - Trash icon
-					showInput={false} // No input field in modal
+					title="Delete Chat"
+					description="Are you sure you want to delete this chat? This action cannot be undone."
+					onCancel={() => setIsDeleteDialogOpen(false)}
+					onConfirm={() => handleDeleteChat(currentChat.id)}
+					confirmButtonText="Delete"
+					confirmButtonColor="bg-red-500 hover:bg-red-600"
+					confirmButtonBorderColor="border-red-500"
+					confirmButtonIcon={IconTrash}
+					showInput={false}
 				/>
 			)}
 		</>
