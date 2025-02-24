@@ -47,4 +47,5 @@ This agreement is governed by the laws of India. Disputes shall be resolved in P
 ---
 
 **Sign Here**  
+I have read the CLA Document and I hereby sign the CLA
 Jignesh Baldaniya
