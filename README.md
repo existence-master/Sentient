@@ -362,7 +362,7 @@ Please read the [code of conduct](https://github.com/existence-master/Sentient/b
 <!-- License -->
 ## :warning: License
 
-Distributed under the GNU AGPL License. Check [our lisence](https://github.com/existence-master/Sentient/blob/master/LICENSE.md) for more information.
+Distributed under the GNU AGPL License. Check [our lisence](https://github.com/existence-master/Sentient/blob/master/LICENSE.txt) for more information.
 
 <!-- Contact -->
 ## :handshake: Contact
