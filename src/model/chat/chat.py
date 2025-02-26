@@ -125,14 +125,20 @@ async def chat(message: Message) -> StreamingResponse:
             "../../userProfileDb.json", "r", encoding="utf-8"
         ) as f:  # Load user profile database
             db = json.load(f)
+            
+        print("User profile loaded successfully")
 
         chat_history = get_chat_history(
             message.chat_id
         )  # Retrieve chat history for the given chat ID
+        
+        print("Chat history loaded successfully")
 
         chat_runnable = get_chat_runnable(
             chat_history
         )  # Initialize chat runnable with chat history
+        
+        print("Chat runnable loaded successfully")
 
         username = db["userData"]["personalInfo"][
             "name"

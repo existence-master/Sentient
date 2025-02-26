@@ -30,6 +30,7 @@ async def generate_streaming_response(
                                   Yields None if an error occurs during response generation.
     """
     try:
+        print("Generating response...")
         if stream and hasattr(
             runnable, "stream_response"
         ):  # Check if streaming is enabled and runnable supports it
