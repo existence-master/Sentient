@@ -65,6 +65,9 @@ const Settings = () => {
 	// State to control visibility of the beta user dialog - showBetaDialog: boolean
 	const [showBetaDialog, setShowBetaDialog] = useState(false)
 
+	const [availableModels, setAvailableModels] = useState([])
+	const [selectedModel, setSelectedModel] = useState("llama3.2:3b") // Default model
+
 	/**
 	 * Fetches user details from the backend.
 	 *
@@ -188,35 +191,51 @@ const Settings = () => {
 	 */
 	const fetchData = async () => {
 		try {
-			const response = await window.electron?.invoke("get-db-data") // Invoke electron to get data from database
+			const response = await window.electron?.invoke("get-db-data")
 			if (response.status === 200 && response.data) {
-				const { linkedInProfile, redditProfile, twitterProfile } =
-					response.data // Destructure profile data from response
-
+				const {
+					linkedInProfile,
+					redditProfile,
+					twitterProfile,
+					selectedModel
+				} = response.data
 				setIsProfileConnected({
-					// Update isProfileConnected state based on fetched data
 					LinkedIn:
 						linkedInProfile &&
-						Object.keys(linkedInProfile).length > 0, // Check if LinkedIn profile data exists
+						Object.keys(linkedInProfile).length > 0,
 					Reddit:
-						redditProfile && Object.keys(redditProfile).length > 0, // Check if Reddit profile data exists
+						redditProfile && Object.keys(redditProfile).length > 0,
 					Twitter:
-						twitterProfile && Object.keys(twitterProfile).length > 0 // Check if Twitter profile data exists
+						twitterProfile && Object.keys(twitterProfile).length > 0
 				})
+				// Set selectedModel, default to "llama3.2:3b" if not present
+				setSelectedModel(selectedModel || "llama3.2:3b")
 			}
 		} catch (error) {
-			toast.error("Error fetching user data.") // Show error toast if fetching fails
+			toast.error("Error fetching user data.")
 		}
 	}
 
-	/**
-	 * useEffect hook to fetch initial data when the component mounts.
-	 *
-	 * Calls `fetchData` to load connected profiles status when the component is first rendered.
-	 */
-	useEffect(() => {
-		fetchData() // Fetch data on component mount
-	}, []) // Empty dependency array ensures this effect runs only once on mount
+	// Fetch available models from Ollama
+	const fetchAvailableModels = async () => {
+		try {
+			const models = await window.electron.invoke("get-ollama-models")
+			setAvailableModels(models)
+			// If selectedModel isn't in availableModels, reset to default or first available
+			if (models.length > 0 && !models.includes(selectedModel)) {
+				const newModel = models[0] // Default to first available model
+				await window.electron.invoke("set-db-data", {
+					data: { selectedModel: newModel }
+				})
+				setSelectedModel(newModel)
+			}
+		} catch (error) {
+			toast.error(
+				"Error fetching available models. Ensure Ollama is running."
+			)
+			setAvailableModels([])
+		}
+	}
 
 	/**
 	 * useEffect hook to fetch user details, pricing plan, referral, and beta user status on component mount.
@@ -224,10 +243,12 @@ const Settings = () => {
 	 * Calls various data fetching functions to initialize settings page with user-specific information.
 	 */
 	useEffect(() => {
+		fetchData()
 		fetchUserDetails() // Fetch user details on component mount
 		fetchPricingPlan() // Fetch pricing plan on component mount
 		fetchReferralDetails() // Fetch referral details on component mount
 		fetchBetaUserStatus() // Fetch beta user status on component mount
+		fetchAvailableModels()
 	}, []) // Empty dependency array ensures this effect runs only once on mount
 
 	/**
@@ -558,6 +579,50 @@ const Settings = () => {
 						} // Disable card for free plan users or if any app is loading
 					/>
 				</div>
+				{/* New Model Selection Section */}
+				<div className="w-4/5 px-4 py-4">
+					<h2 className="font-Poppins text-white text-2xl py-2">
+						Model Settings
+					</h2>
+					<label htmlFor="model-select" className="text-white mr-2">
+						Select AI Model:
+					</label>
+					<select
+						id="model-select"
+						value={selectedModel}
+						onChange={async (e) => {
+							const newModel = e.target.value
+							try {
+								await window.electron.invoke("set-db-data", {
+									data: { selectedModel: newModel }
+								})
+								setSelectedModel(newModel)
+								toast.success("Model updated successfully.")
+							} catch (error) {
+								toast.error("Error updating model.")
+							}
+						}}
+						className="bg-gray-800 text-white p-2 rounded"
+					>
+						{availableModels.length > 0 ? (
+							availableModels.map((model) => (
+								<option key={model} value={model}>
+									{model}
+								</option>
+							))
+						) : (
+							<option value="" disabled>
+								No models available
+							</option>
+						)}
+					</select>
+					{availableModels.length === 0 && (
+						<p className="text-red-500 mt-2">
+							No models found. Please download models using Ollama
+							and restart the app.
+						</p>
+					)}
+				</div>	
 			</div>
 			{/* ModalDialog component for Referral Program info */}
 			{showReferralDialog && (

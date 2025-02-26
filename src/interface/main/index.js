@@ -127,6 +127,11 @@ const chatsDb = await getChatsDb(chatsDbPath)
  */
 const userProfileDb = await getUserProfileDb(userProfileDbPath)
 
+if (!userProfileDb.data.userData.selectedModel) {
+	userProfileDb.data.userData.selectedModel = "llama3.2:3b"
+	await userProfileDb.write()
+}
+
 /**
  * The main application window instance.
  * @type {BrowserWindow | null}
@@ -1449,5 +1454,19 @@ ipcMain.handle("delete-subgraph", async (event, { source_name }) => {
 	} catch (error) {
 		console.log(`Error deleting subgraph: ${error}`)
 		return { status: "failure", error: error.message }
+	}
+})
+
+ipcMain.handle("get-ollama-models", async () => {
+	try {
+		const response = await fetch("http://localhost:11434/api/tags")
+		if (!response.ok) {
+			throw new Error("Failed to fetch models from Ollama")
+		}
+		const data = await response.json()
+		return data.models.map((model) => model.name)
+	} catch (error) {
+		console.error("Error fetching Ollama models:", error)
+		return [] // Return empty array on failure
 	}
 })

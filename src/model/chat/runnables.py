@@ -10,6 +10,15 @@ from dotenv import load_dotenv
 
 load_dotenv("../.env")  # Load environment variables from .env file
 
+# Helper function to get selected model
+def get_selected_model():
+    """Fetch the selected model name from userProfile.json."""
+    db_path = os.getenv("USER_PROFILE_DB_PATH")
+    if not db_path or not os.path.exists(db_path):
+        raise ValueError("USER_PROFILE_DB_PATH not set or file not found")
+    with open(db_path, "r", encoding="utf-8") as f:
+        db = json.load(f)
+    return db["userData"].get("selectedModel", "llama3.2:3b")  # Default to llama3.2:3b
 
 # --- CustomRunnable Class Definition ---
 class CustomRunnable:
@@ -293,7 +302,7 @@ def get_chat_runnable(chat_history: List[Dict[str, str]]) -> CustomRunnable:
     """
     chat_runnable: CustomRunnable = CustomRunnable(  # Initialize CustomRunnable for chat
         model_url=os.getenv("BASE_MODEL_URL"),
-        model_name=os.getenv("BASE_MODEL_REPO_ID"),
+        model_name=get_selected_model(),
         system_prompt_template=chat_system_prompt_template,  # System prompt for chat
         user_prompt_template=chat_user_prompt_template,  # User prompt template for chat
         input_variables=[
