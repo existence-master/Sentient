@@ -36,7 +36,13 @@ def get_selected_model() -> str:
         raise ValueError("USER_PROFILE_DB_PATH not set or file not found")
     with open(db_path, "r", encoding="utf-8") as f:
         db = json.load(f)
-    return db["userData"].get("selectedModel", "llama3.2:3b")  # Default to llama3.2:3b
+    selected_model = db["userData"].get("selectedModel", "llama3.2:3b")  # Default to llama3.2:3b
+    if selected_model == "openai":
+        return "gpt-4o"
+    elif selected_model == "claude":
+        return "claude-3-7-sonnet-20250219"
+    else:
+        return selected_model
 
 class BaseRunnable(ABC):
     """
@@ -520,7 +526,7 @@ class ClaudeRunnable(BaseRunnable):
 
         # Construct the payload
         payload = {
-            "model": "claude-3-7-sonnet-20250219",  # Hardcoded model name for Claude
+            "model": self.model_name,  # Hardcoded model name for Claude
             "messages": self.messages,
             "max_tokens": 4096
         }
