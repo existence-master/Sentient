@@ -1,321 +1,426 @@
 import os
-from prompts import *
-from wrapt_timeout_decorator import *
-from helpers import *
 import json
 import requests
-import asyncio
-from typing import Dict, Any, List, Union, Optional, Generator, AsyncGenerator
+from typing import Dict, Any, List, Union, Optional, Generator
+from abc import ABC, abstractmethod
+from helpers import *
 from dotenv import load_dotenv
+import keyring 
 
-load_dotenv("../.env")  # Load environment variables from .env file
+load_dotenv("../.env")
 
-# Helper function to get selected model
 def get_selected_model():
     """Fetch the selected model name from userProfile.json."""
-    db_path = os.getenv("USER_PROFILE_DB_PATH")
+    db_path = "../../userProfileDb.json"
     if not db_path or not os.path.exists(db_path):
         raise ValueError("USER_PROFILE_DB_PATH not set or file not found")
     with open(db_path, "r", encoding="utf-8") as f:
         db = json.load(f)
     return db["userData"].get("selectedModel", "llama3.2:3b")  # Default to llama3.2:3b
 
-# --- CustomRunnable Class Definition ---
-class CustomRunnable:
-    """
-    A custom runnable class to interact with language models via API requests.
+class BaseRunnable(ABC):
+    @abstractmethod
+    def __init__(self, model_url: str, model_name: str, system_prompt_template: str,
+                 user_prompt_template: str, input_variables: List[str], response_type: str,
+                 required_format: Optional[Union[dict, list]] = None, stream: bool = False,
+                 stateful: bool = False):
+        self.model_url = model_url
+        self.model_name = model_name
+        self.user_prompt_template = user_prompt_template
+        self.input_variables = input_variables
+        self.response_type = response_type
+        self.required_format = required_format
+        self.stream = stream
+        self.stateful = stateful
 
-    This class handles building prompts, sending requests to a model API,
-    and processing responses. It supports both standard and streaming responses,
-    and can maintain stateful conversations.
-    """
-
-    def __init__(
-        self,
-        model_url: str,
-        model_name: str,
-        system_prompt_template: str,
-        user_prompt_template: str,
-        input_variables: List[str],
-        response_type: str,
-        required_format: Optional[Union[dict, list]] = None,
-        stream: bool = False,
-        stateful: bool = False,
-    ):
-        """
-        Initialize the CustomRunnable instance.
-
-        Args:
-            model_url (str): URL of the model API endpoint.
-            model_name (str): Name of the model to use.
-            system_prompt_template (str): Template for the system prompt.
-            user_prompt_template (str): Template for the user prompt.
-            input_variables (List[str]): List of variables required by the prompt templates.
-            response_type (str): Expected response type, e.g., "json", "chat".
-            required_format (Optional[Union[dict, list]]): Expected output format for JSON responses (optional).
-            stream (bool): Whether to use streaming for responses (default: False).
-            stateful (bool): Whether the runnable should maintain conversation state (default: False).
-        """
-        self.model_url: str = model_url  # Model API endpoint URL
-        self.model_name: str = model_name  # Model name to be used in API requests
-        self.system_prompt_template: str = (
-            system_prompt_template  # System prompt template string
-        )
-        self.user_prompt_template: str = (
-            user_prompt_template  # User prompt template string
-        )
-        self.input_variables: List[str] = (
-            input_variables  # List of input variable names
-        )
-        self.required_format: Optional[Union[dict, list]] = (
-            required_format  # Required format for JSON responses, if applicable
-        )
-        self.messages: List[Dict[str, str]] = [
-            {"role": "system", "content": self.system_prompt_template}
-        ]  # Initialize messages list with system prompt
-        self.response_type: str = (
-            response_type  # Expected response type ("json", "chat", etc.)
-        )
-        self.stream: bool = stream  # Flag to enable streaming responses
-        self.stateful: bool = stateful  # Flag to indicate if the runnable is stateful
+        if self.response_type == "json" and self.required_format:
+            schema_str = json.dumps(self.required_format, indent=2)
+            system_prompt_template += f"\n\nPlease respond in JSON format following this schema:\n{schema_str}"
+        self.messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt_template}]
 
     def build_prompt(self, inputs: Dict[str, Any]):
-        """
-        Build the prompt by substituting input variables into the user prompt template.
+        """Build the prompt by substituting input variables into templates."""
+        user_prompt = self.user_prompt_template.format(**inputs)
 
-        If the runnable is stateful, it appends the new user prompt to the existing message history.
-        Otherwise, it resets the message history to just the system prompt before adding the new user prompt.
-
-        Args:
-            inputs (Dict[str, Any]): Dictionary of input variables to replace in the prompt template.
-        """
-        if self.stateful:  # If stateful, maintain conversation history
-            user_prompt: str = self.user_prompt_template.format(
-                **inputs
-            )  # Format user prompt with inputs
-
-            new_messages: List[Dict[str, str]] = [  # Create new message in chat format
-                {"role": "user", "content": user_prompt},
-            ]
-
-            for message in new_messages:  # Append new messages to existing history
-                self.messages.append(message)
-        else:  # If not stateful, start with a fresh system prompt each time
-            self.messages = [
-                {"role": "system", "content": self.system_prompt_template}
-            ]  # Reset messages to just system prompt
-
-            user_prompt: str = self.user_prompt_template.format(
-                **inputs
-            )  # Format user prompt with inputs
-            self.messages.append(
-                {"role": "user", "content": user_prompt}
-            )  # Append new user prompt
+        if self.stateful:
+            self.messages.append({"role": "user", "content": user_prompt})
+        else:
+            self.messages = [{"role": "system", "content": self.messages[0]["content"]}]
+            self.messages.append({"role": "user", "content": user_prompt})
 
     def add_to_history(self, chat_history: List[Dict[str, str]]):
-        """
-        Add chat history to the messages list.
+        """Add chat history to maintain context."""
+        self.messages.extend(chat_history)
 
-        This method is used to incorporate previous chat turns into the current prompt,
-        maintaining context for stateful conversations.
+    @abstractmethod
+    def invoke(self, inputs: Dict[str, Any]) -> Union[Dict[str, Any], List[Any], str, None]:
+        pass
 
-        Args:
-            chat_history (List[Dict[str, str]]): A list of chat messages, each a dictionary
-                                                 with 'role' ("user" or "assistant") and 'content'.
-        """
-        for chat in chat_history:  # Iterate through provided chat history
-            self.messages.append(
-                chat
-            )  # Append each message to the current messages list
+    @abstractmethod
+    def stream_response(self, inputs: Dict[str, Any]) -> Generator[Optional[str], None, None]:
+        pass
 
-    def invoke(
-        self, inputs: Dict[str, Any]
-    ) -> Union[Dict[str, Any], List[Any], str, None]:
-        """
-        Execute the model call, process the response, and return the output.
 
-        This method builds the prompt, sends a request to the model API,
-        and then processes the JSON response to extract and return the content.
-        It handles potential JSON decoding errors and HTTP request failures.
+class OllamaRunnable(BaseRunnable):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-        Args:
-            inputs (Dict[str, Any]): Dictionary of input values for prompt formatting.
-
-        Returns:
-            Union[Dict[str, Any], List[Any], str, None]: Processed output from the model response.
-                                                         Returns a dict or list if response is JSON,
-                                                         a string for other response types, or None on failure.
-
-        Raises:
-            ValueError: If the HTTP request fails or if JSON decoding fails and response_type is "json".
-        """
-        self.build_prompt(inputs)  # Build the prompt using the input
-
-        payload: Dict[str, Any] = {  # Construct the payload for the API request
+    def invoke(self, inputs: Dict[str, Any]):
+        self.build_prompt(inputs)
+        payload = {
             "model": self.model_name,
             "messages": self.messages,
-            "stream": False,  # Set stream to False for standard response
-            "options": {  # Model options
-                "num_ctx": 4096  # Context window size
-            },
+            "stream": False,
+            "options": {"num_ctx": 4096},
         }
 
-        if self.response_type == "json":  # If expecting a JSON response, set the format
-            if (
-                platform == "win32"
-            ):  # Conditional format setting based on platform (Windows specific handling)
-                payload["format"] = (
-                    self.required_format
-                )  # Set format directly for Windows
-            else:
-                payload["format"] = json.dumps(
-                    self.required_format
-                )  # Serialize format to JSON string for non-Windows
+        if self.response_type == "json" and self.required_format:
+            payload["format"] = json.dumps(self.required_format)
 
-        headers: Dict[str, str] = {
-            "Content-Type": "application/json"
-        }  # Set headers for JSON request
+        response = requests.post(self.model_url, json=payload)
+        return self._handle_response(response)
 
-        response: requests.Response = requests.post(
-            self.model_url, headers=headers, data=json.dumps(payload)
-        )  # Send POST request to model API
+    def stream_response(self, inputs: Dict[str, Any]):
+        self.build_prompt(inputs)
+        payload = {
+            "model": self.model_name,
+            "messages": self.messages,
+            "stream": True,
+            "options": {"num_ctx": 4096},
+        }
 
-        if response.status_code == 200:  # Check if the request was successful
+        with requests.post(self.model_url, json=payload, stream=True) as response:
+            for line in response.iter_lines(decode_unicode=True):
+                if line:
+                    yield self._handle_stream_line(line)
+
+    def _handle_response(self, response: requests.Response):
+        if response.status_code == 200:
             try:
-                data: str = (
-                    response.json().get("message", {}).get("content", "")
-                )  # Extract content from JSON response
-                try:  # Attempt to parse response data as JSON
-                    parsed_data: Union[Dict[str, Any], List[Any]] = (
-                        extract_and_fix_json(data)
-                    )  # Parse and fix JSON, if necessary
-                    return parsed_data  # Return parsed JSON data
-                except (
-                    Exception
-                ):  # If JSON parsing fails, proceed to next parsing attempt
-                    pass  # Fallback to literal evaluation if JSON parsing fails
+                data = response.json().get("message", {}).get("content", "")
+                if self.response_type == "json":
+                    return json.loads(data)
+                return data
+            except json.JSONDecodeError:
+                raise ValueError(f"Failed to decode JSON response: {data}")
+        raise ValueError(f"Request failed with status {response.status_code}: {response.text}")
 
-                try:  # Attempt to parse response data as Python literal (e.g., list, dict, string)
-                    parsed_data = ast.literal_eval(
-                        data
-                    )  # Safely evaluate string as Python literal
-                    return parsed_data  # Return parsed Python literal data
-                except (
-                    ValueError,
-                    SyntaxError,
-                ):  # Catch errors during literal evaluation
-                    pass  # If literal evaluation fails, return raw data
+    def _handle_stream_line(self, line: str):
+        try:
+            data = json.loads(line)
+            if data.get("done", True):
+                return None
+            return data["message"]["content"]
+        except json.JSONDecodeError:
+            return None
 
-                return data  # Return raw string data if no parsing is successful
 
-            except json.JSONDecodeError:  # Handle JSONDecodeError specifically
-                raise ValueError(
-                    f"Failed to decode JSON response: {response.text}"
-                )  # Raise ValueError for JSON decode failure
-        else:  # Handle non-200 status codes
-            raise ValueError(
-                f"Request failed with status code {response.status_code}: {response.text}"
-            )  # Raise ValueError for HTTP error
+class OpenAIRunnable(BaseRunnable):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.api_key = os.getenv("OPENAI_API_KEY") # Old way from environment variable
+        # self.api_key = keyring.get_password("openai", "api_key") # Get from keyring, service name "openai", username "api_key"
 
-    def stream_response(
-        self, inputs: Dict[str, Any]
-    ) -> Generator[Optional[str], None, None]:
-        """
-        Generate a streaming response from the model API.
-
-        This method is similar to `invoke` but handles streaming responses.
-        It yields tokens as they are received from the API, allowing for real-time processing
-        of the model's output.
-
-        Args:
-            inputs (Dict[str, Any]): Dictionary of input values for prompt formatting.
-
-        Yields:
-            Generator[Optional[str], None, None]: A generator that yields tokens (strings) from the streaming response.
-                                                 Yields None to signal the end of the stream.
-        """
-        self.build_prompt(inputs)  # Build the prompt using the inputs
-
-        payload: Dict[str, Any] = {  # Construct payload for streaming request
+    def invoke(self, inputs: Dict[str, Any]):
+        self.build_prompt(inputs)
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        payload = {
             "model": self.model_name,
             "messages": self.messages,
-            "stream": True,  # Set stream to True for streaming response
-            "options": {  # Model options
-                "num_ctx": 4096  # Context window size
-            },
+            "temperature": 0.7,
+        }
+        if self.response_type == "json":
+            payload["response_format"] = {"type": "json_object"}
+
+        response = requests.post(self.model_url, headers=headers, json=payload)
+        return self._handle_response(response)
+
+    def stream_response(self, inputs: Dict[str, Any]):
+        print(inputs)
+        self.build_prompt(inputs)
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        payload = {
+            "model": self.model_name,
+            "messages": self.messages,
+            "temperature": 0.7,
+            "stream": True
         }
 
-        if (
-            self.response_type == "json"
-        ):  # If expecting JSON response format, set format in payload
-            payload["format"] = (
-                self.required_format
-            )  # Set the required format for JSON response
+        with requests.post(self.model_url, headers=headers, json=payload, stream=True) as response:
+            print("Response: ", response)
+            for line in response.iter_lines():
+                print("Line: ", line)
+                if line:
+                    yield self._handle_stream_line(line)
 
-        with requests.post(
-            self.model_url, json=payload, stream=True
-        ) as response:  # Send streaming POST request
-            for line in response.iter_lines(
-                decode_unicode=True
-            ):  # Iterate over response lines
-                if line:  # Check if line is not empty
-                    try:
-                        data: Dict[str, Any] = json.loads(
-                            line
-                        )  # Load JSON data from line
+    def _handle_response(self, response: requests.Response):
+        if response.status_code == 200:
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            if self.response_type == "json":
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    raise ValueError("Model did not return valid JSON.")
+            return content
+        raise ValueError(f"OpenAI API Error: {response.text}")
 
-                        if data.get("done", True):  # Check if stream is done
-                            if (
-                                data.get("done_reason") == "load"
-                            ):  # Skip if done reason is 'load'
-                                continue  # Continue to next line
-                            else:  # If done for other reasons, yield None and break
-                                token: None = (
-                                    None  # Set token to None to signal end of stream
-                                )
-                                yield token  # Yield None token
-                                break  # Break from loop
+    def _handle_stream_line(self, line: bytes):
+        if line.startswith(b"data: "):
+            chunk = json.loads(line[6:])
+            return chunk["choices"][0]["delta"].get("content", "")
+        return None
 
-                        token: Optional[str] = data["message"][
-                            "content"
-                        ]  # Extract token content from message
-                        if token:  # Check if token is not empty
-                            yield token  # Yield the extracted token
 
-                    except (
-                        json.JSONDecodeError
-                    ):  # Handle JSONDecodeError during line processing
-                        continue  # Continue to next line if JSON decode fails
+class ClaudeRunnable(BaseRunnable):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.api_key = os.getenv("CLAUDE_API_KEY") # Old way from environment variable
+        # self.api_key = keyring.get_password("claude", "api_key") # Get from keyring, service name "claude", username "api_key"
 
-def get_chat_runnable(chat_history: List[Dict[str, str]]) -> CustomRunnable:
-    """
-    Initialize and configure a CustomRunnable for chat interactions.
+    def invoke(self, inputs: Dict[str, Any]):
+        self.build_prompt(inputs)
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
+        payload = {
+            "model": self.model_name,
+            "messages": self.messages,
+            "max_tokens": 4096
+        }
 
-    This runnable is designed for conversational exchanges, using a chat-specific system prompt
-    and user prompt templates. It is configured for streaming responses and maintains stateful conversation history.
+        response = requests.post(self.model_url, headers=headers, json=payload)
+        return self._handle_response(response)
 
-    Args:
-        chat_history (List[Dict[str, str]]): Initial chat history to prime the conversation.
+    def stream_response(self, inputs: Dict[str, Any]):
+        self.build_prompt(inputs)
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
+        payload = {
+            "model": self.model_name,
+            "messages": self.messages,
+            "max_tokens": 4096,
+            "stream": True
+        }
 
-    Returns:
-        CustomRunnable: Configured CustomRunnable instance for chat interactions.
-    """
-    chat_runnable: CustomRunnable = CustomRunnable(  # Initialize CustomRunnable for chat
-        model_url=os.getenv("BASE_MODEL_URL"),
-        model_name=get_selected_model(),
-        system_prompt_template=chat_system_prompt_template,  # System prompt for chat
-        user_prompt_template=chat_user_prompt_template,  # User prompt template for chat
-        input_variables=[
-            "query",
-            "user_context",
-            "internet_context",
-            "name",
-            "personality",
-        ],  # Input variables for chat prompts
-        response_type="chat",  # Response type is chat
-        stream=True,  # Enable streaming for chat responses
-        stateful=True,  # Enable stateful conversation
+        response = requests.post(self.model_url, headers=headers, json=payload, stream=True)
+        print("Response: ", response)
+        for line in response.iter_lines():
+            print("Line: ", line)
+            if line:
+                yield self._handle_stream_line(line)
+
+    def _handle_response(self, response: requests.Response):
+        if response.status_code == 200:
+            data = response.json()
+            content = " ".join([block["text"] for block in data["content"]])
+            if self.response_type == "json":
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    raise ValueError("Model did not return valid JSON.")
+            return content
+        raise ValueError(f"Claude API Error: {response.text}")
+
+    def _handle_stream_line(self, line: bytes):
+        try:
+            data = json.loads(line.decode("utf-8"))
+            return " ".join([block["text"] for block in data.get("content", [])])
+        except json.JSONDecodeError:
+            return None
+
+class GeminiRunnable(BaseRunnable):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Retrieve the encrypted API key from Keyring
+        encrypted_key = keyring.get_password("electron-openid-oauth", "gemini")
+        print("Encrypted Key: ", encrypted_key)
+        
+        # Check if the encrypted key exists
+        if encrypted_key:
+            try:
+                # Decrypt the key using the locally defined aes_decrypt function
+                decrypted_data = aes_decrypt(encrypted_key)
+                self.api_key = decrypted_data
+            except Exception as e:
+                # Handle decryption errors
+                print(f"Failed to decrypt API key: {str(e)}")
+                self.api_key = None
+        else:
+            # Handle the case where no encrypted key is found in Keyring
+            print("No encrypted API key found in Keyring.")
+            self.api_key = None
+    
+    def invoke(self, inputs):
+        # Build the prompt (e.g., append user input to messages list)
+        self.build_prompt(inputs)
+
+        # Extract system instruction (first message if role is "system")
+        system_instruction = None
+        if self.messages and self.messages[0]["role"].lower() == "system":
+            system_content = self.messages[0]["content"]
+            system_instruction = {"parts": [{"text": system_content}]}
+            conversation_messages = self.messages[1:]
+        else:
+            conversation_messages = self.messages
+
+        # Map roles: "user" -> "user", "assistant" -> "model"
+        def map_role(role):
+            role_lower = role.lower()
+            if role_lower == "assistant":
+                return "model"
+            elif role_lower == "user":
+                return "user"
+            else:
+                raise ValueError(f"Unsupported role: {role}")
+
+        # Construct contents list from messages
+        contents = [
+            {
+                "role": map_role(msg["role"]),
+                "parts": [{"text": msg["content"]}]
+            }
+            for msg in conversation_messages
+        ]
+
+        # Build the payload
+        payload = {"contents": contents}
+        if system_instruction:
+            payload["systemInstruction"] = system_instruction
+
+        # Add generationConfig for structured JSON output if response_type is "json"
+        if self.response_type == "json" and self.required_format:
+            payload["generationConfig"] = {
+                "response_mime_type": "application/json",
+                "response_schema": self.required_format
+            }
+
+        # Make the API request
+        response = requests.post(
+            f"{self.model_url}?key={self.api_key}",
+            json=payload,
+            headers={"Content-Type": "application/json"}
+        )
+
+        # Handle the response
+        return self._handle_response(response)
+
+    def _handle_response(self, response: requests.Response):
+        if response.status_code == 200:
+            data = response.json()
+            content = "".join([part["text"] for part in data["candidates"][0]["content"]["parts"]])
+            if self.response_type == "json":
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    raise ValueError("Model did not return valid JSON.")
+            return content
+        raise ValueError(f"Gemini API Error: {response.text}")
+
+    def stream_response(self, inputs):
+        # Build the prompt (e.g., append user input to messages list)
+        self.build_prompt(inputs)
+
+        # Extract system instruction (assuming it’s the first message if role is "system")
+        system_instruction = None
+        if self.messages and self.messages[0]["role"].lower() == "system":
+            system_content = self.messages[0]["content"]
+            system_instruction = {"parts": [{"text": system_content}]}
+            conversation_messages = self.messages[1:]
+        else:
+            conversation_messages = self.messages
+
+        # Map roles for conversation messages ("user" stays "user", "assistant" becomes "model")
+        def map_role(role):
+            role_lower = role.lower()
+            if role_lower == "assistant":
+                return "model"
+            elif role_lower == "user":
+                return "user"
+            else:
+                raise ValueError(f"Unsupported role: {role}")
+
+        # Construct the contents list from remaining messages
+        contents = [
+            {
+                "role": map_role(msg["role"]),
+                "parts": [{"text": msg["content"]}]
+            }
+            for msg in conversation_messages
+        ]
+
+        # Build the payload
+        payload = {"contents": contents}
+        if system_instruction:
+            payload["systemInstruction"] = system_instruction
+
+        # Make the API request
+        response = requests.post(
+            f"{self.model_url}?key={self.api_key}",
+            json=payload,
+            headers={"Content-Type": "application/json"}
+        )
+
+        # Handle the response (assuming _handle_response exists)
+        yield self._handle_response(response)
+
+    def _handle_response(self, response: requests.Response):
+        if response.status_code == 200:
+            data = response.json()
+            content = "".join([part["text"] for part in data["candidates"][0]["content"]["parts"]])
+            if self.response_type == "json":
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    raise ValueError("Model did not return valid JSON.")
+            return content
+        raise ValueError(f"Gemini API Error: {response.text}")
+
+def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
+    model_mapping = {
+        "openai": (os.getenv("OPENAI_API_URL"), OpenAIRunnable),
+        "claude": (os.getenv("CLAUDE_API_URL"), ClaudeRunnable),
+        "gemini": (os.getenv("GEMINI_API_URL"), GeminiRunnable),
+    }
+    
+    print("Model Mapping: ", model_mapping)
+
+    provider = None
+
+    model_name = get_selected_model()
+    
+    print("Model Name: ", model_name)
+
+    provider = model_name.lower()
+    
+    if provider and provider in model_mapping:
+        model_url, runnable_class = model_mapping[provider]
+    else:
+        model_url = os.getenv("BASE_MODEL_URL")
+        runnable_class = OllamaRunnable
+        
+    print(model_url)
+    print(provider)
+    print(runnable_class)
+
+    system_prompt = "You are a helpful AI assistant."
+    user_prompt = "{query}"
+
+    runnable = runnable_class(
+        model_url=model_url,
+        model_name=model_name,
+        system_prompt_template=system_prompt,
+        user_prompt_template=user_prompt,
+        input_variables=["query"],
+        response_type="text",
+        stream=True,
+        stateful=True
     )
 
-    chat_runnable.add_to_history(chat_history)  # Add initial chat history to runnable
-    return chat_runnable  # Return configured chat runnable
+    runnable.add_to_history(chat_history)
+    return runnable

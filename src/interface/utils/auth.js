@@ -745,3 +745,55 @@ export async function getReferrerStatusFromKeytar() {
 		return null
 	}
 }
+
+
+/**
+ * Sets an API key for a given provider by sending it to the Python backend.
+ * @param {string} provider - The name of the provider.
+ * @param {string} apiKey - The API key to store.
+ * @returns {Promise<{ success: boolean, error?: string }>} - Success status and optional error message.
+ */
+export async function setApiKey(provider, apiKey) {
+    try {
+        const response = await fetch('http://localhost:5005/set-api-key', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ provider, api_key: apiKey }),
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        return { success: data.success }; // { success: true }
+    } catch (error) {
+        console.error(`Error setting API key for ${provider}:`, error);
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * Checks if an API key exists for a given provider by querying the Python backend.
+ * @param {string} provider - The name of the provider.
+ * @returns {Promise<boolean>} - True if the key exists, false otherwise.
+ */
+export async function hasApiKey(provider) {
+    try {
+        const response = await fetch('http://localhost:5005/has-api-key', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ provider }),
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        return data.exists; // true or false
+    } catch (error) {
+        console.error(`Error checking API key for ${provider}:`, error);
+        return false; // Return false on error, consistent with original behavior
+    }
+}

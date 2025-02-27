@@ -6,6 +6,7 @@ from helpers import *
 import uvicorn
 import requests
 import nest_asyncio
+import keyring
 
 from dotenv import load_dotenv
 
@@ -79,6 +80,12 @@ class SetReferrerRequest(BaseModel):
 
     referral_code: str
 
+class SetApiKeyRequest(BaseModel):
+    provider: str
+    api_key: str
+
+class HasApiKeyRequest(BaseModel):
+    provider: str
 
 nest_asyncio.apply()  # Apply nest_asyncio for running async operations in sync context
 
@@ -563,6 +570,49 @@ async def decrypt_data(request: DecryptionRequest) -> JSONResponse:
             status_code=500, content={"message": str(e)}
         )  # Return 500 for any exceptions
 
+# Endpoint to store an encrypted API key in keyring
+@app.post("/set-api-key")
+async def set_api_key(request: SetApiKeyRequest):
+    """
+    Encrypts the provided API key and stores it in keyring for the given provider.
+
+    Args:
+        request (SetApiKeyRequest): Request containing the provider and API key.
+
+    Returns:
+        dict: Success status or raises an HTTPException on failure.
+    """
+    try:
+        # Encrypt the API key using the existing aes_encrypt function
+        encrypted_key = aes_encrypt(request.api_key)
+        # Store the encrypted key in keyring with "Sentient" as the service name
+        keyring.set_password("electron-openid-oauth", request.provider, encrypted_key)
+        return JSONResponse(
+            status_code=200, content={"success": True}
+        )  
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error storing API key: {str(e)}")
+
+# Endpoint to check if an API key exists for a provider
+@app.post("/has-api-key")
+async def has_api_key(request: HasApiKeyRequest):
+    """
+    Checks if an encrypted API key exists in keyring for the given provider.
+
+    Args:
+        request (HasApiKeyRequest): Request containing the provider.
+
+    Returns:
+        dict: Whether the key exists or raises an HTTPException on failure.
+    """
+    try:
+        # Retrieve the encrypted key from keyring
+        encrypted_key = keyring.get_password("electron-openid-oauth", request.provider)
+        # Return true if a key exists, false otherwise
+        return JSONResponse(
+            status_code=200, content={"exists": encrypted_key is not None})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking API key: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(

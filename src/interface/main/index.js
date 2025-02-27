@@ -20,7 +20,9 @@ import {
 	fetchAndSetBetaUserStatus,
 	getReferralCodeFromKeytar,
 	getBetaUserStatusFromKeytar,
-	setBetaUserStatusInKeytar
+	setBetaUserStatusInKeytar,
+	hasApiKey,
+	setApiKey
 } from "../utils/auth.js"
 import { getPrivateData } from "../utils/api.js"
 import { createAuthWindow, createLogoutWindow } from "./auth.js"
@@ -1470,3 +1472,13 @@ ipcMain.handle("get-ollama-models", async () => {
 		return [] // Return empty array on failure
 	}
 })
+
+// IPC handler to check if an API key exists for a provider
+ipcMain.handle("check-api-key", async (event, provider) => {
+    return await hasApiKey(provider);
+});
+
+// IPC handler to set an API key for a provider
+ipcMain.handle("set-api-key", async (event, { provider, apiKey }) => {
+    return await setApiKey(provider, apiKey);
+});
