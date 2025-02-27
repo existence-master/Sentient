@@ -31,11 +31,11 @@ def get_selected_model() -> str:
         db = json.load(f)
     selected_model = db["userData"].get("selectedModel", "llama3.2:3b")  # Default to llama3.2:3b
     if selected_model == "openai":
-        return "gpt-4o"
+        return "gpt-4o", "openai"
     elif selected_model == "claude":
-        return "claude-3-7-sonnet-20250219"
+        return "claude-3-7-sonnet-20250219", "claude"
     else:
-        return selected_model
+        return selected_model, selected_model
 
 class BaseRunnable(ABC):
     """
@@ -880,8 +880,7 @@ def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
     }
 
     provider: Optional[str] = None
-    model_name: str = get_selected_model()
-    provider = model_name.split(":")[0].lower()
+    model_name, provider=get_selected_model()
 
     if provider and provider in model_mapping:
         model_url, runnable_class = model_mapping[provider]
@@ -930,8 +929,7 @@ def get_agent_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
     }
 
     provider: Optional[str] = None
-    model_name: str = get_selected_model()
-    provider = model_name.split(":")[0].lower()
+    model_name, provider=get_selected_model()
 
     if provider and provider in model_mapping:
         model_url, runnable_class = model_mapping[provider]
@@ -987,8 +985,7 @@ def get_tool_runnable(
     }
 
     provider: Optional[str] = None
-    model_name: str = get_selected_model()
-    provider = model_name.split(":")[0].lower()
+    model_name, provider=get_selected_model()
 
     if provider and provider in model_mapping:
         model_url, runnable_class = model_mapping[provider]
@@ -1026,8 +1023,7 @@ def get_reflection_runnable() -> BaseRunnable:
     }
 
     provider: Optional[str] = None
-    model_name: str = get_selected_model()
-    provider = model_name.split(":")[0].lower()
+    model_name, provider=get_selected_model()
 
     if provider and provider in model_mapping:
         model_url, runnable_class = model_mapping[provider]
@@ -1065,8 +1061,7 @@ def get_inbox_summarizer_runnable() -> BaseRunnable:
     }
 
     provider: Optional[str] = None
-    model_name: str = get_selected_model()
-    provider = model_name.split(":")[0].lower()
+    model_name, provider=get_selected_model()
 
     if provider and provider in model_mapping:
         model_url, runnable_class = model_mapping[provider]

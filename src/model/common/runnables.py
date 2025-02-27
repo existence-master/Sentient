@@ -37,11 +37,11 @@ def get_selected_model() -> str:
         db = json.load(f)
     selected_model = db["userData"].get("selectedModel", "llama3.2:3b")  # Default to llama3.2:3b
     if selected_model == "openai":
-        return "gpt-4o"
+        return "gpt-4o", "openai"
     elif selected_model == "claude":
-        return "claude-3-7-sonnet-20250219"
+        return "claude-3-7-sonnet-20250219", "claude"
     else:
-        return selected_model
+        return selected_model, selected_model
 
 class BaseRunnable(ABC):
     """
@@ -889,7 +889,7 @@ def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
 
     model_name: str = get_selected_model()
 
-    provider = model_name.split(":")[0].lower() # Extract provider from model name (e.g., 'openai' from 'openai:gpt-3.5-turbo')
+     # Extract provider from model name (e.g., 'openai' from 'openai:gpt-3.5-turbo')
 
 
     if provider and provider in model_mapping:
@@ -935,8 +935,8 @@ def get_orchestrator_runnable(chat_history):
     :param chat_history: The chat history to maintain context for orchestration decisions.
     :return: A configured CustomRunnable instance for orchestration.
     """
-    model_name=get_selected_model()
-    provider = model_name.split(":")[0].lower()
+    model_name, provider=get_selected_model()
+    
     model_mapping: Dict[str, type[BaseRunnable]] = {
         "openai": OpenAIRunnable,
         "claude": ClaudeRunnable,
@@ -974,8 +974,7 @@ def get_context_classification_runnable():
 
     :return: A configured CustomRunnable instance for context classification.
     """
-    model_name=get_selected_model()
-    provider = model_name.split(":")[0].lower()
+    model_name, provider=get_selected_model()
     model_mapping: Dict[str, type[BaseRunnable]] = {
         "openai": OpenAIRunnable,
         "claude": ClaudeRunnable,
@@ -1006,8 +1005,8 @@ def get_internet_classification_runnable():
 
     :return: A configured CustomRunnable instance for internet classification.
     """
-    model_name=get_selected_model()
-    provider = model_name.split(":")[0].lower()
+    model_name, provider=get_selected_model()
+    
     model_mapping: Dict[str, type[BaseRunnable]] = {
         "openai": OpenAIRunnable,
         "claude": ClaudeRunnable,
@@ -1038,8 +1037,8 @@ def get_internet_query_reframe_runnable():
 
     :return: A configured CustomRunnable instance for internet query reframing.
     """
-    model_name=get_selected_model()
-    provider = model_name.split(":")[0].lower()
+    model_name, provider=get_selected_model()
+    
     model_mapping: Dict[str, type[BaseRunnable]] = {
         "openai": OpenAIRunnable,
         "claude": ClaudeRunnable,
@@ -1069,8 +1068,8 @@ def get_internet_summary_runnable():
 
     :return: A configured CustomRunnable instance for internet summary generation.
     """
-    model_name=get_selected_model()
-    provider = model_name.split(":")[0].lower()
+    model_name, provider=get_selected_model()
+    
     model_mapping: Dict[str, type[BaseRunnable]] = {
         "openai": OpenAIRunnable,
         "claude": ClaudeRunnable,
