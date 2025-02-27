@@ -7,6 +7,7 @@ from prompts import *
 from formats import *
 from dotenv import load_dotenv
 import keyring
+from sys import platform
 
 load_dotenv("../.env")
 
@@ -66,13 +67,16 @@ class BaseRunnable(ABC):
         """
         self.model_url: str = model_url
         self.model_name: str = model_name
+        self.system_prompt_template: str = system_prompt_template
         self.user_prompt_template: str = user_prompt_template
         self.input_variables: List[str] = input_variables
         self.response_type: str = response_type
         self.required_format: Optional[Union[dict, list]] = required_format
         self.stream: bool = stream
         self.stateful: bool = stateful
-        self.messages = []
+        self.messages: List[Dict[str, str]] = [
+            {"role": "system", "content": self.system_prompt_template}
+        ]
 
     def build_prompt(self, inputs: Dict[str, Any]) -> None:
         """

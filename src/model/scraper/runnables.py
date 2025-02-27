@@ -79,7 +79,9 @@ class BaseRunnable(ABC):
         self.required_format: Optional[Union[dict, list]] = required_format
         self.stream: bool = stream
         self.stateful: bool = stateful
-        self.messages = []
+        self.messages: List[Dict[str, str]] = [
+            {"role": "system", "content": self.system_prompt_template}
+        ]
 
     def build_prompt(self, inputs: Dict[str, Any]) -> None:
         """
