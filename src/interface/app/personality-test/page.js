@@ -9,6 +9,7 @@ import AnimatedLogo from "@components/AnimatedLogo" // Component for displaying 
 import ShiningButton from "@components/ShiningButton" // Custom button component with a shining effect
 import AnimatedBeam from "@components/AnimatedBeam" // Component for animated beam effect
 import ShinyCard from "@components/ShinyCard" // Custom card component with a shiny effect
+import ModelSelection from "@components/ModelSelection"
 import toast from "react-hot-toast" // Library for displaying toast notifications
 
 /**
@@ -169,6 +170,7 @@ const PersonalityTest = () => {
 	const [isReferred, setIsReferred] = useState(null) // isReferred: boolean | null
 	// State to store the referral code entered by the user.
 	const [referralCode, setReferralCode] = useState("") // referralCode: string
+	const [showModelSelection, setShowModelSelection] = useState(false)
 
 	/**
 	 * useEffect hook to fetch existing personality data on component mount.
@@ -415,17 +417,17 @@ const PersonalityTest = () => {
 	const handleBasicInfoSubmit = async (basicInfo) => {
 		try {
 			const response = await window.electron?.invoke("set-db-data", {
-				// Invoke electron to set data in database
-				data: { personalInfo: basicInfo } // Data to set is the basicInfo object
+				data: { personalInfo: basicInfo }
 			})
 
 			if (response.status === 200) {
-				setShowBasicInfoForm(false) // Hide BasicInfoForm on successful submission
+				setShowBasicInfoForm(false)
+				setShowModelSelection(true) // Show model selection after basic info
 			} else {
-				throw new Error("Error saving basic information") // Throw error if response status is not 200
+				throw new Error("Error saving basic information")
 			}
 		} catch (error) {
-			toast.error(`Error saving basic information: ${error}`) // Show error toast if any error occurs
+			toast.error(`Error saving basic information: ${error}`)
 		}
 	}
 
@@ -728,6 +730,17 @@ const PersonalityTest = () => {
 	 *
 	 * @returns {React.ReactNode} - The main UI for the PersonalityTest component.
 	 */
+
+	if (showModelSelection) {
+		return (
+			<div className="min-h-screen flex justify-center items-center bg-black">
+				<ModelSelection
+					onProceed={() => setShowModelSelection(false)}
+				/>
+			</div>
+		)
+	}
+
 	return (
 		<AnimatedBeam className={"w-screen h-screen"}>
 			<div className="relative overflow-hidden">
