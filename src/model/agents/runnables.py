@@ -566,67 +566,27 @@ class GeminiRunnable(BaseRunnable):
         Inherits arguments from BaseRunnable.
         """
         super().__init__(*args, **kwargs)
+        self.api_key: Optional[str] = os.getenv("GEMINI_API_KEY")  # only in development
 
-        self.api_key: Optional[str] = os.getenv("GEMINI_API_KEY") # only in development
-
-        # # Retrieve the encrypted API key from Keyring - commented out for now.
-        # encrypted_key = keyring.get_password("electron-openid-oauth", "gemini")
-
-        # # Check if the encrypted key exists
-        # if encrypted_key:
-        #     try:
-        #         # Define the utility server URL and endpoint
-        #         url = "http://localhost:5005/decrypt"
-        #         # Prepare the JSON payload with the encrypted data
-        #         payload = {"encrypted_data": encrypted_key}
-        #         # Make a POST request to the /decrypt endpoint
-        #         response = requests.post(url, json=payload)
-
-        #         # Check if the request was successful
-        #         if response.status_code == 200:
-        #             # Extract the decrypted data from the response
-        #             decrypted_data = response.json().get("decrypted_data")
-        #             self.api_key = decrypted_data
-        #         else:
-        #             # Handle non-200 status codes (e.g., 500 from server errors)
-        #             print(f"Failed to decrypt API key: {response.status_code} - {response.text}")
-        #             self.api_key = None
-        #     except requests.exceptions.RequestException as e:
-        #         # Handle network-related errors (e.g., server down, connection issues)
-        #         print(f"Error connecting to decryption service: {e}")
-        #         self.api_key = None
-        # else:
-        #     # Handle the case where no encrypted key is found in Keyring
-        #     print("No encrypted API key found in Keyring.")
-        #     self.api_key = None
     def clean_schema_for_gemini(self, schema: Union[Dict[str, Any], List[Any]]) -> Union[Dict[str, Any], List[Any]]:
         supported_keywords = {"enum", "items", "maxItems", "nullable", "properties", "required", "type"}
-
         if isinstance(schema, dict):
+            # Handle 'oneOf' by selecting the first subschema and cleaning it
             if "oneOf" in schema:
                 print("Warning: 'oneOf' found in schema. Replacing with first subschema.")
                 subschema = schema["oneOf"][0]
-                if "type" not in subschema:
-                    if "properties" in subschema:
-                        subschema["type"] = "object"
-                    elif "items" in subschema:
-                        subschema["type"] = "array"
-                    else:
-                        subschema["type"] = "string"
                 return self.clean_schema_for_gemini(subschema)
             
-            # Clean the schema by keeping only supported keywords and handling properties explicitly
             cleaned = {}
             for k, v in schema.items():
-                if k in supported_keywords:
-                    cleaned[k] = self.clean_schema_for_gemini(v)
-                elif k == "properties":
-                    # Recursively clean properties and ensure it’s not empty
+                if k == "properties":
                     cleaned["properties"] = {prop: self.clean_schema_for_gemini(prop_schema) 
                                             for prop, prop_schema in v.items()}
+                elif k in supported_keywords:
+                    cleaned[k] = self.clean_schema_for_gemini(v)
             
             # Ensure 'type' is set for objects with properties
-            if "type" not in cleaned and "properties" in cleaned:
+            if "properties" in cleaned and "type" not in cleaned:
                 cleaned["type"] = "object"
             
             # Validate object type
@@ -634,11 +594,10 @@ class GeminiRunnable(BaseRunnable):
                 if "properties" not in cleaned or not cleaned["properties"]:
                     raise ValueError(f"Gemini requires non-empty 'properties' for object type in schema: {json.dumps(cleaned)}")
                 if "required" in cleaned:
-                    # Filter 'required' to only include defined properties
                     defined_properties = set(cleaned["properties"].keys())
                     cleaned["required"] = [prop for prop in cleaned["required"] if prop in defined_properties]
                     if not cleaned["required"]:
-                        del cleaned["required"]  # Remove empty 'required' field
+                        del cleaned["required"]
             
             return cleaned
         elif isinstance(schema, list):
@@ -656,24 +615,20 @@ class GeminiRunnable(BaseRunnable):
             conversation_messages = self.messages
 
         def map_role(role: str) -> str:
-            role_lower = role.lower()
-            return "model" if role_lower == "assistant" else "user"
+            return "model" if role.lower() == "assistant" else "user"
 
         contents = [{"role": map_role(msg["role"]), "parts": [{"text": msg["content"]}]} 
                     for msg in conversation_messages]
-        
         payload = {"contents": contents}
         if system_instruction:
             payload["systemInstruction"] = system_instruction
 
-        if self.response_type == "json" and self.required_format:
-            print("Original schema:", json.dumps(self.required_format, indent=2))
-            clean_schema = self.clean_schema_for_gemini(self.required_format)
-            print("Cleaned schema:", json.dumps(clean_schema, indent=2))
-            payload["generationConfig"] = {
-                "response_mime_type": "application/json",
-                "response_schema": clean_schema
-            }
+        if self.response_type == "json":
+            generation_config = {"response_mime_type": "application/json"}
+            if self.required_format:
+                clean_schema = self.clean_schema_for_gemini(self.required_format)
+                generation_config["response_schema"] = clean_schema
+            payload["generationConfig"] = generation_config
 
         response = requests.post(
             f"{self.model_url}?key={self.api_key}",
@@ -683,34 +638,39 @@ class GeminiRunnable(BaseRunnable):
         return self._handle_response(response)
 
 
+
     def _handle_response(self, response: requests.Response) -> Union[Dict[str, Any], str, None]:
         if response.status_code == 200:
-            data = response.json()
-            content = "".join([part["text"] for part in data["candidates"][0]["content"]["parts"]])
+            raw_content = response.text
+            print(f"Raw model response: {raw_content}")
+            if not raw_content.strip():
+                raise ValueError("Model returned an empty response")
             if self.response_type == "json":
                 try:
+                    data = response.json()
+                    content = "".join([part["text"] for part in data["candidates"][0]["content"]["parts"]])
                     return json.loads(content)
                 except json.JSONDecodeError as e:
+                    print(f"Failed to parse JSON: {e}, Raw content: {raw_content}")
                     raise ValueError(f"Model did not return valid JSON. Error: {e}")
-            return content
-        raise ValueError(f"Gemini API Error: {response.text}")
-
+            return raw_content
+        raise ValueError(f"API Error: {response.status_code} - {response.text}")
 
     def stream_response(self, inputs: Dict[str, Any]) -> Generator[Union[Dict[str, Any], str, None], None, None]:
         """
-        Intended for streaming responses from Gemini, but currently returns a non-streaming response.
-        Streaming functionality for Gemini is not fully implemented in this version.
+        Invokes the Gemini model to get a stream of responses.
+
+        Currently implemented as a single yield due to limited streaming support,
+        but can be extended for true streaming later.
 
         Args:
             inputs (Dict[str, Any]): Input variables for the prompt.
 
         Yields:
-            Generator[Union[Dict[str, Any], str, None], None, None]: A generator that currently yields a single non-streaming response.
+            Generator[Union[Dict[str, Any], str, None], None, None]: A generator yielding the response.
         """
-        # Build the prompt (e.g., append user input to messages list)
         self.build_prompt(inputs)
 
-        # Extract system instruction (assuming it’s the first message if role is "system")
         system_instruction = None
         if self.messages and self.messages[0]["role"].lower() == "system":
             system_content = self.messages[0]["content"]
@@ -719,67 +679,24 @@ class GeminiRunnable(BaseRunnable):
         else:
             conversation_messages = self.messages
 
-        # Map roles for conversation messages ("user" stays "user", "assistant" becomes "model")
         def map_role(role: str) -> str:
-            """Maps generic role names to Gemini specific role names for streaming."""
             role_lower = role.lower()
-            if role_lower == "assistant":
-                return "model"
-            elif role_lower == "user":
-                return "user"
-            else:
-                raise ValueError(f"Unsupported role: {role}")
+            return "model" if role_lower == "assistant" else "user"
 
-        # Construct the contents list from remaining messages
-        contents = [
-            {
-                "role": map_role(msg["role"]),
-                "parts": [{"text": msg["content"]}]
-            }
-            for msg in conversation_messages
-        ]
+        contents = [{"role": map_role(msg["role"]), "parts": [{"text": msg["content"]}]}
+                    for msg in conversation_messages]
 
-        # Build the payload
         payload: Dict[str, Any] = {"contents": contents}
         if system_instruction:
             payload["systemInstruction"] = system_instruction
 
-        # Make the API request
         response = requests.post(
             f"{self.model_url}?key={self.api_key}",
             json=payload,
             headers={"Content-Type": "application/json"}
         )
 
-        # Handle the response (assuming _handle_response exists)
         yield self._handle_response(response)
-
-    def _handle_response(self, response: requests.Response) -> Union[Dict[str, Any], str, None]:
-        """
-        Handles the HTTP response from the Gemini API (same as non-streaming).
-
-        Parses the JSON response, extracts the content, and handles potential errors
-        such as JSON decoding failures or non-200 status codes.
-
-        Args:
-            response (requests.Response): The HTTP response object from the Gemini API.
-
-        Returns:
-            Union[Dict[str, Any], str, None]: The processed response content, either JSON or text, or None on error.
-
-        Raises:
-            ValueError: If the request to Gemini API fails or JSON response is invalid.
-        """
-        if response.status_code == 200:
-            data = response.json()
-            content = "".join([part["text"] for part in data["candidates"][0]["content"]["parts"]])
-            if self.response_type == "json":
-                try:
-                    return json.loads(content)
-                except json.JSONDecodeError as e:
-                    raise ValueError(f"Model did not return valid JSON. Error: {e}")
-            return content
-        raise ValueError(f"Gemini API Error: {response.text}")
 
 def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
     """

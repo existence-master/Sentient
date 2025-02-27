@@ -181,27 +181,18 @@ async def initiate() -> JSONResponse:
 
 @app.post("/elaborator", status_code=200)
 async def elaborate(message: ElaboratorMessage) -> JSONResponse:
-    """
-    Endpoint to elaborate on a given input for a specific purpose using a tool runnable.
-
-    Args:
-        message (ElaboratorMessage): Request body containing the input and purpose for elaboration.
-
-    Returns:
-        JSONResponse: The elaborated output message in JSON format.
-    """
     try:
-        elaborator_runnable = get_tool_runnable(  # Initialize elaborator tool runnable
+        elaborator_runnable = get_tool_runnable(
             elaborator_system_prompt_template,
             elaborator_user_prompt_template,
             None,
-            ["query", "purpose"],  # Expected input parameters for the runnable
+            ["query", "purpose"],
         )
         output = elaborator_runnable.invoke(
             {"query": message.input, "purpose": message.purpose}
-        )  # Invoke the elaborator runnable
+        )
+        print(f"Elaborator output: {output}")  # Debug the raw output
         return JSONResponse(status_code=200, content={"message": output})
-
     except Exception as e:
         print(f"Error in elaborator: {str(e)}")
         return JSONResponse(status_code=500, content={"message": str(e)})
