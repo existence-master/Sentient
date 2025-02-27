@@ -282,38 +282,33 @@ class OpenAIRunnable(BaseRunnable):
         Inherits arguments from BaseRunnable.
         """
         super().__init__(*args, **kwargs)
-        self.api_key: Optional[str] = os.getenv("OPENAI_API_KEY") # only in development
+        self.api_key: Optional[str] = os.getenv("OPENAI_API_KEY")  # only in development
+        
+        print("Using OPENAI")
 
-        # # Retrieve the encrypted API key from Keyring - commented out for now.
-        # encrypted_key = keyring.get_password("electron-openid-oauth", "claude")
+    def clean_schema_for_openai(self, schema: Union[Dict[str, Any], List[Any]]) -> Union[Dict[str, Any], List[Any]]:
+        """
+        Recursively processes the JSON schema to remove or adjust disallowed keywords like 'oneOf'
+        for compatibility with OpenAI's API.
 
-        # # Check if the encrypted key exists
-        # if encrypted_key:
-        #     try:
-        #         # Define the utility server URL and endpoint
-        #         url = "http://localhost:5005/decrypt"
-        #         # Prepare the JSON payload with the encrypted data
-        #         payload = {"encrypted_data": encrypted_key}
-        #         # Make a POST request to the /decrypt endpoint
-        #         response = requests.post(url, json=payload)
+        Args:
+            schema: The JSON schema to clean (can be a dict or list).
 
-        #         # Check if the request was successful
-        #         if response.status_code == 200:
-        #             # Extract the decrypted data from the response
-        #             decrypted_data = response.json().get("decrypted_data")
-        #             self.api_key = decrypted_data
-        #         else:
-        #             # Handle non-200 status codes (e.g., 500 from server errors)
-        #             print(f"Failed to decrypt API key: {response.status_code} - {response.text}")
-        #             self.api_key = None
-        #     except requests.exceptions.RequestException as e:
-        #         # Handle network-related errors (e.g., server down, connection issues)
-        #         print(f"Error connecting to decryption service: {e}")
-        #         self.api_key = None
-        # else:
-        #     # Handle the case where no encrypted key is found in Keyring
-        #     print("No encrypted API key found in Keyring.")
-        #     self.api_key = None
+        Returns:
+            The cleaned schema with unsupported fields like 'oneOf' removed or transformed.
+        """
+        if isinstance(schema, dict):
+            if "oneOf" in schema:
+                print("Warning: 'oneOf' found in schema. Replacing with first subschema.")
+                # Replace 'oneOf' with the first subschema to maintain basic compatibility
+                return self.clean_schema_for_openai(schema["oneOf"][0])
+            # Recursively clean all other key-value pairs, excluding 'oneOf'
+            return {k: self.clean_schema_for_openai(v) for k, v in schema.items() if k != "oneOf"}
+        elif isinstance(schema, list):
+            # Recursively clean each item in the list
+            return [self.clean_schema_for_openai(item) for item in schema]
+        # Return non-dict/list values unchanged (e.g., strings, numbers)
+        return schema
 
     def invoke(self, inputs: Dict[str, Any]) -> Union[Dict[str, Any], str, None]:
         """
@@ -323,10 +318,10 @@ class OpenAIRunnable(BaseRunnable):
         and processes the response.
 
         Args:
-            inputs (Dict[str, Any]): Input variables for the prompt.
+            inputs: Input variables for the prompt.
 
         Returns:
-            Union[Dict[str, Any], str, None]: The response from the OpenAI model, either JSON or text, or None on error.
+            The response from the OpenAI model, either JSON or text, or None on error.
 
         Raises:
             ValueError: If the OpenAI API request fails.
@@ -346,14 +341,18 @@ class OpenAIRunnable(BaseRunnable):
         
         # Apply structured JSON response format if response_type is "json"
         if self.response_type == "json":
+            # Clean the schema to remove unsupported keywords like 'oneOf'
+            clean_schema = self.clean_schema_for_openai(self.required_format)
             payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "json_response",
                     "strict": True,
-                    "schema": self.required_format  # Assumes this is the schema from your query
+                    "schema": clean_schema
                 }
             }
+            
+        print(payload)
         
         # Send the request to the OpenAI API
         response = requests.post(self.model_url, headers=headers, json=payload)
@@ -369,10 +368,10 @@ class OpenAIRunnable(BaseRunnable):
         as they are received.
 
         Args:
-            inputs (Dict[str, Any]): Input variables for the prompt.
+            inputs: Input variables for the prompt.
 
         Yields:
-            Generator[Optional[str], None, None]: A generator yielding response chunks as strings, or None for errors/end.
+            A generator yielding response chunks as strings, or None for errors/end.
         """
         print(inputs)
         self.build_prompt(inputs)
@@ -399,10 +398,10 @@ class OpenAIRunnable(BaseRunnable):
         such as JSON decoding failures or non-200 status codes.
 
         Args:
-            response (requests.Response): The HTTP response object from the OpenAI API.
+            response: The HTTP response object from the OpenAI API.
 
         Returns:
-            Union[Dict[str, Any], str, None]: The processed response content, either JSON or text, or None on error.
+            The processed response content, either JSON or text, or None on error.
 
         Raises:
             ValueError: If the request to OpenAI API fails or JSON response is invalid.
@@ -425,16 +424,15 @@ class OpenAIRunnable(BaseRunnable):
         Parses each line, extracts the content delta, and returns it.
 
         Args:
-            line (bytes): A line from the streaming response in bytes.
+            line: A line from the streaming response in bytes.
 
         Returns:
-            Optional[str]: The extracted content chunk as a string, or None if the line is not a data line or content is empty.
+            The extracted content chunk as a string, or None if the line is not a data line or content is empty.
         """
         if line.startswith(b"data: "):
             chunk = json.loads(line[6:])
             return chunk["choices"][0]["delta"].get("content", "")
         return None
-
 
 class ClaudeRunnable(BaseRunnable):
     """
@@ -882,9 +880,7 @@ def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
         "gemini": (os.getenv("GEMINI_API_URL"), GeminiRunnable),
     }
 
-    provider: Optional[str] = None
-
-    model_name: str = get_selected_model()
+    model_name, provider = get_selected_model()
 
      # Extract provider from model name (e.g., 'openai' from 'openai:gpt-3.5-turbo')
 

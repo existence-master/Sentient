@@ -213,6 +213,8 @@ async def chat(message: Message):
         graph_decision_runnable, \
         query_classification_runnable, \
         text_description_runnable
+        
+    print("Query classification runnable", query_classification_runnable)
 
     try:
         with open("../../userProfileDb.json", "r", encoding="utf-8") as f:

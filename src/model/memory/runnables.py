@@ -1126,6 +1126,8 @@ def get_query_classification_runnable() -> BaseRunnable:
     else:
         model_url = os.getenv("BASE_MODEL_URL")
         runnable_class = OllamaRunnable
+        
+    print("MODEL URL: ", model_url)
 
     query_classification_runnable: BaseRunnable = runnable_class(
         model_url=model_url,

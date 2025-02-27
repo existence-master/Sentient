@@ -270,97 +270,54 @@ class OllamaRunnable(BaseRunnable):
 
 
 class OpenAIRunnable(BaseRunnable):
-    """
-    Runnable class for interacting with OpenAI language models.
-
-    This class extends BaseRunnable and implements the specific logic for calling
-    the OpenAI API, handling authentication, requests, responses, and streaming.
-    """
     def __init__(self, *args, **kwargs):
-        """
-        Initializes an OpenAIRunnable instance.
-        Retrieves the OpenAI API key from environment variables or Keyring.
-        Inherits arguments from BaseRunnable.
-        """
         super().__init__(*args, **kwargs)
-        self.api_key: Optional[str] = os.getenv("OPENAI_API_KEY") # only in development
+        self.api_key = os.getenv("OPENAI_API_KEY")  # Ensure this is set in your .env file
+        print("Using OPENAI")
 
-        # # Retrieve the encrypted API key from Keyring - commented out for now.
-        # encrypted_key = keyring.get_password("electron-openid-oauth", "claude")
-
-        # # Check if the encrypted key exists
-        # if encrypted_key:
-        #     try:
-        #         # Define the utility server URL and endpoint
-        #         url = "http://localhost:5005/decrypt"
-        #         # Prepare the JSON payload with the encrypted data
-        #         payload = {"encrypted_data": encrypted_key}
-        #         # Make a POST request to the /decrypt endpoint
-        #         response = requests.post(url, json=payload)
-
-        #         # Check if the request was successful
-        #         if response.status_code == 200:
-        #             # Extract the decrypted data from the response
-        #             decrypted_data = response.json().get("decrypted_data")
-        #             self.api_key = decrypted_data
-        #         else:
-        #             # Handle non-200 status codes (e.g., 500 from server errors)
-        #             print(f"Failed to decrypt API key: {response.status_code} - {response.text}")
-        #             self.api_key = None
-        #     except requests.exceptions.RequestException as e:
-        #         # Handle network-related errors (e.g., server down, connection issues)
-        #         print(f"Error connecting to decryption service: {e}")
-        #         self.api_key = None
-        # else:
-        #     # Handle the case where no encrypted key is found in Keyring
-        #     print("No encrypted API key found in Keyring.")
-        #     self.api_key = None
+    def clean_schema_for_openai(self, schema: Union[Dict[str, Any], List[Any]]) -> Union[Dict[str, Any], List[Any]]:
+        """
+        Recursively processes the JSON schema to remove unsupported keywords for OpenAI's Structured Outputs.
+        Unsupported keywords include 'format' and 'oneOf'. For 'oneOf', it selects the first subschema.
+        """
+        unsupported_keywords = {"format", "oneOf", "minLength", "maxLength", "pattern"}  # Add more as needed
+        
+        if isinstance(schema, dict):
+            if "oneOf" in schema:
+                print("Warning: 'oneOf' found in schema. Replacing with first subschema.")
+                return self.clean_schema_for_openai(schema["oneOf"][0])
+            return {
+                k: self.clean_schema_for_openai(v)
+                for k, v in schema.items()
+                if k not in unsupported_keywords
+            }
+        elif isinstance(schema, list):
+            return [self.clean_schema_for_openai(item) for item in schema]
+        return schema
 
     def invoke(self, inputs: Dict[str, Any]) -> Union[Dict[str, Any], str, None]:
-        """
-        Invokes the OpenAI model to get a complete response.
-
-        Constructs the headers and payload for the OpenAI API, sends the request,
-        and processes the response.
-
-        Args:
-            inputs (Dict[str, Any]): Input variables for the prompt.
-
-        Returns:
-            Union[Dict[str, Any], str, None]: The response from the OpenAI model, either JSON or text, or None on error.
-
-        Raises:
-            ValueError: If the OpenAI API request fails.
-        """
-        # Build the prompt from inputs (assumes this sets self.messages)
         self.build_prompt(inputs)
-        
-        # Set up headers with API key
         headers = {"Authorization": f"Bearer {self.api_key}"}
-        
-        # Construct the payload
         payload = {
-            "model": self.model_name,  # e.g., "gpt-4o-2024-08-06"
-            "messages": self.messages,  # Contains system and user messages
-            "temperature": 0.7,        # Adjustable as needed
+            "model": self.model_name,
+            "messages": self.messages,
+            "temperature": 0.7,
         }
-        
-        # Apply structured JSON response format if response_type is "json"
-        if self.response_type == "json":
+
+        if self.response_type == "json" and self.required_format:
+            clean_schema = self.clean_schema_for_openai(self.required_format)
             payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "json_response",
                     "strict": True,
-                    "schema": self.required_format  # Assumes this is the schema from your query
+                    "schema": clean_schema
                 }
             }
-        
-        # Send the request to the OpenAI API
+
         response = requests.post(self.model_url, headers=headers, json=payload)
-        
-        # Handle and return the response
         return self._handle_response(response)
+
 
     def stream_response(self, inputs: Dict[str, Any]) -> Generator[Optional[str], None, None]:
         """
@@ -370,10 +327,10 @@ class OpenAIRunnable(BaseRunnable):
         as they are received.
 
         Args:
-            inputs (Dict[str, Any]): Input variables for the prompt.
+            inputs: Input variables for the prompt.
 
         Yields:
-            Generator[Optional[str], None, None]: A generator yielding response chunks as strings, or None for errors/end.
+            A generator yielding response chunks as strings, or None for errors/end.
         """
         print(inputs)
         self.build_prompt(inputs)
@@ -393,21 +350,6 @@ class OpenAIRunnable(BaseRunnable):
                     yield self._handle_stream_line(line)
 
     def _handle_response(self, response: requests.Response) -> Union[Dict[str, Any], str, None]:
-        """
-        Handles the HTTP response from the OpenAI API for non-streaming requests.
-
-        Parses the JSON response, extracts the content, and handles potential errors
-        such as JSON decoding failures or non-200 status codes.
-
-        Args:
-            response (requests.Response): The HTTP response object from the OpenAI API.
-
-        Returns:
-            Union[Dict[str, Any], str, None]: The processed response content, either JSON or text, or None on error.
-
-        Raises:
-            ValueError: If the request to OpenAI API fails or JSON response is invalid.
-        """
         if response.status_code == 200:
             data = response.json()
             content = data["choices"][0]["message"]["content"]
@@ -426,16 +368,15 @@ class OpenAIRunnable(BaseRunnable):
         Parses each line, extracts the content delta, and returns it.
 
         Args:
-            line (bytes): A line from the streaming response in bytes.
+            line: A line from the streaming response in bytes.
 
         Returns:
-            Optional[str]: The extracted content chunk as a string, or None if the line is not a data line or content is empty.
+            The extracted content chunk as a string, or None if the line is not a data line or content is empty.
         """
         if line.startswith(b"data: "):
             chunk = json.loads(line[6:])
             return chunk["choices"][0]["delta"].get("content", "")
         return None
-
 
 class ClaudeRunnable(BaseRunnable):
     """
@@ -658,47 +599,54 @@ class GeminiRunnable(BaseRunnable):
         #     # Handle the case where no encrypted key is found in Keyring
         #     print("No encrypted API key found in Keyring.")
         #     self.api_key = None
-    def remove_unsupported_fields(self, schema):
-        """
-        Recursively removes unsupported fields like 'additionalProperties' from the schema.
+    def clean_schema_for_gemini(self, schema: Union[Dict[str, Any], List[Any]]) -> Union[Dict[str, Any], List[Any]]:
+        supported_keywords = {"enum", "items", "maxItems", "nullable", "properties", "required", "type"}
 
-        Args:
-            schema (Union[Dict[str, Any], List[Any]]): The schema to clean.
-
-        Returns:
-            Union[Dict[str, Any], List[Any]]: The cleaned schema.
-        """
         if isinstance(schema, dict):
-            return {
-                key: self.remove_unsupported_fields(value)
-                for key, value in schema.items()
-                if key != "additionalProperties"
-            }
+            if "oneOf" in schema:
+                print("Warning: 'oneOf' found in schema. Replacing with first subschema.")
+                subschema = schema["oneOf"][0]
+                if "type" not in subschema:
+                    if "properties" in subschema:
+                        subschema["type"] = "object"
+                    elif "items" in subschema:
+                        subschema["type"] = "array"
+                    else:
+                        subschema["type"] = "string"
+                return self.clean_schema_for_gemini(subschema)
+            
+            # Clean the schema by keeping only supported keywords and handling properties explicitly
+            cleaned = {}
+            for k, v in schema.items():
+                if k in supported_keywords:
+                    cleaned[k] = self.clean_schema_for_gemini(v)
+                elif k == "properties":
+                    # Recursively clean properties and ensure it’s not empty
+                    cleaned["properties"] = {prop: self.clean_schema_for_gemini(prop_schema) 
+                                            for prop, prop_schema in v.items()}
+            
+            # Ensure 'type' is set for objects with properties
+            if "type" not in cleaned and "properties" in cleaned:
+                cleaned["type"] = "object"
+            
+            # Validate object type
+            if cleaned.get("type") == "object":
+                if "properties" not in cleaned or not cleaned["properties"]:
+                    raise ValueError(f"Gemini requires non-empty 'properties' for object type in schema: {json.dumps(cleaned)}")
+                if "required" in cleaned:
+                    # Filter 'required' to only include defined properties
+                    defined_properties = set(cleaned["properties"].keys())
+                    cleaned["required"] = [prop for prop in cleaned["required"] if prop in defined_properties]
+                    if not cleaned["required"]:
+                        del cleaned["required"]  # Remove empty 'required' field
+            
+            return cleaned
         elif isinstance(schema, list):
-            return [self.remove_unsupported_fields(item) for item in schema]
-        else:
-            return schema
-        
+            return [self.clean_schema_for_gemini(item) for item in schema]
+        return schema
+
     def invoke(self, inputs: Dict[str, Any]) -> Union[Dict[str, Any], str, None]:
-        """
-        Invokes the Gemini model to get a complete response.
-
-        Constructs the payload for the Gemini API, including system instructions and
-        structured JSON output configuration if required. Sends the request and processes the response.
-
-        Args:
-            inputs (Dict[str, Any]): Input variables for the prompt.
-
-        Returns:
-            Union[Dict[str, Any], str, None]: The response from the Gemini model, either JSON or text, or None on error.
-
-        Raises:
-            ValueError: If the Gemini API request fails.
-        """
-        # Build the prompt (e.g., append user input to messages list)
         self.build_prompt(inputs)
-
-        # Extract system instruction (first message if role is "system")
         system_instruction = None
         if self.messages and self.messages[0]["role"].lower() == "system":
             system_content = self.messages[0]["content"]
@@ -707,66 +655,35 @@ class GeminiRunnable(BaseRunnable):
         else:
             conversation_messages = self.messages
 
-        # Map roles: "user" -> "user", "assistant" -> "model"
         def map_role(role: str) -> str:
-            """Maps generic role names to Gemini specific role names."""
             role_lower = role.lower()
-            if role_lower == "assistant":
-                return "model"
-            elif role_lower == "user":
-                return "user"
-            else:
-                raise ValueError(f"Unsupported role: {role}")
+            return "model" if role_lower == "assistant" else "user"
 
-        # Construct contents list from messages
-        contents = [
-            {
-                "role": map_role(msg["role"]),
-                "parts": [{"text": msg["content"]}]
-            }
-            for msg in conversation_messages
-        ]
-
-        # Build the payload
-        payload: Dict[str, Any] = {"contents": contents}
+        contents = [{"role": map_role(msg["role"]), "parts": [{"text": msg["content"]}]} 
+                    for msg in conversation_messages]
+        
+        payload = {"contents": contents}
         if system_instruction:
             payload["systemInstruction"] = system_instruction
 
-        # Add generationConfig for structured JSON output if response_type is "json"
         if self.response_type == "json" and self.required_format:
-            # Clean the schema to remove unsupported fields
-            clean_schema = self.remove_unsupported_fields(self.required_format)
+            print("Original schema:", json.dumps(self.required_format, indent=2))
+            clean_schema = self.clean_schema_for_gemini(self.required_format)
+            print("Cleaned schema:", json.dumps(clean_schema, indent=2))
             payload["generationConfig"] = {
                 "response_mime_type": "application/json",
                 "response_schema": clean_schema
             }
 
-        # Make the API request
         response = requests.post(
             f"{self.model_url}?key={self.api_key}",
             json=payload,
             headers={"Content-Type": "application/json"}
         )
-
-        # Handle the response
         return self._handle_response(response)
 
+
     def _handle_response(self, response: requests.Response) -> Union[Dict[str, Any], str, None]:
-        """
-        Handles the HTTP response from the Gemini API for non-streaming requests.
-
-        Parses the JSON response, extracts the content, and handles potential errors
-        such as JSON decoding failures or non-200 status codes.
-
-        Args:
-            response (requests.Response): The HTTP response object from the Gemini API.
-
-        Returns:
-            Union[Dict[str, Any], str, None]: The processed response content, either JSON or text, or None on error.
-
-        Raises:
-            ValueError: If the request to Gemini API fails or JSON response is invalid.
-        """
         if response.status_code == 200:
             data = response.json()
             content = "".join([part["text"] for part in data["candidates"][0]["content"]["parts"]])
@@ -777,6 +694,7 @@ class GeminiRunnable(BaseRunnable):
                     raise ValueError(f"Model did not return valid JSON. Error: {e}")
             return content
         raise ValueError(f"Gemini API Error: {response.text}")
+
 
     def stream_response(self, inputs: Dict[str, Any]) -> Generator[Union[Dict[str, Any], str, None], None, None]:
         """

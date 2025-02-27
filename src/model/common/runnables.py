@@ -289,6 +289,8 @@ class OpenAIRunnable(BaseRunnable):
         """
         super().__init__(*args, **kwargs)
         self.api_key: Optional[str] = os.getenv("OPENAI_API_KEY") # only in development
+        print("Using OPENAI")
+
 
         # # Retrieve the encrypted API key from Keyring - commented out for now.
         # encrypted_key = keyring.get_password("electron-openid-oauth", "claude")

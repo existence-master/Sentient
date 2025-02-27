@@ -184,6 +184,8 @@ async def chat(message: Message) -> StreamingResponse:
             context_classification = await classify_context(
                 transformed_input, "category"
             )  # Classify context for category
+            
+            print("Context classification: ", context_classification)
             context_classification_category = context_classification[
                 "class"
             ]  # Extract classification category
@@ -211,6 +213,8 @@ async def chat(message: Message) -> StreamingResponse:
             internet_classification_internet = internet_classification[
                 "class"
             ]  # Extract internet classification
+            
+            print("Internet classification: ", internet_classification_internet)
 
             if pricing_plan == "free":  # Free plan logic
                 if (

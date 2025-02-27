@@ -1182,12 +1182,8 @@ async def graphrag_endpoint(request: GraphRAGRequest) -> JSONResponse:
     payload: Dict[str, str] = (
         request.model_dump()
     )  # Extract payload from GraphRAGRequest model
-    memory_port: str = os.environ.get(
-        "MEMORY_SERVER_PORT"
-    )  # Get Memory Service port from environment variables
-    url: str = f"http://localhost:{memory_port}/graphrag"  # Construct full URL for graphrag endpoint
-    return await fetch_streaming_response(
-        url, payload
+    return await call_service_endpoint(
+        "MEMORY_SERVER_PORT", "/graphrag", payload
     )  # Fetch and return streaming response
 
 
