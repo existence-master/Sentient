@@ -72,6 +72,7 @@ class BaseRunnable(ABC):
         """
         self.model_url: str = model_url
         self.model_name: str = model_name
+        self.system_prompt_template: str = system_prompt_template
         self.user_prompt_template: str = user_prompt_template
         self.input_variables: List[str] = input_variables
         self.response_type: str = response_type
