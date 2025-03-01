@@ -270,41 +270,79 @@ class OllamaRunnable(BaseRunnable):
 
 
 class OpenAIRunnable(BaseRunnable):
+    """
+    Runnable class for interacting with OpenAI language models.
+
+    This class extends BaseRunnable and implements the specific logic for calling
+    the OpenAI API, handling authentication, requests, responses, and streaming.
+    """
     def __init__(self, *args, **kwargs):
+        """
+        Initializes an OpenAIRunnable instance.
+        Retrieves the OpenAI API key from environment variables or Keyring.
+        Inherits arguments from BaseRunnable.
+        """
         super().__init__(*args, **kwargs)
-        self.api_key = os.getenv("OPENAI_API_KEY")  # Ensure this is set in your .env file
+        self.api_key: Optional[str] = os.getenv("OPENAI_API_KEY")  # only in development
+        
         print("Using OPENAI")
 
     def clean_schema_for_openai(self, schema: Union[Dict[str, Any], List[Any]]) -> Union[Dict[str, Any], List[Any]]:
         """
-        Recursively processes the JSON schema to remove unsupported keywords for OpenAI's Structured Outputs.
-        Unsupported keywords include 'format' and 'oneOf'. For 'oneOf', it selects the first subschema.
+        Recursively processes the JSON schema to remove or adjust disallowed keywords like 'oneOf'
+        for compatibility with OpenAI's API.
+
+        Args:
+            schema: The JSON schema to clean (can be a dict or list).
+
+        Returns:
+            The cleaned schema with unsupported fields like 'oneOf' removed or transformed.
         """
-        unsupported_keywords = {"format", "oneOf", "minLength", "maxLength", "pattern"}  # Add more as needed
-        
         if isinstance(schema, dict):
             if "oneOf" in schema:
                 print("Warning: 'oneOf' found in schema. Replacing with first subschema.")
+                # Replace 'oneOf' with the first subschema to maintain basic compatibility
                 return self.clean_schema_for_openai(schema["oneOf"][0])
-            return {
-                k: self.clean_schema_for_openai(v)
-                for k, v in schema.items()
-                if k not in unsupported_keywords
-            }
+            # Recursively clean all other key-value pairs, excluding 'oneOf'
+            return {k: self.clean_schema_for_openai(v) for k, v in schema.items() if k != "oneOf"}
         elif isinstance(schema, list):
+            # Recursively clean each item in the list
             return [self.clean_schema_for_openai(item) for item in schema]
+        # Return non-dict/list values unchanged (e.g., strings, numbers)
         return schema
 
     def invoke(self, inputs: Dict[str, Any]) -> Union[Dict[str, Any], str, None]:
-        self.build_prompt(inputs)
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        payload = {
-            "model": self.model_name,
-            "messages": self.messages,
-            "temperature": 0.7,
-        }
+        """
+        Invokes the OpenAI model to get a complete response.
 
-        if self.response_type == "json" and self.required_format:
+        Constructs the headers and payload for the OpenAI API, sends the request,
+        and processes the response.
+
+        Args:
+            inputs: Input variables for the prompt.
+
+        Returns:
+            The response from the OpenAI model, either JSON or text, or None on error.
+
+        Raises:
+            ValueError: If the OpenAI API request fails.
+        """
+        # Build the prompt from inputs (assumes this sets self.messages)
+        self.build_prompt(inputs)
+        
+        # Set up headers with API key
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        
+        # Construct the payload
+        payload = {
+            "model": self.model_name,  # e.g., "gpt-4o-2024-08-06"
+            "messages": self.messages,  # Contains system and user messages
+            "temperature": 0.7,        # Adjustable as needed
+        }
+        
+        # Apply structured JSON response format if response_type is "json"
+        if self.response_type == "json":
+            # Clean the schema to remove unsupported keywords like 'oneOf'
             clean_schema = self.clean_schema_for_openai(self.required_format)
             payload["response_format"] = {
                 "type": "json_schema",
@@ -314,10 +352,14 @@ class OpenAIRunnable(BaseRunnable):
                     "schema": clean_schema
                 }
             }
-
+            
+        print(payload)
+        
+        # Send the request to the OpenAI API
         response = requests.post(self.model_url, headers=headers, json=payload)
+        
+        # Handle and return the response
         return self._handle_response(response)
-
 
     def stream_response(self, inputs: Dict[str, Any]) -> Generator[Optional[str], None, None]:
         """
@@ -350,6 +392,21 @@ class OpenAIRunnable(BaseRunnable):
                     yield self._handle_stream_line(line)
 
     def _handle_response(self, response: requests.Response) -> Union[Dict[str, Any], str, None]:
+        """
+        Handles the HTTP response from the OpenAI API for non-streaming requests.
+
+        Parses the JSON response, extracts the content, and handles potential errors
+        such as JSON decoding failures or non-200 status codes.
+
+        Args:
+            response: The HTTP response object from the OpenAI API.
+
+        Returns:
+            The processed response content, either JSON or text, or None on error.
+
+        Raises:
+            ValueError: If the request to OpenAI API fails or JSON response is invalid.
+        """
         if response.status_code == 200:
             data = response.json()
             content = data["choices"][0]["message"]["content"]
@@ -642,24 +699,17 @@ class GeminiRunnable(BaseRunnable):
         )
         return self._handle_response(response)
 
-
-
     def _handle_response(self, response: requests.Response) -> Union[Dict[str, Any], str, None]:
         if response.status_code == 200:
-            raw_content = response.text
-            print(f"Raw model response: {raw_content}")
-            if not raw_content.strip():
-                raise ValueError("Model returned an empty response")
+            data = response.json()
+            content = "".join([part["text"] for part in data["candidates"][0]["content"]["parts"]])
             if self.response_type == "json":
                 try:
-                    data = response.json()
-                    content = "".join([part["text"] for part in data["candidates"][0]["content"]["parts"]])
                     return json.loads(content)
                 except json.JSONDecodeError as e:
-                    print(f"Failed to parse JSON: {e}, Raw content: {raw_content}")
                     raise ValueError(f"Model did not return valid JSON. Error: {e}")
-            return raw_content
-        raise ValueError(f"API Error: {response.status_code} - {response.text}")
+            return content
+        raise ValueError(f"Gemini API Error: {response.text}")
 
     def stream_response(self, inputs: Dict[str, Any]) -> Generator[Union[Dict[str, Any], str, None], None, None]:
         """
