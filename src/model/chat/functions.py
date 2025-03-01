@@ -33,9 +33,7 @@ async def generate_streaming_response(
         if stream and hasattr(
             runnable, "stream_response"
         ):  # Check if streaming is enabled and runnable supports it
-            for token in await asyncio.to_thread(
-                lambda: runnable.stream_response(inputs)
-            ):  # Use thread to stream response without blocking
+            for token in await asyncio.to_thread(lambda: runnable.stream_response(inputs)):
                 yield token  # Yield each token from the streaming response
         else:  # Handle non-streaming response
             response = runnable.invoke(

@@ -589,10 +589,15 @@ class GeminiRunnable(BaseRunnable):
             if "properties" in cleaned and "type" not in cleaned:
                 cleaned["type"] = "object"
             
-            # Validate object type
+            # Handle object type validation and conversion for Gemini
             if cleaned.get("type") == "object":
                 if "properties" not in cleaned or not cleaned["properties"]:
-                    raise ValueError(f"Gemini requires non-empty 'properties' for object type in schema: {json.dumps(cleaned)}")
+                    # Convert empty object to string type for JSON workaround
+                    print("Warning: Empty object detected. Converting to JSON string schema for Gemini compatibility.")
+                    return {
+                        "type": "string",
+                        "description": cleaned.get("description", "Dynamic parameters as a JSON string") + " (JSON string)"
+                    }
                 if "required" in cleaned:
                     defined_properties = set(cleaned["properties"].keys())
                     cleaned["required"] = [prop for prop in cleaned["required"] if prop in defined_properties]
