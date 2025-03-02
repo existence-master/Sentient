@@ -91,21 +91,25 @@ const ModelSelection = ({ onProceed }) => {
 			<select
 				value={selectedModel}
 				onChange={(e) => handleModelChange(e.target.value)}
-				className="bg-gray-800 text-white p-2 rounded w-full mb-4"
+				className="bg-transparent border-2 border-gray-400 text-white p-2 rounded-xl pr-4 w-full mb-4"
 			>
 				{cloudModels.map((model) => (
-					<option key={model.value} value={model.value}>
-						{model.name}
+					<option
+						className="bg-matteblack"
+						key={model.value}
+						value={model.value}
+					>
+						{model.name} (Cloud)
 					</option>
 				))}
 				{availableModels.map((model) => (
-					<option key={model} value={model}>
-						{model}
+					<option className="bg-matteblack" key={model} value={model}>
+						{model} (Local)
 					</option>
 				))}
 				{availableModels.length === 0 && (
-					<option value="" disabled>
-						No local models available
+					<option className="bg-matteblack" value="" disabled>
+						No local models available.
 					</option>
 				)}
 			</select>

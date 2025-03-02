@@ -86,6 +86,9 @@ class SetApiKeyRequest(BaseModel):
 
 class HasApiKeyRequest(BaseModel):
     provider: str
+    
+class DeleteApiKeyRequest(BaseModel):
+    provider: str
 
 nest_asyncio.apply()  # Apply nest_asyncio for running async operations in sync context
 
@@ -613,6 +616,43 @@ async def has_api_key(request: HasApiKeyRequest):
             status_code=200, content={"exists": encrypted_key is not None})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error checking API key: {str(e)}")
+
+# Endpoint to get providers with stored API keys
+@app.get("/get-stored-providers")
+async def get_stored_providers():
+    """
+    Returns a dictionary of known providers and whether they have API keys stored in the keyring.
+    
+    Returns:
+        JSONResponse: Dictionary with provider names as keys and boolean values indicating key presence.
+    """
+    try:
+        providers = ["openai", "gemini", "claude"]
+        stored_status = {
+            provider: keyring.get_password("electron-openid-oauth", provider) is not None
+            for provider in providers
+        }
+        return JSONResponse(status_code=200, content=stored_status)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching stored providers: {str(e)}")
+
+# Endpoint to delete an API key for a specific provider
+@app.post("/delete-api-key")
+async def delete_api_key(request: DeleteApiKeyRequest):
+    """
+    Deletes the API key for the specified provider from the keyring.
+    
+    Args:
+        request (DeleteApiKeyRequest): Request containing the provider name.
+    
+    Returns:
+        JSONResponse: Success status or error message.
+    """
+    try:
+        keyring.delete_password("electron-openid-oauth", request.provider)
+        return JSONResponse(status_code=200, content={"success": True})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting API key: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(

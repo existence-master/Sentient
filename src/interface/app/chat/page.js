@@ -23,6 +23,7 @@ import IconGoogleCalendar from "@components/icons/IconGoogleCalendar" // Icon fo
 import IconGoogleSlides from "@components/icons/IconGoogleSlides" // Icon for Google Slides command
 import IconGoogleMail from "@components/icons/IconGoogleMail" // Icon for Google Mail command
 import IconGoogleDrive from "@components/icons/IconGoogleDrive" // Icon for Google Drive command
+import ReminderWidget from "@components/agents/Reminder"
 
 /**
  * Chat component for the main chat interface.
@@ -59,6 +60,7 @@ const Chat = () => {
 	const [showCommands, setShowCommands] = useState(false) // showCommands: boolean
 	// State to hold the filtered slash commands based on user input.
 	const [filteredCommands, setFilteredCommands] = useState([]) // filteredCommands: { text: string, value: string, icon: React.ReactNode }[]
+	const [currentModel, setCurrentModel] = useState("")
 
 	/**
 	 * Array of available slash commands.
@@ -265,6 +267,21 @@ const Chat = () => {
 		}
 	}
 
+	const fetchCurrentModel = async () => {
+		try {
+			const response = await window.electron?.invoke("get-db-data")
+			if (response.status === 200 && response.data) {
+				const selectedModel = response.data.selectedModel
+				setCurrentModel(selectedModel || "llama3.2:3b")
+			} else {
+				setCurrentModel("llama3.2:3b") // Fallback if no data
+			}
+		} catch (error) {
+			toast.error("Error fetching user data.")
+			setCurrentModel("llama3.2:3b") // Fallback on error
+		}
+	}
+
 	/**
 	 * Initializes the chat session with the backend for the given chatId.
 	 */
@@ -310,6 +327,7 @@ const Chat = () => {
 	 */
 	useEffect(() => {
 		fetchUserDetails()
+		fetchCurrentModel()
 	}, [])
 
 	/**
@@ -638,14 +656,18 @@ const Chat = () => {
 						"absolute flex flex-col justify-center items-center w-full h-full"
 					}
 				/>
-				<div className="w-3/5 flex flex-col font-Poppins justify-center items-center h-full bg-matteblack">
-					<h1
-						className="text-8xl text-white font-bold mb-8"
-						style={{ zIndex: 10 }}
-					>
-						what&apos;s on your mind?
-					</h1>
-					<AiButton onClick={() => setShowCreateChatOverlay(true)} />
+				<div className="w-3/5 flex flex-col font-Poppins items-center h-full relative">
+					<div className="flex flex-col items-center justify-center flex-grow">
+						<h1
+							className="text-8xl text-white font-bold mb-8"
+							style={{ zIndex: 10 }}
+						>
+							what's on your mind?
+						</h1>
+						<AiButton
+							onClick={() => setShowCreateChatOverlay(true)}
+						/>
+					</div>
 					{showCreateChatOverlay && (
 						<ModalDialog
 							title="Create a New Chat"
@@ -661,6 +683,15 @@ const Chat = () => {
 							showInput={true}
 						/>
 					)}
+					<div className="absolute bottom-16 left-0 right-0 flex flex-col items-center justify-center">
+						<p className="text-white text-sm mb-5">
+							Widgets are coming here soon! 👇
+						</p>
+						<div className="flex flex-row gap-8">
+							<ReminderWidget />
+							{/* Add more widgets here in the future, e.g., <AnotherWidget /> */}
+						</div>
+					</div>
 				</div>
 			</div>
 		)
@@ -796,6 +827,14 @@ const Chat = () => {
 
 						<div ref={chatEndRef} />
 					</div>
+					<p className="text-gray-400 font-Poppins text-sm">
+						You can change now your model from the{" "}
+						<a href="/settings" className="underline">
+							Settings
+						</a>{" "}
+						page! Current Model:{" "}
+						<span className="text-lightblue">{currentModel}</span>
+					</p>
 					<div className="relative mb-5 flex flex-row gap-4 w-full px-4 py-1 bg-matteblack border-[1px] border-white rounded-lg z-30">
 						<textarea
 							ref={textareaRef}

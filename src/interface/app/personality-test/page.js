@@ -733,11 +733,13 @@ const PersonalityTest = () => {
 
 	if (showModelSelection) {
 		return (
-			<div className="min-h-screen flex justify-center items-center bg-black">
-				<ModelSelection
-					onProceed={() => setShowModelSelection(false)}
-				/>
-			</div>
+			<AnimatedBeam className={"w-screen h-screen"}>
+				<div className="min-h-screen flex justify-center items-center">
+					<ModelSelection
+						onProceed={() => setShowModelSelection(false)}
+					/>
+				</div>
+			</AnimatedBeam>
 		)
 	}
 

@@ -269,7 +269,7 @@ const AppIntegration = () => {
 						<AppCard
 							logo="/images/linkedin-logo.png" // LinkedIn logo image path
 							name="LinkedIn" // App name - LinkedIn
-							description="Connect your LinkedIn account to pull in your professional profile and enhance your experience." // Description for LinkedIn card
+							description="Connect your LinkedIn account to add your professional information to Sentient's context." // Description for LinkedIn card
 							onClick={() => {
 								// OnClick handler for LinkedIn card
 								if (!isConnecting && !connectedApps.LinkedIn) {
@@ -287,7 +287,7 @@ const AppIntegration = () => {
 						<AppCard
 							logo="/images/reddit-logo.png" // Reddit logo image path
 							name="Reddit" // App name - Reddit
-							description="Connect your Reddit account to analyze your subreddit activity and identify topics of interest." // Description for Reddit card
+							description="Connect your Reddit account to let Sentient analyze your subreddit activity and identify topics of interest." // Description for Reddit card
 							onClick={() => {
 								// OnClick handler for Reddit card
 								if (
@@ -319,7 +319,7 @@ const AppIntegration = () => {
 						<AppCard
 							logo="/images/twitter-logo.png" // Twitter logo image path
 							name="Twitter" // App name - Twitter
-							description="Connect your Twitter account to analyze your tweets and identify topics of interest." // Description for Twitter card
+							description="Connect your Twitter account to let Sentient analyze your tweets and identify topics of interest." // Description for Twitter card
 							onClick={() => {
 								// OnClick handler for Twitter card
 								if (
@@ -358,7 +358,7 @@ const AppIntegration = () => {
 					</ShiningButton>
 					<div
 						data-tooltip-id="integrations" // Tooltip ID for integrations info
-						data-tooltip-content="You can always connect or disconnect the apps from the settings page later" // Tooltip content
+						data-tooltip-content="You can always connect or disconnect the apps from the Settings page later. All data stays local." // Tooltip content
 						className="absolute top-4 right-4" // Positioning classes
 					>
 						<button className="text-gray-300 hover-button p-2 rounded-[50%] text-sm cursor-default">

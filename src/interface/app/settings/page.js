@@ -8,12 +8,9 @@ import ProIcon from "@components/ProIcon"
 import toast from "react-hot-toast"
 import ShiningButton from "@components/ShiningButton"
 import ModalDialog from "@components/ModalDialog"
-import {
-	IconGift,
-	IconBeta,
-	IconRocket
-} from "@node_modules/@tabler/icons-react/dist/esm/tabler-icons-react"
+import { IconGift, IconBeta, IconRocket } from "@tabler/icons-react"
 import React from "react"
+import { IconTrash } from "@tabler/icons-react"
 
 const Settings = () => {
 	const [showDisclaimer, setShowDisclaimer] = useState(false)
@@ -45,6 +42,12 @@ const Settings = () => {
 	const [apiKeyDialog, setApiKeyDialog] = useState(false)
 	const [apiKey, setApiKey] = useState("")
 	const [selectedProvider, setSelectedProvider] = useState("")
+	const [storedProviders, setStoredProviders] = useState({
+		openai: false,
+		gemini: false,
+		claude: false
+	})
+	const [setModelOnSubmit, setSetModelOnSubmit] = useState(false)
 
 	// Define cloud models to appear at the top of the dropdown
 	const cloudModels = [
@@ -60,6 +63,7 @@ const Settings = () => {
 		fetchReferralDetails()
 		fetchBetaUserStatus()
 		fetchAvailableModels()
+		fetchStoredProviders() // Fetch stored providers on load
 	}, [])
 
 	const fetchUserDetails = async () => {
@@ -166,12 +170,34 @@ const Settings = () => {
 		}
 	}
 
+	const fetchStoredProviders = async () => {
+		try {
+			const response = await window.electron?.invoke(
+				"get-stored-providers"
+			)
+			setStoredProviders(response)
+		} catch (error) {
+			toast.error("Error fetching stored API keys.")
+		}
+	}
+
+	const handleDeleteKey = async (provider) => {
+		try {
+			await window.electron.invoke("delete-api-key", provider)
+			setStoredProviders((prev) => ({ ...prev, [provider]: false }))
+			toast.success(`API key for ${provider} deleted successfully.`)
+		} catch (error) {
+			toast.error(`Error deleting API key for ${provider}.`)
+		}
+	}
+
 	// Handle model selection change
 	const handleModelChange = async (model) => {
 		if (cloudModels.some((m) => m.value === model)) {
 			setSelectedProvider(model)
 			const hasKey = await window.electron.invoke("check-api-key", model)
 			if (!hasKey) {
+				setSetModelOnSubmit(true) // Set model after saving key
 				setApiKeyDialog(true)
 			} else {
 				setSelectedModel(model)
@@ -196,13 +222,20 @@ const Settings = () => {
 				provider: selectedProvider,
 				apiKey
 			})
-			setSelectedModel(selectedProvider)
-			await window.electron.invoke("set-db-data", {
-				data: { selectedModel: selectedProvider }
-			})
-			toast.success("API key saved and model updated successfully.")
+			if (setModelOnSubmit) {
+				setSelectedModel(selectedProvider)
+				await window.electron.invoke("set-db-data", {
+					data: { selectedModel: selectedProvider }
+				})
+			}
+			toast.success(
+				setModelOnSubmit
+					? "API key saved and model updated successfully."
+					: "API key saved successfully."
+			)
 			setApiKeyDialog(false)
 			setApiKey("")
+			fetchStoredProviders() // Refresh stored providers
 		} catch (error) {
 			toast.error("Error saving API key.")
 		}
@@ -299,6 +332,13 @@ const Settings = () => {
 
 	const handleDisclaimerDecline = () => {
 		setShowDisclaimer(false)
+	}
+
+	const openAddKeyDialog = (provider) => {
+		setSelectedProvider(provider)
+		setApiKey("")
+		setSetModelOnSubmit(false) // Do not set model after saving key
+		setApiKeyDialog(true)
 	}
 
 	return (
@@ -458,7 +498,7 @@ const Settings = () => {
 						id="model-select"
 						value={selectedModel}
 						onChange={(e) => handleModelChange(e.target.value)}
-						className="bg-gray-800 text-white p-2 rounded"
+						className="bg-matteblack text-white p-2 rounded focus:outline-none"
 					>
 						{cloudModels.map((model) => (
 							<option key={model.value} value={model.value}>
@@ -482,6 +522,73 @@ const Settings = () => {
 							Ollama and restart the app.
 						</p>
 					)}
+				</div>
+				<div className="w-4/5 px-4 py-4">
+					<h2 className="font-Poppins text-white text-2xl py-2">
+						Stored API Keys
+					</h2>
+					<div className="w-full min-h-fit overflow-x-auto rounded-xl border border-gray-400">
+						<table className="min-w-full bg-matteblack text-white">
+							<thead>
+								<tr>
+									<th className="py-2 px-4 border-b">
+										Provider
+									</th>
+									<th className="py-2 px-4 border-b">
+										Status
+									</th>
+									<th className="py-2 px-4 border-b">
+										Action
+									</th>
+								</tr>
+							</thead>
+							<tbody>
+								{cloudModels.map((model) => (
+									<tr key={model.value}>
+										<td className="py-2 px-4 border-b text-center">
+											{model.name}
+										</td>
+										<td className="py-2 px-4 border-b text-center">
+											{storedProviders[model.value] ? (
+												<span className="text-green-500">
+													Key stored
+												</span>
+											) : (
+												<span className="text-red-500">
+													No key stored
+												</span>
+											)}
+										</td>
+										<td className="py-2 px-4 border-b text-center">
+											{storedProviders[model.value] ? (
+												<button
+													onClick={() =>
+														handleDeleteKey(
+															model.value
+														)
+													}
+													className="bg-red-500 cursor-pointer text-white px-2 py-1 rounded hover:bg-red-600"
+												>
+													<IconTrash />
+												</button>
+											) : (
+												<button
+													onClick={() =>
+														openAddKeyDialog(
+															model.value
+														)
+													}
+													className="bg-green-500 cursor-pointer text-white px-2 py-1 rounded hover:bg-green-600"
+												>
+													Add Key
+												</button>
+											)}
+										</td>
+									</tr>
+								))}
+							</tbody>
+						</table>
+					</div>
 				</div>
 			</div>
 			{apiKeyDialog && (

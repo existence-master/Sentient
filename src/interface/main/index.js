@@ -22,7 +22,8 @@ import {
 	getBetaUserStatusFromKeytar,
 	setBetaUserStatusInKeytar,
 	hasApiKey,
-	setApiKey
+	setApiKey,
+	deleteApiKey
 } from "../utils/auth.js"
 import { getPrivateData } from "../utils/api.js"
 import { createAuthWindow, createLogoutWindow } from "./auth.js"
@@ -1475,10 +1476,30 @@ ipcMain.handle("get-ollama-models", async () => {
 
 // IPC handler to check if an API key exists for a provider
 ipcMain.handle("check-api-key", async (event, provider) => {
-    return await hasApiKey(provider);
-});
+	return await hasApiKey(provider)
+})
 
 // IPC handler to set an API key for a provider
 ipcMain.handle("set-api-key", async (event, { provider, apiKey }) => {
-    return await setApiKey(provider, apiKey);
-});
+	return await setApiKey(provider, apiKey)
+})
+
+ipcMain.handle("get-stored-providers", async () => {
+	try {
+		const response = await fetch(
+			"http://localhost:5005/get-stored-providers"
+		)
+		if (!response.ok) {
+			throw new Error("Failed to fetch stored providers")
+		}
+		return await response.json()
+	} catch (error) {
+		console.error("Error fetching stored providers:", error)
+		throw error
+	}
+})
+
+// IPC handler to delete an API key for a provider
+ipcMain.handle("delete-api-key", async (event, provider) => {
+	return await deleteApiKey(provider)
+})
