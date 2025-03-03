@@ -685,9 +685,9 @@ class GeminiRunnable(BaseRunnable):
         if system_instruction:
             payload["systemInstruction"] = system_instruction
 
-        if self.response_type == "json":
+        if self.response_type == "json" and self.required_format:
             generation_config = {"response_mime_type": "application/json"}
-            if self.required_format:
+            if self.required_format is not None:
                 clean_schema = self.clean_schema_for_gemini(self.required_format)
                 generation_config["response_schema"] = clean_schema
             payload["generationConfig"] = generation_config

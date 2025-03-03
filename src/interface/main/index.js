@@ -1021,9 +1021,9 @@ ipcMain.handle("send-message", async (_event, { chatId, input }) => {
 								id: uuid(),
 								message: "",
 								isUser: false,
-								memoryUsed: false,
-								agentsUsed: false,
-								internetUsed: false
+								memoryUsed: parsedMessage.memoryUsed,
+								agentsUsed: parsedMessage.agentsUsed,
+								internetUsed: parsedMessage.internetUsed
 							}
 							chat.chatHistory.push(last) // Add new message to chat history
 						}
@@ -1035,6 +1035,7 @@ ipcMain.handle("send-message", async (_event, { chatId, input }) => {
 
 						last.message += parsedMessage.token // Append token to last message content
 						if (parsedMessage.done === true) {
+							console.log("Parsed message: ", parsedMessage)
 							// Update message flags when streaming is done
 							last.memoryUsed = parsedMessage.memoryUsed
 							last.agentsUsed = parsedMessage.agentsUsed

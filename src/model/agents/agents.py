@@ -623,6 +623,10 @@ async def chat(message: Message) -> StreamingResponse:
                                         "type": "assistantStream",
                                         "token": token,
                                         "done": False,
+                                        "memoryUsed": memory_used,
+                                        "agentsUsed": agents_used,
+                                        "internetUsed": internet_used,
+                                        "proUsed": pro_used,
                                     }
                                 )
                                 + "\n"
