@@ -11,16 +11,17 @@ from sys import platform
 
 load_dotenv("../.env")
 
-def get_selected_model() -> str:
+def get_selected_model() -> Tuple[str, str]:
     """
-    Fetches the selected model name from the user profile database.
+    Fetches the selected model name and provider from the user profile database.
 
     Reads the `userProfileDb.json` file to determine the currently selected
     language model. If the database file is not found or the 'selectedModel'
-    key is missing, it defaults to 'llama3.2:3b'.
+    key is missing, it defaults to 'llama3.2:3b' as the model and provider.
 
     Returns:
-        str: The name of the selected model.
+        Tuple[str, str]: A tuple containing the selected model name and the provider.
+                         For example: ('gpt-4o', 'openai') or ('llama3.2:3b', 'llama3.2:3b').
 
     Raises:
         ValueError: If the `userProfileDb.json` file path is not set or the file does not exist.
@@ -66,24 +67,36 @@ class BaseRunnable(ABC):
             stateful (bool, optional): Whether the conversation is stateful, maintaining message history. Defaults to False.
         """
         self.model_url: str = model_url
+        """The URL of the language model API endpoint."""
         self.model_name: str = model_name
+        """The name or identifier of the language model."""
         self.system_prompt_template: str = system_prompt_template
+        """The template for the system prompt."""
         self.user_prompt_template: str = user_prompt_template
+        """The template for the user prompt."""
         self.input_variables: List[str] = input_variables
+        """A list of variable names to be replaced in the prompts."""
         self.response_type: str = response_type
+        """The expected type of the model's response ('text' or 'json')."""
         self.required_format: Optional[Union[dict, list]] = required_format
+        """Required format for JSON responses, if applicable."""
         self.stream: bool = stream
+        """Whether to use streaming for API requests."""
         self.stateful: bool = stateful
+        """Whether the conversation is stateful, maintaining message history."""
         self.messages: List[Dict[str, str]] = [
             {"role": "system", "content": self.system_prompt_template}
         ]
+        """Message history for stateful conversations, starting with the system prompt."""
 
     def build_prompt(self, inputs: Dict[str, Any]) -> None:
         """
-        Builds the prompt for the language model by substituting input variables.
+        Builds the prompt for the language model by substituting input variables into the templates.
 
         Formats the user prompt template with the provided inputs and constructs
         the message history based on whether the conversation is stateful or not.
+        For stateful conversations, it appends the new user prompt to the existing message history.
+        For stateless conversations, it resets the message history to just the system prompt and the current user prompt.
 
         Args:
             inputs (Dict[str, Any]): A dictionary of input variable names and their values.
@@ -101,7 +114,7 @@ class BaseRunnable(ABC):
         Adds chat history to the message list to maintain conversation context.
 
         Extends the current message list with previous conversation turns, which is
-        crucial for stateful conversations where context needs to be preserved.
+        crucial for stateful conversations where context needs to be preserved across multiple interactions.
 
         Args:
             chat_history (List[Dict[str, str]]): A list of message dictionaries representing the chat history.
@@ -114,8 +127,9 @@ class BaseRunnable(ABC):
         """
         Abstract method to invoke the language model with the given inputs and get a complete response.
 
-        This method should be implemented by subclasses to handle the specific API
-        call and response processing for each language model provider.
+        This method must be implemented by subclasses to handle the specific API
+        call and response processing for each language model provider. It is responsible for sending
+        the prompt to the model and returning the full response.
 
         Args:
             inputs (Dict[str, Any]): A dictionary of input variable names and their values for the prompt.
@@ -123,7 +137,7 @@ class BaseRunnable(ABC):
         Returns:
             Union[Dict[str, Any], List[Any], str, None]: The response from the language model.
                                                         The type of response depends on the 'response_type'
-                                                        and could be a JSON object (dict), a list, a string, or None.
+                                                        and could be a JSON object (dict), a list, a string, or None in case of error.
         """
         pass
 
@@ -132,8 +146,8 @@ class BaseRunnable(ABC):
         """
         Abstract method to invoke the language model and get a stream of responses.
 
-        This method should be implemented by subclasses to handle streaming responses
-        from the language model API.
+        This method must be implemented by subclasses to handle streaming responses
+        from the language model API. It should send the prompt and yield chunks of the response as they are received.
 
         Args:
             inputs (Dict[str, Any]): A dictionary of input variable names and their values for the prompt.
@@ -150,7 +164,8 @@ class OllamaRunnable(BaseRunnable):
     Runnable class for interacting with Ollama language models.
 
     This class extends BaseRunnable and implements the specific logic for calling
-    the Ollama API, handling requests and responses, and streaming.
+    the Ollama API, handling requests and responses, and streaming. It provides methods to invoke Ollama models
+    for both complete responses and streaming responses.
     """
     def __init__(self, *args, **kwargs):
         """
@@ -161,23 +176,24 @@ class OllamaRunnable(BaseRunnable):
 
     def invoke(self, inputs: Dict[str, Any]) -> Union[Dict[str, Any], str, None]:
         """
-        Invokes the Ollama model to get a complete response.
+        Invokes the Ollama model to get a complete, non-streaming response.
 
-        Constructs the payload for the Ollama API, sends the request, and processes
-        the response to return the model's output.
+        Constructs the payload for the Ollama API, sends the POST request, and processes
+        the JSON response to extract and return the model's output.
 
         Args:
             inputs (Dict[str, Any]): Input variables for the prompt.
 
         Returns:
-            Union[Dict[str, Any], str, None]: The response from the Ollama model, either JSON or text, or None on error.
+            Union[Dict[str, Any], str, None]: The response from the Ollama model, either JSON (dict) or text (str),
+                                             or None if there is an error in the API call or response processing.
         """
         self.build_prompt(inputs)
         payload = {
             "model": self.model_name,
             "messages": self.messages,
             "stream": False,
-            "options": {"num_ctx": 4096},
+            "options": {"num_ctx": 4096}, # Set context window size
         }
 
         if self.response_type == "json":  # If expecting a JSON response, set the format
@@ -199,21 +215,22 @@ class OllamaRunnable(BaseRunnable):
         """
         Invokes the Ollama model to get a stream of responses.
 
-        Sends a streaming request to the Ollama API and yields chunks of the response
-        as they are received.
+        Sends a streaming POST request to the Ollama API and yields chunks of the response
+        as they are received. This allows for real-time processing of the model's output.
 
         Args:
             inputs (Dict[str, Any]): Input variables for the prompt.
 
         Yields:
-            Generator[Optional[str], None, None]: A generator yielding response chunks as strings, or None for errors/end.
+            Generator[Optional[str], None, None]: A generator yielding response chunks as strings.
+                                                Yields None if a chunk cannot be processed or the stream ends.
         """
         self.build_prompt(inputs)
         payload = {
             "model": self.model_name,
             "messages": self.messages,
             "stream": True,
-            "options": {"num_ctx": 4096},
+            "options": {"num_ctx": 4096}, # Set context window size
         }
 
         with requests.post(self.model_url, json=payload, stream=True) as response:
@@ -232,7 +249,8 @@ class OllamaRunnable(BaseRunnable):
             response (requests.Response): The HTTP response object from the Ollama API.
 
         Returns:
-            Union[Dict[str, Any], str, None]: The processed response content, either JSON or text, or None on error.
+            Union[Dict[str, Any], str, None]: The processed response content, either JSON (dict) or text (str).
+                                             Returns None if the response status is not 200 or JSON decoding fails.
 
         Raises:
             ValueError: If the request fails or the JSON response cannot be decoded.
@@ -252,13 +270,14 @@ class OllamaRunnable(BaseRunnable):
         Handles each line of a streaming response from the Ollama API.
 
         Parses each line as JSON, extracts the content chunk, and returns it.
-        Handles 'done' signals and JSON decoding errors.
+        Handles 'done' signals which indicate the end of the stream.
 
         Args:
-            line (str): A line from the streaming response.
+            line (str): A line from the streaming response, expected to be a JSON string.
 
         Returns:
-            Optional[str]: The extracted content chunk as a string, or None if the line is not valid or stream is done.
+            Optional[str]: The extracted content chunk as a string.
+                           Returns None if the line is not valid JSON, or if the stream is marked as 'done'.
         """
         try:
             data = json.loads(line)
@@ -274,23 +293,24 @@ class OpenAIRunnable(BaseRunnable):
     Runnable class for interacting with OpenAI language models.
 
     This class extends BaseRunnable and implements the specific logic for calling
-    the OpenAI API, handling authentication, requests, responses, and streaming.
+    the OpenAI API, including authentication, request formatting, response handling, and streaming.
+    It supports both text and JSON response formats and handles API key retrieval.
     """
     def __init__(self, *args, **kwargs):
         """
         Initializes an OpenAIRunnable instance.
-        Retrieves the OpenAI API key from environment variables or Keyring.
+        Retrieves the OpenAI API key from environment variables.
         Inherits arguments from BaseRunnable.
         """
         super().__init__(*args, **kwargs)
         self.api_key: Optional[str] = os.getenv("OPENAI_API_KEY")  # only in development
-        
-        print("Using OPENAI")
+        """OpenAI API key, retrieved from environment variables."""
 
     def clean_schema_for_openai(self, schema: Union[Dict[str, Any], List[Any]]) -> Union[Dict[str, Any], List[Any]]:
         """
         Recursively processes the JSON schema to remove or adjust disallowed keywords like 'oneOf'
-        for compatibility with OpenAI's API.
+        for compatibility with OpenAI's API. OpenAI's API has limitations on certain JSON schema keywords.
+        This function aims to simplify the schema to increase compatibility.
 
         Args:
             schema: The JSON schema to clean (can be a dict or list).
@@ -313,33 +333,34 @@ class OpenAIRunnable(BaseRunnable):
 
     def invoke(self, inputs: Dict[str, Any]) -> Union[Dict[str, Any], str, None]:
         """
-        Invokes the OpenAI model to get a complete response.
+        Invokes the OpenAI model to get a complete, non-streaming response.
 
-        Constructs the headers and payload for the OpenAI API, sends the request,
-        and processes the response.
+        Constructs the headers and payload for the OpenAI API, sends the POST request,
+        and processes the JSON response to extract and return the model's output.
+        Handles structured JSON response formatting if `response_type` is set to "json".
 
         Args:
             inputs: Input variables for the prompt.
 
         Returns:
-            The response from the OpenAI model, either JSON or text, or None on error.
+            The response from the OpenAI model, either JSON (dict) or text (str), or None on error.
 
         Raises:
-            ValueError: If the OpenAI API request fails.
+            ValueError: If the OpenAI API request fails or returns an error status.
         """
         # Build the prompt from inputs (assumes this sets self.messages)
         self.build_prompt(inputs)
-        
+
         # Set up headers with API key
         headers = {"Authorization": f"Bearer {self.api_key}"}
-        
+
         # Construct the payload
         payload = {
             "model": self.model_name,  # e.g., "gpt-4o-2024-08-06"
             "messages": self.messages,  # Contains system and user messages
             "temperature": 0.7,        # Adjustable as needed
         }
-        
+
         # Apply structured JSON response format if response_type is "json"
         if self.response_type == "json":
             # Clean the schema to remove unsupported keywords like 'oneOf'
@@ -352,12 +373,10 @@ class OpenAIRunnable(BaseRunnable):
                     "schema": clean_schema
                 }
             }
-            
-        print(payload)
-        
+
         # Send the request to the OpenAI API
         response = requests.post(self.model_url, headers=headers, json=payload)
-        
+
         # Handle and return the response
         return self._handle_response(response)
 
@@ -365,16 +384,16 @@ class OpenAIRunnable(BaseRunnable):
         """
         Invokes the OpenAI model to get a stream of responses.
 
-        Sends a streaming request to the OpenAI API and yields content chunks
-        as they are received.
+        Sends a streaming POST request to the OpenAI API and yields content chunks
+        as they are received. This enables real-time, chunk-wise processing of the model's output.
 
         Args:
             inputs: Input variables for the prompt.
 
         Yields:
-            A generator yielding response chunks as strings, or None for errors/end.
+            Generator[Optional[str], None, None]: A generator yielding response chunks as strings.
+                                                Yields None if a chunk is not valid or the stream ends.
         """
-        print(inputs)
         self.build_prompt(inputs)
         headers = {"Authorization": f"Bearer {self.api_key}"}
         payload = {
@@ -385,9 +404,7 @@ class OpenAIRunnable(BaseRunnable):
         }
 
         with requests.post(self.model_url, headers=headers, json=payload, stream=True) as response:
-            print("Response: ", response)
             for line in response.iter_lines():
-                print("Line: ", line)
                 if line:
                     yield self._handle_stream_line(line)
 
@@ -402,7 +419,7 @@ class OpenAIRunnable(BaseRunnable):
             response: The HTTP response object from the OpenAI API.
 
         Returns:
-            The processed response content, either JSON or text, or None on error.
+            The processed response content, either JSON (dict) or text (str), or None on error.
 
         Raises:
             ValueError: If the request to OpenAI API fails or JSON response is invalid.
@@ -422,13 +439,15 @@ class OpenAIRunnable(BaseRunnable):
         """
         Handles each line of a streaming response from the OpenAI API.
 
-        Parses each line, extracts the content delta, and returns it.
+        Parses each line, extracts the content delta (the incremental content chunk), and returns it.
+        Streaming responses from OpenAI are in a specific 'data: ...' format, which this function parses.
 
         Args:
             line: A line from the streaming response in bytes.
 
         Returns:
-            The extracted content chunk as a string, or None if the line is not a data line or content is empty.
+            Optional[str]: The extracted content chunk as a string.
+                           Returns None if the line is not a data line or if the content delta is empty.
         """
         if line.startswith(b"data: "):
             chunk = json.loads(line[6:])
@@ -441,15 +460,18 @@ class ClaudeRunnable(BaseRunnable):
 
     This class extends BaseRunnable and implements the specific logic for calling
     the Claude API, including authentication, request formatting, response handling, and streaming.
+    It handles API key retrieval, request headers specific to Claude, and response parsing for both
+    complete and streaming responses.
     """
     def __init__(self, *args, **kwargs):
         """
         Initializes a ClaudeRunnable instance.
-        Retrieves the Claude API key from environment variables or Keyring.
+        Retrieves the Claude API key from environment variables.
         Inherits arguments from BaseRunnable.
         """
         super().__init__(*args, **kwargs)
         self.api_key: Optional[str] = os.getenv("CLAUDE_API_KEY") # only in development
+        """Claude API key, retrieved from environment variables."""
 
         # # Retrieve the encrypted API key from Keyring - commented out for now.
         # encrypted_key = keyring.get_password("electron-openid-oauth", "claude")
@@ -484,19 +506,21 @@ class ClaudeRunnable(BaseRunnable):
 
     def invoke(self, inputs: Dict[str, Any]) -> Union[Dict[str, Any], str, None]:
         """
-        Invokes the Claude model to get a complete response.
+        Invokes the Claude model to get a complete, non-streaming response.
 
-        Constructs the headers and payload for the Claude API, sends the request,
-        and processes the response. Adds JSON formatting instructions to the prompt if response_type is "json".
+        Constructs the headers and payload for the Claude API, sends the POST request,
+        and processes the JSON response to extract and return the model's output.
+        If `response_type` is "json", it adds JSON formatting instructions to the prompt to guide the model.
 
         Args:
             inputs (Dict[str, Any]): Input variables for the prompt.
 
         Returns:
-            Union[Dict[str, Any], str, None]: The response from the Claude model, either JSON or text, or None on error.
+            Union[Dict[str, Any], str, None]: The response from the Claude model, either JSON (dict) or text (str),
+                                             or None if there is an error in the API call or response processing.
 
         Raises:
-            ValueError: If the Claude API request fails.
+            ValueError: If the Claude API request fails or returns an error status.
         """
         # Build the initial prompt from inputs
         self.build_prompt(inputs)
@@ -515,15 +539,15 @@ class ClaudeRunnable(BaseRunnable):
         # Set up headers with API key and required Claude-specific headers
         headers = {
             "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
+            "anthropic-version": "2023-06-01", # Required Claude API version header
+            "content-type": "application/json" # Explicitly set content type to JSON
         }
 
         # Construct the payload
         payload = {
             "model": self.model_name,  # Hardcoded model name for Claude
             "messages": self.messages,
-            "max_tokens": 4096
+            "max_tokens": 4096 # Maximum number of tokens in the response
         }
 
         # Send the request to the Claude API
@@ -535,32 +559,31 @@ class ClaudeRunnable(BaseRunnable):
         """
         Invokes the Claude model to get a stream of responses.
 
-        Sends a streaming request to the Claude API and yields content chunks
-        as they are received.
+        Sends a streaming POST request to the Claude API and yields content chunks
+        as they are received. This allows for real-time processing of Claude's output.
 
         Args:
             inputs (Dict[str, Any]): Input variables for the prompt.
 
         Yields:
-            Generator[Optional[str], None, None]: A generator yielding response chunks as strings, or None for errors/end.
+            Generator[Optional[str], None, None]: A generator yielding response chunks as strings.
+                                                Yields None if a chunk is not valid or the stream ends.
         """
         self.build_prompt(inputs)
         headers = {
             "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
+            "anthropic-version": "2023-06-01", # Required Claude API version header
+            "content-type": "application/json" # Explicitly set content type to JSON
         }
         payload = {
             "model": self.model_name,
             "messages": self.messages,
-            "max_tokens": 4096,
+            "max_tokens": 4096, # Maximum number of tokens in the response
             "stream": True
         }
 
         response = requests.post(self.model_url, headers=headers, json=payload, stream=True)
-        print("Response: ", response)
         for line in response.iter_lines():
-            print("Line: ", line)
             if line:
                 yield self._handle_stream_line(line)
 
@@ -575,14 +598,15 @@ class ClaudeRunnable(BaseRunnable):
             response (requests.Response): The HTTP response object from the Claude API.
 
         Returns:
-            Union[Dict[str, Any], str, None]: The processed response content, either JSON or text, or None on error.
+            Union[Dict[str, Any], str, None]: The processed response content, either JSON (dict) or text (str).
+                                             Returns None if the response status is not 200 or JSON decoding fails.
 
         Raises:
             ValueError: If the request to Claude API fails or JSON response is invalid.
         """
         if response.status_code == 200:
             data = response.json()
-            content = " ".join([block["text"] for block in data["content"]])
+            content = " ".join([block["text"] for block in data["content"]]) # Claude returns content as a list of blocks
             if self.response_type == "json":
                 try:
                     return json.loads(content)
@@ -596,16 +620,18 @@ class ClaudeRunnable(BaseRunnable):
         Handles each line of a streaming response from the Claude API.
 
         Parses each line as JSON, extracts the content blocks, and concatenates their text.
+        Claude's streaming API sends updates as JSON lines, which need to be parsed and processed.
 
         Args:
             line (bytes): A line from the streaming response in bytes.
 
         Returns:
-            Optional[str]: The extracted content chunk as a string, or None if the line is not valid or content is empty.
+            Optional[str]: The extracted content chunk as a string.
+                           Returns None if the line is not valid JSON or if the content is empty.
         """
         try:
             data = json.loads(line.decode("utf-8"))
-            return " ".join([block["text"] for block in data.get("content", [])])
+            return " ".join([block["text"] for block in data.get("content", [])]) # Extract text from content blocks
         except json.JSONDecodeError:
             return None
 
@@ -615,17 +641,62 @@ class GeminiRunnable(BaseRunnable):
 
     This class extends BaseRunnable and implements the specific logic for calling
     the Gemini API, including authentication, request formatting, response handling, and streaming.
+    It manages API key authorization, request payloads formatted for Gemini, and response parsing.
     """
     def __init__(self, *args, **kwargs):
         """
         Initializes a GeminiRunnable instance.
-        Retrieves the Gemini API key from environment variables or Keyring.
+        Retrieves the Gemini API key from environment variables.
         Inherits arguments from BaseRunnable.
         """
         super().__init__(*args, **kwargs)
         self.api_key: Optional[str] = os.getenv("GEMINI_API_KEY")  # only in development
+        """Gemini API key, retrieved from environment variables."""
+        # # Retrieve the encrypted API key from Keyring - commented out for now.
+        # encrypted_key = keyring.get_password("electron-openid-oauth", "gemini")
+
+        # # Check if the encrypted key exists
+        # if encrypted_key:
+        #     try:
+        #         # Define the utility server URL and endpoint
+        #         url = "http://localhost:5005/decrypt"
+        #         # Prepare the JSON payload with the encrypted data
+        #         payload = {"encrypted_data": encrypted_key}
+        #         # Make a POST request to the /decrypt endpoint
+        #         response = requests.post(url, json=payload)
+
+        #         # Check if the request was successful
+        #         if response.status_code == 200:
+        #             # Extract the decrypted data from the response
+        #             decrypted_data = response.json().get("decrypted_data")
+        #             self.api_key = decrypted_data
+        #         else:
+        #             # Handle non-200 status codes (e.g., 500 from server errors)
+        #             print(f"Failed to decrypt API key: {response.status_code} - {response.text}")
+        #             self.api_key = None
+        #     except requests.exceptions.RequestException as e:
+        #         # Handle network-related errors (e.g., server down, connection issues)
+        #         print(f"Error connecting to decryption service: {e}")
+        #         self.api_key = None
+        # else:
+        #     # Handle the case where no encrypted key is found in Keyring
+        #     print("No encrypted API key found in Keyring.")
+        #     self.api_key = None
 
     def clean_schema_for_gemini(self, schema: Union[Dict[str, Any], List[Any]]) -> Union[Dict[str, Any], List[Any]]:
+        """
+        Cleans and adapts a JSON schema for compatibility with the Gemini API.
+
+        Gemini has specific requirements and limitations on JSON schemas, particularly for function calling and structured output.
+        This function removes unsupported keywords and adjusts the schema to align with Gemini's capabilities.
+        It specifically handles 'oneOf' and ensures that object types are correctly defined.
+
+        Args:
+            schema: The JSON schema to be cleaned (can be a dict or list).
+
+        Returns:
+            The cleaned JSON schema, compatible with Gemini API requirements.
+        """
         supported_keywords = {"enum", "items", "maxItems", "nullable", "properties", "required", "type"}
         if isinstance(schema, dict):
             # Handle 'oneOf' by selecting the first subschema and cleaning it
@@ -633,19 +704,19 @@ class GeminiRunnable(BaseRunnable):
                 print("Warning: 'oneOf' found in schema. Replacing with first subschema.")
                 subschema = schema["oneOf"][0]
                 return self.clean_schema_for_gemini(subschema)
-            
+
             cleaned = {}
             for k, v in schema.items():
                 if k == "properties":
-                    cleaned["properties"] = {prop: self.clean_schema_for_gemini(prop_schema) 
+                    cleaned["properties"] = {prop: self.clean_schema_for_gemini(prop_schema)
                                             for prop, prop_schema in v.items()}
                 elif k in supported_keywords:
                     cleaned[k] = self.clean_schema_for_gemini(v)
-            
+
             # Ensure 'type' is set for objects with properties
             if "properties" in cleaned and "type" not in cleaned:
                 cleaned["type"] = "object"
-            
+
             # Handle object type validation and conversion for Gemini
             if cleaned.get("type") == "object":
                 if "properties" not in cleaned or not cleaned["properties"]:
@@ -660,13 +731,30 @@ class GeminiRunnable(BaseRunnable):
                     cleaned["required"] = [prop for prop in cleaned["required"] if prop in defined_properties]
                     if not cleaned["required"]:
                         del cleaned["required"]
-            
+
             return cleaned
         elif isinstance(schema, list):
             return [self.clean_schema_for_gemini(item) for item in schema]
         return schema
 
     def invoke(self, inputs: Dict[str, Any]) -> Union[Dict[str, Any], str, None]:
+        """
+        Invokes the Gemini model to get a complete, non-streaming response.
+
+        Constructs the payload for the Gemini API, sends the POST request, and processes
+        the JSON response to extract and return the model's output.
+        Handles system instructions and formats the payload according to Gemini's API requirements.
+
+        Args:
+            inputs (Dict[str, Any]): Input variables for the prompt.
+
+        Returns:
+            Union[Dict[str, Any], str, None]: The response from the Gemini model, either JSON (dict) or text (str),
+                                             or None if there is an error in the API call or response processing.
+
+        Raises:
+            ValueError: If the Gemini API request fails or returns an error status.
+        """
         self.build_prompt(inputs)
         system_instruction = None
         if self.messages and self.messages[0]["role"].lower() == "system":
@@ -677,9 +765,10 @@ class GeminiRunnable(BaseRunnable):
             conversation_messages = self.messages
 
         def map_role(role: str) -> str:
+            """Maps a role name to Gemini's role names ('user' or 'model')."""
             return "model" if role.lower() == "assistant" else "user"
 
-        contents = [{"role": map_role(msg["role"]), "parts": [{"text": msg["content"]}]} 
+        contents = [{"role": map_role(msg["role"]), "parts": [{"text": msg["content"]}]}
                     for msg in conversation_messages]
         payload = {"contents": contents}
         if system_instruction:
@@ -693,17 +782,33 @@ class GeminiRunnable(BaseRunnable):
             payload["generationConfig"] = generation_config
 
         response = requests.post(
-            f"{self.model_url}?key={self.api_key}",
+            f"{self.model_url}?key={self.api_key}", # API key is passed as a query parameter
             json=payload,
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"} # Explicitly set content type to JSON
         )
         return self._handle_response(response)
 
     def _handle_response(self, response: requests.Response) -> Union[Dict[str, Any], str, None]:
+        """
+        Handles the HTTP response from the Gemini API for non-streaming requests.
+
+        Parses the JSON response, extracts the content, and handles potential errors
+        such as JSON decoding failures or non-200 status codes.
+
+        Args:
+            response (requests.Response): The HTTP response object from the Gemini API.
+
+        Returns:
+            Union[Dict[str, Any], str, None]: The processed response content, either JSON (dict) or text (str).
+                                             Returns None if the response status is not 200 or JSON decoding fails.
+
+        Raises:
+            ValueError: If the request to Gemini API fails or JSON response is invalid.
+        """
         if response.status_code == 200:
             data = response.json()
-            content = "".join([part["text"] for part in data["candidates"][0]["content"]["parts"]])
-            if self.response_type == "json":
+            content = "".join([part["text"] for part in data["candidates"][0]["content"]["parts"]]) # Gemini returns content in 'parts'
+            if self.response_type == "json" and self.required_format:
                 try:
                     return json.loads(content)
                 except json.JSONDecodeError as e:
@@ -716,13 +821,14 @@ class GeminiRunnable(BaseRunnable):
         Invokes the Gemini model to get a stream of responses.
 
         Currently implemented as a single yield due to limited streaming support,
-        but can be extended for true streaming later.
+        but can be extended for true streaming later. In the current implementation, it behaves like a non-streaming call.
 
         Args:
             inputs (Dict[str, Any]): Input variables for the prompt.
 
         Yields:
             Generator[Union[Dict[str, Any], str, None], None, None]: A generator yielding the response.
+                                                                    In the current implementation, it yields only once.
         """
         self.build_prompt(inputs)
 
@@ -735,6 +841,7 @@ class GeminiRunnable(BaseRunnable):
             conversation_messages = self.messages
 
         def map_role(role: str) -> str:
+            """Maps a role name to Gemini's role names ('user' or 'model')."""
             role_lower = role.lower()
             return "model" if role_lower == "assistant" else "user"
 
@@ -746,32 +853,36 @@ class GeminiRunnable(BaseRunnable):
             payload["systemInstruction"] = system_instruction
 
         response = requests.post(
-            f"{self.model_url}?key={self.api_key}",
+            f"{self.model_url}?key={self.api_key}", # API key is passed as a query parameter
             json=payload,
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"} # Explicitly set content type to JSON
         )
 
         yield self._handle_response(response)
 
 def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
     """
-    Factory function to get the appropriate Runnable class for chat based on the selected model.
+    Factory function to get the appropriate Runnable class for chat interactions based on the selected model.
 
     Determines the model provider (Ollama, OpenAI, Claude, Gemini) based on the
     selected model name from `get_selected_model()`. It then returns an instance
     of the corresponding Runnable class, configured with API URLs and chat prompts.
+    This function is designed for conversational chat interfaces.
 
     Args:
-        chat_history (List[Dict[str, str]]): The chat history to initialize the runnable with.
+        chat_history (List[Dict[str, str]]): The chat history to initialize the runnable with. This provides context
+                                            from previous turns in the conversation.
 
     Returns:
-        BaseRunnable: An instance of a Runnable class (OllamaRunnable, OpenAIRunnable, ClaudeRunnable, or GeminiRunnable) configured for chat.
+        BaseRunnable: An instance of a Runnable class (OllamaRunnable, OpenAIRunnable, ClaudeRunnable, or GeminiRunnable)
+                      that is configured for chat interactions, including streaming and stateful conversation management.
     """
     model_mapping: Dict[str, Tuple[Optional[str], Type[BaseRunnable]]] = {
         "openai": (os.getenv("OPENAI_API_URL"), OpenAIRunnable),
         "claude": (os.getenv("CLAUDE_API_URL"), ClaudeRunnable),
         "gemini": (os.getenv("GEMINI_API_URL"), GeminiRunnable),
     }
+    """Mapping of model providers to their API URLs and Runnable classes."""
 
     provider: Optional[str] = None
     model_name, provider=get_selected_model()
@@ -798,6 +909,7 @@ def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
         stream=True,
         stateful=True,
     )
+    """Configures the Runnable instance with chat-specific settings: streaming, stateful, and chat prompts."""
 
     runnable.add_to_history(chat_history)
     return runnable
@@ -805,22 +917,25 @@ def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
 
 def get_agent_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
     """
-    Factory function to get the appropriate Runnable class for agent behavior based on the selected model.
+    Factory function to get the appropriate Runnable class for agent-like behavior based on the selected model.
 
-    Determines the model provider and returns a CustomRunnable configured for agent-like tasks,
-    including JSON response format and agent-specific prompts.
+    Determines the model provider and returns a Runnable configured for agent-like tasks,
+    including JSON response format and agent-specific prompts. Agents typically require structured output for tool use.
 
     Args:
         chat_history (List[Dict[str, str]]): Initial chat history to provide context to the agent.
+                                            This history might include initial instructions or context for the agent's task.
 
     Returns:
-        BaseRunnable: A CustomRunnable instance configured for agent behavior.
+        BaseRunnable: A Runnable instance configured for agent behavior. This instance is set up to expect
+                      JSON responses and is initialized with agent-specific prompts and state management.
     """
     model_mapping: Dict[str, Tuple[Optional[str], Type[BaseRunnable]]] = {
         "openai": (os.getenv("OPENAI_API_URL"), OpenAIRunnable),
         "claude": (os.getenv("CLAUDE_API_URL"), ClaudeRunnable),
         "gemini": (os.getenv("GEMINI_API_URL"), GeminiRunnable),
     }
+    """Mapping of model providers to their API URLs and Runnable classes."""
 
     provider: Optional[str] = None
     model_name, provider=get_selected_model()
@@ -846,6 +961,7 @@ def get_agent_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
         response_type="json",
         stateful=True,
     )
+    """Configures the Runnable instance for agent-like behavior, expecting JSON responses and maintaining state."""
 
     runnable.add_to_history(chat_history)
     return runnable
@@ -860,23 +976,29 @@ def get_tool_runnable(
     """
     Factory function to get the appropriate Runnable class for tool execution based on the selected model.
 
-    Determines the model provider and returns a CustomRunnable configured for tool calls,
-    with JSON response format and stateless operation.
+    Determines the model provider and returns a Runnable configured for tool calls,
+    with JSON response format and stateless operation. Tool execution typically requires structured JSON output
+    and each call is often independent without needing to retain conversation history.
 
     Args:
-        system_prompt_template (str): System prompt template specific to the tool.
-        user_prompt_template (str): User prompt template for tool interaction.
-        required_format (dict): Required JSON format for tool responses.
-        input_variables (List[str]): List of input variables for tool prompts.
+        system_prompt_template (str): System prompt template specific to the tool. Provides context and instructions
+                                     for the model when executing the tool.
+        user_prompt_template (str): User prompt template for tool interaction. Formats user input for the tool.
+        required_format (dict): Required JSON format for tool responses. Defines the structure of the JSON output
+                                expected from the model when it uses the tool.
+        input_variables (List[str]): List of input variables for tool prompts. Variables to be replaced in the
+                                     prompt templates with actual values when the tool is invoked.
 
     Returns:
-        BaseRunnable: A CustomRunnable instance configured for tool execution.
+        BaseRunnable: A Runnable instance configured for tool execution. This instance is set up to expect
+                      JSON responses and operates in a stateless manner, suitable for independent tool calls.
     """
     model_mapping: Dict[str, Tuple[Optional[str], Type[BaseRunnable]]] = {
         "openai": (os.getenv("OPENAI_API_URL"), OpenAIRunnable),
         "claude": (os.getenv("CLAUDE_API_URL"), ClaudeRunnable),
         "gemini": (os.getenv("GEMINI_API_URL"), GeminiRunnable),
     }
+    """Mapping of model providers to their API URLs and Runnable classes."""
 
     provider: Optional[str] = None
     model_name, provider=get_selected_model()
@@ -896,6 +1018,7 @@ def get_tool_runnable(
         required_format=required_format,
         response_type="json",
     )
+    """Configures the Runnable instance for tool execution, expecting JSON responses and operating stateless."""
 
     return runnable
 
@@ -904,17 +1027,20 @@ def get_reflection_runnable() -> BaseRunnable:
     """
     Factory function to get the appropriate Runnable class for reflection tasks based on the selected model.
 
-    Determines the model provider and returns a CustomRunnable configured for reflection,
-    with streaming chat responses and stateless operation.
+    Determines the model provider and returns a Runnable configured for reflection,
+    with streaming chat responses and stateless operation. Reflection tasks are typically stateless and benefit
+    from streaming responses for immediate feedback.
 
     Returns:
-        BaseRunnable: A CustomRunnable instance configured for reflection tasks.
+        BaseRunnable: A Runnable instance configured for reflection tasks. This instance is set up for streaming
+                      chat responses and operates in a stateless manner, suitable for independent reflection calls.
     """
     model_mapping: Dict[str, Tuple[Optional[str], Type[BaseRunnable]]] = {
         "openai": (os.getenv("OPENAI_API_URL"), OpenAIRunnable),
         "claude": (os.getenv("CLAUDE_API_URL"), ClaudeRunnable),
         "gemini": (os.getenv("GEMINI_API_URL"), GeminiRunnable),
     }
+    """Mapping of model providers to their API URLs and Runnable classes."""
 
     provider: Optional[str] = None
     model_name, provider=get_selected_model()
@@ -934,25 +1060,29 @@ def get_reflection_runnable() -> BaseRunnable:
         response_type="chat",
         stream=True,
     )
+    """Configures the Runnable instance for reflection tasks, using streaming chat responses and operating stateless."""
 
     return runnable
 
 
 def get_inbox_summarizer_runnable() -> BaseRunnable:
     """
-    Factory function to get the appropriate Runnable class for inbox summarization based on the selected model.
+    Factory function to get the appropriate Runnable class for inbox summarization tasks based on the selected model.
 
-    Determines the model provider and returns a CustomRunnable configured for inbox summarization,
-    with streaming chat responses and stateless operation.
+    Determines the model provider and returns a Runnable configured for inbox summarization,
+    with streaming chat responses and stateless operation. Inbox summarization is typically a stateless task
+    where each summarization is independent, and streaming allows for quicker feedback.
 
     Returns:
-        BaseRunnable: A CustomRunnable instance configured for inbox summarization.
+        BaseRunnable: A Runnable instance configured for inbox summarization. This instance is set up for streaming
+                      chat responses and operates in a stateless manner, suitable for independent summarization calls.
     """
     model_mapping: Dict[str, Tuple[Optional[str], Type[BaseRunnable]]] = {
         "openai": (os.getenv("OPENAI_API_URL"), OpenAIRunnable),
         "claude": (os.getenv("CLAUDE_API_URL"), ClaudeRunnable),
         "gemini": (os.getenv("GEMINI_API_URL"), GeminiRunnable),
     }
+    """Mapping of model providers to their API URLs and Runnable classes."""
 
     provider: Optional[str] = None
     model_name, provider=get_selected_model()
@@ -972,5 +1102,6 @@ def get_inbox_summarizer_runnable() -> BaseRunnable:
         response_type="chat",
         stream=True,
     )
+    """Configures the Runnable instance for inbox summarization, using streaming chat responses and operating stateless."""
 
     return runnable

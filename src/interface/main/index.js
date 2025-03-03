@@ -1035,7 +1035,6 @@ ipcMain.handle("send-message", async (_event, { chatId, input }) => {
 
 						last.message += parsedMessage.token // Append token to last message content
 						if (parsedMessage.done === true) {
-							console.log("Parsed message: ", parsedMessage)
 							// Update message flags when streaming is done
 							last.memoryUsed = parsedMessage.memoryUsed
 							last.agentsUsed = parsedMessage.agentsUsed
