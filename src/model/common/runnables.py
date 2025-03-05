@@ -12,6 +12,7 @@ from helpers import *  # Importing helper functions from helpers.py
 from formats import *  # Importing format specifications or utilities from formats.py
 import ast  # For Abstract Syntax Tree manipulation, used for safely evaluating strings as Python literals
 from sys import platform  # To get system platform information
+from typing import Tuple  # Importing Tuple from typing module for type hinting
 
 
 load_dotenv("../.env")

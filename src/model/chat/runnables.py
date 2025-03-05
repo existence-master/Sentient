@@ -7,6 +7,7 @@ from prompts import *
 from dotenv import load_dotenv
 import keyring
 from sys import platform
+from typing import Tuple
 
 load_dotenv("../.env")
 

@@ -34,6 +34,7 @@ import dotenv from "dotenv"
 import pkg from "electron-updater"
 const { autoUpdater } = pkg
 import serve from "electron-serve"
+import net from "net"
 
 /**
  * @file Main process file for the Electron application.
@@ -226,6 +227,39 @@ export const createAppWindow = () => {
 				isExiting = false // Reset exiting flag if user cancels exit
 			}
 		}
+	})
+}
+
+// Socket server for wake word signals
+const socketServer = net.createServer((socket) => {
+	socket.on("data", async (data) => {
+		if (data.toString().trim() === "start-voice-conversation") {
+			await startNewVoiceChat()
+		}
+	})
+	socket.on("error", (err) => console.log(`Socket error: ${err}`))
+})
+
+socketServer.listen(2345, "localhost", () => {
+	console.log("Socket server listening on port 2345")
+})
+
+async function startNewVoiceChat() {
+	const chatId = `voice-${uuid()}`
+	const response = await ipcMain.invoke("create-chat", {
+		title: "Voice Chat"
+	})
+	if (response.status === 200) {
+		mainWindow.webContents.send("navigate-to-voice-chat", response.chatId)
+		if (mainWindow.isMinimized()) mainWindow.restore()
+		mainWindow.focus()
+	}
+}
+
+// Handle --wake-word flag
+if (process.argv.includes("--wake-word")) {
+	app.on("ready", async () => {
+		await startNewVoiceChat()
 	})
 }
 
