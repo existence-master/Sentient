@@ -93,6 +93,9 @@ class GraphRAGRequest(BaseModel):
     """
 
     query: str  # User's query for GraphRAG
+    
+class CustomRAGRequest(BaseModel):
+    query: str
 
 
 # --- Global Variables for Application State ---
@@ -876,6 +879,31 @@ async def refresh_rag_context():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error refreshing RAG context: {str(e)}")
 
+app.post("/custom-rag")
+async def custom_rag(request: CustomRAGRequest):
+    """
+    Endpoint to perform a similarity search in ChromaDB and return formatted context with sources.
+
+    Args:
+        request (CustomRAGRequest): Request body containing the query string.
+
+    Returns:
+        dict: JSON response with 'context' key containing the formatted context string.
+
+    Raises:
+        HTTPException: If an error occurs during processing, returns a 500 status code with error details.
+    """
+    try:
+        query = request.query
+        # Perform similarity search
+        results = semantic_search(collection, query)
+        # Format context with sources
+        formatted_context = format_context_with_sources(results)
+        # Return JSON response
+        return {"context": formatted_context}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
 # --- Main execution block ---
 if __name__ == "__main__":
     """

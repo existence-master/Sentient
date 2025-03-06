@@ -1815,3 +1815,41 @@ def process_and_add_documents(collection: chromadb.Collection, folder_path: str)
         ids, texts, metadatas = process_document(file_path)
         add_to_collection(collection, ids, texts, metadatas)
         print(f"Added {len(texts)} chunks to collection")
+        
+# Helper function to perform semantic search
+def semantic_search(collection: chromadb.Collection, query: str, n_results: int = 10) -> dict:
+    """
+    Perform a semantic search on the ChromaDB collection.
+
+    Args:
+        collection (chromadb.Collection): The ChromaDB collection to search.
+        query (str): The user's query string.
+        n_results (int): Number of results to return. Defaults to 10.
+
+    Returns:
+        dict: Search results from ChromaDB containing documents and metadata.
+    """
+    results = collection.query(query_texts=[query], n_results=n_results)
+    return results
+
+# Helper function to format context with sources
+def format_context_with_sources(results: dict) -> str:
+    """
+    Format the search results into a string with source and information.
+
+    Args:
+        results (dict): Search results from ChromaDB with documents and metadata.
+
+    Returns:
+        str: Formatted context string or empty string if no results.
+    """
+    if not results['documents'] or not results['documents'][0]:
+        return ""
+    
+    formatted_parts = []
+    for doc, meta in zip(results['documents'][0], results['metadatas'][0]):
+        source_name = f"{meta['source']} (chunk {meta['chunk']})"
+        formatted_part = f"Source: {source_name}\nInformation: {doc}"
+        formatted_parts.append(formatted_part)
+    
+    return "\n\n".join(formatted_parts)
