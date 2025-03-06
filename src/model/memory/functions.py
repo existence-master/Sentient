@@ -17,7 +17,6 @@ import chromadb
 from chromadb.utils import embedding_functions
 import docx
 import PyPDF2
-import os
 import chromadb
 from chromadb.utils import embedding_functions
 from typing import List, Tuple, Dict
@@ -34,6 +33,16 @@ import io
 import tempfile
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
+import html2text
+import yt_dlp
+import speech_recognition as sr
+import tempfile
+import subprocess
+from pathlib import Path
+import re
+import unicodedata
+from pydub import AudioSegment
+from bs4 import BeautifulSoup
 
 load_dotenv("../.env")  # Load environment variables from .env file
 
@@ -1853,3 +1862,126 @@ def format_context_with_sources(results: dict) -> str:
         formatted_parts.append(formatted_part)
     
     return "\n\n".join(formatted_parts)
+
+
+def extract_text_from_url(url: str) -> str:
+    """
+    Extracts structured text from a website URL.
+
+    Args:
+        url (str): The website URL.
+
+    Returns:
+        str: Extracted text in markdown format, or an error message if extraction fails.
+    """
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        return f"Error fetching the webpage: {e}"
+
+    soup = BeautifulSoup(response.text, 'html.parser')
+    for script in soup(['script', 'style', 'meta', 'noscript']):
+        script.extract()
+
+    markdown_converter = html2text.HTML2Text()
+    markdown_converter.ignore_links = False
+    markdown_converter.ignore_images = True
+    markdown_converter.ignore_tables = False
+
+    structured_text = markdown_converter.handle(str(soup))
+    return structured_text.strip()
+
+# --- YouTube Transcript Extraction ---
+def sanitize_filename(filename: str) -> str:
+    filename = re.sub(r'[<>:"/\\|?*]', '', filename)
+    filename = filename.replace(' ', '_')
+    filename = unicodedata.normalize('NFKD', filename).encode('ASCII', 'ignore').decode()
+    return filename[:200]
+
+def check_ffmpeg() -> str:
+    try:
+        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+        if result.returncode == 0:
+            return 'ffmpeg'
+    except FileNotFoundError:
+        possible_paths = [
+            r'C:\ffmpeg\bin\ffmpeg.exe', r'C:\Program Files\ffmpeg\bin\ffmpeg.exe',
+            r'C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe', str(Path.home() / 'ffmpeg' / 'bin' / 'ffmpeg.exe'),
+            '/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/opt/homebrew/bin/ffmpeg',
+            str(Path.home() / 'ffmpeg' / 'ffmpeg')
+        ]
+        for path in possible_paths:
+            if os.path.isfile(path):
+                return path
+        raise Exception("FFmpeg not found. Please install it and add it to PATH.")
+
+def download_audio(url: str, output_path: str) -> Optional[str]:
+    try:
+        ffmpeg_path = check_ffmpeg()
+        output_template = os.path.join(output_path, '%(title).100s.%(ext)s')
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': output_template,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'wav',
+                'preferredquality': '192',
+            }],
+            'ffmpeg_location': os.path.dirname(ffmpeg_path) if os.path.dirname(ffmpeg_path) else None,
+            'quiet': True,
+            'no_warnings': True,
+            'restrictfilenames': True
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            safe_title = sanitize_filename(info['title'])
+            audio_file = os.path.join(output_path, f"{safe_title}.wav")
+            if not os.path.exists(audio_file):
+                possible_files = [f for f in os.listdir(output_path) if f.endswith('.wav')]
+                if possible_files:
+                    audio_file = os.path.join(output_path, possible_files[0])
+            return audio_file
+    except Exception as e:
+        print(f"Error downloading audio: {str(e)}")
+        return None
+
+def transcribe_audio(audio_path: str, language: str = "en-US", chunk_size: int = 60000) -> Optional[str]:
+    if not os.path.exists(audio_path):
+        print("Audio file not found")
+        return None
+    recognizer = sr.Recognizer()
+    audio = AudioSegment.from_wav(audio_path)
+    chunks = [audio[start:start + chunk_size] for start in range(0, len(audio), chunk_size)]
+    full_text = []
+    for i, chunk in enumerate(chunks):
+        temp_fd, temp_wav_path = tempfile.mkstemp(suffix=".wav")
+        os.close(temp_fd)
+        try:
+            chunk.export(temp_wav_path, format="wav")
+            with sr.AudioFile(temp_wav_path) as source:
+                audio_data = recognizer.listen(source)
+                try:
+                    text = recognizer.recognize_google(audio_data, language=language)
+                    full_text.append(text)
+                except sr.UnknownValueError:
+                    print(f"Could not understand chunk {i}")
+                except sr.RequestError as e:
+                    print(f"Speech recognition error in chunk {i}: {e}")
+        finally:
+            os.remove(temp_wav_path)
+    return " ".join(full_text).strip()
+
+def generate_transcript(url: str) -> Optional[str]:
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_file = download_audio(url, temp_dir)
+            if not audio_file or not os.path.exists(audio_file):
+                print("Failed to download audio file")
+                return None
+            transcript = transcribe_audio(audio_file)
+            return transcript if transcript else None
+    except Exception as e:
+        print(f"Error generating transcript: {str(e)}")
+        return None

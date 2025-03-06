@@ -156,3 +156,34 @@ async def get_rag_context(query:str) -> Dict[str, Any]:
         return {
             "error": f"Error calling customrag: {str(e)}"
         }  
+        
+async def get_url_context(query: str) -> str:
+    """
+    Asynchronously calls the proxy endpoint to get extracted data from URLs in the query.
+
+    Args:
+        query (str): The user's query, which may contain URLs.
+
+    Returns:
+        str: Extracted data from URLs in the format 'Source: <url>\nInformation: <content>', 
+             or an error message if the request fails.
+    """
+    # Extract URLs from the query
+    url_data = extract_and_classify_urls(query)
+    website_urls = url_data['website_urls']
+    youtube_urls = url_data['youtube_urls']
+
+    try:
+        port = os.environ.get("APP_SERVER_PORT", "5000")
+        async with httpx.AsyncClient(timeout=None) as client:
+            response = await client.post(
+                f"http://localhost:{port}/url-rag",
+                json={"query": query, "website_urls": website_urls, "youtube_urls": youtube_urls}
+            )
+            if response.status_code == 200:
+                return response.json()["context"]
+            else:
+                return f"Error fetching RAG context: {response.text}"
+    except Exception as e:
+        print(f"Error fetching RAG context: {e}")
+        return f"Error calling custom-rag: {str(e)}"

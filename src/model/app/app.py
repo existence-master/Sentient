@@ -1265,7 +1265,26 @@ async def custom_rag_endpoint(request: CustomRAGRequest) -> JSONResponse:
         "MEMORY_SERVER_PORT", "/custom-rag", payload
     )  # Fetch and return streaming response
 
+@app.post("/temp-rag")
+async def custom_rag_endpoint(request: CustomRAGRequest) -> JSONResponse:
+    """
+    Endpoint to proxy TempRAG requests to the Memory Service.
 
+    Forwards requests for text based retrieval-augmented generation to the Memory Service and returns its streaming response.
+
+    Args:
+        request (TempRAGRequest): Request body containing the query for TempRAG.
+
+    Returns:
+        StreamingResponse: Streaming response from the Memory Service's custom-rag endpoint.
+    """
+    payload: Dict[str, str] = (
+        request.model_dump()
+    )  # Extract payload from GraphRAGRequest model
+    return await call_service_endpoint(
+        "MEMORY_SERVER_PORT", "/temp-rag", payload
+    )  # Fetch and return streaming response
+    
 @app.post("/chat", status_code=200)
 async def chat(message: Message) -> StreamingResponse:
     """

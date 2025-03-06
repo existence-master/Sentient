@@ -252,3 +252,30 @@ def check_uploaded_files() -> bool:
     if not os.path.exists(upload_dir):
         return False
     return len(os.listdir(upload_dir)) > 0
+
+def extract_and_classify_urls(message: str) -> dict:
+    """
+    Extracts URLs from the message and classifies them as website or YouTube URLs.
+
+    Args:
+        message (str): The user's message.
+
+    Returns:
+        dict: A dictionary with keys 'website_urls' and 'youtube_urls', each containing a list of URLs.
+    """
+    url_pattern = r'(https?://[^\s]+)'
+    urls = re.findall(url_pattern, message)
+    
+    website_urls = []
+    youtube_urls = []
+    
+    for url in urls:
+        if 'youtube.com' in url or 'youtu.be' in url:
+            youtube_urls.append(url)
+        else:
+            website_urls.append(url)
+    
+    return {
+        'website_urls': website_urls,
+        'youtube_urls': youtube_urls
+    }

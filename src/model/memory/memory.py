@@ -96,7 +96,10 @@ class GraphRAGRequest(BaseModel):
     
 class CustomRAGRequest(BaseModel):
     query: str
-
+    
+class TempRAGRequest(BaseModel):
+    website_urls: list
+    youtube_urls: list
 
 # --- Global Variables for Application State ---
 # These global variables store initialized models, runnables, database connections, and chat history.
@@ -903,6 +906,27 @@ async def custom_rag(request: CustomRAGRequest):
         return {"context": formatted_context}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/url-rag")
+async def url_rag(request: TempRAGRequest):
+    """
+    Endpoint to fetch and format content from URLs.
+
+    Args:
+        request (CustomRAGRequest): Request body containing the query and URLs.
+
+    Returns:
+        dict: A dictionary with a 'context' key containing the formatted content.
+    """
+    context = ""
+    for url in request.website_urls:
+        text = extract_text_from_url(url)
+        context += f"Source: {url}\nInformation: {text}\n\n"
+    for url in request.youtube_urls:
+        transcript = generate_transcript(url)
+        if transcript:
+            context += f"Source: {url}\nInformation: {transcript}\n\n"
+    return {"context": context.strip()}
     
 # --- Main execution block ---
 if __name__ == "__main__":

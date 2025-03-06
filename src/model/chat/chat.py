@@ -153,6 +153,7 @@ async def chat(message: Message) -> StreamingResponse:
             user_context = None
             internet_context = None
             rag_context = None
+            url_context = None
             pro_used = False
             note = ""
 
@@ -221,6 +222,8 @@ async def chat(message: Message) -> StreamingResponse:
                 }) + "\n")
                 await asyncio.sleep(0.05)
                 rag_context = await get_rag_context()
+                
+            url_context = await get_url_context(message.original_input)
 
             personality_description = db["userData"].get("personality", "None")
 
@@ -232,6 +235,7 @@ async def chat(message: Message) -> StreamingResponse:
                         "user_context": user_context,
                         "internet_context": internet_context,
                         "rag_context": rag_context,
+                        "url_context": url_context,
                         "name": username,
                         "personality": personality_description,
                     },
