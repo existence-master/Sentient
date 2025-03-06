@@ -8,7 +8,7 @@ from formats import *  # Importing format specifications or utilities from forma
 import ast  # For Abstract Syntax Tree manipulation, used for safely evaluating strings as Python literals
 import json  # For working with JSON data
 from sys import platform  # To get system platform information
-from typing import Optional, Dict, Any, List, Union, Generator  # For type hints
+from typing import Optional, Dict, Any, List, Union, Generator, Tuple  # For type hints
 from dotenv import load_dotenv
 from abc import ABC, abstractmethod
 import keyring

@@ -9,7 +9,8 @@ import {
 	IconRefresh, // Icon for refresh/clear chat action
 	IconPlayerPlayFilled, // Icon for play/restart server action
 	IconLoader, // Icon for loading/thinking state
-	IconPlus // Icon for add/create new chat action
+	IconPlus, // Icon for add/create new chat action
+	IconUpload // Icon for file upload action
 } from "@tabler/icons-react" // Icon library
 import * as d3 from "d3" // D3.js library for creating data visualizations, used for flowchart
 import { Tooltip } from "react-tooltip" // Tooltip component for providing hints
@@ -61,6 +62,8 @@ const Chat = () => {
 	// State to hold the filtered slash commands based on user input.
 	const [filteredCommands, setFilteredCommands] = useState([]) // filteredCommands: { text: string, value: string, icon: React.ReactNode }[]
 	const [currentModel, setCurrentModel] = useState("")
+	const [uploadedFiles, setUploadedFiles] = useState([])
+	const [showUploadDropdown, setShowUploadDropdown] = useState(false)
 
 	/**
 	 * Array of available slash commands.
@@ -169,6 +172,18 @@ const Chat = () => {
 	const statusTimeoutRef = useRef(null) // statusTimeoutRef: React.RefObject<number | null>
 	// useRef for the dropdown menu for slash commands.
 	const dropdownRef = useRef(null) // dropdownRef: React.RefObject<HTMLDivElement>
+	const uploadDropdownRef = useRef(null)
+
+
+	useEffect(() => {
+		const fetchUploadedFiles = async () => {
+			const response = await window.electron.invoke("get-uploaded-files")
+			if (response.status === 200) {
+				setUploadedFiles(response.files)
+			}
+		}
+		fetchUploadedFiles()
+	}, [])
 
 	/**
 	 * useEffect hook to handle closing the slash command dropdown when clicking outside.
@@ -639,6 +654,53 @@ const Chat = () => {
 		}
 	}
 
+	const handleFileUpload = async (event) => {
+		const files = Array.from(event.target.files)
+		const fileData = await Promise.all(
+			files.map(async (file) => ({
+				name: file.name,
+				data: Buffer.from(await file.arrayBuffer())
+			}))
+		)
+
+		const response = await window.electron.invoke("upload-files", fileData)
+		if (response.status === 200) {
+			setUploadedFiles((prev) => [
+				...new Set([...prev, ...response.files])
+			]) // Avoid duplicates
+			toast.success("Files uploaded successfully")
+			setShowUploadDropdown(true) // Keep dropdown open after upload
+		} else {
+			toast.error("Error uploading files")
+		}
+	}
+
+	// Handle file removal
+	const handleRemoveFile = async (fileName) => {
+		const response = await window.electron.invoke("delete-file", fileName)
+		if (response.status === 200) {
+			setUploadedFiles((prev) => prev.filter((file) => file !== fileName))
+			toast.success("File removed successfully")
+		} else {
+			toast.error("Error removing file")
+		}
+	}
+
+	// Handle clicks outside upload dropdown to close it
+	useEffect(() => {
+		const handleClickOutside = (event) => {
+			if (
+				uploadDropdownRef.current &&
+				!uploadDropdownRef.current.contains(event.target)
+			) {
+				setShowUploadDropdown(false)
+			}
+		}
+		document.addEventListener("mousedown", handleClickOutside)
+		return () =>
+			document.removeEventListener("mousedown", handleClickOutside)
+	}, [])
+
 	// Render different UI based on chatId. 'home' indicates the initial screen.
 	if (chatId === "home") {
 		return (
@@ -835,7 +897,26 @@ const Chat = () => {
 						page! Current Model:{" "}
 						<span className="text-lightblue">{currentModel}</span>
 					</p>
+
 					<div className="relative mb-5 flex flex-row gap-4 w-full px-4 py-1 bg-matteblack border-[1px] border-white rounded-lg z-30">
+						<div className="flex items-center justify-center">
+						<button
+							onClick={() =>
+								setShowUploadDropdown(!showUploadDropdown)
+							}
+							className="p-3 hover-button transition-transform transform scale-100 hover:scale-110 cursor-pointer rounded-full text-white"
+							data-tooltip-id="upload-tooltip"
+							data-tooltip-content="Upload files"
+						>
+							<IconUpload className="w-4 h-4 text-white" />
+							</button>
+						</div>
+						<Tooltip
+							id="upload-tooltip"
+							place="top"
+							type="dark"
+							effect="float"
+						/>
 						<textarea
 							ref={textareaRef}
 							value={input}
@@ -887,6 +968,45 @@ const Chat = () => {
 											<span>{cmd.text}</span>
 										</div>
 									))
+								)}
+							</div>
+						)}
+						{showUploadDropdown && (
+							<div
+								ref={uploadDropdownRef}
+								className="absolute bottom-12 left-0 bg-smokeblack text-white rounded-xl shadow-lg w-64 p-2 max-h-60 overflow-y-auto"
+							>
+								<input
+									type="file"
+									multiple
+									onChange={handleFileUpload}
+									className="mb-2 text-sm text-white file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-lightblue file:text-white hover:file:bg-blue-600"
+								/>
+								{uploadedFiles.length > 0 ? (
+									<ul className="space-y-2">
+										{uploadedFiles.map((file) => (
+											<li
+												key={file}
+												className="flex items-center justify-between p-1 hover:bg-gray-700 rounded"
+											>
+												<span className="truncate flex-1">
+													{file}
+												</span>
+												<button
+													onClick={() =>
+														handleRemoveFile(file)
+													}
+													className="ml-2 text-red-500 hover:text-red-700"
+												>
+													Remove
+												</button>
+											</li>
+										))}
+									</ul>
+								) : (
+									<p className="text-gray-400 text-sm">
+										No files uploaded
+									</p>
 								)}
 							</div>
 						)}

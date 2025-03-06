@@ -3,7 +3,7 @@ from prompts import *  # Importing prompt templates and related utilities from p
 from wrapt_timeout_decorator import *  # Importing timeout decorator for functions from wrapt_timeout_decorator library
 from helpers import *  # Importing helper functions from helpers.py
 from constants import *  # Importing constant variables from constants.py
-from typing import Optional, Dict, Any, List, Union, Generator
+from typing import Optional, Dict, Any, List, Union, Generator, Tuple  # Importing type hints for function arguments and return values
 from abc import ABC, abstractmethod
 import requests  # For making HTTP requests
 from formats import *  # Importing format specifications or utilities from formats.py

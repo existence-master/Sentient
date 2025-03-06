@@ -227,6 +227,7 @@ models
 input
 results
 checkpoints
+uploads 
 
 # Custom files
 .env*

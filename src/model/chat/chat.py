@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
 from pydantic import BaseModel
 import os
-from typing import Dict, Any, AsyncGenerator  # Import specific types for clarity
+from typing import Dict, AsyncGenerator # Import specific types for clarity
 from dotenv import load_dotenv
 
 load_dotenv("../.env")  # Load environment variables from .env file

@@ -1,7 +1,7 @@
 import os
 import json
 import requests
-from typing import Dict, Any, List, Union, Optional, Generator
+from typing import Dict, Any, List, Union, Optional, Generator, Tuple
 from abc import ABC, abstractmethod
 from prompts import *
 from dotenv import load_dotenv
