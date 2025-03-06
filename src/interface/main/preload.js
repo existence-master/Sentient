@@ -31,6 +31,23 @@ contextBridge.exposeInMainWorld("electron", {
 		ipcRenderer.on(channel, callback)
 	},
 	/**
+	 * Removes a specific listener for an event from the main process on a given channel.
+	 * This allows the renderer process to clean up event listeners when they are no longer needed.
+	 *
+	 * @param {string} channel - The name of the IPC channel to remove the listener from.
+	 * @param {Function} callback - The specific callback function to remove for the channel.
+	 *
+	 * @example
+	 * // In renderer.js
+	 * const handleEvent = (event, data) => console.log(data);
+	 * window.electron.on('some-channel', handleEvent);
+	 * // Later, to clean up:
+	 * window.electron.removeListener('some-channel', handleEvent);
+	 */
+	removeListener: (channel, callback) => {
+		ipcRenderer.removeListener(channel, callback)
+	},
+	/**
 	 * Sends a message to the main process on a specific channel.
 	 * This is a one-way asynchronous communication from the renderer to the main process.
 	 *

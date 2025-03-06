@@ -1559,3 +1559,31 @@ ipcMain.handle("get-stored-providers", async () => {
 ipcMain.handle("delete-api-key", async (event, provider) => {
 	return await deleteApiKey(provider)
 })
+
+ipcMain.handle("add-voice-messages", async (_event, { chatId, messages }) => {
+	try {
+		const chat = chatsDb.data.chats.find((c) => c.id === chatId)
+		if (!chat) {
+			return { message: "Chat not found", status: 404 }
+		}
+		const newMessages = messages.map((msg) => ({
+			id: uuid(),
+			message: msg.message,
+			isUser: msg.isUser,
+			memoryUsed: msg.memoryUsed || false,
+			agentsUsed: msg.agentsUsed || false,
+			internetUsed: msg.internetUsed || false
+		}))
+		chat.chatHistory.push(...newMessages)
+		await chatsDb.write()
+		// Notify renderer with updated messages
+		mainWindow.webContents.send("voice-messages-added", {
+			chatId,
+			messages: newMessages
+		})
+		return { message: "Messages added successfully", status: 200 }
+	} catch (error) {
+		console.log(`Error adding voice messages: ${error}`)
+		return { message: "Error adding voice messages", status: 500 }
+	}
+})

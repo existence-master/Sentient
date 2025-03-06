@@ -12,6 +12,7 @@ from sys import platform  # To get system platform information
 from dotenv import load_dotenv
 import json
 import keyring
+from typing import Tuple
 
 
 load_dotenv("../.env")  # Load environment variables from .env file

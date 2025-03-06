@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any, List, Union, Generator  # For type hints
 from dotenv import load_dotenv
 from abc import ABC, abstractmethod
 import keyring
+from typing import Tuple
 
 
 load_dotenv("../.env")  # Load environment variables from .env file
