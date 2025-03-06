@@ -17,6 +17,23 @@ import chromadb
 from chromadb.utils import embedding_functions
 import docx
 import PyPDF2
+import os
+import chromadb
+from chromadb.utils import embedding_functions
+from typing import List, Tuple, Dict
+import cv2
+import numpy as np
+import pytesseract
+import easyocr
+from PIL import Image
+import logging
+from dataclasses import dataclass
+from sklearn.cluster import KMeans
+import speech_recognition as sr
+import io
+import tempfile
+from pydub import AudioSegment
+from pydub.silence import split_on_silence
 
 load_dotenv("../.env")  # Load environment variables from .env file
 
@@ -1539,7 +1556,171 @@ def delete_source_subgraph(graph_driver, file_name: str):
 
     except Exception as e:
         print(f"Error deleting subgraph: {e}")  # Print error message if deletion fails
-        
+  # Image RAG: AdvancedSceneTextReader class
+@dataclass
+class TextDetectionResult:
+    text: str
+    confidence: float
+    method: str
+
+class AdvancedSceneTextReader:
+    def __init__(self, tesseract_path: str = "/usr/share/tesseract-ocr/4.00/tessdata"):
+        self.tesseract_path = tesseract_path
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
+        self.reader = easyocr.Reader(['en'])
+        self.logger = logging.getLogger(__name__)
+
+    def _analyze_image_characteristics(self, image: np.ndarray) -> Dict[str, float]:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        avg_brightness = np.mean(gray)
+        contrast = np.std(gray)
+        texture_kernel = np.ones((5,5), np.float32)/25
+        blurred = cv2.filter2D(gray, -1, texture_kernel)
+        texture_measure = np.mean(np.absolute(gray - blurred))
+        return {
+            'brightness': float(avg_brightness),
+            'contrast': float(contrast),
+            'texture': float(texture_measure)
+        }
+
+    def _create_binary_masks(self, image: np.ndarray) -> List[np.ndarray]:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        masks = []
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        masks.append(binary)
+        adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                        cv2.THRESH_BINARY, 11, 2)
+        masks.append(adaptive)
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        kmeans = KMeans(n_clusters=2, random_state=42, n_init=10)
+        h, w = gray.shape
+        reshaped_lab = lab.reshape((h * w, 3))
+        kmeans.fit(reshaped_lab)
+        segmented = kmeans.labels_.reshape((h, w)) * 255
+        masks.append(segmented.astype(np.uint8))
+        return masks
+
+    def _enhance_contrast(self, image: np.ndarray) -> np.ndarray:
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        cl = clahe.apply(l)
+        enhanced = cv2.merge((cl, a, b))
+        return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+
+    def _remove_noise(self, image: np.ndarray) -> np.ndarray:
+        return cv2.bilateralFilter(image, 9, 75, 75)
+
+    def _extract_text_tesseract(self, image: np.ndarray, config: str = '') -> TextDetectionResult:
+        try:
+            data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT, config=config)
+            text_parts = []
+            confidence_scores = []
+            for i, conf in enumerate(data['conf']):
+                if conf > -1:
+                    text_parts.append(data['text'][i])
+                    confidence_scores.append(int(conf))
+            if text_parts:
+                avg_confidence = sum(confidence_scores) / len(confidence_scores)
+                return TextDetectionResult(
+                    text=' '.join(text_parts).strip(),
+                    confidence=avg_confidence / 100,
+                    method='tesseract'
+                )
+        except Exception as e:
+            self.logger.warning(f"Tesseract error: {str(e)}")
+        return TextDetectionResult('', 0.0, 'tesseract')
+
+    def _extract_text_easyocr(self, image: np.ndarray) -> TextDetectionResult:
+        try:
+            results = self.reader.readtext(image)
+            if results:
+                text_parts = []
+                confidence_scores = []
+                for detection in results:
+                    text_parts.append(detection[1])
+                    confidence_scores.append(detection[2])
+                return TextDetectionResult(
+                    text=' '.join(text_parts).strip(),
+                    confidence=sum(confidence_scores) / len(confidence_scores),
+                    method='easyocr'
+                )
+        except Exception as e:
+            self.logger.warning(f"EasyOCR error: {str(e)}")
+        return TextDetectionResult('', 0.0, 'easyocr')
+
+    def extract_text(self, image_path: str) -> str:
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"Image file not found: {image_path}")
+        image = cv2.imread(image_path)
+        if image is None:
+            raise ValueError("Unable to read image file")
+        enhanced = self._enhance_contrast(image)
+        denoised = self._remove_noise(enhanced)
+        masks = self._create_binary_masks(denoised)
+        results = []
+        for mask in masks:
+            results.append(self._extract_text_tesseract(mask))
+            results.append(self._extract_text_easyocr(mask))
+        results.append(self._extract_text_tesseract(denoised))
+        results.append(self._extract_text_easyocr(denoised))
+        valid_results = [r for r in results if r.text.strip()]
+        if not valid_results:
+            return ""
+        best_result = max(valid_results, key=lambda x: (x.confidence, len(x.text.strip())))
+        return best_result.text.strip()
+
+# Audio RAG functions
+def convert_to_wav(audio_path: str) -> str:
+    if audio_path.endswith('.wav'):
+        return audio_path
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_wav:
+        temp_path = temp_wav.name
+        audio = AudioSegment.from_file(audio_path)
+        audio.export(temp_path, format="wav")
+    return temp_path
+
+def extract_text_from_audio(audio_path: str, language: str = "en-US", chunk_size: int = 60000) -> str:
+    if not os.path.exists(audio_path):
+        raise FileNotFoundError(f"Audio file not found at {audio_path}")
+    try:
+        recognizer = sr.Recognizer()
+        wav_path = convert_to_wav(audio_path)
+        audio = AudioSegment.from_wav(wav_path)
+        chunks = []
+        if chunk_size:
+            for start in range(0, len(audio), chunk_size):
+                chunks.append(audio[start:start + chunk_size])
+        else:
+            chunks = split_on_silence(
+                audio,
+                min_silence_len=500,
+                silence_thresh=audio.dBFS - 14,
+                keep_silence=500
+            )
+        full_text = []
+        for i, chunk in enumerate(chunks):
+            with io.BytesIO() as wav_buffer:
+                chunk.export(wav_buffer, format="wav")
+                wav_buffer.seek(0)
+                with sr.AudioFile(wav_buffer) as source:
+                    audio_data = recognizer.record(source)
+                    try:
+                        text = recognizer.recognize_google(audio_data, language=language)
+                        full_text.append(text)
+                    except sr.UnknownValueError:
+                        print(f"Could not understand chunk {i}")
+                    except sr.RequestError as e:
+                        print(f"Speech recognition service error in chunk {i}: {e}")
+        if wav_path != audio_path:
+            os.remove(wav_path)
+        return " ".join(full_text).strip()
+    except Exception as e:
+        if 'wav_path' in locals() and wav_path != audio_path:
+            os.remove(wav_path)
+        raise Exception(f"Error during transcription: {str(e)}")
+
+# Core document processing functions
 def read_text_file(file_path: str) -> str:
     with open(file_path, 'r', encoding='utf-8') as file:
         return file.read()
@@ -1557,18 +1738,27 @@ def read_docx_file(file_path: str) -> str:
     return "\n".join([paragraph.text for paragraph in doc.paragraphs])
 
 def read_document(file_path: str) -> str:
+    """Read and extract text from a document based on its file extension."""
     _, file_extension = os.path.splitext(file_path)
     file_extension = file_extension.lower()
-    if file_extension == '.txt':
-        return read_text_file(file_path)
-    elif file_extension == '.pdf':
-        return read_pdf_file(file_path)
-    elif file_extension == '.docx':
-        return read_docx_file(file_path)
+    
+    if file_extension in ['.txt', '.pdf', '.docx']:
+        if file_extension == '.txt':
+            return read_text_file(file_path)
+        elif file_extension == '.pdf':
+            return read_pdf_file(file_path)
+        elif file_extension == '.docx':
+            return read_docx_file(file_path)
+    elif file_extension in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']:
+        reader = AdvancedSceneTextReader()
+        return reader.extract_text(file_path)
+    elif file_extension in ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.mp4']:
+        return extract_text_from_audio(file_path)
     else:
         raise ValueError(f"Unsupported file format: {file_extension}")
 
 def split_text(text: str, chunk_size: int = 1000) -> List[str]:
+    """Split text into chunks based on a specified size."""
     sentences = text.replace('\n', ' ').split('. ')
     chunks: List[str] = []
     current_chunk: List[str] = []
@@ -1592,6 +1782,7 @@ def split_text(text: str, chunk_size: int = 1000) -> List[str]:
     return chunks
 
 def process_document(file_path: str) -> Tuple[List[str], List[str], List[dict]]:
+    """Process a document by reading and splitting its content, generating IDs and metadata."""
     try:
         content = read_document(file_path)
         chunks = split_text(content)
@@ -1604,6 +1795,7 @@ def process_document(file_path: str) -> Tuple[List[str], List[str], List[dict]]:
         return [], [], []
 
 def add_to_collection(collection: chromadb.Collection, ids: List[str], texts: List[str], metadatas: List[dict]) -> None:
+    """Add processed document chunks to the ChromaDB collection."""
     if not texts:
         return
     batch_size = 100
@@ -1616,6 +1808,7 @@ def add_to_collection(collection: chromadb.Collection, ids: List[str], texts: Li
         )
 
 def process_and_add_documents(collection: chromadb.Collection, folder_path: str) -> None:
+    """Process all supported files in a folder and add them to the ChromaDB collection."""
     files = [os.path.join(folder_path, file) for file in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, file))]
     for file_path in files:
         print(f"Processing {os.path.basename(file_path)}...")
