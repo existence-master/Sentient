@@ -240,3 +240,15 @@ def write_to_log(message: str):
         print(
             f"Error writing to log file: {error}"
         )  # Print error message if writing to log file fails
+
+def check_uploaded_files() -> bool:
+    """
+    Checks if there are any files in the uploads folder.
+
+    Returns:
+        bool: True if there are files in the uploads folder, False otherwise.
+    """
+    upload_dir = "../../interface/uploads"  # Replace with actual path
+    if not os.path.exists(upload_dir):
+        return False
+    return len(os.listdir(upload_dir)) > 0

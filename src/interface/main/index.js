@@ -1537,37 +1537,59 @@ ipcMain.handle("delete-api-key", async (event, provider) => {
 })
 
 // Handle file uploads
-ipcMain.handle('upload-files', async (event, files) => {
-    try {
-        const uploadedFiles = []
-        for (const file of files) {
-            const filePath = path.join(uploadDir, file.name)
-            // Check for file name conflicts and skip if exists
-            if (!fs.existsSync(filePath)) {
-                fs.writeFileSync(filePath, file.data)
-                uploadedFiles.push(file.name)
-            }
-        }
-        return { status: 200, message: 'Files uploaded successfully', files: uploadedFiles }
-    } catch (error) {
-        console.error(`Error uploading files: ${error}`)
-        return { status: 500, message: 'Error uploading files', error: error.message }
-    }
+ipcMain.handle("upload-files", async (event, files) => {
+	try {
+		const uploadedFiles = []
+		for (const file of files) {
+			const filePath = path.join(uploadDir, file.name)
+			// Check for file name conflicts and skip if exists
+			if (!fs.existsSync(filePath)) {
+				fs.writeFileSync(filePath, file.data)
+				uploadedFiles.push(file.name)
+			}
+		}
+		// Send request to refresh RAG context
+		await fetch("http://localhost:5000/refresh-rag-context", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" }
+		})
+		return {
+			status: 200,
+			message: "Files uploaded successfully",
+			files: uploadedFiles
+		}
+	} catch (error) {
+		console.error(`Error uploading files: ${error}`)
+		return {
+			status: 500,
+			message: "Error uploading files",
+			error: error.message
+		}
+	}
 })
 
 // Handle file deletion
-ipcMain.handle('delete-file', async (event, fileName) => {
-    try {
-        const filePath = path.join(uploadDir, fileName)
-        if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath)
-            return { status: 200, message: 'File deleted successfully' }
-        }
-        return { status: 404, message: 'File not found' }
-    } catch (error) {
-        console.error(`Error deleting file: ${error}`)
-        return { status: 500, message: 'Error deleting file', error: error.message }
-    }
+ipcMain.handle("delete-file", async (event, fileName) => {
+	try {
+		const filePath = path.join(uploadDir, fileName)
+		if (fs.existsSync(filePath)) {
+			fs.unlinkSync(filePath)
+			// Send request to refresh RAG context
+			await fetch("http://localhost:5000/refresh-rag-context", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" }
+			})
+			return { status: 200, message: "File deleted successfully" }
+		}
+		return { status: 404, message: "File not found" }
+	} catch (error) {
+		console.error(`Error deleting file: ${error}`)
+		return {
+			status: 500,
+			message: "Error deleting file",
+			error: error.message
+		}
+	}
 })
 
 // Get list of uploaded files

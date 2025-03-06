@@ -147,188 +147,125 @@ async def chat(message: Message) -> StreamingResponse:
         credits = message.credits  # Get credits from message
 
         async def response_generator() -> AsyncGenerator[str, None]:
-            """
-            Asynchronous generator to produce streaming responses for the chat endpoint.
+            memory_used = False
+            agents_used = False
+            internet_used = False
+            user_context = None
+            internet_context = None
+            rag_context = None
+            pro_used = False
+            note = ""
 
-            Yields:
-                str: JSON string representing different types of messages in the chat flow.
-            """
-            memory_used = False  # Flag to track if memory was used
-            agents_used = False  # Flag to track if agents were used (not used in this simplified chat)
-            internet_used = False  # Flag to track if internet search was used
-            user_context = None  # Placeholder for user context retrieved from memory
-            internet_context = None  # Placeholder for internet search results
-            pro_used = False  # Flag to track if pro features were used
-            note = ""  # Placeholder for notes or messages to the user
+            yield (json.dumps({
+                "type": "userMessage",
+                "message": message.original_input,
+                "memoryUsed": False,
+                "agentsUsed": False,
+                "internetUsed": False,
+            }) + "\n")
+            await asyncio.sleep(0.05)
 
-            yield (
-                json.dumps(
-                    {
-                        "type": "userMessage",
-                        "message": message.original_input,
-                        "memoryUsed": False,
-                        "agentsUsed": False,
-                        "internetUsed": False,
-                    }
-                )
-                + "\n"
-            )  # Yield user message
-            await asyncio.sleep(0.05)  # Small delay for streaming effect
+            yield (json.dumps({
+                "type": "intermediary",
+                "message": "Processing chat response..."
+            }) + "\n")
+            await asyncio.sleep(0.05)
 
-            yield (
-                json.dumps(
-                    {"type": "intermediary", "message": "Processing chat response..."}
-                )
-                + "\n"
-            )  # Yield intermediary message
-            await asyncio.sleep(0.05)  # Small delay
+            context_classification = await classify_context(transformed_input, "category")
+            context_classification_category = context_classification["class"]
 
-            context_classification = await classify_context(
-                transformed_input, "category"
-            )  # Classify context for category
-            
-            print("Context classification: ", context_classification)
-            context_classification_category = context_classification[
-                "class"
-            ]  # Extract classification category
-
-            if (
-                "personal" in context_classification_category
-            ):  # If context is personal, retrieve memory
-                yield (
-                    json.dumps(
-                        {"type": "intermediary", "message": "Retrieving memories..."}
-                    )
-                    + "\n"
-                )  # Yield intermediary message
-                await asyncio.sleep(0.05)  # Small delay
-                memory_used = True  # Mark memory as used
-                user_context = await perform_graphrag(
-                    transformed_input
-                )  # Perform graph-based RAG for memory retrieval
+            if "personal" in context_classification_category:
+                yield (json.dumps({
+                    "type": "intermediary",
+                    "message": "Retrieving memories..."
+                }) + "\n")
+                await asyncio.sleep(0.05)
+                memory_used = True
+                user_context = await perform_graphrag(transformed_input)
             else:
-                user_context = None  # No user context needed
+                user_context = None
 
-            internet_classification = await classify_context(
-                transformed_input, "internet"
-            )  # Classify context for internet
-            internet_classification_internet = internet_classification[
-                "class"
-            ]  # Extract internet classification
-            
-            print("Internet classification: ", internet_classification_internet)
+            internet_classification = await classify_context(transformed_input, "internet")
+            internet_classification_internet = internet_classification["class"]
 
-            if pricing_plan == "free":  # Free plan logic
-                if (
-                    internet_classification_internet == "Internet"
-                ):  # If internet search is relevant
-                    if credits > 0:  # Check for credits
-                        yield (
-                            json.dumps(
-                                {
-                                    "type": "intermediary",
-                                    "message": "Searching the internet...",
-                                }
-                            )
-                            + "\n"
-                        )  # Yield intermediary message
-                        internet_context = await perform_internet_search(
-                            transformed_input
-                        )  # Perform internet search
-                        internet_used = True  # Mark internet as used
-                        pro_used = True  # Mark pro feature as used
+            if pricing_plan == "free":
+                if internet_classification_internet == "Internet":
+                    if credits > 0:
+                        yield (json.dumps({
+                            "type": "intermediary",
+                            "message": "Searching the internet..."
+                        }) + "\n")
+                        internet_context = await perform_internet_search(transformed_input)
+                        internet_used = True
+                        pro_used = True
                     else:
-                        note = "Sorry friend, could have searched the internet for this query for more context. But, that is a pro feature and your daily credits have expired. You can always upgrade to pro from the settings page"  # Note for free users without credits
+                        note = "Sorry friend, could have searched the internet for this query for more context. But, that is a pro feature and your daily credits have expired. You can always upgrade to pro from the settings page"
                 else:
-                    internet_context = None  # No internet context needed for free plan
-
-            else:  # Pro plan logic
-                if (
-                    internet_classification_internet == "Internet"
-                ):  # If internet search is relevant
-                    yield (
-                        json.dumps(
-                            {
-                                "type": "intermediary",
-                                "message": "Searching the internet...",
-                            }
-                        )
-                        + "\n"
-                    )  # Yield intermediary message
-                    internet_context = await perform_internet_search(
-                        transformed_input
-                    )  # Perform internet search
-                    internet_used = True  # Mark internet as used
-                    pro_used = True  # Mark pro feature as used
+                    internet_context = None
+            else:
+                if internet_classification_internet == "Internet":
+                    yield (json.dumps({
+                        "type": "intermediary",
+                        "message": "Searching the internet..."
+                    }) + "\n")
+                    internet_context = await perform_internet_search(transformed_input)
+                    internet_used = True
+                    pro_used = True
                 else:
-                    internet_context = None  # No internet context needed for pro plan
+                    internet_context = None
 
-            personality_description = db["userData"].get(
-                "personality", "None"
-            )  # Extract personality description from user profile
+            if check_uploaded_files():
+                yield (json.dumps({
+                    "type": "intermediary",
+                    "message": "Processing uploaded files..."
+                }) + "\n")
+                await asyncio.sleep(0.05)
+                rag_context = await get_rag_context()
+
+            personality_description = db["userData"].get("personality", "None")
 
             try:
-                async for (
-                    token
-                ) in generate_streaming_response(  # Stream response from chat runnable
+                async for token in generate_streaming_response(
                     chat_runnable,
-                    inputs={  # Input parameters for chat runnable
+                    inputs={
                         "query": transformed_input,
                         "user_context": user_context,
                         "internet_context": internet_context,
+                        "rag_context": rag_context,
                         "name": username,
                         "personality": personality_description,
                     },
-                    stream=True,  # Enable streaming response
+                    stream=True,
                 ):
-                    if isinstance(token, str):  # Yield assistant stream tokens
-                        yield (
-                            json.dumps(
-                                {
-                                    "type": "assistantStream",
-                                    "token": token,
-                                    "done": False,
-                                }
-                            )
-                            + "\n"
-                        )
-                        await asyncio.sleep(0.05)  # Small delay
-                    else:  # Yield final assistant stream message with metadata
-                        yield (
-                            json.dumps(
-                                {
-                                    "type": "assistantStream",
-                                    "token": "\n\n" + note,
-                                    "done": True,
-                                    "memoryUsed": memory_used,
-                                    "agentsUsed": agents_used,
-                                    "internetUsed": internet_used,
-                                    "proUsed": pro_used,
-                                }
-                            )
-                            + "\n"
-                        )
-            except Exception as e:  # Handle exceptions during chat generation
+                    if isinstance(token, str):
+                        yield (json.dumps({
+                            "type": "assistantStream",
+                            "token": token,
+                            "done": False,
+                        }) + "\n")
+                        await asyncio.sleep(0.05)
+                    else:
+                        yield (json.dumps({
+                            "type": "assistantStream",
+                            "token": "\n\n" + note,
+                            "done": True,
+                            "memoryUsed": memory_used,
+                            "agentsUsed": agents_used,
+                            "internetUsed": internet_used,
+                            "proUsed": pro_used,
+                        }) + "\n")
+            except Exception as e:
                 print(f"Error executing chat in chat: {e}")
-                yield (
-                    json.dumps(
-                        {
-                            "type": "error",
-                            "message": f"Generation error: {str(e)}",  # Error message for generation failure
-                        }
-                    )
-                    + "\n"
-                )
+                yield (json.dumps({
+                    "type": "error",
+                    "message": f"Generation error: {str(e)}",
+                }) + "\n")
 
-        return StreamingResponse(
-            response_generator(), media_type="application/json"
-        )  # Return streaming response
+        return StreamingResponse(response_generator(), media_type="application/json")
 
-    except Exception as e:  # Handle exceptions during chat processing
+    except Exception as e:
         print(f"Error executing chat in chat: {e}")
-        return JSONResponse(
-            status_code=500, content={"message": str(e)}
-        )  # Return JSON error response
+        return JSONResponse(status_code=500, content={"message": str(e)})
 
 
 if __name__ == "__main__":

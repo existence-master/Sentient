@@ -228,6 +228,7 @@ input
 results
 checkpoints
 uploads 
+chroma_db
 
 # Custom files
 .env*

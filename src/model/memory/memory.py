@@ -8,7 +8,7 @@ from constants import *  # Importing constant variables from constants.py
 from helpers import *  # Importing helper functions from helpers.py
 from prompts import *  # Importing prompt templates and related utilities from prompts.py
 import nest_asyncio  # For running asyncio event loop within another event loop (needed for FastAPI in some environments)
-from fastapi import FastAPI  # Importing FastAPI for creating the API application
+from fastapi import FastAPI, HTTPException  # Importing FastAPI for creating the API application
 from pydantic import (
     BaseModel,
 )  # Importing BaseModel from Pydantic for request body validation and data modeling
@@ -52,6 +52,7 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers to be included in requests
 )
 
+UPLOAD_DIR = "../../interface/uploads"
 
 # --- Pydantic Models for Request Body Validation ---
 class DeleteSubgraphRequest(BaseModel):
@@ -127,7 +128,7 @@ text_description_runnable = None  # Runnable for generating descriptions for ent
 # Applying nest_asyncio to allow asyncio event loops to be nested.
 # This is often needed when running FastAPI applications in environments that may already have an event loop running,
 # such as Jupyter notebooks or certain testing frameworks.
-nest_asyncio.apply()
+# nest_asyncio.apply()
 
 
 # --- API Endpoints ---
@@ -859,6 +860,21 @@ async def customize_graph(request: GraphRequest):
             },  # Return error message if exception occurs
         )
 
+@app.post("/refresh-rag-context")
+async def refresh_rag_context():
+    try:
+        # Delete and recreate the collection to ensure a fresh state
+        client.delete_collection("documents_collection")
+        global collection
+        collection = client.get_or_create_collection(
+            name="documents_collection",
+            embedding_function=sentence_transformer_ef
+        )
+        # Process all files in the uploads folder and add to ChromaDB
+        process_and_add_documents(collection, UPLOAD_DIR)
+        return {"status": "success", "message": "RAG context refreshed"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error refreshing RAG context: {str(e)}")
 
 # --- Main execution block ---
 if __name__ == "__main__":

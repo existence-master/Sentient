@@ -133,3 +133,22 @@ async def perform_graphrag(query: str) -> Dict[str, Any]:
         return {
             "error": f"Error calling graphrag: {str(e)}"
         }  # Return an error dictionary with the exception message
+
+async def get_rag_context() -> str:
+    """
+    Asynchronously calls an external server to get extracted data from uploaded files.
+
+    Returns:
+        str: Extracted data from the uploaded files, or an error message if the request fails.
+    """
+    try:
+        port: Optional[str] = os.environ.get("APP_SERVER_PORT")
+        async with httpx.AsyncClient(timeout=None) as client:
+            response = await client.get(f"http://localhost:{port}/custom-rag")
+        if response.status_code == 200:
+            return response.json()["data"]
+        else:
+            return f"Error fetching RAG context: {response.text}"
+    except Exception as e:
+        print(f"Error fetching RAG context: {e}")
+        return f"Error fetching RAG context: {str(e)}"

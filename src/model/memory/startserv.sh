@@ -1,1 +1,1 @@
-sudo -E <your-venv-path> -m uvicorn memory:app --host 0.0.0.0 --port 5002
+sudo -E "/home/existence/Desktop/Sentient/Open Source/SK/development/src/model/venv/bin/python3" -m uvicorn memory:app --host 0.0.0.0 --port 5002

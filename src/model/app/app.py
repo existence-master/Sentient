@@ -179,6 +179,11 @@ class ContextClassificationRequest(BaseModel):
 
     query: str
     context: str
+    
+class CustomRAGRequest(BaseModel):
+    """BaseModel for GraphRAG (Graph-based Retrieval Augmented Generation) requests."""
+
+    query: str
 
 
 class BetaUserStatusRequest(BaseModel):
@@ -1231,6 +1236,34 @@ async def context_classify_endpoint(
     return await call_service_endpoint(
         "COMMON_SERVER_PORT", "/context-classify", payload
     )  # Call Common Service context-classify endpoint
+    
+@app.post("/refresh-rag-context")
+async def refresh_rag_context():
+    try:
+        response = await call_service_endpoint("MEMORY_SERVER_PORT", "/refresh-rag-context")
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error refreshing RAG context: {str(e)}")
+    
+@app.post("/custom-rag")
+async def custom_rag_endpoint(request: CustomRAGRequest) -> JSONResponse:
+    """
+    Endpoint to proxy CustomRAG requests to the Memory Service.
+
+    Forwards requests for text based retrieval-augmented generation to the Memory Service and returns its streaming response.
+
+    Args:
+        request (CustomRAGRequest): Request body containing the query for CustomRAG.
+
+    Returns:
+        StreamingResponse: Streaming response from the Memory Service's custom-rag endpoint.
+    """
+    payload: Dict[str, str] = (
+        request.model_dump()
+    )  # Extract payload from GraphRAGRequest model
+    return await call_service_endpoint(
+        "MEMORY_SERVER_PORT", "/custom-rag", payload
+    )  # Fetch and return streaming response
 
 
 @app.post("/chat", status_code=200)
