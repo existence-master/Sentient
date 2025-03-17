@@ -17,6 +17,8 @@ from pydantic import BaseModel
 import os
 from typing import Dict, Any, AsyncGenerator  # Import specific types for clarity
 from dotenv import load_dotenv
+from lowdb import LowDB, JSONFile
+
 
 load_dotenv("../.env")  # Load environment variables from .env file
 
@@ -63,8 +65,10 @@ class Message(BaseModel):
 # --- Global Variables ---
 # These global variables hold the runnables and chat history for the chat functionality.
 # It is initialized to None and will be set in the `/chat` endpoint.
-chat_history = None  # Placeholder for chat history object
-chat_runnable = None  # Runnable for handling chat conversations
+db_path = os.path.join(os.path.dirname(__file__), "chatsDb.json")
+db = LowDB(JSONFile(db_path))
+db.data = db.data or {"messages": []}
+chat_runnable = None
 
 # --- Apply nest_asyncio ---
 # nest_asyncio is used to allow asyncio.run() to be called from within a jupyter notebook or another async environment.
@@ -104,232 +108,91 @@ async def initiate() -> JSONResponse:
         print(f"Error initiating chat: {e}")
         return JSONResponse(status_code=500, content={"message": str(e)})
 
+@app.get("/get-chat-history", status_code=200)
+async def get_chat_history():
+    return JSONResponse(status_code=200, content={"messages": db.data["messages"]})
+
+@app.post("/clear-chat-history", status_code=200)
+async def clear_chat_history():
+    db.data["messages"] = []
+    db.write()
+    return JSONResponse(status_code=200, content={"message": "Chat history cleared"})
 
 @app.post("/chat", status_code=200)
-async def chat(message: Message) -> StreamingResponse:
-    """
-    Endpoint to handle chat messages and generate responses using the AI model.
-
-    This is the main chat endpoint that processes user messages, retrieves context,
-    and streams back the response.
-
-    Args:
-        message (Message): Request body containing the chat message details.
-
-    Returns:
-        StreamingResponse: A streaming response containing different types of messages
-                           (user message, intermediary messages, assistant messages).
-    """
-    global chat_runnable  # Access the global chat_runnable
-
+async def chat(message: Message):
+    global chat_runnable
     try:
-        with open(
-            "../../userProfileDb.json", "r", encoding="utf-8"
-        ) as f:  # Load user profile database
-            db = json.load(f)
+        with open("../../userProfileDb.json", "r", encoding="utf-8") as f:
+            user_db = json.load(f)
 
-        chat_history = get_chat_history(
-            message.chat_id
-        )  # Retrieve chat history for the given chat ID
+        if not chat_runnable:
+            chat_runnable = get_chat_runnable(db.data["messages"])
 
-        chat_runnable = get_chat_runnable(
-            chat_history
-        )  # Initialize chat runnable with chat history
+        username = user_db["userData"]["personalInfo"]["name"]
+        transformed_input = message.transformed_input
+        pricing_plan = message.pricing
+        credits = message.credits
 
-        username = db["userData"]["personalInfo"][
-            "name"
-        ]  # Extract username from user profile
-        transformed_input = (
-            message.transformed_input
-        )  # Get transformed input from message
+        async def response_generator():
+            memory_used = False
+            agents_used = False
+            internet_used = False
+            user_context = None
+            internet_context = None
+            pro_used = False
+            note = ""
 
-        pricing_plan = message.pricing  # Get pricing plan from message
-        credits = message.credits  # Get credits from message
+            # Save user message
+            user_msg = {"id": str(int(time.time() * 1000)), "message": message.original_input, "isUser": True, "memoryUsed": False, "agentsUsed": False, "internetUsed": False}
+            db.data["messages"].append(user_msg)
+            db.write()
 
-        async def response_generator() -> AsyncGenerator[str, None]:
-            """
-            Asynchronous generator to produce streaming responses for the chat endpoint.
+            yield json.dumps({"type": "userMessage", "message": message.original_input, "memoryUsed": False, "agentsUsed": False, "internetUsed": False}) + "\n"
+            await asyncio.sleep(0.05)
 
-            Yields:
-                str: JSON string representing different types of messages in the chat flow.
-            """
-            memory_used = False  # Flag to track if memory was used
-            agents_used = False  # Flag to track if agents were used (not used in this simplified chat)
-            internet_used = False  # Flag to track if internet search was used
-            user_context = None  # Placeholder for user context retrieved from memory
-            internet_context = None  # Placeholder for internet search results
-            pro_used = False  # Flag to track if pro features were used
-            note = ""  # Placeholder for notes or messages to the user
+            yield json.dumps({"type": "intermediary", "message": "Processing chat response..."}) + "\n"
+            await asyncio.sleep(0.05)
 
-            yield (
-                json.dumps(
-                    {
-                        "type": "userMessage",
-                        "message": message.original_input,
-                        "memoryUsed": False,
-                        "agentsUsed": False,
-                        "internetUsed": False,
-                    }
-                )
-                + "\n"
-            )  # Yield user message
-            await asyncio.sleep(0.05)  # Small delay for streaming effect
+            context_classification = await classify_context(transformed_input, "category")
+            if "personal" in context_classification["class"]:
+                yield json.dumps({"type": "intermediary", "message": "Retrieving memories..."}) + "\n"
+                memory_used = True
+                user_context = await perform_graphrag(transformed_input)
 
-            yield (
-                json.dumps(
-                    {"type": "intermediary", "message": "Processing chat response..."}
-                )
-                + "\n"
-            )  # Yield intermediary message
-            await asyncio.sleep(0.05)  # Small delay
-
-            context_classification = await classify_context(
-                transformed_input, "category"
-            )  # Classify context for category
-            
-            print("Context classification: ", context_classification)
-            context_classification_category = context_classification[
-                "class"
-            ]  # Extract classification category
-
-            if (
-                "personal" in context_classification_category
-            ):  # If context is personal, retrieve memory
-                yield (
-                    json.dumps(
-                        {"type": "intermediary", "message": "Retrieving memories..."}
-                    )
-                    + "\n"
-                )  # Yield intermediary message
-                await asyncio.sleep(0.05)  # Small delay
-                memory_used = True  # Mark memory as used
-                user_context = await perform_graphrag(
-                    transformed_input
-                )  # Perform graph-based RAG for memory retrieval
+            internet_classification = await classify_context(transformed_input, "internet")
+            if pricing_plan == "free" and internet_classification["class"] == "Internet" and credits > 0:
+                yield json.dumps({"type": "intermediary", "message": "Searching the internet..."}) + "\n"
+                internet_context = await perform_internet_search(transformed_input)
+                internet_used = True
+                pro_used = True
+            elif pricing_plan != "free" and internet_classification["class"] == "Internet":
+                yield json.dumps({"type": "intermediary", "message": "Searching the internet..."}) + "\n"
+                internet_context = await perform_internet_search(transformed_input)
+                internet_used = True
+                pro_used = True
             else:
-                user_context = None  # No user context needed
+                note = "Sorry, internet search is a pro feature and requires credits on the free plan."
 
-            internet_classification = await classify_context(
-                transformed_input, "internet"
-            )  # Classify context for internet
-            internet_classification_internet = internet_classification[
-                "class"
-            ]  # Extract internet classification
-            
-            print("Internet classification: ", internet_classification_internet)
+            personality = user_db["userData"].get("personality", "None")
+            assistant_msg = {"id": str(int(time.time() * 1000)), "message": "", "isUser": False, "memoryUsed": memory_used, "agentsUsed": agents_used, "internetUsed": internet_used}
+            db.data["messages"].append(assistant_msg)
+            db.write()
 
-            if pricing_plan == "free":  # Free plan logic
-                if (
-                    internet_classification_internet == "Internet"
-                ):  # If internet search is relevant
-                    if credits > 0:  # Check for credits
-                        yield (
-                            json.dumps(
-                                {
-                                    "type": "intermediary",
-                                    "message": "Searching the internet...",
-                                }
-                            )
-                            + "\n"
-                        )  # Yield intermediary message
-                        internet_context = await perform_internet_search(
-                            transformed_input
-                        )  # Perform internet search
-                        internet_used = True  # Mark internet as used
-                        pro_used = True  # Mark pro feature as used
-                    else:
-                        note = "Sorry friend, could have searched the internet for this query for more context. But, that is a pro feature and your daily credits have expired. You can always upgrade to pro from the settings page"  # Note for free users without credits
+            async for token in generate_streaming_response(chat_runnable, inputs={"query": transformed_input, "user_context": user_context, "internet_context": internet_context, "name": username, "personality": personality}, stream=True):
+                if isinstance(token, str):
+                    assistant_msg["message"] += token
+                    db.write()
+                    yield json.dumps({"type": "assistantStream", "token": token, "done": False, "messageId": assistant_msg["id"]}) + "\n"
+                    await asyncio.sleep(0.05)
                 else:
-                    internet_context = None  # No internet context needed for free plan
+                    assistant_msg["message"] += "\n\n" + note
+                    db.write()
+                    yield json.dumps({"type": "assistantStream", "token": "\n\n" + note, "done": True, "memoryUsed": memory_used, "agentsUsed": agents_used, "internetUsed": internet_used, "proUsed": pro_used, "messageId": assistant_msg["id"]}) + "\n"
 
-            else:  # Pro plan logic
-                if (
-                    internet_classification_internet == "Internet"
-                ):  # If internet search is relevant
-                    yield (
-                        json.dumps(
-                            {
-                                "type": "intermediary",
-                                "message": "Searching the internet...",
-                            }
-                        )
-                        + "\n"
-                    )  # Yield intermediary message
-                    internet_context = await perform_internet_search(
-                        transformed_input
-                    )  # Perform internet search
-                    internet_used = True  # Mark internet as used
-                    pro_used = True  # Mark pro feature as used
-                else:
-                    internet_context = None  # No internet context needed for pro plan
-
-            personality_description = db["userData"].get(
-                "personality", "None"
-            )  # Extract personality description from user profile
-
-            try:
-                async for (
-                    token
-                ) in generate_streaming_response(  # Stream response from chat runnable
-                    chat_runnable,
-                    inputs={  # Input parameters for chat runnable
-                        "query": transformed_input,
-                        "user_context": user_context,
-                        "internet_context": internet_context,
-                        "name": username,
-                        "personality": personality_description,
-                    },
-                    stream=True,  # Enable streaming response
-                ):
-                    if isinstance(token, str):  # Yield assistant stream tokens
-                        yield (
-                            json.dumps(
-                                {
-                                    "type": "assistantStream",
-                                    "token": token,
-                                    "done": False,
-                                }
-                            )
-                            + "\n"
-                        )
-                        await asyncio.sleep(0.05)  # Small delay
-                    else:  # Yield final assistant stream message with metadata
-                        yield (
-                            json.dumps(
-                                {
-                                    "type": "assistantStream",
-                                    "token": "\n\n" + note,
-                                    "done": True,
-                                    "memoryUsed": memory_used,
-                                    "agentsUsed": agents_used,
-                                    "internetUsed": internet_used,
-                                    "proUsed": pro_used,
-                                }
-                            )
-                            + "\n"
-                        )
-            except Exception as e:  # Handle exceptions during chat generation
-                print(f"Error executing chat in chat: {e}")
-                yield (
-                    json.dumps(
-                        {
-                            "type": "error",
-                            "message": f"Generation error: {str(e)}",  # Error message for generation failure
-                        }
-                    )
-                    + "\n"
-                )
-
-        return StreamingResponse(
-            response_generator(), media_type="application/json"
-        )  # Return streaming response
-
-    except Exception as e:  # Handle exceptions during chat processing
-        print(f"Error executing chat in chat: {e}")
-        return JSONResponse(
-            status_code=500, content={"message": str(e)}
-        )  # Return JSON error response
-
+        return StreamingResponse(response_generator(), media_type="application/json")
+    except Exception as e:
+        print(f"Error executing chat: {e}")
+        return JSONResponse(status_code=500, content={"message": str(e)})
 
 if __name__ == "__main__":
     uvicorn.run(app, port=5003)  # Run the FastAPI application using Uvicorn server

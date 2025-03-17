@@ -44,14 +44,6 @@ const Load = () => {
 			const { data: userData } =
 				await window.electron?.invoke("get-db-data")
 
-			// Start the Neo4j database in production (currently commented out)
-			// await window.electron.invoke("start-neo4j")
-
-			// Initiate the FastAPI server in production (currently commented out)
-			// await window.electron.invoke(
-			// 	"initiate-fastapi-server"
-			// )
-
 			setLoading(false) // Set loading to false once initialization is complete (or attempted)
 			setOnboarded(userData?.firstRunCompleted) // Set onboarded state based on 'firstRunCompleted' from user data
 		} catch (error) {

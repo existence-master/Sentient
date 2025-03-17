@@ -1,7 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog } from "electron"
 import path, { dirname } from "path"
 import { fileURLToPath } from "url"
-import { v4 as uuid } from "uuid"
 import fetch from "node-fetch"
 import { getChatsDb, getUserProfileDb } from "../utils/db.js"
 import {
@@ -20,16 +19,10 @@ import {
 	fetchAndSetBetaUserStatus,
 	getReferralCodeFromKeytar,
 	getBetaUserStatusFromKeytar,
-	setBetaUserStatusInKeytar,
-	hasApiKey,
-	setApiKey,
-	deleteApiKey
+	setBetaUserStatusInKeytar
 } from "../utils/auth.js"
 import { getPrivateData } from "../utils/api.js"
 import { createAuthWindow, createLogoutWindow } from "./auth.js"
-import { setupServer } from "../scripts/setupServer.js"
-import { startAppServer } from "../scripts/appServer.js"
-import { startNeo4jServer, stopNeo4jServer } from "../scripts/neo4j.js"
 import dotenv from "dotenv"
 import pkg from "electron-updater"
 const { autoUpdater } = pkg
@@ -105,8 +98,6 @@ if (app.isPackaged) {
 	dotenvPath = isWindows
 		? path.join(process.resourcesPath, ".env")
 		: path.join(app.getPath("home"), ".sentient.env")
-	chatsDbPath = path.join(basePath, "chatsDb.json")
-	userProfileDbPath = path.join(basePath, "userProfileDb.json")
 	appOutDir = path.join(__dirname, "../out")
 } else {
 	basePath = __dirname
@@ -129,11 +120,6 @@ const chatsDb = await getChatsDb(chatsDbPath)
  * @type {lowdb.Low<lowdb.Data<any>>}
  */
 const userProfileDb = await getUserProfileDb(userProfileDbPath)
-
-if (!userProfileDb.data.userData.selectedModel) {
-	userProfileDb.data.userData.selectedModel = "llama3.2:3b"
-	await userProfileDb.write()
-}
 
 /**
  * The main application window instance.
@@ -451,19 +437,6 @@ if (!gotTheLock) {
 }
 
 /**
- * Initializes application servers (App server, Auth server, Utils server).
- * Sets a flag to indicate that the app server is loaded.
- * @async
- * @returns {Promise<void>}
- */
-const initializeAppServer = async () => {
-	// startAppServer() // Start the main app server (FastAPI) - currently disabled
-	// startAuthServer() // Start the authentication server - currently disabled
-	// startUtilsServer() // Start the utilities server - currently disabled
-	process.env.APP_SERVER_LOADED = "true" // Set flag indicating app server is loaded
-}
-
-/**
  * Checks for application updates using Electron AutoUpdater.
  * Sets the feed URL based on whether the user is a beta user or not.
  * Then creates the main application window and initiates update checks.
@@ -525,8 +498,6 @@ const startApp = async () => {
 	await checkForUpdates() // Check for application updates
 	setTimeout(async () => {
 		if (process.env.UPDATING !== "true") {
-			await initializeAppServer() // Initialize application servers
-			console.log("App servers started successfully")
 			await checkValidity() // Check application validity (auth and user info)
 		}
 	}, 10000) // Delay before starting servers and validity check
@@ -570,62 +541,6 @@ ipcMain.handle("get-private-data", async () => {
 ipcMain.on("log-out", () => {
 	BrowserWindow.getAllWindows().forEach((win) => win.close()) // Close all browser windows
 	createLogoutWindow() // Create logout window
-})
-
-// IPC handler to setup server
-ipcMain.handle("setup-server", async () => {
-	try {
-		let response = await setupServer() // Run server setup script
-		process.env.UPDATING = "false" // Reset updating flag after setup
-		return { message: "Server setup successful", status: 200, response }
-	} catch (error) {
-		await console.log(`Error setting up server: ${error}`)
-		return { message: "Error setting up server", status: 500 }
-	}
-})
-
-// IPC handler to start Neo4j server
-ipcMain.handle("start-neo4j", async () => {
-	try {
-		while (true) {
-			if (process.env.NEO4J_SERVER_STARTED !== "true") {
-				await startNeo4jServer() // Start Neo4j server
-				process.env.NEO4J_SERVER_STARTED = "true" // Set flag when server start is attempted
-			}
-
-			const isReady = await pollServer(process.env.NEO4J_SERVER_URL) // Poll Neo4j server for readiness
-			if (isReady) {
-				console.log("Neo4j server started successfully")
-				return {
-					message: "Neo4j server started successfully",
-					status: 200
-				}
-			} else {
-				console.warn("Neo4j server is not ready. Restarting...")
-				process.env.NEO4J_SERVER_STARTED = "false" // Reset flag if server is not ready, to attempt restart in next poll
-			}
-		}
-	} catch (error) {
-		await console.log(`Error in starting Neo4j server: ${error}`)
-		return {
-			message: `Error starting Neo4j server: ${error.message}`,
-			status: 500
-		}
-	}
-})
-
-// IPC handler to stop Neo4j server
-ipcMain.handle("stop-neo4j", async () => {
-	try {
-		await stopNeo4jServer() // Stop Neo4j server
-		return { message: "Neo4j server stopped successfully", status: 200 }
-	} catch (error) {
-		await console.log(`Error in stopping Neo4j server: ${error}`)
-		return {
-			message: `Error stopping Neo4j server: ${error.message}`,
-			status: 500
-		}
-	}
 })
 
 // IPC handler to fetch pricing plan
@@ -820,140 +735,90 @@ ipcMain.handle("get-db-data", async () => {
 	}
 })
 
-// IPC handler to get all chats from database
-ipcMain.handle("get-chats", async () => {
+ipcMain.handle("fetch-chat-history", async () => {
 	try {
-		return { data: { chats: chatsDb.data.chats }, status: 200 } // Return chats data
+		const response = await fetch(
+			`${process.env.APP_SERVER_URL}/get-chat-history`,
+			{ method: "GET" }
+		)
+		if (!response.ok) throw new Error("Failed to fetch chat history")
+		const data = await response.json()
+		return { messages: data.messages, status: 200 }
 	} catch (error) {
-		await console.log(`Error fetching data: ${error}`)
-		return { message: "Error fetching data", status: 500 }
-	}
-})
-
-/**
- * Polls a server URL until it's ready (responds with status 200).
- * @async
- * @param {string} url - The URL of the server to poll.
- * @param {number} [interval=10000] - Polling interval in milliseconds.
- * @returns {Promise<boolean>} True if server is ready, false otherwise (after timeout/errors).
- */
-const pollServer = async (url, interval = 10000) => {
-	while (true) {
-		try {
-			const response = await fetch(url) // Attempt to fetch from the URL
-			if (response.ok) {
-				return true // Server is ready if response is ok
-			}
-		} catch (error) {
-			await console.log(`Error in polling: ${error}`)
-		}
-		await delay(interval) // Wait before next poll attempt
-	}
-}
-
-// IPC handler to initiate FastAPI server and model
-ipcMain.handle("initiate-fastapi-server", async () => {
-	try {
-		startAppServer() // Start FastAPI server
-
-		while (true) {
-			const isReady = await pollServer(`${process.env.APP_SERVER_URL}/`) // Poll server root URL
-			if (isReady) {
-				console.log("App server started successfully")
-				if (process.env.APP_SERVER_INITIATED !== "true") {
-					// Initiate FastAPI model if not already initiated
-					const initiateResponse = await fetch(
-						`${process.env.APP_SERVER_URL}/initiate`,
-						{ method: "POST" }
-					)
-
-					if (initiateResponse.ok) {
-						process.env.APP_SERVER_INITIATED = "true" // Set flag after successful initiation
-						console.log("App server initiated successfully")
-						return {
-							message: "FastAPI server initiated successfully",
-							status: 200
-						}
-					} else {
-						console.log("Failed to initiate FastAPI model.")
-					}
-				} else {
-					console.log("FastAPI server is already initiated.")
-					return {
-						message:
-							"FastAPI server is ready and initiated already",
-						status: 200
-					}
-				}
-			} else {
-				process.env.APP_SERVER_LOADED = "false" // Reset server loaded flag if not ready
-			}
-		}
-	} catch (error) {
-		await console.log(`Error starting FastAPI server: ${error.message}`)
-		return {
-			message: `Error starting FastAPI server: ${error.message}`,
-			status: 500
-		}
-	}
-})
-
-// IPC handler to fetch chat history by chat ID
-ipcMain.handle("fetch-chat-history", async (_event, { chatId }) => {
-	/** @type {{ chatId: string }} */
-	try {
-		const chat = chatsDb.data.chats.find((c) => c.id === chatId) // Find chat by ID
-
-		if (!chat) {
-			return { message: "Chat not found", status: 404 }
-		}
-
-		return { messages: chat.chatHistory, status: 200 } // Return chat history
-	} catch (error) {
-		await console.log(`Error fetching chat history: ${error}`)
+		console.log(`Error fetching chat history: ${error}`)
 		return { message: "Error fetching chat history", status: 500 }
 	}
 })
 
-// IPC handler to rename a chat
-ipcMain.handle("rename-chat", async (_event, { id, newName }) => {
-	/** @type {{ id: string, newName: string }} */
+ipcMain.handle("send-message", async (_event, { input }) => {
 	try {
-		const chat = chatsDb.data.chats.find((c) => c.id === id) // Find chat by ID
+		const pricing = (await getPricingFromKeytar()) || "free"
+		const credits = await getCreditsFromKeytar()
+		const response = await fetch(`${process.env.APP_SERVER_URL}/chat`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				input,
+				pricing,
+				credits,
+				chat_id: "single_chat"
+			})
+		})
+		if (!response.ok) throw new Error("Error sending message")
 
-		if (!chat) {
-			return { message: "Chat not found", status: 404 }
+		const readable = response.body
+		const decoder = new TextDecoder("utf-8")
+		let buffer = ""
+
+		for await (const chunk of readable) {
+			buffer += decoder.decode(chunk, { stream: true })
+			const splitMessages = buffer.split("\n")
+			buffer = splitMessages.pop()
+
+			for (const msg of splitMessages) {
+				try {
+					const parsedMessage = JSON.parse(msg)
+					if (parsedMessage.type === "assistantStream") {
+						mainWindow.webContents.send("message-stream", {
+							messageId: parsedMessage.messageId || Date.now(),
+							token: parsedMessage.token
+						})
+						if (
+							parsedMessage.done &&
+							parsedMessage.proUsed &&
+							pricing === "free"
+						) {
+							let credits = await getCreditsFromKeytar()
+							credits -= 1
+							await setCreditsInKeytar(Math.max(credits, 0))
+						}
+					}
+				} catch (parseError) {
+					console.log(
+						`Error parsing streamed message: ${parseError}: ${msg}`
+					)
+				}
+			}
 		}
 
-		chat.title = newName // Update chat title
-
-		await chatsDb.write() // Write changes to database
-
-		return { message: "Chat renamed successfully", status: 200 }
-	} catch (error) {
-		await console.log(`Error renaming chat: ${error}`)
-		return { message: "Error renaming chat", status: 500 }
-	}
-})
-
-// IPC handler to delete a chat
-ipcMain.handle("delete-chat", async (_event, { id }) => {
-	/** @type {{ id: string }} */
-	try {
-		const chatIndex = chatsDb.data.chats.findIndex((c) => c.id === id) // Find chat index by ID
-
-		if (chatIndex === -1) {
-			return { message: "Chat not found", status: 404 }
+		if (buffer.trim()) {
+			try {
+				const parsedMessage = JSON.parse(buffer)
+				if (parsedMessage.type === "assistantMessage") {
+					mainWindow.webContents.send("message-stream", {
+						messageId: Date.now(),
+						token: parsedMessage.message
+					})
+				}
+			} catch (parseError) {
+				console.log(`Error parsing final buffer message: ${parseError}`)
+			}
 		}
 
-		chatsDb.data.chats.splice(chatIndex, 1) // Remove chat from array
-
-		await chatsDb.write() // Write changes to database
-
-		return { message: "Chat deleted successfully", status: 200 }
+		return { message: "Streaming complete", status: 200 }
 	} catch (error) {
-		await console.log(`Error deleting chat: ${error}`)
-		return { message: "Error deleting chat", status: 500 }
+		console.log(`Error sending message: ${error}`)
+		return { message: `Error: ${error.message}`, status: 500 }
 	}
 })
 
@@ -984,202 +849,6 @@ ipcMain.handle("scrape-linkedin", async (_event, { linkedInProfileUrl }) => {
 		}
 	} catch (error) {
 		await console.log(`Error scraping LinkedIn profile: ${error}`)
-		return { message: `Error: ${error.message}`, status: 500 }
-	}
-})
-
-// IPC handler to send a message to the chat API and stream response
-ipcMain.handle("send-message", async (_event, { chatId, input }) => {
-	/** @type {{ chatId: string, input: string }} */
-	try {
-		const chat = chatsDb.data.chats.find((c) => c.id === chatId) // Find chat by ID
-
-		if (!chat) {
-			return { message: "Chat not found", status: 404 }
-		}
-
-		const pricing = (await getPricingFromKeytar()) || "free" // Get pricing plan or default to 'free'
-		const credits = await getCreditsFromKeytar() // Get current pro credits
-
-		// API call to send chat message
-		const response = await fetch(`${process.env.APP_SERVER_URL}/chat`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				input: input,
-				pricing: pricing,
-				credits: credits,
-				chat_id: chatId
-			})
-		})
-
-		if (!response.ok) {
-			return { message: "Error sending message", status: 500 }
-		}
-
-		const readable = response.body // Get readable stream from response body
-		const decoder = new TextDecoder("utf-8") // Text decoder for stream
-
-		let buffer = "" // Buffer to hold streamed data
-
-		// Iterate over stream chunks
-		for await (const chunk of readable) {
-			buffer += decoder.decode(chunk, { stream: true }) // Decode chunk and append to buffer
-
-			const splitMessages = buffer.split("\n") // Split buffer by newline to get individual messages
-			buffer = splitMessages.pop() // Keep the last (possibly incomplete) message in buffer
-
-			// Process each complete message
-			for (const msg of splitMessages) {
-				try {
-					const parsedMessage = JSON.parse(msg) // Parse each message as JSON
-
-					if (parsedMessage.type === "assistantStream") {
-						// Handle assistant stream messages (tokens)
-						let last = chat.chatHistory[chat.chatHistory.length - 1]
-						if (!last || last.isUser || last.toolResult) {
-							// Create new assistant message if last message is user's or tool result
-							last = {
-								id: uuid(),
-								message: "",
-								isUser: false,
-								memoryUsed: parsedMessage.memoryUsed,
-								agentsUsed: parsedMessage.agentsUsed,
-								internetUsed: parsedMessage.internetUsed
-							}
-							chat.chatHistory.push(last) // Add new message to chat history
-						}
-						mainWindow.webContents.send("message-stream", {
-							chatId,
-							messageId: last.id,
-							token: parsedMessage.token // Send message stream event to renderer
-						})
-
-						last.message += parsedMessage.token // Append token to last message content
-						if (parsedMessage.done === true) {
-							// Update message flags when streaming is done
-							last.memoryUsed = parsedMessage.memoryUsed
-							last.agentsUsed = parsedMessage.agentsUsed
-							last.internetUsed = parsedMessage.internetUsed
-
-							if (
-								parsedMessage.proUsed === true &&
-								pricing === "free"
-							) {
-								// Decrement credits if pro features used in free plan
-								let credits = await getCreditsFromKeytar()
-								credits -= 1
-								await setCreditsInKeytar(Math.max(credits, 0))
-							}
-						}
-						await chatsDb.write() // Write changes to database
-					} else if (parsedMessage.type === "userMessage") {
-						// Handle user messages
-						const userMessage = {
-							id: uuid(),
-							message: parsedMessage.message,
-							isUser: true,
-							memoryUsed: false,
-							agentsUsed: false,
-							internetUsed: false
-						}
-						chat.chatHistory.push(userMessage) // Add user message to chat history
-					} else if (parsedMessage.type === "assistantMessage") {
-						// Handle complete assistant messages (non-stream)
-						const assistantMessage = {
-							id: uuid(),
-							message: parsedMessage.message,
-							isUser: false,
-							memoryUsed: parsedMessage.memoryUsed,
-							agentsUsed: parsedMessage.agentsUsed,
-							internetUsed: parsedMessage.internetUsed
-						}
-						if (
-							parsedMessage.proUsed === true &&
-							pricing === "free"
-						) {
-							// Decrement credits if pro features used in free plan
-							let credits = await getCreditsFromKeytar()
-							credits -= 1
-							await setCreditsInKeytar(Math.max(credits, 0))
-						}
-						chat.chatHistory.push(assistantMessage) // Add assistant message to chat history
-					}
-					if (parsedMessage.type === "toolResult") {
-						// Handle tool result messages
-						let toolMessage
-						if (parsedMessage.tool_name === "search_inbox") {
-							toolMessage = {
-								id: uuid(),
-								message: JSON.stringify({
-									type: "toolResult",
-									tool_name: parsedMessage.tool_name,
-									emails: parsedMessage.result.email_data,
-									gmail_search_url:
-										parsedMessage.result.gmail_search_url
-								}),
-								isUser: false,
-								memoryUsed: false,
-								agentsUsed: true,
-								internetUsed: false,
-								toolResult: true // Flag as tool result message
-							}
-						} else {
-							toolMessage = "Tool has no additional information."
-						}
-						chat.chatHistory.push(toolMessage) // Add tool result message to chat history
-						await chatsDb.write() // Write changes to database
-					} else if (
-						parsedMessage.type === "intermediary-flow-update"
-					) {
-						// Send intermediary flow update to renderer
-						mainWindow.webContents.send(
-							"flow-updated",
-							parsedMessage.message
-						)
-					} else if (parsedMessage.type === "intermediary-flow-end") {
-						// Send intermediary flow end signal to renderer
-						mainWindow.webContents.send("flow-ended")
-					} else {
-						// Send status updates to renderer
-						mainWindow.webContents.send(
-							"status-updated",
-							parsedMessage.message
-						)
-					}
-					await chatsDb.write() // Write changes to database after each message part
-				} catch (parseError) {
-					console.log(
-						`Error parsing streamed message: ${parseError}: ${msg}`
-					)
-				}
-			}
-		}
-
-		// Handle any remaining data in buffer after stream ends
-		if (buffer.trim()) {
-			try {
-				const parsedMessage = JSON.parse(buffer)
-
-				if (parsedMessage.type === "assistantMessage") {
-					chat.chatHistory.push({
-						id: uuid(),
-						message: parsedMessage.message,
-						isUser: false,
-						memoryUsed: parsedMessage.memoryUsed,
-						agentsUsed: parsedMessage.agentsUsed,
-						internetUsed: parsedMessage.internetUsed
-					})
-					await chatsDb.write() // Write changes to database
-				}
-			} catch (parseError) {
-				console.log(`Error parsing final buffer message: ${parseError}`)
-			}
-		}
-
-		return { message: "Streaming complete", status: 200 }
-	} catch (error) {
-		console.log(`Error sending message: ${error}`)
 		return { message: `Error: ${error.message}`, status: 500 }
 	}
 })
@@ -1233,113 +902,6 @@ ipcMain.handle("recreate-graph", async () => {
 		return { message: "Graph recreated successfully", status: 200 }
 	} catch (error) {
 		await console.log(`Error recreating graph: ${error}`)
-		return { message: `Error: ${error.message}`, status: 500 }
-	}
-})
-
-// IPC handler to reinitiate FastAPI server with a specific chat context
-ipcMain.handle("reinitiate-fastapi-server", async (_event, { chatId }) => {
-	/** @type {{ chatId: string }} */
-	try {
-		// API call to initiate FastAPI server
-		let response = await fetch(`${process.env.APP_SERVER_URL}/initiate`, {
-			method: "POST"
-		})
-
-		if (response.ok) {
-			// API call to set chat context
-			response = await fetch(`${process.env.APP_SERVER_URL}/set-chat`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ id: chatId })
-			})
-
-			if (response.ok) {
-				return {
-					message: "FastAPI server reinitiated successfully",
-					status: 200
-				}
-			} else {
-				await console.log(`Failed to reinitiate FastAPI server`)
-				return {
-					message: "Failed to reinitiate FastAPI server",
-					status: response.status
-				}
-			}
-		} else {
-			await console.log(`Failed to reinitiate FastAPI server`)
-			return {
-				message: "Failed to reinitiate FastAPI server",
-				status: response.status
-			}
-		}
-	} catch (error) {
-		await console.log(`Error reinitiating FastAPI server: ${error}`)
-		return {
-			message: `Error reinitiating FastAPI server: ${error.message}`,
-			status: 500
-		}
-	}
-})
-
-// IPC handler to clear chat history for a specific chat
-ipcMain.handle("clear-chat-history", async (_event, { chatId }) => {
-	/** @type {{ chatId: string }} */
-	try {
-		const chat = chatsDb.data.chats.find((c) => c.id === chatId) // Find chat by ID
-
-		if (!chat) {
-			return { message: "Chat not found", status: 404 }
-		}
-
-		chat.chatHistory = [] // Clear chat history array
-
-		await chatsDb.write() // Write changes to database
-		return { message: "Chat history cleared successfully", status: 200 }
-	} catch (error) {
-		await console.log(`Error clearing chat history: ${error}`)
-		return { message: "Error clearing chat history", status: 500 }
-	}
-})
-
-// IPC handler to create a new chat
-ipcMain.handle("create-chat", async (_event, { title }) => {
-	/** @type {{ title: string }} */
-	try {
-		const chatId = `chat-${uuid()}` // Generate a unique chat ID
-		chatsDb.data.chats.push({
-			id: chatId,
-			title,
-			chatHistory: [] // Initialize with empty chat history
-		})
-		await chatsDb.write() // Write changes to database
-		return { message: "Chat created successfully", chatId, status: 200 }
-	} catch (error) {
-		await console.log(`Error creating chat: ${error}`)
-		return { message: `Error: ${error.message}`, status: 500 }
-	}
-})
-
-// IPC handler to set the current chat context in the server
-ipcMain.handle("set-chat", async (_event, { chatId }) => {
-	/** @type {{ chatId: string }} */
-	try {
-		// API call to set chat context
-		const response = await fetch(`${process.env.APP_SERVER_URL}/set-chat`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ id: chatId })
-		})
-
-		if (!response.ok) {
-			const errorMessage = await response.text()
-			return { message: errorMessage, status: response.status }
-		}
-
-		const data = await response.json()
-		return { message: data.message, status: response.status }
-	} catch (error) {
-		await console.log(`Error setting chat: ${error}`)
 		return { message: `Error: ${error.message}`, status: 500 }
 	}
 })
@@ -1480,48 +1042,4 @@ ipcMain.handle("delete-subgraph", async (event, { source_name }) => {
 		console.log(`Error deleting subgraph: ${error}`)
 		return { status: "failure", error: error.message }
 	}
-})
-
-ipcMain.handle("get-ollama-models", async () => {
-	try {
-		const response = await fetch("http://localhost:11434/api/tags")
-		if (!response.ok) {
-			throw new Error("Failed to fetch models from Ollama")
-		}
-		const data = await response.json()
-		return data.models.map((model) => model.name)
-	} catch (error) {
-		console.error("Error fetching Ollama models:", error)
-		return [] // Return empty array on failure
-	}
-})
-
-// IPC handler to check if an API key exists for a provider
-ipcMain.handle("check-api-key", async (event, provider) => {
-	return await hasApiKey(provider)
-})
-
-// IPC handler to set an API key for a provider
-ipcMain.handle("set-api-key", async (event, { provider, apiKey }) => {
-	return await setApiKey(provider, apiKey)
-})
-
-ipcMain.handle("get-stored-providers", async () => {
-	try {
-		const response = await fetch(
-			"http://localhost:5005/get-stored-providers"
-		)
-		if (!response.ok) {
-			throw new Error("Failed to fetch stored providers")
-		}
-		return await response.json()
-	} catch (error) {
-		console.error("Error fetching stored providers:", error)
-		throw error
-	}
-})
-
-// IPC handler to delete an API key for a provider
-ipcMain.handle("delete-api-key", async (event, provider) => {
-	return await deleteApiKey(provider)
 })

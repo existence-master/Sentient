@@ -750,19 +750,9 @@ async def initiate_memory() -> JSONResponse:
     )  # Call Memory Service initiate endpoint
 
 
-@app.post("/initiate-chat", status_code=200)
-async def initiate_chat() -> JSONResponse:
-    """
-    Endpoint to initiate the Chat Service.
-
-    Forwards the initiation request to the Chat Service and returns its response.
-
-    Returns:
-        JSONResponse: Response from the Chat Service's initiate endpoint.
-    """
-    return await call_service_initiate(
-        "CHAT_SERVER_PORT"
-    )  # Call Chat Service initiate endpoint
+@app.post("/set-chat", status_code=200)
+async def set_chat(id: ChatId):
+    return JSONResponse(status_code=200, content={"message": "Chat ID ignored for single-chat mode"})
 
 
 @app.post("/initiate-scraper", status_code=200)
@@ -793,6 +783,14 @@ async def initiate_utils() -> JSONResponse:
     return await call_service_initiate(
         "UTILS_SERVER_PORT"
     )  # Call Utils Service initiate endpoint
+    
+@app.get("/get-chat-history", status_code=200)
+async def get_chat_history():
+    return await call_service_endpoint("CHAT_SERVER_PORT", "/get-chat-history")
+
+@app.post("/clear-chat-history", status_code=200)
+async def clear_chat_history():
+    return await call_service_endpoint("CHAT_SERVER_PORT", "/clear-chat-history")
 
 
 @app.post("/elaborator", status_code=200)
@@ -1234,112 +1232,37 @@ async def context_classify_endpoint(
 
 
 @app.post("/chat", status_code=200)
-async def chat(message: Message) -> StreamingResponse:
-    """
-    Main chat endpoint to route chat requests to the appropriate service based on classification.
-
-    This endpoint classifies the chat message using the Common Service and then routes the request
-    to either the Chat, Memory, or Agent Service based on the classification result.
-    It returns a StreamingResponse, proxying the streaming output from the relevant service.
-
-    Args:
-        message (Message): Request body containing the chat message and related context.
-
-    Returns:
-        StreamingResponse: Streaming response from the Chat, Memory, or Agent Service,
-                           depending on the classification of the chat message.
-
-    Raises:
-        HTTPException: If chat classification fails or if the determined category is invalid.
-    """
-    global chat_id  # Access the global chat_id variable
-
+async def chat(message: Message):
     try:
-        response: JSONResponse = await call_service_endpoint(
-            "COMMON_SERVER_PORT",
-            "/chat-classify",
-            {"input": message.input, "chat_id": chat_id},
-        )  # Classify chat message category
+        response = await call_service_endpoint("COMMON_SERVER_PORT", "/chat-classify", {"input": message.input, "chat_id": "single_chat"})
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=f"Chat classification failed: {json.loads(response.body)['message']}")
 
-        if response.status_code != 200:  # Check if chat classification was successful
-            print(f"Chat classification failed: {json.loads(response.body)['message']}")
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"Chat classification failed: {json.loads(response.body)['message']}",
-            )  # Raise HTTPException if classification fails
+        response_data = json.loads(response.body)
+        category = response_data["classification"]
+        transformed_input = response_data["transformed_input"]
 
-        response_data: Dict[str, Any] = json.loads(
-            response.body
-        )  # Load JSON response from classification service
-        category: str = response_data[
-            "classification"
-        ]  # Extract classification category
-        transformed_input: str = response_data[
-            "transformed_input"
-        ]  # Extract transformed input
+        category_port_env_var = {"chat": "CHAT_SERVER_PORT", "memory": "MEMORY_SERVER_PORT", "agent": "AGENTS_SERVER_PORT"}.get(category)
+        if not category_port_env_var:
+            raise HTTPException(status_code=400, detail="Invalid category determined by orchestrator")
 
-        category_port_env_var: Optional[str] = (
-            None  # Initialize category port environment variable
-        )
-        if category == "chat":  # Route to Chat Service if category is 'chat'
-            category_port_env_var = "CHAT_SERVER_PORT"
-        elif category == "memory":  # Route to Memory Service if category is 'memory'
-            category_port_env_var = "MEMORY_SERVER_PORT"
-        elif category == "agent":  # Route to Agent Service if category is 'agent'
-            category_port_env_var = "AGENTS_SERVER_PORT"
-        else:  # Handle invalid categories
-            print(f"Invalid category determined by orchestrator: {category}")
-            raise HTTPException(
-                status_code=400, detail="Invalid category determined by orchestrator"
-            )  # Raise HTTPException for invalid category
+        category_port = os.environ.get(category_port_env_var)
+        if not category_port:
+            raise HTTPException(status_code=500, detail=f"{category_port_env_var} not configured.")
 
-        category_port: Optional[str] = os.environ.get(
-            category_port_env_var
-        )  # Get category service port from environment variable
-        if not category_port:  # Check if category port is configured
-            print(f"{category_port_env_var} not configured.")
-            raise HTTPException(
-                status_code=500, detail=f"{category_port_env_var} not configured."
-            )  # Raise HTTPException if category port is not configured
+        if not await spawn_server(category_port_env_var):
+            raise HTTPException(status_code=500, detail=f"Service on port {category_port} is not available.")
 
-        if not await spawn_server(
-            category_port_env_var
-        ):  # Ensure category service is spawned and live
-            print(f"Service on port {category_port} is not available.")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Service on port {category_port} is not available.",
-            )  # Raise HTTPException if service is not available
+        await call_service_initiate(category_port_env_var)
+        category_url = f"http://localhost:{category_port}/chat"
 
-        await call_service_initiate(
-            category_port_env_var
-        )  # Initiate the category service
-
-        category_url: str = f"http://localhost:{category_port}/chat"  # Construct URL for category-specific chat endpoint
-
-        payload: Dict[str, Union[str, int]] = {  # Construct payload for chat endpoint
-            "chat_id": chat_id,
-            "original_input": message.input,
-            "transformed_input": transformed_input,
-            "pricing": message.pricing,
-            "credits": message.credits,
-        }
-
-        return await fetch_streaming_response(
-            category_url, payload
-        )  # Fetch and return streaming response from category service
-
-    except HTTPException as http_exc:  # Catch HTTPExceptions raised during processing
-        print(http_exc)
-        return JSONResponse(
-            status_code=http_exc.status_code, content={"message": http_exc.detail}
-        )  # Return JSONResponse for HTTP Exceptions
-    except Exception as e:  # Catch any other exceptions during chat processing
+        payload = {"chat_id": "single_chat", "original_input": message.input, "transformed_input": transformed_input, "pricing": message.pricing, "credits": message.credits}
+        return await fetch_streaming_response(category_url, payload)
+    except HTTPException as http_exc:
+        return JSONResponse(status_code=http_exc.status_code, content={"message": http_exc.detail})
+    except Exception as e:
         print(f"Error in chat endpoint: {e}")
-        return JSONResponse(
-            status_code=500, content={"message": f"Error processing chat: {str(e)}"}
-        )  # Return JSONResponse for general exceptions
-
+        return JSONResponse(status_code=500, content={"message": f"Error processing chat: {str(e)}"})
 
 # --- Server Shutdown Endpoint ---
 # Endpoint to gracefully stop backend services when the orchestrator app closes.

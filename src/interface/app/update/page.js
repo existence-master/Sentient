@@ -54,12 +54,10 @@ const Update = () => {
 					// Listener for 'update-downloaded' event from electron backend
 					window.electron.onUpdateDownloaded(async () => {
 						try {
-							// Invoke electron backend to setup server after update download
-							await window.electron.invoke("setup-server")
 
 							// Alert user to restart application to apply update
 							alert(
-								"Update downloaded and server setup complete. Please restart the application to apply the update."
+								"Update downloaded. Please restart the application to apply the update."
 							)
 
 							// Timeout to allow user to read alert before resolving promise and resetting state
