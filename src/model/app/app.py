@@ -43,6 +43,8 @@ SERVICE_MODULES: Dict[str, str] = {
     "COMMON_SERVER_PORT": "common.exe",
 }
 
+initiated_services: Dict[str, bool] = {}
+
 # --- FastAPI Application ---
 app = FastAPI(
     title="Orchestrator API",
@@ -248,69 +250,37 @@ async def is_server_live(port: str) -> bool:
 
 async def spawn_server(port_env_var: str) -> bool:
     """
-    Spawns a server as a Windows executable if it's not already live.
-
-    This function checks if a server is already running on the specified port.
-    If not, it attempts to start the server by launching a Windows executable defined in SERVICE_MODULES.
+    Spawns a server if it’s not already running.
 
     Args:
-        port_env_var (str): Environment variable name that holds the port number for the service.
+        port_env_var (str): Environment variable for the service’s port.
 
     Returns:
-        bool: True if the server is live after checking or spawning, False if spawning fails or times out.
+        bool: True if server is spawned and becomes live, False otherwise.
     """
-    port: Optional[str] = os.environ.get(
-        port_env_var
-    )  # Get port number from environment variable
-    exe_file: Optional[str] = SERVICE_MODULES.get(
-        port_env_var
-    )  # Get executable file name from SERVICE_MODULES mapping
+    port = os.environ.get(port_env_var)
+    exe_file = SERVICE_MODULES.get(port_env_var)
 
-    if not port:  # Check if port is defined
+    if not port:
         print(f"{port_env_var} not defined in environment variables.")
-        return False  # Return False if port is not defined
-    if not exe_file:  # Check if executable file is defined
+        return False
+    if not exe_file:
         print(f"No executable defined for {port_env_var}.")
-        return False  # Return False if executable file is not defined
-
-    if await is_server_live(port):  # Check if server is already live
-        print(f"Server at port {port} is already live.")
-        return True  # Return True if server is already live
+        return False
 
     print(f"Spawning server for {port_env_var} on port {port}...")
-    print(
-        f"Starting server with: {os.path.join(os.path.dirname(sys.executable), exe_file)}"
-    )
-
     try:
-        process: subprocess.Popen = subprocess.Popen(  # Start server as a subprocess
-            [
-                os.path.join(os.path.dirname(sys.executable), exe_file)
-            ],  # Path to the executable
-            env=os.environ.copy(),  # Inherit environment variables
-            cwd=os.path.dirname(
-                sys.executable
-            ),  # Set current working directory to executable's directory
-            creationflags=subprocess.CREATE_NO_WINDOW,  # Run in background without a console window (Windows specific)
+        subprocess.Popen(
+            [os.path.join(os.path.dirname(sys.executable), exe_file)],
+            env=os.environ.copy(),
+            cwd=os.path.dirname(sys.executable),
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
-
-        start_time: float = time.time()  # Record start time for timeout
-        timeout: int = 120  # Set timeout for server to become live (seconds)
-
-        while (
-            time.time() - start_time < timeout
-        ):  # Wait for server to become live within timeout period
-            if await is_server_live(port):  # Check if server is live
-                print(f"Server on port {port} spawned successfully.")
-                return True  # Return True if server spawned successfully and is live
-            await asyncio.sleep(2)  # Wait for 2 seconds before checking again
-
-        print(f"Server on port {port} did not become live within {timeout} seconds.")
-        return False  # Return False if server did not become live within timeout
-
-    except Exception as e:  # Catch any exceptions during server spawning
+        # No immediate liveness check here; rely on /initiate to confirm
+        return True
+    except Exception as e:
         print(f"Error spawning server on port {port}: {e}")
-        return False  # Return False if server spawning fails
+        return False
 
 
 async def stop_server(port_env_var: str) -> bool:
@@ -374,186 +344,74 @@ async def stop_server(port_env_var: str) -> bool:
 # --- Service Call Functions ---
 # Functions to call and manage interactions with backend services (initiate, call endpoints).
 
-
-async def call_service_initiate(port_env_var: str) -> JSONResponse:
-    """
-    Calls the '/initiate' endpoint of a service after ensuring it's live.
-
-    This function first ensures that the service at the given port is live,
-    spawning it if necessary. Then, it calls the '/initiate' endpoint of the service.
-
-    Args:
-        port_env_var (str): Environment variable name that holds the port number of the service.
-
-    Returns:
-        JSONResponse: A FastAPI JSONResponse object containing the service's response,
-                      or an error message if initiation fails.
-    """
-    port: Optional[str] = os.environ.get(
-        port_env_var
-    )  # Get port number from environment variable
-    if not port:  # Check if port is defined
-        print(f"{port_env_var} not configured.")
-        return JSONResponse(
-            status_code=500, content={"message": f"{port_env_var} not configured."}
-        )  # Return error response if port is not configured
-
-    if not await spawn_server(port_env_var):  # Ensure the server is spawned and live
-        print(f"Failed to spawn service on port {port}.")
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"Failed to start service on port {port}."},
-        )  # Return error response if server spawning fails
-
-    initiate_url: str = (
-        f"http://localhost:{port}/initiate"  # Construct initiate endpoint URL
-    )
-    try:
-        async with httpx.AsyncClient(
-            timeout=None
-        ) as client:  # Create async HTTP client with no timeout
-            response: httpx.Response = await client.post(
-                initiate_url
-            )  # Send POST request to initiate endpoint
-            if response.status_code == 200:  # Check if request was successful
-                print(f"Service on port {port} initiated successfully.")
-                return JSONResponse(
-                    status_code=200, content=response.json()
-                )  # Return success response with service response
-            else:  # Handle non-200 status codes
-                print(f"Error initiating service on port {port}: {response.text}")
-                return JSONResponse(
-                    status_code=response.status_code, content={"message": response.text}
-                )  # Return error response with service error message
-    except Exception as e:  # Catch any exceptions during service initiation call
-        print(f"Error calling initiate endpoint at port {port}: {e}")
-        return JSONResponse(
-            status_code=500, content={"message": f"Error initiating service: {str(e)}"}
-        )  # Return error response with exception message
-
-
 async def call_service_endpoint(
-    port_env_var: str, endpoint: str, payload: Optional[dict] = None
+    port_env_var: str, endpoint: str, method: str = "POST", payload: Optional[dict] = None
 ) -> JSONResponse:
     """
-    Calls a specific endpoint of a service, ensuring the service is live and initiated.
-
-    This function improves upon `call_service_initiate` by adding retry logic for service initiation
-    and more robust error handling for both service availability and HTTP requests.
+    Calls a service endpoint, initiating the service only if necessary.
 
     Args:
-        port_env_var (str): Environment variable name for the service's port.
-        endpoint (str): The API endpoint to call on the service (e.g., "/chat", "/graphrag").
-        payload (Optional[dict]): Optional dictionary payload to send with the POST request as JSON.
+        port_env_var (str): Environment variable for the service’s port.
+        endpoint (str): The API endpoint to call.
+        method (str): HTTP method (GET or POST).
+        payload (Optional[dict]): Data to send with the request.
 
     Returns:
-        JSONResponse: A FastAPI JSONResponse object containing the service's response,
-                      or a detailed error response if the call fails at any stage.
+        JSONResponse: Service response or error.
     """
-    port: Optional[str] = os.environ.get(
-        port_env_var
-    )  # Get port number from environment variable
-    if not port:  # Check if port is configured
-        return JSONResponse(
-            status_code=500,
-            content={
-                "message": f"{port_env_var} not configured."
-            },  # Return error response if port is not configured
-        )
+    global initiated_services
+    port = os.environ.get(port_env_var)
+    if not port:
+        return JSONResponse(status_code=500, content={"message": f"{port_env_var} not configured."})
 
-    try:
-        server_available: bool = (
-            await asyncio.wait_for(  # Wait for server to be available, with timeout
-                spawn_server(
-                    port_env_var
-                ),  # Attempt to spawn server if not already running
-                timeout=None,  # No timeout for server spawning
-            )
-        )
-        if (
-            not server_available
-        ):  # Check if server is available after attempting to spawn
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "message": f"Service on port {port} unavailable after startup attempt"
-                },  # Return error response if server is unavailable
-            )
+    service_url = f"http://localhost:{port}{endpoint}"
+    initiate_url = f"http://localhost:{port}/initiate"
 
-        max_retries: int = 3  # Set maximum number of retries for service initiation
-        for attempt in range(max_retries):  # Retry loop for service initiation
-            initiate_response: JSONResponse = await call_service_initiate(
-                port_env_var
-            )  # Call service initiate endpoint
-            if (
-                initiate_response.status_code == 200
-            ):  # Check if initiate call was successful
-                break  # Break retry loop if initiation is successful
-            await asyncio.sleep(
-                1 + attempt * 2
-            )  # Wait before retrying, with increasing backoff
-        else:  # Else block executed if loop completes without break (all retries failed)
-            print(
-                f"Failed to initiate service on port {port} after {max_retries} attempts"
-            )
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "message": f"Service initiation failed after {max_retries} attempts"
-                },  # Return error response if initiation fails after retries
-            )
-
-        service_url: str = (
-            f"http://localhost:{port}{endpoint}"  # Construct full service endpoint URL
-        )
-
-        async with httpx.AsyncClient(
-            timeout=None
-        ) as client:  # Create async HTTP client with no timeout
-            response: httpx.Response = (
-                await client.post(  # Send POST request to service endpoint
-                    service_url,
-                    json=payload,  # Payload for the request
-                    headers={
-                        "Content-Type": "application/json"
-                    },  # Set JSON content type header
-                )
-            )
-
+    # Skip initiation if already marked as initiated
+    if not initiated_services.get(port_env_var, False):
+        max_retries = 3
+        for attempt in range(max_retries):
             try:
-                response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
-                return JSONResponse(  # Return success JSONResponse with content from service
-                    status_code=response.status_code, content=response.json()
-                )
-            except httpx.HTTPStatusError as e:  # Catch HTTP status errors
-                print(f"Service returned error: {e.response.text}")
-                return JSONResponse(  # Return error JSONResponse with details from service error
-                    status_code=e.response.status_code,
-                    content={"message": f"Service returned error: {str(e)}"},
-                )
+                async with httpx.AsyncClient(timeout=None) as client:
+                    response = await client.post(initiate_url)
+                    if response.status_code == 200:
+                        print(f"Service on port {port} initiated successfully.")
+                        initiated_services[port_env_var] = True
+                        break
+            except (httpx.ConnectError, httpx.HTTPStatusError) as e:
+                if attempt == 0:  # First failure, try spawning
+                    if not await spawn_server(port_env_var):
+                        return JSONResponse(status_code=503, content={"message": f"Failed to spawn service on port {port}"})
+                await asyncio.sleep(1 + attempt * 2)  # Exponential backoff
+            except Exception as e:
+                print(f"Error initiating service on port {port}: {e}")
+                return JSONResponse(status_code=500, content={"message": f"Error initiating service: {str(e)}"})
+        else:
+            print(f"Failed to initiate service on port {port} after {max_retries} attempts")
+            return JSONResponse(status_code=503, content={"message": f"Service initiation failed after {max_retries} attempts"})
 
-    except asyncio.TimeoutError:  # Handle asyncio timeout errors
-        print(f"Service timeout")
-        return JSONResponse(
-            status_code=504,
-            content={"message": f"Service timeout"},  # Return timeout error response
-        )
-    except httpx.RequestError as e:  # Handle httpx request errors (network issues)
-        print(f"Network error calling {endpoint}: {e}")
-        return JSONResponse(
-            status_code=502,
-            content={
-                "message": f"Network error: {str(e)}"
-            },  # Return network error response
-        )
-    except Exception as e:  # Catch any other unexpected exceptions
-        print(f"Critical error calling {endpoint}: {traceback.format_exc()}")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "message": "Internal server error"
-            },  # Return internal server error response
-        )
+    # Call the desired endpoint
+    async with httpx.AsyncClient(timeout=None) as client:
+        try:
+            if method.upper() == "GET":
+                response = await client.get(service_url)
+            elif method.upper() == "POST":
+                response = await client.post(service_url, json=payload)
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
+            response.raise_for_status()
+            return JSONResponse(status_code=response.status_code, content=response.json())
+        except httpx.HTTPStatusError as e:
+            print(f"Service returned error: {e.response.text}")
+            return JSONResponse(status_code=e.response.status_code, content={"message": f"Service returned error: {str(e)}"})
+        except httpx.RequestError as e:
+            print(f"Network error calling {endpoint}: {e}")
+            return JSONResponse(status_code=502, content={"message": f"Network error: {str(e)}"})
+        except Exception as e:
+            print(f"Critical error calling {endpoint}: {traceback.format_exc()}")
+            return JSONResponse(status_code=500, content={"message": "Internal server error"})
+
+
 
 
 async def fetch_streaming_response(url: str, payload: dict) -> StreamingResponse:
@@ -719,78 +577,18 @@ async def set_chat(id: ChatId) -> JSONResponse:
             status_code=500, content={"message": str(e)}
         )  # Return error response with exception message
 
-
-@app.post("/initiate-agents", status_code=200)
-async def initiate_agents() -> JSONResponse:
-    """
-    Endpoint to initiate the Agent Service.
-
-    Forwards the initiation request to the Agent Service and returns its response.
-
-    Returns:
-        JSONResponse: Response from the Agent Service's initiate endpoint.
-    """
-    return await call_service_initiate(
-        "AGENTS_SERVER_PORT"
-    )  # Call Agent Service initiate endpoint
-
-
-@app.post("/initiate-memory", status_code=200)
-async def initiate_memory() -> JSONResponse:
-    """
-    Endpoint to initiate the Memory Service.
-
-    Forwards the initiation request to the Memory Service and returns its response.
-
-    Returns:
-        JSONResponse: Response from the Memory Service's initiate endpoint.
-    """
-    return await call_service_initiate(
-        "MEMORY_SERVER_PORT"
-    )  # Call Memory Service initiate endpoint
-
-
 @app.post("/set-chat", status_code=200)
 async def set_chat(id: ChatId):
     return JSONResponse(status_code=200, content={"message": "Chat ID ignored for single-chat mode"})
 
-
-@app.post("/initiate-scraper", status_code=200)
-async def initiate_scraper() -> JSONResponse:
-    """
-    Endpoint to initiate the Scraper Service.
-
-    Forwards the initiation request to the Scraper Service and returns its response.
-
-    Returns:
-        JSONResponse: Response from the Scraper Service's initiate endpoint.
-    """
-    return await call_service_initiate(
-        "SCRAPER_SERVER_PORT"
-    )  # Call Scraper Service initiate endpoint
-
-
-@app.post("/initiate-utils", status_code=200)
-async def initiate_utils() -> JSONResponse:
-    """
-    Endpoint to initiate the Utils Service.
-
-    Forwards the initiation request to the Utils Service and returns its response.
-
-    Returns:
-        JSONResponse: Response from the Utils Service's initiate endpoint.
-    """
-    return await call_service_initiate(
-        "UTILS_SERVER_PORT"
-    )  # Call Utils Service initiate endpoint
-    
+   
 @app.get("/get-chat-history", status_code=200)
 async def get_chat_history():
-    return await call_service_endpoint("CHAT_SERVER_PORT", "/get-chat-history")
+    return await call_service_endpoint("CHAT_SERVER_PORT", "/get-chat-history", method="GET")
 
 @app.post("/clear-chat-history", status_code=200)
 async def clear_chat_history():
-    return await call_service_endpoint("CHAT_SERVER_PORT", "/clear-chat-history")
+    return await call_service_endpoint("CHAT_SERVER_PORT", "/clear-chat-history", method="POST")
 
 
 @app.post("/elaborator", status_code=200)
@@ -811,7 +609,7 @@ async def elaborate(message: ElaboratorMessage) -> JSONResponse:
         message.model_dump()
     )  # Extract payload from ElaboratorMessage model
     return await call_service_endpoint(
-        "AGENTS_SERVER_PORT", "/elaborator", payload
+        "AGENTS_SERVER_PORT", "/elaborator", method="POST", payload= payload
     )  # Call Agent Service elaborator endpoint
 
 
@@ -827,7 +625,7 @@ async def create_graph() -> JSONResponse:
         JSONResponse: Response from the Memory Service's create-graph endpoint.
     """
     return await call_service_endpoint(
-        "MEMORY_SERVER_PORT", "/create-graph"
+        "MEMORY_SERVER_PORT", "/create-graph", method="POST"
     )  # Call Memory Service create-graph endpoint
 
 
@@ -849,7 +647,7 @@ async def delete_subgraph(request: DeleteSubgraphRequest) -> JSONResponse:
         request.model_dump()
     )  # Extract payload from DeleteSubgraphRequest model
     return await call_service_endpoint(
-        "MEMORY_SERVER_PORT", "/delete-subgraph", payload
+        "MEMORY_SERVER_PORT", "/delete-subgraph", method="POST", payload= payload
     )  # Call Memory Service delete-subgraph endpoint
 
 
@@ -865,7 +663,7 @@ async def create_document() -> JSONResponse:
         JSONResponse: Response from the Memory Service's create-document endpoint.
     """
     return await call_service_endpoint(
-        "MEMORY_SERVER_PORT", "/create-document"
+        "MEMORY_SERVER_PORT", "/create-document", method="POST"
     )  # Call Memory Service create-document endpoint
 
 
@@ -884,7 +682,7 @@ async def scrape_linkedin(profile: Profile) -> JSONResponse:
     """
     payload: Dict[str, str] = profile.model_dump()  # Extract payload from Profile model
     return await call_service_endpoint(
-        "SCRAPER_SERVER_PORT", "/scrape-linkedin", payload
+        "SCRAPER_SERVER_PORT", "/scrape-linkedin", method="POST", payload= payload
     )  # Call Scraper Service scrape-linkedin endpoint
 
 
@@ -906,7 +704,7 @@ async def customize_graph(request: GraphRequest) -> JSONResponse:
         request.model_dump()
     )  # Extract payload from GraphRequest model
     return await call_service_endpoint(
-        "MEMORY_SERVER_PORT", "/customize-graph", payload
+        "MEMORY_SERVER_PORT", "/customize-graph", method="POST", payload= payload
     )  # Call Memory Service customize-graph endpoint
 
 
@@ -927,7 +725,7 @@ async def scrape_reddit(reddit_url: RedditURL) -> JSONResponse:
         reddit_url.model_dump()
     )  # Extract payload from RedditURL model
     return await call_service_endpoint(
-        "SCRAPER_SERVER_PORT", "/scrape-reddit", payload
+        "SCRAPER_SERVER_PORT", "/scrape-reddit", method="POST", payload= payload
     )  # Call Scraper Service scrape-reddit endpoint
 
 
@@ -948,7 +746,7 @@ async def scrape_twitter(twitter_url: TwitterURL) -> JSONResponse:
         twitter_url.model_dump()
     )  # Extract payload from TwitterURL model
     return await call_service_endpoint(
-        "SCRAPER_SERVER_PORT", "/scrape-twitter", payload
+        "SCRAPER_SERVER_PORT", "/scrape-twitter", method="POST", payload= payload
     )  # Call Scraper Service scrape-twitter endpoint
 
 
@@ -969,7 +767,7 @@ async def get_role_endpoint(request: UserInfoRequest) -> JSONResponse:
         request.model_dump()
     )  # Extract payload from UserInfoRequest model
     return await call_service_endpoint(
-        "UTILS_SERVER_PORT", "/get-role", payload
+        "UTILS_SERVER_PORT", "/get-role", method="POST", payload= payload
     )  # Call Utils Service get-role endpoint
 
 
@@ -990,7 +788,7 @@ async def get_referral_code_endpoint(request: UserInfoRequest) -> JSONResponse:
         request.model_dump()
     )  # Extract payload from UserInfoRequest model
     return await call_service_endpoint(
-        "UTILS_SERVER_PORT", "/get-referral-code", payload
+        "UTILS_SERVER_PORT", "/get-referral-code", method="POST", payload= payload
     )  # Call Utils Service get-referral-code endpoint
 
 
@@ -1011,7 +809,7 @@ async def get_referrer_status_endpoint(request: UserInfoRequest) -> JSONResponse
         request.model_dump()
     )  # Extract payload from UserInfoRequest model
     return await call_service_endpoint(
-        "UTILS_SERVER_PORT", "/get-referrer-status", payload
+        "UTILS_SERVER_PORT", "/get-referrer-status", method="POST", payload= payload
     )  # Call Utils Service get-referrer-status endpoint
 
 
@@ -1032,7 +830,7 @@ async def set_referrer_status_endpoint(request: ReferrerStatusRequest) -> JSONRe
         request.model_dump()
     )  # Extract payload from ReferrerStatusRequest model
     return await call_service_endpoint(
-        "UTILS_SERVER_PORT", "/set-referrer-status", payload
+        "UTILS_SERVER_PORT", "/set-referrer-status", method="POST", payload= payload
     )  # Call Utils Service set-referrer-status endpoint
 
 
@@ -1055,7 +853,7 @@ async def get_user_and_set_referrer_status_endpoint(
         request.model_dump()
     )  # Extract payload from SetReferrerRequest model
     return await call_service_endpoint(
-        "UTILS_SERVER_PORT", "/get-user-and-set-referrer-status", payload
+        "UTILS_SERVER_PORT", "/get-user-and-set-referrer-status", method="POST", payload= payload
     )  # Call Utils Service get-user-and-set-referrer-status endpoint
 
 
@@ -1078,7 +876,7 @@ async def get_user_and_invert_beta_user_status_endpoint(
         request.model_dump()
     )  # Extract payload from UserInfoRequest model
     return await call_service_endpoint(
-        "UTILS_SERVER_PORT", "/get-user-and-invert-beta-user-status", payload
+        "UTILS_SERVER_PORT", "/get-user-and-invert-beta-user-status", method="POST", payload= payload
     )  # Call Utils Service get-user-and-invert-beta-user-status endpoint
 
 
@@ -1099,7 +897,7 @@ async def set_beta_user_status_endpoint(request: BetaUserStatusRequest) -> JSONR
         request.model_dump()
     )  # Extract payload from BetaUserStatusRequest model
     return await call_service_endpoint(
-        "UTILS_SERVER_PORT", "/set-beta-user-status", payload
+        "UTILS_SERVER_PORT", "/set-beta-user-status", method="POST", payload= payload
     )  # Call Utils Service set-beta-user-status endpoint
 
 
@@ -1120,7 +918,7 @@ async def get_beta_user_status_endpoint(request: UserInfoRequest) -> JSONRespons
         request.model_dump()
     )  # Extract payload from UserInfoRequest model
     return await call_service_endpoint(
-        "UTILS_SERVER_PORT", "/get-beta-user-status", payload
+        "UTILS_SERVER_PORT", "/get-beta-user-status", method="POST", payload=payload
     )  # Call Utils Service get-beta-user-status endpoint
 
 
@@ -1141,7 +939,7 @@ async def encrypt_endpoint(request: EncryptionRequest) -> JSONResponse:
         request.model_dump()
     )  # Extract payload from EncryptionRequest model
     return await call_service_endpoint(
-        "UTILS_SERVER_PORT", "/encrypt", payload
+        "UTILS_SERVER_PORT", "/encrypt", method="POST", payload=payload
     )  # Call Utils Service encrypt endpoint
 
 
@@ -1158,12 +956,8 @@ async def decrypt_endpoint(request: DecryptionRequest) -> JSONResponse:
     Returns:
         JSONResponse: Response from the Utils Service's decrypt endpoint.
     """
-    payload: Dict[str, str] = (
-        request.model_dump()
-    )  # Extract payload from DecryptionRequest model
-    return await call_service_endpoint(
-        "UTILS_SERVER_PORT", "/decrypt", payload
-    )  # Call Utils Service decrypt endpoint
+    payload: Dict[str, str] = request.model_dump()  # Extract payload from DecryptionRequest model
+    return await call_service_endpoint("UTILS_SERVER_PORT", "/decrypt", method="POST", payload=payload)
 
 
 @app.post("/graphrag")
@@ -1183,7 +977,7 @@ async def graphrag_endpoint(request: GraphRAGRequest) -> JSONResponse:
         request.model_dump()
     )  # Extract payload from GraphRAGRequest model
     return await call_service_endpoint(
-        "MEMORY_SERVER_PORT", "/graphrag", payload
+        "MEMORY_SERVER_PORT", "/graphrag", method="POST", payload= payload
     )  # Fetch and return streaming response
 
 
@@ -1204,7 +998,7 @@ async def internet_search_endpoint(request: InternetSearchRequest) -> JSONRespon
         request.model_dump()
     )  # Extract payload from InternetSearchRequest model
     return await call_service_endpoint(
-        "COMMON_SERVER_PORT", "/internet-search", payload
+        "COMMON_SERVER_PORT", "/internet-search", method="POST", payload= payload
     )  # Call Common Service internet-search endpoint
 
 
@@ -1227,14 +1021,18 @@ async def context_classify_endpoint(
         request.model_dump()
     )  # Extract payload from ContextClassificationRequest model
     return await call_service_endpoint(
-        "COMMON_SERVER_PORT", "/context-classify", payload
+        "COMMON_SERVER_PORT", "/context-classify", method="POST", payload= payload
     )  # Call Common Service context-classify endpoint
 
 
 @app.post("/chat", status_code=200)
 async def chat(message: Message):
     try:
-        response = await call_service_endpoint("COMMON_SERVER_PORT", "/chat-classify", {"input": message.input, "chat_id": "single_chat"})
+        # Step 1: Classify the chat input
+        response = await call_service_endpoint(
+            "COMMON_SERVER_PORT", "/chat-classify", method="POST",
+            payload={"input": message.input, "chat_id": "single_chat"}
+        )
         if response.status_code != 200:
             raise HTTPException(status_code=response.status_code, detail=f"Chat classification failed: {json.loads(response.body)['message']}")
 
@@ -1242,6 +1040,7 @@ async def chat(message: Message):
         category = response_data["classification"]
         transformed_input = response_data["transformed_input"]
 
+        # Step 2: Route to appropriate service
         category_port_env_var = {"chat": "CHAT_SERVER_PORT", "memory": "MEMORY_SERVER_PORT", "agent": "AGENTS_SERVER_PORT"}.get(category)
         if not category_port_env_var:
             raise HTTPException(status_code=400, detail="Invalid category determined by orchestrator")
@@ -1250,20 +1049,21 @@ async def chat(message: Message):
         if not category_port:
             raise HTTPException(status_code=500, detail=f"{category_port_env_var} not configured.")
 
-        if not await spawn_server(category_port_env_var):
-            raise HTTPException(status_code=500, detail=f"Service on port {category_port} is not available.")
-
-        await call_service_initiate(category_port_env_var)
         category_url = f"http://localhost:{category_port}/chat"
-
-        payload = {"chat_id": "single_chat", "original_input": message.input, "transformed_input": transformed_input, "pricing": message.pricing, "credits": message.credits}
+        payload = {
+            "chat_id": "single_chat",
+            "original_input": message.input,
+            "transformed_input": transformed_input,
+            "pricing": message.pricing,
+            "credits": message.credits
+        }
         return await fetch_streaming_response(category_url, payload)
     except HTTPException as http_exc:
         return JSONResponse(status_code=http_exc.status_code, content={"message": http_exc.detail})
     except Exception as e:
         print(f"Error in chat endpoint: {e}")
         return JSONResponse(status_code=500, content={"message": f"Error processing chat: {str(e)}"})
-
+    
 # --- Server Shutdown Endpoint ---
 # Endpoint to gracefully stop backend services when the orchestrator app closes.
 

@@ -160,9 +160,7 @@ async def chat_classify(request: ChatClassificationRequest):
     try:
         global orchestrator_runnable, chat_history
 
-        chat_history = get_chat_history(
-            request.chat_id
-        )  # Retrieve chat history based on chat_id
+        chat_history = get_chat_history()
         orchestrator_runnable = get_orchestrator_runnable(
             chat_history
         )  # Initialize orchestrator runnable with chat history

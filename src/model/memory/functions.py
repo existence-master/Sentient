@@ -92,49 +92,34 @@ def generate_response(
         return None
 
 
-def get_chat_history(chat_id: str) -> list[dict] | None:
+def get_chat_history() -> list[dict] | None:
     """
-    Retrieve the chat history for the given chat_id from a local JSON database.
+    Retrieve the entire chat history from the local JSON database.
 
-    Reads chat history from a JSON file ("../../chatsDb.json"), finds the chat with the matching `chat_id`,
-    and extracts the last 10 messages from the chat history. Formats the history into a list of dictionaries
-    suitable for language models, with 'role' and 'content' keys.
-
-    Args:
-        chat_id (str): The identifier of the chat session.
+    Reads the chat history from "../../chatsDb.json", which contains a single "messages" array
+    in the single chat architecture. Formats the history into a list of dictionaries suitable
+    for language models, with 'role' and 'content' keys.
 
     Returns:
         list[dict] or None: A list of dictionaries representing the formatted chat history,
-                           or None if the chat_id is not found or an error occurs.
-                           Each dictionary in the list has 'role' ("user" or "assistant") and 'content' keys.
+                            or None if an error occurs. Each dictionary has 'role' ("user" or
+                            "assistant") and 'content' keys.
     """
     try:
         with open("../../chatsDb.json", "r", encoding="utf-8") as f:
             db = json.load(f)  # Load chat database from JSON file
 
-            chats = db.get("chats", [])  # Get the list of chats from the database
-            chat = next(
-                (c for c in chats if c["id"] == chat_id), None
-            )  # Find the chat with the given chat_id
+        messages = db.get("messages", [])  # Get the messages array, default to empty list if not found
 
-            if not chat:
-                raise ValueError(
-                    f"Chat with id {chat_id} not found."
-                )  # Raise error if chat_id is not found
+        formatted_chat_history = [
+            {
+                "role": "user" if entry["isUser"] else "assistant",
+                "content": entry["message"],
+            }
+            for entry in messages  # Format all messages
+        ]
 
-            chat_history = chat["chatHistory"][
-                -10:
-            ]  # Get the last 10 messages from chat history, limit to last 10 entries
-
-            formatted_chat_history = [
-                {
-                    "role": "user" if entry["isUser"] else "assistant",
-                    "content": entry["message"],
-                }  # Format chat history for language model input
-                for entry in chat_history
-            ]
-
-            return formatted_chat_history
+        return formatted_chat_history
 
     except Exception as e:
         print(f"Error retrieving chat history: {e}")

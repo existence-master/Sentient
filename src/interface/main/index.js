@@ -2,7 +2,6 @@ import { app, BrowserWindow, ipcMain, dialog } from "electron"
 import path, { dirname } from "path"
 import { fileURLToPath } from "url"
 import fetch from "node-fetch"
-import { getChatsDb, getUserProfileDb } from "../utils/db.js"
 import {
 	getProfile,
 	refreshTokens,
@@ -109,17 +108,6 @@ if (app.isPackaged) {
 
 // Load environment variables from .env file
 dotenv.config({ path: dotenvPath })
-
-/**
- * Database instance for chats.
- * @type {lowdb.Low<lowdb.Data<any>>}
- */
-const chatsDb = await getChatsDb(chatsDbPath)
-/**
- * Database instance for user profile data.
- * @type {lowdb.Low<lowdb.Data<any>>}
- */
-const userProfileDb = await getUserProfileDb(userProfileDbPath)
 
 /**
  * The main application window instance.

@@ -221,9 +221,7 @@ async def chat(message: Message) -> StreamingResponse:
         ) as f:  # Load user profile database
             db = json.load(f)
 
-        chat_history = get_chat_history(
-            message.chat_id
-        )  # Retrieve chat history for the given chat ID
+        chat_history = get_chat_history()  # Retrieve chat history for the given chat ID
 
         chat_runnable = get_chat_runnable(
             chat_history

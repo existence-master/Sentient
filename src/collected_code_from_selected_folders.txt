@@ -1,3 +1,970 @@
+### model\chat\chat.py ###
+import os
+import uvicorn
+import json
+import asyncio
+from runnables import *
+from functions import *
+from externals import *
+from helpers import *
+from prompts import *
+import nest_asyncio
+from fastapi import FastAPI
+from pydantic import BaseModel
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Dict, Any, AsyncGenerator
+from dotenv import load_dotenv
+import time
+
+load_dotenv("../.env")  # Load environment variables from .env file
+
+# --- FastAPI Application ---
+app = FastAPI(
+    title="Chat API", description="API for chat functionalities",
+    docs_url="/docs",
+    redoc_url=None
+)
+
+# --- CORS Middleware ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Pydantic Models for Request Bodies ---
+class Message(BaseModel):
+    """
+    Pydantic model for the chat message request body.
+    """
+    original_input: str
+    transformed_input: str
+    pricing: str
+    credits: int
+    chat_id: str
+
+# --- Global Variables and Database Setup ---
+db_path = os.path.join(os.path.dirname(__file__), "..", "..", "chatsDb.json")
+db_lock = asyncio.Lock()  # Lock for synchronizing database access
+
+def load_db():
+    """Load the database from chatsDb.json, initializing with {"messages": []} if it doesn't exist or is invalid."""
+    try:
+        with open(db_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print ("DB NOT FOUND!")
+        return {"messages": []}
+
+def save_db(data):
+    """Save the data to chatsDb.json."""
+    with open(db_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4)
+
+db_data = load_db()  # Load database into memory at startup
+chat_runnable = None  # Global chat runnable, initialized later
+
+# --- Apply nest_asyncio ---
+nest_asyncio.apply()
+
+# --- API Endpoints ---
+@app.get("/", status_code=200)
+async def main() -> Dict[str, str]:
+    """Root endpoint of the Chat API."""
+    return {
+        "message": "Hello, I am Sentient, your private, decentralized and interactive AI companion who feels human"
+    }
+
+@app.post("/initiate", status_code=200)
+async def initiate() -> JSONResponse:
+    """Endpoint to initiate the Chat API model."""
+    try:
+        return JSONResponse(
+            status_code=200, content={"message": "Model initiated successfully"}
+        )
+    except Exception as e:
+        print(f"Error initiating chat: {e}")
+        return JSONResponse(status_code=500, content={"message": str(e)})
+
+@app.get("/get-chat-history", status_code=200)
+async def get_chat_history():
+    """Retrieve the chat history."""
+    async with db_lock:
+        return JSONResponse(status_code=200, content={"messages": db_data["messages"]})
+
+@app.post("/clear-chat-history", status_code=200)
+async def clear_chat_history():
+    """Clear the chat history."""
+    async with db_lock:
+        db_data["messages"] = []
+        save_db(db_data)
+    return JSONResponse(status_code=200, content={"message": "Chat history cleared"})
+
+@app.post("/chat", status_code=200)
+async def chat(message: Message):
+    """Handle chat interactions with streaming responses."""
+    global chat_runnable
+    try:
+        with open("../../userProfileDb.json", "r", encoding="utf-8") as f:
+            user_db = json.load(f)
+
+        if not chat_runnable:
+            chat_runnable = get_chat_runnable(db_data["messages"])
+
+        username = user_db["userData"]["personalInfo"]["name"]
+        transformed_input = message.transformed_input
+        pricing_plan = message.pricing
+        credits = message.credits
+
+        async def response_generator():
+            memory_used = False
+            agents_used = False
+            internet_used = False
+            user_context = None
+            internet_context = None
+            pro_used = False
+            note = ""
+
+            # Save user message
+            user_msg = {
+                "id": str(int(time.time() * 1000)),
+                "message": message.original_input,
+                "isUser": True,
+                "memoryUsed": False,
+                "agentsUsed": False,
+                "internetUsed": False
+            }
+            async with db_lock:
+                db_data["messages"].append(user_msg)
+                save_db(db_data)
+
+            yield json.dumps({
+                "type": "userMessage",
+                "message": message.original_input,
+                "memoryUsed": False,
+                "agentsUsed": False,
+                "internetUsed": False
+            }) + "\n"
+            await asyncio.sleep(0.05)
+
+            yield json.dumps({"type": "intermediary", "message": "Processing chat response..."}) + "\n"
+            await asyncio.sleep(0.05)
+
+            context_classification = await classify_context(transformed_input, "category")
+            if "personal" in context_classification["class"]:
+                yield json.dumps({"type": "intermediary", "message": "Retrieving memories..."}) + "\n"
+                memory_used = True
+                user_context = await perform_graphrag(transformed_input)
+                
+            note = ""
+            internet_classification = await classify_context(transformed_input, "internet")
+            if pricing_plan == "free" and internet_classification["class"] == "Internet" and credits > 0:
+                yield json.dumps({"type": "intermediary", "message": "Searching the internet..."}) + "\n"
+                internet_context = await perform_internet_search(transformed_input)
+                internet_used = True
+                pro_used = True
+            elif pricing_plan != "free" and internet_classification["class"] == "Internet":
+                yield json.dumps({"type": "intermediary", "message": "Searching the internet..."}) + "\n"
+                internet_context = await perform_internet_search(transformed_input)
+                internet_used = True
+                pro_used = True
+            else:
+                note = "Sorry, internet search is a pro feature and requires credits on the free plan."
+
+            personality = user_db["userData"].get("personality", "None")
+            assistant_msg = {
+                "id": str(int(time.time() * 1000)),
+                "message": "",
+                "isUser": False,
+                "memoryUsed": memory_used,
+                "agentsUsed": agents_used,
+                "internetUsed": internet_used
+            }
+            async with db_lock:
+                db_data["messages"].append(assistant_msg)
+                save_db(db_data)
+
+            async for token in generate_streaming_response(
+                chat_runnable,
+                inputs={
+                    "query": transformed_input,
+                    "user_context": user_context,
+                    "internet_context": internet_context,
+                    "name": username,
+                    "personality": personality
+                },
+                stream=True
+            ):
+                if isinstance(token, str):
+                    assistant_msg["message"] += token
+                    async with db_lock:
+                        save_db(db_data)
+                    yield json.dumps({
+                        "type": "assistantStream",
+                        "token": token,
+                        "done": False,
+                        "messageId": assistant_msg["id"]
+                    }) + "\n"
+                    await asyncio.sleep(0.05)
+                else:
+                    assistant_msg["message"] += "\n\n" + note
+                    async with db_lock:
+                        save_db(db_data)
+                    yield json.dumps({
+                        "type": "assistantStream",
+                        "token": "\n\n" + note,
+                        "done": True,
+                        "memoryUsed": memory_used,
+                        "agentsUsed": agents_used,
+                        "internetUsed": internet_used,
+                        "proUsed": pro_used,
+                        "messageId": assistant_msg["id"]
+                    }) + "\n"
+
+        return StreamingResponse(response_generator(), media_type="application/json")
+    except Exception as e:
+        print(f"Error executing chat: {e}")
+        return JSONResponse(status_code=500, content={"message": str(e)})
+
+if __name__ == "__main__":
+    uvicorn.run(app, port=5003)
+### model\chat\externals.py ###
+import httpx
+import os
+from helpers import *
+from typing import Dict, Any, Optional
+from dotenv import load_dotenv
+
+load_dotenv("../.env")  # Load environment variables from .env file
+
+async def classify_context(query: str, context: str) -> Dict[str, Any]:
+    """
+    Asynchronously calls the /context-classify endpoint to classify a query.
+
+    This function sends a POST request to the context classification service
+    to determine the context of the given query.
+
+    Args:
+        query (str): The query string to be classified.
+        context (str): The context in which the query is being made (e.g., "category", "internet").
+
+    Returns:
+        Dict[str, Any]: A dictionary containing the classification result.
+                         If successful, it returns a dictionary with the 'classification' key.
+                         If an error occurs, it returns a dictionary with an 'error' key
+                         containing the error message.
+    """
+    try:
+        port: Optional[str] = os.environ.get(
+            "APP_SERVER_PORT"
+        )  # Get the port from environment variables
+        async with httpx.AsyncClient(
+            timeout=None
+        ) as client:  # Create an async HTTP client with no timeout
+            response = await client.post(
+                f"http://localhost:{port}/context-classify",
+                json={"query": query, "context": context},
+            )  # Send POST request to classify context
+
+        if response.status_code == 200:  # Check if the request was successful
+            return response.json()[
+                "classification"
+            ]  # Return the classification from the response
+        else:
+            return {
+                "error": response.text
+            }  # Return an error dictionary with the response text
+
+    except Exception as e:  # Catch any exceptions during the process
+        print(f"Error calling classify_context: {e}")
+        return {
+            "error": f"Error calling context-classify: {str(e)}"
+        }  # Return an error dictionary with the exception message
+
+
+async def perform_internet_search(query: str) -> Dict[str, Any]:
+    """
+    Asynchronously calls the /internet-search endpoint to fetch search results and summarize them.
+
+    This function sends a POST request to the internet search service to
+    retrieve and summarize internet search results for the given query.
+
+    Args:
+        query (str): The query string to be used for internet search.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing the internet search context.
+                         If successful, it returns a dictionary with the 'internet_context' key.
+                         If an error occurs, it returns a dictionary with an 'error' key
+                         containing the error message.
+    """
+    try:
+        port: Optional[str] = os.environ.get(
+            "APP_SERVER_PORT"
+        )  # Get the port from environment variables
+        async with httpx.AsyncClient(
+            timeout=None
+        ) as client:  # Create an async HTTP client with no timeout
+            response = await client.post(
+                f"http://localhost:{port}/internet-search", json={"query": query}
+            )  # Send POST request for internet search
+
+        if response.status_code == 200:  # Check if the request was successful
+            return response.json()[
+                "internet_context"
+            ]  # Return the internet context from the response
+        else:
+            return {
+                "error": response.text
+            }  # Return an error dictionary with the response text
+
+    except Exception as e:  # Catch any exceptions during the process
+        print(f"Error performing internet search: {e}")
+        return {
+            "error": f"Error calling internet-search: {str(e)}"
+        }  # Return an error dictionary with the exception message
+
+
+async def perform_graphrag(query: str) -> Dict[str, Any]:
+    """
+    Asynchronously calls the /graphrag endpoint to query the user profile and get graphrag context.
+
+    This function sends a POST request to the graphrag service to query the user profile
+    and retrieve relevant context using graph-based retrieval-augmented generation (RAG).
+
+    Args:
+        query (str): The query string to be used for graph-based RAG.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing the graphrag context.
+                         If successful, it returns a dictionary with the 'context' key.
+                         If an error occurs, it returns a dictionary with an 'error' key
+                         containing the error message.
+    """
+    try:
+        port: Optional[str] = os.environ.get(
+            "APP_SERVER_PORT"
+        )  # Get the port from environment variables
+        async with httpx.AsyncClient(
+            timeout=None
+        ) as client:  # Create an async HTTP client with no timeout
+            response = await client.post(
+                f"http://localhost:{port}/graphrag", json={"query": query}
+            )  # Send POST request for graphrag
+
+        if response.status_code == 200:  # Check if the request was successful
+            return response.json()["context"]  # Return the context from the response
+        else:
+            return {
+                "error": response.text
+            }  # Return an error dictionary with the response text
+
+    except Exception as e:  # Catch any exceptions during the process
+        print(f"Error performing graphrag: {e}")
+        return {
+            "error": f"Error calling graphrag: {str(e)}"
+        }  # Return an error dictionary with the exception message
+
+### model\chat\functions.py ###
+import os
+from prompts import *
+from wrapt_timeout_decorator import *
+from helpers import *
+import json
+import requests
+import asyncio
+from typing import Dict, Any, List, Optional, AsyncGenerator
+from dotenv import load_dotenv
+
+load_dotenv("../.env")  # Load environment variables from .env file
+
+async def generate_streaming_response(
+    runnable, inputs: Dict[str, Any], stream: bool = False
+) -> AsyncGenerator[Any, None]:
+    """
+    Generic function to generate a streaming response from any runnable.
+
+    This function abstracts the process of invoking a runnable and handling its response,
+    whether it's a standard response or a streaming one. It checks if the runnable supports
+    streaming and calls the appropriate method.
+
+    Args:
+        runnable: The runnable object (e.g., chain, agent runnable) to invoke.
+        inputs (Dict[str, Any]): Input dictionary for the runnable.
+        stream (bool): If True, attempt to generate a streaming response if supported by the runnable (default is False).
+
+    Yields:
+        AsyncGenerator[Any, None]: Asynchronously yields tokens or the full response depending on streaming.
+                                  Yields None if an error occurs during response generation.
+    """
+    try:
+        if stream and hasattr(
+            runnable, "stream_response"
+        ):  # Check if streaming is enabled and runnable supports it
+            for token in await asyncio.to_thread(lambda: runnable.stream_response(inputs)):
+                yield token  # Yield each token from the streaming response
+        else:  # Handle non-streaming response
+            response = runnable.invoke(
+                inputs
+            )  # Invoke the runnable to get a standard response
+            yield response  # Yield the complete response
+
+    except Exception as e:  # Catch any exceptions during response generation
+        print(f"An error occurred: {e}")
+        yield None  # Yield None to indicate an error occurred
+
+
+def generate_response(
+    runnable,
+    message: str,
+    user_context: Optional[str],
+    internet_context: Optional[str],
+    username: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Generate a response using the provided runnable, incorporating user and internet context.
+
+    This function retrieves user personality description from a user profile database,
+    and invokes the given runnable with the message, context information, username, and personality.
+
+    Args:
+        runnable: The runnable object (e.g., agent runnable) to use for response generation.
+        message (str): The user's input message.
+        user_context (Optional[str]): Context retrieved from user's personal memory or graph (optional).
+        internet_context (Optional[str]): Context retrieved from internet search (optional).
+        username (str): The username of the user.
+
+    Returns:
+        Optional[Dict[str, Any]]: The response generated by the runnable, or None if an error occurs.
+    """
+    try:
+        with open(
+            "../../userProfileDb.json", "r", encoding="utf-8"
+        ) as f:  # Open and load user profile database
+            db = json.load(f)  # Load user profile data from JSON file
+
+        personality_description: str = db["userData"].get(
+            "personality", "None"
+        )  # Extract personality description from database, default to "None"
+
+        response = runnable.invoke(
+            {
+                "query": message,
+                "user_context": user_context,
+                "internet_context": internet_context,
+                "name": username,
+                "personality": personality_description,
+            }
+        )  # Invoke runnable with all inputs
+
+        return response  # Return the generated response
+    except Exception as e:  # Catch any exceptions during response generation
+        print(f"An error occurred in generating response: {e}")
+        return None  # Return None to indicate an error occurred
+
+
+def get_reframed_internet_query(internet_query_reframe_runnable, input: str) -> str:
+    """
+    Reframes the internet query using the provided runnable.
+
+    This function takes a user input and uses a runnable, specifically designed
+    for reframing internet queries, to generate a more effective search query.
+
+    Args:
+        internet_query_reframe_runnable: The runnable object designed for reframing internet queries.
+        input (str): The original user input to be reframed into an internet search query.
+
+    Returns:
+        str: The reframed internet search query.
+    """
+    reframed_query: str = internet_query_reframe_runnable.invoke(
+        {"query": input}
+    )  # Invoke the query reframe runnable
+    return reframed_query  # Return the reframed query
+
+
+def get_search_results(reframed_query: str) -> List[Dict[str, Optional[str]]]:
+    """
+    Fetch and clean descriptions from a web search API based on the provided query.
+
+    This function uses the Brave Search API to fetch web search results for a given query.
+    It extracts titles, URLs, and descriptions from the API response and cleans the descriptions
+    to remove HTML tags and unescape HTML entities.
+
+    Args:
+        reframed_query (str): The search query string to be used for fetching web search results.
+
+    Returns:
+        List[Dict[str, Optional[str]]]: A list of dictionaries, each containing the 'title', 'url', and 'description'
+                                         of a search result. Returns an empty list if there's an error or no results.
+    """
+    try:
+        params: Dict[str, str] = {  # Parameters for the Brave Search API request
+            "q": reframed_query,  # The search query
+        }
+
+        headers: Dict[str, str] = {  # Headers for the Brave Search API request
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "X-Subscription-Token": os.getenv(
+                "BRAVE_SUBSCRIPTION_TOKEN"
+            ),  # API token for Brave Search
+        }
+
+        response: requests.Response = requests.get(
+            os.getenv("BRAVE_BASE_URL"), headers=headers, params=params
+        )  # Send GET request to Brave Search API
+
+        if response.status_code == 200:  # Check if the API request was successful
+            results = response.json()  # Parse JSON response
+
+            descriptions: List[
+                Dict[str, Optional[str]]
+            ] = []  # Initialize list to store descriptions
+            for item in results.get("web", {}).get("results", [])[
+                :5
+            ]:  # Iterate through the top 5 web search results
+                descriptions.append(
+                    {  # Append extracted and raw data to descriptions list
+                        "title": item.get("title"),
+                        "url": item.get("url"),
+                        "description": item.get("description"),
+                    }
+                )
+
+            clean_descriptions: List[
+                Dict[str, Optional[str]]
+            ] = [  # Clean descriptions to remove html tags and unescape html characters
+                {
+                    "title": entry["title"],
+                    "url": entry["url"],
+                    "description": clean_description(
+                        entry["description"]
+                    ),  # Clean the description text
+                }
+                for entry in descriptions  # Iterate over descriptions to clean each description
+            ]
+
+            return clean_descriptions  # Return the list of cleaned descriptions
+
+        else:  # Handle non-200 status codes
+            raise Exception(
+                f"API request failed with status code {response.status_code}: {response.text}"
+            )  # Raise exception with error details
+
+    except Exception as e:  # Catch any exceptions during search or processing
+        print(f"Error fetching or processing descriptions: {e}")
+        return []  # Return empty list in case of error
+
+
+def get_search_summary(
+    internet_summary_runnable, search_results: List[Dict[str, Optional[str]]]
+) -> Optional[Dict[str, Any]]:
+    """
+    Summarize internet search results using the provided runnable.
+
+    This function takes a list of search results and uses a runnable, specifically designed
+    for summarizing internet search results, to generate a concise summary.
+
+    Args:
+        internet_summary_runnable: The runnable object designed for summarizing internet search results.
+        search_results (List[Dict[str, Optional[str]]]): A list of dictionaries, each containing search result details.
+
+    Returns:
+        Optional[Dict[str, Any]]: The summary of the search results generated by the runnable,
+                                  or None if an error occurs during summarization.
+    """
+    search_summary = internet_summary_runnable.invoke(
+        {"query": search_results}
+    )  # Invoke the internet summary runnable with search results
+
+    return search_summary  # Return the generated search summary
+
+
+def get_chat_history() -> Optional[List[Dict[str, str]]]:
+    """
+    Retrieve the entire chat history from the local JSON database.
+
+    Reads the chat history from "../../chatsDb.json" and formats it into a list of dictionaries
+    suitable for conversational models, indicating 'user' or 'assistant' role for each message.
+
+    Returns:
+        Optional[List[Dict[str, str]]]: Formatted chat history as a list of dictionaries, where each
+                                        dictionary has 'role' ('user' or 'assistant') and 'content'
+                                        (message text). Returns None if retrieval fails.
+    """
+    try:
+        with open("../../chatsDb.json", "r", encoding="utf-8") as f:
+            db = json.load(f)  # Load chat database from JSON file
+
+        messages = db.get("messages", [])  # Get the messages array, default to empty list if not found
+
+        formatted_chat_history: List[Dict[str, str]] = [
+            {
+                "role": "user" if entry["isUser"] else "assistant",
+                "content": entry["message"],
+            }
+            for entry in messages  # Format all messages
+        ]
+
+        return formatted_chat_history
+
+    except Exception as e:
+        print(f"Error retrieving chat history: {e}")
+        return None  # Return None in case of error
+
+### model\chat\helpers.py ###
+import re
+from prompts import *
+import json
+from html import unescape
+import os
+import datetime
+import platform
+from typing import Optional, Union, Dict, List, Any
+from dotenv import load_dotenv
+
+load_dotenv("../.env")  # Load environment variables from .env file
+
+# --- Logging Configuration ---
+# Determine log file path based on the operating system.
+if platform.system() == "Windows":
+    log_file_path = os.path.join(
+        os.getenv("PROGRAMDATA"), "Sentient", "logs", "fastapi-backend.log"
+    )
+else:
+    log_file_path = os.path.join("/var", "log", "sentient", "fastapi-backend.log")
+
+# --- Utility Functions ---
+
+
+def clean_key(key: str) -> str:
+    """
+    Clean a string by removing parentheses and extra whitespace.
+
+    This function removes any text within parentheses (including the parentheses themselves)
+    and strips leading/trailing whitespace from the given string.
+
+    Args:
+        key (str): The input string to clean.
+
+    Returns:
+        str: The cleaned string.
+    """
+    return re.sub(
+        r"\s*\(.*?\)\s*", "", key
+    ).strip()  # Remove parentheses and enclosed text, then strip whitespace
+
+
+def clean_description(description: Optional[str]) -> str:
+    """
+    Clean a description by removing HTML tags and unescaping HTML entities.
+
+    This function removes any HTML tags from the input description and unescapes
+    HTML entities (e.g., '&' becomes '&').
+
+    Args:
+        description (Optional[str]): The description string, possibly containing HTML.
+
+    Returns:
+        str: The cleaned description string, with HTML tags removed and entities unescaped.
+             Returns an empty string if the input description is None or empty.
+    """
+    if not description:
+        return ""  # Return empty string if description is None or empty
+
+    clean_text: str = re.sub(r"<.*?>", "", description)  # Remove HTML tags
+    clean_text: str = unescape(clean_text)  # Unescape HTML entities
+    return clean_text  # Return cleaned text
+
+
+class TimeoutException(Exception):
+    """Custom exception class for timeout events."""
+
+    pass
+
+
+def watchdog(timeout_sec: int):
+    """
+    Raise a TimeoutError exception with a custom message indicating a timeout.
+
+    Args:
+        timeout_sec (int): The timeout duration in seconds.
+
+    Raises:
+        TimeoutError: Always raises a TimeoutError with a message indicating the timeout duration.
+    """
+    raise TimeoutError(
+        "Query timed out after {} seconds.".format(timeout_sec)
+    )  # Raise TimeoutError with a custom message
+
+
+def extract_and_fix_json(json_string: str) -> Union[Dict[str, Any], List[Any]]:
+    """
+    Extract and fix JSON from a possibly malformed string.
+
+    This function attempts to extract valid JSON objects or arrays from a string that may contain
+    malformed JSON. It sanitizes invalid characters, attempts to find and parse JSON matches,
+    and if parsing fails, it tries to fix common syntax errors before attempting to parse again.
+
+    Args:
+        json_string (str): The input string that may contain JSON.
+
+    Returns:
+        Union[Dict[str, Any], List[Any]]: Parsed JSON object (dictionary) or array (list) if successful.
+                                          Raises ValueError if JSON parsing fails even after fixing.
+
+    Raises:
+        ValueError: If no JSON object is found or if JSON parsing fails even after attempting to fix syntax.
+    """
+    try:
+        sanitized_string: str = sanitize_invalid_characters(
+            json_string
+        )  # Sanitize invalid characters from JSON string
+
+        json_matches: List[str] = re.findall(
+            r"(\{.*\}|\[.*\])", sanitized_string, re.DOTALL
+        )  # Find all JSON objects or arrays in the string
+        if not json_matches:  # Check if any JSON matches were found
+            raise ValueError(
+                "No JSON object found in the input string."
+            )  # Raise ValueError if no JSON object is found
+
+        for match in json_matches:  # Iterate through each JSON match
+            try:
+                return json.loads(match)  # Attempt to parse the JSON match
+            except json.JSONDecodeError as e:  # Catch JSONDecodeError if parsing fails
+                print(f"Error in fixing JSON: {str(e)}")
+                continue  # Continue to the next match if parsing fails
+
+        fixed_json_string: str = fix_json_syntax(
+            sanitized_string
+        )  # Fix JSON syntax errors
+        return json.loads(fixed_json_string)  # Attempt to parse the fixed JSON string
+
+    except Exception as e:  # Catch any exceptions during JSON parsing
+        print(f"Error parsing JSON: {str(e)}")
+        raise ValueError(
+            f"Failed to parse JSON: {e}"
+        )  # Raise ValueError if JSON parsing fails
+
+
+def fix_json_syntax(json_string: str) -> str:
+    """
+    Fix common JSON syntax issues such as missing brackets or braces.
+
+    This function corrects common JSON syntax errors like unbalanced brackets or braces
+    by counting the occurrences of opening and closing brackets and braces and appending
+    or prepending the necessary characters to balance them.
+
+    Args:
+        json_string (str): The input JSON string that may have syntax errors.
+
+    Returns:
+        str: The JSON string with corrected syntax.
+    """
+    json_string = re.sub(
+        r"^[^{\[]*", "", json_string
+    )  # Remove any characters before the start of JSON object or array
+    json_string = re.sub(
+        r"[^}\]]*$", "", json_string
+    )  # Remove any characters after the end of JSON object or array
+
+    open_braces: int = json_string.count("{")  # Count number of opening braces
+    close_braces: int = json_string.count("}")  # Count number of closing braces
+    open_brackets: int = json_string.count("[")  # Count number of opening brackets
+    close_brackets: int = json_string.count("]")  # Count number of closing brackets
+
+    if (
+        open_braces > close_braces
+    ):  # Check if there are more opening braces than closing braces
+        json_string += "}" * (
+            open_braces - close_braces
+        )  # Append missing closing braces
+    elif (
+        close_braces > open_braces
+    ):  # Check if there are more closing braces than opening braces
+        json_string = (
+            "{" * (close_braces - open_braces) + json_string
+        )  # Prepend missing opening braces
+
+    if (
+        open_brackets > close_brackets
+    ):  # Check if there are more opening brackets than closing brackets
+        json_string += "]" * (
+            open_brackets - close_brackets
+        )  # Append missing closing brackets
+    elif (
+        close_brackets > open_brackets
+    ):  # Check if there are more closing brackets than opening brackets
+        json_string = (
+            "[" * (close_brackets - open_brackets) + json_string
+        )  # Prepend missing opening brackets
+
+    return json_string  # Return the JSON string with corrected syntax
+
+
+def sanitize_invalid_characters(json_string: str) -> str:
+    """
+    Remove invalid control characters from a JSON string.
+
+    This function removes characters that are not allowed in JSON strings,
+    specifically control characters in the ranges U+0000 to U+001F and U+007F.
+
+    Args:
+        json_string (str): The input JSON string that may contain invalid characters.
+
+    Returns:
+        str: The sanitized JSON string with invalid characters removed.
+    """
+    invalid_chars_pattern = (
+        r"[\x00-\x1F\x7F]"  # Define regex pattern for invalid control characters
+    )
+    return re.sub(
+        invalid_chars_pattern, "", json_string
+    )  # Replace invalid characters with empty string
+
+
+def write_to_log(message: str):
+    """
+    Write a timestamped message to a log file.
+
+    This function writes a log message to a predefined log file, prepending the current timestamp
+    in ISO format. It also handles directory creation if the log directory does not exist
+    and creates the log file if it does not exist.
+
+    Args:
+        message (str): The message string to write to the log file.
+    """
+    timestamp: str = (
+        datetime.datetime.now().isoformat()
+    )  # Generate ISO format timestamp
+    log_message: str = f"{timestamp}: {message}\n"  # Format log message with timestamp
+
+    try:
+        os.makedirs(
+            os.path.dirname(log_file_path), exist_ok=True
+        )  # Ensure log directory exists, create if not
+
+        if not os.path.exists(log_file_path):  # Check if log file exists
+            with open(log_file_path, "w") as f:  # Create log file if it doesn't exist
+                pass  # Do nothing, just create the file
+
+        with open(log_file_path, "a") as log_file:  # Open log file in append mode
+            log_file.write(log_message)  # Write the log message to the file
+    except Exception as error:  # Catch any exceptions during log writing
+        print(
+            f"Error writing to log file: {error}"
+        )  # Print error message if writing to log file fails
+
+### model\chat\prompts.py ###
+chat_system_prompt_template = """You are Sentient, a personalized AI companion for the user. Your primary goal is to provide responses that are engaging, empathetic, and relevant to the user's input. Follow these guidelines:
+
+### General Rules:
+1. Informal language: Keep your tone super casual and friendly for responses.
+2. Contextual Personalization: If context is provided, incorporate it to generate a personalized response. DO NOT TELL THE USER ABOUT THEIR OWN PERSONALITY, SIMPLY USE IT TO GENERATE A RESPONSE.
+3. Handling Empty Context: 
+   - If the input is a general message and context is empty, provide a general response relevant to the input.
+   - Avoid asking unnecessary follow-up questions.
+4. Chat History:
+   - Use the chat history to maintain continuity in conversations. 
+   - If no chat history exists, respond as if it's a new conversation. DO NOT TELL THE USER THAT THERE IS NO PAST CONTEXT.
+   - DO NOT REPEAT THE CHAT HISTORY. DO NOT USE WORDS LIKE "Chat History: ..." IN YOUR RESPONSE.
+5. Internet Search Context:
+   - If the query requires information not available in the provided context or chat history, and internet search results are provided, incorporate these results into your response.
+   - Use search results to enhance the response but do not directly quote or list them unless the query explicitly asks for a detailed list.
+   - Summarize the search results into coherent, user-friendly insights.
+
+### Tone:
+- For personal queries: Be empathetic, encouraging, and supportive.
+- For general queries: Be concise, informative, and clear.
+- Maintain a conversational and friendly tone throughout.
+
+### Output Format:
+- Responses must be relevant and directly address the query.
+- Do not repeat the input unnecessarily unless for clarity.
+- Seamlessly integrate internet search context when applicable.
+
+### Examples:
+
+#### Example 1: Personalized Response with Context
+Query: "I feel overwhelmed with work."
+Context: "The user is a software engineer working on a tight project deadline."
+Chat History: According to the chat history, the user expressed feeling overburdened, and the assistant suggested taking breaks and focusing on manageable tasks to alleviate stress.
+
+Response:
+"It’s understandable to feel overwhelmed with such a demanding project. Maybe breaking tasks into smaller steps could help? Also, don’t hesitate to set boundaries for your work hours!"
+
+---
+
+#### Example 2: General Query with Empty Context
+Query: "What's the weather like in Paris?"
+Context: ""
+Chat History: According to the chat history, the assistant mentioned they could provide updates on the weather if given the city of interest.
+
+Response:
+"I can help with that! Currently, I don't have real-time weather data, but you can check using weather apps or websites."
+
+---
+
+#### Example 3: Using Chat History for Continuity
+Query: "Can you remind me of my goals?"
+Context: "The user is working on self-improvement and wants to stay motivated."
+Chat History: According to the chat history, the user mentioned focusing on building consistent habits, and the assistant suggested setting small, achievable goals.
+
+Response:
+"Of course! You mentioned focusing on consistency in your habits. Let me know if you'd like to review specific goals or create new strategies."
+
+---
+
+#### Example 4: Using Internet Search Context
+Query: "What are the top tourist spots in Paris?"
+Context: ""
+Internet Search Results: "Paris, France is home to some of the world's most iconic landmarks. The Eiffel Tower offers stunning city views, the Louvre Museum houses the largest art collection, and the Notre Dame Cathedral stands as a Gothic masterpiece. Each symbolizes Paris's rich history and cultural significance, attracting millions of visitors annually."
+
+Response:
+"Paris has some amazing tourist attractions! The Eiffel Tower offers breathtaking views, while the Louvre Museum is perfect for art enthusiasts. Don’t forget to visit the Notre Dame Cathedral, a stunning example of Gothic architecture!"
+
+---
+
+#### Example 5: Empathetic Response
+Query: "I failed my exam, and I don’t know what to do."
+Context: "The user is a college student feeling stressed about academic performance."
+Chat History: According to the chat history, the user expressed struggles with academic pressure, and the assistant encouraged them to focus on progress rather than perfection.
+
+Response:
+"I’m really sorry to hear that. Remember, one exam doesn’t define your abilities. Take some time to reflect and figure out what adjustments can help you moving forward. I’m here if you need advice!"
+
+---
+
+#### Example 6: Casual, Non-Personal Query
+Query: "Tell me a fun fact."
+Context: ""
+Chat History: According to the chat history, the assistant shared that honey never spoils and that archaeologists found 3,000-year-old honey in ancient Egyptian tombs that was still edible.
+
+Response:
+"Here’s a fun fact: Octopuses have three hearts, and two of them stop beating when they swim!"
+"""
+
+chat_user_prompt_template = """
+User Query (ANSWER THIS QUESTION OR RESPOND TO THIS MESSAGE): {query}
+
+Context (ONLY USE THIS AS CONTEXT TO GENERATE A RESPONSE. DO NOT REPEAT THIS INFORMATION TO THE USER.): {user_context}
+
+Internet Search Results (USE THIS AS ADDITIONAL CONTEXT TO RESPOND TO THE QUERY, ONLY IF PROVIDED.): {internet_context}
+
+Username (ONLY CALL THE USER BY THEIR NAME WHEN REQUIRED. YOU DO NOT NEED TO CALL THE USER BY THEIR NAME IN EACH MESSAGE.): {name}
+
+Personality (DO NOT REPEAT THE USER'S PERSONALITY TO THEM, ONLY USE IT TO GENERATE YOUR RESPONSES OR CHANGE YOUR STYLE OF TALKING.): {personality}
+
+CHAT LIKE A HUMAN WOULD. USE LOWERCASE LETTERS AND A CASUAL TONE. AVOID USING PUNCTUATION MARKS LIKE FULL STOPS OR COMMAS. KEEP YOUR RESPONSES SHORT AND ENGAGING.
+YOU NEED TO BE THE USER'S FRIEND - NOT AN ASSISTANT.
+"""
+
+### model\chat\runnables.py ###
 import os
 import json
 import requests
@@ -230,10 +1197,8 @@ class OllamaRunnable(BaseRunnable):
             "messages": self.messages,
             "stream": True,
             "options": {"num_ctx": 4096}, # Set context window size
-        }        
-        
-        print ("Payload: ", payload)
-        
+        }
+
         with requests.post(self.model_url, json=payload, stream=True) as response:
             for line in response.iter_lines(decode_unicode=True):
                 if line:
@@ -911,3 +1876,5 @@ def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
 
     runnable.add_to_history(chat_history)
     return runnable
+### model\chat\startserv.sh ###
+sudo -E <your-venv-path> -m uvicorn chat:app --host 0.0.0.0 --port 5003

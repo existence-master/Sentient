@@ -575,3 +575,8 @@ async def decrypt_data(request: DecryptionRequest) -> JSONResponse:
         return JSONResponse(
             status_code=500, content={"message": str(e)}
         )  # Return 500 for any exceptions
+
+if __name__ == "__main__":
+    uvicorn.run(
+        app, port=5005
+    ) 

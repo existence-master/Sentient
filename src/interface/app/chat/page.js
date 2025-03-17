@@ -18,6 +18,7 @@ const Chat = () => {
 	const [serverStatus, setServerStatus] = useState(true)
 	const [isSidebarVisible, setSidebarVisible] = useState(false)
 	const [currentModel, setCurrentModel] = useState("")
+	const [isLoading, setIsLoading] = useState(true) // New loading state
 
 	const textareaRef = useRef(null)
 	const chatEndRef = useRef(null)
@@ -31,12 +32,15 @@ const Chat = () => {
 	}
 
 	const fetchChatHistory = async () => {
+		setIsLoading(true)
 		try {
 			const response = await window.electron?.invoke("fetch-chat-history")
 			if (response.status === 200) setMessages(response.messages)
 			else toast.error("Error fetching chat history.")
 		} catch (error) {
 			toast.error("Error fetching chat history.")
+		} finally {
+			setIsLoading(false)
 		}
 	}
 
@@ -141,10 +145,8 @@ const Chat = () => {
 	const reinitiateServer = async () => {
 		setServerStatus(false)
 		try {
-			await fetch(`${process.env.APP_SERVER_URL}/initiate-chat`, {
-				method: "POST"
-			})
-			toast.success("Server reinitiated successfully")
+			const response = await window.electron?.invoke("fetch-chat-history")
+			if (response.status === 200) setMessages(response.messages)
 		} catch (error) {
 			toast.error("Error restarting the server.")
 		} finally {
@@ -174,27 +176,32 @@ const Chat = () => {
 				</div>
 				<div className="w-4/5 ml-10 z-10 h-full overflow-y-scroll no-scrollbar flex flex-col gap-4">
 					<div className="grow overflow-y-auto p-4 bg-matteblack rounded-xl no-scrollbar">
-						{messages.length === 0 && (
+						{isLoading ? (
+							<div className="flex justify-center items-center h-full">
+								<IconLoader className="w-8 h-8 text-white animate-spin" />
+							</div>
+						) : messages.length === 0 ? (
 							<div className="font-Poppins h-full flex flex-col justify-center items-center text-gray-500">
 								<p className="text-4xl text-white mb-4">
 									Send a message to start a conversation
 								</p>
 							</div>
+						) : (
+							messages.map((msg) => (
+								<div
+									key={msg.id}
+									className={`flex ${msg.isUser ? "justify-end" : "justify-start"}`}
+								>
+									<ChatBubble
+										message={msg.message}
+										isUser={msg.isUser}
+										memoryUsed={msg.memoryUsed}
+										agentsUsed={msg.agentsUsed}
+										internetUsed={msg.internetUsed}
+									/>
+								</div>
+							))
 						)}
-						{messages.map((msg) => (
-							<div
-								key={msg.id}
-								className={`flex ${msg.isUser ? "justify-end" : "justify-start"}`}
-							>
-								<ChatBubble
-									message={msg.message}
-									isUser={msg.isUser}
-									memoryUsed={msg.memoryUsed}
-									agentsUsed={msg.agentsUsed}
-									internetUsed={msg.internetUsed}
-								/>
-							</div>
-						))}
 						{thinking && (
 							<div className="flex items-center gap-2 mt-3 animate-pulse">
 								<div className="bg-gray-500 rounded-full h-3 w-3"></div>

@@ -213,56 +213,34 @@ def get_search_summary(
     return search_summary  # Return the generated search summary
 
 
-def get_chat_history(chat_id: str) -> Optional[List[Dict[str, str]]]:
+def get_chat_history() -> Optional[List[Dict[str, str]]]:
     """
-    Retrieve the chat history for the given chat_id and format it for conversational models.
+    Retrieve the entire chat history from the local JSON database.
 
-    This function reads chat history from a JSON database file, filters for the chat with the given ID,
-    and formats the last 10 messages into a list of dictionaries suitable for conversational models,
-    indicating 'user' or 'assistant' role for each message.
-
-    Args:
-        chat_id (str): The unique identifier for the chat session.
+    Reads the chat history from "../../chatsDb.json" and formats it into a list of dictionaries
+    suitable for conversational models, indicating 'user' or 'assistant' role for each message.
 
     Returns:
-        Optional[List[Dict[str, str]]]: Formatted chat history as a list of dictionaries, where each dictionary
-                                        has 'role' ('user' or 'assistant') and 'content' (message text).
-                                        Returns None if chat history retrieval fails or chat ID is not found.
+        Optional[List[Dict[str, str]]]: Formatted chat history as a list of dictionaries, where each
+                                        dictionary has 'role' ('user' or 'assistant') and 'content'
+                                        (message text). Returns None if retrieval fails.
     """
     try:
-        with open(
-            "../../chatsDb.json", "r", encoding="utf-8"
-        ) as f:  # Open and load chat database file
-            db = json.load(f)  # Load chat data from JSON file
+        with open("../../chatsDb.json", "r", encoding="utf-8") as f:
+            db = json.load(f)  # Load chat database from JSON file
 
-            chats: List[Dict[str, Any]] = db.get(
-                "chats", []
-            )  # Get list of chats from database, default to empty list if not found
-            chat: Optional[Dict[str, Any]] = next(
-                (c for c in chats if c["id"] == chat_id), None
-            )  # Find chat with given ID, default to None if not found
+        messages = db.get("messages", [])  # Get the messages array, default to empty list if not found
 
-            if not chat:  # Check if chat was found
-                raise ValueError(
-                    f"Chat with id {chat_id} not found."
-                )  # Raise ValueError if chat ID not found
+        formatted_chat_history: List[Dict[str, str]] = [
+            {
+                "role": "user" if entry["isUser"] else "assistant",
+                "content": entry["message"],
+            }
+            for entry in messages  # Format all messages
+        ]
 
-            chat_history: List[Dict[str, Any]] = chat["chatHistory"][
-                -10:
-            ]  # Get last 10 messages from chat history
+        return formatted_chat_history
 
-            formatted_chat_history: List[
-                Dict[str, str]
-            ] = [  # Format chat history for conversational model input
-                {
-                    "role": "user" if entry["isUser"] else "assistant",
-                    "content": entry["message"],
-                }  # Map each entry to desired format
-                for entry in chat_history  # Iterate through chat history entries
-            ]
-
-            return formatted_chat_history  # Return the formatted chat history
-
-    except Exception as e:  # Catch any exceptions during chat history retrieval
+    except Exception as e:
         print(f"Error retrieving chat history: {e}")
-        return None  # Return None to indicate retrieval failure
+        return None  # Return None in case of error

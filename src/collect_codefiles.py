@@ -1,15 +1,15 @@
 import os
 
-# List of file names to exclude (can still be specified as in the original script)
+# List of file names to exclude
 exclude_files = ['.env', '.env.template', ".prettierrc", "eslint.config.js", "jsconfig.json", "next.config.js", "package-lock.json", "package.json", "postcss.config.js", "README.md", "tailwind.config.js", "chatsDb.json", "userProfileDb.json", "requirements.txt", "token.pickle", "run_servers.sh", "version.txt", "collect_code.py"]
 
-# List of folders to exclude (can still be specified as in the original script)
+# List of folders to exclude
 exclude_dirs = ['node_modules', '.next', 'public', 'styles', 'input', 'venv', '__pycache__', 'chroma_db', 'agents', 'scraper']
 
-# List of specific folders to include (this will contain the folder names or relative paths to include)
-include_folders = ['/src/interface/chat', '/src/model/chat']  # Example specific paths or folder names
+# List of specific folders to include
+include_folders = ['model\\chat']
 
-# List of specific files to include (optional - can specify exact file paths if needed)
+# List of specific files to include
 include_files = []  # Leave empty to include all files in the specified folders
 
 def get_code_from_files(directory, exclude_files, exclude_dirs, include_folders, include_files):
@@ -20,22 +20,28 @@ def get_code_from_files(directory, exclude_files, exclude_dirs, include_folders,
         # Remove any excluded directories
         dirs[:] = [d for d in dirs if d not in exclude_dirs]
         
-        # Check if the folder is one of the included folders
+        # Get the relative path for the current directory
         relative_root = os.path.relpath(root, directory)
+        print(f"Checking directory: {relative_root}")  # Debug statement to check the directory paths
         
-        # Skip if the current directory doesn't match any of the include folders
-        if not any(include_folder in relative_root for include_folder in include_folders):
+        # Check if the folder is one of the included folders or subfolders
+        is_included = any(relative_root.startswith(include_folder) for include_folder in include_folders)
+        
+        # Skip this directory if it's not in any of the included folders
+        if not is_included:
             continue
         
+        # Process each file in the current directory
         for file in files:
             # Exclude files that are in the exclude list
             if file in exclude_files:
                 continue
             
             # If include_files is not empty, only consider the specified files
-            if include_files and file not in include_files:
+            if include_files and os.path.relpath(file, root) not in include_files:
                 continue
 
+            # Full path of the file
             file_path = os.path.join(root, file)
             
             # Read the file and append its content with the file path
@@ -50,9 +56,10 @@ def get_code_from_files(directory, exclude_files, exclude_dirs, include_folders,
     
     return all_code
 
+
 def main():
     # Get the current working directory
-    current_directory = os.getcwd()
+    current_directory = "D:/Documents/cyber/projects/Sentient-New/Code/src"
     
     # Get all the code from the files in the specified directory
     code = get_code_from_files(current_directory, exclude_files, exclude_dirs, include_folders, include_files)

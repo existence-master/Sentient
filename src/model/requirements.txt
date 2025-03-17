@@ -31,4 +31,3 @@ cryptography
 requests
 pyinstaller
 ruff
-keyring

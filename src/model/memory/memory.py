@@ -223,9 +223,7 @@ async def chat(message: Message):
         with open("../../userProfileDb.json", "r", encoding="utf-8") as f:
             db = json.load(f)  # Load user profile database
 
-        chat_history = get_chat_history(
-            message.chat_id
-        )  # Retrieve chat history for the given chat_id
+        chat_history = get_chat_history()  # Retrieve chat history for the given chat_id
 
         chat_runnable = get_chat_runnable(
             chat_history
