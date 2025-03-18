@@ -110,7 +110,7 @@ async def chat(message: Message):
         with open("../../userProfileDb.json", "r", encoding="utf-8") as f:
             user_db = json.load(f)
         
-        chat_history = await get_chat_history()
+        chat_history = get_formatted_chat_history()  # Get raw messages list
         chat_runnable = get_chat_runnable(chat_history)
 
         username = user_db["userData"]["personalInfo"]["name"]
@@ -165,6 +165,8 @@ async def chat(message: Message):
                 internet_context = await perform_internet_search(transformed_input)
                 internet_used = True
                 pro_used = True
+            elif pricing_plan == "free" and internet_classification["class"] != "Internet":
+                pass
             elif pricing_plan != "free" and internet_classification["class"] == "Internet":
                 yield json.dumps({"type": "intermediary", "message": "Searching the internet..."}) + "\n"
                 internet_context = await perform_internet_search(transformed_input)

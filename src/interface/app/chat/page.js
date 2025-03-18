@@ -131,7 +131,7 @@ const Chat = () => {
 	const clearChatHistory = async () => {
 		try {
 			const response = await fetch(
-				`${process.env.APP_SERVER_URL}/clear-chat-history`,
+				`http://localhost:5003/clear-chat-history`,
 				{ method: "POST" }
 			)
 			if (!response.ok) throw new Error("Failed to clear chat history")

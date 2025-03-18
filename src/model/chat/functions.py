@@ -213,7 +213,7 @@ def get_search_summary(
     return search_summary  # Return the generated search summary
 
 
-def get_chat_history() -> Optional[List[Dict[str, str]]]:
+def get_formatted_chat_history() -> Optional[List[Dict[str, str]]]:
     """
     Retrieve the entire chat history from the local JSON database.
 

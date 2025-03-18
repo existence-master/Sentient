@@ -1,0 +1,287 @@
+Context for Sentient
+Vision and Goals
+Sentient is a personal AI companion envisioned as an AI friend that lives across your devices, learns about you, and assists with tasks to help you achieve your goals. Unlike typical generative AI applications that focus on multi-chat interfaces, Sentient aims to provide a unified conversation experience, mimicking human-like interaction with advanced memory management and asynchronous task execution. The ultimate goal is to democratize AI companions, making them accessible to everyone.
+Key Objectives
+Deliver a seamless, unified chat interface with text and voice capabilities.
+
+Implement sophisticated memory systems for long-term, short-term, and episodic contexts.
+
+Enable asynchronous task execution for actions like email sending or calendar queries.
+
+Introduce autonomous context awareness to proactively assist users.
+
+Launch an open-source, self-hosted version for enthusiasts, followed by a cloud-hosted version for general consumers with plans for a mobile app.
+
+Development Strategy
+Current Focus: Building an open-source, self-hosted version for Windows using an Electron frontend and a Python backend, targeting a single user without authentication.
+
+Future Vision: Transition to a cloud-hosted model (e.g., AWS or Azure) with multi-user support, authentication, and a mobile app, funded by traction from the open-source version.
+
+Key Features
+Unified Chat Interface
+Single Conversation Stream: Users interact through one continuous chat, eliminating the need to switch between multiple chats.
+
+Input/Output Modes:
+Text: Standard text-based interaction.
+
+Standard Voice: User audio is converted to text via Speech-to-Text (STT), processed, and responses are converted to audio via Text-to-Speech (TTS).
+
+Advanced Voice: A multimodal model generates audio directly for a true audio-to-audio experience.
+
+Context Management:
+Time-based Conversation Blocking: After a period of inactivity (e.g., 10 minutes), Sentient starts a new internal "chat" to refresh context.
+
+Tag-based Context Switching: Messages are tagged (e.g., "personal - pets"), and relevant history is loaded dynamically when the conversation shifts topics.
+
+Memory Stores
+Long-term Memory: Stored in a Neo4j graph database, capturing persistent facts about the user (e.g., preferences, relationships). Retrieved using GraphRAG for inference-time context.
+
+Short-term Memory: Stored in an SQL database (e.g., SQLite), holding time-sensitive data (e.g., "interview in 2 weeks") with timestamps for expiration or reminders.
+
+Episodic Memory: Stored in LowDB, managing conversation history with tags and timestamps to support context switching in the unified chat.
+
+Actions and Agents
+Task Queue: An asynchronous queue (LowDB-based) for executing user-requested tasks (e.g., sending emails, fetching calendar events). Tasks include priority levels, status tracking, and completion details.
+
+Memory Operations Queue: An asynchronous queue for updating memory stores (create, update, delete) without delaying chat responses.
+
+Agent Orchestrator: Monitors chat history, detects tasks and memory updates, and assigns them to the appropriate queues.
+
+External Integrations:
+API-based Automations: Supports Gmail, Google Docs, Calendar, Drive, Sheets, and Slides.
+
+Sandboxed Environment: A cloud-hosted VM or Browser-Use instance for general tasks (e.g., file operations, web browsing).
+
+Intent and Context Engine
+Context Monitoring: Streams data from desktop/mobile notifications and microphone input (e.g., conversation topics, speaker detection).
+
+Autonomous Actions: Adds tasks or memories to queues based on user-configurable autonomy levels (full autonomy or confirmation required).
+
+Architecture Overview
+Sentient’s architecture is modular, separating the frontend, backend, memory stores, and external integrations. The current self-hosted version connects the Electron frontend to a Python backend via ngrok tunneling, allowing the backend to run on any server.
+Components
+Frontend (Electron)
+Provides the unified chat interface for text and voice interactions.
+
+Handles input/output processing and communicates with the backend via HTTP APIs and WebSockets.
+
+Backend (Python)
+API Layer: Manages HTTP endpoints and WebSockets for real-time interaction.
+
+Conversation Manager: Oversees the unified chat, storing history in LowDB and implementing time-based blocking and tag-based context switching.
+
+Memory Manager: Interfaces with Neo4j (long-term), SQL DB (short-term), and LowDB (episodic) to supply memories for inference.
+
+Task Queue: Manages asynchronous task execution with prioritization (e.g., immediate info requests vs. background tasks).
+
+Memory Operations Queue: Processes asynchronous memory updates.
+
+Agent Orchestrator: Monitors chats, assigns tasks and memory operations to queues, and executes tasks via integrations.
+
+Context Engine: Streams context from notifications and microphone, adding tasks/memories to queues.
+
+Databases
+Neo4j: Long-term memory as a knowledge graph.
+
+SQL DB (SQLite): Short-term memory with time-sensitive data.
+
+LowDB: Episodic memory for conversation history.
+
+External Integrations
+APIs: Specific tools (e.g., Gmail, Calendar).
+
+Sandboxed Environment: Cloud-hosted VM or Browser-Use for general automations.
+
+Component Interactions
+Frontend Backend: Connected via HTTP/WebSockets through ngrok tunneling.
+
+Conversation Flow: The Conversation Manager uses LowDB for history and the Memory Manager for context.
+
+Agent Operations: The Agent Orchestrator monitors chats, feeding the Task Queue and Memory Operations Queue.
+
+Context Engine: Monitors frontend inputs, enhancing autonomy.
+
+External Actions: The Task Queue leverages APIs or the sandbox for execution.
+
+Mermaid Architecture Diagram
+mermaid
+
+graph TD
+subgraph Frontend
+UI[User Interface<br>(Electron)]
+end
+
+    subgraph Backend
+        API[API Layer<br>(HTTP/WS)]
+        ConvMgr[Conversation Manager]
+        MemMgr[Memory Manager]
+        TaskQ[Task Queue]
+        MemOpQ[Memory Operations Queue]
+        AgentOrch[Agent Orchestrator]
+        ContextEng[Context Engine]
+    end
+
+    subgraph Databases
+        Neo4j[Neo4j<br>(Long-term Memory)]
+        SQL[SQL DB<br>(Short-term Memory)]
+        LowDB[LowDB<br>(Episodic Memory)]
+    end
+
+    subgraph External
+        APIs[External APIs<br>(Gmail, Calendar, etc.)]
+        Sandbox[Sandboxed Environment<br>(VM/Browser-Use)]
+    end
+
+    UI -->|HTTP/WS via ngrok| API
+    API --> ConvMgr
+    ConvMgr -->|Reads/Writes| LowDB
+    ConvMgr -->|Retrieves Memories| MemMgr
+    MemMgr -->|Reads/Writes| Neo4j
+    MemMgr -->|Reads/Writes| SQL
+    AgentOrch -->|Monitors| ConvMgr
+    AgentOrch -->|Adds Tasks| TaskQ
+    AgentOrch -->|Adds Memory Ops| MemOpQ
+    TaskQ -->|Executes| AgentOrch
+    MemOpQ -->|Processes| MemMgr
+    ContextEng -->|Monitors| UI
+    ContextEng -->|Adds Tasks/Memories| TaskQ
+    ContextEng -->|Adds Tasks/Memories| MemOpQ
+    TaskQ -->|Uses| APIs
+    TaskQ -->|Uses| Sandbox
+
+Potential Issues and Fixes
+Context Switching Complexity:
+Issue: Overlapping topics or multi-tagged messages may confuse tag-based switching.
+
+Fix: Use simple keyword tagging initially, refining with user feedback; retain recent multi-tagged messages to maintain context.
+
+Memory Retrieval Efficiency:
+Issue: Large Neo4j graphs or SQL queries may slow inference.
+
+Fix: Add indexing and caching for frequent memory access.
+
+Task Prioritization:
+Issue: Automatic urgency detection may be inaccurate.
+
+Fix: Apply heuristics (e.g., "now" = high priority) and allow UI overrides.
+
+Autonomous Actions:
+Issue: Misinterpreted intent could lead to unwanted actions.
+
+Fix: Default to confirmation prompts; log autonomous decisions for review.
+
+Scalability:
+Issue: Single-user design may hinder multi-user scaling.
+
+Fix: Use modular design and containerization (e.g., Docker) for future cloud deployment.
+
+Implementation Plan
+A phased approach respecting dependencies:
+Unified Chat Interface:
+Build Electron UI with text input/output.
+
+Integrate LowDB for episodic memory.
+
+Add basic conversation logic in Python.
+
+Memory Stores:
+Set up Neo4j for long-term memory with GraphRAG.
+
+Configure SQLite for short-term memory.
+
+Implement Memory Manager.
+
+Context Management:
+Add time-based blocking.
+
+Develop tag-based switching (keyword-based initially).
+
+Asynchronous Queues:
+Implement Task Queue in LowDB.
+
+Build Memory Operations Queue.
+
+Adapt existing pipelines for async execution.
+
+Agent Orchestrator:
+Create monitoring agent for tasks and memory ops.
+
+Test with mock tasks.
+
+External Integrations:
+Integrate Google APIs.
+
+Set up a basic sandboxed VM.
+
+Context Engine:
+Add notification monitoring.
+
+Implement microphone input (mock initially).
+
+Connect to queues with autonomy settings.
+
+Voice Modes:
+Integrate STT/TTS for standard voice.
+
+Experiment with advanced voice.
+
+Polish and Testing:
+Refine UI/UX.
+
+Test all features thoroughly.
+
+Project File Structure
+Sentient’s codebase is split into interface (frontend) and model (backend), with the backend now designed to run on a separate server (local or cloud) connected via ngrok.
+interface (Frontend - Electron/Next.js)
+app: Pages for chat, integrations, profile, settings, etc.
+
+components: UI elements (e.g., ChatBubble, ModelSelection).
+
+hooks: Custom React hooks (e.g., useMousePosition).
+
+main: Electron entry points (e.g., index.js, preload.js).
+
+public: Static assets (e.g., logos).
+
+scripts: Server scripts (e.g., appServer.js).
+
+styles: CSS and styling configs.
+
+utils: Helper functions (e.g., api.js, auth.js).
+
+model (Backend - Python)
+agents: Agent logic and runnables.
+
+app: Core backend logic.
+
+auth: Authentication (unused in self-hosted version).
+
+chat: Chat-specific functions and prompts.
+
+common: Shared utilities.
+
+input: User input data files.
+
+memory: Memory management logic.
+
+scraper: Web scraping utilities.
+
+utils: General helpers.
+
+.env: Configuration variables.
+
+requirements.txt: Dependencies.
+
+run_servers.sh: Starts backend servers.
+
+Additional Files
+chatsDb.json: Chat history storage.
+
+userProfileDb.json: User profile data.
+
+get-tree.ps1: Generates file tree.
+
+Additional Information
+Self-Hosted Design: The Electron frontend connects to a Python backend on a local or cloud server via ngrok. No authentication; single-user focus.
+
+Backend Separation: All backend logic (Neo4j, queues, agents) runs on a separate server, making the frontend a lightweight shell.
