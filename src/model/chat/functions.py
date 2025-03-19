@@ -1,14 +1,15 @@
 import os
-from prompts import *
 from wrapt_timeout_decorator import *
-from helpers import *
 import json
 import requests
 import asyncio
 from typing import Dict, Any, List, Optional, AsyncGenerator
 from dotenv import load_dotenv
 
-load_dotenv("../.env")  # Load environment variables from .env file
+from .prompts import *
+from model.app.helpers import *
+
+load_dotenv("model/.env")  # Load environment variables from .env file
 
 async def generate_streaming_response(
     runnable, inputs: Dict[str, Any], stream: bool = False
@@ -71,7 +72,7 @@ def generate_response(
     """
     try:
         with open(
-            "../../userProfileDb.json", "r", encoding="utf-8"
+            "userProfileDb.json", "r", encoding="utf-8"
         ) as f:  # Open and load user profile database
             db = json.load(f)  # Load user profile data from JSON file
 
@@ -213,11 +214,11 @@ def get_search_summary(
     return search_summary  # Return the generated search summary
 
 
-def get_formatted_chat_history() -> Optional[List[Dict[str, str]]]:
+def get_chat_history() -> Optional[List[Dict[str, str]]]:
     """
     Retrieve the entire chat history from the local JSON database.
 
-    Reads the chat history from "../../chatsDb.json" and formats it into a list of dictionaries
+    Reads the chat history from "chatsDb.json" located in /src and formats it into a list of dictionaries
     suitable for conversational models, indicating 'user' or 'assistant' role for each message.
 
     Returns:
@@ -226,7 +227,7 @@ def get_formatted_chat_history() -> Optional[List[Dict[str, str]]]:
                                         (message text). Returns None if retrieval fails.
     """
     try:
-        with open("../../chatsDb.json", "r", encoding="utf-8") as f:
+        with open("chatsDb.json", "r", encoding="utf-8") as f:
             db = json.load(f)  # Load chat database from JSON file
 
         messages = db.get("messages", [])  # Get the messages array, default to empty list if not found

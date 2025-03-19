@@ -329,7 +329,7 @@ export async function fetchAndSetUserRole() {
 
 	try {
 		// Fetch user role from backend server
-		const response = await fetch("http://localhost:5005/get-role", {
+		const response = await fetch("http://localhost:5000/get-role", {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json"
@@ -575,7 +575,7 @@ export async function fetchAndSetReferralCode() {
 	try {
 		// Fetch referral code from backend server
 		const response = await fetch(
-			"http://localhost:5005/get-referral-code",
+			"http://localhost:5000/get-referral-code",
 			{
 				method: "POST",
 				headers: {
@@ -619,7 +619,7 @@ export async function fetchAndSetReferrerStatus() {
 	try {
 		// Fetch referrer status from backend server
 		const response = await fetch(
-			"http://localhost:5005/get-referrer-status",
+			"http://localhost:5000/get-referrer-status",
 			{
 				method: "POST",
 				headers: {
@@ -665,7 +665,7 @@ export async function fetchAndSetBetaUserStatus() {
 	try {
 		// Fetch beta user status from backend server
 		const response = await fetch(
-			"http://localhost:5005/get-beta-user-status",
+			"http://localhost:5000/get-beta-user-status",
 			{
 				method: "POST",
 				headers: {
@@ -754,7 +754,7 @@ export async function getReferrerStatusFromKeytar() {
  */
 export async function setApiKey(provider, apiKey) {
 	try {
-		const response = await fetch("http://localhost:5005/set-api-key", {
+		const response = await fetch("http://localhost:5000/set-api-key", {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json"
@@ -779,7 +779,7 @@ export async function setApiKey(provider, apiKey) {
  */
 export async function hasApiKey(provider) {
 	try {
-		const response = await fetch("http://localhost:5005/has-api-key", {
+		const response = await fetch("http://localhost:5000/has-api-key", {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json"
@@ -804,7 +804,7 @@ export async function hasApiKey(provider) {
  */
 export async function deleteApiKey(provider) {
 	try {
-		const response = await fetch("http://localhost:5005/delete-api-key", {
+		const response = await fetch("http://localhost:5000/delete-api-key", {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json"

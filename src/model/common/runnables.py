@@ -1,20 +1,14 @@
 import os
-import json
-import requests
-from typing import Dict, Any, List, Union, Optional, Generator, Tuple
-from abc import ABC, abstractmethod
-from prompts import *
+from typing import Dict, List, Optional
 from dotenv import load_dotenv
-import keyring
-from prompts import *  # Importing prompt templates and related utilities from prompts.py
 from wrapt_timeout_decorator import *  # Importing timeout decorator for functions from wrapt_timeout_decorator library
-from helpers import *  # Importing helper functions from helpers.py
-from formats import *  # Importing format specifications or utilities from formats.py
-import ast  # For Abstract Syntax Tree manipulation, used for safely evaluating strings as Python literals
-from sys import platform  # To get system platform information
-from app.base import *
 
-load_dotenv("../.env")
+from .prompts import *  # Importing prompt templates and related utilities from prompts.py
+from .formats import *  # Importing format specifications or utilities from formats.py
+from model.app.base import *
+from model.app.helpers import *  # Importing helper functions from helpers.py
+
+load_dotenv("model/.env")
 
 def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
     """

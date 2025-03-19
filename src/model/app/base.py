@@ -3,18 +3,13 @@ import json
 import requests
 from typing import Dict, Any, List, Union, Optional, Generator, Tuple
 from abc import ABC, abstractmethod
-from prompts import *
 from dotenv import load_dotenv
-import keyring
-from prompts import *  # Importing prompt templates and related utilities from prompts.py
 from wrapt_timeout_decorator import *  # Importing timeout decorator for functions from wrapt_timeout_decorator library
-from helpers import *  # Importing helper functions from helpers.py
-from formats import *  # Importing format specifications or utilities from formats.py
-import ast  # For Abstract Syntax Tree manipulation, used for safely evaluating strings as Python literals
+from .helpers import *  # Importing helper functions from helpers.py
 from sys import platform  # To get system platform information
 
 
-load_dotenv("../.env")
+load_dotenv("model/.env")
 
 def get_selected_model() -> Tuple[str, str]:
     """
@@ -31,7 +26,7 @@ def get_selected_model() -> Tuple[str, str]:
     Raises:
         ValueError: If the `userProfileDb.json` file path is not set or the file does not exist.
     """
-    db_path = "../../userProfileDb.json"
+    db_path = "userProfileDb.json"
     if not db_path or not os.path.exists(db_path):
         raise ValueError("USER_PROFILE_DB_PATH not set or file not found")
     with open(db_path, "r", encoding="utf-8") as f:

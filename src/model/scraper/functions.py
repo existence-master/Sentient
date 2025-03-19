@@ -1,13 +1,13 @@
 import os
-from prompts import *  # Importing prompt templates and related utilities from prompts.py
 from wrapt_timeout_decorator import *  # Importing timeout decorator for functions from wrapt_timeout_decorator library (not explicitly used in this file)
 from linkedin_api import Linkedin  # Importing Linkedin API client
-from helpers import *  # Importing helper functions from helpers.py (not explicitly used in this file)
 import praw  # Importing praw, the Python Reddit API Wrapper
 from ntscraper import Nitter  # Importing Nitter scraper for Twitter
 from dotenv import load_dotenv
 
-load_dotenv("../.env")  # Load environment variables from .env file
+from .prompts import *  # Importing prompt templates and related utilities from prompts.py
+
+load_dotenv("model/.env")  # Load environment variables from .env file
 
 def scrape_linkedin_profile(url: str) -> dict:
     """

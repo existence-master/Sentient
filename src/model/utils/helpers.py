@@ -10,7 +10,7 @@ import platform
 
 from dotenv import load_dotenv
 
-load_dotenv("../.env")  # Load environment variables from .env file
+load_dotenv("model/.env")  # Load environment variables from .env file
 
 # Load configuration from environment variables.
 AUTH0_DOMAIN = os.getenv("AUTH0_DOMAIN")

@@ -1,3 +1,6 @@
+import time
+START_TIME = time.time()
+
 import os
 import json
 import asyncio
@@ -20,37 +23,38 @@ import nest_asyncio
 import uvicorn
 
 # Import specific functions, runnables, and helpers from respective folders
-from agents.runnables import *
-from agents.functions import *
-from agents.prompts import *
-from agents.formats import *
+from model.agents.runnables import *
+from model.agents.functions import *
+from model.agents.prompts import *
+from model.agents.formats import *
 
-from memory.runnables import *
-from memory.functions import *
-from memory.prompts import *
-from memory.constants import *
-from memory.formats import *
+from model.memory.runnables import *
+from model.memory.functions import *
+from model.memory.prompts import *
+from model.memory.constants import *
+from model.memory.formats import *
 
-from utils.helpers import *
+from model.utils.helpers import *
 
-from scraper.runnables import *
-from scraper.functions import *
-from scraper.prompts import *
-from scraper.formats import *
+from model.scraper.runnables import *
+from model.scraper.functions import *
+from model.scraper.prompts import *
+from model.scraper.formats import *
 
-from auth.helpers import *
+from model.auth.helpers import *
 
-from common.functions import *
-from common.runnables import *
-from common.prompts import *
-from common.formats import *
+from model.common.functions import *
+from model.common.runnables import *
+from model.common.prompts import *
+from model.common.formats import *
 
-from chat.runnables import *
-from chat.prompts import *
-from chat.functions import *
+from model.chat.runnables import *
+from model.chat.prompts import *
+from model.chat.functions import *
+
 
 # Load environment variables from .env file
-load_dotenv("../.env")
+load_dotenv("model/.env")
 
 # Apply nest_asyncio to allow nested event loops (useful for development environments)
 nest_asyncio.apply()
@@ -135,6 +139,23 @@ MANAGEMENT_CLIENT_SECRET = os.getenv("AUTH0_MANAGEMENT_CLIENT_SECRET")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 USER_PROFILE_DB = os.path.join(BASE_DIR, "..", "..", "userProfileDb.json")
 
+CHAT_DB = "chatsDb.json"
+db_lock = asyncio.Lock()  # Lock for synchronizing database access
+
+async def load_db():
+    """Load the database from chatsDb.json, initializing with {"messages": []} if it doesn't exist or is invalid."""
+    try:
+        with open(CHAT_DB, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print ("DB NOT FOUND!")
+        return {"messages": []}
+
+async def save_db(data):
+    """Save the data to chatsDb.json."""
+    with open(CHAT_DB, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4)
+
 # --- FastAPI Application Setup ---
 app = FastAPI(
     title="Sentient API",
@@ -154,8 +175,7 @@ app.add_middleware(
 
 # --- Pydantic Models ---
 class Message(BaseModel):
-    original_input: str
-    transformed_input: str
+    input: str
     pricing: str
     credits: int
     chat_id: str
@@ -215,6 +235,22 @@ async def main():
     return {
         "message": "Hello, I am Sentient, your private, decentralized and interactive AI companion who feels human"
     }
+    
+@app.get("/get-history", status_code=200)
+async def get_history():
+    """Retrieve the chat history."""
+    async with db_lock:
+        db_data = await load_db() 
+        return JSONResponse(status_code=200, content={"messages": db_data["messages"]})
+
+@app.post("/clear-chat-history", status_code=200)
+async def clear_chat_history():
+    """Clear the chat history."""
+    async with db_lock:
+        db_data = await load_db() 
+        db_data["messages"] = []
+        save_db(db_data)
+    return JSONResponse(status_code=200, content={"message": "Chat history cleared"})
 
 ## Chat Endpoint (Combining agents and memory logic)
 @app.post("/chat", status_code=200)
@@ -224,10 +260,13 @@ async def chat(message: Message):
     global graph_analysis_runnable, graph_decision_runnable, query_classification_runnable, agent_runnable, orchestrator_runnable, text_description_runnable, reflection_runnable, internet_search_runnable, internet_query_reframe_runnable, internet_summary_runnable
 
     try:
-        with open("../../userProfileDb.json", "r", encoding="utf-8") as f:
+        with open("userProfileDb.json", "r", encoding="utf-8") as f:
             db = json.load(f)
+        
+        with open("chatsDb.json", "r", encoding="utf-8") as f:
+            chatsDb = json.load(f)
 
-        chat_history = get_chat_history(message.chat_id)
+        chat_history = get_chat_history()
         chat_runnable = get_chat_runnable(chat_history)
         agent_runnable = get_agent_runnable(chat_history)
         orchestrator_runnable = get_orchestrator_runnable(chat_history)
@@ -248,9 +287,34 @@ async def chat(message: Message):
             internet_context = None
             pro_used = False
             note = ""
+            
+            user_msg = {
+                "id": str(int(time.time() * 1000)),
+                "message": message.input,
+                "isUser": True,
+                "memoryUsed": False,
+                "agentsUsed": False,
+                "internetUsed": False
+            }
+            async with db_lock:
+                chatsDb["messages"].append(user_msg)
+                await save_db(chatsDb)
+
 
             yield json.dumps({"type": "userMessage", "message": message.input, "memoryUsed": memory_used, "agentsUsed": agents_used, "internetUsed": internet_used}) + "\n"
             await asyncio.sleep(0.05)
+            
+            assistant_msg = {
+                "id": str(int(time.time() * 1000)),
+                "message": "",
+                "isUser": False,
+                "memoryUsed": False,  # Will be updated as needed
+                "agentsUsed": False,  # Will be updated as needed
+                "internetUsed": False  # Will be updated as needed
+            }
+            async with db_lock:
+                chatsDb["messages"].append(assistant_msg)
+                await save_db(chatsDb)
 
             if category == "chat":
                 yield json.dumps({"type": "intermediary", "message": "Processing chat response..."}) + "\n"
@@ -295,10 +359,13 @@ async def chat(message: Message):
                         pro_used = True
                     else:
                         internet_context = None
-                with open("../../userProfileDb.json", "r", encoding="utf-8") as f:
+                with open("userProfileDb.json", "r", encoding="utf-8") as f:
                     db = json.load(f)
 
                 personality_description = db["userData"].get("personality", "None")
+                
+                assistant_msg["memoryUsed"] = memory_used
+                assistant_msg["internetUsed"] = internet_used
 
                 async for token in generate_streaming_response(
                     chat_runnable,
@@ -312,12 +379,22 @@ async def chat(message: Message):
                     stream=True
                 ):
                     if isinstance(token, str):
+                        assistant_msg["message"] += token
+                        async with db_lock:
+                            chatsDb["messages"][-1]["message"] = assistant_msg["message"]
+                            await save_db(chatsDb)
                         yield json.dumps({
                             "type": "assistantStream",
                             "token": token,
-                            "done": False
+                            "done": False,
+                            "messageId": assistant_msg["id"]
                         }) + "\n"
                     else:
+                        if note:
+                            assistant_msg["message"] += "\n\n" + note
+                        async with db_lock:
+                            chatsDb["messages"][-1] = assistant_msg  # Update the full message object
+                            await save_db(chatsDb)
                         yield json.dumps({
                             "type": "assistantStream",
                             "token": "\n\n" + note,
@@ -326,6 +403,7 @@ async def chat(message: Message):
                             "agentsUsed": agents_used,
                             "internetUsed": internet_used,
                             "proUsed": pro_used,
+                            "messageId": assistant_msg["id"]
                         }) + "\n"
                     await asyncio.sleep(0.05)  
                 await asyncio.sleep(0.05)
@@ -394,11 +472,14 @@ async def chat(message: Message):
                     else:
                         internet_context = None
 
-                with open("../../userProfileDb.json", "r", encoding="utf-8") as f:
+                with open("userProfileDb.json", "r", encoding="utf-8") as f:
                     db = json.load(f)
 
                 personality_description = db["userData"].get("personality", "None")
 
+                assistant_msg["memoryUsed"] = memory_used
+                assistant_msg["internetUsed"] = internet_used
+                
                 async for token in generate_streaming_response(
                     chat_runnable,
                     inputs= {
@@ -411,12 +492,22 @@ async def chat(message: Message):
                     stream=True
                 ):
                     if isinstance(token, str):
+                        assistant_msg["message"] += token
+                        async with db_lock:
+                            chatsDb["messages"][-1]["message"] = assistant_msg["message"]
+                            await save_db(chatsDb)
                         yield json.dumps({
                             "type": "assistantStream",
                             "token": token,
-                            "done": False
+                            "done": False,
+                            "messageId": assistant_msg["id"]
                         }) + "\n"
                     else:
+                        if note:
+                            assistant_msg["message"] += "\n\n" + note
+                        async with db_lock:
+                            chatsDb["messages"][-1] = assistant_msg
+                            await save_db(chatsDb)
                         yield json.dumps({
                             "type": "assistantStream",
                             "token": "\n\n" + note,
@@ -425,6 +516,7 @@ async def chat(message: Message):
                             "agentsUsed": agents_used,
                             "internetUsed": internet_used,
                             "proUsed": pro_used,
+                            "messageId": assistant_msg["id"]
                         }) + "\n"
                     await asyncio.sleep(0.05)  
                 await asyncio.sleep(0.05)
@@ -476,9 +568,13 @@ async def chat(message: Message):
                 response = generate_response(agent_runnable, transformed_input, user_context, internet_context, username)
                 
                 if "tool_calls" not in response or not isinstance(response["tool_calls"], list):
+                    assistant_msg["message"] = "Error: Invalid tool_calls format in response."
+                    async with db_lock:
+                        chatsDb["messages"][-1] = assistant_msg
+                        await save_db(chatsDb)
                     yield json.dumps({
                         "type": "assistantMessage",
-                        "message": "Error: Invalid tool_calls format in response."
+                        "message": assistant_msg["message"]
                     }) + "\n"
                     return
 
@@ -486,10 +582,14 @@ async def chat(message: Message):
                 all_tool_results = []
 
                 if len(response["tool_calls"]) > 1 and pricing_plan == "free":
+                    assistant_msg["message"] = "Sorry. This query requires multiple tools to be called. Flows are a pro feature and you have run out of daily Pro credits. You can upgrade to pro from the Settings page." + f"\n\n{note}"
+                    async with db_lock:
+                        chatsDb["messages"][-1] = assistant_msg
+                        await save_db(chatsDb)
                     if credits <= 0:
                         yield json.dumps({
                             "type": "assistantMessage",
-                            "message": "Sorry friend, but the query requires multiple tools to be called. This is a pro feature and you are out of daily credits for pro. You can upgrade to pro from the settings page." + f"\n\n{note}"
+                            "message": assistant_msg["message"]
                         }) + "\n"
                         return
                     else:
@@ -501,23 +601,30 @@ async def chat(message: Message):
 
                     tool_name = tool_call["content"].get("tool_name")
 
-                    if tool_name != "gmail" and pricing_plan == "free":
-                        if credits <= 0:
+                    if tool_name != "gmail" and pricing_plan == "free" and credits <= 0:
+                            assistant_msg["message"] = "Sorry, but the query requires Sentient to use a tool that it can only use on the Pro plan. You have run out of daily credits for Pro and can upgrade your plan from the Settings page." + f"\n\n{note}"
+                            async with db_lock:
+                                chatsDb["messages"][-1] = assistant_msg
+                                await save_db(chatsDb)
                             yield json.dumps({
                                 "type": "assistantMessage",
-                                "message": "Sorry friend but the query requires a tool to be called which is only available in the pro version. This is a pro feature and you are out of daily credits for pro. You can upgrade to pro from the settings page." + f"\n\n{note}"
+                                "message": assistant_msg["message"]
                             }) + "\n"
                             return
-                        else:
-                            pro_used = True
+                    elif tool_name != "gmail" and pricing_plan == "free":
+                        pro_used = True
 
                     task_instruction = tool_call["content"].get("task_instruction")
                     previous_tool_response_required = tool_call["content"].get("previous_tool_response", False)
 
                     if not tool_name or not task_instruction:
+                        assistant_msg["message"] = "Error: Tool call is missing required fields."
+                        async with db_lock:
+                            chatsDb["messages"][-1] = assistant_msg
+                            await save_db(chatsDb)
                         yield json.dumps({
                             "type": "assistantMessage",
-                            "message": "Error: Tool call is missing required fields."
+                            "message": assistant_msg["message"]
                         }) + "\n"
                         continue
 
@@ -526,9 +633,13 @@ async def chat(message: Message):
 
                     tool_handler = tool_handlers.get(tool_name)
                     if not tool_handler:
+                        assistant_msg["message"] = f"Error: Tool {tool_name} not found."
+                        async with db_lock:
+                            chatsDb["messages"][-1] = assistant_msg
+                            await save_db(chatsDb)
                         yield json.dumps({
                             "type": "assistantMessage",
-                            "message": f"Error: Tool {tool_name} not found."
+                            "message": assistant_msg["message"]
                         }) + "\n"
                         continue
 
@@ -572,16 +683,24 @@ async def chat(message: Message):
                             "tool_result": tool_result
                         })
                     except Exception as e:
+                        assistant_msg["message"] = f"Error executing tool {tool_name}: {str(e)}"
+                        async with db_lock:
+                            chatsDb["messages"][-1] = assistant_msg
+                            await save_db(chatsDb)
                         write_to_log(f"Error executing tool {tool_name}: {str(e)}")
                         yield json.dumps({
                             "type": "assistantMessage",
-                            "message": f"Error executing tool {tool_name}: {str(e)}"
+                            "message": assistant_msg["message"]
                         }) + "\n"
                         continue
 
                 yield json.dumps({"type": "intermediary-flow-end"}) + "\n"
                 await asyncio.sleep(0.05)
-
+                
+                assistant_msg["memoryUsed"] = memory_used
+                assistant_msg["agentsUsed"] = agents_used
+                assistant_msg["internetUsed"] = internet_used
+                
                 try:
                     if len(all_tool_results) == 1 and all_tool_results[0]["tool_name"] == "search_inbox":
                         filtered_tool_result = {
@@ -599,10 +718,15 @@ async def chat(message: Message):
                             stream=True  
                         ):
                             if isinstance(token, str):
+                                assistant_msg["message"] += token
+                                async with db_lock:
+                                    chatsDb["messages"][-1]["message"] = assistant_msg["message"]
+                                    await save_db(chatsDb)
                                 yield json.dumps({
                                     "type": "assistantStream",
                                     "token": token,
-                                    "done": False
+                                    "done": False,
+                                    "messageId": assistant_msg["id"]
                                 }) + "\n"
                                 await asyncio.sleep(0.05)  
                             else:
@@ -614,6 +738,7 @@ async def chat(message: Message):
                                     "agentsUsed": agents_used,
                                     "internetUsed": internet_used,
                                     "proUsed": pro_used,
+                                    "messageId": assistant_msg["id"]
                                 }) + "\n"
                             await asyncio.sleep(0.05)
                         await asyncio.sleep(0.05)
@@ -624,10 +749,15 @@ async def chat(message: Message):
                             stream=True  
                         ):
                             if isinstance(token, str):
+                                assistant_msg["message"] += token
+                                async with db_lock:
+                                    chatsDb["messages"][-1]["message"] = assistant_msg["message"]
+                                    await save_db(chatsDb)
                                 yield json.dumps({
                                     "type": "assistantStream",
                                     "token": token,
-                                    "done": False
+                                    "done": False,
+                                    "messageId": assistant_msg["id"]
                                 }) + "\n"
                                 await asyncio.sleep(0.05)  
                             else:
@@ -639,14 +769,19 @@ async def chat(message: Message):
                                     "agentsUsed": agents_used,
                                     "internetUsed": internet_used,
                                     "proUsed": pro_used,
+                                    "messageId": assistant_msg["id"]
                                 }) + "\n"
                             await asyncio.sleep(0.05)
                     await asyncio.sleep(0.05)
                 except Exception as e:
+                    assistant_msg["message"] = f"Error during reflection: {str(e)}"
+                    async with db_lock:
+                        chatsDb["messages"][-1] = assistant_msg
+                        await save_db(chatsDb)
                     write_to_log(f"Error during reflection: {str(e)}")
                     yield json.dumps({
                         "type": "assistantMessage",
-                        "message": f"Error during reflection: {str(e)}"
+                        "message": assistant_msg["message"]
                     }) + "\n"
 
         return StreamingResponse(response_generator(), media_type="application/json")
@@ -676,7 +811,7 @@ async def elaborate(message: ElaboratorMessage):
 async def gmail_tool(tool_call: ToolCall) -> Dict[str, Any]:
     """Handles Gmail-related tasks using multi-tool support."""
     try:
-        with open("../../userProfileDb.json", "r", encoding="utf-8") as f:
+        with open("userProfileDb.json", "r", encoding="utf-8") as f:
             db = json.load(f)
         username = db["userData"]["personalInfo"]["name"]
         tool_runnable = get_tool_runnable(
@@ -807,7 +942,7 @@ async def gslides_tool(tool_call: ToolCall) -> Dict[str, Any]:
 
     try:
         with open(
-            "../../userProfileDb.json", "r", encoding="utf-8"
+            "userProfileDb.json", "r", encoding="utf-8"
         ) as f:  # Load user profile database
             db = json.load(f)
 
@@ -895,9 +1030,6 @@ async def gcalendar_tool(tool_call: ToolCall) -> Dict[str, Any]:
         print(f"Error calling gcalendar: {e}")
         return {"status": "failure", "error": str(e)}  # Return error status and message
 
-# Additional tool handlers (gslides, gdocs, gsheets, gcalendar) follow the same pattern
-# They are omitted here for brevity but should be included similarly
-
 ## Utils Endpoints
 @app.post("/get-role")
 async def get_role(request: UserInfoRequest) -> JSONResponse:
@@ -936,8 +1068,308 @@ async def get_beta_user_status(request: UserInfoRequest) -> JSONResponse:
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
 
-# Additional utils endpoints (get-referral-code, set-referrer-status, etc.) follow similar patterns
-# They are omitted here for brevity but should be included
+@app.post("/get-referral-code")
+async def get_referral_code(request: UserInfoRequest) -> JSONResponse:
+    """
+    Retrieves the referral code from Auth0 app_metadata.
+
+    Args:
+        request (UserInfoRequest): Request containing the user_id.
+
+    Returns:
+        JSONResponse: Referral code or error message.
+    """
+    try:
+        token = get_management_token()  # Obtain management API token
+        url = f"https://{AUTH0_DOMAIN}/api/v2/users/{request.user_id}"
+        headers = {
+            "Authorization": f"Bearer {token}",  # Include token in header
+            "Accept": "application/json",
+        }
+
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Error fetching user info: {response.text}",  # Raise HTTP exception if request fails
+            )
+
+        user_data = response.json()
+        referral_code = user_data.get("app_metadata", {}).get(
+            "referralCode"
+        )  # Extract referralCode from app_metadata
+        if not referral_code:
+            return JSONResponse(
+                status_code=404, content={"message": "Referral code not found."}
+            )  # Return 404 if referral code not found
+
+        return JSONResponse(
+            status_code=200, content={"referralCode": referral_code}
+        )  # Return referral code
+    except Exception as e:
+        print(f"Error in get-referral-code: {str(e)}")
+        return JSONResponse(
+            status_code=500, content={"message": str(e)}
+        )  # Return 500 for any exceptions
+
+
+@app.post("/get-referrer-status")
+async def get_referrer_status(request: UserInfoRequest) -> JSONResponse:
+    """
+    Retrieves the referrer status from Auth0 app_metadata.
+
+    Args:
+        request (UserInfoRequest): Request containing the user_id.
+
+    Returns:
+        JSONResponse: Referrer status or error message.
+    """
+    try:
+        token = get_management_token()  # Obtain management API token
+        url = f"https://{AUTH0_DOMAIN}/api/v2/users/{request.user_id}"
+        headers = {
+            "Authorization": f"Bearer {token}",  # Include token in header
+            "Accept": "application/json",
+        }
+
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Error fetching user info: {response.text}",  # Raise HTTP exception if request fails
+            )
+
+        user_data = response.json()
+        referrer_status = user_data.get("app_metadata", {}).get(
+            "referrer"
+        )  # Extract referrer status from app_metadata
+        if referrer_status is None:
+            return JSONResponse(
+                status_code=404, content={"message": "Referrer status not found."}
+            )  # Return 404 if referrer status not found
+
+        return JSONResponse(
+            status_code=200, content={"referrerStatus": referrer_status}
+        )  # Return referrer status
+    except Exception as e:
+        print(f"Error in referrer-status: {str(e)}")
+        return JSONResponse(
+            status_code=500, content={"message": str(e)}
+        )  # Return 500 for any exceptions
+
+
+@app.post("/set-referrer-status")
+async def set_referrer_status(request: ReferrerStatusRequest) -> JSONResponse:
+    """
+    Sets the referrer status in Auth0 app_metadata.
+
+    Args:
+        request (ReferrerStatusRequest): Request containing user_id and referrer_status.
+
+    Returns:
+        JSONResponse: Success or error message.
+    """
+    try:
+        token = get_management_token()  # Obtain management API token
+        url = f"https://{AUTH0_DOMAIN}/api/v2/users/{request.user_id}"
+        headers = {
+            "Authorization": f"Bearer {token}",  # Include token in header
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "app_metadata": {
+                "referrer": request.referrer_status  # Set referrer status in app_metadata
+            }
+        }
+
+        response = requests.patch(
+            url, headers=headers, json=payload
+        )  # Use PATCH to update user metadata
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Error updating referrer status: {response.text}",  # Raise HTTP exception if request fails
+            )
+
+        return JSONResponse(
+            status_code=200,
+            content={"message": "Referrer status updated successfully."},
+        )  # Return success message
+    except Exception as e:
+        print(f"Error in set-referrer-status: {str(e)}")
+        return JSONResponse(
+            status_code=500, content={"message": str(e)}
+        )  # Return 500 for any exceptions
+
+
+@app.post("/get-user-and-set-referrer-status")
+async def get_user_and_set_referrer_status(request: SetReferrerRequest) -> JSONResponse:
+    """
+    Searches for a user by referral code and sets their referrer status to true.
+
+    Args:
+        request (SetReferrerRequest): Request containing referral_code.
+
+    Returns:
+        JSONResponse: Success or error message.
+    """
+    try:
+        token = get_management_token()  # Obtain management API token
+        headers = {
+            "Authorization": f"Bearer {token}",  # Include token in header
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+        search_url = f"https://{AUTH0_DOMAIN}/api/v2/users?q=app_metadata.referralCode%3A%22{request.referral_code}%22"  # Search URL to find user by referral code
+        search_response = requests.get(search_url, headers=headers)
+
+        if search_response.status_code != 200:
+            raise HTTPException(
+                status_code=search_response.status_code,
+                detail=f"Error searching for user: {search_response.text}",  # Raise HTTP exception if search fails
+            )
+
+        users = search_response.json()
+
+        if not users or len(users) == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No user found with referral code: {request.referral_code}",  # Raise 404 if no user found
+            )
+
+        user_id = users[0]["user_id"]  # Get user_id from search results
+
+        referrer_status_payload = {"user_id": user_id, "referrer_status": True}
+
+        set_status_url = f"http://localhost:5005/set-referrer-status"  # URL to set referrer status (assuming local service)
+        set_status_response = requests.post(
+            set_status_url, json=referrer_status_payload
+        )  # Call local service to set referrer status
+
+        if set_status_response.status_code != 200:
+            raise HTTPException(
+                status_code=set_status_response.status_code,
+                detail=f"Error setting referrer status: {set_status_response.text}",  # Raise HTTP exception if setting status fails
+            )
+
+        return JSONResponse(
+            status_code=200,
+            content={"message": "Referrer status updated successfully."},
+        )  # Return success message
+
+    except Exception as e:
+        print(f"Error in get-user-and-set-referrer-status: {str(e)}")
+        return JSONResponse(
+            status_code=500, content={"message": str(e)}
+        )  # Return 500 for any exceptions
+
+
+@app.post("/set-beta-user-status")
+def set_beta_user_status(request: BetaUserStatusRequest) -> JSONResponse:
+    """
+    Sets the beta user status in Auth0 app_metadata.
+
+    Args:
+        request (BetaUserStatusRequest): Request containing user_id and beta_user_status.
+
+    Returns:
+        JSONResponse: Success or error message.
+    """
+    try:
+        token = get_management_token()  # Obtain management API token
+        url = f"https://{AUTH0_DOMAIN}/api/v2/users/{request.user_id}"
+        headers = {
+            "Authorization": f"Bearer {token}",  # Include token in header
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "app_metadata": {
+                "betaUser": request.beta_user_status  # Set betaUser status in app_metadata
+            }
+        }
+
+        response = requests.patch(
+            url, headers=headers, json=payload
+        )  # Use PATCH to update user metadata
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Error updating beta user status: {response.text}",  # Raise HTTP exception if request fails
+            )
+
+        return JSONResponse(
+            status_code=200,
+            content={"message": "Beta user status updated successfully."},
+        )  # Return success message
+    except Exception as e:
+        print(f"Error in set-beta-user-status: {str(e)}")
+        return JSONResponse(
+            status_code=500, content={"message": str(e)}
+        )  # Return 500 for any exceptions
+
+
+@app.post("/get-user-and-invert-beta-user-status")
+def get_user_and_invert_beta_user_status(request: UserInfoRequest) -> JSONResponse:
+    """
+    Searches for a user by user id and inverts the beta user status in Auth0 app_metadata.
+
+    Args:
+        request (UserInfoRequest): Request containing user_id.
+
+    Returns:
+        JSONResponse: Success or error message.
+    """
+    try:
+        token = get_management_token()  # Obtain management API token
+        url = f"https://{AUTH0_DOMAIN}/api/v2/users/{request.user_id}"
+        headers = {
+            "Authorization": f"Bearer {token}",  # Include token in header
+            "Accept": "application/json",
+        }
+
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Error fetching user info: {response.text}",  # Raise HTTP exception if request fails
+            )
+
+        user_data = response.json()
+        beta_user_status = user_data.get("app_metadata", {}).get(
+            "betaUser"
+        )  # Get current betaUser status
+
+        # Invert the beta user status (string boolean to boolean and then invert)
+        beta_user_status_payload = {
+            "user_id": request.user_id,
+            "beta_user_status": False
+            if str(beta_user_status).lower() == "true"
+            else True,
+        }
+
+        set_status_url = f"http://localhost:5005/set-beta-user-status"  # URL to set beta user status (assuming local service)
+        set_status_response = requests.post(
+            set_status_url, json=beta_user_status_payload
+        )  # Call local service to set inverted beta user status
+
+        if set_status_response.status_code != 200:
+            raise HTTPException(
+                status_code=set_status_response.status_code,
+                detail=f"Error inverting beta user status: {set_status_response.text}",  # Raise HTTP exception if setting status fails
+            )
+
+        return JSONResponse(
+            status_code=200,
+            content={"message": "Beta user status inverted successfully."},
+        )  # Return success message
+    except Exception as e:
+        print(f"Error in get-user-and-invert-beta-user-status: {str(e)}")
+        return JSONResponse(
+            status_code=500, content={"message": str(e)}
+        )  # Return 500 for any exceptions
 
 @app.post("/encrypt")
 async def encrypt_data(request: EncryptionRequest) -> JSONResponse:
@@ -1003,8 +1435,8 @@ async def authenticate_google():
     """Authenticates with Google using OAuth 2.0."""
     try:
         creds = None
-        if os.path.exists("../token.pickle"):
-            with open("../token.pickle", "rb") as token:
+        if os.path.exists("model/token.pickle"):
+            with open("model/token.pickle", "rb") as token:
                 creds = pickle.load(token)
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
@@ -1012,7 +1444,7 @@ async def authenticate_google():
             else:
                 flow = InstalledAppFlow.from_client_config(CREDENTIALS_DICT, SCOPES)
                 creds = flow.run_local_server(port=0)
-            with open("../token.pickle", "wb") as token:
+            with open("model/token.pickle", "wb") as token:
                 pickle.dump(creds, token)
         return JSONResponse(status_code=200, content={"success": True})
     except Exception as e:
@@ -1035,8 +1467,8 @@ async def graphrag(request: GraphRAGRequest):
 async def create_graph():
     """Creates a knowledge graph from documents in the input directory."""
     try:
-        input_dir = "../input"
-        with open("../../userProfileDb.json", "r", encoding="utf-8") as f:
+        input_dir = "model/input"
+        with open("userProfileDb.json", "r", encoding="utf-8") as f:
             db = json.load(f)
         username = db["userData"]["personalInfo"].get("name", "User")
         extracted_texts = []
@@ -1064,7 +1496,7 @@ async def create_graph():
 async def delete_subgraph(request: DeleteSubgraphRequest):
     """Deletes a subgraph from the knowledge graph based on a source name."""
     try:
-        with open("../../userProfileDb.json", "r", encoding="utf-8") as f:
+        with open("userProfileDb.json", "r", encoding="utf-8") as f:
             db = json.load(f)
         username = db["userData"]["personalInfo"].get("name", "User").lower()
         source_name = request.source
@@ -1077,7 +1509,7 @@ async def delete_subgraph(request: DeleteSubgraphRequest):
         if not file_name:
             return JSONResponse(status_code=400, content={"message": f"No file mapping found for source: {source_name}"})
         delete_source_subgraph(graph_driver, file_name)
-        os.remove(f"../input/{file_name}")
+        os.remove(f"model/input/{file_name}")
         return JSONResponse(status_code=200, content={"message": f"Subgraph related to {file_name} deleted successfully."})
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
@@ -1086,14 +1518,14 @@ async def delete_subgraph(request: DeleteSubgraphRequest):
 async def create_document():
     """Creates and summarizes personality documents based on user profile data."""
     try:
-        with open("../../userProfileDb.json", "r", encoding="utf-8") as f:
+        with open("userProfileDb.json", "r", encoding="utf-8") as f:
             db = json.load(f)
         username = db["userData"]["personalInfo"].get("name", "User")
         personality_type = db["userData"].get("personalityType", "")
         structured_linkedin_profile = db["userData"].get("linkedInProfile", {})
         reddit_profile = db["userData"].get("redditProfile", [])
         twitter_profile = db["userData"].get("twitterProfile", [])
-        input_dir = "../input"
+        input_dir = "model/input"
         os.makedirs(input_dir, exist_ok=True)
         for file in os.listdir(input_dir):
             os.remove(os.path.join(input_dir, file))
@@ -1136,7 +1568,7 @@ async def create_document():
 async def customize_graph(request: GraphRequest):
     """Customizes the knowledge graph with new information."""
     try:
-        with open("../../userProfileDb.json", "r", encoding="utf-8") as f:
+        with open("userProfileDb.json", "r", encoding="utf-8") as f:
             db = json.load(f)
         username = db["userData"]["personalInfo"]["name"]
         points = fact_extraction_runnable.invoke({"paragraph": request.information, "username": username})
@@ -1149,6 +1581,9 @@ async def customize_graph(request: GraphRequest):
         return JSONResponse(status_code=200, content={"message": "Graph customized successfully."})
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
+
+STARTUP_TIME = time.time() - START_TIME
+print(f"Server startup time: {STARTUP_TIME:.2f} seconds")
 
 # --- Run the Application ---
 if __name__ == "__main__":

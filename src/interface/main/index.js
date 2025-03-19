@@ -391,7 +391,7 @@ const resetCreditsIfNecessary = async () => {
 const checkGoogleCredentials = async () => {
 	try {
 		const response = await fetch(
-			"http://127.0.0.1:5007/authenticate-google" // URL to check Google auth status
+			"http://127.0.0.1:5000/authenticate-google" // URL to check Google auth status
 		)
 		const data = await response.json()
 
@@ -725,10 +725,9 @@ ipcMain.handle("get-db-data", async () => {
 
 ipcMain.handle("fetch-chat-history", async () => {
 	try {
-		const response = await fetch(
-			`${process.env.APP_SERVER_URL}/get-chat-history`,
-			{ method: "GET" }
-		)
+		const response = await fetch(`http://localhost:5000/get-history`, {
+			method: "GET"
+		})
 		if (!response.ok) throw new Error("Failed to fetch chat history")
 		const data = await response.json()
 		return { messages: data.messages, status: 200 }
@@ -742,6 +741,15 @@ ipcMain.handle("send-message", async (_event, { input }) => {
 	try {
 		const pricing = (await getPricingFromKeytar()) || "free"
 		const credits = await getCreditsFromKeytar()
+		console.log(
+			"PAYLOAD:",
+			JSON.stringify({
+				input,
+				pricing,
+				credits,
+				chat_id: "single_chat"
+			})
+		)
 		const response = await fetch(`${process.env.APP_SERVER_URL}/chat`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },

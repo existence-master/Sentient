@@ -1,13 +1,12 @@
 import re
 import json
-from html import unescape
 import os
 import datetime
 import platform
-from typing import Optional, Union, Dict, List, Any
+from typing import Union, Dict, List, Any
 from dotenv import load_dotenv
 
-load_dotenv("../.env")  # Load environment variables from .env file
+load_dotenv("model/.env")  # Load environment variables from .env file
 
 # --- Logging Configuration ---
 # Determine log file path based on the operating system.
@@ -37,28 +36,6 @@ def clean_key(key: str) -> str:
     return re.sub(
         r"\s*\(.*?\)\s*", "", key
     ).strip()  # Remove parentheses and enclosed text, then strip whitespace
-
-
-def clean_description(description: Optional[str]) -> str:
-    """
-    Clean a description by removing HTML tags and unescaping HTML entities.
-
-    This function removes any HTML tags from the input description and unescapes
-    HTML entities (e.g., '&' becomes '&').
-
-    Args:
-        description (Optional[str]): The description string, possibly containing HTML.
-
-    Returns:
-        str: The cleaned description string, with HTML tags removed and entities unescaped.
-             Returns an empty string if the input description is None or empty.
-    """
-    if not description:
-        return ""  # Return empty string if description is None or empty
-
-    clean_text: str = re.sub(r"<.*?>", "", description)  # Remove HTML tags
-    clean_text: str = unescape(clean_text)  # Unescape HTML entities
-    return clean_text  # Return cleaned text
 
 
 class TimeoutException(Exception):

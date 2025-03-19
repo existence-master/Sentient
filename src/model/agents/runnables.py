@@ -1,16 +1,12 @@
 import os
-import json
-import requests
-from typing import Dict, Any, List, Union, Optional, Generator, Tuple, Type
-from abc import ABC, abstractmethod
-from prompts import *
-from formats import *
+from typing import Dict, List, Optional, Tuple, Type
 from dotenv import load_dotenv
-import keyring
-from sys import platform
-from app.base import *
 
-load_dotenv("../.env")
+from .formats import *
+from .prompts import *
+from model.app.base import *
+
+load_dotenv("model/.env")
 
 def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
     """
