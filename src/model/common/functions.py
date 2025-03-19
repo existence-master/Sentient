@@ -228,3 +228,11 @@ def get_chat_history() -> list[dict] | None:
     except Exception as e:
         print(f"Error retrieving chat history: {e}")
         return None  # Return None in case of error
+
+def context_classify(classification_runnable, query):
+    try:
+        classification = classification_runnable.invoke({"query":query})
+        return classification
+    except Exception as e:
+        write_to_log(f"An error occurred in context classification: {e}")
+        return None

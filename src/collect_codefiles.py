@@ -1,13 +1,13 @@
 import os
 
 # List of file names to exclude
-exclude_files = ['.env', '.env.template', ".prettierrc", "eslint.config.js", "jsconfig.json", "next.config.js", "package-lock.json", "package.json", "postcss.config.js", "README.md", "tailwind.config.js", "chatsDb.json", "userProfileDb.json", "requirements.txt", "token.pickle", "run_servers.sh", "version.txt", "collect_code.py"]
+exclude_files = ['.env', '.env.template', ".prettierrc", "eslint.config.js", "jsconfig.json", "next.config.js", "package-lock.json", "package.json", "postcss.config.js", "README.md", "tailwind.config.js", "chatsDb.json", "userProfileDb.json", "requirements.txt", "token.pickle", "run_servers.sh", "version.txt", "collect_code.py", "prompts.py", "formats.py", "runnables.py", "functions.py", "helpers.py", "externals.py", "constants.py"]
 
 # List of folders to exclude
-exclude_dirs = ['node_modules', '.next', 'public', 'styles', 'input', 'venv', '__pycache__', 'chroma_db', 'agents', 'scraper']
+exclude_dirs = ['node_modules', '.next', 'public', 'styles', 'input', 'venv', '__pycache__', 'chroma_db']
 
 # List of specific folders to include
-include_folders = ['model\\chat']
+include_folders = ['chat', 'auth', 'agents', 'app', 'common', 'memory', 'scraper', 'utils']
 
 # List of specific files to include
 include_files = []  # Leave empty to include all files in the specified folders
@@ -59,7 +59,7 @@ def get_code_from_files(directory, exclude_files, exclude_dirs, include_folders,
 
 def main():
     # Get the current working directory
-    current_directory = "D:/Documents/cyber/projects/Sentient-New/Code/src"
+    current_directory = "/home/existence/Desktop/Sentient/Open Source/SK/development/src/model"
     
     # Get all the code from the files in the specified directory
     code = get_code_from_files(current_directory, exclude_files, exclude_dirs, include_folders, include_files)
