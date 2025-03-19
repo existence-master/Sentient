@@ -89,6 +89,7 @@ twitter_runnable = get_twitter_runnable()
 context_classification_runnable = get_context_classification_runnable()
 internet_query_reframe_runnable = get_internet_query_reframe_runnable()
 internet_summary_runnable = get_internet_summary_runnable()
+internet_search_runnable = get_internet_classification_runnable()
 
 # Tool handlers registry for agent tools
 tool_handlers: Dict[str, callable] = {}
@@ -130,6 +131,9 @@ CREDENTIALS_DICT = {
 AUTH0_DOMAIN = os.getenv("AUTH0_DOMAIN")
 MANAGEMENT_CLIENT_ID = os.getenv("AUTH0_MANAGEMENT_CLIENT_ID")
 MANAGEMENT_CLIENT_SECRET = os.getenv("AUTH0_MANAGEMENT_CLIENT_SECRET")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+USER_PROFILE_DB = os.path.join(BASE_DIR, "..", "..", "userProfileDb.json")
 
 # --- FastAPI Application Setup ---
 app = FastAPI(
@@ -215,15 +219,15 @@ async def main():
 ## Chat Endpoint (Combining agents and memory logic)
 @app.post("/chat", status_code=200)
 async def chat(message: Message):
-    global index, embed_model, chat_runnable, context_classification_runnable
+    global embed_model, chat_runnable, context_classification_runnable
     global fact_extraction_runnable, text_conversion_runnable, information_extraction_runnable
-    global graph_analysis_runnable, graph_decision_runnable, query_classification_runnable, agent_runnable, orchestrator_runnable, text_description_runnable, reflection_runnable, chat_id, internet_search_runnable, internet_query_reframe_runnable, internet_summary_runnable
+    global graph_analysis_runnable, graph_decision_runnable, query_classification_runnable, agent_runnable, orchestrator_runnable, text_description_runnable, reflection_runnable, internet_search_runnable, internet_query_reframe_runnable, internet_summary_runnable
 
     try:
         with open("../../userProfileDb.json", "r", encoding="utf-8") as f:
             db = json.load(f)
 
-        chat_history = get_chat_history(chat_id)
+        chat_history = get_chat_history(message.chat_id)
         chat_runnable = get_chat_runnable(chat_history)
         agent_runnable = get_agent_runnable(chat_history)
         orchestrator_runnable = get_orchestrator_runnable(chat_history)
