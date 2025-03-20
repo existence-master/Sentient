@@ -249,7 +249,7 @@ async def clear_chat_history():
     async with db_lock:
         db_data = await load_db() 
         db_data["messages"] = []
-        save_db(db_data)
+        await save_db(db_data)
     return JSONResponse(status_code=200, content={"message": "Chat history cleared"})
 
 ## Chat Endpoint (Combining agents and memory logic)
@@ -674,7 +674,7 @@ async def chat(message: Message):
                         else:
                             tool_result = tool_result_main
                             
-                        write_to_log(f"Tool {tool_name} executed successfully.")
+                        print(f"Tool {tool_name} executed successfully.")
 
                         previous_tool_result = tool_result
                         all_tool_results.append({
@@ -687,7 +687,7 @@ async def chat(message: Message):
                         async with db_lock:
                             chatsDb["messages"][-1] = assistant_msg
                             await save_db(chatsDb)
-                        write_to_log(f"Error executing tool {tool_name}: {str(e)}")
+                        print(f"Error executing tool {tool_name}: {str(e)}")
                         yield json.dumps({
                             "type": "assistantMessage",
                             "message": assistant_msg["message"]
@@ -778,7 +778,7 @@ async def chat(message: Message):
                     async with db_lock:
                         chatsDb["messages"][-1] = assistant_msg
                         await save_db(chatsDb)
-                    write_to_log(f"Error during reflection: {str(e)}")
+                    print(f"Error during reflection: {str(e)}")
                     yield json.dumps({
                         "type": "assistantMessage",
                         "message": assistant_msg["message"]
@@ -787,7 +787,7 @@ async def chat(message: Message):
         return StreamingResponse(response_generator(), media_type="application/json")
 
     except Exception as e:
-        write_to_log(f"Error in chat: {str(e)}")
+        print(f"Error in chat: {str(e)}")
         return JSONResponse(status_code=500, content={"message": str(e)})
 
 ## Agents Endpoints

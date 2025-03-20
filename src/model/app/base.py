@@ -197,6 +197,8 @@ class OllamaRunnable(BaseRunnable):
         }
 
         if self.response_type == "json":  # If expecting a JSON response, set the format
+            print(f"Response type: {self.response_type}")
+            print(f"Platform: {platform}")
             if (
                 platform == "win32"
             ):  # Conditional format setting based on platform (Windows specific handling)
@@ -204,9 +206,8 @@ class OllamaRunnable(BaseRunnable):
                     self.required_format
                 )  # Set format directly for Windows
             else:
-                payload["format"] = json.dumps(
-                    self.required_format
-                )  # Serialize format to JSON string for non-Windows
+                payload["format"] = self.required_format
+                  # Serialize format to JSON string for non-Windows
 
         response = requests.post(self.model_url, json=payload)
         return self._handle_response(response)

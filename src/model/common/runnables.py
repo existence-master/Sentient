@@ -89,7 +89,6 @@ def get_orchestrator_runnable(chat_history):
     runnable_class = model_mapping.get(provider, OllamaRunnable)
     model_url = os.getenv("BASE_MODEL_URL") if provider not in model_mapping else os.getenv(f"{provider.upper()}_API_URL")
 
-
     orchestrator_runnable = runnable_class(
         model_url=model_url,  # Get model URL from environment variables
         model_name=model_name,  # Get model name from environment variables
@@ -106,7 +105,6 @@ def get_orchestrator_runnable(chat_history):
     )  # Add chat history to the runnable
 
     return orchestrator_runnable  # Return the configured orchestrator runnable
-
 
 def get_context_classification_runnable():
     """

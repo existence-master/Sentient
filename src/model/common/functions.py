@@ -235,5 +235,5 @@ def context_classify(classification_runnable, query):
         classification = classification_runnable.invoke({"query":query})
         return classification
     except Exception as e:
-        write_to_log(f"An error occurred in context classification: {e}")
+        print(f"An error occurred in context classification: {e}")
         return None
