@@ -1,23 +1,21 @@
-context_classification_required_format = {
-    "type": "object",
-    "properties": {"class": {"type": "string", "enum": ["personal", "general"]}},
-    "required": ["class"],
-    "additionalProperties": False,
-}
-
-orchestrator_required_format = {
-    "type": "object",
-    "properties": {
-        "class": {"type": "string", "enum": ["agent", "memory", "chat"]},
-        "input": {"type": "string"},
+unified_classification_format = {
+  "type": "object",
+  "properties": {
+    "category": {
+      "type": "string",
+      "enum": ["chat", "memory", "agent"]
     },
-    "required": ["class", "input"],
-    "additionalProperties": False,
-}
-
-internet_classification_required_format = {
-    "type": "object",
-    "properties": {"class": {"type": "string", "enum": ["Internet", "None"]}},
-    "required": ["class"],
-    "additionalProperties": False,
+    "use_personal_context": {
+      "type": "boolean"
+    },
+    "internet": {
+      "type": "string",
+      "enum": ["Internet", "None"]
+    },
+    "transformed_input": {
+      "type": "string"
+    }
+  },
+  "required": ["category", "use_personal_context", "internet", "transformed_input"],
+  "additionalProperties": False
 }

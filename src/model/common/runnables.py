@@ -68,20 +68,9 @@ def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
 # These functions create and configure instances of CustomRunnable for different tasks.
 # They encapsulate the specific prompts, model settings, and response formats for each functionality.
 
-def get_orchestrator_runnable(chat_history):
-    """
-    Creates and configures a CustomRunnable for orchestrating different tasks based on user input.
-
-    This runnable is designed to classify user queries and decide the appropriate course of action,
-    such as performing an internet search or providing a direct response. It uses a specific system prompt,
-    user prompt template, and required format defined for orchestration tasks.
-
-    :param chat_history: The chat history to maintain context for orchestration decisions.
-    :return: A configured CustomRunnable instance for orchestration.
-    """
-    model_name, provider=get_selected_model()
-    
-    model_mapping: Dict[str, type[BaseRunnable]] = {
+def get_unified_classification_runnable(chat_history):
+    model_name, provider = get_selected_model()
+    model_mapping = {
         "openai": OpenAIRunnable,
         "claude": ClaudeRunnable,
         "gemini": GeminiRunnable,
@@ -89,85 +78,18 @@ def get_orchestrator_runnable(chat_history):
     runnable_class = model_mapping.get(provider, OllamaRunnable)
     model_url = os.getenv("BASE_MODEL_URL") if provider not in model_mapping else os.getenv(f"{provider.upper()}_API_URL")
 
-    orchestrator_runnable = runnable_class(
-        model_url=model_url,  # Get model URL from environment variables
-        model_name=model_name,  # Get model name from environment variables
-        system_prompt_template=orchestrator_system_prompt_template,  # System prompt for orchestration
-        user_prompt_template=orchestrator_user_prompt_template,  # User prompt template for orchestration
-        input_variables=["query"],  # Input variable for the orchestrator prompt
-        required_format=orchestrator_required_format,  # Expected JSON format for orchestrator response
-        response_type="json",  # Response type is JSON
-        stateful=True,  # Stateful to maintain conversation context
+    unified_classification_runnable = runnable_class(
+        model_url=model_url,
+        model_name=model_name,
+        system_prompt_template=unified_classification_system_prompt_template,  # Defined above
+        user_prompt_template=unified_classification_user_prompt_template,      # Defined above
+        input_variables=["query"],
+        required_format=unified_classification_format,                # Defined above
+        response_type="json",
+        stateful=True,
     )
-
-    orchestrator_runnable.add_to_history(
-        chat_history
-    )  # Add chat history to the runnable
-
-    return orchestrator_runnable  # Return the configured orchestrator runnable
-
-def get_context_classification_runnable():
-    """
-    Creates and configures a CustomRunnable for classifying the context of a user query.
-
-    This runnable is used to determine the general category or intent of a user query,
-    which can be used for routing or further processing. It is configured with prompts and settings
-    specific to context classification.
-
-    :return: A configured CustomRunnable instance for context classification.
-    """
-    model_name, provider=get_selected_model()
-    model_mapping: Dict[str, type[BaseRunnable]] = {
-        "openai": OpenAIRunnable,
-        "claude": ClaudeRunnable,
-        "gemini": GeminiRunnable,
-    }
-    runnable_class = model_mapping.get(provider, OllamaRunnable)
-    model_url = os.getenv("BASE_MODEL_URL") if provider not in model_mapping else os.getenv(f"{provider.upper()}_API_URL")
-
-    context_classification_runnable = runnable_class(
-        model_url=model_url,  # Get model URL from environment variables
-        model_name=model_name,  # Get model name from environment variables
-        system_prompt_template=context_classification_system_prompt_template,  # System prompt for context classification
-        user_prompt_template=context_classification_user_prompt_template,  # User prompt template for context classification
-        input_variables=["query"],  # Input variable for context classification prompt
-        required_format=context_classification_required_format,  # Expected JSON format for classification response
-        response_type="json",  # Response type is JSON
-    )
-
-    return context_classification_runnable  # Return the configured context classification runnable
-
-
-def get_internet_classification_runnable():
-    """
-    Creates and configures a CustomRunnable for classifying if a user query requires internet search.
-
-    This runnable decides whether a given query necessitates accessing the internet to provide a relevant response.
-    It is set up with prompts and configurations designed for internet search classification tasks.
-
-    :return: A configured CustomRunnable instance for internet classification.
-    """
-    model_name, provider=get_selected_model()
-    
-    model_mapping: Dict[str, type[BaseRunnable]] = {
-        "openai": OpenAIRunnable,
-        "claude": ClaudeRunnable,
-        "gemini": GeminiRunnable,
-    }
-    runnable_class = model_mapping.get(provider, OllamaRunnable)
-    model_url = os.getenv("BASE_MODEL_URL") if provider not in model_mapping else os.getenv(f"{provider.upper()}_API_URL")
-
-    internet_classification_runnable = runnable_class(
-        model_url=model_url,  # Get model URL from environment variables
-        model_name=model_name,  # Get model name from environment variables
-        system_prompt_template=internet_classification_system_prompt_template,  # System prompt for internet classification
-        user_prompt_template=internet_classification_user_prompt_template,  # User prompt template for internet classification
-        input_variables=["query"],  # Input variable for internet classification prompt
-        required_format=internet_classification_required_format,  # Expected JSON format for internet classification response
-        response_type="json",  # Response type is JSON
-    )
-
-    return internet_classification_runnable  # Return the configured internet classification runnable
+    unified_classification_runnable.add_to_history(chat_history)
+    return unified_classification_runnable
 
 
 def get_internet_query_reframe_runnable():
