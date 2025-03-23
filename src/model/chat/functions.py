@@ -216,32 +216,42 @@ def get_search_summary(
 
 def get_chat_history() -> Optional[List[Dict[str, str]]]:
     """
-    Retrieve the entire chat history from the local JSON database.
+    Retrieve the chat history from the active chat for use with the Ollama backend.
 
-    Reads the chat history from "chatsDb.json" located in /src and formats it into a list of dictionaries
+    Reads the chat history from "chatsDb.json" and formats it into a list of dictionaries
     suitable for conversational models, indicating 'user' or 'assistant' role for each message.
 
     Returns:
         Optional[List[Dict[str, str]]]: Formatted chat history as a list of dictionaries, where each
                                         dictionary has 'role' ('user' or 'assistant') and 'content'
-                                        (message text). Returns None if retrieval fails.
+                                        (message text). Returns None if retrieval fails or no active chat exists.
     """
     try:
         with open("chatsDb.json", "r", encoding="utf-8") as f:
             db = json.load(f)  # Load chat database from JSON file
 
-        messages = db.get("messages", [])  # Get the messages array, default to empty list if not found
+        active_chat_id = db.get("active_chat_id")
+        if active_chat_id is None:
+            return []  # No active chat, return empty history
+
+        # Find the active chat
+        active_chat = next((chat for chat in db["chats"] if chat["id"] == active_chat_id), None)
+        if active_chat is None:
+            return []  # Active chat not found, return empty history
+
+        messages = active_chat.get("messages", [])  # Get messages from active chat
 
         formatted_chat_history: List[Dict[str, str]] = [
             {
                 "role": "user" if entry["isUser"] else "assistant",
                 "content": entry["message"],
             }
-            for entry in messages  # Format all messages
+            for entry in messages  # Format all messages from active chat
         ]
 
         return formatted_chat_history
 
     except Exception as e:
-        print(f"Error retrieving chat history: {e}")
+        print(f"Error retrieving chat history: {str(e)}")
         return None  # Return None in case of error
+

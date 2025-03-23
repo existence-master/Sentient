@@ -7,7 +7,7 @@ import asyncio
 import pickle
 import multiprocessing
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from tzlocal import get_localzone
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -140,14 +140,27 @@ USER_PROFILE_DB = os.path.join(BASE_DIR, "..", "..", "userProfileDb.json")
 CHAT_DB = "chatsDb.json"
 db_lock = asyncio.Lock()  # Lock for synchronizing database access
 
+initial_db = {
+    "chats": [],
+    "active_chat_id": None,
+    "next_chat_id": 1
+}
+
 async def load_db():
-    """Load the database from chatsDb.json, initializing with {"messages": []} if it doesn't exist or is invalid."""
+    """Load the database from chatsDb.json, initializing if it doesn't exist or is invalid."""
     try:
         with open(CHAT_DB, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+            if "chats" not in data:
+                data["chats"] = []
+            if "active_chat_id" not in data:
+                data["active_chat_id"] = None
+            if "next_chat_id" not in data:
+                data["next_chat_id"] = 1
+            return data
     except (FileNotFoundError, json.JSONDecodeError):
-        print ("DB NOT FOUND!")
-        return {"messages": []}
+        print("DB NOT FOUND! Initializing with default structure.")
+        return initial_db
 
 async def save_db(data):
     """Save the data to chatsDb.json."""
@@ -236,18 +249,50 @@ async def main():
     
 @app.get("/get-history", status_code=200)
 async def get_history():
-    """Retrieve the chat history."""
+    """
+    Retrieve the chat history of the currently active chat.
+    Check for inactivity (10 minutes since last message) and create a new chat if needed.
+    """
     async with db_lock:
-        db_data = await load_db() 
-        return JSONResponse(status_code=200, content={"messages": db_data["messages"]})
+        chatsDb = await load_db()
+        active_chat_id = chatsDb["active_chat_id"]
+        current_time = datetime.datetime.now(timezone.utc)  # Updated to use datetime.now with UTC timezone
 
+        # If no active chat exists, create a new one
+        if active_chat_id is None or not chatsDb["chats"]:
+            new_chat_id = f"chat_{chatsDb['next_chat_id']}"
+            chatsDb["next_chat_id"] += 1
+            new_chat = {"id": new_chat_id, "messages": []}
+            chatsDb["chats"].append(new_chat)
+            chatsDb["active_chat_id"] = new_chat_id
+            await save_db(chatsDb)
+            return JSONResponse(status_code=200, content={"messages": []})
+
+        # Find the active chat
+        active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == active_chat_id), None)
+        if active_chat and active_chat["messages"]:
+            last_message = active_chat["messages"][-1]
+            last_timestamp = datetime.datetime.fromisoformat(last_message["timestamp"].replace('Z', '+00:00'))
+            if (current_time - last_timestamp).total_seconds() > 600:  # 10 minutes = 600 seconds
+                # Inactivity period exceeded, create a new chat
+                new_chat_id = f"chat_{chatsDb['next_chat_id']}"
+                chatsDb["next_chat_id"] += 1
+                new_chat = {"id": new_chat_id, "messages": []}
+                chatsDb["chats"].append(new_chat)
+                chatsDb["active_chat_id"] = new_chat_id
+                await save_db(chatsDb)
+                return JSONResponse(status_code=200, content={"messages": []})
+
+        # Return messages from the active chat
+        active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"]), None)
+        return JSONResponse(status_code=200, content={"messages": active_chat["messages"] if active_chat else []})
+    
 @app.post("/clear-chat-history", status_code=200)
 async def clear_chat_history():
-    """Clear the chat history."""
+    """Clear all chat history by resetting to the initial database structure."""
     async with db_lock:
-        db_data = await load_db() 
-        db_data["messages"] = []
-        await save_db(db_data)
+        chatsDb = initial_db.copy()
+        await save_db(chatsDb)
     return JSONResponse(status_code=200, content={"message": "Chat history cleared"})
 
 ## Chat Endpoint (Combining agents and memory logic)
@@ -261,11 +306,22 @@ async def chat(message: Message):
     try:
         with open("userProfileDb.json", "r", encoding="utf-8") as f:
             db = json.load(f)
-        
-        with open("chatsDb.json", "r", encoding="utf-8") as f:
-            chatsDb = json.load(f)
+
+        async with db_lock:
+            chatsDb = await load_db()
+            active_chat_id = chatsDb["active_chat_id"]
+            if active_chat_id is None:
+                raise HTTPException(status_code=400, detail="No active chat found. Please load the chat page first.")
+
+            # Find the active chat
+            active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == active_chat_id), None)
+            if active_chat is None:
+                raise HTTPException(status_code=400, detail="Active chat not found.")
 
         chat_history = get_chat_history()
+        if chat_history is None:
+            raise HTTPException(status_code=500, detail="Failed to retrieve chat history")
+
         chat_runnable = get_chat_runnable(chat_history)
         agent_runnable = get_agent_runnable(chat_history)
         unified_classification_runnable = get_unified_classification_runnable(chat_history)
@@ -288,32 +344,46 @@ async def chat(message: Message):
             internet_context = None
             pro_used = False
             note = ""
-            
+
+            # Add user message to active chat
             user_msg = {
                 "id": str(int(time.time() * 1000)),
                 "message": message.input,
                 "isUser": True,
                 "memoryUsed": False,
                 "agentsUsed": False,
-                "internetUsed": False
+                "internetUsed": False,
+                "timestamp": datetime.datetime.utcnow().isoformat() + 'Z'
             }
             async with db_lock:
-                chatsDb["messages"].append(user_msg)
+                chatsDb = await load_db()
+                active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                active_chat["messages"].append(user_msg)
                 await save_db(chatsDb)
 
-            yield json.dumps({"type": "userMessage", "message": message.input, "memoryUsed": memory_used, "agentsUsed": agents_used, "internetUsed": internet_used}) + "\n"
+            yield json.dumps({
+                "type": "userMessage",
+                "message": message.input,
+                "memoryUsed": memory_used,
+                "agentsUsed": agents_used,
+                "internetUsed": internet_used
+            }) + "\n"
             await asyncio.sleep(0.05)
-            
+
+            # Initialize assistant message
             assistant_msg = {
                 "id": str(int(time.time() * 1000)),
                 "message": "",
                 "isUser": False,
                 "memoryUsed": False,
                 "agentsUsed": False,
-                "internetUsed": False
+                "internetUsed": False,
+                "timestamp": datetime.datetime.utcnow().isoformat() + 'Z'
             }
             async with db_lock:
-                chatsDb["messages"].append(assistant_msg)
+                chatsDb = await load_db()
+                active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                active_chat["messages"].append(assistant_msg)
                 await save_db(chatsDb)
 
             # Handle memory category: update memories first, then retrieve context
@@ -378,7 +448,12 @@ async def chat(message: Message):
                     if isinstance(token, str):
                         assistant_msg["message"] += token
                         async with db_lock:
-                            chatsDb["messages"][-1]["message"] = assistant_msg["message"]
+                            chatsDb = await load_db()
+                            active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                            for msg in active_chat["messages"]:
+                                if msg["id"] == assistant_msg["id"]:
+                                    msg["message"] = assistant_msg["message"]
+                                    break
                             await save_db(chatsDb)
                         yield json.dumps({
                             "type": "assistantStream",
@@ -390,7 +465,12 @@ async def chat(message: Message):
                         if note:
                             assistant_msg["message"] += "\n\n" + note
                         async with db_lock:
-                            chatsDb["messages"][-1] = assistant_msg
+                            chatsDb = await load_db()
+                            active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                            for msg in active_chat["messages"]:
+                                if msg["id"] == assistant_msg["id"]:
+                                    msg.update(assistant_msg)
+                                    break
                             await save_db(chatsDb)
                         yield json.dumps({
                             "type": "assistantStream",
@@ -409,11 +489,16 @@ async def chat(message: Message):
                 assistant_msg["memoryUsed"] = memory_used
                 assistant_msg["internetUsed"] = internet_used
                 response = generate_response(agent_runnable, transformed_input, user_context, internet_context, username)
-                
+
                 if "tool_calls" not in response or not isinstance(response["tool_calls"], list):
                     assistant_msg["message"] = "Error: Invalid tool_calls format in response."
                     async with db_lock:
-                        chatsDb["messages"][-1] = assistant_msg
+                        chatsDb = await load_db()
+                        active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                        for msg in active_chat["messages"]:
+                            if msg["id"] == assistant_msg["id"]:
+                                msg.update(assistant_msg)
+                                break
                         await save_db(chatsDb)
                     yield json.dumps({"type": "assistantMessage", "message": assistant_msg["message"]}) + "\n"
                     return
@@ -423,7 +508,12 @@ async def chat(message: Message):
                 if len(response["tool_calls"]) > 1 and pricing_plan == "free":
                     assistant_msg["message"] = "Sorry. This query requires multiple tools to be called. Flows are a pro feature and you have run out of daily Pro credits. You can upgrade to pro from the Settings page." + f"\n\n{note}"
                     async with db_lock:
-                        chatsDb["messages"][-1] = assistant_msg
+                        chatsDb = await load_db()
+                        active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                        for msg in active_chat["messages"]:
+                            if msg["id"] == assistant_msg["id"]:
+                                msg.update(assistant_msg)
+                                break
                         await save_db(chatsDb)
                     if credits <= 0:
                         yield json.dumps({"type": "assistantMessage", "message": assistant_msg["message"]}) + "\n"
@@ -438,7 +528,12 @@ async def chat(message: Message):
                     if tool_name != "gmail" and pricing_plan == "free" and credits <= 0:
                         assistant_msg["message"] = "Sorry, but the query requires Sentient to use a tool that it can only use on the Pro plan. You have run out of daily credits for Pro and can upgrade your plan from the Settings page." + f"\n\n{note}"
                         async with db_lock:
-                            chatsDb["messages"][-1] = assistant_msg
+                            chatsDb = await load_db()
+                            active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                            for msg in active_chat["messages"]:
+                                if msg["id"] == assistant_msg["id"]:
+                                    msg.update(assistant_msg)
+                                    break
                             await save_db(chatsDb)
                         yield json.dumps({"type": "assistantMessage", "message": assistant_msg["message"]}) + "\n"
                         return
@@ -450,7 +545,12 @@ async def chat(message: Message):
                     if not tool_name or not task_instruction:
                         assistant_msg["message"] = "Error: Tool call is missing required fields."
                         async with db_lock:
-                            chatsDb["messages"][-1] = assistant_msg
+                            chatsDb = await load_db()
+                            active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                            for msg in active_chat["messages"]:
+                                if msg["id"] == assistant_msg["id"]:
+                                    msg.update(assistant_msg)
+                                    break
                             await save_db(chatsDb)
                         yield json.dumps({"type": "assistantMessage", "message": assistant_msg["message"]}) + "\n"
                         continue
@@ -460,7 +560,12 @@ async def chat(message: Message):
                     if not tool_handler:
                         assistant_msg["message"] = f"Error: Tool {tool_name} not found."
                         async with db_lock:
-                            chatsDb["messages"][-1] = assistant_msg
+                            chatsDb = await load_db()
+                            active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                            for msg in active_chat["messages"]:
+                                if msg["id"] == assistant_msg["id"]:
+                                    msg.update(assistant_msg)
+                                    break
                             await save_db(chatsDb)
                         yield json.dumps({"type": "assistantMessage", "message": assistant_msg["message"]}) + "\n"
                         continue
@@ -494,7 +599,12 @@ async def chat(message: Message):
                     except Exception as e:
                         assistant_msg["message"] = f"Error executing tool {tool_name}: {str(e)}"
                         async with db_lock:
-                            chatsDb["messages"][-1] = assistant_msg
+                            chatsDb = await load_db()
+                            active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                            for msg in active_chat["messages"]:
+                                if msg["id"] == assistant_msg["id"]:
+                                    msg.update(assistant_msg)
+                                    break
                             await save_db(chatsDb)
                         yield json.dumps({"type": "assistantMessage", "message": assistant_msg["message"]}) + "\n"
                         continue
@@ -516,7 +626,12 @@ async def chat(message: Message):
                             if isinstance(token, str):
                                 assistant_msg["message"] += token
                                 async with db_lock:
-                                    chatsDb["messages"][-1]["message"] = assistant_msg["message"]
+                                    chatsDb = await load_db()
+                                    active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                                    for msg in active_chat["messages"]:
+                                        if msg["id"] == assistant_msg["id"]:
+                                            msg["message"] = assistant_msg["message"]
+                                            break
                                     await save_db(chatsDb)
                                 yield json.dumps({
                                     "type": "assistantStream",
@@ -528,7 +643,12 @@ async def chat(message: Message):
                                 if note:
                                     assistant_msg["message"] += "\n\n" + note
                                 async with db_lock:
-                                    chatsDb["messages"][-1] = assistant_msg
+                                    chatsDb = await load_db()
+                                    active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                                    for msg in active_chat["messages"]:
+                                        if msg["id"] == assistant_msg["id"]:
+                                            msg.update(assistant_msg)
+                                            break
                                     await save_db(chatsDb)
                                 yield json.dumps({
                                     "type": "assistantStream",
@@ -550,7 +670,12 @@ async def chat(message: Message):
                             if isinstance(token, str):
                                 assistant_msg["message"] += token
                                 async with db_lock:
-                                    chatsDb["messages"][-1]["message"] = assistant_msg["message"]
+                                    chatsDb = await load_db()
+                                    active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                                    for msg in active_chat["messages"]:
+                                        if msg["id"] == assistant_msg["id"]:
+                                            msg["message"] = assistant_msg["message"]
+                                            break
                                     await save_db(chatsDb)
                                 yield json.dumps({
                                     "type": "assistantStream",
@@ -562,7 +687,12 @@ async def chat(message: Message):
                                 if note:
                                     assistant_msg["message"] += "\n\n" + note
                                 async with db_lock:
-                                    chatsDb["messages"][-1] = assistant_msg
+                                    chatsDb = await load_db()
+                                    active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                                    for msg in active_chat["messages"]:
+                                        if msg["id"] == assistant_msg["id"]:
+                                            msg.update(assistant_msg)
+                                            break
                                     await save_db(chatsDb)
                                 yield json.dumps({
                                     "type": "assistantStream",
@@ -578,7 +708,12 @@ async def chat(message: Message):
                 except Exception as e:
                     assistant_msg["message"] = f"Error during reflection: {str(e)}"
                     async with db_lock:
-                        chatsDb["messages"][-1] = assistant_msg
+                        chatsDb = await load_db()
+                        active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                        for msg in active_chat["messages"]:
+                            if msg["id"] == assistant_msg["id"]:
+                                msg.update(assistant_msg)
+                                break
                         await save_db(chatsDb)
                     yield json.dumps({"type": "assistantMessage", "message": assistant_msg["message"]}) + "\n"
 
@@ -587,7 +722,7 @@ async def chat(message: Message):
     except Exception as e:
         print(f"Error in chat: {str(e)}")
         return JSONResponse(status_code=500, content={"message": str(e)})
-
+    
 ## Agents Endpoints
 @app.post("/elaborator", status_code=200)
 async def elaborate(message: ElaboratorMessage):
@@ -792,7 +927,7 @@ async def gcalendar_tool(tool_call: ToolCall) -> Dict[str, Any]:
     """
 
     try:
-        current_time = datetime.now().isoformat()  # Get current time in ISO format
+        current_time = datetime.datetime.now().isoformat()  # Get current time in ISO format
         local_timezone = get_localzone()  # Get local timezone
         timezone = local_timezone.key  # Get timezone key
 
