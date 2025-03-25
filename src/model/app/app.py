@@ -214,7 +214,7 @@ async def execute_agent_task(task: dict) -> str:
             )
         except Exception as e:
             print(f"Error computing user_context: {e}")
-            user_context = None  # Fallback to None on error
+            user_context = None
 
     # Compute internet_context if required
     if internet == "Internet":
@@ -224,7 +224,7 @@ async def execute_agent_task(task: dict) -> str:
             internet_context = get_search_summary(internet_summary_runnable, search_results)
         except Exception as e:
             print(f"Error computing internet_context: {e}")
-            internet_context = None  # Fallback to None on error
+            internet_context = None
 
     # Invoke agent_runnable with all required parameters
     response = agent_runnable.invoke({
@@ -237,7 +237,7 @@ async def execute_agent_task(task: dict) -> str:
 
     print(f"Agent response: {response}")
 
-    # Handle tool calls (remaining logic unchanged)
+    # Handle tool calls
     if "tool_calls" not in response or not isinstance(response["tool_calls"], list):
         return "Error: Invalid tool_calls format in response."
 
@@ -278,15 +278,14 @@ async def execute_agent_task(task: dict) -> str:
             "email_data": [{k: email[k] for k in email if k != "body"} for email in all_tool_results[0]["tool_result"]["result"]["email_data"]],
             "gmail_search_url": all_tool_results[0]["tool_result"]["result"]["gmail_search_url"]
         }
-        async for token in generate_streaming_response(inbox_summarizer_runnable, {"tool_result": filtered_tool_result}, stream=True):
-            if isinstance(token, str):
-                return token
+        # Assuming inbox_summarizer_runnable also supports non-streaming invocation
+        result = inbox_summarizer_runnable.invoke({"tool_result": filtered_tool_result})
     else:
-        async for token in generate_streaming_response(reflection_runnable, {"tool_results": all_tool_results}, stream=True):
-            if isinstance(token, str):
-                print(f"Token: {token}")
-                return token
-    return "Task completed."
+        # Invoke reflection_runnable without streaming
+        result = reflection_runnable.invoke({"tool_results": all_tool_results})
+
+    print(f"Final result: {result}")
+    return result
 
 async def add_result_to_chat(chat_id: str, result: str):
     """Add the task result to the corresponding chat."""
