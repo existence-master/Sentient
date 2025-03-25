@@ -310,6 +310,58 @@ async def process_queue():
                 print(f"WebSocket message sent for task error: {task['task_id']} - Error: {error_str}")
         await asyncio.sleep(0.1)
 
+async def process_memory_operations():
+    while True:
+        operation = await memory_backend.memory_queue.get_next_operation()
+        if operation:
+            try:
+                user_id = operation["user_id"]
+                memory_data = operation["memory_data"]
+                operation_type = operation["type"]
+                fact = memory_data["fact"]
+                memory_type = memory_data["memory_type"]
+
+                if memory_type == "Short Term":
+                    if operation_type == "store":
+                        expiry_info = memory_backend.memory_manager.expiry_date_decision(fact)
+                        retention_days = expiry_info.get("retention_days", 7)
+                        memory_info = memory_backend.memory_manager.extract_and_invoke_memory(fact)
+                        category = memory_info.get("memories", [{}])[0].get("category", "tasks")
+                        memory_backend.memory_manager.store_memory(user_id, fact, {"retention_days": retention_days}, category)
+                    elif operation_type == "update":
+                        memory_backend.memory_manager.update_memory(user_id, fact)
+                else:
+                    if operation_type in ["store", "update"]:
+                        crud_graph_operations(
+                            fact, memory_backend.graph_driver, memory_backend.embed_model,
+                            memory_backend.query_class_runnable, memory_backend.info_extraction_runnable,
+                            memory_backend.graph_analysis_runnable, memory_backend.graph_decision_runnable,
+                            memory_backend.text_desc_runnable
+                        )
+
+                await memory_backend.memory_queue.complete_operation(operation["operation_id"], result="Success")
+
+                notification = {
+                    "type": "memory_operation_completed",
+                    "operation_id": operation["operation_id"],
+                    "operation_type": operation_type,
+                    "status": "success",
+                    "fact": fact
+                }
+                await manager.broadcast(json.dumps(notification))
+            except Exception as e:
+                await memory_backend.memory_queue.complete_operation(operation["operation_id"], error=str(e))
+                notification = {
+                    "type": "memory_operation_error",
+                    "operation_id": operation["operation_id"],
+                    "operation_type": operation_type,
+                    "error": str(e),
+                    "fact": memory_data.get("fact", "Unknown")
+                }
+                await manager.broadcast(json.dumps(notification))
+        await asyncio.sleep(0.1)
+
+
 async def execute_agent_task(task: dict) -> str:
     """Execute the agent task asynchronously and return the result."""
     global agent_runnable, reflection_runnable, inbox_summarizer_runnable, graph_driver, embed_model, text_conversion_runnable, query_classification_runnable, internet_query_reframe_runnable, internet_summary_runnable
@@ -465,21 +517,18 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# Load tasks on startup
 @app.on_event("startup")
 async def startup_event():
     await task_queue.load_tasks()
-
-# Start the queue processor on app startup
-@app.on_event("startup")
-async def startup_event():
+    await memory_backend.memory_queue.load_operations()
     asyncio.create_task(process_queue())
-    asyncio.create_task(cleanup_tasks_periodically()) # Start periodic cleanup task
+    asyncio.create_task(process_memory_operations())
+    asyncio.create_task(cleanup_tasks_periodically())
 
-# Optional: Save tasks on shutdown (not strictly necessary since we save after each operation)
 @app.on_event("shutdown")
 async def shutdown_event():
     await task_queue.save_tasks()
+    await memory_backend.memory_queue.save_operations()
 
 # --- Pydantic Models ---
 class Message(BaseModel):
@@ -623,7 +672,6 @@ async def chat(message: Message):
             pro_used = False
             note = ""
 
-            # Add user message to active chat
             user_msg = {
                 "id": str(int(time.time() * 1000)),
                 "message": message.input,
@@ -631,7 +679,7 @@ async def chat(message: Message):
                 "memoryUsed": False,
                 "agentsUsed": False,
                 "internetUsed": False,
-                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+                "timestamp": datetime.utcnow().isoformat() + "Z"
             }
             async with db_lock:
                 chatsDb = await load_db()
@@ -648,7 +696,6 @@ async def chat(message: Message):
             }) + "\n"
             await asyncio.sleep(0.05)
 
-            # Initialize assistant message for all categories
             assistant_msg = {
                 "id": str(int(time.time() * 1000)),
                 "message": "",
@@ -656,38 +703,29 @@ async def chat(message: Message):
                 "memoryUsed": False,
                 "agentsUsed": False,
                 "internetUsed": False,
-                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+                "timestamp": datetime.utcnow().isoformat() + "Z"
             }
 
-            # Handle agent category
             if category == "agent":
                 with open("userProfileDb.json", "r", encoding="utf-8") as f:
                     db = json.load(f)
                 personality_description = db["userData"].get("personality", "None")
-                # Replace keyword-based priority with LLM-based priority
                 priority_response = priority_runnable.invoke({"task_description": transformed_input})
-
                 priority = priority_response["priority"]
 
                 print("Adding task to queue")
-
-                # Add task to queue and set "On it" message
                 await task_queue.add_task(
                     chat_id=active_chat_id,
                     description=transformed_input,
                     priority=priority,
                     username=username,
                     personality=personality_description,
-                    use_personal_context=use_personal_context,  # Boolean flag
-                    internet=internet  # e.g., "Internet" or other value
+                    use_personal_context=use_personal_context,
+                    internet=internet
                 )
-
                 print("Task added to queue")
 
                 assistant_msg["message"] = "On it"
-
-                print("Assistant message set")
-
                 async with db_lock:
                     chatsDb = await load_db()
                     active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
@@ -702,27 +740,25 @@ async def chat(message: Message):
                     "internetUsed": False
                 }) + "\n"
                 await asyncio.sleep(0.05)
-                return  # End response for agent category
+                return
 
-            # Handle memory category: update and retrieve context
             if category == "memory":
                 if pricing_plan == "free" and credits <= 0:
                     yield json.dumps({"type": "intermediary", "message": "Retrieving memories..."}) + "\n"
                     user_context = memory_backend.retrieve_memory(username, transformed_input)
                     note = "Sorry friend, memory updates are a pro feature and your daily credits have expired. Upgrade to pro in settings!"
                 else:
-                    yield json.dumps({"type": "intermediary", "message": "Updating memories..."}) + "\n"
+                    yield json.dumps({"type": "intermediary", "message": "Retrieving memories..."}) + "\n"
                     memory_used = True
                     pro_used = True
-                    memory_backend.update_memory(username, transformed_input)
-                    yield json.dumps({"type": "intermediary", "message": "Retrieving memories..."}) + "\n"
                     user_context = memory_backend.retrieve_memory(username, transformed_input)
+                    # Queue memory update in the background
+                    asyncio.create_task(memory_backend.update_memory(username, transformed_input))
             elif use_personal_context:
                 yield json.dumps({"type": "intermediary", "message": "Retrieving memories..."}) + "\n"
                 memory_used = True
                 user_context = memory_backend.retrieve_memory(username, transformed_input)
 
-            # Handle internet search if required
             if internet == "Internet":
                 if pricing_plan == "free" and credits <= 0:
                     note = "Sorry friend, could have searched the internet for more context, but your daily credits have expired. You can always upgrade to pro from the settings page"
@@ -734,7 +770,6 @@ async def chat(message: Message):
                     internet_used = True
                     pro_used = True
 
-            # Generate response for chat and memory categories
             if category in ["chat", "memory"]:
                 with open("userProfileDb.json", "r", encoding="utf-8") as f:
                     db = json.load(f)
@@ -742,7 +777,7 @@ async def chat(message: Message):
 
                 assistant_msg["memoryUsed"] = memory_used
                 assistant_msg["internetUsed"] = internet_used
-                print ("USER CONTEXT: ", user_context)
+                print("USER CONTEXT: ", user_context)
                 async for token in generate_streaming_response(
                     chat_runnable,
                     inputs={
@@ -763,6 +798,8 @@ async def chat(message: Message):
                                 if msg["id"] == assistant_msg["id"]:
                                     msg["message"] = assistant_msg["message"]
                                     break
+                            else:
+                                active_chat["messages"].append(assistant_msg)
                             await save_db(chatsDb)
                         yield json.dumps({
                             "type": "assistantStream",
@@ -780,6 +817,8 @@ async def chat(message: Message):
                                 if msg["id"] == assistant_msg["id"]:
                                     msg.update(assistant_msg)
                                     break
+                            else:
+                                active_chat["messages"].append(assistant_msg)
                             await save_db(chatsDb)
                         yield json.dumps({
                             "type": "assistantStream",
