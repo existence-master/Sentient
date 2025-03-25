@@ -184,7 +184,7 @@ const Tasks = () => {
 								onClick={() => setFilterStatus("all")}
 								className={`rounded-md px-3 py-2 text-sm font-medium ${
 									filterStatus === "all"
-										? "bg-blue-600 text-white"
+										? "bg-lightblue text-white"
 										: "bg-gray-800 hover:bg-gray-700 text-gray-300"
 								}`}
 							>
@@ -194,7 +194,7 @@ const Tasks = () => {
 								onClick={() => setFilterStatus("to do")}
 								className={`rounded-md px-3 py-2 text-sm font-medium ${
 									filterStatus === "to do"
-										? "bg-blue-600 text-white"
+										? "bg-lightblue text-white"
 										: "bg-gray-800 hover:bg-gray-700 text-gray-300"
 								}`}
 							>
@@ -204,7 +204,7 @@ const Tasks = () => {
 								onClick={() => setFilterStatus("in progress")}
 								className={`rounded-md px-3 py-2 text-sm font-medium ${
 									filterStatus === "in progress"
-										? "bg-blue-600 text-white"
+										? "bg-lightblue text-white"
 										: "bg-gray-800 hover:bg-gray-700 text-gray-300"
 								}`}
 							>
@@ -214,7 +214,7 @@ const Tasks = () => {
 								onClick={() => setFilterStatus("done")}
 								className={`rounded-md px-3 py-2 text-sm font-medium ${
 									filterStatus === "done"
-										? "bg-blue-600 text-white"
+										? "bg-lightblue text-white"
 										: "bg-gray-800 hover:bg-gray-700 text-gray-300"
 								}`}
 							>
@@ -224,7 +224,7 @@ const Tasks = () => {
 								onClick={() => setFilterStatus("error")}
 								className={`rounded-md px-3 py-2 text-sm font-medium ${
 									filterStatus === "error"
-										? "bg-blue-600 text-white"
+										? "bg-lightblue text-white"
 										: "bg-gray-800 hover:bg-gray-700 text-gray-300"
 								}`}
 							>
@@ -258,7 +258,7 @@ const Tasks = () => {
 							/>
 							<button
 								onClick={handleAddTask}
-								className="flex items-center justify-center p-3 rounded-md bg-blue-600 text-white hover:bg-blue-700 focus:outline-none"
+								className="flex items-center justify-center p-3 rounded-md bg-lightblue text-white hover:bg-blue-700 focus:outline-none"
 							>
 								<IconPlus className="h-4 w-4 mr-2" /> Add Task
 							</button>

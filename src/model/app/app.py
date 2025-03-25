@@ -7,7 +7,7 @@ import asyncio
 import pickle
 import multiprocessing
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from tzlocal import get_localzone
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -220,7 +220,160 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
         # Return messages from the active chat
         active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"]), None)
         return active_chat["messages"] if active_chat else []
-        
+
+class WebSocketManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def send_personal_message(self, message: str, websocket: WebSocket):
+        await websocket.send_text(message)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except Exception as e:
+                print(f"Error broadcasting message to connection: {e}")
+                self.disconnect(connection) # Remove broken connection
+
+class TaskQueue:
+    def __init__(self, tasks_file="tasks.json"):
+        self.tasks_file = tasks_file
+        self.tasks = []
+        self.task_id_counter = 0
+        self.lock = asyncio.Lock()
+        self.current_task_execution = None  # To hold the currently executing task
+
+    async def load_tasks(self):
+        """Load tasks from the tasks.json file."""
+        try:
+            with open(self.tasks_file, 'r') as f:
+                data = json.load(f)
+                self.tasks = data.get('tasks', [])
+                self.task_id_counter = data.get('task_id_counter', 0)
+        except FileNotFoundError:
+            self.tasks = []
+            self.task_id_counter = 0
+            await self.save_tasks() # Create file if not exists
+        except json.JSONDecodeError:
+            self.tasks = []
+            self.task_id_counter = 0
+            print("Error decoding tasks.json, initializing with empty tasks.")
+            await self.save_tasks()
+
+    async def save_tasks(self):
+        """Save tasks to the tasks.json file."""
+        data = {'tasks': self.tasks, 'task_id_counter': self.task_id_counter}
+        with open(self.tasks_file, 'w') as f:
+            json.dump(data, f, indent=4)
+
+    async def add_task(self, chat_id: str, description: str, priority: int, username: str, personality: Union[Dict, str, None], use_personal_context: bool, internet: str) -> str:
+        """Add a new task to the queue."""
+        async with self.lock:
+            task_id = f"task_{self.task_id_counter}"
+            task = {
+                "task_id": task_id,
+                "chat_id": chat_id,
+                "description": description,
+                "priority": priority,
+                "status": "pending",
+                "username": username,
+                "personality": personality,
+                "use_personal_context": use_personal_context,
+                "internet": internet,
+                "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+                "completed_at": None,
+                "result": None,
+                "error": None
+            }
+            self.tasks.append(task)
+            self.task_id_counter += 1
+            await self.save_tasks()
+            return task_id
+
+    async def get_next_task(self) -> Optional[Dict]:
+        """Get the next pending task with the highest priority."""
+        async with self.lock:
+            pending_tasks = [task for task in self.tasks if task["status"] == "pending"]
+            if not pending_tasks:
+                return None
+
+            # Sort by priority (lower number = higher priority) and then by creation time (FIFO for same priority)
+            pending_tasks.sort(key=lambda task: (task["priority"], task["created_at"]))
+            next_task = pending_tasks[0]
+            next_task["status"] = "processing"
+            await self.save_tasks() # Update task status immediately when processing starts
+            return next_task
+
+    async def complete_task(self, task_id: str, result: Optional[str] = None, error: Optional[str] = None):
+        """Mark a task as completed and save the result."""
+        async with self.lock:
+            for task in self.tasks:
+                if task["task_id"] == task_id:
+                    task["status"] = "completed"
+                    task["result"] = result
+                    task["error"] = error
+                    task["completed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+                    break # Task ID is unique, no need to continue searching
+            await self.save_tasks()
+
+    async def update_task(self, task_id: str, description: str, priority: int):
+        """Update a task's description and priority."""
+        async with self.lock:
+            for task in self.tasks:
+                if task["task_id"] == task_id:
+                    if task["status"] not in ["pending", "processing"]:
+                        raise ValueError(f"Cannot update task with status: {task['status']}. Only pending or processing tasks can be updated.")
+                    task["description"] = description
+                    task["priority"] = priority
+                    break
+            else:
+                raise ValueError(f"Task with id {task_id} not found.")
+            await self.save_tasks()
+
+    async def delete_task(self, task_id: str):
+        """Delete a task by its ID."""
+        async with self.lock:
+            self.tasks = [task for task in self.tasks if task["task_id"] != task_id]
+            await self.save_tasks()
+
+    async def get_all_tasks(self) -> List[Dict]:
+        """Return a list of all tasks."""
+        async with self.lock:
+            return list(self.tasks) # Return a copy to avoid external modification
+
+    async def delete_old_completed_tasks(self, hours_threshold: int = 1):
+        """Delete completed tasks older than the specified hours threshold."""
+        async with self.lock:
+            now = datetime.datetime.utcnow()
+            tasks_to_keep = []
+            deleted_task_ids = []
+            for task in self.tasks:
+                if task["status"] == "completed" and task["completed_at"]:
+                    completed_at_dt = datetime.datetime.fromisoformat(task["completed_at"].replace('Z', '+00:00'))
+                    if now - completed_at_dt > timedelta(hours=hours_threshold):
+                        deleted_task_ids.append(task["task_id"])
+                        continue # Skip adding to tasks_to_keep, effectively deleting it
+                tasks_to_keep.append(task)
+            self.tasks = tasks_to_keep
+            await self.save_tasks()
+            if deleted_task_ids:
+                print(f"Deleted completed tasks with IDs: {deleted_task_ids} older than {hours_threshold} hours.")
+
+async def cleanup_tasks_periodically():
+    """Periodically clean up old completed tasks."""
+    while True:
+        await task_queue.delete_old_completed_tasks()
+        await asyncio.sleep(60 * 60) # Check every hour (or less for testing, e.g., 60 seconds)
+
+
 async def process_queue():
     while True:
         task = await task_queue.get_next_task()
@@ -386,7 +539,7 @@ async def add_result_to_chat(chat_id: str, result: str):
             }
             chat["messages"].append(result_message)
             await save_db(chatsDb)
-            
+
 chat_history = get_chat_history()
 
 chat_runnable = get_chat_runnable(chat_history)
@@ -419,6 +572,7 @@ async def startup_event():
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(process_queue())
+    asyncio.create_task(cleanup_tasks_periodically()) # Start periodic cleanup task
 
 # Optional: Save tasks on shutdown (not strictly necessary since we save after each operation)
 @app.on_event("shutdown")
@@ -477,7 +631,7 @@ class TwitterURL(BaseModel):
 
 class LinkedInURL(BaseModel):
     url: str
-    
+
 class CreateTaskRequest(BaseModel):
     chat_id: str
     description: str
@@ -505,7 +659,7 @@ async def main():
     return {
         "message": "Hello, I am Sentient, your private, decentralized and interactive AI companion who feels human"
     }
-    
+
 @app.get("/get-history", status_code=200)
 async def get_history():
     """
@@ -513,7 +667,7 @@ async def get_history():
     """
     messages = await get_chat_history_messages()
     return JSONResponse(status_code=200, content={"messages": messages})
-    
+
 @app.post("/clear-chat-history", status_code=200)
 async def clear_chat_history():
     """Clear all chat history by resetting to the initial database structure."""
@@ -610,11 +764,11 @@ async def chat(message: Message):
                 personality_description = db["userData"].get("personality", "None")
                 # Replace keyword-based priority with LLM-based priority
                 priority_response = priority_runnable.invoke({"task_description": transformed_input})
-                
+
                 priority = priority_response["priority"]
-                
+
                 print("Adding task to queue")
-                
+
                 # Add task to queue and set "On it" message
                 await task_queue.add_task(
                     chat_id=active_chat_id,
@@ -625,12 +779,12 @@ async def chat(message: Message):
                     use_personal_context=use_personal_context,  # Boolean flag
                     internet=internet  # e.g., "Internet" or other value
                 )
-                
+
                 print("Task added to queue")
-                
+
                 assistant_msg["message"] = "On it"
                 assistant_msg["agentsUsed"] = True
-                
+
                 print("Assistant message set")
 
                 async with db_lock:
@@ -687,7 +841,7 @@ async def chat(message: Message):
                 with open("userProfileDb.json", "r", encoding="utf-8") as f:
                     db = json.load(f)
                 personality_description = db["userData"].get("personality", "None")
-                
+
                 assistant_msg["memoryUsed"] = memory_used
                 assistant_msg["internetUsed"] = internet_used
                 assistant_msg["agentsUsed"] = agents_used
@@ -753,7 +907,7 @@ async def chat(message: Message):
     except Exception as e:
         print(f"Error in chat: {str(e)}")
         return JSONResponse(status_code=500, content={"message": str(e)})
-    
+
 ## Agents Endpoints
 @app.post("/elaborator", status_code=200)
 async def elaborate(message: ElaboratorMessage):
@@ -942,7 +1096,7 @@ async def gslides_tool(tool_call: ToolCall) -> Dict[str, Any]:
     except Exception as e:  # Handle exceptions during gslides tool execution
         print(f"Error calling gslides tool: {e}")
         return {"status": "failure", "error": str(e)}  # Return error status and message
-    
+
 @register_tool("gcalendar")
 async def gcalendar_tool(tool_call: ToolCall) -> Dict[str, Any]:
     """
@@ -1445,7 +1599,7 @@ async def create_graph():
                         extracted_texts.append({"text": text_content, "source": file_name})
         if not extracted_texts:
             return JSONResponse(status_code=400, content={"message": "No content found in input documents."})
-        
+
         with graph_driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n")
         build_initial_knowledge_graph(
@@ -1505,19 +1659,19 @@ async def create_document():
                     file.write(summarized_paragraph)
 
         unified_personality_description = f"{username}'s Personality:\n\n" + "\n".join(trait_descriptions)
-        
+
         if structured_linkedin_profile:
             linkedin_file = os.path.join(input_dir, f"{username.lower()}_linkedin_profile.txt")
             summarized_paragraph = text_summarizer_runnable.invoke({"user_name": username, "text": structured_linkedin_profile})
             with open(linkedin_file, "w", encoding="utf-8") as file:
                 file.write(summarized_paragraph)
-        
+
         if reddit_profile:
             reddit_file = os.path.join(input_dir, f"{username.lower()}_reddit_profile.txt")
             summarized_paragraph = text_summarizer_runnable.invoke({"user_name": username, "text": "Interests: " + ",".join(reddit_profile)})
             with open(reddit_file, "w", encoding="utf-8") as file:
                 file.write(summarized_paragraph)
-        
+
         if twitter_profile:
             twitter_file = os.path.join(input_dir, f"{username.lower()}_twitter_profile.txt")
             summarized_paragraph = text_summarizer_runnable.invoke({"user_name": username, "text": "Interests: " + ",".join(twitter_profile)})
@@ -1545,7 +1699,7 @@ async def customize_graph(request: GraphRequest):
         return JSONResponse(status_code=200, content={"message": "Graph customized successfully."})
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
-    
+
 @app.get("/fetch-tasks", status_code=200)
 async def get_tasks():
     """Return the current state of all tasks."""
@@ -1604,7 +1758,7 @@ async def delete_task(delete_request: DeleteTaskRequest): # Use DeleteTaskReques
         return JSONResponse(content={"message": "Task deleted successfully"})
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)

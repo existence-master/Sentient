@@ -33,14 +33,15 @@ class TaskQueue:
             "username": username,
             "personality": personality,
             "use_personal_context": use_personal_context,
-            "internet": internet
+            "internet": internet,
+            "completed_at": None # ADDED completed_at property here
         }
-        
+
         async with task_lock:
             self.all_tasks[task_id] = task_dict
             heapq.heappush(self.todo_tasks, (priority, task_id))
             await self.save_tasks()
-            
+
         return task_id
 
     async def update_task(self, task_id: str, description: str, priority: int):
@@ -93,6 +94,7 @@ class TaskQueue:
                 if self.current_task == task_id:
                     self.current_task = None
                     self.current_task_execution = None
+                task["completed_at"] = datetime.datetime.utcnow().isoformat() + "Z" # ADDED setting completed_at on task completion
                 await self.save_tasks()
 
     async def get_all_tasks(self) -> List[dict]:
@@ -125,3 +127,21 @@ class TaskQueue:
         except FileNotFoundError:
             # No tasks to load if the file doesn’t exist yet
             pass
+
+    async def delete_old_completed_tasks(self, hours_threshold: int = 1):
+        """Delete completed tasks older than the specified hours threshold."""
+        async with task_lock:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            tasks_to_keep = {}
+            deleted_task_ids = []
+            for task_id, task in self.all_tasks.items():
+                if task["status"] in ["done", "error"] and task["completed_at"]:
+                    completed_at_dt = datetime.datetime.fromisoformat(task["completed_at"].replace('Z', '+00:00'))
+                    if now - completed_at_dt > datetime.timedelta(hours=hours_threshold):
+                        deleted_task_ids.append(task_id)
+                        continue
+                    tasks_to_keep[task_id] = task
+            self.all_tasks = tasks_to_keep
+            await self.save_tasks()
+            if deleted_task_ids:
+                print(f"Deleted completed tasks with IDs: {deleted_task_ids} older than {hours_threshold} hours.")
