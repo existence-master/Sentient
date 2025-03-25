@@ -76,6 +76,7 @@ graph_driver = GraphDatabase.driver(
 # Initialize runnables from agents
 reflection_runnable = get_reflection_runnable()
 inbox_summarizer_runnable = get_inbox_summarizer_runnable()
+priority_runnable = get_priority_runnable()
 
 # Initialize runnables from memory
 graph_decision_runnable = get_graph_decision_runnable()
@@ -173,19 +174,19 @@ async def save_db(data):
         json.dump(data, f, indent=4)
         
 async def process_queue():
-    """Background task to process tasks from the queue one at a time."""
     while True:
         task = await task_queue.get_next_task()
         if task:
             try:
-                # Process the task asynchronously
-                result = await execute_agent_task(task)
-                # Update chat with result
+                task_queue.current_task_execution = asyncio.create_task(execute_agent_task(task))
+                result = await task_queue.current_task_execution
                 await add_result_to_chat(task["chat_id"], result)
                 await task_queue.complete_task(task["task_id"], result=result)
+            except asyncio.CancelledError:
+                await task_queue.complete_task(task["task_id"], error="Task was cancelled")
             except Exception as e:
                 await task_queue.complete_task(task["task_id"], error=str(e))
-        await asyncio.sleep(0.1)  # Prevent busy waiting
+        await asyncio.sleep(0.1)
 
 async def execute_agent_task(task: dict) -> str:
     """Execute the agent task asynchronously and return the result."""
@@ -389,6 +390,24 @@ class TwitterURL(BaseModel):
 
 class LinkedInURL(BaseModel):
     url: str
+    
+class CreateTaskRequest(BaseModel):
+    chat_id: str
+    description: str
+    priority: int
+    username: str
+    personality: Union[Dict, str, None]
+    use_personal_context: bool
+    internet: str
+
+class UpdateTaskRequest(BaseModel):
+    task_id: str
+    description: str
+    priority: int
+
+class DeleteTaskRequest(BaseModel):
+    # No request body needed as per the function signature, but including for potential future use or consistency
+    task_id: str
 
 # --- API Endpoints ---
 
@@ -453,7 +472,7 @@ async def chat(message: Message):
     global embed_model, chat_runnable, fact_extraction_runnable, text_conversion_runnable
     global information_extraction_runnable, graph_analysis_runnable, graph_decision_runnable
     global query_classification_runnable, agent_runnable, text_description_runnable
-    global reflection_runnable, internet_query_reframe_runnable, internet_summary_runnable
+    global reflection_runnable, internet_query_reframe_runnable, internet_summary_runnable, priority_runnable
 
     try:
         with open("userProfileDb.json", "r", encoding="utf-8") as f:
@@ -534,12 +553,13 @@ async def chat(message: Message):
 
             # Handle agent category
             if category == "agent":
-                agents_used = True
                 with open("userProfileDb.json", "r", encoding="utf-8") as f:
                     db = json.load(f)
                 personality_description = db["userData"].get("personality", "None")
-                priority_keywords = ["urgent", "right now", "important"]
-                priority = 0 if any(keyword.lower() in message.input.lower() for keyword in priority_keywords) else 1
+                # Replace keyword-based priority with LLM-based priority
+                priority_response = priority_runnable.invoke({"task_description": transformed_input})
+                
+                priority = priority_response["priority"]
                 
                 print("Adding task to queue")
                 
@@ -1474,11 +1494,40 @@ async def customize_graph(request: GraphRequest):
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
     
-@app.get("/tasks", status_code=200)
+@app.get("/fetch-tasks", status_code=200)
 async def get_tasks():
     """Return the current state of all tasks."""
     tasks = await task_queue.get_all_tasks()
     return JSONResponse(content={"tasks": tasks})
+
+@app.post("/add-task", status_code=201)
+async def add_task(task_request: CreateTaskRequest): # Use CreateTaskRequest as dependency
+    task_id = await task_queue.add_task(
+        task_request.chat_id,
+        task_request.description,
+        task_request.priority,
+        task_request.username,
+        task_request.personality,
+        task_request.use_personal_context,
+        task_request.internet
+    )
+    return JSONResponse(content={"task_id": task_id})
+
+@app.post("/update-task", status_code=200)
+async def update_task(update_request: UpdateTaskRequest): # Use UpdateTaskRequest as dependency
+    try:
+        await task_queue.update_task(update_request.task_id, update_request.description, update_request.priority)
+        return JSONResponse(content={"message": "Task updated successfully"})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/delete-task", status_code=200)
+async def delete_task(delete_request: DeleteTaskRequest): # Use DeleteTaskRequest as dependency (even though it's empty)
+    try:
+        await task_queue.delete_task(delete_request.task_id)
+        return JSONResponse(content={"message": "Task deleted successfully"})
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 STARTUP_TIME = time.time() - START_TIME
 print(f"Server startup time: {STARTUP_TIME:.2f} seconds")

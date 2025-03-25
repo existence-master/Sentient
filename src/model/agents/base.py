@@ -36,19 +36,42 @@ class TaskQueue:
             "internet": internet
         }
         
-        print(f"Task defined: {task_dict}")
-        
         async with task_lock:
             self.all_tasks[task_id] = task_dict
             heapq.heappush(self.todo_tasks, (priority, task_id))
             await self.save_tasks()
             
-        print(f"Task added: {task_dict}")
-        
         return task_id
 
-    async def get_next_task(self) -> Optional[dict]:
-        """Get the next task to process and mark it as in progress."""
+    async def update_task(self, task_id: str, description: str, priority: int):
+        async with task_lock:
+            if task_id not in self.all_tasks:
+                raise ValueError("Task not found")
+            task = self.all_tasks[task_id]
+            if task["status"] == "in progress":
+                raise ValueError("Cannot update a task in progress")
+            task["description"] = description
+            task["priority"] = priority
+            if task["status"] == "to do":
+                self.todo_tasks = [t for t in self.todo_tasks if t[1] != task_id]
+                heapq.heappush(self.todo_tasks, (priority, task_id))
+            await self.save_tasks()
+
+    async def delete_task(self, task_id: str):
+        async with task_lock:
+            if task_id not in self.all_tasks:
+                raise ValueError("Task not found")
+            task = self.all_tasks[task_id]
+            if task["status"] == "to do":
+                self.todo_tasks = [t for t in self.todo_tasks if t[1] != task_id]
+            elif task["status"] == "in progress" and self.current_task == task_id:
+                if self.current_task_execution:
+                    self.current_task_execution.cancel()
+                self.current_task = None
+            del self.all_tasks[task_id]
+            await self.save_tasks()
+
+    async def get_next_task(self):
         async with task_lock:
             if self.current_task is None and self.todo_tasks:
                 priority, task_id = heapq.heappop(self.todo_tasks)
@@ -59,7 +82,6 @@ class TaskQueue:
         return None
 
     async def complete_task(self, task_id: str, result: str = None, error: str = None):
-        """Mark the current task as done or errored and clear current_task."""
         async with task_lock:
             if task_id in self.all_tasks:
                 task = self.all_tasks[task_id]
@@ -70,6 +92,7 @@ class TaskQueue:
                     task["error"] = error
                 if self.current_task == task_id:
                     self.current_task = None
+                    self.current_task_execution = None
                 await self.save_tasks()
 
     async def get_all_tasks(self) -> List[dict]:

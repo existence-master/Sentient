@@ -250,3 +250,40 @@ def get_inbox_summarizer_runnable() -> BaseRunnable:
     """Configures the Runnable instance for inbox summarization, using streaming chat responses and operating stateless."""
 
     return runnable
+
+def get_priority_runnable() -> BaseRunnable:
+    """
+    Creates a Runnable instance for determining task priority using an LLM.
+
+    Returns:
+        BaseRunnable: A configured runnable for priority determination.
+    """
+    # Model selection logic (adapt to your existing setup)
+    model_mapping: Dict[str, Tuple[Optional[str], Type[BaseRunnable]]] = {
+        "openai": (os.getenv("OPENAI_API_URL"), OpenAIRunnable),
+        "claude": (os.getenv("CLAUDE_API_URL"), ClaudeRunnable),
+        "gemini": (os.getenv("GEMINI_API_URL"), GeminiRunnable),
+    }
+
+    provider: Optional[str] = None
+    model_name, provider = get_selected_model()  # Assume this function exists in your codebase
+
+    if provider and provider in model_mapping:
+        model_url, runnable_class = model_mapping[provider]
+    else:
+        model_url = os.getenv("BASE_MODEL_URL")
+        runnable_class = OllamaRunnable  # Default fallback
+
+    # Create the runnable
+    runnable: BaseRunnable = runnable_class(
+        model_url=model_url,
+        model_name=model_name,
+        system_prompt_template=priority_system_prompt_template,
+        user_prompt_template=priority_user_prompt_template,
+        input_variables=["task_description"],
+        required_format=priority_required_format,
+        response_type="json",
+        stream=False,  # We want a single, non-streaming response
+    )
+
+    return runnable

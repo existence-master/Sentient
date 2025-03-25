@@ -1073,3 +1073,32 @@ inbox_summarizer_user_prompt_template = """Summarize the following email data in
 
 {tool_result}
 """
+
+priority_system_prompt_template = """You are an AI assistant tasked with determining the priority of tasks based on their descriptions. Your goal is to analyze the task and assign a priority level.
+
+### Priority Levels:
+- 0: High priority (urgent or important tasks that need immediate attention)
+- 1: Medium priority (tasks that are important but not urgent)
+- 2: Low priority (tasks that are neither urgent nor important)
+
+### Instructions:
+- Analyze the task description provided.
+- Consider factors such as urgency, importance, deadlines, and impact.
+- Assign a priority level (0, 1, or 2) based on your analysis.
+- Output only the priority level as a single integer.
+
+### Output Format:
+A single integer (0, 1, or 2) representing the priority level.
+
+### Examples:
+- Task Description: "Send an email to the client about the project delay." → 0
+- Task Description: "Organize the team meeting for next week." → 1
+- Task Description: "Clean up the desk." → 2
+"""
+
+priority_user_prompt_template = """Determine the priority of the following task:
+ 
+Task Description: {task_description}
+
+Priority:
+"""

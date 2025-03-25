@@ -154,6 +154,12 @@ const Chat = () => {
 		}
 	}
 
+	useEffect(() => {
+		const intervalId = setInterval(fetchChatHistory, 5000) // Refresh every 5 seconds
+
+		return () => clearInterval(intervalId) // Cleanup interval on component unmount
+	}, [])
+
 	return (
 		<div className="h-screen bg-matteblack flex relative">
 			<Sidebar
