@@ -27,6 +27,8 @@ from model.agents.runnables import *
 from model.agents.functions import *
 from model.agents.prompts import *
 from model.agents.formats import *
+from model.agents.base import *
+from model.agents.helpers import *
 
 from model.memory.runnables import *
 from model.memory.functions import *
@@ -95,6 +97,9 @@ internet_summary_runnable = get_internet_summary_runnable()
 
 # Tool handlers registry for agent tools
 tool_handlers: Dict[str, callable] = {}
+
+# Instantiate the task queue globally
+task_queue = TaskQueue()
 
 def register_tool(name: str):
     """Decorator to register a function as a tool handler."""
@@ -166,6 +171,139 @@ async def save_db(data):
     """Save the data to chatsDb.json."""
     with open(CHAT_DB, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4)
+        
+async def process_queue():
+    """Background task to process tasks from the queue one at a time."""
+    while True:
+        task = await task_queue.get_next_task()
+        if task:
+            try:
+                # Process the task asynchronously
+                result = await execute_agent_task(task)
+                # Update chat with result
+                await add_result_to_chat(task["chat_id"], result)
+                await task_queue.complete_task(task["task_id"], result=result)
+            except Exception as e:
+                await task_queue.complete_task(task["task_id"], error=str(e))
+        await asyncio.sleep(0.1)  # Prevent busy waiting
+
+async def execute_agent_task(task: dict) -> str:
+    """Execute the agent task asynchronously and return the result."""
+    global agent_runnable, reflection_runnable, inbox_summarizer_runnable, graph_driver, embed_model, text_conversion_runnable, query_classification_runnable, internet_query_reframe_runnable, internet_summary_runnable
+
+    # Extract parameters from task
+    transformed_input = task["description"]
+    username = task["username"]
+    personality = task["personality"]
+    use_personal_context = task["use_personal_context"]
+    internet = task["internet"]
+
+    # Initialize context variables
+    user_context = None
+    internet_context = None
+
+    # Compute user_context if required
+    if use_personal_context:
+        try:
+            user_context = query_user_profile(
+                transformed_input,
+                graph_driver,
+                embed_model,
+                text_conversion_runnable,
+                query_classification_runnable
+            )
+        except Exception as e:
+            print(f"Error computing user_context: {e}")
+            user_context = None  # Fallback to None on error
+
+    # Compute internet_context if required
+    if internet == "Internet":
+        try:
+            reframed_query = get_reframed_internet_query(internet_query_reframe_runnable, transformed_input)
+            search_results = get_search_results(reframed_query)
+            internet_context = get_search_summary(internet_summary_runnable, search_results)
+        except Exception as e:
+            print(f"Error computing internet_context: {e}")
+            internet_context = None  # Fallback to None on error
+
+    # Invoke agent_runnable with all required parameters
+    response = agent_runnable.invoke({
+        "query": transformed_input,
+        "name": username,
+        "user_context": user_context,
+        "internet_context": internet_context,
+        "personality": personality
+    })
+
+    print(f"Agent response: {response}")
+
+    # Handle tool calls (remaining logic unchanged)
+    if "tool_calls" not in response or not isinstance(response["tool_calls"], list):
+        return "Error: Invalid tool_calls format in response."
+
+    print(f"Executing task: {transformed_input}")
+    print(f"Tool calls: {response['tool_calls']}")
+
+    all_tool_results = []
+    previous_tool_result = None
+    for tool_call in response["tool_calls"]:
+        if tool_call["response_type"] != "tool_call":
+            continue
+        tool_name = tool_call["content"].get("tool_name")
+        task_instruction = tool_call["content"].get("task_instruction")
+        previous_tool_response_required = tool_call["content"].get("previous_tool_response", False)
+
+        tool_handler = tool_handlers.get(tool_name)
+        if not tool_handler:
+            return f"Error: Tool {tool_name} not found."
+
+        tool_input = {"input": task_instruction}
+        if previous_tool_response_required and previous_tool_result:
+            tool_input["previous_tool_response"] = previous_tool_result
+        else:
+            tool_input["previous_tool_response"] = "Not Required"
+
+        tool_result_main = await tool_handler(tool_input)
+
+        print(f"Tool result for {tool_name}: {tool_result_main}")
+
+        tool_result = tool_result_main["tool_result"] if "tool_result" in tool_result_main else tool_result_main
+        previous_tool_result = tool_result
+        all_tool_results.append({"tool_name": tool_name, "task_instruction": task_instruction, "tool_result": tool_result})
+
+    # Generate final response based on tool results
+    if len(all_tool_results) == 1 and all_tool_results[0]["tool_name"] == "search_inbox":
+        filtered_tool_result = {
+            "response": all_tool_results[0]["tool_result"]["result"]["response"],
+            "email_data": [{k: email[k] for k in email if k != "body"} for email in all_tool_results[0]["tool_result"]["result"]["email_data"]],
+            "gmail_search_url": all_tool_results[0]["tool_result"]["result"]["gmail_search_url"]
+        }
+        async for token in generate_streaming_response(inbox_summarizer_runnable, {"tool_result": filtered_tool_result}, stream=True):
+            if isinstance(token, str):
+                return token
+    else:
+        async for token in generate_streaming_response(reflection_runnable, {"tool_results": all_tool_results}, stream=True):
+            if isinstance(token, str):
+                return token
+    return "Task completed."
+
+async def add_result_to_chat(chat_id: str, result: str):
+    """Add the task result to the corresponding chat."""
+    async with db_lock:
+        chatsDb = await load_db()
+        chat = next((c for c in chatsDb["chats"] if c["id"] == chat_id), None)
+        if chat:
+            result_message = {
+                "id": str(int(time.time() * 1000)),
+                "message": result,
+                "isUser": False,
+                "memoryUsed": False,
+                "agentsUsed": True,
+                "internetUsed": False,
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+            }
+            chat["messages"].append(result_message)
+            await save_db(chatsDb)
 
 # --- FastAPI Application Setup ---
 app = FastAPI(
@@ -183,6 +321,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"]
 )
+
+# Load tasks on startup
+@app.on_event("startup")
+async def startup_event():
+    await task_queue.load_tasks()
+
+# Start the queue processor on app startup
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(process_queue())
+
+# Optional: Save tasks on shutdown (not strictly necessary since we save after each operation)
+@app.on_event("shutdown")
+async def shutdown_event():
+    await task_queue.save_tasks()
 
 # --- Pydantic Models ---
 class Message(BaseModel):
@@ -295,7 +448,6 @@ async def clear_chat_history():
         await save_db(chatsDb)
     return JSONResponse(status_code=200, content={"message": "Chat history cleared"})
 
-## Chat Endpoint (Combining agents and memory logic)
 @app.post("/chat", status_code=200)
 async def chat(message: Message):
     global embed_model, chat_runnable, fact_extraction_runnable, text_conversion_runnable
@@ -313,7 +465,6 @@ async def chat(message: Message):
             if active_chat_id is None:
                 raise HTTPException(status_code=400, detail="No active chat found. Please load the chat page first.")
 
-            # Find the active chat
             active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == active_chat_id), None)
             if active_chat is None:
                 raise HTTPException(status_code=400, detail="Active chat not found.")
@@ -353,7 +504,7 @@ async def chat(message: Message):
                 "memoryUsed": False,
                 "agentsUsed": False,
                 "internetUsed": False,
-                "timestamp": datetime.datetime.utcnow().isoformat() + 'Z'
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
             }
             async with db_lock:
                 chatsDb = await load_db()
@@ -370,7 +521,7 @@ async def chat(message: Message):
             }) + "\n"
             await asyncio.sleep(0.05)
 
-            # Initialize assistant message
+            # Initialize assistant message for all categories
             assistant_msg = {
                 "id": str(int(time.time() * 1000)),
                 "message": "",
@@ -378,15 +529,55 @@ async def chat(message: Message):
                 "memoryUsed": False,
                 "agentsUsed": False,
                 "internetUsed": False,
-                "timestamp": datetime.datetime.utcnow().isoformat() + 'Z'
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
             }
-            async with db_lock:
-                chatsDb = await load_db()
-                active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
-                active_chat["messages"].append(assistant_msg)
-                await save_db(chatsDb)
 
-            # Handle memory category: update memories first, then retrieve context
+            # Handle agent category
+            if category == "agent":
+                agents_used = True
+                with open("userProfileDb.json", "r", encoding="utf-8") as f:
+                    db = json.load(f)
+                personality_description = db["userData"].get("personality", "None")
+                priority_keywords = ["urgent", "right now", "important"]
+                priority = 0 if any(keyword.lower() in message.input.lower() for keyword in priority_keywords) else 1
+                
+                print("Adding task to queue")
+                
+                # Add task to queue and set "On it" message
+                await task_queue.add_task(
+                    chat_id=active_chat_id,
+                    description=transformed_input,
+                    priority=priority,
+                    username=username,
+                    personality=personality_description,
+                    use_personal_context=use_personal_context,  # Boolean flag
+                    internet=internet  # e.g., "Internet" or other value
+                )
+                
+                print("Task added to queue")
+                
+                assistant_msg["message"] = "On it"
+                assistant_msg["agentsUsed"] = True
+                
+                print("Assistant message set")
+
+                async with db_lock:
+                    chatsDb = await load_db()
+                    active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                    active_chat["messages"].append(assistant_msg)
+                    await save_db(chatsDb)
+
+                yield json.dumps({
+                    "type": "assistantMessage",
+                    "message": "On it",
+                    "memoryUsed": memory_used,
+                    "agentsUsed": agents_used,
+                    "internetUsed": internet_used
+                }) + "\n"
+                await asyncio.sleep(0.05)
+                return  # End response for agent category
+
+            # Handle memory category: update and retrieve context
             if category == "memory":
                 if pricing_plan == "free" and credits <= 0:
                     yield json.dumps({"type": "intermediary", "message": "Retrieving memories..."}) + "\n"
@@ -401,24 +592,16 @@ async def chat(message: Message):
                         crud_graph_operations(point, graph_driver, embed_model, query_classification_runnable, information_extraction_runnable, graph_analysis_runnable, graph_decision_runnable, text_description_runnable)
                     yield json.dumps({"type": "intermediary", "message": "Retrieving memories..."}) + "\n"
                     user_context = query_user_profile(transformed_input, graph_driver, embed_model, text_conversion_runnable, query_classification_runnable)
-            # For chat and agent, retrieve context if use_personal_context is true
-            elif use_personal_context:
+            # For chat category, retrieve context if needed
+            elif category == "chat" and use_personal_context:
                 yield json.dumps({"type": "intermediary", "message": "Retrieving memories..."}) + "\n"
                 memory_used = True
                 user_context = query_user_profile(transformed_input, graph_driver, embed_model, text_conversion_runnable, query_classification_runnable)
 
             # Handle internet search if required
             if internet == "Internet":
-                if pricing_plan == "free":
-                    if credits > 0:
-                        yield json.dumps({"type": "intermediary", "message": "Searching the internet..."}) + "\n"
-                        reframed_query = get_reframed_internet_query(internet_query_reframe_runnable, transformed_input)
-                        search_results = get_search_results(reframed_query)
-                        internet_context = get_search_summary(internet_summary_runnable, search_results)
-                        internet_used = True
-                        pro_used = True
-                    else:
-                        note = "Sorry friend, could have searched the internet for more context, but your daily credits have expired. You can always upgrade to pro from the settings page"
+                if pricing_plan == "free" and credits <= 0:
+                    note = "Sorry friend, could have searched the internet for more context, but your daily credits have expired. You can always upgrade to pro from the settings page"
                 else:
                     yield json.dumps({"type": "intermediary", "message": "Searching the internet..."}) + "\n"
                     reframed_query = get_reframed_internet_query(internet_query_reframe_runnable, transformed_input)
@@ -427,13 +610,22 @@ async def chat(message: Message):
                     internet_used = True
                     pro_used = True
 
-            # Generate response based on category
+            # Generate response for chat and memory categories
             if category in ["chat", "memory"]:
                 with open("userProfileDb.json", "r", encoding="utf-8") as f:
                     db = json.load(f)
                 personality_description = db["userData"].get("personality", "None")
+                
                 assistant_msg["memoryUsed"] = memory_used
                 assistant_msg["internetUsed"] = internet_used
+                assistant_msg["agentsUsed"] = agents_used
+
+                async with db_lock:
+                    chatsDb = await load_db()
+                    active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                    active_chat["messages"].append(assistant_msg)
+                    await save_db(chatsDb)
+
                 async for token in generate_streaming_response(
                     chat_runnable,
                     inputs={
@@ -474,7 +666,7 @@ async def chat(message: Message):
                             await save_db(chatsDb)
                         yield json.dumps({
                             "type": "assistantStream",
-                            "token": "\n\n" + note,
+                            "token": "\n\n" + note if note else "",
                             "done": True,
                             "memoryUsed": memory_used,
                             "agentsUsed": agents_used,
@@ -483,239 +675,6 @@ async def chat(message: Message):
                             "messageId": assistant_msg["id"]
                         }) + "\n"
                     await asyncio.sleep(0.05)
-
-            elif category == "agent":
-                agents_used = True
-                assistant_msg["memoryUsed"] = memory_used
-                assistant_msg["internetUsed"] = internet_used
-                response = generate_response(agent_runnable, transformed_input, user_context, internet_context, username)
-
-                if "tool_calls" not in response or not isinstance(response["tool_calls"], list):
-                    assistant_msg["message"] = "Error: Invalid tool_calls format in response."
-                    async with db_lock:
-                        chatsDb = await load_db()
-                        active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
-                        for msg in active_chat["messages"]:
-                            if msg["id"] == assistant_msg["id"]:
-                                msg.update(assistant_msg)
-                                break
-                        await save_db(chatsDb)
-                    yield json.dumps({"type": "assistantMessage", "message": assistant_msg["message"]}) + "\n"
-                    return
-
-                previous_tool_result = None
-                all_tool_results = []
-                if len(response["tool_calls"]) > 1 and pricing_plan == "free":
-                    assistant_msg["message"] = "Sorry. This query requires multiple tools to be called. Flows are a pro feature and you have run out of daily Pro credits. You can upgrade to pro from the Settings page." + f"\n\n{note}"
-                    async with db_lock:
-                        chatsDb = await load_db()
-                        active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
-                        for msg in active_chat["messages"]:
-                            if msg["id"] == assistant_msg["id"]:
-                                msg.update(assistant_msg)
-                                break
-                        await save_db(chatsDb)
-                    if credits <= 0:
-                        yield json.dumps({"type": "assistantMessage", "message": assistant_msg["message"]}) + "\n"
-                        return
-                    else:
-                        pro_used = True
-
-                for tool_call in response["tool_calls"]:
-                    if tool_call["response_type"] != "tool_call":
-                        continue
-                    tool_name = tool_call["content"].get("tool_name")
-                    if tool_name != "gmail" and pricing_plan == "free" and credits <= 0:
-                        assistant_msg["message"] = "Sorry, but the query requires Sentient to use a tool that it can only use on the Pro plan. You have run out of daily credits for Pro and can upgrade your plan from the Settings page." + f"\n\n{note}"
-                        async with db_lock:
-                            chatsDb = await load_db()
-                            active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
-                            for msg in active_chat["messages"]:
-                                if msg["id"] == assistant_msg["id"]:
-                                    msg.update(assistant_msg)
-                                    break
-                            await save_db(chatsDb)
-                        yield json.dumps({"type": "assistantMessage", "message": assistant_msg["message"]}) + "\n"
-                        return
-                    elif tool_name != "gmail" and pricing_plan == "free":
-                        pro_used = True
-
-                    task_instruction = tool_call["content"].get("task_instruction")
-                    previous_tool_response_required = tool_call["content"].get("previous_tool_response", False)
-                    if not tool_name or not task_instruction:
-                        assistant_msg["message"] = "Error: Tool call is missing required fields."
-                        async with db_lock:
-                            chatsDb = await load_db()
-                            active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
-                            for msg in active_chat["messages"]:
-                                if msg["id"] == assistant_msg["id"]:
-                                    msg.update(assistant_msg)
-                                    break
-                            await save_db(chatsDb)
-                        yield json.dumps({"type": "assistantMessage", "message": assistant_msg["message"]}) + "\n"
-                        continue
-
-                    yield json.dumps({"type": "intermediary-flow-update", "message": f"Calling tool: {tool_name}..."}) + "\n"
-                    tool_handler = tool_handlers.get(tool_name)
-                    if not tool_handler:
-                        assistant_msg["message"] = f"Error: Tool {tool_name} not found."
-                        async with db_lock:
-                            chatsDb = await load_db()
-                            active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
-                            for msg in active_chat["messages"]:
-                                if msg["id"] == assistant_msg["id"]:
-                                    msg.update(assistant_msg)
-                                    break
-                            await save_db(chatsDb)
-                        yield json.dumps({"type": "assistantMessage", "message": assistant_msg["message"]}) + "\n"
-                        continue
-
-                    tool_input = {"input": task_instruction}
-                    if previous_tool_response_required and previous_tool_result:
-                        tool_input["previous_tool_response"] = previous_tool_result
-                    else:
-                        tool_input["previous_tool_response"] = "Not Required"
-
-                    try:
-                        tool_result_main = await tool_handler(tool_input)
-                        tool_result = tool_result_main["tool_result"] if "tool_result" in tool_result_main else tool_result_main
-                        if "tool_call_str" in tool_result_main and tool_result_main["tool_call_str"]:
-                            tool_name = tool_result_main["tool_call_str"]["tool_name"]
-                            if tool_name == "search_inbox":
-                                yield json.dumps({
-                                    "type": "toolResult",
-                                    "tool_name": tool_name,
-                                    "result": tool_result["result"],
-                                    "gmail_search_url": tool_result["result"]["gmail_search_url"]
-                                }) + "\n"
-                            elif tool_name == "get_email_details":
-                                yield json.dumps({
-                                    "type": "toolResult",
-                                    "tool_name": tool_name,
-                                    "result": tool_result["result"]
-                                }) + "\n"
-                        previous_tool_result = tool_result
-                        all_tool_results.append({"tool_name": tool_name, "task_instruction": task_instruction, "tool_result": tool_result})
-                    except Exception as e:
-                        assistant_msg["message"] = f"Error executing tool {tool_name}: {str(e)}"
-                        async with db_lock:
-                            chatsDb = await load_db()
-                            active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
-                            for msg in active_chat["messages"]:
-                                if msg["id"] == assistant_msg["id"]:
-                                    msg.update(assistant_msg)
-                                    break
-                            await save_db(chatsDb)
-                        yield json.dumps({"type": "assistantMessage", "message": assistant_msg["message"]}) + "\n"
-                        continue
-
-                yield json.dumps({"type": "intermediary-flow-end"}) + "\n"
-                assistant_msg["agentsUsed"] = agents_used
-                try:
-                    if len(all_tool_results) == 1 and all_tool_results[0]["tool_name"] == "search_inbox":
-                        filtered_tool_result = {
-                            "response": all_tool_results[0]["tool_result"]["result"]["response"],
-                            "email_data": [{key: email[key] for key in email if key != "body"} for email in all_tool_results[0]["tool_result"]["result"]["email_data"]],
-                            "gmail_search_url": all_tool_results[0]["tool_result"]["result"]["gmail_search_url"]
-                        }
-                        async for token in generate_streaming_response(
-                            inbox_summarizer_runnable,
-                            inputs={"tool_result": filtered_tool_result},
-                            stream=True
-                        ):
-                            if isinstance(token, str):
-                                assistant_msg["message"] += token
-                                async with db_lock:
-                                    chatsDb = await load_db()
-                                    active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
-                                    for msg in active_chat["messages"]:
-                                        if msg["id"] == assistant_msg["id"]:
-                                            msg["message"] = assistant_msg["message"]
-                                            break
-                                    await save_db(chatsDb)
-                                yield json.dumps({
-                                    "type": "assistantStream",
-                                    "token": token,
-                                    "done": False,
-                                    "messageId": assistant_msg["id"]
-                                }) + "\n"
-                            else:
-                                if note:
-                                    assistant_msg["message"] += "\n\n" + note
-                                async with db_lock:
-                                    chatsDb = await load_db()
-                                    active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
-                                    for msg in active_chat["messages"]:
-                                        if msg["id"] == assistant_msg["id"]:
-                                            msg.update(assistant_msg)
-                                            break
-                                    await save_db(chatsDb)
-                                yield json.dumps({
-                                    "type": "assistantStream",
-                                    "token": "\n\n" + note,
-                                    "done": True,
-                                    "memoryUsed": memory_used,
-                                    "agentsUsed": agents_used,
-                                    "internetUsed": internet_used,
-                                    "proUsed": pro_used,
-                                    "messageId": assistant_msg["id"]
-                                }) + "\n"
-                            await asyncio.sleep(0.05)
-                    else:
-                        async for token in generate_streaming_response(
-                            reflection_runnable,
-                            inputs={"tool_results": all_tool_results},
-                            stream=True
-                        ):
-                            if isinstance(token, str):
-                                assistant_msg["message"] += token
-                                async with db_lock:
-                                    chatsDb = await load_db()
-                                    active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
-                                    for msg in active_chat["messages"]:
-                                        if msg["id"] == assistant_msg["id"]:
-                                            msg["message"] = assistant_msg["message"]
-                                            break
-                                    await save_db(chatsDb)
-                                yield json.dumps({
-                                    "type": "assistantStream",
-                                    "token": token,
-                                    "done": False,
-                                    "messageId": assistant_msg["id"]
-                                }) + "\n"
-                            else:
-                                if note:
-                                    assistant_msg["message"] += "\n\n" + note
-                                async with db_lock:
-                                    chatsDb = await load_db()
-                                    active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
-                                    for msg in active_chat["messages"]:
-                                        if msg["id"] == assistant_msg["id"]:
-                                            msg.update(assistant_msg)
-                                            break
-                                    await save_db(chatsDb)
-                                yield json.dumps({
-                                    "type": "assistantStream",
-                                    "token": "\n\n" + note,
-                                    "done": True,
-                                    "memoryUsed": memory_used,
-                                    "agentsUsed": agents_used,
-                                    "internetUsed": internet_used,
-                                    "proUsed": pro_used,
-                                    "messageId": assistant_msg["id"]
-                                }) + "\n"
-                            await asyncio.sleep(0.05)
-                except Exception as e:
-                    assistant_msg["message"] = f"Error during reflection: {str(e)}"
-                    async with db_lock:
-                        chatsDb = await load_db()
-                        active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
-                        for msg in active_chat["messages"]:
-                            if msg["id"] == assistant_msg["id"]:
-                                msg.update(assistant_msg)
-                                break
-                        await save_db(chatsDb)
-                    yield json.dumps({"type": "assistantMessage", "message": assistant_msg["message"]}) + "\n"
 
         return StreamingResponse(response_generator(), media_type="application/json")
 
@@ -754,9 +713,9 @@ async def gmail_tool(tool_call: ToolCall) -> Dict[str, Any]:
             ["query", "username", "previous_tool_response"]
         )
         tool_call_str = tool_runnable.invoke({
-            "query": tool_call.input,
+            "query": tool_call["input"],
             "username": username,
-            "previous_tool_response": tool_call.previous_tool_response
+            "previous_tool_response": tool_call["previous_tool_response"]
         })
         tool_result = await parse_and_execute_tool_calls(tool_call_str)
         return {"tool_result": tool_result, "tool_call_str": tool_call_str}
@@ -774,8 +733,8 @@ async def drive_tool(tool_call: ToolCall) -> Dict[str, Any]:
             ["query", "previous_tool_response"]
         )
         tool_call_str = tool_runnable.invoke({
-            "query": tool_call.input,
-            "previous_tool_response": tool_call.previous_tool_response
+            "query": tool_call["input"],
+            "previous_tool_response": tool_call["previous_tool_response"]
         })
         tool_result = await parse_and_execute_tool_calls(tool_call_str)
         return {"tool_result": tool_result, "tool_call_str": None}
@@ -1514,6 +1473,12 @@ async def customize_graph(request: GraphRequest):
         return JSONResponse(status_code=200, content={"message": "Graph customized successfully."})
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
+    
+@app.get("/tasks", status_code=200)
+async def get_tasks():
+    """Return the current state of all tasks."""
+    tasks = await task_queue.get_all_tasks()
+    return JSONResponse(content={"tasks": tasks})
 
 STARTUP_TIME = time.time() - START_TIME
 print(f"Server startup time: {STARTUP_TIME:.2f} seconds")

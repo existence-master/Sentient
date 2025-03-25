@@ -239,4 +239,5 @@ uploads
 token.pickle
 chatsDb.json
 userProfileDb.json
+tasks.json
 ruff_cache

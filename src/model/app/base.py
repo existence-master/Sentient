@@ -860,3 +860,4 @@ class GeminiRunnable(BaseRunnable):
         )
 
         yield self._handle_response(response)
+        

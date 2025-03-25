@@ -101,8 +101,9 @@ def get_agent_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
         user_prompt_template=agent_user_prompt_template,
         input_variables=[
             "query",
+            "name",
             "user_context",
-            "internet_contextname", # Note: Typo in original function 'internet_contextname' is kept for consistency
+            "internet_context", # Note: Typo in original function 'internet_contextname' is kept for consistency
             "personality",
         ],
         required_format=agent_required_format,
