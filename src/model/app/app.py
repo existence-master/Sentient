@@ -225,7 +225,6 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
                 if not message.get("isVisible", True) is False # default to True if isVisible is not present
             ]
             
-            print(filtered_messages)
             return filtered_messages
         else:
             return []
@@ -810,6 +809,7 @@ async def chat(message: Message):
 @app.post("/elaborator", status_code=200)
 async def elaborate(message: ElaboratorMessage):
     """Elaborates on an input string based on a specified purpose."""
+    print ("MESSAGE TO BE ELABORATED: ", message.input)
     try:
         elaborator_runnable = get_tool_runnable(
             elaborator_system_prompt_template,
@@ -817,7 +817,9 @@ async def elaborate(message: ElaboratorMessage):
             None,
             ["query", "purpose"]
         )
+        print ("Elaborator runnable: ", elaborator_runnable)
         output = elaborator_runnable.invoke({"query": message.input, "purpose": message.purpose})
+        print (f"Elaborator output: {output}")
         return JSONResponse(status_code=200, content={"message": output})
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})

@@ -165,7 +165,7 @@ def get_tool_runnable(
         user_prompt_template=user_prompt_template,
         input_variables=input_variables,
         required_format=required_format,
-        response_type="json",
+        response_type= "json" if required_format else "chat",
     )
     """Configures the Runnable instance for tool execution, expecting JSON responses and operating stateless."""
 
