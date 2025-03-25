@@ -21,6 +21,7 @@ from google.auth.transport.requests import Request
 from dotenv import load_dotenv
 import nest_asyncio
 import uvicorn
+from fastapi import WebSocket, WebSocketDisconnect
 
 # Import specific functions, runnables, and helpers from respective folders
 from model.agents.runnables import *
@@ -73,8 +74,7 @@ graph_driver = GraphDatabase.driver(
     auth=(os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"])
 )
 
-
-
+manager = WebSocketManager()
 
 # Initialize runnables from agents
 reflection_runnable = get_reflection_runnable()
@@ -231,10 +231,42 @@ async def process_queue():
                 result = await task_queue.current_task_execution
                 await add_result_to_chat(task["chat_id"], result)
                 await task_queue.complete_task(task["task_id"], result=result)
+
+                # --- WebSocket Message on Success ---
+                task_completion_message = {
+                    "type": "task_completed",
+                    "task_id": task["task_id"],
+                    "description": task["description"],
+                    "result": result
+                }
+                await manager.broadcast(json.dumps(task_completion_message))
+                print(f"WebSocket message sent for task completion: {task['task_id']}")
+
+
             except asyncio.CancelledError:
                 await task_queue.complete_task(task["task_id"], error="Task was cancelled")
+                # --- WebSocket Message on Cancellation ---
+                task_error_message = {
+                    "type": "task_error",
+                    "task_id": task["task_id"],
+                    "description": task["description"],
+                    "error": "Task was cancelled"
+                }
+                await manager.broadcast(json.dumps(task_error_message))
+                print(f"WebSocket message sent for task cancellation: {task['task_id']}")
+
             except Exception as e:
-                await task_queue.complete_task(task["task_id"], error=str(e))
+                error_str = str(e)
+                await task_queue.complete_task(task["task_id"], error=error_str)
+                # --- WebSocket Message on Error ---
+                task_error_message = {
+                    "type": "task_error",
+                    "task_id": task["task_id"],
+                    "description": task["description"],
+                    "error": error_str
+                }
+                await manager.broadcast(json.dumps(task_error_message))
+                print(f"WebSocket message sent for task error: {task['task_id']} - Error: {error_str}")
         await asyncio.sleep(0.1)
 
 async def execute_agent_task(task: dict) -> str:
@@ -1572,6 +1604,20 @@ async def delete_task(delete_request: DeleteTaskRequest): # Use DeleteTaskReques
         return JSONResponse(content={"message": "Task deleted successfully"})
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            # You can process messages received from the client here if needed
+            # For now, we are primarily sending messages from the server to client
+            pass # Or print(f"Client sent message: {data}")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        # Handle disconnection if needed
+        # print("Client disconnected")
 
 STARTUP_TIME = time.time() - START_TIME
 print(f"Server startup time: {STARTUP_TIME:.2f} seconds")

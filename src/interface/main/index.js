@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from "electron"
+import { app, BrowserWindow, ipcMain, dialog, Notification } from "electron"
 import path, { dirname } from "path"
 import { fileURLToPath } from "url"
 import fetch from "node-fetch"
@@ -26,6 +26,7 @@ import dotenv from "dotenv"
 import pkg from "electron-updater"
 const { autoUpdater } = pkg
 import serve from "electron-serve"
+import WebSocket from "ws"
 
 /**
  * @file Main process file for the Electron application.
@@ -104,6 +105,41 @@ if (app.isPackaged) {
 	chatsDbPath = path.resolve(__dirname, "../../chatsDb.json")
 	userProfileDbPath = path.resolve(__dirname, "../../userProfileDb.json")
 	appOutDir = path.join(__dirname, "../out")
+}
+
+let ws = new WebSocket("ws://localhost:5000/ws") // Replace with your FastAPI server URL if different
+
+ws.onopen = () => {
+	console.log("WebSocket connection opened with FastAPI")
+	// Optionally send a message to the server upon connection
+	// ws.send('Electron client connected');
+}
+
+ws.onmessage = (event) => {
+	const messageData = JSON.parse(event.data)
+	console.log("WebSocket message received:", messageData)
+
+	if (messageData.type === "task_completed") {
+		const { task_id, description, result } = messageData
+		new Notification({
+			title: "Task Completed!",
+			body: `Task "${description}" (ID: ${task_id}) completed successfully.\nResult: ${result.substring(0, 100)}...` // Limit result preview for notification
+		}).show()
+	} else if (messageData.type === "task_error") {
+		const { task_id, description, error } = messageData
+		new Notification({
+			title: "Task Error!",
+			body: `Task "${description}" (ID: ${task_id}) encountered an error.\nError: ${error}`
+		}).show()
+	}
+}
+
+ws.onclose = () => {
+	console.log("WebSocket connection closed")
+}
+
+ws.onerror = (error) => {
+	console.error("WebSocket error:", error)
 }
 
 // Load environment variables from .env file
