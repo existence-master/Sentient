@@ -284,6 +284,7 @@ async def execute_agent_task(task: dict) -> str:
     else:
         async for token in generate_streaming_response(reflection_runnable, {"tool_results": all_tool_results}, stream=True):
             if isinstance(token, str):
+                print(f"Token: {token}")
                 return token
     return "Task completed."
 

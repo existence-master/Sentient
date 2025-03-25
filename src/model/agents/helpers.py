@@ -82,15 +82,13 @@ def get_function_from_agents(function_name: str) -> Optional[Callable]:
     """
     try:
         functions_module = importlib.import_module(
-            "functions"
+            "model.agents.functions"
         )  # Attempt to import the 'functions' module
         return getattr(
             functions_module, function_name, None
         )  # Get the function by name, return None if not found
     except ModuleNotFoundError:
         return None  # Return None if the 'functions' module is not found
-    
-    
 
 async def parse_and_execute_tool_calls(tool_call: Dict[str, Any]) -> Dict[str, Any]:
     """
