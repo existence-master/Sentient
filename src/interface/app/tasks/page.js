@@ -17,7 +17,7 @@ const Tasks = () => {
 
 	useEffect(() => {
 		fetchTasksData()
-		const intervalId = setInterval(fetchTasksData, 5000)
+		const intervalId = setInterval(fetchTasksData, 300000)
 		fetchUserDetails()
 		return () => clearInterval(intervalId)
 	}, [])
@@ -58,13 +58,8 @@ const Tasks = () => {
 		}
 		try {
 			const taskData = {
-				chat_id: "default_chat_id", // Replace with actual logic to get chat_id
 				description: newTaskDescription,
 				priority: parseInt(newTaskPriority),
-				username: userDetails.username || "default_user", // Use actual user data
-				personality: "default_personality", // Adjust as needed
-				use_personal_context: false, // Default value, adjust as needed
-				internet: "None" // Default value, adjust as needed
 			}
 			const response = await window.electron.invoke("add-task", taskData)
 			if (response.error) {

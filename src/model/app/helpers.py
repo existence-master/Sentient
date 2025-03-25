@@ -360,3 +360,4 @@ def write_to_log(message: str):
         print(
             f"Error writing to log file: {error}"
         )  # Print error message if writing to log file fails
+        

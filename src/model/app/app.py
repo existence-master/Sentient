@@ -73,6 +73,9 @@ graph_driver = GraphDatabase.driver(
     auth=(os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"])
 )
 
+
+
+
 # Initialize runnables from agents
 reflection_runnable = get_reflection_runnable()
 inbox_summarizer_runnable = get_inbox_summarizer_runnable()
@@ -152,6 +155,11 @@ initial_db = {
     "next_chat_id": 1
 }
 
+def load_user_profile():
+    """Load user profile data from userProfileDb.json."""
+    with open("userProfileDb.json", "r", encoding="utf-8") as f:
+        return json.load(f)
+
 async def load_db():
     """Load the database from chatsDb.json, initializing if it doesn't exist or is invalid."""
     try:
@@ -172,11 +180,52 @@ async def save_db(data):
     """Save the data to chatsDb.json."""
     with open(CHAT_DB, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4)
+
+async def get_chat_history_messages() -> List[Dict[str, Any]]:
+    """
+    Function to retrieve the chat history of the currently active chat.
+    Checks for inactivity and creates a new chat if needed.
+    Returns the list of messages for the active chat.
+    """
+    async with db_lock:
+        chatsDb = await load_db()
+        active_chat_id = chatsDb["active_chat_id"]
+        current_time = datetime.datetime.now(timezone.utc)
+
+        # If no active chat exists, create a new one
+        if active_chat_id is None or not chatsDb["chats"]:
+            new_chat_id = f"chat_{chatsDb['next_chat_id']}"
+            chatsDb["next_chat_id"] += 1
+            new_chat = {"id": new_chat_id, "messages": []}
+            chatsDb["chats"].append(new_chat)
+            chatsDb["active_chat_id"] = new_chat_id
+            await save_db(chatsDb)
+            return []  # Return empty messages for new chat
+
+        # Find the active chat
+        active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == active_chat_id), None)
+        if active_chat and active_chat["messages"]:
+            last_message = active_chat["messages"][-1]
+            last_timestamp = datetime.datetime.fromisoformat(last_message["timestamp"].replace('Z', '+00:00'))
+            if (current_time - last_timestamp).total_seconds() > 600:  # 10 minutes = 600 seconds
+                # Inactivity period exceeded, create a new chat
+                new_chat_id = f"chat_{chatsDb['next_chat_id']}"
+                chatsDb["next_chat_id"] += 1
+                new_chat = {"id": new_chat_id, "messages": []}
+                chatsDb["chats"].append(new_chat)
+                chatsDb["active_chat_id"] = new_chat_id
+                await save_db(chatsDb)
+                return [] # Return empty messages for new chat
+
+        # Return messages from the active chat
+        active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"]), None)
+        return active_chat["messages"] if active_chat else []
         
 async def process_queue():
     while True:
         task = await task_queue.get_next_task()
         if task:
+            print(f"Processing task: {task}")
             try:
                 task_queue.current_task_execution = asyncio.create_task(execute_agent_task(task))
                 result = await task_queue.current_task_execution
@@ -305,6 +354,12 @@ async def add_result_to_chat(chat_id: str, result: str):
             }
             chat["messages"].append(result_message)
             await save_db(chatsDb)
+            
+chat_history = get_chat_history()
+
+chat_runnable = get_chat_runnable(chat_history)
+agent_runnable = get_agent_runnable(chat_history)
+unified_classification_runnable = get_unified_classification_runnable(chat_history)
 
 # --- FastAPI Application Setup ---
 app = FastAPI(
@@ -422,42 +477,10 @@ async def main():
 @app.get("/get-history", status_code=200)
 async def get_history():
     """
-    Retrieve the chat history of the currently active chat.
-    Check for inactivity (10 minutes since last message) and create a new chat if needed.
+    Endpoint to retrieve the chat history. Calls the get_chat_history_messages function.
     """
-    async with db_lock:
-        chatsDb = await load_db()
-        active_chat_id = chatsDb["active_chat_id"]
-        current_time = datetime.datetime.now(timezone.utc)  # Updated to use datetime.now with UTC timezone
-
-        # If no active chat exists, create a new one
-        if active_chat_id is None or not chatsDb["chats"]:
-            new_chat_id = f"chat_{chatsDb['next_chat_id']}"
-            chatsDb["next_chat_id"] += 1
-            new_chat = {"id": new_chat_id, "messages": []}
-            chatsDb["chats"].append(new_chat)
-            chatsDb["active_chat_id"] = new_chat_id
-            await save_db(chatsDb)
-            return JSONResponse(status_code=200, content={"messages": []})
-
-        # Find the active chat
-        active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == active_chat_id), None)
-        if active_chat and active_chat["messages"]:
-            last_message = active_chat["messages"][-1]
-            last_timestamp = datetime.datetime.fromisoformat(last_message["timestamp"].replace('Z', '+00:00'))
-            if (current_time - last_timestamp).total_seconds() > 600:  # 10 minutes = 600 seconds
-                # Inactivity period exceeded, create a new chat
-                new_chat_id = f"chat_{chatsDb['next_chat_id']}"
-                chatsDb["next_chat_id"] += 1
-                new_chat = {"id": new_chat_id, "messages": []}
-                chatsDb["chats"].append(new_chat)
-                chatsDb["active_chat_id"] = new_chat_id
-                await save_db(chatsDb)
-                return JSONResponse(status_code=200, content={"messages": []})
-
-        # Return messages from the active chat
-        active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"]), None)
-        return JSONResponse(status_code=200, content={"messages": active_chat["messages"] if active_chat else []})
+    messages = await get_chat_history_messages()
+    return JSONResponse(status_code=200, content={"messages": messages})
     
 @app.post("/clear-chat-history", status_code=200)
 async def clear_chat_history():
@@ -473,6 +496,7 @@ async def chat(message: Message):
     global information_extraction_runnable, graph_analysis_runnable, graph_decision_runnable
     global query_classification_runnable, agent_runnable, text_description_runnable
     global reflection_runnable, internet_query_reframe_runnable, internet_summary_runnable, priority_runnable
+    global unified_classification_runnable
 
     try:
         with open("userProfileDb.json", "r", encoding="utf-8") as f:
@@ -491,10 +515,6 @@ async def chat(message: Message):
         chat_history = get_chat_history()
         if chat_history is None:
             raise HTTPException(status_code=500, detail="Failed to retrieve chat history")
-
-        chat_runnable = get_chat_runnable(chat_history)
-        agent_runnable = get_agent_runnable(chat_history)
-        unified_classification_runnable = get_unified_classification_runnable(chat_history)
 
         username = db["userData"]["personalInfo"]["name"]
         unified_output = unified_classification_runnable.invoke({"query": message.input})
@@ -1445,7 +1465,7 @@ async def create_document():
         trait_descriptions = []
         for trait in personality_type:
             if trait in PERSONALITY_DESCRIPTIONS:
-                description = f"{trait}: {PERSONITY_DESCRIPTIONS[trait]}"
+                description = f"{trait}: {PERSONALITY_DESCRIPTIONS[trait]}"
                 trait_descriptions.append(description)
                 filename = f"{username.lower()}_{trait.lower()}.txt"
                 summarized_paragraph = text_summarizer_runnable.invoke({"user_name": username, "text": description})
@@ -1501,17 +1521,41 @@ async def get_tasks():
     return JSONResponse(content={"tasks": tasks})
 
 @app.post("/add-task", status_code=201)
-async def add_task(task_request: CreateTaskRequest): # Use CreateTaskRequest as dependency
-    task_id = await task_queue.add_task(
-        task_request.chat_id,
-        task_request.description,
-        task_request.priority,
-        task_request.username,
-        task_request.personality,
-        task_request.use_personal_context,
-        task_request.internet
-    )
-    return JSONResponse(content={"task_id": task_id})
+async def add_task(task_request: dict):
+    """
+    Adds a new task with dynamically determined chat_id, personality, use_personal_context, and internet.
+    """
+    try:
+        async with db_lock:
+            chatsDb = await load_db()
+            active_chat_id = chatsDb.get("active_chat_id")
+            if not active_chat_id:
+                raise HTTPException(status_code=400, detail="No active chat found.")
+
+        user_profile = load_user_profile()
+        username = user_profile["userData"]["personalInfo"].get("name", "default_user")
+        personality = user_profile["userData"].get("personality", "default_personality")
+
+        unified_output = unified_classification_runnable.invoke({"query": task_request["description"]})
+        use_personal_context = unified_output["use_personal_context"]
+        internet = unified_output["internet"]
+
+        priority_response = priority_runnable.invoke({"task_description": task_request["description"]})
+        priority = priority_response["priority"]
+
+        task_id = await task_queue.add_task(
+            chat_id=active_chat_id,
+            description=task_request["description"],
+            priority=priority,
+            username=username,
+            personality=personality,
+            use_personal_context=use_personal_context,
+            internet=internet
+        )
+
+        return JSONResponse(content={"task_id": task_id})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/update-task", status_code=200)
 async def update_task(update_request: UpdateTaskRequest): # Use UpdateTaskRequest as dependency
