@@ -185,7 +185,7 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
     """
     Function to retrieve the chat history of the currently active chat.
     Checks for inactivity and creates a new chat if needed.
-    Returns the list of messages for the active chat.
+    Returns the list of messages for the active chat, filtering out messages where isVisible is False.
     """
     async with db_lock:
         chatsDb = await load_db()
@@ -217,9 +217,18 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
                 await save_db(chatsDb)
                 return [] # Return empty messages for new chat
 
-        # Return messages from the active chat
+        # Return messages from the active chat, filtering out those with isVisible: False
         active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"]), None)
-        return active_chat["messages"] if active_chat else []
+        if active_chat and active_chat["messages"]:
+            filtered_messages = [
+                message for message in active_chat["messages"]
+                if not message.get("isVisible", True) is False # default to True if isVisible is not present
+            ]
+            
+            print(filtered_messages)
+            return filtered_messages
+        else:
+            return []
 
 class WebSocketManager:
     def __init__(self):
@@ -243,136 +252,11 @@ class WebSocketManager:
                 print(f"Error broadcasting message to connection: {e}")
                 self.disconnect(connection) # Remove broken connection
 
-class TaskQueue:
-    def __init__(self, tasks_file="tasks.json"):
-        self.tasks_file = tasks_file
-        self.tasks = []
-        self.task_id_counter = 0
-        self.lock = asyncio.Lock()
-        self.current_task_execution = None  # To hold the currently executing task
-
-    async def load_tasks(self):
-        """Load tasks from the tasks.json file."""
-        try:
-            with open(self.tasks_file, 'r') as f:
-                data = json.load(f)
-                self.tasks = data.get('tasks', [])
-                self.task_id_counter = data.get('task_id_counter', 0)
-        except FileNotFoundError:
-            self.tasks = []
-            self.task_id_counter = 0
-            await self.save_tasks() # Create file if not exists
-        except json.JSONDecodeError:
-            self.tasks = []
-            self.task_id_counter = 0
-            print("Error decoding tasks.json, initializing with empty tasks.")
-            await self.save_tasks()
-
-    async def save_tasks(self):
-        """Save tasks to the tasks.json file."""
-        data = {'tasks': self.tasks, 'task_id_counter': self.task_id_counter}
-        with open(self.tasks_file, 'w') as f:
-            json.dump(data, f, indent=4)
-
-    async def add_task(self, chat_id: str, description: str, priority: int, username: str, personality: Union[Dict, str, None], use_personal_context: bool, internet: str) -> str:
-        """Add a new task to the queue."""
-        async with self.lock:
-            task_id = f"task_{self.task_id_counter}"
-            task = {
-                "task_id": task_id,
-                "chat_id": chat_id,
-                "description": description,
-                "priority": priority,
-                "status": "pending",
-                "username": username,
-                "personality": personality,
-                "use_personal_context": use_personal_context,
-                "internet": internet,
-                "created_at": datetime.datetime.utcnow().isoformat() + "Z",
-                "completed_at": None,
-                "result": None,
-                "error": None
-            }
-            self.tasks.append(task)
-            self.task_id_counter += 1
-            await self.save_tasks()
-            return task_id
-
-    async def get_next_task(self) -> Optional[Dict]:
-        """Get the next pending task with the highest priority."""
-        async with self.lock:
-            pending_tasks = [task for task in self.tasks if task["status"] == "pending"]
-            if not pending_tasks:
-                return None
-
-            # Sort by priority (lower number = higher priority) and then by creation time (FIFO for same priority)
-            pending_tasks.sort(key=lambda task: (task["priority"], task["created_at"]))
-            next_task = pending_tasks[0]
-            next_task["status"] = "processing"
-            await self.save_tasks() # Update task status immediately when processing starts
-            return next_task
-
-    async def complete_task(self, task_id: str, result: Optional[str] = None, error: Optional[str] = None):
-        """Mark a task as completed and save the result."""
-        async with self.lock:
-            for task in self.tasks:
-                if task["task_id"] == task_id:
-                    task["status"] = "completed"
-                    task["result"] = result
-                    task["error"] = error
-                    task["completed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
-                    break # Task ID is unique, no need to continue searching
-            await self.save_tasks()
-
-    async def update_task(self, task_id: str, description: str, priority: int):
-        """Update a task's description and priority."""
-        async with self.lock:
-            for task in self.tasks:
-                if task["task_id"] == task_id:
-                    if task["status"] not in ["pending", "processing"]:
-                        raise ValueError(f"Cannot update task with status: {task['status']}. Only pending or processing tasks can be updated.")
-                    task["description"] = description
-                    task["priority"] = priority
-                    break
-            else:
-                raise ValueError(f"Task with id {task_id} not found.")
-            await self.save_tasks()
-
-    async def delete_task(self, task_id: str):
-        """Delete a task by its ID."""
-        async with self.lock:
-            self.tasks = [task for task in self.tasks if task["task_id"] != task_id]
-            await self.save_tasks()
-
-    async def get_all_tasks(self) -> List[Dict]:
-        """Return a list of all tasks."""
-        async with self.lock:
-            return list(self.tasks) # Return a copy to avoid external modification
-
-    async def delete_old_completed_tasks(self, hours_threshold: int = 1):
-        """Delete completed tasks older than the specified hours threshold."""
-        async with self.lock:
-            now = datetime.datetime.utcnow()
-            tasks_to_keep = []
-            deleted_task_ids = []
-            for task in self.tasks:
-                if task["status"] == "completed" and task["completed_at"]:
-                    completed_at_dt = datetime.datetime.fromisoformat(task["completed_at"].replace('Z', '+00:00'))
-                    if now - completed_at_dt > timedelta(hours=hours_threshold):
-                        deleted_task_ids.append(task["task_id"])
-                        continue # Skip adding to tasks_to_keep, effectively deleting it
-                tasks_to_keep.append(task)
-            self.tasks = tasks_to_keep
-            await self.save_tasks()
-            if deleted_task_ids:
-                print(f"Deleted completed tasks with IDs: {deleted_task_ids} older than {hours_threshold} hours.")
-
 async def cleanup_tasks_periodically():
     """Periodically clean up old completed tasks."""
     while True:
         await task_queue.delete_old_completed_tasks()
         await asyncio.sleep(60 * 60) # Check every hour (or less for testing, e.g., 60 seconds)
-
 
 async def process_queue():
     while True:
@@ -382,7 +266,8 @@ async def process_queue():
             try:
                 task_queue.current_task_execution = asyncio.create_task(execute_agent_task(task))
                 result = await task_queue.current_task_execution
-                await add_result_to_chat(task["chat_id"], result)
+                await add_result_to_chat(task["chat_id"], task["description"], True)
+                await add_result_to_chat(task["chat_id"], result, False, task["description"])
                 await task_queue.complete_task(task["task_id"], result=result)
 
                 # --- WebSocket Message on Success ---
@@ -522,21 +407,35 @@ async def execute_agent_task(task: dict) -> str:
     print(f"Final result: {result}")
     return result
 
-async def add_result_to_chat(chat_id: str, result: str):
+async def add_result_to_chat(chat_id: str, result: str, isUser: bool, task_description: str = None):
     """Add the task result to the corresponding chat."""
     async with db_lock:
         chatsDb = await load_db()
         chat = next((c for c in chatsDb["chats"] if c["id"] == chat_id), None)
         if chat:
-            result_message = {
-                "id": str(int(time.time() * 1000)),
-                "message": result,
-                "isUser": False,
-                "memoryUsed": False,
-                "agentsUsed": True,
-                "internetUsed": False,
-                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
-            }
+            if not isUser:
+                result_message = {
+                    "id": str(int(time.time() * 1000)),
+                    "type": "tool_result",
+                    "message": result,
+                    "task": task_description,
+                    "isUser": False,
+                    "memoryUsed": False,
+                    "agentsUsed": True,
+                    "internetUsed": False,
+                    "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+                }
+            else:
+                result_message = {
+                    "id": str(int(time.time() * 1000)),
+                    "message": result,
+                    "isUser": True,
+                    "isVisible": False,
+                    "memoryUsed": False,
+                    "agentsUsed": False,
+                    "internetUsed": False,
+                    "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+                }
             chat["messages"].append(result_message)
             await save_db(chatsDb)
 
@@ -783,7 +682,6 @@ async def chat(message: Message):
                 print("Task added to queue")
 
                 assistant_msg["message"] = "On it"
-                assistant_msg["agentsUsed"] = True
 
                 print("Assistant message set")
 
@@ -796,9 +694,9 @@ async def chat(message: Message):
                 yield json.dumps({
                     "type": "assistantMessage",
                     "message": "On it",
-                    "memoryUsed": memory_used,
-                    "agentsUsed": agents_used,
-                    "internetUsed": internet_used
+                    "memoryUsed": False,
+                    "agentsUsed": False,
+                    "internetUsed": False
                 }) + "\n"
                 await asyncio.sleep(0.05)
                 return  # End response for agent category

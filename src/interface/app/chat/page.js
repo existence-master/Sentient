@@ -1,6 +1,7 @@
 "use client"
 import React, { useState, useEffect, useRef } from "react"
 import ChatBubble from "@components/ChatBubble"
+import ToolResultBubble from "@components/ToolResultBubble"
 import Sidebar from "@components/Sidebar"
 import {
 	IconSend,
@@ -9,6 +10,7 @@ import {
 	IconLoader
 } from "@tabler/icons-react"
 import toast from "react-hot-toast"
+
 
 const Chat = () => {
 	const [messages, setMessages] = useState([])
@@ -155,7 +157,7 @@ const Chat = () => {
 	}
 
 	useEffect(() => {
-		const intervalId = setInterval(fetchChatHistory, 5000) // Refresh every 5 seconds
+		const intervalId = setInterval(fetchChatHistory, 60000) // Refresh every 5 seconds
 
 		return () => clearInterval(intervalId) // Cleanup interval on component unmount
 	}, [])
@@ -198,13 +200,23 @@ const Chat = () => {
 									key={msg.id}
 									className={`flex ${msg.isUser ? "justify-end" : "justify-start"}`}
 								>
-									<ChatBubble
-										message={msg.message}
-										isUser={msg.isUser}
-										memoryUsed={msg.memoryUsed}
-										agentsUsed={msg.agentsUsed}
-										internetUsed={msg.internetUsed}
-									/>
+									{msg.type === "tool_result" ? (
+										<ToolResultBubble
+											task={msg.task}
+											result={msg.message}
+											memoryUsed={msg.memoryUsed}
+											agentsUsed={msg.agentsUsed}
+											internetUsed={msg.internetUsed}
+										/>
+									) : (
+										<ChatBubble
+											message={msg.message}
+											isUser={msg.isUser}
+											memoryUsed={msg.memoryUsed}
+											agentsUsed={msg.agentsUsed}
+											internetUsed={msg.internetUsed}
+										/>
+									)}
 								</div>
 							))
 						)}

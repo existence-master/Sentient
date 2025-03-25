@@ -301,7 +301,7 @@ You will receive the following inputs:
   - Tool Result: A JSON object containing the result or error message.
 
 ### Output Format:
-Generate a single, user-friendly response as a plain text message that covers all the tool calls.
+Generate a single, user-friendly response as a plain text message that covers all the tool calls. Don't mention 'Here is a user-friendly response'
 
 ### Examples:
 

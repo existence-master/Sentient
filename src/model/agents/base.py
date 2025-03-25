@@ -4,7 +4,7 @@ import asyncio
 import datetime
 import aiofiles
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 # Global lock for thread-safe access to task data
 task_lock = asyncio.Lock()
@@ -13,135 +13,125 @@ task_lock = asyncio.Lock()
 TASKS_FILE = "tasks.json"
 
 class TaskQueue:
-    def __init__(self):
-        # Heapq list for "to do" tasks: (priority, task_id)
-        self.todo_tasks: List[Tuple[int, str]] = []
-        # Dictionary for all tasks: task_id -> task_dict
-        self.all_tasks: Dict[str, dict] = {}
-        # Current task being processed: task_id or None
-        self.current_task: Optional[str] = None
+    def __init__(self, tasks_file="tasks.json"):
+        self.tasks_file = tasks_file
+        self.tasks = []
+        self.task_id_counter = 0
+        self.lock = asyncio.Lock()
+        self.current_task_execution = None  # To hold the currently executing task
 
-    async def add_task(self, chat_id: str, description: str, priority: int, username: str, personality: str, use_personal_context: bool, internet: str) -> str:
-        task_id = str(uuid.uuid4())
-        task_dict = {
-            "task_id": task_id,
-            "chat_id": chat_id,
-            "description": description,
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-            "priority": priority,
-            "status": "to do",
-            "username": username,
-            "personality": personality,
-            "use_personal_context": use_personal_context,
-            "internet": internet,
-            "completed_at": None # ADDED completed_at property here
-        }
-
-        async with task_lock:
-            self.all_tasks[task_id] = task_dict
-            heapq.heappush(self.todo_tasks, (priority, task_id))
+    async def load_tasks(self):
+        """Load tasks from the tasks.json file."""
+        try:
+            with open(self.tasks_file, 'r') as f:
+                data = json.load(f)
+                self.tasks = data.get('tasks', [])
+                self.task_id_counter = data.get('task_id_counter', 0)
+        except FileNotFoundError:
+            self.tasks = []
+            self.task_id_counter = 0
+            await self.save_tasks() # Create file if not exists
+        except json.JSONDecodeError:
+            self.tasks = []
+            self.task_id_counter = 0
+            print("Error decoding tasks.json, initializing with empty tasks.")
             await self.save_tasks()
 
-        return task_id
+    async def save_tasks(self):
+        """Save tasks to the tasks.json file."""
+        data = {'tasks': self.tasks, 'task_id_counter': self.task_id_counter}
+        with open(self.tasks_file, 'w') as f:
+            json.dump(data, f, indent=4)
+
+    async def add_task(self, chat_id: str, description: str, priority: int, username: str, personality: Union[Dict, str, None], use_personal_context: bool, internet: str) -> str:
+        """Add a new task to the queue."""
+        async with self.lock:
+            task_id = f"task_{self.task_id_counter}"
+            task = {
+                "task_id": task_id,
+                "chat_id": chat_id,
+                "description": description,
+                "priority": priority,
+                "status": "pending",
+                "username": username,
+                "personality": personality,
+                "use_personal_context": use_personal_context,
+                "internet": internet,
+                "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+                "completed_at": None,
+                "result": None,
+                "error": None
+            }
+            self.tasks.append(task)
+            self.task_id_counter += 1
+            await self.save_tasks()
+            return task_id
+
+    async def get_next_task(self) -> Optional[Dict]:
+        """Get the next pending task with the highest priority."""
+        async with self.lock:
+            pending_tasks = [task for task in self.tasks if task["status"] == "pending"]
+            if not pending_tasks:
+                return None
+
+            # Sort by priority (lower number = higher priority) and then by creation time (FIFO for same priority)
+            pending_tasks.sort(key=lambda task: (task["priority"], task["created_at"]))
+            next_task = pending_tasks[0]
+            next_task["status"] = "processing"
+            await self.save_tasks() # Update task status immediately when processing starts
+            return next_task
+
+    async def complete_task(self, task_id: str, result: Optional[str] = None, error: Optional[str] = None):
+        """Mark a task as completed and save the result."""
+        async with self.lock:
+            for task in self.tasks:
+                if task["task_id"] == task_id:
+                    task["status"] = "completed"
+                    task["result"] = result
+                    task["error"] = error
+                    task["completed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+                    break # Task ID is unique, no need to continue searching
+            await self.save_tasks()
 
     async def update_task(self, task_id: str, description: str, priority: int):
-        async with task_lock:
-            if task_id not in self.all_tasks:
-                raise ValueError("Task not found")
-            task = self.all_tasks[task_id]
-            if task["status"] == "in progress":
-                raise ValueError("Cannot update a task in progress")
-            task["description"] = description
-            task["priority"] = priority
-            if task["status"] == "to do":
-                self.todo_tasks = [t for t in self.todo_tasks if t[1] != task_id]
-                heapq.heappush(self.todo_tasks, (priority, task_id))
+        """Update a task's description and priority."""
+        async with self.lock:
+            for task in self.tasks:
+                if task["task_id"] == task_id:
+                    if task["status"] not in ["pending", "processing"]:
+                        raise ValueError(f"Cannot update task with status: {task['status']}. Only pending or processing tasks can be updated.")
+                    task["description"] = description
+                    task["priority"] = priority
+                    break
+            else:
+                raise ValueError(f"Task with id {task_id} not found.")
             await self.save_tasks()
 
     async def delete_task(self, task_id: str):
-        async with task_lock:
-            if task_id not in self.all_tasks:
-                raise ValueError("Task not found")
-            task = self.all_tasks[task_id]
-            if task["status"] == "to do":
-                self.todo_tasks = [t for t in self.todo_tasks if t[1] != task_id]
-            elif task["status"] == "in progress" and self.current_task == task_id:
-                if self.current_task_execution:
-                    self.current_task_execution.cancel()
-                self.current_task = None
-            del self.all_tasks[task_id]
+        """Delete a task by its ID."""
+        async with self.lock:
+            self.tasks = [task for task in self.tasks if task["task_id"] != task_id]
             await self.save_tasks()
 
-    async def get_next_task(self):
-        async with task_lock:
-            if self.current_task is None and self.todo_tasks:
-                priority, task_id = heapq.heappop(self.todo_tasks)
-                self.current_task = task_id
-                self.all_tasks[task_id]["status"] = "in progress"
-                await self.save_tasks()
-                return self.all_tasks[task_id]
-        return None
-
-    async def complete_task(self, task_id: str, result: str = None, error: str = None):
-        async with task_lock:
-            if task_id in self.all_tasks:
-                task = self.all_tasks[task_id]
-                task["status"] = "done" if not error else "error"
-                if result:
-                    task["result"] = result
-                if error:
-                    task["error"] = error
-                if self.current_task == task_id:
-                    self.current_task = None
-                    self.current_task_execution = None
-                task["completed_at"] = datetime.datetime.utcnow().isoformat() + "Z" # ADDED setting completed_at on task completion
-                await self.save_tasks()
-
-    async def get_all_tasks(self) -> List[dict]:
-        """Return a list of all tasks for frontend access."""
-        async with task_lock:
-            return list(self.all_tasks.values())
-
-    async def save_tasks(self):
-        """Save all tasks to the JSON file without acquiring the lock."""
-        async with aiofiles.open(TASKS_FILE, "w") as f:
-            await f.write(json.dumps(self.all_tasks))
-
-    async def load_tasks(self):
-        """Load tasks from the JSON file and reconstruct the heapq list."""
-        try:
-            with open(TASKS_FILE, "r") as f:
-                loaded_tasks = json.load(f)
-            async with task_lock:
-                self.all_tasks = loaded_tasks
-                self.todo_tasks = []
-                for task_id, task in loaded_tasks.items():
-                    if task["status"] == "to do":
-                        heapq.heappush(self.todo_tasks, (task["priority"], task_id))
-                    elif task["status"] == "in progress":
-                        # Reset in-progress tasks to "to do" since processing was interrupted
-                        task["status"] = "to do"
-                        heapq.heappush(self.todo_tasks, (task["priority"], task_id))
-                # Reset current_task since processing was interrupted
-                self.current_task = None
-        except FileNotFoundError:
-            # No tasks to load if the file doesn’t exist yet
-            pass
+    async def get_all_tasks(self) -> List[Dict]:
+        """Return a list of all tasks."""
+        async with self.lock:
+            return list(self.tasks) # Return a copy to avoid external modification
 
     async def delete_old_completed_tasks(self, hours_threshold: int = 1):
         """Delete completed tasks older than the specified hours threshold."""
-        async with task_lock:
+        async with self.lock:
             now = datetime.datetime.now(datetime.timezone.utc)
-            tasks_to_keep = {}
+            tasks_to_keep = []
             deleted_task_ids = []
-            for task_id, task in self.all_tasks.items():
-                if task["status"] in ["done", "error"] and task["completed_at"]:
+            for task in self.tasks:
+                if task["status"] == "completed" and task["completed_at"]:
                     completed_at_dt = datetime.datetime.fromisoformat(task["completed_at"].replace('Z', '+00:00'))
                     if now - completed_at_dt > datetime.timedelta(hours=hours_threshold):
-                        deleted_task_ids.append(task_id)
-                        continue
-                    tasks_to_keep[task_id] = task
-            self.all_tasks = tasks_to_keep
+                        deleted_task_ids.append(task["task_id"])
+                        continue # Skip adding to tasks_to_keep, effectively deleting it
+                tasks_to_keep.append(task)
+            self.tasks = tasks_to_keep
             await self.save_tasks()
             if deleted_task_ids:
                 print(f"Deleted completed tasks with IDs: {deleted_task_ids} older than {hours_threshold} hours.")

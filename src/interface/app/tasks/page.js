@@ -6,10 +6,13 @@ import {
 	IconPencil,
 	IconTrash,
 	IconPlus,
-	IconSearch
+	IconSearch,
+	IconRefresh
 } from "@tabler/icons-react"
 import Sidebar from "@components/Sidebar"
 import toast from "react-hot-toast"
+import { Tooltip } from "react-tooltip"
+import "react-tooltip/dist/react-tooltip.css"
 
 const Tasks = () => {
 	const [tasks, setTasks] = useState([])
@@ -18,9 +21,9 @@ const Tasks = () => {
 	const [userDetails, setUserDetails] = useState({})
 	const [isSidebarVisible, setSidebarVisible] = useState(false)
 	const [newTaskDescription, setNewTaskDescription] = useState("")
-	const [newTaskPriority, setNewTaskPriority] = useState("")
+	const [newTaskPriority, setNewTaskPriority] = useState("") // String based priority now
 	const [editingTask, setEditingTask] = useState(null)
-	const [filterStatus, setFilterStatus] = useState("all") // 'all', 'to do', 'in progress', 'done', 'error'
+	const [filterStatus, setFilterStatus] = useState("all")
 	const [searchTerm, setSearchTerm] = useState("")
 
 	useEffect(() => {
@@ -59,15 +62,36 @@ const Tasks = () => {
 		}
 	}
 
+	const priorityStringToNumber = (priorityString) => {
+		const priorityMap = { High: 0, Medium: 1, Low: 2 }
+		return priorityMap[priorityString] !== undefined
+			? priorityMap[priorityString]
+			: null
+	}
+
+	const priorityNumberToString = (priorityNumber) => {
+		const priorityMap = { 0: "High", 1: "Medium", 2: "Low" }
+		return priorityMap[priorityNumber] || "Unknown"
+	}
+
 	const handleAddTask = async () => {
 		if (!newTaskDescription || !newTaskPriority) {
 			toast.error("Please fill in all fields")
 			return
 		}
+
+		const priorityNumber = priorityStringToNumber(newTaskPriority)
+		if (priorityNumber === null) {
+			toast.error(
+				"Invalid priority value. Please use 'High', 'Medium', or 'Low'."
+			)
+			return
+		}
+
 		try {
 			const taskData = {
 				description: newTaskDescription,
-				priority: parseInt(newTaskPriority)
+				priority: priorityNumber // Send number to backend
 			}
 			const response = await window.electron.invoke("add-task", taskData)
 			if (response.error) {
@@ -84,7 +108,10 @@ const Tasks = () => {
 	}
 
 	const handleEditTask = (task) => {
-		setEditingTask({ ...task })
+		setEditingTask({
+			...task,
+			priority: priorityNumberToString(task.priority) // Convert to string for editing
+		})
 	}
 
 	const handleUpdateTask = async () => {
@@ -92,11 +119,20 @@ const Tasks = () => {
 			toast.error("Please fill in all fields")
 			return
 		}
+
+		const priorityNumber = priorityStringToNumber(editingTask.priority)
+		if (priorityNumber === null) {
+			toast.error(
+				"Invalid priority value. Please use 'High', 'Medium', or 'Low'."
+			)
+			return
+		}
+
 		try {
 			const response = await window.electron.invoke("update-task", {
 				taskId: editingTask.task_id,
 				description: editingTask.description,
-				priority: parseInt(editingTask.priority)
+				priority: priorityNumber // Send number to backend
 			})
 			if (response.error) {
 				toast.error(response.error)
@@ -163,9 +199,25 @@ const Tasks = () => {
 			/>
 			<div className="w-4/5 flex flex-col items-start h-full bg-matteblack ml-5 py-8">
 				<div className="w-full max-w-5xl p-6 bg-gray-900 rounded-lg shadow-xl text-white flex flex-col gap-6">
-					<h2 className="text-3xl font-bold text-center">
-						Task Management
-					</h2>
+					<div className="flex justify-between items-center">
+						<h2 className="text-3xl font-bold text-center">
+							Task Management
+						</h2>
+						<div>
+							<button
+								onClick={fetchTasksData}
+								className="p-2 rounded-md hover:bg-gray-800 transition-colors text-gray-300"
+								data-tooltip-id="refresh-tooltip"
+							>
+								<IconRefresh className="h-5 w-5" />
+							</button>
+							<Tooltip
+								id="refresh-tooltip"
+								content="Auto refreshes every minute"
+								place="bottom"
+							/>
+						</div>
+					</div>
 
 					{/* Search and Filter Bar */}
 					<div className="flex flex-col md:flex-row items-center justify-between gap-4">
@@ -248,8 +300,8 @@ const Tasks = () => {
 						</div>
 						<div className="flex flex-col md:flex-row items-center gap-2">
 							<input
-								type="number"
-								placeholder="Priority"
+								type="text" // Changed to text input
+								placeholder="Priority (High, Medium, Low)"
 								value={newTaskPriority}
 								onChange={(e) =>
 									setNewTaskPriority(e.target.value)
@@ -311,10 +363,13 @@ const Tasks = () => {
 												{task.description}
 											</td>
 											<td className="py-3 px-4">
-												{task.timestamp}
+												{task.created_at}
 											</td>
 											<td className="py-3 px-4 text-center">
-												{task.priority}
+												{priorityNumberToString(
+													task.priority
+												)}{" "}
+												{/* Display string priority */}
 											</td>
 											<td className="py-3 px-4">
 												{task.status}
@@ -393,10 +448,10 @@ const Tasks = () => {
 										htmlFor="edit-priority"
 										className="block text-gray-200 text-sm font-bold mb-2"
 									>
-										Priority
+										Priority (High, Medium, Low)
 									</label>
 									<input
-										type="number"
+										type="text" // Changed to text input
 										id="edit-priority"
 										value={editingTask.priority}
 										onChange={(e) =>
