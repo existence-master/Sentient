@@ -334,6 +334,83 @@ class MemoryManager:
         except Exception as e:
             print(f"Error during memory cleanup: {e}")
             
+    def add_memory(self, user_id: str, text: str, category: str, retention_days: int) -> int:
+        """Add a new memory to the specified category."""
+        if category.lower() not in [cat.lower() for cat in self.categories.keys()]:
+            raise ValueError("Invalid category")
+        if not (1 <= retention_days <= 90):
+            raise ValueError("Retention days must be between 1 and 90")
+        
+        keywords = self.extract_keywords(text)
+        embedding = self.compute_embedding(text)
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        current_time = datetime.datetime.now()
+        expiry_time = current_time + timedelta(days=retention_days)
+        
+        cursor.execute(f'''
+        INSERT INTO {category.lower()} (user_id, original_text, keywords, embedding, created_at, expiry_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ''', (user_id, text, ','.join(keywords), embedding, current_time, expiry_time))
+        
+        memory_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        print(f"Added memory ID {memory_id} to {category.lower()}: '{text[:50]}...'")
+        return memory_id
+
+    def update_memory(self, user_id: str, category: str, memory_id: int, text: str, retention_days: int):
+        """Update an existing memory's text and retention days."""
+        if category.lower() not in [cat.lower() for cat in self.categories.keys()]:
+            raise ValueError("Invalid category")
+        if not (1 <= retention_days <= 90):
+            raise ValueError("Retention days must be between 1 and 90")
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Verify memory exists and belongs to the user
+        cursor.execute(f'SELECT user_id FROM {category.lower()} WHERE id = ?', (memory_id,))
+        result = cursor.fetchone()
+        if not result or result[0] != user_id:
+            conn.close()
+            raise ValueError("Memory not found or not owned by the user")
+        
+        keywords = self.extract_keywords(text)
+        embedding = self.compute_embedding(text)
+        current_time = datetime.datetime.now()
+        expiry_time = current_time + timedelta(days=retention_days)
+        
+        cursor.execute(f'''
+        UPDATE {category.lower()}
+        SET original_text = ?, keywords = ?, embedding = ?, expiry_at = ?
+        WHERE id = ?
+        ''', (text, ','.join(keywords), embedding, expiry_time, memory_id))
+        
+        conn.commit()
+        conn.close()
+        print(f"Updated memory ID {memory_id} in {category.lower()}: '{text[:50]}...'")
+
+    def delete_memory(self, user_id: str, category: str, memory_id: int):
+        """Delete a memory by ID and category."""
+        if category.lower() not in [cat.lower() for cat in self.categories.keys()]:
+            raise ValueError("Invalid category")
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Verify memory exists and belongs to the user
+        cursor.execute(f'SELECT user_id FROM {category.lower()} WHERE id = ?', (memory_id,))
+        result = cursor.fetchone()
+        if not result or result[0] != user_id:
+            conn.close()
+            raise ValueError("Memory not found or not owned by the user")
+        
+        cursor.execute(f'DELETE FROM {category.lower()} WHERE id = ?', (memory_id,))
+        conn.commit()
+        conn.close()
+        print(f"Deleted memory ID {memory_id} from {category.lower()}")
+
     def fetch_memories_by_category(self, user_id: str, category: str, limit: int = 50) -> List[Dict]:
         """
         Fetch memories for a specific user and category from the SQLite database.
@@ -351,13 +428,11 @@ class MemoryManager:
         cursor = conn.cursor()
         
         try:
-            # Ensure category is in lowercase and exists in categories
             category = category.lower()
             if category not in [cat.lower() for cat in self.categories.keys()]:
                 print(f"Invalid category: {category}")
                 return []
             
-            # Query to fetch active and non-expired memories
             cursor.execute(f'''
             SELECT id, original_text, keywords, created_at, expiry_at
             FROM {category}
@@ -366,14 +441,14 @@ class MemoryManager:
             LIMIT ?
             ''', (user_id, limit))
             
-            # Convert results to list of dictionaries
             memories = [
                 {
                     'id': row[0],
                     'original_text': row[1],
                     'keywords': row[2].split(','),
                     'created_at': row[3],
-                    'expiry_at': row[4]
+                    'expiry_at': row[4],
+                    'category': category  # Added category field
                 }
                 for row in cursor.fetchall()
             ]
@@ -386,3 +461,11 @@ class MemoryManager:
             return []
         finally:
             conn.close()
+            
+    def clear_all_memories(self, user_id: str):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        for table in self.categories.values():
+            cursor.execute(f'DELETE FROM {table.lower()} WHERE user_id = ?', (user_id,))
+        conn.commit()
+        conn.close()

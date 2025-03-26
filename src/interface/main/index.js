@@ -699,60 +699,70 @@ ipcMain.handle("decrement-pro-credits", async () => {
 
 // IPC handler to set data in user profile database
 ipcMain.handle("set-db-data", async (_event, args) => {
-    /** @type {{ data: object }} */ const { data } = args // Type hinting for args
-    try {
-        const response = await fetch(`${process.env.APP_SERVER_URL}/set-db-data`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ data: data }) // Send data as JSON in the request body
-        });
+	/** @type {{ data: object }} */ const { data } = args // Type hinting for args
+	try {
+		const response = await fetch(
+			`${process.env.APP_SERVER_URL}/set-db-data`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json"
+				},
+				body: JSON.stringify({ data: data }) // Send data as JSON in the request body
+			}
+		)
 
-        if (!response.ok) {
-            const errorDetail = await response.json(); // Try to get error detail from response
-            console.error(`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`);
-            return { message: "Error storing data", status: response.status }; // Return HTTP status
-        }
+		if (!response.ok) {
+			const errorDetail = await response.json() // Try to get error detail from response
+			console.error(
+				`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`
+			)
+			return { message: "Error storing data", status: response.status } // Return HTTP status
+		}
 
-        const result = await response.json();
-        return result; // Return the response from FastAPI
-    } catch (error) {
-        console.error(`Error setting data: ${error}`);
-        return { message: "Error storing data", status: 500 }; // Generic error status
-    }
+		const result = await response.json()
+		return result // Return the response from FastAPI
+	} catch (error) {
+		console.error(`Error setting data: ${error}`)
+		return { message: "Error storing data", status: 500 } // Generic error status
+	}
 })
 
 // IPC handler to add data to user profile database, handles array and object merging
 ipcMain.handle("add-db-data", async (_event, args) => {
-    /** @type {{ data: object }} */ const { data } = args // Type hinting for args
-    try {
-        const response = await fetch(`${process.env.APP_SERVER_URL}/add-db-data`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ data: data }) // Send data as JSON in the request body
-        });
+	/** @type {{ data: object }} */ const { data } = args // Type hinting for args
+	try {
+		const response = await fetch(
+			`${process.env.APP_SERVER_URL}/add-db-data`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json"
+				},
+				body: JSON.stringify({ data: data }) // Send data as JSON in the request body
+			}
+		)
 
-        if (!response.ok) {
-            const errorDetail = await response.json(); // Try to get error detail from response
-            console.error(`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`);
-            return { message: "Error adding data", status: response.status }; // Return HTTP status
-        }
+		if (!response.ok) {
+			const errorDetail = await response.json() // Try to get error detail from response
+			console.error(
+				`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`
+			)
+			return { message: "Error adding data", status: response.status } // Return HTTP status
+		}
 
-        const result = await response.json();
-        return result; // Return the response from FastAPI
-    } catch (error) {
-        console.error(`Error adding data: ${error}`);
-        return { message: "Error adding data", status: 500 }; // Generic error status
-    }
+		const result = await response.json()
+		return result // Return the response from FastAPI
+	} catch (error) {
+		console.error(`Error adding data: ${error}`)
+		return { message: "Error adding data", status: 500 } // Generic error status
+	}
 })
 
 // IPC handler to get all user profile database data
 ipcMain.handle("get-db-data", async () => {
-    try {
-        const response = await fetch(
+	try {
+		const response = await fetch(
 			`${process.env.APP_SERVER_URL}/get-db-data`,
 			{
 				method: "POST", // FastAPI endpoint is defined as POST
@@ -762,21 +772,23 @@ ipcMain.handle("get-db-data", async () => {
 			}
 		)
 
-        if (!response.ok) {
-            const errorDetail = await response.json(); // Try to get error detail from response
-            console.error(`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`);
-            return { message: "Error fetching data", status: response.status }; // Return HTTP status
-        }
+		if (!response.ok) {
+			const errorDetail = await response.json() // Try to get error detail from response
+			console.error(
+				`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`
+			)
+			return { message: "Error fetching data", status: response.status } // Return HTTP status
+		}
 
-        const result = await response.json();
-        return {
-            data: result.data, // Extract user data from the response
-            status: result.status
-        };
-    } catch (error) {
-        console.error(`Error fetching data: ${error}`);
-        return { message: "Error fetching data", status: 500 }; // Generic error status
-    }
+		const result = await response.json()
+		return {
+			data: result.data, // Extract user data from the response
+			status: result.status
+		}
+	} catch (error) {
+		console.error(`Error fetching data: ${error}`)
+		return { message: "Error fetching data", status: 500 } // Generic error status
+	}
 })
 
 ipcMain.handle("fetch-chat-history", async () => {
@@ -1135,7 +1147,11 @@ ipcMain.handle(
 				{
 					method: "POST", // Changed method to POST
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ task_id: taskId, description, priority }) // Included taskId in the body
+					body: JSON.stringify({
+						task_id: taskId,
+						description,
+						priority
+					}) // Included taskId in the body
 				}
 			)
 			if (!response.ok) {
@@ -1167,52 +1183,161 @@ ipcMain.handle("delete-task", async (event, taskId) => {
 	}
 })
 
-ipcMain.handle(
-	"fetch-short-term-memories",
-	async (event, { category }) => {
-		try {
-
-			let response = await fetch(
+ipcMain.handle("fetch-short-term-memories", async (event, { category }) => {
+	try {
+		let response = await fetch(
 			`${process.env.APP_SERVER_URL}/get-db-data`,
 			{
 				method: "POST", // FastAPI endpoint is defined as POST
 				headers: {
 					"Content-Type": "application/json"
 				}
-				}
-			)
-
-			if (!response.ok) {
-				const errorDetail = await response.json(); // Try to get error detail from response
-				console.error(`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`);
-				return { message: "Error fetching data", status: response.status }; // Return HTTP status
 			}
+		)
 
-			const result = await response.json();
-			const userId = result.data["personalInfo"]["name"]
-			// Make a request to FastAPI endpoint
-			response = await fetch(
-				"http://localhost:5000/get-short-term-memories",
-				{
-					method: "POST", // Specify the method as POST
-					headers: {
-						"Content-Type": "application/json" // Indicate we are sending JSON data
-					},
-					body: JSON.stringify({ user_id: userId, category, limit: 10 }) // Send userId and category in the request body as JSON
-				}
+		if (!response.ok) {
+			const errorDetail = await response.json() // Try to get error detail from response
+			console.error(
+				`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`
 			)
-
-			if (!response.ok) {
-				throw new Error(
-					`Failed to fetch memories: ${response.status} ${response.statusText}`
-				) // Include status code and text in error message for better debugging
-			}
-
-			const memories = await response.json()
-			return memories
-		} catch (error) {
-			console.error("Error fetching SQLite memories:", error)
-			return []
+			return { message: "Error fetching data", status: response.status } // Return HTTP status
 		}
+
+		const result = await response.json()
+		const userId = result.data["personalInfo"]["name"]
+		// Make a request to FastAPI endpoint
+		response = await fetch(
+			"http://localhost:5000/get-short-term-memories",
+			{
+				method: "POST", // Specify the method as POST
+				headers: {
+					"Content-Type": "application/json" // Indicate we are sending JSON data
+				},
+				body: JSON.stringify({ user_id: userId, category, limit: 10 }) // Send userId and category in the request body as JSON
+			}
+		)
+
+		if (!response.ok) {
+			throw new Error(
+				`Failed to fetch memories: ${response.status} ${response.statusText}`
+			) // Include status code and text in error message for better debugging
+		}
+
+		const memories = await response.json()
+		return memories
+	} catch (error) {
+		console.error("Error fetching SQLite memories:", error)
+		return []
 	}
-)
+})
+// Helper function to fetch user_id from the server
+async function getUserId() {
+    try {
+        const response = await fetch(`${process.env.APP_SERVER_URL}/get-db-data`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            }
+        });
+        if (!response.ok) {
+            const errorDetail = await response.json();
+            console.error(`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`);
+            throw new Error("Failed to fetch user data");
+        }
+        const result = await response.json();
+        return result.data["personalInfo"]["name"];
+    } catch (error) {
+        console.error("Error fetching user ID:", error);
+        throw error;
+    }
+}
+
+// IPC handler for adding a memory
+ipcMain.handle("add-memory", async (event, memoryData) => {
+    try {
+        const userId = await getUserId();
+        const requestBody = {
+            user_id: userId,
+            ...memoryData
+        };
+        const response = await fetch("http://localhost:5000/add-memory", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestBody)
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.error("Error adding memory:", error);
+        return { error: error.message };
+    }
+});
+
+// IPC handler for updating a memory
+ipcMain.handle("update-memory", async (event, memoryData) => {
+    try {
+        const userId = await getUserId();
+        const requestBody = {
+            user_id: userId,
+            ...memoryData
+        };
+        const response = await fetch("http://localhost:5000/update-memory", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestBody)
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.error("Error updating memory:", error);
+        return { error: error.message };
+    }
+});
+
+// IPC handler for deleting a memory
+ipcMain.handle("delete-memory", async (event, memoryData) => {
+    try {
+        const userId = await getUserId();
+        const requestBody = {
+            user_id: userId,
+            ...memoryData
+        };
+        const response = await fetch("http://localhost:5000/delete-memory", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestBody)
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.error("Error deleting memory:", error);
+        return { error: error.message };
+    }
+});
+
+ipcMain.handle("clear-all-memories", async () => {
+	try {
+		const userId = await getUserId()
+		const response = await fetch(
+			"http://localhost:5000/clear-all-memories",
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ user_id: userId })
+			}
+		)
+		if (!response.ok) {
+			throw new Error(`HTTP error! status: ${response.status}`)
+		}
+		return await response.json()
+	} catch (error) {
+		console.error("Error clearing memories:", error)
+		return { error: error.message }
+	}
+})

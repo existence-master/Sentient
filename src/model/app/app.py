@@ -628,6 +628,23 @@ class UpdateUserDataRequest(BaseModel):
 class AddUserDataRequest(BaseModel):
     data: Dict[str, Any]
 
+class AddMemoryRequest(BaseModel):
+    user_id: str
+    text: str
+    category: str
+    retention_days: int
+
+class UpdateMemoryRequest(BaseModel):
+    user_id: str
+    category: str
+    id: int
+    text: str
+    retention_days: int
+
+class DeleteMemoryRequest(BaseModel):
+    user_id: str
+    category: str
+    id: int
 
 # --- API Endpoints ---
 
@@ -1734,11 +1751,6 @@ async def delete_task(delete_request: DeleteTaskRequest): # Use DeleteTaskReques
     
 @app.post("/get-short-term-memories")
 async def get_short_term_memories(request: GetShortTermMemoriesRequest) -> List[Dict]:
-    """
-    Retrieve memories for a specific user and category.
-    
-    Returns a list of memory dictionaries.
-    """
     try:
         memories = memory_manager.fetch_memories_by_category(
             user_id=request.user_id, 
@@ -1749,6 +1761,57 @@ async def get_short_term_memories(request: GetShortTermMemoriesRequest) -> List[
     except Exception as e:
         print(f"Error in get_memories endpoint: {e}")
         return []
+
+# New CRUD endpoints
+@app.post("/add-memory")
+async def add_memory(request: AddMemoryRequest):
+    """Add a new memory."""
+    try:
+        memory_id = memory_manager.add_memory(
+            request.user_id, request.text, request.category, request.retention_days
+        )
+        return {"memory_id": memory_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error adding memory: {e}")
+
+@app.post("/update-memory")
+async def update_memory(request: UpdateMemoryRequest):
+    """Update an existing memory."""
+    try:
+        memory_manager.update_memory(
+            request.user_id, request.category, request.id, request.text, request.retention_days
+        )
+        return {"message": "Memory updated successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating memory: {e}")
+
+@app.post("/delete-memory")
+async def delete_memory(request: DeleteMemoryRequest):
+    """Delete a memory."""
+    try:
+        memory_manager.delete_memory(
+            request.user_id, request.category, request.id
+        )
+        return {"message": "Memory deleted successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting memory: {e}")
+    
+@app.post("/clear-all-memories")
+async def clear_all_memories(request: Dict):
+    user_id = request.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    try:
+        memory_manager.clear_all_memories(user_id)
+        return {"message": "All memories cleared successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     
 # Endpoint for "set-db-data"
 @app.post("/set-db-data")
