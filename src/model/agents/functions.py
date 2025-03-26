@@ -906,7 +906,7 @@ async def search_events(query: str) -> Dict[str, Any]:
     """
     try:
         service = authenticate_calendar()
-        now = datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.utcnow().isoformat() + "Z"
         events_result = (
             service.events()
             .list(
@@ -950,8 +950,8 @@ async def list_upcoming_events(days: int = 7) -> Dict[str, Any]:
     """
     try:
         service = authenticate_calendar()
-        now = datetime.utcnow().isoformat() + "Z"
-        max_time = (datetime.utcnow() + timedelta(days=days)).isoformat() + "Z"
+        now = datetime.datetime.utcnow().isoformat() + "Z"
+        max_time = (datetime.datetime.utcnow() + timedelta(days=days)).isoformat() + "Z"
         events_result = (
             service.events()
             .list(

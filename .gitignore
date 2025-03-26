@@ -240,5 +240,6 @@ token.pickle
 chatsDb.json
 userProfileDb.json
 tasks.json
+memory_operations.json
 ruff_cache
 .db

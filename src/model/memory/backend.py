@@ -171,7 +171,7 @@ class MemoryBackend:
                 return context
             else:
                 print("No relevant short-term memories found.")
-                return "I don't have any relevant short-term memories for that query."
+                return None
         else:
             print("Retrieving from Long Term memory (Neo4j)...")
             context = query_user_profile(

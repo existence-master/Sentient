@@ -303,7 +303,7 @@ class MemoryManager:
 
         if not memory_context:
             # Fallback response when no context is available
-            response = "I don’t have any stored memories about that."
+            response = None
         else:
             runnable = OllamaRunnable(
                 model_url="http://localhost:11434/api/chat",

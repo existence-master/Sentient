@@ -498,7 +498,7 @@ chat_history = get_chat_history()
 
 chat_runnable = get_chat_runnable(chat_history)
 agent_runnable = get_agent_runnable(chat_history)
-unified_classification_runnable = get_unified_classification_runnable(chat_history)
+unified_classification_runnable = get_unified_classification_runnable()
 
 # --- FastAPI Application Setup ---
 app = FastAPI(
@@ -655,10 +655,12 @@ async def chat(message: Message):
 
         username = db["userData"]["personalInfo"]["name"]
         unified_output = unified_classification_runnable.invoke({"query": message.input})
+        
+        print("Unified output: ", unified_output)
         category = unified_output["category"]
         use_personal_context = unified_output["use_personal_context"]
         internet = unified_output["internet"]
-        transformed_input = unified_output["transformed_input"]
+        transformed_input = message.input
 
         pricing_plan = message.pricing
         credits = message.credits
@@ -679,7 +681,7 @@ async def chat(message: Message):
                 "memoryUsed": False,
                 "agentsUsed": False,
                 "internetUsed": False,
-                "timestamp": datetime.utcnow().isoformat() + "Z"
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
             }
             async with db_lock:
                 chatsDb = await load_db()
@@ -703,7 +705,7 @@ async def chat(message: Message):
                 "memoryUsed": False,
                 "agentsUsed": False,
                 "internetUsed": False,
-                "timestamp": datetime.utcnow().isoformat() + "Z"
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
             }
 
             if category == "agent":

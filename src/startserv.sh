@@ -1,0 +1,1 @@
+sudo -E "/home/existence/Desktop/Sentient/Open Source/SK/development/src/model/venv/bin/python3" -m "model.app.app"
