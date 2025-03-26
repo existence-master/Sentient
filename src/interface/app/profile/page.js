@@ -5,10 +5,16 @@ import { useEffect, useState } from "react" // Importing necessary React hooks
 import GraphVisualization from "@components/GraphViz" // Component for visualizing the graph data
 import Sidebar from "@components/Sidebar" // Sidebar component for navigation
 import { fetchGraphData } from "@utils/neo4j" // Utility function to fetch graph data from Neo4j
-import { IconInfoCircle, IconRefresh } from "@tabler/icons-react" // Icons from tabler-icons-react library
+import {
+	IconInfoCircle,
+	IconRefresh,
+	IconDatabase,
+	IconBrain
+} from "@tabler/icons-react" // Icons from tabler-icons-react library
 import toast from "react-hot-toast" // Library for displaying toast notifications
 import ProIcon from "@components/ProIcon" // Component to indicate Pro features
 import ShiningButton from "@components/ShiningButton" // Custom button component with a shining effect
+import SQLiteMemoryDisplay from "@components/SQLiteMemoryDisplay" // Assuming this component exists and is for SQLite memory display
 
 /**
  * Profile Component - Displays the user profile, including personality type and knowledge graph.
@@ -41,6 +47,7 @@ const Profile = () => {
 	const [pricing, setPricing] = useState("free") // pricing: string ("free" | "pro")
 	// State to store the user's pro credits, initially null.
 	const [credits, setCredits] = useState(null) // credits: number | null
+	const [memoryDisplayType, setMemoryDisplayType] = useState("neo4j")
 
 	/**
 	 * Fetches user details from the backend.
@@ -241,6 +248,8 @@ const Profile = () => {
 		loadGraphData() // Load graph data on component mount
 	}, []) // Empty dependency array ensures this effect runs only once on mount
 
+	console.log("userDetails", userDetails)	
+
 	/**
 	 * Main return statement for the Profile component, rendering the profile UI.
 	 *
@@ -329,12 +338,40 @@ const Profile = () => {
 					)}
 				</div>
 
+				<div className="flex items-center space-x-4">
+					<button
+						onClick={() => setMemoryDisplayType("neo4j")}
+						className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-all ${
+							memoryDisplayType === "neo4j"
+								? "bg-blue-600 text-white"
+								: "bg-gray-700 text-gray-300 hover:bg-gray-600"
+						}`}
+					>
+						<IconDatabase className="w-5 h-5" />
+						<span>Neo4j Memories</span>
+					</button>
+					<button
+						onClick={() => setMemoryDisplayType("sqlite")}
+						className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-all ${
+							memoryDisplayType === "sqlite"
+								? "bg-blue-600 text-white"
+								: "bg-gray-700 text-gray-300 hover:bg-gray-600"
+						}`}
+					>
+						<IconBrain className="w-5 h-5" />
+						<span>SQLite Memories</span>
+					</button>
+				</div>
+
 				<div className="flex items-start justify-center h-full w-[80%]">
-					<GraphVisualization
-						nodes={graphData.nodes}
-						edges={graphData.edges}
-					/>{" "}
-					{/* Graph visualization component */}
+					{memoryDisplayType === "neo4j" ? (
+						<GraphVisualization
+							nodes={graphData.nodes}
+							edges={graphData.edges}
+						/>
+					) : (
+						<SQLiteMemoryDisplay userDetails={userDetails} />
+					)}
 				</div>
 
 				<div className="fixed bottom-5 right-5 flex flex-col items-end space-y-4">
@@ -356,7 +393,7 @@ const Profile = () => {
 								<span className="mr-2">
 									Add your own memories
 								</span>
-								{pricing === "free" && <ProIcon />}{" "}
+								{pricing === "free" && <ProIcon />}
 								{/* Show ProIcon for free plan users */}
 							</button>
 						)}

@@ -699,64 +699,84 @@ ipcMain.handle("decrement-pro-credits", async () => {
 
 // IPC handler to set data in user profile database
 ipcMain.handle("set-db-data", async (_event, args) => {
-	/** @type {{ data: object }} */ const { data } = args // Type hinting for args
-	try {
-		userProfileDb.data.userData = {
-			...userProfileDb.data.userData,
-			...data // Merge existing user data with new data
-		}
-		await userProfileDb.write() // Write changes to database
-		return { message: "Data stored successfully", status: 200 }
-	} catch (error) {
-		await console.log(`Error setting data: ${error}`)
-		return { message: "Error storing data", status: 500 }
-	}
+    /** @type {{ data: object }} */ const { data } = args // Type hinting for args
+    try {
+        const response = await fetch(`${process.env.APP_SERVER_URL}/set-db-data`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ data: data }) // Send data as JSON in the request body
+        });
+
+        if (!response.ok) {
+            const errorDetail = await response.json(); // Try to get error detail from response
+            console.error(`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`);
+            return { message: "Error storing data", status: response.status }; // Return HTTP status
+        }
+
+        const result = await response.json();
+        return result; // Return the response from FastAPI
+    } catch (error) {
+        console.error(`Error setting data: ${error}`);
+        return { message: "Error storing data", status: 500 }; // Generic error status
+    }
 })
 
 // IPC handler to add data to user profile database, handles array and object merging
 ipcMain.handle("add-db-data", async (_event, args) => {
-	/** @type {{ data: object }} */ const { data } = args // Type hinting for args
-	try {
-		const existingData = userProfileDb.data.userData || {}
-		// Iterate through the data to be added
-		for (const [key, value] of Object.entries(data)) {
-			if (Array.isArray(existingData[key]) && Array.isArray(value)) {
-				// For arrays, merge and remove duplicates
-				existingData[key] = [
-					...new Set([...existingData[key], ...value])
-				]
-			} else if (
-				typeof existingData[key] === "object" &&
-				typeof value === "object"
-			) {
-				// For objects, merge properties
-				existingData[key] = { ...existingData[key], ...value }
-			} else {
-				// For other types, simply overwrite or set new value
-				existingData[key] = value
-			}
-		}
-		userProfileDb.data.userData = existingData
-		await userProfileDb.write() // Write changes to database
-		return { message: "Data added successfully", status: 200 }
-	} catch (error) {
-		await console.log(`Error adding data: ${error}`)
-		return { message: "Error adding data", status: 500 }
-	}
+    /** @type {{ data: object }} */ const { data } = args // Type hinting for args
+    try {
+        const response = await fetch(`${process.env.APP_SERVER_URL}/add-db-data`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ data: data }) // Send data as JSON in the request body
+        });
+
+        if (!response.ok) {
+            const errorDetail = await response.json(); // Try to get error detail from response
+            console.error(`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`);
+            return { message: "Error adding data", status: response.status }; // Return HTTP status
+        }
+
+        const result = await response.json();
+        return result; // Return the response from FastAPI
+    } catch (error) {
+        console.error(`Error adding data: ${error}`);
+        return { message: "Error adding data", status: 500 }; // Generic error status
+    }
 })
 
 // IPC handler to get all user profile database data
 ipcMain.handle("get-db-data", async () => {
-	try {
-		return {
-			data: userProfileDb.data.userData, // Return user data
-			userProfileDbPath, // Return database path
-			status: 200
-		}
-	} catch (error) {
-		await console.log(`Error fetching data: ${error}`)
-		return { message: "Error fetching data", status: 500 }
-	}
+    try {
+        const response = await fetch(
+			`${process.env.APP_SERVER_URL}/get-db-data`,
+			{
+				method: "POST", // FastAPI endpoint is defined as POST
+				headers: {
+					"Content-Type": "application/json"
+				}
+			}
+		)
+
+        if (!response.ok) {
+            const errorDetail = await response.json(); // Try to get error detail from response
+            console.error(`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`);
+            return { message: "Error fetching data", status: response.status }; // Return HTTP status
+        }
+
+        const result = await response.json();
+        return {
+            data: result.data, // Extract user data from the response
+            status: result.status
+        };
+    } catch (error) {
+        console.error(`Error fetching data: ${error}`);
+        return { message: "Error fetching data", status: 500 }; // Generic error status
+    }
 })
 
 ipcMain.handle("fetch-chat-history", async () => {
@@ -1146,3 +1166,53 @@ ipcMain.handle("delete-task", async (event, taskId) => {
 		return { error: error.message }
 	}
 })
+
+ipcMain.handle(
+	"fetch-short-term-memories",
+	async (event, { category }) => {
+		try {
+
+			const response = await fetch(
+			`${process.env.APP_SERVER_URL}/get-db-data`,
+			{
+				method: "POST", // FastAPI endpoint is defined as POST
+				headers: {
+					"Content-Type": "application/json"
+				}
+				}
+			)
+
+			if (!response.ok) {
+				const errorDetail = await response.json(); // Try to get error detail from response
+				console.error(`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`);
+				return { message: "Error fetching data", status: response.status }; // Return HTTP status
+			}
+
+			const result = await response.json();
+			const userId = result.data.username
+			// Make a request to FastAPI endpoint
+			const response = await fetch(
+				"http://localhost:5000/get-short-term-memories",
+				{
+					method: "POST", // Specify the method as POST
+					headers: {
+						"Content-Type": "application/json" // Indicate we are sending JSON data
+					},
+					body: JSON.stringify({ user_id: userId, category, limit: 10 }) // Send userId and category in the request body as JSON
+				}
+			)
+
+			if (!response.ok) {
+				throw new Error(
+					`Failed to fetch memories: ${response.status} ${response.statusText}`
+				) // Include status code and text in error message for better debugging
+			}
+
+			const memories = await response.json()
+			return memories
+		} catch (error) {
+			console.error("Error fetching SQLite memories:", error)
+			return []
+		}
+	}
+)

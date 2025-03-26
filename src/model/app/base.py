@@ -39,6 +39,9 @@ def get_selected_model() -> Tuple[str, str]:
     else:
         return selected_model, selected_model
 
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any, Optional, Union, Generator
+
 class BaseRunnable(ABC):
     """
     Abstract base class for runnable language model interactions.
@@ -84,9 +87,7 @@ class BaseRunnable(ABC):
         """Whether to use streaming for API requests."""
         self.stateful: bool = stateful
         """Whether the conversation is stateful, maintaining message history."""
-        self.messages: List[Dict[str, str]] = [
-            {"role": "system", "content": self.system_prompt_template}
-        ]
+        self.messages: List[Dict[str, str]] = []
         """Message history for stateful conversations, starting with the system prompt."""
 
     def build_prompt(self, inputs: Dict[str, Any]) -> None:
@@ -120,7 +121,18 @@ class BaseRunnable(ABC):
             chat_history (List[Dict[str, str]]): A list of message dictionaries representing the chat history.
                                                 Each dictionary should have 'role' and 'content' keys.
         """
+        self.messages = [{"role": "system", "content": self.system_prompt_template}]
         self.messages.extend(chat_history)
+
+    def clear_history(self) -> None:
+        """
+        Clears the message history, resetting the conversation to its initial state.
+
+        This method is useful for starting a new conversation with the language model
+        without any context from previous interactions. It resets the message history
+        to contain only the initial system prompt.
+        """
+        self.messages = []
 
     @abstractmethod
     def invoke(self, inputs: Dict[str, Any]) -> Union[Dict[str, Any], List[Any], str, None]:
@@ -157,7 +169,6 @@ class BaseRunnable(ABC):
                                                 Yields None when the stream ends or encounters an error.
         """
         pass
-
 
 class OllamaRunnable(BaseRunnable):
     """

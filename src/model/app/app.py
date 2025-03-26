@@ -37,6 +37,7 @@ from model.memory.prompts import *
 from model.memory.constants import *
 from model.memory.formats import *
 from model.memory.backend import MemoryBackend
+from model.memory.dual_memory import MemoryManager
 
 from model.utils.helpers import *
 
@@ -75,6 +76,8 @@ graph_driver = GraphDatabase.driver(
     auth=(os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"])
 )
 
+memory_manager = MemoryManager(db_path="memory.db", model_name=os.environ["BASE_MODEL_REPO_ID"])
+
 manager = WebSocketManager()
 
 # Initialize runnables from agents
@@ -92,7 +95,11 @@ query_classification_runnable = get_query_classification_runnable()
 fact_extraction_runnable = get_fact_extraction_runnable()
 text_summarizer_runnable = get_text_summarizer_runnable()
 text_description_runnable = get_text_description_runnable()
+chat_history = get_chat_history()
 
+chat_runnable = get_chat_runnable(chat_history)
+agent_runnable = get_agent_runnable(chat_history)
+unified_classification_runnable = get_unified_classification_runnable(chat_history)
 # Initialize runnables from scraper
 reddit_runnable = get_reddit_runnable()
 twitter_runnable = get_twitter_runnable()
@@ -158,8 +165,23 @@ initial_db = {
 
 def load_user_profile():
     """Load user profile data from userProfileDb.json."""
-    with open("userProfileDb.json", "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(USER_PROFILE_DB, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"userData": {}} # Return empty structure if file not found, similar to initial state
+    except json.JSONDecodeError:
+        return {"userData": {}} # Handle case where JSON is corrupted or empty
+
+def write_user_profile(data):
+    """Write user profile data to userProfileDb.json."""
+    try:
+        with open(USER_PROFILE_DB, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4) # Use indent for pretty printing
+        return True
+    except Exception as e:
+        print(f"Error writing to database: {e}")
+        return False
     
 memory_backend = MemoryBackend()
 memory_backend.cleanup()
@@ -494,12 +516,6 @@ async def add_result_to_chat(chat_id: str, result: str, isUser: bool, task_descr
             chat["messages"].append(result_message)
             await save_db(chatsDb)
 
-chat_history = get_chat_history()
-
-chat_runnable = get_chat_runnable(chat_history)
-agent_runnable = get_agent_runnable(chat_history)
-unified_classification_runnable = get_unified_classification_runnable()
-
 # --- FastAPI Application Setup ---
 app = FastAPI(
     title="Sentient API",
@@ -600,6 +616,18 @@ class UpdateTaskRequest(BaseModel):
 class DeleteTaskRequest(BaseModel):
     # No request body needed as per the function signature, but including for potential future use or consistency
     task_id: str
+    
+class GetShortTermMemoriesRequest(BaseModel):
+    user_id: str
+    category: str
+    limit: int
+    
+class UpdateUserDataRequest(BaseModel):
+    data: Dict[str, Any]
+
+class AddUserDataRequest(BaseModel):
+    data: Dict[str, Any]
+
 
 # --- API Endpoints ---
 
@@ -625,6 +653,11 @@ async def clear_chat_history():
     async with db_lock:
         chatsDb = initial_db.copy()
         await save_db(chatsDb)
+        
+    chat_runnable.clear_history()
+    agent_runnable.clear_history()
+    unified_classification_runnable.clear_history()
+    
     return JSONResponse(status_code=200, content={"message": "Chat history cleared"})
 
 @app.post("/chat", status_code=200)
@@ -650,6 +683,11 @@ async def chat(message: Message):
                 raise HTTPException(status_code=400, detail="Active chat not found.")
 
         chat_history = get_chat_history()
+
+        chat_runnable = get_chat_runnable(chat_history)
+        agent_runnable = get_agent_runnable(chat_history)
+        unified_classification_runnable = get_unified_classification_runnable(chat_history)
+        
         if chat_history is None:
             raise HTTPException(status_code=500, detail="Failed to retrieve chat history")
 
@@ -660,7 +698,7 @@ async def chat(message: Message):
         category = unified_output["category"]
         use_personal_context = unified_output["use_personal_context"]
         internet = unified_output["internet"]
-        transformed_input = message.input
+        transformed_input = unified_output["transformed_input"]
 
         pricing_plan = message.pricing
         credits = message.credits
@@ -1693,6 +1731,108 @@ async def delete_task(delete_request: DeleteTaskRequest): # Use DeleteTaskReques
         return JSONResponse(content={"message": "Task deleted successfully"})
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    
+@app.post("/get-short-term-memories")
+async def get_short_term_memories(request: GetShortTermMemoriesRequest) -> List[Dict]:
+    """
+    Retrieve memories for a specific user and category.
+    
+    - **user_id**: The ID of the user
+    - **category**: Memory category to fetch
+    - **limit**: Maximum number of memories to retrieve (default 50)
+    
+    Returns a list of memory dictionaries.
+    """
+    try:
+        memories = memory_manager.fetch_memories_by_category(
+            user_id=request.user_id, 
+            category=request.category, 
+            limit=request.limit
+        )
+        return memories
+    except Exception as e:
+        print(f"Error in get_memories endpoint: {e}")
+        return []
+    
+# Endpoint for "set-db-data"
+@app.post("/set-db-data")
+async def set_db_data(request: UpdateUserDataRequest) -> Dict[str, Any]:
+    """
+    Set data in the user profile database.
+    Merges the provided data with the existing userData.
+
+    - **data**: An object containing the data to be set.
+    """
+    try:
+        db_data = load_user_profile()
+        db_data["userData"] = {
+            **(db_data.get("userData", {})), # Ensure userData exists, default to empty object
+            **(request.data) # Merge new data
+        }
+        if write_user_profile(db_data):
+            return {"message": "Data stored successfully", "status": 200}
+        else:
+            raise HTTPException(status_code=500, detail="Error storing data")
+    except Exception as e:
+        print(f"Error setting data: {e}")
+        raise HTTPException(status_code=500, detail="Error storing data")
+
+
+# Endpoint for "add-db-data"
+@app.post("/add-db-data")
+async def add_db_data(request: AddUserDataRequest) -> Dict[str, Any]:
+    """
+    Add data to the user profile database.
+    Handles array and object merging similar to the Electron IPC handler.
+
+    - **data**: An object containing the data to be added.
+    """
+    try:
+        db_data = load_user_profile()
+        existing_data = db_data.get("userData", {}) # Ensure userData exists, default to empty object
+        data_to_add = request.data
+
+        for key, value in data_to_add.items():
+            if key in existing_data:
+                if isinstance(existing_data[key], list) and isinstance(value, list):
+                    # For arrays, merge and remove duplicates
+                    existing_data[key] = list(set(existing_data[key] + value))
+                elif isinstance(existing_data[key], dict) and isinstance(value, dict):
+                    # For objects, merge properties
+                    existing_data[key] = {**existing_data[key], **value}
+                else:
+                    # For other types, simply overwrite or set new value
+                    existing_data[key] = value
+            else:
+                # If key doesn't exist, set new value
+                existing_data[key] = value
+
+        db_data["userData"] = existing_data # Update userData in db_data
+        if write_user_profile(db_data):
+            return {"message": "Data added successfully", "status": 200}
+        else:
+            raise HTTPException(status_code=500, detail="Error adding data")
+    except Exception as e:
+        print(f"Error adding data: {e}")
+        raise HTTPException(status_code=500, detail="Error adding data")
+
+# Endpoint for "get-db-data"
+@app.post("/get-db-data")
+async def get_db_data() -> Dict[str, Any]: # Request is just for consistency, not used
+    """
+    Get all user profile database data.
+    Returns the userData and the database path.
+    """
+    try:
+        db_data = load_user_profile()
+        user_data = db_data.get("userData", {}) # Ensure userData exists, default to empty object
+        return {
+            "data": user_data,
+            "status": 200
+        }
+    except Exception as e:
+        print(f"Error fetching data: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching data")
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

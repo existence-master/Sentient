@@ -790,7 +790,7 @@ def query_user_profile(
             query, query_classification_runnable
         )  # Classify the query into a category
         if not category:
-            return "Unable to classify the query into a category."  # Return error if category classification fails
+            return None  # Return error if category classification fails
 
         graph_data = perform_similarity_search_rag(
             category, query, graph_driver, embed_model
@@ -802,18 +802,18 @@ def query_user_profile(
                 "Miscellaneous", query, graph_driver, embed_model
             )
             if len(graph_data.get("nodes")) == 0:
-                return "No relevant information found in any category."  # Return error if no relevant info found even in Miscellaneous
+                return None  # Return error if no relevant info found even in Miscellaneous
 
         context = generate_unstructured_text_from_graph(
             graph_data, text_conversion_runnable
         )  # Generate unstructured text from graph data
         if not context:
-            return "Unable to generate unstructured text from the graph."  # Return error if text generation fails
+            return None # Return error if text generation fails
 
         return context  # Return the generated context as the answer
     except Exception as e:
         print(f"Error processing user profile query: {e}")
-        return "Failed to process the query."  # Return general error message if any exception occurs
+        return None  # Return general error message if any exception occurs
 
 
 def analyze_graph_differences(

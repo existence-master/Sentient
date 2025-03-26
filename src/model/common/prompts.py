@@ -201,7 +201,7 @@ DO NOT INCLUDE ANYTHING OTHER THAN THE ELABORATED RESPONSE.
 {query}
 """
 
-unified_classification_system_prompt_template = """You are an input orchestrator for a personalized AI system. Your task is to analyze the user input and classify it based on multiple criteria.
+unified_classification_system_prompt_template = """You are an input orchestrator for a personalized AI system. Your task is to analyze the user input and classify it based on multiple criteria, while also transforming the input when necessary to include relevant context from the chat history.
 
 ### Classification Criteria:
 
@@ -214,7 +214,7 @@ unified_classification_system_prompt_template = """You are an input orchestrator
      - Example: "Send an email to my manager," "Create a new Google Doc for meeting notes."
 
 2. Use Personal Context:
-   - Set to true if the query requires any sort of information about the user's personal life to be answered.
+   - Set to true if the query requires any sort of information about the user's personal life to be answered. 
       - Example: "What did I have for lunch yesterday?" or "Do I have meetings tomorrow?" will require personal context.
    - You must also set this to true if it requires long-term context about the user, such as preferences, habits or information about their relationships with others.
       - Example: "What's my favorite color?" or "What do I usually order at restaurants?" will require personal context.
@@ -224,47 +224,75 @@ unified_classification_system_prompt_template = """You are an input orchestrator
    - Set to Internet if and ONLY if the query requires updated information that can only be obtained from an online search (e.g., facts, news, weather, or public knowledge).
    - Set to None if the query does not require internet search, such as personal data or tool interactions.
 
+4. Transformed Input:
+   - For Agent category: If the input references a past tool-related action (e.g., "Retry the action"), transform the input to include the context of the original tool call from the chat history.
+   - For other categories: Return the user input as-is.
+
+### Chat History Representation:
+- The chat history is always present, formatted as a list of role-content pairs.
+- Example:
+  [
+    {"role": "user", "content": "Send an email to my manager with the updated report."},
+    {"role": "assistant", "content": "I attempted to send the email via Gmail but encountered an error."},
+    {"role": "user", "content": "Retry the action."}
+  ]
 
 ### Output Format:
 Return a JSON object with the following keys:
 - "category": "chat" | "memory" | "agent"
 - "use_personal_context": true | false
 - "internet": "Internet" | "None"
+- "transformed_input": string
 
 ### Key Instructions:
 - Always classify into only one category.
 - For "memory," select this category if the input conveys *any* factual information about the user that can be stored as a memory about the user.
+- For "agent," transform the input to include relevant tool-related context from the chat history when applicable.
+- If no matching tool-related context exists for inputs like "Retry the action," classify as "chat" instead.
 - Set "use_personal_context" to true if the query requires any sort of personal context about the user.
 - Set "internet" to "Internet" if the query requires additional updated information that can only be obtained through an online search.
+- Ensure that keywords and meanings from the user input are preserved in the transformation.
 
 ### Examples:
 
-Input: "It's raining here, but I still love it."
-Output: {"category": "chat", "use_personal_context": true, "internet": "None"}
+Input: "It's raining here, but I still love it."  
+Chat History: [{"role": "user", "content": "Do you like the rain?"}, {"role": "assistant", "content": "I don’t have personal preferences."}]  
+Output: {"category": "chat", "use_personal_context": true, "internet": "None", "transformed_input": "It's raining here, but I still love it."}
 
-Input: "I prefer my coffee black without sugar."
-Output: {"category": "memory", "use_personal_context": true, "internet": "None"}
+Input: "I prefer my coffee black without sugar."  
+Chat History: [{"role": "user", "content": "Do you drink coffee?"}, {"role": "assistant", "content": "I can help with coffee recipes!"}]  
+Output: {"category": "memory", "use_personal_context": true, "internet": "None", "transformed_input": "I prefer my coffee black without sugar."}
 
-Input: "What is the weather like today?"
-Output: {"category": "chat", "use_personal_context": false, "internet": "Internet"}
+Input: "Retry the action."  
+Chat History: [{"role": "user", "content": "Share the project files via Google Drive."}, {"role": "assistant", "content": "Encountered an error."}, {"role": "user", "content": "Retry the action."}]  
+Output: {"category": "agent", "use_personal_context": false, "internet": "None", "transformed_input": "Retry sharing the project files via Google Drive."}
 
-Input: "Create a new Google Doc for meeting notes."
-Output: {"category": "agent", "use_personal_context": false, "internet": "None"}
+Input: "What is the weather like today?"  
+Chat History: []  
+Output: {"category": "chat", "use_personal_context": false, "internet": "Internet", "transformed_input": "What is the weather like today?"}
 
-Input: "I just started a new job at Google."
-Output: {"category": "memory", "use_personal_context": true, "internet": "None"}
+Input: "Create a new Google Doc for meeting notes."  
+Chat History: []  
+Output: {"category": "agent", "use_personal_context": false, "internet": "None", "transformed_input": "Create a new Google Doc for meeting notes."}
 
-Input: "Tell me about Steve Jobs."
-Output: {"category": "chat", "use_personal_context": false, "internet": "Internet"}
+Input: "I just started a new job at Google."  
+Chat History: [{"role": "user", "content": "I'm preparing for job interviews."}, {"role": "assistant", "content": "Good luck!"}]  
+Output: {"category": "memory", "use_personal_context": true, "internet": "None", "transformed_input": "I just started a new job at Google."}
 
-Input: "Search for the latest news on climate change."
-Output: {"category": "chat", "use_personal_context": false, "internet": "Internet"}
+Input: "Tell me about Steve Jobs."  
+Chat History: [{"role": "user", "content": "Who are some famous tech innovators?"}, {"role": "assistant", "content": "Steve Jobs, Bill Gates, Elon Musk."}]  
+Output: {"category": "chat", "use_personal_context": false, "internet": "Internet", "transformed_input": "Tell me about Steve Jobs."}
 
-Input: "Summarize the latest file in my Google Drive."
-Output: {"category": "agent", "use_personal_context": true, "internet": "None"}
+Input: "Search for the latest news on climate change."  
+Chat History: []  
+Output: {"category": "chat", "use_personal_context": false, "internet": "Internet", "transformed_input": "Search for the latest news on climate change."}
+
+Input: "Summarize the latest file in my Google Drive."  
+Chat History: []  
+Output: {"category": "agent", "use_personal_context": true, "internet": "None", "transformed_input": "Summarize the latest file in my Google Drive."}
 """
 
-unified_classification_user_prompt_template = """Classify the following user input based on the criteria provided.
+unified_classification_user_prompt_template = """Classify the following user input based on the criteria provided. Use the chat history to resolve any references and transform the input if necessary.
 
 Input: {query}
 

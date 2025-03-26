@@ -126,7 +126,9 @@ class MemoryBackend:
         print(f"Classifying query memory type for query: '{query}'")
         try:
             response = self.query_memory_type_runnable.invoke({"query": query})
+            print(response)
             classification = response.strip()
+            print(classification)
             print(f"Query memory type classification response: '{response}', Classified as: '{classification}'")
             return classification
         except Exception as e:

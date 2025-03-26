@@ -11,8 +11,11 @@ unified_classification_format = {
     "internet": {
       "type": "string",
       "enum": ["Internet", "None"]
+    },
+    "transformed_input": {
+      "type": "string"
     }
   },
-  "required": ["category", "use_personal_context", "internet"],
+  "required": ["category", "use_personal_context", "internet", "transformed_input"],
   "additionalProperties": False
 }

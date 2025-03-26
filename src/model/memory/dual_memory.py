@@ -333,3 +333,56 @@ class MemoryManager:
             print("Expired memory cleanup completed.")
         except Exception as e:
             print(f"Error during memory cleanup: {e}")
+            
+    def fetch_memories_by_category(self, user_id: str, category: str, limit: int = 50) -> List[Dict]:
+        """
+        Fetch memories for a specific user and category from the SQLite database.
+        
+        Args:
+            user_id (str): The ID of the user
+            category (str): Memory category to fetch
+            limit (int, optional): Maximum number of memories to retrieve. Defaults to 50.
+        
+        Returns:
+            List[Dict]: List of memory dictionaries
+        """
+        print(f"Fetching memories for user '{user_id}' in category '{category}'")
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            # Ensure category is in lowercase and exists in categories
+            category = category.lower()
+            if category not in [cat.lower() for cat in self.categories.keys()]:
+                print(f"Invalid category: {category}")
+                return []
+            
+            # Query to fetch active and non-expired memories
+            cursor.execute(f'''
+            SELECT id, original_text, keywords, created_at, expiry_at
+            FROM {category}
+            WHERE user_id = ? AND is_active = 1 AND datetime('now') < expiry_at
+            ORDER BY created_at DESC
+            LIMIT ?
+            ''', (user_id, limit))
+            
+            # Convert results to list of dictionaries
+            memories = [
+                {
+                    'id': row[0],
+                    'original_text': row[1],
+                    'keywords': row[2].split(','),
+                    'created_at': row[3],
+                    'expiry_at': row[4]
+                }
+                for row in cursor.fetchall()
+            ]
+            
+            print(f"Retrieved {len(memories)} memories")
+            return memories
+        
+        except Exception as e:
+            print(f"Error fetching memories: {e}")
+            return []
+        finally:
+            conn.close()
