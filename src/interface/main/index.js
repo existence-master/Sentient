@@ -1172,7 +1172,7 @@ ipcMain.handle(
 	async (event, { category }) => {
 		try {
 
-			const response = await fetch(
+			let response = await fetch(
 			`${process.env.APP_SERVER_URL}/get-db-data`,
 			{
 				method: "POST", // FastAPI endpoint is defined as POST
@@ -1189,9 +1189,9 @@ ipcMain.handle(
 			}
 
 			const result = await response.json();
-			const userId = result.data.username
+			const userId = result.data["personalInfo"]["name"]
 			// Make a request to FastAPI endpoint
-			const response = await fetch(
+			response = await fetch(
 				"http://localhost:5000/get-short-term-memories",
 				{
 					method: "POST", // Specify the method as POST

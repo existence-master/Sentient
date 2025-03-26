@@ -1737,10 +1737,6 @@ async def get_short_term_memories(request: GetShortTermMemoriesRequest) -> List[
     """
     Retrieve memories for a specific user and category.
     
-    - **user_id**: The ID of the user
-    - **category**: Memory category to fetch
-    - **limit**: Maximum number of memories to retrieve (default 50)
-    
     Returns a list of memory dictionaries.
     """
     try:
