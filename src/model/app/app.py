@@ -76,8 +76,6 @@ graph_driver = GraphDatabase.driver(
     auth=(os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"])
 )
 
-memory_manager = MemoryManager(db_path="memory.db", model_name=os.environ["BASE_MODEL_REPO_ID"])
-
 manager = WebSocketManager()
 
 # Initialize runnables from agents
@@ -305,7 +303,6 @@ async def process_queue():
                 await manager.broadcast(json.dumps(task_completion_message))
                 print(f"WebSocket message sent for task completion: {task['task_id']}")
 
-
             except asyncio.CancelledError:
                 await task_queue.complete_task(task["task_id"], error="Task was cancelled")
                 # --- WebSocket Message on Cancellation ---
@@ -335,54 +332,35 @@ async def process_queue():
 async def process_memory_operations():
     while True:
         operation = await memory_backend.memory_queue.get_next_operation()
+        
+        print(f"Processing memory operation: {operation}")
         if operation:
             try:
                 user_id = operation["user_id"]
                 memory_data = operation["memory_data"]
-                operation_type = operation["type"]
-                fact = memory_data["fact"]
-                memory_type = memory_data["memory_type"]
 
-                if memory_type == "Short Term":
-                    if operation_type == "store":
-                        expiry_info = memory_backend.memory_manager.expiry_date_decision(fact)
-                        retention_days = expiry_info.get("retention_days", 7)
-                        memory_info = memory_backend.memory_manager.extract_and_invoke_memory(fact)
-                        category = memory_info.get("memories", [{}])[0].get("category", "tasks")
-                        memory_backend.memory_manager.store_memory(user_id, fact, {"retention_days": retention_days}, category)
-                    elif operation_type == "update":
-                        memory_backend.memory_manager.update_memory(user_id, fact)
-                else:
-                    if operation_type in ["store", "update"]:
-                        crud_graph_operations(
-                            fact, memory_backend.graph_driver, memory_backend.embed_model,
-                            memory_backend.query_class_runnable, memory_backend.info_extraction_runnable,
-                            memory_backend.graph_analysis_runnable, memory_backend.graph_decision_runnable,
-                            memory_backend.text_desc_runnable
-                        )
+                await memory_backend.update_memory(user_id, memory_data)
 
                 await memory_backend.memory_queue.complete_operation(operation["operation_id"], result="Success")
-
+                
                 notification = {
                     "type": "memory_operation_completed",
                     "operation_id": operation["operation_id"],
-                    "operation_type": operation_type,
                     "status": "success",
-                    "fact": fact
+                    "fact": memory_data
                 }
+                
                 await manager.broadcast(json.dumps(notification))
             except Exception as e:
                 await memory_backend.memory_queue.complete_operation(operation["operation_id"], error=str(e))
                 notification = {
                     "type": "memory_operation_error",
                     "operation_id": operation["operation_id"],
-                    "operation_type": operation_type,
                     "error": str(e),
-                    "fact": memory_data.get("fact", "Unknown")
+                    "fact": memory_data
                 }
                 await manager.broadcast(json.dumps(notification))
         await asyncio.sleep(0.1)
-
 
 async def execute_agent_task(task: dict) -> str:
     """Execute the agent task asynchronously and return the result."""
@@ -810,7 +788,7 @@ async def chat(message: Message):
                     pro_used = True
                     user_context = memory_backend.retrieve_memory(username, transformed_input)
                     # Queue memory update in the background
-                    asyncio.create_task(memory_backend.update_memory(username, transformed_input))
+                    asyncio.create_task(memory_backend.add_operation(username, transformed_input))
             elif use_personal_context:
                 yield json.dumps({"type": "intermediary", "message": "Retrieving memories..."}) + "\n"
                 memory_used = True
@@ -1752,7 +1730,7 @@ async def delete_task(delete_request: DeleteTaskRequest): # Use DeleteTaskReques
 @app.post("/get-short-term-memories")
 async def get_short_term_memories(request: GetShortTermMemoriesRequest) -> List[Dict]:
     try:
-        memories = memory_manager.fetch_memories_by_category(
+        memories = memory_backend.memory_manager.fetch_memories_by_category(
             user_id=request.user_id, 
             category=request.category, 
             limit=request.limit
@@ -1762,12 +1740,11 @@ async def get_short_term_memories(request: GetShortTermMemoriesRequest) -> List[
         print(f"Error in get_memories endpoint: {e}")
         return []
 
-# New CRUD endpoints
-@app.post("/add-memory")
+@app.post("/add-short-term-memory")
 async def add_memory(request: AddMemoryRequest):
     """Add a new memory."""
     try:
-        memory_id = memory_manager.add_memory(
+        memory_id = memory_backend.memory_manager.store_memory(
             request.user_id, request.text, request.category, request.retention_days
         )
         return {"memory_id": memory_id}
@@ -1776,11 +1753,11 @@ async def add_memory(request: AddMemoryRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error adding memory: {e}")
 
-@app.post("/update-memory")
+@app.post("/update-short-term-memory")
 async def update_memory(request: UpdateMemoryRequest):
     """Update an existing memory."""
     try:
-        memory_manager.update_memory(
+        memory_backend.memory_manager.update_memory(
             request.user_id, request.category, request.id, request.text, request.retention_days
         )
         return {"message": "Memory updated successfully"}
@@ -1789,11 +1766,11 @@ async def update_memory(request: UpdateMemoryRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating memory: {e}")
 
-@app.post("/delete-memory")
+@app.post("/delete-short-term-memory")
 async def delete_memory(request: DeleteMemoryRequest):
     """Delete a memory."""
     try:
-        memory_manager.delete_memory(
+        memory_backend.memory_manager.delete_memory(
             request.user_id, request.category, request.id
         )
         return {"message": "Memory deleted successfully"}
@@ -1808,7 +1785,7 @@ async def clear_all_memories(request: Dict):
     if not user_id:
         raise HTTPException(status_code=400, detail="user_id is required")
     try:
-        memory_manager.clear_all_memories(user_id)
+        memory_backend.memory_manager.clear_all_memories(user_id)
         return {"message": "All memories cleared successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1835,7 +1812,6 @@ async def set_db_data(request: UpdateUserDataRequest) -> Dict[str, Any]:
     except Exception as e:
         print(f"Error setting data: {e}")
         raise HTTPException(status_code=500, detail="Error storing data")
-
 
 # Endpoint for "add-db-data"
 @app.post("/add-db-data")

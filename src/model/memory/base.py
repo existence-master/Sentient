@@ -29,13 +29,12 @@ class MemoryQueue:
         with open(self.memory_file, 'w') as f:
             json.dump(data, f, indent=4)
 
-    async def add_operation(self, operation_type: str, user_id: str, memory_data: Dict) -> str:
+    async def add_operation(self, user_id: str, memory_data: Dict) -> str:
         """Add a new memory operation to the queue."""
         async with self.lock:
             operation_id = f"mem_op_{self.operation_id_counter}"
             operation = {
                 "operation_id": operation_id,
-                "type": operation_type,
                 "user_id": user_id,
                 "memory_data": memory_data,
                 "timestamp": datetime.datetime.utcnow().isoformat() + "Z",

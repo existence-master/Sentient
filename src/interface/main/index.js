@@ -1232,94 +1232,108 @@ ipcMain.handle("fetch-short-term-memories", async (event, { category }) => {
 })
 // Helper function to fetch user_id from the server
 async function getUserId() {
-    try {
-        const response = await fetch(`${process.env.APP_SERVER_URL}/get-db-data`, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            }
-        });
-        if (!response.ok) {
-            const errorDetail = await response.json();
-            console.error(`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`);
-            throw new Error("Failed to fetch user data");
-        }
-        const result = await response.json();
-        return result.data["personalInfo"]["name"];
-    } catch (error) {
-        console.error("Error fetching user ID:", error);
-        throw error;
-    }
+	try {
+		const response = await fetch(
+			`${process.env.APP_SERVER_URL}/get-db-data`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json"
+				}
+			}
+		)
+		if (!response.ok) {
+			const errorDetail = await response.json()
+			console.error(
+				`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`
+			)
+			throw new Error("Failed to fetch user data")
+		}
+		const result = await response.json()
+		return result.data["personalInfo"]["name"]
+	} catch (error) {
+		console.error("Error fetching user ID:", error)
+		throw error
+	}
 }
 
 // IPC handler for adding a memory
 ipcMain.handle("add-memory", async (event, memoryData) => {
-    try {
-        const userId = await getUserId();
-        const requestBody = {
-            user_id: userId,
-            ...memoryData
-        };
-        const response = await fetch("http://localhost:5000/add-memory", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(requestBody)
-        });
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return await response.json();
-    } catch (error) {
-        console.error("Error adding memory:", error);
-        return { error: error.message };
-    }
-});
+	try {
+		const userId = await getUserId()
+		const requestBody = {
+			user_id: userId,
+			...memoryData
+		}
+		const response = await fetch(
+			"http://localhost:5000/add-short-term-memory",
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(requestBody)
+			}
+		)
+		if (!response.ok) {
+			throw new Error(`HTTP error! status: ${response.status}`)
+		}
+		return await response.json()
+	} catch (error) {
+		console.error("Error adding memory:", error)
+		return { error: error.message }
+	}
+})
 
 // IPC handler for updating a memory
 ipcMain.handle("update-memory", async (event, memoryData) => {
-    try {
-        const userId = await getUserId();
-        const requestBody = {
-            user_id: userId,
-            ...memoryData
-        };
-        const response = await fetch("http://localhost:5000/update-memory", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(requestBody)
-        });
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return await response.json();
-    } catch (error) {
-        console.error("Error updating memory:", error);
-        return { error: error.message };
-    }
-});
+	try {
+		const userId = await getUserId()
+		const requestBody = {
+			user_id: userId,
+			...memoryData
+		}
+		const response = await fetch(
+			"http://localhost:5000/update-short-term-memory",
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(requestBody)
+			}
+		)
+		if (!response.ok) {
+			throw new Error(`HTTP error! status: ${response.status}`)
+		}
+		return await response.json()
+	} catch (error) {
+		console.error("Error updating memory:", error)
+		return { error: error.message }
+	}
+})
 
 // IPC handler for deleting a memory
 ipcMain.handle("delete-memory", async (event, memoryData) => {
-    try {
-        const userId = await getUserId();
-        const requestBody = {
-            user_id: userId,
-            ...memoryData
-        };
-        const response = await fetch("http://localhost:5000/delete-memory", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(requestBody)
-        });
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return await response.json();
-    } catch (error) {
-        console.error("Error deleting memory:", error);
-        return { error: error.message };
-    }
-});
+	try {
+		const userId = await getUserId()
+		const requestBody = {
+			user_id: userId,
+			...memoryData
+		}
+		const response = await fetch(
+			"http://localhost:5000/delete-short-term-memory",
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(requestBody)
+			}
+		)
+		if (!response.ok) {
+			throw new Error(`HTTP error! status: ${response.status}`)
+		}
+		return await response.json()
+	} catch (error) {
+		console.error("Error deleting memory:", error)
+		return { error: error.message }
+	}
+})
 
 ipcMain.handle("clear-all-memories", async () => {
 	try {

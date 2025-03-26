@@ -11,7 +11,6 @@ import {
 } from "@tabler/icons-react"
 import toast from "react-hot-toast"
 
-
 const Chat = () => {
 	const [messages, setMessages] = useState([])
 	const [input, setInput] = useState("")
@@ -138,6 +137,7 @@ const Chat = () => {
 			)
 			if (!response.ok) throw new Error("Failed to clear chat history")
 			setMessages([])
+			fetchChatHistory()
 			toast.success("Chat history cleared.")
 		} catch (error) {
 			toast.error("Error clearing chat history.")

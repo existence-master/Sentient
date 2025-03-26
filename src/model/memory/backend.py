@@ -137,30 +137,64 @@ class MemoryBackend:
             return "Long Term"
 
     async def store_memory(self, user_id: str, query: str):
-        """Queue memory storage operation."""
-        print(f"Queuing store memory for user ID: '{user_id}', query: '{query}'")
+        """Extract and store multiple facts in the appropriate memory system."""
+        print(f"Storing memory for user ID: '{user_id}', query: '{query}'")
         facts = self.extract_memory_facts(query)
+
         if not facts:
             print("No facts extracted from the query. Memory storage aborted.")
             return
+
         for fact in facts:
             memory_type = self.classify_memory(fact)
-            memory_data = {"fact": fact, "memory_type": memory_type}
-            await self.memory_queue.add_operation("store", user_id, memory_data)
+            print(f"Extracted fact: '{fact}' | Classified as: {memory_type}")
 
+            if memory_type == "Short Term":
+                print("Storing fact in Short Term memory...")
+                expiry_info = self.memory_manager.expiry_date_decision(fact)
+                retention_days = expiry_info.get("retention_days", 7)
+                memory_info = self.memory_manager.extract_and_invoke_memory(fact)
+                category = memory_info.get("memories", [{}])[0].get("category", "tasks")
+                self.memory_manager.store_memory(user_id, fact, {"retention_days": retention_days}, category)
+                print("Fact stored in Short Term memory.")
+            else:
+                print("Storing fact in Long Term memory (Neo4j)...")
+                crud_graph_operations(
+                    fact, self.graph_driver, self.embed_model, self.query_class_runnable,
+                    self.info_extraction_runnable, self.graph_analysis_runnable,
+                    self.graph_decision_runnable, self.text_desc_runnable
+                )
+                print("Fact stored in Long Term memory (Neo4j).")
+        print("Memory storage process completed.")
+    
     async def update_memory(self, user_id: str, query: str):
-        """Queue memory update operation."""
-        print(f"Queuing update memory for user ID: '{user_id}', query: '{query}'")
+        """Extract and update multiple facts in the memory system."""
+        print(f"Updating memory for user ID: '{user_id}', query: '{query}'")
         facts = self.extract_memory_facts(query)
+
         if not facts:
             print("No facts extracted from the query. Memory update aborted.")
             return
+
         for fact in facts:
             memory_type = self.classify_memory(fact)
-            memory_data = {"fact": fact, "memory_type": memory_type}
-            await self.memory_queue.add_operation("update", user_id, memory_data)
+            print(f"Extracted fact: '{fact}' | Classified as: {memory_type}")
 
-    def retrieve_memory(self, user_id: str, query: str) -> str:
+            if memory_type == "Short Term":
+                print("Updating Short Term memory...")
+                self.memory_manager.update_memory(user_id, fact)
+                print("Short Term memory updated.")
+            else:
+                print("Updating Long Term memory (Neo4j)...")
+                crud_graph_operations(
+                    fact, self.graph_driver, self.embed_model, self.query_class_runnable,
+                    self.info_extraction_runnable, self.graph_analysis_runnable,
+                    self.graph_decision_runnable, self.text_desc_runnable
+                )
+                print("Long Term memory (Neo4j) updated.")
+        print("Memory update process completed.")
+
+    async def retrieve_memory(self, user_id: str, query: str) -> str:
         """Retrieve relevant memories synchronously from the appropriate store."""
         print(f"Retrieving memory for user ID: '{user_id}', query: '{query}'")
         memory_type = self.classify_query_memory_type(query)
@@ -182,6 +216,9 @@ class MemoryBackend:
             )
             print(f"Retrieved long-term context: {context}")
             return context
+    
+    async def add_operation(self, user_id: str, query: str):
+        await self.memory_queue.add_operation(user_id, query)
 
     def cleanup(self):
         """Clean up expired short-term memories."""

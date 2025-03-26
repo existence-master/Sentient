@@ -333,63 +333,6 @@ class MemoryManager:
             print("Expired memory cleanup completed.")
         except Exception as e:
             print(f"Error during memory cleanup: {e}")
-            
-    def add_memory(self, user_id: str, text: str, category: str, retention_days: int) -> int:
-        """Add a new memory to the specified category."""
-        if category.lower() not in [cat.lower() for cat in self.categories.keys()]:
-            raise ValueError("Invalid category")
-        if not (1 <= retention_days <= 90):
-            raise ValueError("Retention days must be between 1 and 90")
-        
-        keywords = self.extract_keywords(text)
-        embedding = self.compute_embedding(text)
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        current_time = datetime.datetime.now()
-        expiry_time = current_time + timedelta(days=retention_days)
-        
-        cursor.execute(f'''
-        INSERT INTO {category.lower()} (user_id, original_text, keywords, embedding, created_at, expiry_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ''', (user_id, text, ','.join(keywords), embedding, current_time, expiry_time))
-        
-        memory_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        print(f"Added memory ID {memory_id} to {category.lower()}: '{text[:50]}...'")
-        return memory_id
-
-    def update_memory(self, user_id: str, category: str, memory_id: int, text: str, retention_days: int):
-        """Update an existing memory's text and retention days."""
-        if category.lower() not in [cat.lower() for cat in self.categories.keys()]:
-            raise ValueError("Invalid category")
-        if not (1 <= retention_days <= 90):
-            raise ValueError("Retention days must be between 1 and 90")
-        
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Verify memory exists and belongs to the user
-        cursor.execute(f'SELECT user_id FROM {category.lower()} WHERE id = ?', (memory_id,))
-        result = cursor.fetchone()
-        if not result or result[0] != user_id:
-            conn.close()
-            raise ValueError("Memory not found or not owned by the user")
-        
-        keywords = self.extract_keywords(text)
-        embedding = self.compute_embedding(text)
-        current_time = datetime.datetime.now()
-        expiry_time = current_time + timedelta(days=retention_days)
-        
-        cursor.execute(f'''
-        UPDATE {category.lower()}
-        SET original_text = ?, keywords = ?, embedding = ?, expiry_at = ?
-        WHERE id = ?
-        ''', (text, ','.join(keywords), embedding, expiry_time, memory_id))
-        
-        conn.commit()
-        conn.close()
-        print(f"Updated memory ID {memory_id} in {category.lower()}: '{text[:50]}...'")
 
     def delete_memory(self, user_id: str, category: str, memory_id: int):
         """Delete a memory by ID and category."""
