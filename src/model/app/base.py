@@ -103,11 +103,11 @@ class BaseRunnable(ABC):
             inputs (Dict[str, Any]): A dictionary of input variable names and their values.
         """
         user_prompt = self.user_prompt_template.format(**inputs)
-
+        
         if self.stateful:
             self.messages.append({"role": "user", "content": user_prompt})
         else:
-            self.messages = [{"role": "system", "content": self.messages[0]["content"]}]
+            self.messages = [{"role": "system", "content": self.system_prompt_template}]
             self.messages.append({"role": "user", "content": user_prompt})
 
     def add_to_history(self, chat_history: List[Dict[str, str]]) -> None:
