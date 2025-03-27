@@ -31,3 +31,14 @@ cryptography
 requests
 pyinstaller
 ruff
+transformers
+optimum
+accelerate
+pyaudio
+webrtcvad
+# install torch with CUDA support for CSM - check csm/requirements.txt
+# install torchaudio with CUDA support for CSM - check csm/requirements.txt
+# triton-windows==3.0.0 - install from the wheel file
+# additional requirements for Sesame CSM are in csm/requirements.txt
+bitsandbytes
+aiofiles

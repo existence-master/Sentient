@@ -1,6 +1,6 @@
 #use Set-ExecutionPolicy RemoteSigned -Scope CurrentUser to allow running scripts
 $excludeFolders = @("venv", "__pycache__", "node_modules", ".next")
-$path = "D:\Documents\cyber\projects\Sentient-New\Code\src\model"
+$path = "D:\Documents\cyber\projects\Sentient-New\Code\src\model\voice"
 
 function Get-Tree {
     param ($directory, $level = 0)
