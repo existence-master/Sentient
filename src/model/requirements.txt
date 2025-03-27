@@ -31,3 +31,6 @@ cryptography
 requests
 pyinstaller
 ruff
+matplotlib
+aiofiles
+spacy

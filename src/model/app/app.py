@@ -333,7 +333,6 @@ async def process_memory_operations():
     while True:
         operation = await memory_backend.memory_queue.get_next_operation()
         
-        print(f"Processing memory operation: {operation}")
         if operation:
             try:
                 user_id = operation["user_id"]
@@ -1054,6 +1053,8 @@ async def gslides_tool(tool_call: ToolCall) -> Dict[str, Any]:
             }
         )
 
+        print("TOOL_CALL_STR: ", tool_call_str)
+
         tool_result = await parse_and_execute_tool_calls(
             tool_call_str
         )  # Parse and execute tool calls from the response
@@ -1064,6 +1065,7 @@ async def gslides_tool(tool_call: ToolCall) -> Dict[str, Any]:
     except Exception as e:  # Handle exceptions during gslides tool execution
         print(f"Error calling gslides tool: {e}")
         return {"status": "failure", "error": str(e)}  # Return error status and message
+
 
 @register_tool("gcalendar")
 async def gcalendar_tool(tool_call: ToolCall) -> Dict[str, Any]:

@@ -812,16 +812,28 @@ AVAILABLE FUNCTIONS:
 1. create_google_presentation(outline: dict)
    - Creates a Google Slides presentation based on the provided outline.
    - Parameters:
-     - outline (dict, required): Outline of the presentation, including the topic, username, slide titles, and slide contents.
+     - outline (dict, required): Outline of the presentation, including:
+       - topic (string, required): The main topic of the presentation.
+       - username (string, required): The user's name for attribution.
+       - slides (list, required): List of slides, each with:
+         - title (string, required): Slide title.
+         - content (list or string, required): Slide content (bullet points as a list of strings, or a single string for paragraph text).
+         - image_description (string, optional): A descriptive query for an Unsplash image to add to the slide. Should be relevant to the slide's content.
+         - chart (dict, optional): Chart details with:
+           - type (string, required): "bar", "pie", or "line".
+           - categories (list, required): Chart categories (labels for data points/sections).
+           - data (list, required): Numerical data corresponding to the categories.
 
 INSTRUCTIONS:
-- If `previous_tool_response` is provided, use it to enhance or refine the outline for the presentation.
-- Use the provided username for the username key value in the response
-- Ensure the outline is detailed, coherent, and logically structured based on the query and/or previous response.
-- Do not return any extra parameters than given in the schema for every function
+- If `previous_tool_response` is provided, use its data to enrich the presentation outline. Synthesize information rather than just copying.
+- Use the provided username for the 'username' key in the response.
+- Ensure the outline is detailed, coherent, and logically structured.
+- **Slide Content:** The `content` field should be detailed and informative. Use bullet points (list of strings) for lists or key points. Use a single string for explanatory paragraphs. Avoid overly brief or single-word content points.
+- **Image Descriptions:** Include a relevant `image_description` for most slides to enhance visual appeal. Be specific and descriptive in the query (e.g., "professional team collaborating in modern office" instead of just "team"). Omit `image_description` only if the slide content is purely data (like a chart-only slide) or an image is clearly inappropriate or redundant.
+- Include charts only when explicitly requested or when data provided (e.g., in `previous_tool_response`) strongly suggests a chart is the best way to represent it.
+- Do not return any extra parameters beyond the defined schema. Strictly adhere to the specified parameter names and structure.
 
 RESPONSE FORMAT:
-EVERY RESPONSE MUST BE A VALID JSON OBJECT IN THE FOLLOWING FORMAT:
 {
   "tool_name": "create_google_presentation",
   "parameters": {
@@ -831,36 +843,144 @@ EVERY RESPONSE MUST BE A VALID JSON OBJECT IN THE FOLLOWING FORMAT:
       "slides": [
         {
           "title": "Slide 1 Title",
-          "content": ["Point 1", "Point 2", "Point 3"]
+          "content": ["Detailed point 1 explaining a concept.", "Detailed point 2 providing supporting evidence.", "Detailed point 3 with an implication."],
+          "image_description": "Descriptive query for a relevant image",
+          "chart": { // Optional chart example
+            "type": "bar",
+            "categories": ["Category A", "Category B"],
+            "data": [55, 45]
+          }
         },
         {
           "title": "Slide 2 Title",
-          "content": "Detailed explanation of Slide 2 content."
+          "content": "This slide contains a paragraph explaining a complex idea in detail, providing context and background information necessary for understanding the subsequent points.",
+          "image_description": "Another specific image query related to slide 2's content"
+        }
+        // ... more slides
+      ]
+    }
+  }
+}
+
+EXAMPLES:
+
+
+**Example 1: Using Previous Tool Response**
+
+User Query: "Create a presentation on our quarterly performance using the highlights provided. Add a bar chart for Q1 revenue and a line chart for the NPS trend."
+User Name: "John"
+Previous Tool Response: `{"highlights": [["Q1", "Strong Revenue Growth", 15], ["Q2", "Improved Customer Retention", 5]], "key_metric": "Net Promoter Score", "nps_trend": [40, 45], "challenges": ["Market saturation", "Increased competition"]}`
+
+Response:
+{
+  "tool_name": "create_google_presentation",
+  "parameters": {
+    "outline": {
+      "topic": "Quarterly Performance Review",
+      "username": "John",
+      "slides": [
+        {
+          "title": "Executive Summary",
+          "content": [
+            "Review of key performance indicators for Q1 and Q2.",
+            "Highlights include significant revenue growth and improved customer retention.",
+            "Net Promoter Score shows a positive upward trend.",
+            "Addressing challenges related to market saturation."
+          ],
+          "image_description": "Professional dashboard showing key business metrics"
+        },
+        {
+          "title": "Q1 Performance: Revenue Growth",
+          "content": [
+            "Achieved strong revenue growth of 15% year-over-year.",
+            "Key driver: Successful launch and adoption of Product X.",
+            "Exceeded target projections for the quarter."
+          ],
+          "chart": {
+            "type": "bar",
+            "categories": ["Q1 Revenue Growth (%)"],
+            "data": [15]
+          },
+          "image_description": "Upward trending financial graph or chart"
+        },
+        {
+          "title": "Q2 Performance: Customer Retention",
+          "content": [
+            "Significant improvement in customer retention rate, up 5 points compared to the previous period.",
+            "Attributed to the implementation of the new loyalty program and enhanced support.",
+            "Positive customer feedback received on recent service upgrades."
+          ],
+          "image_description": "Illustration of customer loyalty or support interaction"
+        },
+        {
+          "title": "Net Promoter Score (NPS) Trend",
+          "content": [
+            "NPS continues to show a positive trend, indicating improving customer satisfaction.",
+            "Q1 NPS: 40",
+            "Q2 NPS: 45"
+          ],
+          "chart": {
+            "type": "line",
+            "categories": ["Q1", "Q2"],
+            "data": [40, 45]
+          },
+          "image_description": "Line graph showing positive upward trend"
+        },
+        {
+          "title": "Challenges and Next Steps",
+          "content": [
+            "Acknowledged Challenges: Market saturation impacting new customer acquisition, increased competition requiring innovation.",
+            "Next Steps: Focus on product differentiation, explore new market segments, continue enhancing customer experience."
+          ],
+          "image_description": "Team brainstorming or strategic planning session"
         }
       ]
     }
   }
 }
 
-EXAMPLE:
-User Query: "Create a presentation on our quarterly performance."
-User Name: "John"
-Previous Tool Response: {"highlights": [["Q1", "Revenue Growth"], ["Q2", "Customer Retention"]]}
+Example 2: No Previous Response, Explicit Image Request
+
+User Query: "Make a 3-slide presentation about the benefits of remote work for employees. Please include a picture of a comfortable home office setup."
+User Name: "Alice"
+Previous Tool Response: None
+
 Response:
 {
   "tool_name": "create_google_presentation",
   "parameters": {
     "outline": {
-      "topic": "Quarterly Performance",
-      "username": "John",
+      "topic": "Benefits of Remote Work for Employees",
+      "username": "Alice",
       "slides": [
         {
-          "title": "Q1 Performance",
-          "content": ["Revenue Growth"]
+          "title": "Introduction: The Shift to Remote Work",
+          "content": [
+            "Remote work offers flexibility and autonomy, becoming increasingly popular.",
+            "Technology enables seamless collaboration from anywhere.",
+            "Focus on outcomes rather than physical presence."
+          ],
+          "image_description": "Diverse group of people collaborating online via video conference"
         },
         {
-          "title": "Q2 Performance",
-          "content": ["Customer Retention"]
+          "title": "Key Employee Advantages",
+          "content": [
+            "Improved Work-Life Balance: More time for family, hobbies, and personal well-being.",
+            "Reduced Commute: Saves time, money, and reduces stress associated with daily travel.",
+            "Increased Productivity: Fewer office distractions can lead to more focused work.",
+            "Greater Autonomy: Control over work environment and schedule."
+          ],
+          "image_description": "Comfortable and ergonomic home office setup with natural light"
+        },
+        {
+          "title": "Flexibility and Well-being",
+          "content": [
+            "Remote work supports diverse employee needs and lifestyles.",
+            "Potential for reduced stress and improved mental health.",
+            "Empowers employees to create a work environment that suits them best.",
+            "Conclusion: Offers significant benefits for employee satisfaction and retention."
+          ],
+          "image_description": "Person smiling while working on a laptop in a relaxed setting"
         }
       ]
     }

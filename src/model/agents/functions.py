@@ -10,12 +10,16 @@ from email.mime.text import MIMEText
 from base64 import urlsafe_b64encode
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
 import httpx
 from sentence_transformers import SentenceTransformer, util
 from urllib.parse import quote
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
+import time
+import matplotlib.pyplot as plt
+import io
+import requests
 
 from model.app.helpers import *
 
@@ -154,6 +158,126 @@ async def create_message(to: str, subject: str, message: str) -> str:
     except Exception as error:
         print(f"Error creating message: {str(error)}")
         raise Exception(f"Error creating message: {error}")
+    
+async def search_unsplash_image(query: str) -> str:
+    """Search for an image on Unsplash and return its URL.
+
+    Args:
+        query (str): The search term to find an image (e.g., 'nature').
+
+    Returns:
+        str: The URL of the first image result, or None if no image is found or an error occurs.
+    """
+    try:
+        access_key = os.getenv("UNSPLASH_ACCESS_KEY")
+        if not access_key:
+            print("Unsplash access key is missing. Please set UNSPLASH_ACCESS_KEY in your .env file.")
+            return None
+
+        url = f"https://api.unsplash.com/search/photos?query={query}"
+        headers = {'Authorization': f'Client-ID {access_key}'}
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code != 200:
+            print(f"API Error: {response.status_code}")
+            return None
+            
+        data = response.json()
+        if data.get("results"):
+            return data["results"][0]["urls"]["regular"]
+            
+        print(f"No images found for query: {query}")
+        return None
+    except requests.RequestException as e:
+        print(f"Error searching Unsplash: {e}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return None
+
+async def upload_image_to_slide(service, drive_service, presentation_id, slide_id, image_url):
+    """Upload an image from a URL to a specific slide.
+
+    Args:
+        service: Google Slides API service instance.
+        drive_service: Google Drive API service instance.
+        presentation_id (str): ID of the presentation.
+        slide_id (str): ID of the slide to add the image to.
+        image_url (str): URL of the image to upload.
+
+    Returns:
+        dict: Status and result or error message.
+    """
+    try:
+        # Download the image
+        response = requests.get(image_url)
+        if response.status_code != 200:
+            return {"status": "failure", "error": f"Failed to download image from {image_url}"}
+        
+        image_bytes = response.content
+        file_metadata = {'name': f'slide_image_{int(time.time())}.jpg'}
+        media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype='image/jpeg')
+        
+        # Upload to Google Drive
+        uploaded_file = drive_service.files().create(
+            body=file_metadata, media_body=media, fields='id'
+        ).execute()
+        file_id = uploaded_file.get('id')
+        
+        # Set permission to make the file publicly accessible
+        permission = {'type': 'anyone', 'role': 'reader'}
+        drive_service.permissions().create(fileId=file_id, body=permission).execute()
+        
+        # Create image in the slide
+        image_url = f"https://drive.google.com/uc?id={file_id}"
+        create_image_request = {
+            "createImage": {
+                "url": image_url,
+                "elementProperties": {
+                    "pageObjectId": slide_id,
+                    "size": {"width": {"magnitude": 450, "unit": "PT"}, "height": {"magnitude": 300, "unit": "PT"}},
+                    "transform": {"scaleX": 1, "scaleY": 1, "translateX": 50, "translateY": 150, "unit": "PT"}
+                }
+            }
+        }
+        service.presentations().batchUpdate(
+            presentationId=presentation_id, body={"requests": [create_image_request]}
+        ).execute()
+        
+        return {"status": "success", "result": "Image added to slide"}
+    except Exception as e:
+        return {"status": "failure", "error": str(e)}
+
+async def generate_chart_image(chart_type, categories, data):
+    """Generate a chart image and return its Google Drive URL."""
+    try:
+        plt.figure(figsize=(6, 4))
+        if chart_type == "bar":
+            plt.bar(categories, data)
+        elif chart_type == "pie":
+            plt.pie(data, labels=categories, autopct='%1.1f%%')
+        elif chart_type == "line":
+            plt.plot(categories, data)
+        else:
+            return {"status": "failure", "error": f"Unsupported chart type: {chart_type}"}
+        plt.title("Chart")
+        chart_path = f"chart_{int(time.time())}.png"
+        plt.savefig(chart_path)
+        plt.close()
+        
+        drive_service = authenticate_drive()
+        file_metadata = {'name': os.path.basename(chart_path)}
+        media = MediaFileUpload(chart_path, mimetype='image/png')
+        uploaded_file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        file_id = uploaded_file.get('id')
+        permission = {'type': 'anyone', 'role': 'reader'}
+        drive_service.permissions().create(fileId=file_id, body=permission).execute()
+        image_url = f"https://drive.google.com/uc?id={file_id}"
+        os.remove(chart_path)  # Clean up local file
+        return {"status": "success", "result": image_url}
+    except Exception as e:
+        return {"status": "failure", "error": str(e)}
+    
 
 async def create_presentation(service, title: str) -> Dict[str, Any]:
     """
@@ -173,7 +297,175 @@ async def create_presentation(service, title: str) -> Dict[str, Any]:
     except HttpError as error:
         print(str(error))
         raise Exception(error)
+    
+async def create_google_presentation(outline: Dict[str, Any]) -> Dict[str, Any]:
+    """Creates a Google Slides presentation with enhanced features from gslides.py and title slide logic."""
+    print("Starting create_google_presentation function")
+    print(f"Topic: {outline.get('topic')}, Username: {outline.get('username')}")
+    try:
 
+        print("OUTLINE: ", outline)
+        service = authenticate_slides()
+        drive_service = authenticate_drive()
+        print("Successfully authenticated Google Slides and Drive services.")
+        title = outline["topic"]
+        user_name = outline["username"]
+        presentation = await create_presentation(service, title)
+        presentation_id = presentation["presentationId"]
+        presentation_url = f"https://docs.google.com/presentation/d/{presentation_id}"
+        print(f"Presentation created successfully. ID: {presentation_id}, URL: {presentation_url}")
+
+        # Update title slide with title and subtitle
+        print("Updating title slide...")
+        presentation_data = service.presentations().get(presentationId=presentation_id).execute()
+        default_slide = presentation_data["slides"][0]
+
+        title_placeholder_id = None
+        subtitle_placeholder_id = None
+
+        for element in default_slide.get("pageElements", []):
+            if "shape" in element:
+                if element["shape"]["shapeType"] == "TEXT_BOX":
+                    if title_placeholder_id is None:
+                        title_placeholder_id = element["objectId"]
+                    else:
+                        subtitle_placeholder_id = element["objectId"]
+
+        print(f"Title placeholder ID: {title_placeholder_id}, Subtitle placeholder ID: {subtitle_placeholder_id}")
+
+        if title_placeholder_id:
+            print("Updating title placeholder...")
+            service.presentations().batchUpdate(
+                presentationId=presentation_id,
+                body={
+                    "requests": [
+                        {
+                            "insertText": {
+                                "objectId": title_placeholder_id,
+                                "text": title,
+                                "insertionIndex": 0,
+                            }
+                        }
+                    ]
+                },
+            ).execute()
+            print("Title placeholder updated.")
+
+        if subtitle_placeholder_id:
+            print("Updating subtitle placeholder...")
+            service.presentations().batchUpdate(
+                presentationId=presentation_id,
+                body={
+                    "requests": [
+                        {
+                            "insertText": {
+                                "objectId": subtitle_placeholder_id,
+                                "text": f"Created by {user_name}",
+                                "insertionIndex": 0,
+                            }
+                        }
+                    ]
+                },
+            ).execute()
+            print("Subtitle placeholder updated.")
+        else:
+            print("Subtitle placeholder not found. Creating a new subtitle textbox.")
+            requests = [
+                {
+                    "createShape": {
+                        "objectId": "SubtitleTextBox",
+                        "shapeType": "TEXT_BOX",
+                        "elementProperties": {
+                            "pageObjectId": default_slide["objectId"],
+                            "size": {
+                                "width": {"magnitude": 5000000, "unit": "EMU"},
+                                "height": {"magnitude": 1000000, "unit": "EMU"},
+                            },
+                            "transform": {
+                                "translateX": 1000000,
+                                "translateY": 2000000,
+                                "unit": "EMU",
+                            },
+                        },
+                    }
+                },
+                {
+                    "insertText": {
+                        "objectId": "SubtitleTextBox",
+                        "text": f"Created by {user_name}",
+                        "insertionIndex": 0,
+                    }
+                },
+            ]
+            service.presentations().batchUpdate(
+                presentationId=presentation_id, body={"requests": requests}
+            ).execute()
+            print("New subtitle textbox created and updated.")
+        print("Title slide updated.")
+
+
+        # Add slides with content, images, and charts
+        print("Adding slides from outline...")
+        for slide in outline["slides"]:
+            slide_title = slide.get("title", "Untitled Slide")
+            slide_content = slide.get("content", ["No content provided."])
+            if not isinstance(slide_content, list):
+                slide_content = [slide_content]
+
+            print(f"Creating slide with title: '{slide_title}' and content: {slide_content}")
+            create_slide_request = {
+                "createSlide": {"slideLayoutReference": {"predefinedLayout": "TITLE_AND_BODY"}}
+            }
+            response = service.presentations().batchUpdate(presentationId=presentation_id, body={"requests": [create_slide_request]}).execute()
+            slide_id = response["replies"][0]["createSlide"]["objectId"]
+            print(f"Slide created with ID: {slide_id}")
+
+            # Add title and content
+            slide_data = service.presentations().get(presentationId=presentation_id).execute()["slides"][-1]
+            title_id = next((e["objectId"] for e in slide_data["pageElements"] if "shape" in e), None)
+            body_id = next((e["objectId"] for e in slide_data["pageElements"] if e["objectId"] != title_id), None)
+            requests = [
+                {"insertText": {"objectId": title_id, "text": slide_title, "insertionIndex": 0}},
+                {"insertText": {"objectId": body_id, "text": "\n".join(slide_content), "insertionIndex": 0}}
+            ]
+            service.presentations().batchUpdate(presentationId=presentation_id, body={"requests": requests}).execute()
+            print("Slide title and content updated.")
+
+            # Add image if present
+            if "image_description" in slide:
+                image_description = slide["image_description"]
+                print(f"Adding image to slide with description: '{image_description}'")
+                image_url = await search_unsplash_image(image_description)
+                if image_url:
+                    print(f"Image URL found: {image_url}. Uploading image...")
+                    await upload_image_to_slide(service, drive_service, presentation_id, slide_id, image_url)
+                    print("Image uploaded to slide.")
+                else:
+                    print("No image URL found for the description.")
+
+            # Add chart if present
+            if "chart" in slide:
+                chart = slide["chart"]
+                print(f"Adding chart to slide: {chart}")
+                chart_result = await generate_chart_image(chart["type"], chart["categories"], chart["data"])
+                if chart_result["status"] == "success":
+                    chart_image_url = chart_result["result"]
+                    print(f"Chart image generated successfully. URL: {chart_image_url}. Uploading chart...")
+                    await upload_image_to_slide(service, drive_service, presentation_id, slide_id, chart_image_url)
+                    print("Chart uploaded to slide.")
+                else:
+                    print(f"Failed to generate chart image. Error: {chart_result.get('error')}")
+        print("All slides added successfully.")
+
+        print("Presentation creation successful.")
+        return {
+            "status": "success",
+            "result": {"response": "Presentation created successfully", "presentationUrl": presentation_url, "presentation_id": presentation_id}
+        }
+    except Exception as e:
+        error_message = str(e)
+        print(f"Error in create_google_presentation: {error_message}")
+        return {"status": "failure", "error": error_message}
 
 async def create_slide(service, presentation_id: str, title: str, content: List[str]):
     """
@@ -1551,156 +1843,6 @@ async def create_google_sheet(
         return {"status": "failure", "error": str(e)}
 
 
-async def create_google_presentation(outline: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Creates a Google Slides presentation and populates it with the provided outline.
-
-    This function creates a new presentation, adds a title slide with a title and subtitle,
-    and then creates slides based on the outline provided, including titles and content for each slide.
-
-    Args:
-        outline (Dict[str, Any]): A dictionary defining the presentation outline, expected to have:
-                                     - "topic" (str): Title of the presentation.
-                                     - "username" (str): Username to include in the subtitle.
-                                     - "slides" (List[Dict]): List of slide dictionaries, each with:
-                                         - "title" (str): Title of the slide.
-                                         - "content" (List[str]): List of strings for slide content.
-
-    Returns:
-        Dict[str, Any]: Status dictionary indicating success or failure and presentation details.
-                         On success, returns:
-                         {
-                             "status": "success",
-                             "result": {
-                                 "response": "Presentation created successfully",
-                                 "presentationUrl": str, # URL to the created presentation
-                                 "presentation_id": str # ID of the created presentation
-                             }
-                         }
-                         On failure, returns:
-                         {"status": "failure", "error": str(error)}
-    """
-    try:
-        service = authenticate_slides()
-        title = outline["topic"]
-        user_name = outline["username"]
-
-        create_response = await create_presentation(service, title=title)
-
-        if not create_response:
-            raise Exception("Failed to create Google Slides presentation.")
-
-        presentation_id = create_response["presentationId"]
-        presentation_url = f"https://docs.google.com/presentation/d/{presentation_id}"
-
-        presentation = (
-            service.presentations().get(presentationId=presentation_id).execute()
-        )
-        default_slide = presentation["slides"][0]
-
-        title_placeholder_id = None
-        subtitle_placeholder_id = None
-
-        for element in default_slide.get("pageElements", []):
-            if "shape" in element:
-                if element["shape"]["shapeType"] == "TEXT_BOX":
-                    if title_placeholder_id == None:
-                        title_placeholder_id = element["objectId"]
-                    else:
-                        subtitle_placeholder_id = element["objectId"]
-
-        if title_placeholder_id:
-            service.presentations().batchUpdate(
-                presentationId=presentation_id,
-                body={
-                    "requests": [
-                        {
-                            "insertText": {
-                                "objectId": title_placeholder_id,
-                                "text": title,
-                                "insertionIndex": 0,
-                            }
-                        }
-                    ]
-                },
-            ).execute()
-
-        if subtitle_placeholder_id:
-            service.presentations().batchUpdate(
-                presentationId=presentation_id,
-                body={
-                    "requests": [
-                        {
-                            "insertText": {
-                                "objectId": subtitle_placeholder_id,
-                                "text": f"Created by {user_name}",
-                                "insertionIndex": 0,
-                            }
-                        }
-                    ]
-                },
-            ).execute()
-        else:
-            requests = [
-                {
-                    "createShape": {
-                        "objectId": "SubtitleTextBox",
-                        "shapeType": "TEXT_BOX",
-                        "elementProperties": {
-                            "pageObjectId": default_slide["objectId"],
-                            "size": {
-                                "width": {"magnitude": 5000000, "unit": "EMU"},
-                                "height": {"magnitude": 1000000, "unit": "EMU"},
-                            },
-                            "transform": {
-                                "translateX": 1000000,
-                                "translateY": 2000000,
-                                "unit": "EMU",
-                            },
-                        },
-                    }
-                },
-                {
-                    "insertText": {
-                        "objectId": "SubtitleTextBox",
-                        "text": f"Created by {user_name}",
-                        "insertionIndex": 0,
-                    }
-                },
-            ]
-            service.presentations().batchUpdate(
-                presentationId=presentation_id, body={"requests": requests}
-            ).execute()
-
-        if (
-            not isinstance(outline, dict)
-            or "slides" not in outline
-            or not isinstance(outline["slides"], list)
-        ):
-            raise ValueError(
-                "Outline must be a dictionary with a 'slides' key containing a list of slides."
-            )
-
-        for slide in outline["slides"]:
-            slide_title = slide.get("title", "Untitled Slide")
-            slide_content = slide.get("content", ["No content provided."])
-
-            if not isinstance(slide_content, list):
-                slide_content = [slide_content]
-
-            await create_slide(service, presentation_id, slide_title, slide_content)
-
-        return {
-            "status": "success",
-            "result": {
-                "response": "Presentation created successfully",
-                "presentationUrl": presentation_url,
-                "presentation_id": presentation_id,
-            },
-        }
-    except Exception as e:
-        print(f"Error in create_google_presentation: {e}")
-        return {"status": "failure", "error": str(e)}
 
 
 async def generate_streaming_response(
