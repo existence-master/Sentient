@@ -6,12 +6,9 @@ import requests
 import json
 import time
 from csm.generator import load_csm_1b
-import speech_recognition as sr
-from transformers import pipeline
-from transformers.utils import is_flash_attn_2_available
-
-# Flag to choose transcription method
-USE_WHISPER = False
+from faster_whisper import WhisperModel
+from queue import Queue
+from threading import Thread, Lock
 
 # Constants
 APP_SERVER_URL = "http://localhost:5000/chat"
@@ -20,28 +17,31 @@ FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 16000
 CHUNK = 480  # 30 ms at 16000 Hz
+BUFFER_SECONDS = 2  # Rolling buffer size in seconds
+TRANSCRIBE_INTERVAL = 0.5  # Transcribe every 0.5 seconds
+SILENCE_THRESHOLD = 0.5  # 0.5 seconds of silence to detect end of speech
+
+# Calculate derived constants
+CHUNK_SIZE_SECONDS = CHUNK / RATE  # ~0.03 seconds per chunk
+BUFFER_CHUNKS = int(BUFFER_SECONDS / CHUNK_SIZE_SECONDS)  # ~66 chunks for 2 seconds
+SILENCE_CHUNKS = int(SILENCE_THRESHOLD / CHUNK_SIZE_SECONDS)  # ~16 chunks for 0.5 seconds
 
 print("Script started, initializing constants...", flush=True)
 
 # Initialize VAD
 print("Initializing VAD...", flush=True)
-vad = webrtcvad.Vad(3)
+vad = webrtcvad.Vad(3)  # Sensitivity level 3 (most sensitive), adjust if needed
 
-# Conditionally load Whisper model
-if USE_WHISPER:
-    print("Loading Whisper model...", flush=True)
-    try:
-        pipe = pipeline(
-            "automatic-speech-recognition",
-            model="openai/whisper-large-v3",
-            torch_dtype=torch.float16,
-            device="cuda:0",
-            model_kwargs={"attn_implementation": "flash_attention_2"} if is_flash_attn_2_available() else {"attn_implementation": "sdpa"},
-        )
-        print("Whisper model loaded successfully.", flush=True)
-    except Exception as e:
-        print(f"Error loading Whisper model: {e}", flush=True)
-        raise
+# Load Whisper model
+print("Loading Whisper model...", flush=True)
+try:
+    device = "cpu"
+    compute_type = "int8"
+    model = WhisperModel("base", device=device, compute_type=compute_type)
+    print("Whisper model loaded successfully.", flush=True)
+except Exception as e:
+    print(f"Error loading Whisper model: {e}", flush=True)
+    raise
 
 # Load CSM model
 print("Loading CSM model...", flush=True)
@@ -52,86 +52,89 @@ except Exception as e:
     print(f"Error loading CSM model: {e}", flush=True)
     raise
 
-def record_speech():
+# Shared variables
+audio_buffer = []
+buffer_lock = Lock()
+full_transcription = ""
+transcription_lock = Lock()
+stop_speaking_queue = Queue()
+
+def get_new_text(prev_text, new_text):
+    """Extract new text by comparing previous and current transcriptions."""
+    if not prev_text:
+        return new_text
+    prev_words = prev_text.split()
+    new_words = new_text.split()
+    # Find the point where new_text diverges from prev_text
+    common_length = 0
+    for i in range(min(len(prev_words), len(new_words))):
+        if prev_words[i] != new_words[i]:
+            break
+        common_length += 1
+    new_part = " ".join(new_words[common_length:])
+    return new_part
+
+def recording_thread():
+    """Continuously record audio and detect when the user stops speaking."""
+    global full_transcription  # Declare global at the start
     p = pyaudio.PyAudio()
-    try:
-        stream = p.open(format=FORMAT,
-                        channels=CHANNELS,
-                        rate=RATE,
-                        input=True,
-                        frames_per_buffer=CHUNK)
-        print("Listening...", flush=True)
-    except Exception as e:
-        print(f"Error opening audio stream: {e}", flush=True)
-        p.terminate()
-        return None
-
-    frames = []
+    stream = p.open(format=FORMAT,
+                    channels=CHANNELS,
+                    rate=RATE,
+                    input=True,
+                    frames_per_buffer=CHUNK)
+    is_speaking = False
     silence_counter = 0
-    max_silence_chunks = int(1.5 * RATE / CHUNK)
-    max_recording_chunks = int(10 * RATE / CHUNK)
-    chunk_count = 0
-    speech_detected = False
-    expected_bytes = CHUNK * 2
-
-    while chunk_count < max_recording_chunks:
+    print("Recording started. Speak into the microphone!", flush=True)
+    while True:
         data = stream.read(CHUNK, exception_on_overflow=False)
-        if len(data) != expected_bytes:
-            print(f"Warning: Incomplete chunk, got {len(data)} bytes, expected {expected_bytes}", flush=True)
-            continue
-        chunk_count += 1
-        try:
-            if vad.is_speech(data, RATE):
-                frames.append(data)
+        with buffer_lock:
+            audio_buffer.append(data)
+            if len(audio_buffer) > BUFFER_CHUNKS:
+                audio_buffer.pop(0)
+        # VAD check
+        if vad.is_speech(data, RATE):
+            is_speaking = True
+            silence_counter = 0
+        elif is_speaking:
+            silence_counter += 1
+            if silence_counter >= SILENCE_CHUNKS:
+                # User has stopped speaking
+                with transcription_lock:
+                    if full_transcription.strip():
+                        stop_speaking_queue.put(full_transcription.strip())
+                    full_transcription = ""  # Reset after sending
+                is_speaking = False
                 silence_counter = 0
-                speech_detected = True
-            else:
-                if speech_detected:
-                    silence_counter += 1
-                    frames.append(data)
-                    if silence_counter > max_silence_chunks:
-                        break
-                else:
-                    silence_counter = 0
-        except Exception as e:
-            print(f"VAD error: {e}", flush=True)
-            raise
+                with buffer_lock:
+                    audio_buffer.clear()
 
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
-    audio_data = b''.join(frames) if speech_detected else None
-    if audio_data and len(audio_data) / (RATE * 2) < 0.5:
-        print("Audio too short for transcription.", flush=True)
-        return None
-    return audio_data
-
-def transcribe_whisper(audio_data):
-    if not USE_WHISPER:
-        raise ValueError("Whisper is not enabled")
-    audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
-    audio_input = {"raw": audio_np, "sampling_rate": RATE}
-    outputs = pipe(audio_input, chunk_length_s=30, batch_size=24, return_timestamps=True)
-    return outputs["text"]
-
-def transcribe_google(audio_data):
-    recognizer = sr.Recognizer()
-    audio = sr.AudioData(audio_data, sample_rate=RATE, sample_width=2)
-    try:
-        text = recognizer.recognize_google(audio)
-        return text
-    except sr.UnknownValueError:
-        return "Could not understand audio"
-    except sr.RequestError as e:
-        return f"Could not request results; {e}"
-
-def transcribe_audio(audio_data):
-    if USE_WHISPER:
-        return transcribe_whisper(audio_data)
-    else:
-        return transcribe_google(audio_data)
+def transcription_thread():
+    """Transcribe audio buffer periodically and accumulate transcription."""
+    global full_transcription  # Declare global at the start
+    prev_transcription = ""
+    while True:
+        time.sleep(TRANSCRIBE_INTERVAL)
+        with buffer_lock:
+            if not audio_buffer:
+                continue
+            audio_data = b''.join(audio_buffer)
+        audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+        start_time = time.time()
+        segments, _ = model.transcribe(audio_np, language="en", task="transcribe")
+        current_transcription = " ".join([seg.text for seg in segments]).strip()
+        latency = time.time() - start_time
+        print(f"Transcription latency: {latency:.3f} seconds", flush=True)
+        if current_transcription:
+            new_text = get_new_text(prev_transcription, current_transcription)
+            if new_text:
+                print(f"New transcription: {new_text}", flush=True)
+                with transcription_lock:
+                    full_transcription = full_transcription + " " + new_text if full_transcription else new_text
+            prev_transcription = current_transcription
 
 def get_ai_response(text):
+    """Get AI response from the server."""
     message = {
         "input": text,
         "pricing": "pro",
@@ -142,7 +145,6 @@ def get_ai_response(text):
     if response.status_code != 200:
         print(f"Error from server: {response.status_code}", flush=True)
         return "Sorry, I couldn't process that."
-    
     full_response = ""
     for line in response.iter_lines():
         if line:
@@ -152,6 +154,7 @@ def get_ai_response(text):
     return full_response
 
 def synthesize_speech(text):
+    """Synthesize speech from text using the CSM model."""
     audio = generator.generate(
         text=text,
         speaker=0,
@@ -161,6 +164,7 @@ def synthesize_speech(text):
     return audio
 
 def play_audio(audio, sample_rate):
+    """Play the synthesized audio."""
     p = pyaudio.PyAudio()
     stream = p.open(format=pyaudio.paFloat32,
                     channels=1,
@@ -173,12 +177,21 @@ def play_audio(audio, sample_rate):
     p.terminate()
 
 def main():
-    print("Entering main loop...", flush=True)
+    """Main function to coordinate threads and handle AI responses."""
+    # Start recording thread
+    rec_thread = Thread(target=recording_thread)
+    rec_thread.daemon = True
+    rec_thread.start()
+
+    # Start transcription thread
+    trans_thread = Thread(target=transcription_thread)
+    trans_thread.daemon = True
+    trans_thread.start()
+
     print("Voice conversation started. Speak into your microphone!", flush=True)
     while True:
-        audio_data = record_speech()
-        if audio_data:
-            text = transcribe_audio(audio_data)
+        text = stop_speaking_queue.get()  # Blocks until text is available
+        if text:
             print(f"You said: {text}", flush=True)
             response_text = get_ai_response(text)
             print(f"AI says: {response_text}", flush=True)
@@ -187,12 +200,11 @@ def main():
             print("Speaking...", flush=True)
             play_audio(audio_output, generator.sample_rate)
             print("Listening again...", flush=True)
-        else:
-            print("No speech detected. Listening again...", flush=True)
-        time.sleep(0.5)
 
 if __name__ == "__main__":
     try:
         main()
+    except KeyboardInterrupt:
+        print("\nStopped by user.", flush=True)
     except Exception as e:
         print(f"Script crashed with error: {e}", flush=True)

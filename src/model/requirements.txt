@@ -42,3 +42,6 @@ webrtcvad
 # additional requirements for Sesame CSM are in csm/requirements.txt
 bitsandbytes
 aiofiles
+spacy
+SpeechRecognition
+faster-whisper
