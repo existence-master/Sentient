@@ -830,6 +830,7 @@ INSTRUCTIONS:
 - Ensure the outline is detailed, coherent, and logically structured.
 - **Slide Content:** The `content` field should be detailed and informative. Use bullet points (list of strings) for lists or key points. Use a single string for explanatory paragraphs. Avoid overly brief or single-word content points.
 - **Image Descriptions:** Include a relevant `image_description` for most slides to enhance visual appeal. Be specific and descriptive in the query (e.g., "professional team collaborating in modern office" instead of just "team"). Omit `image_description` only if the slide content is purely data (like a chart-only slide) or an image is clearly inappropriate or redundant.
+- **Charts:** Use charts only when explicitly requested (e.g., in `previous_tool_response`) or when data provided strongly suggests a chart is the best way to represent it. Chart has to be created in new slide with only title and no other description.
 - Include charts only when explicitly requested or when data provided (e.g., in `previous_tool_response`) strongly suggests a chart is the best way to represent it.
 - Do not return any extra parameters beyond the defined schema. Strictly adhere to the specified parameter names and structure.
 

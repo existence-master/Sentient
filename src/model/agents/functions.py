@@ -209,27 +209,76 @@ async def upload_image_to_slide(service, drive_service, presentation_id, slide_i
         dict: Status and result or error message.
     """
     try:
-        # Download the image
         response = requests.get(image_url)
         if response.status_code != 200:
             return {"status": "failure", "error": f"Failed to download image from {image_url}"}
-        
         image_bytes = response.content
-        file_metadata = {'name': f'slide_image_{int(time.time())}.jpg'}
-        media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype='image/jpeg')
-        
+        file_name = f'slide_image_{int(time.time())}.jpg'
+        mimetype = 'image/jpeg'
+        return add_image_to_slide_from_bytes(service, drive_service, presentation_id, slide_id, image_bytes, file_name, mimetype)
+    except Exception as e:
+        return {"status": "failure", "error": str(e)}
+
+def generate_chart_bytes(chart_type, categories, data):
+    """Generate a chart image in memory and return its bytes.
+
+    Args:
+        chart_type (str): Type of chart ('bar', 'pie', 'line').
+        categories (list): Categories for the chart.
+        data (list): Data points for the chart.
+
+    Returns:
+        bytes: The chart image in bytes.
+    """
+    try:
+        plt.figure(figsize=(6, 4))
+        if chart_type == "bar":
+            plt.bar(categories, data)
+        elif chart_type == "pie":
+            plt.pie(data, labels=categories, autopct='%1.1f%%')
+        elif chart_type == "line":
+            plt.plot(categories, data)
+        else:
+            raise ValueError(f"Unsupported chart type: {chart_type}")
+        plt.title("Chart")
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        plt.close()
+        buf.seek(0)
+        return buf.getvalue()
+    except Exception as e:
+        raise RuntimeError(f"Error generating chart: {e}")
+
+def add_image_to_slide_from_bytes(service, drive_service, presentation_id, slide_id, image_bytes, file_name, mimetype):
+    """Upload image bytes to Google Drive and add the image to a specific slide.
+
+    Args:
+        service: Google Slides API service instance.
+        drive_service: Google Drive API service instance.
+        presentation_id (str): ID of the presentation.
+        slide_id (str): ID of the slide to add the image to.
+        image_bytes (bytes): The image data in bytes.
+        file_name (str): The name to give the file in Google Drive.
+        mimetype (str): The MIME type of the image (e.g., 'image/png').
+
+    Returns:
+        dict: Status and result or error message.
+    """
+    try:
         # Upload to Google Drive
+        file_metadata = {'name': file_name}
+        media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype=mimetype)
         uploaded_file = drive_service.files().create(
             body=file_metadata, media_body=media, fields='id'
         ).execute()
         file_id = uploaded_file.get('id')
-        
-        # Set permission to make the file publicly accessible
+
+        # Make the file publicly accessible
         permission = {'type': 'anyone', 'role': 'reader'}
         drive_service.permissions().create(fileId=file_id, body=permission).execute()
-        
-        # Create image in the slide
         image_url = f"https://drive.google.com/uc?id={file_id}"
+
+        # Add the image to the slide
         create_image_request = {
             "createImage": {
                 "url": image_url,
@@ -243,38 +292,35 @@ async def upload_image_to_slide(service, drive_service, presentation_id, slide_i
         service.presentations().batchUpdate(
             presentationId=presentation_id, body={"requests": [create_image_request]}
         ).execute()
-        
         return {"status": "success", "result": "Image added to slide"}
     except Exception as e:
         return {"status": "failure", "error": str(e)}
 
-async def generate_chart_image(chart_type, categories, data):
-    """Generate a chart image and return its Google Drive URL."""
+async def add_chart_to_slide(service, drive_service, presentation_id, slide_id, chart_type, categories, data):
+    """Generate a chart and add it to a specific slide.
+
+    Args:
+        service: Google Slides API service instance.
+        drive_service: Google Drive API service instance.
+        presentation_id (str): ID of the presentation.
+        slide_id (str): ID of the slide to add the chart to.
+        chart_type (str): Type of chart ('bar', 'pie', 'line').
+        categories (list): Categories for the chart.
+        data (list): Data points for the chart.
+
+    Returns:
+        dict: Status and result or error message.
+    """
     try:
-        plt.figure(figsize=(6, 4))
-        if chart_type == "bar":
-            plt.bar(categories, data)
-        elif chart_type == "pie":
-            plt.pie(data, labels=categories, autopct='%1.1f%%')
-        elif chart_type == "line":
-            plt.plot(categories, data)
-        else:
-            return {"status": "failure", "error": f"Unsupported chart type: {chart_type}"}
-        plt.title("Chart")
-        chart_path = f"chart_{int(time.time())}.png"
-        plt.savefig(chart_path)
-        plt.close()
-        
-        drive_service = authenticate_drive()
-        file_metadata = {'name': os.path.basename(chart_path)}
-        media = MediaFileUpload(chart_path, mimetype='image/png')
-        uploaded_file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        file_id = uploaded_file.get('id')
-        permission = {'type': 'anyone', 'role': 'reader'}
-        drive_service.permissions().create(fileId=file_id, body=permission).execute()
-        image_url = f"https://drive.google.com/uc?id={file_id}"
-        os.remove(chart_path)  # Clean up local file
-        return {"status": "success", "result": image_url}
+        # Generate chart bytes
+        image_bytes = generate_chart_bytes(chart_type, categories, data)
+        file_name = f'chart_{chart_type}_{int(time.time())}.png'
+        mimetype = 'image/png'
+
+        # Add chart to slide
+        return add_image_to_slide_from_bytes(
+            service, drive_service, presentation_id, slide_id, image_bytes, file_name, mimetype
+        )
     except Exception as e:
         return {"status": "failure", "error": str(e)}
     
@@ -303,7 +349,6 @@ async def create_google_presentation(outline: Dict[str, Any]) -> Dict[str, Any]:
     print("Starting create_google_presentation function")
     print(f"Topic: {outline.get('topic')}, Username: {outline.get('username')}")
     try:
-
         print("OUTLINE: ", outline)
         service = authenticate_slides()
         drive_service = authenticate_drive()
@@ -403,7 +448,6 @@ async def create_google_presentation(outline: Dict[str, Any]) -> Dict[str, Any]:
             print("New subtitle textbox created and updated.")
         print("Title slide updated.")
 
-
         # Add slides with content, images, and charts
         print("Adding slides from outline...")
         for slide in outline["slides"]:
@@ -447,20 +491,29 @@ async def create_google_presentation(outline: Dict[str, Any]) -> Dict[str, Any]:
             if "chart" in slide:
                 chart = slide["chart"]
                 print(f"Adding chart to slide: {chart}")
-                chart_result = await generate_chart_image(chart["type"], chart["categories"], chart["data"])
+                chart_result = await add_chart_to_slide(
+                    service, 
+                    drive_service, 
+                    presentation_id, 
+                    slide_id, 
+                    chart["type"], 
+                    chart["categories"], 
+                    chart["data"]
+                )
                 if chart_result["status"] == "success":
-                    chart_image_url = chart_result["result"]
-                    print(f"Chart image generated successfully. URL: {chart_image_url}. Uploading chart...")
-                    await upload_image_to_slide(service, drive_service, presentation_id, slide_id, chart_image_url)
-                    print("Chart uploaded to slide.")
+                    print("Chart added to slide successfully.")
                 else:
-                    print(f"Failed to generate chart image. Error: {chart_result.get('error')}")
-        print("All slides added successfully.")
+                    print(f"Failed to add chart to slide. Error: {chart_result.get('error')}")
 
+        print("All slides added successfully.")
         print("Presentation creation successful.")
         return {
             "status": "success",
-            "result": {"response": "Presentation created successfully", "presentationUrl": presentation_url, "presentation_id": presentation_id}
+            "result": {
+                "response": "Presentation created successfully",
+                "presentationUrl": presentation_url,
+                "presentation_id": presentation_id
+            }
         }
     except Exception as e:
         error_message = str(e)
