@@ -229,6 +229,7 @@ results
 checkpoints
 chroma_db
 uploads
+outputs
 
 # Custom files
 .env*
@@ -243,3 +244,4 @@ tasks.json
 memory_operations.json
 ruff_cache
 .db
+.wav

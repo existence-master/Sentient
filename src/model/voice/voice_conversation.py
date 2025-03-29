@@ -1,3 +1,4 @@
+# voice_conversation.py
 import pyaudio
 import webrtcvad
 import numpy as np
@@ -5,10 +6,10 @@ import torch
 import requests
 import json
 import time
-from csm.generator import load_csm_1b
 from faster_whisper import WhisperModel
 from queue import Queue
 from threading import Thread, Lock
+from orpheus_tts import generate_audio_from_text, SAMPLE_RATE, DEFAULT_VOICE
 
 # Constants
 APP_SERVER_URL = "http://localhost:5000/chat"
@@ -30,7 +31,7 @@ print("Script started, initializing constants...", flush=True)
 
 # Initialize VAD
 print("Initializing VAD...", flush=True)
-vad = webrtcvad.Vad(3)  # Sensitivity level 3 (most sensitive), adjust if needed
+vad = webrtcvad.Vad(3)  # Sensitivity level 3 (most sensitive)
 
 # Load Whisper model
 print("Loading Whisper model...", flush=True)
@@ -41,15 +42,6 @@ try:
     print("Whisper model loaded successfully.", flush=True)
 except Exception as e:
     print(f"Error loading Whisper model: {e}", flush=True)
-    raise
-
-# Load CSM model
-print("Loading CSM model...", flush=True)
-try:
-    generator = load_csm_1b(device="cuda")
-    print("CSM model loaded successfully.", flush=True)
-except Exception as e:
-    print(f"Error loading CSM model: {e}", flush=True)
     raise
 
 # Shared variables
@@ -65,7 +57,6 @@ def get_new_text(prev_text, new_text):
         return new_text
     prev_words = prev_text.split()
     new_words = new_text.split()
-    # Find the point where new_text diverges from prev_text
     common_length = 0
     for i in range(min(len(prev_words), len(new_words))):
         if prev_words[i] != new_words[i]:
@@ -76,7 +67,7 @@ def get_new_text(prev_text, new_text):
 
 def recording_thread():
     """Continuously record audio and detect when the user stops speaking."""
-    global full_transcription  # Declare global at the start
+    global full_transcription
     p = pyaudio.PyAudio()
     stream = p.open(format=FORMAT,
                     channels=CHANNELS,
@@ -92,18 +83,16 @@ def recording_thread():
             audio_buffer.append(data)
             if len(audio_buffer) > BUFFER_CHUNKS:
                 audio_buffer.pop(0)
-        # VAD check
         if vad.is_speech(data, RATE):
             is_speaking = True
             silence_counter = 0
         elif is_speaking:
             silence_counter += 1
             if silence_counter >= SILENCE_CHUNKS:
-                # User has stopped speaking
                 with transcription_lock:
                     if full_transcription.strip():
                         stop_speaking_queue.put(full_transcription.strip())
-                    full_transcription = ""  # Reset after sending
+                    full_transcription = ""
                 is_speaking = False
                 silence_counter = 0
                 with buffer_lock:
@@ -111,7 +100,7 @@ def recording_thread():
 
 def transcription_thread():
     """Transcribe audio buffer periodically and accumulate transcription."""
-    global full_transcription  # Declare global at the start
+    global full_transcription
     prev_transcription = ""
     while True:
         time.sleep(TRANSCRIBE_INTERVAL)
@@ -153,37 +142,26 @@ def get_ai_response(text):
                 full_response += data["token"]
     return full_response
 
-def synthesize_speech(text):
-    """Synthesize speech from text using the CSM model."""
-    audio = generator.generate(
-        text=text,
-        speaker=0,
-        context=[],
-        max_audio_length_ms=10_000,
-    )
-    return audio
-
-def play_audio(audio, sample_rate):
-    """Play the synthesized audio."""
+def play_audio(audio_generator, sample_rate):
+    """Play audio chunks from a generator."""
     p = pyaudio.PyAudio()
     stream = p.open(format=pyaudio.paFloat32,
                     channels=1,
                     rate=sample_rate,
                     output=True)
-    audio_np = audio.cpu().numpy().astype(np.float32)
-    stream.write(audio_np.tobytes())
+    for audio_chunk in audio_generator:
+        audio_np = audio_chunk.squeeze().cpu().numpy().astype(np.float32)
+        stream.write(audio_np.tobytes())
     stream.stop_stream()
     stream.close()
     p.terminate()
 
 def main():
     """Main function to coordinate threads and handle AI responses."""
-    # Start recording thread
     rec_thread = Thread(target=recording_thread)
     rec_thread.daemon = True
     rec_thread.start()
 
-    # Start transcription thread
     trans_thread = Thread(target=transcription_thread)
     trans_thread.daemon = True
     trans_thread.start()
@@ -196,9 +174,9 @@ def main():
             response_text = get_ai_response(text)
             print(f"AI says: {response_text}", flush=True)
             print("Generating speech...", flush=True)
-            audio_output = synthesize_speech(response_text)
+            audio_generator = generate_audio_from_text(response_text, voice=DEFAULT_VOICE)
             print("Speaking...", flush=True)
-            play_audio(audio_output, generator.sample_rate)
+            play_audio(audio_generator, SAMPLE_RATE)
             print("Listening again...", flush=True)
 
 if __name__ == "__main__":
