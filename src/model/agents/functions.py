@@ -1795,251 +1795,170 @@ async def search_and_download_file_from_gdrive(
         return {"status": "failure", "error": str(e)}
 
 
-async def create_spreadsheet(service, title: str = "New Spreadsheet") -> Dict[str, Any]:
-    """
-    Create a new Google Spreadsheet.
+import asyncio
+import logging
+from typing import Dict, Any, List
 
-    Args:
-        service: Authenticated Google Sheets API service.
-        title (str): Title of the new spreadsheet (default is "New Spreadsheet").
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-    Returns:
-        Dict[str, Any]: Status dictionary indicating success or failure and spreadsheet details.
-                         On success, returns:
-                         {
-                             "status": "success",
-                             "result": {
-                                 "response": "Spreadsheet created successfully",
-                                 "spreadsheet_url": str # URL to the created Google Spreadsheet
-                             }
-                         }
-                         On failure, returns:
-                         {"status": "failure", "error": str(error)}
-    """
-    try:
+# Assuming these are defined elsewhere
+async def create_spreadsheet(service, title: str) -> Dict[str, Any]:
+    def sync_create():
         spreadsheet = {"properties": {"title": title}}
-        request = service.spreadsheets().create(body=spreadsheet)
-        response = request.execute()
-        return {
-            "status": "success",
-            "result": {
-                "response": "Spreadsheet created successfully",
-                "spreadsheet_url": response["spreadsheetUrl"],
-            },
-        }
-    except HttpError as error:
-        print(f"Error creating spreadsheet: {error}")
-        return {"status": "failure", "error": str(error)}
+        return service.spreadsheets().create(body=spreadsheet).execute()
+    return await asyncio.to_thread(sync_create)
 
+async def get_spreadsheet(service, spreadsheet_id: str) -> Dict[str, Any]:
+    def sync_get():
+        return service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    return await asyncio.to_thread(sync_get)
 
-async def store_data_in_spreadsheet(
-    service, spreadsheet_id: str, data: List[List[Any]], range_: str = "Sheet1!A1"
-) -> Dict[str, Any]:
-    """
-    Store data in a Google Spreadsheet, overwriting data in the specified range.
+async def rename_sheet(service, spreadsheet_id: str, sheet_id: int, sheet_title: str) -> None:
+    def sync_rename():
+        requests = [{
+            "updateSheetProperties": {
+                "properties": {"sheetId": sheet_id, "title": sheet_title},
+                "fields": "title"
+            }
+        }]
+        return service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests}).execute()
+    await asyncio.to_thread(sync_rename)
 
-    Args:
-        service: Authenticated Google Sheets API service.
-        spreadsheet_id (str): ID of the spreadsheet to store data in.
-        data (List[List[Any]]): 2D list of data to store in the spreadsheet. Each inner list is a row.
-        range_ (str): The range in A1 notation to write data to (default is 'Sheet1!A1').
+async def add_sheet(service, spreadsheet_id: str, sheet_title: str) -> None:
+    def sync_add():
+        requests = [{"addSheet": {"properties": {"title": sheet_title}}}]
+        return service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests}).execute()
+    await asyncio.to_thread(sync_add)
 
-    Returns:
-        Dict[str, Any]: Status dictionary indicating success or failure and update details.
-                         On success, returns:
-                         {
-                             "status": "success",
-                             "result": {
-                                 "response": "Data stored in spreadsheet",
-                                 "updated_cells": int # Number of cells updated
-                             }
-                         }
-                         On failure, returns:
-                         {"status": "failure", "error": str(error)}
-    """
-    try:
-        if not all(isinstance(row, list) for row in data):
-            raise ValueError("Data must be a list of lists.")
-
-        body = {"values": data}
-        print(f"Storing data in spreadsheet: {body}")
-        result = (
-            service.spreadsheets()
-            .values()
-            .update(
-                spreadsheetId=spreadsheet_id,
-                range=range_,
-                valueInputOption="RAW",
-                body=body,
-            )
-            .execute()
-        )
-
-        return {
-            "status": "success",
-            "result": {
-                "response": "Data stored in spreadsheet",
-                "updated_cells": result.get("updatedCells"),
-            },
-        }
-    except HttpError as error:
-        print(f"Error storing data in spreadsheet: {error}")
-        return {"status": "failure", "error": str(error)}
-
-
-async def append_data_to_spreadsheet(
-    service, spreadsheet_id: str, data: List[Any], range_: str = "Sheet1!A1"
-) -> Dict[str, Any]:
-    """
-    Append data to a Google Spreadsheet, adding new rows after existing data in the specified sheet.
-
-    Args:
-        service: Authenticated Google Sheets API service.
-        spreadsheet_id (str): ID of the spreadsheet to append data to.
-        data (List[Any]): List of data to append as a new row.
-        range_ (str): The range in A1 notation to start appending from (default is 'Sheet1!A1', but append happens after last row).
-
-    Returns:
-        Dict[str, Any]: Status dictionary indicating success or failure and append details.
-                         On success, returns:
-                         {
-                             "status": "success",
-                             "result": {
-                                 "response": "Data appended in spreadsheet",
-                                 "updated_cells": int # Number of cells updated (appended)
-                             }
-                         }
-                         On failure, returns:
-                         {"status": "failure", "error": str(error)}
-    """
-    try:
-        values = [data] if isinstance(data, list) else [[data]]
-
+async def store_data_in_spreadsheet(service, spreadsheet_id: str, values: List[List[Any]], range_name: str) -> Dict[str, Any]:
+    def sync_store():
         body = {"values": values}
-        result = (
-            service.spreadsheets()
-            .values()
-            .append(
-                spreadsheetId=spreadsheet_id,
-                range=range_,
-                valueInputOption="RAW",
-                body=body,
-            )
-            .execute()
-        )
+        result = service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=range_name,
+            valueInputOption="RAW",
+            body=body
+        ).execute()
+        return {"status": "success", "result": {"response": "Data stored", "updated_cells": result.get("updatedCells")}}
+    return await asyncio.to_thread(sync_store)
 
-        return {
-            "status": "success",
-            "result": {
-                "response": "Data appended in spreadsheet",
-                "updated_cells": result.get("updates")["updatedCells"],
-            },
-        }
-    except HttpError as error:
-        print(f"Error appending data in spreadsheet: {error}")
-        return {"status": "failure", "error": str(error)}
+async def format_headers(service, spreadsheet_id: str, sheet_title: str) -> None:
+    async def get_sheet_id():
+        spreadsheet = await get_spreadsheet(service, spreadsheet_id)
+        for sheet in spreadsheet['sheets']:
+            if sheet['properties']['title'] == sheet_title:
+                return sheet['properties']['sheetId']
+        return None
 
+    sheet_id = await get_sheet_id()
+    def sync_format():
+        requests = [{
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1},
+                "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+                "fields": "userEnteredFormat.textFormat.bold"
+            }
+        }]
+        return service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests}).execute()
+    await asyncio.to_thread(sync_format)
 
-async def read_data_from_spreadsheet(
-    service, spreadsheet_id: str, range_: str = "Sheet1!A1"
-) -> Dict[str, Any]:
+async def apply_table_borders(service, spreadsheet_id: str, sheet_title: str, num_rows: int, num_columns: int) -> None:
+    async def get_sheet_id():
+        spreadsheet = await get_spreadsheet(service, spreadsheet_id)
+        for sheet in spreadsheet['sheets']:
+            if sheet['properties']['title'] == sheet_title:
+                return sheet['properties']['sheetId']
+        return None
+
+    sheet_id = await get_sheet_id()
+    def sync_borders():
+        border_style = {"style": "SOLID", "color": {"red": 0.0, "green": 0.0, "blue": 0.0}}
+        requests = [{
+            "updateBorders": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": num_rows,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": num_columns
+                },
+                "top": border_style,
+                "bottom": border_style,
+                "left": border_style,
+                "right": border_style,
+                "innerHorizontal": border_style,
+                "innerVertical": border_style
+            }
+        }]
+        return service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests}).execute()
+    await asyncio.to_thread(sync_borders)
+
+async def create_google_sheet(title: str, sheets: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Read data from a Google Spreadsheet within the specified range.
+    Creates a Google Spreadsheet with multiple sheets, populates them with data, and applies formatting.
 
     Args:
-        service: Authenticated Google Sheets API service.
-        spreadsheet_id (str): ID of the spreadsheet to read data from.
-        range_ (str): The range in A1 notation to read data from (default is 'Sheet1!A1').
+        title (str): The title of the spreadsheet.
+        sheets (List[Dict[str, Any]]): List of sheets, each containing "title" and "table" with "headers" and "rows".
 
     Returns:
-        Dict[str, Any]: Status dictionary indicating success or failure and retrieved data.
-                         On success, returns:
-                         {
-                             "status": "success",
-                             "result": {
-                                 "response": "Data retrieved successfully",
-                                 "values": List[List[Any]] # 2D list of values read from the spreadsheet
-                             }
-                         }
-                         On failure, returns:
-                         {"status": "failure", "error": str(error)}
-    """
-    try:
-        result = (
-            service.spreadsheets()
-            .values()
-            .get(spreadsheetId=spreadsheet_id, range=range_)
-            .execute()
-        )
-
-        values = result.get("values", [])
-        return {
-            "status": "success",
-            "result": {"response": "Data retrieved successfully", "values": values},
-        }
-    except HttpError as error:
-        print(f"Error reading data from spreadsheet: {error}")
-        return {"status": "failure", "error": str(error)}
-
-
-async def create_google_sheet(
-    data: List[List[Any]], title: str = "New Spreadsheet"
-) -> Dict[str, Any]:
-    """
-    Creates a Google Spreadsheet and populates it with the provided data.
-
-    This function creates a new spreadsheet, gets its ID and URL, and then stores the provided data
-    into the first sheet of the newly created spreadsheet.
-
-    Args:
-        data (List[List[Any]]): 2D list of data to populate the spreadsheet with.
-        title (str): Title of the new Google Spreadsheet (default is "New Spreadsheet").
-
-    Returns:
-        Dict[str, Any]: Status dictionary indicating success or failure and spreadsheet details.
-                         On success, returns:
-                         {
-                             "status": "success",
-                             "result": {
-                                 "response": "Spreadsheet creating successfully with data",
-                                 "spreadsheetUrl": str, # URL to the created spreadsheet
-                                 "spreadsheet_id": str # ID of the created spreadsheet
-                             }
-                         }
-                         On failure, returns:
-                         {"status": "failure", "error": str(error)}
+        Dict[str, Any]: {"status": "success", "result": {"response": str, "spreadsheetUrl": str, "spreadsheet_id": str}}
+                        or {"status": "failure", "error": str}
     """
     try:
         service = authenticate_sheets()
-        create_response = await create_spreadsheet(service, title=title)
+        data = {"title": title, "sheets": sheets}
 
-        if create_response["status"] == "success":
-            spreadsheet_url = create_response["result"]["spreadsheet_url"]
-            spreadsheet_id = spreadsheet_url.split("/")[-2]
+        print("Creating spreadsheet...")
+        create_response = await create_spreadsheet(service, data["title"])
+        if "spreadsheetId" not in create_response:
+            return {"status": "failure", "error": "Failed to create spreadsheet"}
+        
+        spreadsheet_id = create_response["spreadsheetId"]
+        spreadsheet_url = create_response.get("spreadsheetUrl", "N/A")
 
-            if not isinstance(data, list) or not all(
-                isinstance(row, list) for row in data
-            ):
-                raise ValueError("Data must be a list of lists (tabular format).")
+        logger.info("Getting spreadsheet metadata...")
+        spreadsheet = await get_spreadsheet(service, spreadsheet_id)
+        default_sheet_id = spreadsheet['sheets'][0]['properties']['sheetId']
 
-            store_response = await store_data_in_spreadsheet(
-                service, spreadsheet_id, data
-            )
-            if store_response["status"] == "success":
-                return {
-                    "status": "success",
-                    "result": {
-                        "response": "Spreadsheet creating successfully with data",
-                        "spreadsheetUrl": spreadsheet_url,
-                        "spreadsheet_id": spreadsheet_id,
-                    },
-                }
+        for i, sheet in enumerate(data["sheets"]):
+            sheet_title = sheet["title"]
+            table = sheet["table"]
+            headers = table["headers"]
+            rows = table["rows"]
+            values = [headers] + rows
+            num_rows = len(rows) + 1
+            num_columns = len(headers)
+
+            if i == 0:
+                logger.info(f"Renaming default sheet to {sheet_title}...")
+                await rename_sheet(service, spreadsheet_id, default_sheet_id, sheet_title)
             else:
-                return {"status": "failure", "error": store_response.get("error")}
-        else:
-            return {"status": "failure", "error": create_response.get("error")}
+                logger.info(f"Adding sheet {sheet_title}...")
+                await add_sheet(service, spreadsheet_id, sheet_title)
+
+            range_name = f"'{sheet_title}'!A1"
+            logger.info(f"Writing data to {sheet_title}...")
+            store_response = await store_data_in_spreadsheet(service, spreadsheet_id, values, range_name)
+            if store_response["status"] != "success":
+                return store_response
+
+            logger.info(f"Formatting headers in {sheet_title}...")
+            await format_headers(service, spreadsheet_id, sheet_title)
+            logger.info(f"Applying borders in {sheet_title}...")
+            await apply_table_borders(service, spreadsheet_id, sheet_title, num_rows, num_columns)
+
+        return {
+            "status": "success",
+            "result": {
+                "response": "Spreadsheet created successfully with data",
+                "spreadsheetUrl": spreadsheet_url,
+                "spreadsheet_id": spreadsheet_id
+            }
+        }
     except Exception as e:
-        print(f"Error in create_google_sheet: {str(e)}")
+        logger.error(f"Error in create_google_sheet: {str(e)}")
         return {"status": "failure", "error": str(e)}
 
 

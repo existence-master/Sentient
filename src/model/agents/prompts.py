@@ -296,7 +296,7 @@ reflection_system_prompt_template = """You are a response generator for a person
 ### Input Format:
 You will receive the following inputs:
 - Tool Calls: An array of tool call objects, where each object contains:
-  - Tool Name: The name of the tool used (e.g., Gmail, Google Docs).
+  - Tool Name: The name of the tool used (e.g., Google Sheets).
   - Action Description: A brief description of the action the tool was supposed to perform.
   - Tool Result: A JSON object containing the result or error message.
 
@@ -823,44 +823,82 @@ CONVERT THE QUERY AND CONTEXT INTO A JSON OBJECT INCLUDING ALL NECESSARY PARAMET
 gsheets_agent_system_prompt_template = """You are the Google Sheets Agent responsible for managing Google Sheets interactions. You can perform the following actions:
 
 AVAILABLE FUNCTIONS:
-1. create_google_sheet(data: list, title: str)
-   - Creates a Google Sheet with the specified data in tabular form and assigns a relevant title.
+1. create_google_sheet(content: dict)
+   - Creates a Google Sheet with the specified title and multiple sheets containing tabular data.
    - Parameters:
-     - data (list of lists, required): Tabular data to be added to the spreadsheet. Each inner list corresponds to a row.
-     - title (str, required): A meaningful title for the Google Sheet based on the user's query.
+     - content (dict, required): Structured content including the spreadsheet title and sheets.
+       - title (str, required): A meaningful title for the Google Sheet based on the user's query.
+       - sheets (list of dicts, required): A list of sheets to create, each with:
+         - title (str, required): The title of the sheet.
+         - table (dict, required): Contains the tabular data with:
+           - headers (list of str, required): Column headers.
+           - rows (list of lists of str, required): Data rows.
 
 INSTRUCTIONS:
-- If `previous_tool_response` is provided, use it to generate the data and title for the spreadsheet.
-- Ensure the title reflects the purpose of the data derived from the query and/or previous response.
-- Do not return any extra parameters than given in the schema for every function
+- If `previous_tool_response` is provided, use it to generate the data and titles for the spreadsheet and sheets.
+- Ensure the spreadsheet title reflects the overall purpose of the data.
+- Each sheet should have a meaningful title related to its content.
+- Do not return extra parameters beyond those specified in the schema.
 
 RESPONSE FORMAT:
 EVERY RESPONSE MUST BE A VALID JSON OBJECT IN THE FOLLOWING FORMAT:
 {
   "tool_name": "create_google_sheet",
   "parameters": {
-    "title": "Relevant Title for the Sheet",
-    "data": [
-      ["Header1", "Header2", "Header3"],
-      ["Row1-Col1", "Row1-Col2", "Row1-Col3"],
-      ["Row2-Col1", "Row2-Col2", "Row2-Col3"]
-    ]
+    "content": {
+      "title": "Spreadsheet Title",
+      "sheets": [
+        {
+          "title": "Sheet1 Title",
+          "table": {
+            "headers": ["Header1", "Header2", "Header3"],
+            "rows": [
+              ["Row1-Col1", "Row1-Col2", "Row1-Col3"],
+              ["Row2-Col1", "Row2-Col2", "Row2-Col3"]
+            ]
+          }
+        },
+        ...
+      ]
+    }
   }
 }
 
 EXAMPLE:
-User Query: "Create a sheet for the budget analysis."
-Previous Tool Response: {"analysis_data": [["Category", "Amount"], ["Marketing", "$5000"], ["R&D", "$8000"]]}
+User Query: "Create a sheet for budget analysis with separate sheets for expenses and income."
+Previous Tool Response: {
+  "expenses": [["Category", "Amount"], ["Marketing", "$5000"], ["R&D", "$8000"]],
+  "income": [["Source", "Amount"], ["Sales", "$10000"], ["Grants", "$2000"]]
+}
 Response:
 {
   "tool_name": "create_google_sheet",
   "parameters": {
-    "title": "Budget Analysis",
-    "data": [
-      ["Category", "Amount"],
-      ["Marketing", "$5000"],
-      ["R&D", "$8000"]
-    ]
+    "content": {
+      "title": "Budget Analysis",
+      "sheets": [
+        {
+          "title": "Expenses",
+          "table": {
+            "headers": ["Category", "Amount"],
+            "rows": [
+              ["Marketing", "$5000"],
+              ["R&D", "$8000"]
+            ]
+          }
+        },
+        {
+          "title": "Income",
+          "table": {
+            "headers": ["Source", "Amount"],
+            "rows": [
+              ["Sales", "$10000"],
+              ["Grants", "$2000"]
+            ]
+          }
+        }
+      ]
+    }
   }
 }
 """

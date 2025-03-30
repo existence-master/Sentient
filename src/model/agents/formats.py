@@ -238,19 +238,37 @@ gsheets_agent_required_format = {
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
-                "data": {
+                "sheets": {
                     "type": "array",
-                    "items": {"type": "array", "items": {"type": "string"}},
-                },
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "table": {
+                                "type": "object",
+                                "properties": {
+                                    "headers": {"type": "array", "items": {"type": "string"}},
+                                    "rows": {
+                                        "type": "array",
+                                        "items": {"type": "array", "items": {"type": "string"}}
+                                    }
+                                },
+                                "required": ["headers", "rows"],
+                                "additionalProperties": False
+                            }
+                        },
+                        "required": ["title", "table"],
+                        "additionalProperties": False
+                    }
+                }
             },
-            "required": ["title", "data"],
-            "additionalProperties": False,
-        },
+            "required": ["title", "sheets"],
+            "additionalProperties": False
+        }
     },
     "required": ["tool_name", "parameters"],
-    "additionalProperties": False,
+    "additionalProperties": False
 }
-
 gslides_agent_required_format = {
     "type": "object",
     "properties": {
