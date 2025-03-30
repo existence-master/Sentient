@@ -1,4 +1,4 @@
-numpy
+numpy==1.26.4
 neo4j
 pandas
 python-dotenv
@@ -34,8 +34,6 @@ ruff
 transformers
 optimum
 accelerate
-pyaudio
-webrtcvad
 # install torch with CUDA support for CSM - check csm/requirements.txt
 # install torchaudio with CUDA support for CSM - check csm/requirements.txt
 # triton-windows==3.0.0 - install from the wheel file
@@ -45,3 +43,7 @@ aiofiles
 spacy
 SpeechRecognition
 faster-whisper
+snac
+# pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/<cuda-version>
+fastrtc
+librosa

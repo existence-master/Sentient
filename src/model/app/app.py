@@ -7,13 +7,15 @@ import asyncio
 import pickle
 import multiprocessing
 import requests
-from datetime import datetime, timezone, timedelta
-from tzlocal import get_localzone
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
+from datetime import datetime, timezone # Keep timezone explicit
+from tzlocal import get_localzone # Keep if needed elsewhere, but use explicit UTC for DB timestamps
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from contextlib import asynccontextmanager
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse # Added HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles # Added StaticFiles
 from pydantic import BaseModel
-from typing import Optional, Any, Dict, List, AsyncGenerator
+from typing import Optional, Any, Dict, List, AsyncGenerator, Union # Added Union
 from neo4j import GraphDatabase
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -21,7 +23,10 @@ from google.auth.transport.requests import Request
 from dotenv import load_dotenv
 import nest_asyncio
 import uvicorn
-from fastapi import WebSocket, WebSocketDisconnect
+import numpy as np
+import librosa # Ensure 'librosa' is in requirements.txt
+import gradio as gr # Still needed for FastRTC internals
+from fastrtc import Stream, ReplyOnPause, AlgoOptions, SileroVadOptions
 
 # Import specific functions, runnables, and helpers from respective folders
 from model.agents.runnables import *
@@ -57,6 +62,16 @@ from model.chat.runnables import *
 from model.chat.prompts import *
 from model.chat.functions import *
 
+# Import new/refactored voice modules
+from model.voice.stt import transcribe_audio, whisper_model
+from model.voice.orpheus_tts import (
+    generate_audio_from_text_async,
+    load_models as load_voice_models,
+    DEFAULT_VOICE,
+    SAMPLE_RATE as TTS_SAMPLE_RATE,
+    snac_model,
+    llm as orpheus_llm
+)
 
 # Load environment variables from .env file
 load_dotenv("model/.env")
@@ -65,7 +80,6 @@ load_dotenv("model/.env")
 nest_asyncio.apply()
 
 # --- Global Initializations ---
-# Perform all initializations before defining endpoints, replacing the /initiate endpoints
 
 # Initialize embedding model for memory-related operations
 embed_model = HuggingFaceEmbedding(model_name=os.environ["EMBEDDING_MODEL_REPO_ID"])
@@ -75,8 +89,6 @@ graph_driver = GraphDatabase.driver(
     uri=os.environ["NEO4J_URI"],
     auth=(os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"])
 )
-
-manager = WebSocketManager()
 
 # Initialize runnables from agents
 reflection_runnable = get_reflection_runnable()
@@ -253,27 +265,47 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
         else:
             return []
 
+# WebSocket Manager
 class WebSocketManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
+        self.client_ids: Dict[WebSocket, str] = {} # Optional: Track clients if needed
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, client_id: str = "anon"):
         await websocket.accept()
         self.active_connections.append(websocket)
+        self.client_ids[websocket] = client_id
+        print(f"WebSocket client connected: {client_id} ({len(self.active_connections)} total)")
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        client_id = self.client_ids.pop(websocket, "unknown")
+        if websocket in self.active_connections:
+             self.active_connections.remove(websocket)
+        print(f"WebSocket client disconnected: {client_id} ({len(self.active_connections)} total)")
 
     async def send_personal_message(self, message: str, websocket: WebSocket):
-        await websocket.send_text(message)
+        try:
+             await websocket.send_text(message)
+        except Exception as e:
+             print(f"Error sending personal message: {e}")
+             self.disconnect(websocket)
 
     async def broadcast(self, message: str):
-        for connection in self.active_connections:
+        # Create a list of connections to iterate over, as disconnect modifies the list
+        connections_to_send = list(self.active_connections)
+        for connection in connections_to_send:
             try:
                 await connection.send_text(message)
             except Exception as e:
-                print(f"Error broadcasting message to connection: {e}")
-                self.disconnect(connection) # Remove broken connection
+                client_id = self.client_ids.get(connection, "unknown")
+                print(f"Error broadcasting to {client_id}, disconnecting: {e}")
+                # Disconnect broken connections
+                self.disconnect(connection)
+
+    async def broadcast_json(self, data: dict):
+        await self.broadcast(json.dumps(data))
+
+manager = WebSocketManager()
 
 async def cleanup_tasks_periodically():
     """Periodically clean up old completed tasks."""
@@ -510,18 +542,52 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-@app.on_event("startup")
-async def startup_event():
+# --- Startup/Shutdown Events ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Code to run on startup
+    print("--- Server Starting ---")
+    # Load tasks and memory operations
     await task_queue.load_tasks()
     await memory_backend.memory_queue.load_operations()
-    asyncio.create_task(process_queue())
-    asyncio.create_task(process_memory_operations())
-    asyncio.create_task(cleanup_tasks_periodically())
+    # Start background processors
+    app.state.task_processor = asyncio.create_task(process_queue())
+    app.state.memory_processor = asyncio.create_task(process_memory_operations())
+    app.state.cleanup_processor = asyncio.create_task(cleanup_tasks_periodically())
+    # Load Voice Models
+    print("Loading Voice Models...")
+    load_voice_models()
+    if whisper_model is None: print("WARNING: Whisper STT model failed to load.")
+    if snac_model is None: print("WARNING: SNAC TTS model failed to load.")
+    if orpheus_llm is None: print("WARNING: Orpheus TTS LLM failed to load.")
+    print("Voice Models loading process finished.")
+    print("--- Server Ready ---")
 
-@app.on_event("shutdown")
-async def shutdown_event():
+    yield # Server runs here
+
+    # Code to run on shutdown
+    print("--- Server Shutting Down ---")
+    # Gracefully shutdown background tasks (optional, depends on task nature)
+    if hasattr(app.state, 'task_processor') and not app.state.task_processor.done():
+        app.state.task_processor.cancel()
+        try: await app.state.task_processor
+        except asyncio.CancelledError: print("Task processor cancelled.")
+    if hasattr(app.state, 'memory_processor') and not app.state.memory_processor.done():
+        app.state.memory_processor.cancel()
+        try: await app.state.memory_processor
+        except asyncio.CancelledError: print("Memory processor cancelled.")
+    if hasattr(app.state, 'cleanup_processor') and not app.state.cleanup_processor.done():
+        app.state.cleanup_processor.cancel()
+        try: await app.state.cleanup_processor
+        except asyncio.CancelledError: print("Cleanup processor cancelled.")
+
+    # Save pending tasks and memory operations
     await task_queue.save_tasks()
     await memory_backend.memory_queue.save_operations()
+    # Close Neo4j driver
+    if graph_driver:
+        await asyncio.to_thread(graph_driver.close) # Use to_thread if close is blocking
+    print("--- Server Shutdown Complete ---")
 
 # --- Pydantic Models ---
 class Message(BaseModel):
@@ -641,17 +707,27 @@ async def get_history():
     messages = await get_chat_history_messages()
     return JSONResponse(status_code=200, content={"messages": messages})
 
+# Clear Chat History
 @app.post("/clear-chat-history", status_code=200)
 async def clear_chat_history():
     """Clear all chat history by resetting to the initial database structure."""
     async with db_lock:
+        # Reset DB
         chatsDb = initial_db.copy()
         await save_db(chatsDb)
-        
-    chat_runnable.clear_history()
-    agent_runnable.clear_history()
-    unified_classification_runnable.clear_history()
-    
+
+    # Clear in-memory history representations if necessary
+    # This depends on how your runnables manage history.
+    # If they read from DB on each request, this might be enough.
+    # If they hold state, you need to clear them.
+    try:
+         # Re-initialize chat_history object if it holds state
+         global chat_history
+         chat_history = get_chat_history() # Re-create based on now empty DB (or initial state)
+         print("In-memory history states cleared/reset.")
+    except Exception as e:
+         print(f"Warning: Error clearing in-memory history state: {e}")
+
     return JSONResponse(status_code=200, content={"message": "Chat history cleared"})
 
 @app.post("/chat", status_code=200)
@@ -871,6 +947,296 @@ async def chat(message: Message):
     except Exception as e:
         print(f"Error in chat: {str(e)}")
         return JSONResponse(status_code=500, content={"message": str(e)})
+    
+# --- Voice Chat Logic ---
+
+async def process_user_speech(user_text: str, username: str, user_profile: dict, chat_id: str) -> str:
+    """
+    Handles the core LLM interaction for voice chat, replicating /chat logic.
+    Returns the AI's text response.
+    """
+    global unified_classification_runnable, memory_backend, internet_query_reframe_runnable
+    global internet_summary_runnable, chat_runnable, db_lock
+
+    print(f"[Voice] Processing text for chat {chat_id}: '{user_text[:60]}...'")
+    personality = user_profile.get("userData", {}).get("personality", None)
+    # TODO: Get pricing/credits relevant to the user for feature checks
+    pricing_plan = "pro" # Placeholder - fetch actual plan
+    credits = 100      # Placeholder - fetch actual credits
+
+    # 1. Classification (Optional but recommended)
+    try:
+        # Ensure runnable uses appropriate history (based on chat_id if stateful)
+        unified_output = await asyncio.to_thread( # If sync
+            unified_classification_runnable.invoke, {"query": user_text}
+        )
+        category = unified_output.get("category", "chat") # Default to chat
+        use_personal_context = unified_output.get("use_personal_context", False)
+        internet = unified_output.get("internet", "None")
+        transformed_input = unified_output.get("transformed_input", user_text)
+        print(f"[Voice] Classified as: {category}, PersonalCtx: {use_personal_context}, Internet: {internet}")
+    except Exception as class_err:
+        print(f"[Voice] Error during classification: {class_err}")
+        # Fallback to basic chat processing
+        category = "chat"
+        use_personal_context = False
+        internet = "None"
+        transformed_input = user_text
+
+    # 2. Context Retrieval
+    user_context = None
+    internet_context = None
+    note = "" # To potentially add info about skipped features
+
+    # Memory / Personal Context
+    if category == "memory" or use_personal_context:
+        print("[Voice] Retrieving memory context...")
+        memory_used = True # Flag for DB saving potentially
+        try:
+            user_context = await asyncio.to_thread( # Assuming retrieve is sync
+                memory_backend.retrieve_memory, username, transformed_input
+            )
+            # Queue memory update in background if category is 'memory' (pro feature?)
+            if category == "memory":
+                if pricing_plan == "free" and credits <= 0:
+                    note += " (Note: Memory update skipped - credits)"
+                else:
+                    print(f"[Voice] Queueing memory update for {username}")
+                    asyncio.create_task(memory_backend.add_operation(username, transformed_input))
+                    # pro_used = True # Mark pro usage if needed
+        except Exception as mem_err:
+            print(f"[Voice] Error retrieving/updating memory: {mem_err}")
+            note += " (Note: Memory retrieval failed)"
+
+
+    # Internet Context
+    if internet == "Internet":
+        print("[Voice] Retrieving internet context...")
+        internet_used = True # Flag for DB saving potentially
+        if pricing_plan == "free" and credits <= 0:
+            note += " (Note: Internet search skipped - credits)"
+        else:
+            try:
+                reframed_query = await asyncio.to_thread( # Assuming sync
+                    get_reframed_internet_query, internet_query_reframe_runnable, transformed_input
+                )
+                search_results = await asyncio.to_thread(get_search_results, reframed_query) # Assuming sync
+                internet_context = await asyncio.to_thread( # Assuming sync
+                    get_search_summary, internet_summary_runnable, search_results
+                )
+                # pro_used = True # Mark pro usage
+            except Exception as net_err:
+                print(f"[Voice] Error retrieving internet context: {net_err}")
+                note += " (Note: Internet search failed)"
+
+
+    # 3. Core LLM Invocation (Using chat_runnable)
+    response_text = "Sorry, I couldn't think of a response." # Default error
+    try:
+        # Ensure chat_runnable uses appropriate history for chat_id
+        print(f"[Voice] Invoking chat runnable for: '{transformed_input[:50]}...'")
+        stream_input = {
+            "query": transformed_input,
+            "user_context": user_context,
+            "internet_context": internet_context,
+            "name": username,
+            "personality": personality
+        }
+        # Invoke directly (no streaming needed here, just get the full text)
+        # Run in thread if invoke is blocking
+        response_obj = await asyncio.to_thread(chat_runnable.invoke, stream_input)
+
+        # Extract text - adjust based on your runnable's output
+        if isinstance(response_obj, dict):
+             response_text = response_obj.get("output", response_obj.get("result", str(response_obj)))
+        elif isinstance(response_obj, str):
+             response_text = response_obj
+        else:
+             response_text = str(response_obj)
+
+        print(f"[Voice] LLM Response: '{response_text[:100]}...'")
+
+        # Add note if features were skipped
+        if note:
+            response_text += "\n" + note.strip()
+
+    except Exception as llm_err:
+        print(f"[Voice] Error invoking chat runnable: {llm_err}")
+        response_text = "Sorry, I had trouble generating a response." + note # Include note even on error
+
+
+    # 4. Save AI Response to DB (before returning)
+    ai_msg_id = f"assistant-voice-{int(time.time() * 1000)}"
+    ai_msg = {
+        "id": ai_msg_id,
+        "message": response_text,
+        "isUser": False,
+        "memoryUsed": memory_used if 'memory_used' in locals() else False, # Pass flags if needed
+        "agentsUsed": False, # Agents not used in this flow
+        "internetUsed": internet_used if 'internet_used' in locals() else False,
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "type": "assistant",
+        "mode": "voice" # Differentiator
+    }
+    async with db_lock:
+        try:
+            local_chatsDb = await load_db()
+            chat_to_update = next((c for c in local_chatsDb.get("chats", []) if c.get("id") == chat_id), None)
+            if chat_to_update:
+                if "messages" not in chat_to_update: chat_to_update["messages"] = []
+                chat_to_update["messages"].append(ai_msg)
+                await save_db(local_chatsDb)
+                print(f"[Voice] Saved AI response to DB for chat {chat_id}")
+            else:
+                 print(f"[Voice] Error: Chat {chat_id} not found for saving AI response.")
+        except Exception as db_save_err:
+             print(f"[Voice] Error saving AI voice response to DB: {db_save_err}")
+
+    return response_text
+
+
+# FastRTC Voice Handler
+async def voice_handler(audio: tuple[int, np.ndarray]):
+    """
+    Async generator for FastRTC ReplyOnPause. Handles STT, calls chat logic, generates TTS.
+    Yields audio chunks (sr, np.ndarray) and broadcasts state via WebSocket.
+    """
+    sample_rate, audio_array = audio
+    global manager # Access the global WebSocket manager
+
+    if audio_array is None or audio_array.size == 0:
+        print("[Voice] Received empty audio array.")
+        # Optionally broadcast listening state again if needed
+        # await manager.broadcast_json({"type": "voice_state", "state": "listening"})
+        yield None # Yield None for audio as per ReplyOnPause when not speaking
+        return
+
+    async with db_lock:
+            chatsDb = await load_db()
+            active_chat_id = chatsDb["active_chat_id"]
+            if active_chat_id is None:
+                raise HTTPException(status_code=400, detail="No active chat found. Please load the chat page first.")
+
+            active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == active_chat_id), None)
+            if active_chat is None:
+                raise HTTPException(status_code=400, detail="Active chat not found.")
+
+    try:
+        # 1. Broadcast state: Thinking
+        await manager.broadcast_json({"type": "voice_state", "state": "thinking"})
+        yield None # Yield None for audio while thinking
+
+        # 2. Transcribe Audio
+        user_text = await transcribe_audio(audio_array, sample_rate)
+        print(f"[Voice] Transcribed ({active_chat_id}): '{user_text}'")
+
+        if not user_text or not user_text.strip():
+            print("[Voice] Empty transcription, back to listening.")
+            await manager.broadcast_json({"type": "voice_state", "state": "listening"})
+            yield None
+            return
+
+        # 3. Save User Utterance to DB
+        user_profile = load_user_profile() # Load profile to get username etc.
+        username = user_profile.get("userData", {}).get("personalInfo", {}).get("name", "User")
+
+        user_msg_id = f"user-voice-{int(time.time() * 1000)}"
+        user_voice_msg = {
+            "id": user_msg_id,
+            "message": user_text,
+            "isUser": True,
+            "isVisible": True, # Show transcribed user speech in chat? Or False? Let's make it True.
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "type": "user",
+            "mode": "voice" # Differentiator
+        }
+        async with db_lock:
+            try:
+                local_chatsDb = await load_db()
+                # Find/Create chat
+                chat_to_update = next((c for c in local_chatsDb.get("chats", []) if c.get("id") == active_chat_id), None)
+                if not chat_to_update: # Create if doesn't exist
+                     chat_to_update = {"id": active_chat_id, "messages": []}
+                     local_chatsDb["chats"].append(chat_to_update)
+                     local_chatsDb["active_chat_id"] = active_chat_id # Set as active? Risky if text chat is active.
+                if "messages" not in chat_to_update: chat_to_update["messages"] = []
+                chat_to_update["messages"].append(user_voice_msg)
+                await save_db(local_chatsDb)
+                print(f"[Voice] Saved user utterance to DB for chat {active_chat_id}")
+            except Exception as db_err:
+                 print(f"[Voice] Error saving user voice utterance to DB: {db_err}")
+
+
+        # 4. Get AI Response Text (using replicated logic)
+        response_text = await process_user_speech(user_text, username, user_profile, active_chat_id)
+
+
+        # 5. Broadcast state: Speaking
+        await manager.broadcast_json({"type": "voice_state", "state": "speaking"})
+        yield None # Yield None while broadcasting state before audio starts
+
+        # 6. Generate TTS and yield audio chunks
+        tts_start_time = time.time()
+        chunk_count = 0
+        async for tts_sr, tts_chunk_np in generate_audio_from_text_async(response_text, voice=DEFAULT_VOICE):
+            # FastRTC expects (sample_rate, numpy_array)
+            yield (int(tts_sr), tts_chunk_np)
+            chunk_count += 1
+            # await asyncio.sleep(0.001) # Small sleep might help prevent buffer issues on client?
+
+        print(f"[Voice] TTS generation finished: {chunk_count} chunks in {time.time() - tts_start_time:.2f}s")
+
+        # 7. Broadcast state: Listening (after TTS finishes)
+        await manager.broadcast_json({"type": "voice_state", "state": "listening"})
+        yield None # Ensure final yield is None after speaking
+
+    except Exception as e:
+        print(f"[Voice] Error in voice_handler: {e}")
+        import traceback
+        traceback.print_exc()
+        # Try to broadcast error state and yield an error message
+        try:
+            await manager.broadcast_json({"type": "voice_state", "state": "error"}) # Custom state for error
+            yield None
+            error_message = "Sorry, something went wrong processing your request."
+            # Yield TTS for the error message
+            async for sr, chunk in generate_audio_from_text_async(error_message, voice=DEFAULT_VOICE):
+                yield (int(sr), chunk)
+            # Go back to listening after error msg
+            await manager.broadcast_json({"type": "voice_state", "state": "listening"})
+            yield None
+        except Exception as e2:
+            print(f"[Voice] Error generating/sending error TTS: {e2}")
+            # Fallback to listening state if error handling fails
+            await manager.broadcast_json({"type": "voice_state", "state": "listening"})
+            yield None
+
+
+# Create FastRTC Stream Instance
+voice_stream = Stream(
+    # Pass the handler function directly as the first argument to ReplyOnPause
+    handler=ReplyOnPause(
+        voice_handler, # <--- Pass the async generator function directly
+        can_interrupt=True,
+        algo_options=AlgoOptions(
+            audio_chunk_duration=0.6,
+            started_talking_threshold=0.25,
+            speech_threshold=0.2
+        ),
+        model_options=SileroVadOptions(
+            threshold=0.5,
+            min_speech_duration_ms=200,
+            min_silence_duration_ms=500
+        )
+        # startup_fn=your_startup_function, # Optional: Add if you want a welcome message
+    ),
+    # Pass modality and mode as keyword arguments to Stream constructor
+    modality="audio",         # <--- Correct argument
+    mode="send-receive"      # <--- Correct argument
+)
+
+# Mount the FastRTC stream (handles /voice/offer etc.)
+voice_stream.mount(app, path="/voice")
 
 ## Agents Endpoints
 @app.post("/elaborator", status_code=200)
@@ -1870,17 +2236,27 @@ async def get_db_data() -> Dict[str, Any]: # Request is just for consistency, no
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+    # Simple connect/disconnect, broadcasting happens from other parts of the app
+    client_id = websocket.query_params.get("clientId", "anon-" + str(int(time.time() * 1000))) # Example ID
+    await manager.connect(websocket, client_id)
     try:
         while True:
+            # Keep connection alive, receive pings or other messages if needed
             data = await websocket.receive_text()
-            # You can process messages received from the client here if needed
-            # For now, we are primarily sending messages from the server to client
-            pass # Or print(f"Client sent message: {data}")
+            # print(f"Received message on /ws from {client_id}: {data}")
+            # Handle ping or other control messages if necessary
+            try:
+                 msg = json.loads(data)
+                 if msg.get("type") == "ping":
+                     await websocket.send_text(json.dumps({"type": "pong"}))
+            except json.JSONDecodeError:
+                 pass # Ignore non-JSON messages or handle as needed
     except WebSocketDisconnect:
+        print(f"/ws client {client_id} disconnected.")
+    except Exception as e:
+        print(f"/ws error for client {client_id}: {e}")
+    finally:
         manager.disconnect(websocket)
-        # Handle disconnection if needed
-        # print("Client disconnected")
 
 STARTUP_TIME = time.time() - START_TIME
 print(f"Server startup time: {STARTUP_TIME:.2f} seconds")

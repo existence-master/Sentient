@@ -134,7 +134,7 @@ const Sidebar = ({ userDetails, setSidebarVisible, isSidebarVisible }) => {
 						className="flex items-center space-x-3"
 						onClick={toggleUserMenu}
 					>
-						<div className="rounded-full overflow-hidden w-10 h-10 shrink-0">
+						{/* <div className="rounded-full overflow-hidden w-10 h-10 shrink-0">
 							{userDetails["picture"] ? (
 								<img
 									src={userDetails["picture"]}
@@ -146,8 +146,8 @@ const Sidebar = ({ userDetails, setSidebarVisible, isSidebarVisible }) => {
 									<IconUser className="w-6 h-6 text-[#9ca3af]" />
 								</div>
 							)}
-						</div>
-						<div>
+						</div> */}
+						{/* <div>
 							<p className="text-sm text-white cursor-pointer font-medium">
 								{userDetails["given_name"]}
 							</p>
@@ -155,7 +155,7 @@ const Sidebar = ({ userDetails, setSidebarVisible, isSidebarVisible }) => {
 								Current Plan:{" "}
 								{pricing === "free" ? "Free" : "Pro"}
 							</p>
-						</div>
+						</div> */}
 					</div>
 				</div>
 			</div>
