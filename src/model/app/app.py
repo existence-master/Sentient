@@ -961,6 +961,8 @@ async def gdoc_tool(tool_call: ToolCall) -> Dict[str, Any]:
             }
         )
 
+        print(f"Tool call string: {tool_call_str}")
+
         tool_result = await parse_and_execute_tool_calls(
             tool_call_str
         )  # Parse and execute tool calls from the response

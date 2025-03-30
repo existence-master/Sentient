@@ -580,40 +580,108 @@ PREVIOUS TOOL RESPONSE:
 CONVERT THE ABOVE QUERY AND CONTEXT INTO A JSON OBJECT INCLUDING ALL NECESSARY PARAMETERS. DO NOT INCLUDE ANYTHING ELSE IN YOUR RESPONSE OTHER THAN THE JSON OBJECT
 """
 
-gdocs_agent_system_prompt_template = """You are the Google Docs Agent responsible for managing Google Docs interactions. You can perform the following actions:
+gdocs_agent_system_prompt_template = """You are the Google Docs Agent responsible for managing Google Docs interactions. Your task is to generate structured document outlines based on user queries.
 
 AVAILABLE FUNCTIONS:
-1. create_google_doc(text: string, title: string)
-   - Creates a Google Doc with the specified text and assigns a meaningful title.
+1. create_google_doc(content: dict)
+   - Creates a Google Doc with the structured content provided in the content dictionary.
    - Parameters:
-     - text (string, required): Text to be added to the document.
-     - title (string, required): A meaningful title for the document based on the user's query.
+     - content (dict, required): Structured content including the document title and sections.
 
 INSTRUCTIONS:
-- If `previous_tool_response` is provided, use it to generate the content or refine the title of the document.
-- Ensure the title reflects the purpose or context of the content derived from the query and/or previous response.
-- Validate your output to ensure it strictly adheres to JSON format.
-- Do not return any extra parameters than given in the schema for every function
+- Based on the user's topic query, generate a structured document outline.
+- If a `previous_tool_response` is provided, refine the content accordingly; otherwise, create a new outline from the topic.
+- Include 4-5 sections, each with:
+  - A heading (H1 or H2 level)
+  - 1-2 paragraphs of detailed content
+  - 3-5 bullet points with some words in **bold** for emphasis
+  - An image description for relevant visuals. 
+- Ensure the document title reflects the user's query topic.
+- Your response must be a valid JSON object matching the specified format.
+- Do not include extra parameters beyond those defined in the schema.
 
 RESPONSE FORMAT:
-EVERY RESPONSE MUST BE A VALID JSON OBJECT IN THE FOLLOWING FORMAT:
 {
   "tool_name": "create_google_doc",
   "parameters": {
-    "text": "Document content goes here",
-    "title": "Generated Title"
+    "content": {
+      "title": "Document Title",
+      "sections": [
+        {
+          "heading": "Section Title",
+          "heading_level": "H1" or "H2",
+          "paragraphs": ["Paragraph 1 text", "Paragraph 2 text"],
+          "bullet_points": ["Bullet 1 with **bold** text", "Bullet 2", "Bullet 3"],
+          "image_description": "Descriptive image search query" 
+        }
+      ]
+    }
   }
 }
 
 EXAMPLE:
-User Query: "Create a Google Doc summarizing the attached report."
-Previous Tool Response: {"summary": "This is a summary of the attached report."}
+User Query: "Create a document outline on renewable energy"
 Response:
 {
   "tool_name": "create_google_doc",
   "parameters": {
-    "text": "This is a summary of the attached report.",
-    "title": "Report Summary"
+    "content": {
+      "title": "Renewable Energy Overview",
+      "sections": [
+        {
+          "heading": "Introduction to Renewable Energy",
+          "heading_level": "H1",
+          "paragraphs": [
+            "Renewable energy comes from natural sources that replenish over time.",
+            "It plays a critical role in reducing carbon emissions."
+          ],
+          "bullet_points": [
+            "**Solar power** harnesses sunlight",
+            "Wind energy uses **turbines**",
+            "Hydroelectricity from water flow"
+          ],
+          "image_description": "Solar panels in a field"
+        },
+        {
+          "heading": "Benefits of Renewable Energy",
+          "heading_level": "H2",
+          "paragraphs": [
+            "Switching to renewables reduces dependency on fossil fuels."
+          ],
+          "bullet_points": [
+            "Decreases **air pollution**",
+            "Creates **green jobs**",
+            "Sustainable energy supply"
+          ]
+        },
+        {
+          "heading": "Challenges",
+          "heading_level": "H2",
+          "paragraphs": [
+            "Despite advantages, renewable energy faces hurdles.",
+            "Infrastructure costs can be high initially."
+          ],
+          "bullet_points": [
+            "Intermittency of **solar** and wind",
+            "High **initial investment**",
+            "Storage technology gaps"
+          ],
+          "image_description": "Wind turbine maintenance"
+        },
+        {
+          "heading": "Future Outlook",
+          "heading_level": "H2",
+          "paragraphs": [
+            "The future of renewable energy looks promising."
+          ],
+          "bullet_points": [
+            "Advancements in **battery storage**",
+            "Global **policy support**",
+            "Increased adoption rates"
+          ]
+        }
+      ]
+    }
   }
 }
 """

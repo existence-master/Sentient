@@ -14,12 +14,13 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBa
 import httpx
 from sentence_transformers import SentenceTransformer, util
 from urllib.parse import quote
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from dotenv import load_dotenv
 import time
 import matplotlib.pyplot as plt
 import io
 import requests
+import aiohttp
 
 from model.app.helpers import *
 
@@ -1111,9 +1112,74 @@ async def elaborate_text(input_text: str) -> str:
         return input_text
 
 
-async def create_document(service, title: str) -> str:
+async def search_unsplash_image(query: str) -> Tuple[str | None, bytes | None]:
+    """Search for an image on Unsplash and return its URL and raw bytes.
+
+    Args:
+        query (str): The search term to find an image (e.g., 'nature').
+
+    Returns:
+        Tuple[str | None, bytes | None]: The URL of the first image result and its raw bytes,
+        or (None, None) if no image is found or an error occurs.
     """
-    Create a new Google Doc with a specified title and return its document ID.
+    access_key = os.getenv("UNSPLASH_ACCESS_KEY")
+    if not access_key:
+        print("Unsplash access key is missing. Please set UNSPLASH_ACCESS_KEY in your .env file.")
+        return None, None
+
+    url = f"https://api.unsplash.com/search/photos?query={query}&per_page=1"
+    headers = {'Authorization': f'Client-ID {access_key}'}
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status != 200:
+                    print(f"Unsplash API Error: {response.status}")
+                    return None, None
+                data = await response.json()
+                if not data.get("results"):
+                    print(f"No images found for query: {query}")
+                    return None, None
+                image_url = data["results"][0]["urls"]["regular"]
+
+            async with session.get(image_url) as image_response:
+                if image_response.status != 200:
+                    print(f"Failed to download image from {image_url}: {image_response.status}")
+                    return None, None
+                image_bytes = await image_response.read()
+                return image_url, image_bytes
+    except Exception as e:
+        print(f"Error searching Unsplash: {e}")
+        return None, None
+
+async def upload_image_to_drive(drive_service, image_bytes: bytes, file_name: str, mimetype: str) -> str | None:
+    """Upload image bytes to Google Drive and return the public URL.
+
+    Args:
+        drive_service: Authenticated Google Drive API service instance.
+        image_bytes (bytes): The image data in bytes.
+        file_name (str): The name to give the file in Google Drive.
+        mimetype (str): The MIME type of the image (e.g., 'image/jpeg').
+
+    Returns:
+        str | None: The public URL of the uploaded image, or None if upload fails.
+    """
+    try:
+        file_metadata = {'name': file_name}
+        media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype=mimetype)
+        uploaded_file = drive_service.files().create(
+            body=file_metadata, media_body=media, fields='id'
+        ).execute()
+        file_id = uploaded_file.get('id')
+        permission = {'type': 'anyone', 'role': 'reader'}
+        drive_service.permissions().create(fileId=file_id, body=permission).execute()
+        return f"https://drive.google.com/uc?id={file_id}"
+    except Exception as e:
+        print(f"Failed to upload image to Google Drive: {e}")
+        return None
+
+async def create_document(service, title: str) -> str:
+    """Create a new Google Doc with a specified title and return its document ID.
 
     Args:
         service: Authenticated Google Docs API service.
@@ -1121,7 +1187,6 @@ async def create_document(service, title: str) -> str:
 
     Returns:
         str: The ID of the newly created Google Document.
-             Raises an exception if there is an error during document creation.
     """
     try:
         document = service.documents().create(body={"title": title}).execute()
@@ -1131,40 +1196,166 @@ async def create_document(service, title: str) -> str:
         print(f"An error occurred while creating the document: {error}")
         raise
 
-
-async def update_document(service, document_id: str, text: str) -> Dict[str, Any]:
-    """
-    Update the Google Doc by adding elaborated text at the beginning of the document.
+async def create_google_doc(content: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a Google Document with structured content and return its URL.
 
     Args:
-        service: Authenticated Google Docs API service.
-        document_id (str): ID of the document to update.
-        text (str): The text to insert into the document.
+        content (Dict[str, Any]): Structured content dictionary with title and sections.
+            Expected format:
+            {
+                "title": "Document Title",
+                "sections": [
+                    {
+                        "heading": "Section Title",
+                        "heading_level": "H1" or "H2",
+                        "paragraphs": ["Paragraph 1 text", "Paragraph 2 text"],
+                        "bullet_points": ["Bullet 1 with **bold** text", "Bullet 2"],
+                        "image_description": "Descriptive image search query"  # Optional
+                    }
+                ]
+            }
 
     Returns:
-        Dict[str, Any]: The result of the batch update operation from the Google Docs API.
-                         Raises an exception if there is an error during document update.
+        Dict[str, Any]: Status dictionary indicating success or failure.
+            On success: {"status": "success", "result": {"response": str, "url": str}}
+            On failure: {"status": "failure", "error": str}
     """
     try:
-        requests = [
-            {
-                "insertText": {
-                    "location": {
-                        "index": 1,
-                    },
-                    "text": text,
-                }
+        print("Starting create_google_doc function...")
+        docs_service = authenticate_docs()
+        drive_service = authenticate_drive()
+        document_id = await create_document(docs_service, content["title"])
+        document_url = f"https://docs.google.com/document/d/{document_id}/edit"
+        
+        # Initialize request list and index
+        requests = []
+        current_index = 1
+
+        # Add title
+        title_text = content["title"] + "\n\n"
+        requests.append({"insertText": {"location": {"index": current_index}, "text": title_text}})
+        requests.append({
+            "updateParagraphStyle": {
+                "range": {"startIndex": current_index, "endIndex": current_index + len(content["title"])},
+                "paragraphStyle": {"namedStyleType": "HEADING_1"},
+                "fields": "namedStyleType"
             }
-        ]
-        result = (
-            service.documents()
-            .batchUpdate(documentId=document_id, body={"requests": requests})
-            .execute()
-        )
-        return result
-    except HttpError as error:
-        print(f"An error occurred while updating the document: {error}")
-        raise
+        })
+        current_index += len(title_text)
+
+        # Process each section
+        for section in content["sections"]:
+            # Add heading
+            heading_text = section["heading"] + "\n"
+            requests.append({"insertText": {"location": {"index": current_index}, "text": heading_text}})
+            requests.append({
+                "updateParagraphStyle": {
+                    "range": {"startIndex": current_index, "endIndex": current_index + len(section["heading"])},
+                    "paragraphStyle": {"namedStyleType": f"HEADING_{'1' if section['heading_level'] == 'H1' else '2'}"},
+                    "fields": "namedStyleType"
+                }
+            })
+            current_index += len(heading_text)
+
+            # Add paragraphs
+            for para in section["paragraphs"]:
+                para_text = para + "\n\n"
+                requests.append({"insertText": {"location": {"index": current_index}, "text": para_text}})
+                current_index += len(para_text)
+
+            # Add bullet points with bold formatting
+            for bullet in section["bullet_points"]:
+                bullet_text = bullet + "\n"
+                requests.append({"insertText": {"location": {"index": current_index}, "text": bullet_text}})
+                requests.append({
+                    "createParagraphBullets": {
+                        "range": {"startIndex": current_index, "endIndex": current_index + len(bullet_text) - 1},
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"
+                    }
+                })
+                # Apply bold formatting for **text**
+                bold_starts = [i for i in range(len(bullet)) if bullet.startswith("**", i)]
+                for i in range(0, len(bold_starts), 2):
+                    start = bold_starts[i] + 2
+                    end = bold_starts[i + 1] if i + 1 < len(bold_starts) else len(bullet)
+                    if end > start:
+                        requests.append({
+                            "updateTextStyle": {
+                                "range": {"startIndex": current_index + start, "endIndex": current_index + end},
+                                "textStyle": {"bold": True},
+                                "fields": "bold"
+                            }
+                        })
+                current_index += len(bullet_text)
+
+            # Add image if present
+            if "image_description" in section and section["image_description"]:
+                image_url, image_bytes = await search_unsplash_image(section["image_description"])
+                if image_bytes:
+                    drive_url = await upload_image_to_drive(
+                        drive_service=drive_service,
+                        image_bytes=image_bytes,
+                        file_name=f"{section['image_description'].replace(' ', '_')}.jpg",
+                        mimetype="image/jpeg"
+                    )
+                    if drive_url:
+                        # Add newline before image
+                        requests.append({"insertText": {"location": {"index": current_index}, "text": "\n"}})
+                        current_index += 1
+                        # Add image
+                        requests.append({
+                            "insertInlineImage": {
+                                "location": {"index": current_index},
+                                "uri": drive_url,
+                                "objectSize": {
+                                    "height": {"magnitude": 200, "unit": "PT"},
+                                    "width": {"magnitude": 300, "unit": "PT"}
+                                }
+                            }
+                        })
+                        current_index += 1  # Image counts as 1 character
+                        # Add newline after image
+                        requests.append({"insertText": {"location": {"index": current_index}, "text": "\n"}})
+                        current_index += 1
+                    else:
+                        print(f"Failed to upload image: {section['image_description']}")
+                        requests.append({
+                            "insertText": {
+                                "location": {"index": current_index},
+                                "text": f"[Image failed to load: {section['image_description']}]\n\n"
+                            }
+                        })
+                        current_index += len(f"[Image failed to load: {section['image_description']}]\n\n")
+                else:
+                    print(f"No image found for: {section['image_description']}")
+                    requests.append({
+                        "insertText": {
+                            "location": {"index": current_index},
+                            "text": f"[No image found for: {section['image_description']}]\n\n"
+                        }
+                    })
+                    current_index += len(f"[No image found for: {section['image_description']}]\n\n")
+
+            # Add spacing between sections
+            requests.append({"insertText": {"location": {"index": current_index}, "text": "\n"}})
+            current_index += 1
+
+        # Execute all requests in one batch
+        if requests:
+            print(f"Executing batchUpdate with {len(requests)} requests...")
+            docs_service.documents().batchUpdate(documentId=document_id, body={"requests": requests}).execute()
+            print("Document updated successfully.")
+
+        return {
+            "status": "success",
+            "result": {
+                "response": "Document created successfully",
+                "url": document_url
+            }
+        }
+    except Exception as e:
+        print(f"Error in create_google_doc: {e}")
+        return {"status": "failure", "error": str(e)}
 
 
 async def add_event(
@@ -1388,50 +1579,6 @@ async def search_folder(service, folder_name: str) -> str:
         return folders[0]["id"]
     except Exception as e:
         raise Exception(f"Error searching for folder: {e}")
-
-
-async def create_google_doc(
-    text: str, title: str = "Untitled Document"
-) -> Dict[str, Any]:
-    """
-    Create a Google Document and return its URL in the response.
-
-    This function creates a new Google Doc with the given title, elaborates the provided text,
-    and updates the document with the elaborated text.
-
-    Args:
-        text (str): The text content to be added to the document.
-        title (str): Title of the new Google Document (default is "Untitled Document").
-
-    Returns:
-        Dict[str, Any]: Status dictionary indicating success or failure and document details.
-                         On success, returns:
-                         {
-                             "status": "success",
-                             "result": {
-                                 "response": "Document created successfully",
-                                 "url": str # URL to the created Google Document
-                             }
-                         }
-                         On failure, returns:
-                         {"status": "failure", "error": str(error)}
-    """
-    try:
-        service = authenticate_docs()
-        document_id = await create_document(service, title)
-        document_url = f"https://docs.google.com/document/d/{document_id}/view"
-        elaborated_text = await elaborate_text(text)
-        await update_document(service, document_id, elaborated_text)
-        return {
-            "status": "success",
-            "result": {
-                "response": "Document created successfully",
-                "url": document_url,
-            },
-        }
-    except Exception as e:
-        print(f"An error occurred in create_google_doc: {e}")
-        return {"status": "failure", "error": str(e)}
 
 
 async def upload_file_to_folder(

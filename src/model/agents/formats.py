@@ -190,15 +190,46 @@ gdocs_agent_required_format = {
         "tool_name": {"type": "string", "enum": ["create_google_doc"]},
         "parameters": {
             "type": "object",
-            "properties": {"text": {"type": "string"}, "title": {"type": "string"}},
-            "required": ["text", "title"],
-            "additionalProperties": False,
-        },
+            "properties": {
+                "content": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "sections": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "heading": {"type": "string"},
+                                    "heading_level": {"type": "string", "enum": ["H1", "H2"]},
+                                    "paragraphs": {
+                                        "type": "array",
+                                        "items": {"type": "string"}
+                                    },
+                                    "bullet_points": {
+                                        "type": "array",
+                                        "items": {"type": "string"}
+                                    },
+                                    "image_description": {"type": "string"}
+                                },
+                                "required": ["heading", "heading_level", "paragraphs", "bullet_points", "image_description"],
+                                "additionalProperties": False
+                            },
+                            "minItems": 4,
+                            "maxItems": 5
+                        }
+                    },
+                    "required": ["title", "sections"],
+                    "additionalProperties": False
+                }
+            },
+            "required": ["content"],
+            "additionalProperties": False
+        }
     },
     "required": ["tool_name", "parameters"],
-    "additionalProperties": False,
+    "additionalProperties": False
 }
-
 gsheets_agent_required_format = {
     "type": "object",
     "properties": {
