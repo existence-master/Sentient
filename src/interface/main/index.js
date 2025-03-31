@@ -100,10 +100,7 @@ if (app.isPackaged) {
 		: path.join(app.getPath("home"), ".sentient.env")
 	appOutDir = path.join(__dirname, "../out")
 } else {
-	basePath = __dirname
 	dotenvPath = path.resolve(__dirname, "../.env")
-	chatsDbPath = path.resolve(__dirname, "../../chatsDb.json")
-	userProfileDbPath = path.resolve(__dirname, "../../userProfileDb.json")
 	appOutDir = path.join(__dirname, "../out")
 }
 
