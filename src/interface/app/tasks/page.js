@@ -21,7 +21,7 @@ const Tasks = () => {
 	const [userDetails, setUserDetails] = useState({})
 	const [isSidebarVisible, setSidebarVisible] = useState(false)
 	const [newTaskDescription, setNewTaskDescription] = useState("")
-	const [newTaskPriority, setNewTaskPriority] = useState("") // String based priority now
+	const [newTaskPriority, setNewTaskPriority] = useState("")
 	const [editingTask, setEditingTask] = useState(null)
 	const [filterStatus, setFilterStatus] = useState("all")
 	const [searchTerm, setSearchTerm] = useState("")
