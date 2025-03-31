@@ -59,12 +59,12 @@ let dotenvPath
  * Path to the chats database file (JSON).
  * @type {string}
  */
-let chatsDbPath
+// let chatsDbPath // Commented out as not used directly in this snippet
 /**
  * Path to the user profile database file (JSON).
  * @type {string}
  */
-let userProfileDbPath
+// let userProfileDbPath // Commented out as not used directly in this snippet
 /**
  * Output directory for the packaged Electron app.
  * @type {string}
@@ -86,6 +86,7 @@ const __dirname = dirname(__filename)
 
 // Determine paths based on whether the application is packaged or not
 if (app.isPackaged) {
+	console.log("Application is running in PRODUCTION mode (packaged).")
 	basePath = isWindows
 		? path.join(
 				app.getPath("home"),
@@ -100,62 +101,76 @@ if (app.isPackaged) {
 		: path.join(app.getPath("home"), ".sentient.env")
 	appOutDir = path.join(__dirname, "../out")
 } else {
+	console.log("Application is running in DEVELOPMENT mode.")
 	dotenvPath = path.resolve(__dirname, "../.env")
 	appOutDir = path.join(__dirname, "../out")
 }
 
-let ws = new WebSocket("ws://localhost:5000/ws") // Replace with your FastAPI server URL if different
+let ws // Keep WebSocket connection attempt regardless of mode for now
+try {
+	ws = new WebSocket("ws://localhost:5000/ws") // Replace with your FastAPI server URL if different
 
-ws.onopen = () => {
-	console.log("WebSocket connection opened with FastAPI")
-	// Optionally send a message to the server upon connection
-	// ws.send('Electron client connected');
-}
-
-ws.onmessage = (event) => {
-	const messageData = JSON.parse(event.data)
-	console.log("WebSocket message received:", messageData)
-
-	if (messageData.type === "task_completed") {
-		const { task_id, description, result } = messageData
-		new Notification({
-			title: "Task Completed!",
-			body: `Task "${description}" (ID: ${task_id}) completed successfully.\nResult: ${result.substring(0, 100)}...` // Limit result preview for notification
-		}).show()
-	} else if (messageData.type === "task_error") {
-		const { task_id, description, error } = messageData
-		new Notification({
-			title: "Task Error!",
-			body: `Task "${description}" (ID: ${task_id}) encountered an error.\nError: ${error}`
-		}).show()
-	} else if (messageData.type === "memory_operation_completed") {
-		const { operation_id, status, fact } = messageData
-		new Notification({
-			title: "Memory Operation Completed!",
-			body: `Memory operation (ID: ${operation_id}) was successful.\nFact: ${fact.substring(0, 100)}...` // Limit fact preview
-		}).show()
-	} else if (messageData.type === "memory_operation_error") {
-		const { operation_id, error, fact } = messageData
-		new Notification({
-			title: "Memory Operation Error!",
-			body: `Memory operation (ID: ${operation_id}) encountered an error.\nError: ${error}\nFact: ${fact.substring(0, 100)}...` // Limit fact preview
-		}).show()
-	} else if (messageData.type === "new_message") {
-		const { message } = messageData
-		console.log("New message received:", message)
-		new Notification({
-			title: "New Message!",
-			body: message.substring(0, 100) + "..." // Show a preview of the message
-		}).show()
+	ws.onopen = () => {
+		console.log("WebSocket connection opened with FastAPI")
 	}
-}
 
-ws.onclose = () => {
-	console.log("WebSocket connection closed")
-}
+	ws.onmessage = (event) => {
+		try {
+			const messageData = JSON.parse(event.data)
+			console.log("WebSocket message received:", messageData)
 
-ws.onerror = (error) => {
-	console.error("WebSocket error:", error)
+			let notificationTitle = ""
+			let notificationBody = ""
+
+			if (messageData.type === "task_completed") {
+				const { task_id, description, result } = messageData
+				notificationTitle = "Task Completed!"
+				notificationBody = `Task "${description}" (ID: ${task_id}) completed successfully.\nResult: ${result?.substring(0, 100)}...`
+			} else if (messageData.type === "task_error") {
+				const { task_id, description, error } = messageData
+				notificationTitle = "Task Error!"
+				notificationBody = `Task "${description}" (ID: ${task_id}) encountered an error.\nError: ${error}`
+			} else if (messageData.type === "memory_operation_completed") {
+				const { operation_id, status, fact } = messageData
+				notificationTitle = "Memory Operation Completed!"
+				notificationBody = `Memory operation (ID: ${operation_id}) was successful.\nFact: ${fact?.substring(0, 100)}...`
+			} else if (messageData.type === "memory_operation_error") {
+				const { operation_id, error, fact } = messageData
+				notificationTitle = "Memory Operation Error!"
+				notificationBody = `Memory operation (ID: ${operation_id}) encountered an error.\nError: ${error}\nFact: ${fact?.substring(0, 100)}...`
+			} else if (messageData.type === "new_message") {
+				const { message } = messageData
+				console.log("New message received:", message)
+				notificationTitle = "New Message!"
+				notificationBody = message?.substring(0, 100) + "..."
+			}
+
+			if (notificationTitle && notificationBody) {
+				new Notification({
+					title: notificationTitle,
+					body: notificationBody
+				}).show()
+			}
+		} catch (e) {
+			console.error(
+				"Error processing WebSocket message:",
+				e,
+				"Raw data:",
+				event.data
+			)
+		}
+	}
+
+	ws.onclose = () => {
+		console.log("WebSocket connection closed")
+		// Optional: Implement reconnection logic here if desired
+	}
+
+	ws.onerror = (error) => {
+		console.error("WebSocket error:", error?.message || error)
+	}
+} catch (e) {
+	console.error("Failed to establish WebSocket connection:", e)
 }
 
 // Load environment variables from .env file
@@ -178,7 +193,7 @@ const appServe = app.isPackaged ? serve({ directory: appOutDir }) : null
  * @param {number} ms - The number of milliseconds to delay.
  * @returns {Promise<void>} A promise that resolves after the delay.
  */
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+// const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)); // delay seems unused, commenting out
 
 /**
  * Creates and displays the main application window.
@@ -193,8 +208,8 @@ export const createAppWindow = () => {
 		webPreferences: {
 			preload: path.join(__dirname, "preload.js"),
 			contextIsolation: true,
-			enableRemoteModule: false,
-			devTools: true // Enable DevTools for development and debugging
+			enableRemoteModule: false, // Keep false for security best practices
+			devTools: !app.isPackaged // Enable DevTools ONLY in development
 		},
 		backgroundColor: "#000000",
 		autoHideMenuBar: true // Hides the default menu bar
@@ -202,13 +217,27 @@ export const createAppWindow = () => {
 
 	// Load app URL based on environment (packaged or development)
 	if (app.isPackaged) {
-		appServe(mainWindow).then(() => mainWindow.loadURL("app://-"))
+		appServe(mainWindow)
+			.then(() => mainWindow.loadURL("app://-"))
+			.catch((err) => console.error("Failed to serve packaged app:", err))
 	} else {
-		mainWindow.loadURL(process.env.ELECTRON_APP_URL)
-		mainWindow.webContents.openDevTools() // Open DevTools in development mode
-		mainWindow.webContents.on("did-fail-load", () => {
-			mainWindow.webContents.reloadIgnoringCache() // Reload page if load fails
-		})
+		// Development mode
+		const devUrl = process.env.ELECTRON_APP_URL || "http://localhost:5173" // Provide a fallback default
+		console.log(`Attempting to load URL: ${devUrl}`)
+		mainWindow
+			.loadURL(devUrl)
+			.catch((err) => console.error(`Failed to load URL ${devUrl}:`, err))
+		mainWindow.webContents.openDevTools() // Open DevTools automatically in development
+		mainWindow.webContents.on(
+			"did-fail-load",
+			(event, errorCode, errorDescription, validatedURL) => {
+				console.error(
+					`Failed to load ${validatedURL}: ${errorDescription} (Code: ${errorCode})`
+				)
+				// Optional: Add retry logic or show an error page
+				// mainWindow.webContents.reloadIgnoringCache() // Be careful with automatic reloads, can cause loops
+			}
+		)
 	}
 
 	// Handle window closing event to confirm exit
@@ -218,195 +247,243 @@ export const createAppWindow = () => {
 			event.preventDefault() // Prevent default close action
 			isExiting = true
 
-			// Show confirmation dialog before quitting
-			const response = await dialog.showMessageBox(mainWindow, {
-				type: "question",
-				buttons: ["Yes", "No"],
-				defaultId: 1,
-				title: "Confirm Exit",
-				message: "Are you sure you want to quit?"
-			})
+			try {
+				// Show confirmation dialog before quitting
+				const response = await dialog.showMessageBox(mainWindow, {
+					type: "question",
+					buttons: ["Yes", "No"],
+					defaultId: 1,
+					title: "Confirm Exit",
+					message: "Are you sure you want to quit?"
+				})
 
-			// If user confirms exit, attempt to stop servers and quit the app
-			if (response.response === 0) {
-				try {
-					// await stopNeo4jServer() // Commented out: Stop Neo4j server on app close (currently disabled)
-					// await stopAppSubServers() // Commented out: Stop app sub-servers on app close (currently disabled)
+				// If user confirms exit, attempt to stop servers (if any) and quit the app
+				if (response.response === 0) {
+					console.log("User confirmed exit.")
+					// Add any cleanup tasks here if needed before quitting
+					// e.g., await stopNeo4jServer(); await stopAppSubServers();
 					await dialog.showMessageBox(mainWindow, {
+						// Keep this user feedback
 						type: "info",
 						message: "Bye friend...",
 						title: "Quitting Sentient (click ok to exit)"
 					})
-					setTimeout(() => app.quit(), 1000) // Quit app after a short delay
-				} catch (error) {
-					await console.log(
-						`Error while stopping processes: ${error}`
-					)
-					dialog.showErrorBox(
-						"Error",
-						"Failed to stop some processes. Please try again."
-					)
-					isExiting = false // Reset exiting flag on error
+					setTimeout(() => app.quit(), 500) // Quit app after a short delay
+				} else {
+					console.log("User cancelled exit.")
+					isExiting = false // Reset exiting flag if user cancels exit
 				}
-			} else {
-				isExiting = false // Reset exiting flag if user cancels exit
+			} catch (error) {
+				console.error(
+					"Error during exit confirmation or cleanup:",
+					error
+				)
+				// Show error to user, but allow exit attempt to proceed or reset
+				dialog.showErrorBox(
+					"Exit Error",
+					`An error occurred during shutdown: ${error.message}. The application might not close cleanly.`
+				)
+				// Decide if you want to force quit or reset the flag
+				isExiting = false // Resetting might be safer to allow another attempt
+				// Alternatively, force quit: setTimeout(() => app.quit(), 500);
 			}
 		}
 	})
+
+	mainWindow.on("closed", () => {
+		mainWindow = null // Dereference the window object
+	})
 }
 
+// --- Conditional Check Functions ---
+
 /**
- * Checks user information validity, including pricing status, referral code,
- * beta user status, credits, and Google credentials. If any check fails,
- * it triggers logout.
+ * Checks user information validity (ONLY IN PRODUCTION).
+ * Includes pricing, referral, beta status, credits, Google creds.
+ * Triggers logout on failure.
  * @async
  * @returns {Promise<void>}
- * @throws {Error} If any user info check fails, leading to logout.
  */
 const checkUserInfo = async () => {
+	if (!app.isPackaged) {
+		console.log(
+			"DEV MODE: Skipping User Info checks (Pricing, Referral, Beta, Credits, Google)."
+		)
+		return // Skip entirely in development
+	}
+	console.log("PROD MODE: Performing User Info checks...")
 	try {
 		await checkPricingStatus()
 		await checkReferralCodeAndStatus()
 		await checkBetaUserStatus()
 		await resetCreditsIfNecessary()
 		await checkGoogleCredentials()
-		await console.log("User info checked.")
+		console.log("PROD MODE: User info checks passed.")
 	} catch (error) {
-		await console.log(`Error checking user info: ${error}`)
+		console.error(
+			`PROD MODE: Error during user info check: ${error.message}. Triggering logout.`
+		)
 		BrowserWindow.getAllWindows().forEach((win) => win.close())
-		createLogoutWindow() // Create logout window on user info check failure
+		createLogoutWindow() // Create logout window on check failure
+		// Re-throw or handle as needed, maybe notify user more clearly
+		throw error // Propagate error to indicate failure
 	}
 }
 
 /**
- * Checks overall application validity by verifying authentication and user info.
- * If validity checks fail, redirects to the authentication window.
+ * Checks overall application validity (ONLY IN PRODUCTION).
+ * Verifies authentication and user info. Redirects to auth on failure.
  * @async
  * @returns {Promise<void>}
- * @throws {Error} If authentication or user info is invalid, leading to auth window.
  */
 export const checkValidity = async () => {
+	if (!app.isPackaged) {
+		console.log("DEV MODE: Skipping Validity checks (Auth, User Info).")
+		return // Skip entirely in development
+	}
+	console.log("PROD MODE: Performing Validity checks...")
 	try {
-		await checkAuthStatus()
-		await checkUserInfo()
+		await checkAuthStatus() // Checks tokens
+		await checkUserInfo() // Checks pricing, credits etc.
+		console.log("PROD MODE: Validity checks passed.")
 	} catch (error) {
-		await console.log(`Error checking validity: ${error}`)
+		console.error(
+			`PROD MODE: Validity check failed: ${error.message}. Redirecting to Auth window.`
+		)
+		// Ensure windows are closed before showing auth window
+		BrowserWindow.getAllWindows().forEach((win) => {
+			// Avoid closing the auth window if it's already being created
+			if (!win.isAuthWindow) {
+				// You might need to add a property like this during creation
+				win.close()
+			}
+		})
 		createAuthWindow() // Create auth window on validity check failure
+		throw error // Propagate error
 	}
 }
 
 /**
- * Checks user authentication status by refreshing tokens.
- * Throws an error if token refresh fails, indicating user is not authenticated.
+ * Checks user authentication status by refreshing tokens (ONLY IN PRODUCTION).
+ * Throws an error if token refresh fails.
  * @async
  * @returns {Promise<void>}
- * @throws {Error} If refreshTokens fails, indicating authentication failure.
  */
 const checkAuthStatus = async () => {
+	// This check is implicitly skipped in DEV because checkValidity skips it.
+	// No need for an explicit app.isPackaged check here if only called by checkValidity.
+	console.log("PROD MODE: Checking authentication status...")
 	try {
 		await refreshTokens()
-		await console.log("User is authenticated.")
+		console.log("PROD MODE: User is authenticated.")
 	} catch (error) {
-		await console.log(`Error in authentication: ${error}`)
-		throw new Error("User is not authenticated.")
+		console.error(
+			`PROD MODE: Authentication check failed (token refresh): ${error.message}`
+		)
+		throw new Error("User is not authenticated.") // Let checkValidity handle redirection
 	}
 }
 
-/**
- * Checks and fetches/sets referral code and referrer status from Keytar and API.
- * @async
- * @returns {Promise<void>}
- * @throws {Error} If referral code or status check fails.
- */
+// --- Status Check Functions (will only run in production via checkUserInfo) ---
+
 const checkReferralCodeAndStatus = async () => {
+	console.log("PROD MODE: Checking Referral Code and Status...")
 	try {
 		let referralCode = await getReferralCodeFromKeytar()
 		if (!referralCode) {
-			await console.log("Referral code not found.")
-			referralCode = await fetchAndSetReferralCode() // Fetch and set referral code if not found
-			await console.log("Referral code set")
+			console.log(
+				"PROD MODE: Referral code not found in Keytar, fetching..."
+			)
+			referralCode = await fetchAndSetReferralCode()
+			console.log("PROD MODE: Referral code fetched and set.")
 		}
 
 		let referrerStatus = await getReferrerStatusFromKeytar()
-		if (referrerStatus === null || referrerStatus === false) {
-			await console.log("Referrer status not found.")
-			referrerStatus = await fetchAndSetReferrerStatus() // Fetch and set referrer status if not found
-			await console.log("Referrer status set")
+		// Check explicitly for null, as false is a valid status
+		if (referrerStatus === null) {
+			console.log(
+				"PROD MODE: Referrer status not found in Keytar, fetching..."
+			)
+			referrerStatus = await fetchAndSetReferrerStatus()
+			console.log("PROD MODE: Referrer status fetched and set.")
 		}
 
-		await console.log("Referral code and status checked.")
+		console.log("PROD MODE: Referral code and status check complete.")
 	} catch (error) {
-		await console.log(`Error in referral code and status check: ${error}`)
+		console.error(
+			`PROD MODE: Error in referral code/status check: ${error.message}`
+		)
 		throw new Error("Referral code and status check failed.")
 	}
 }
 
-/**
- * Checks and fetches/sets beta user status from Keytar and API.
- * @async
- * @returns {Promise<void>}
- * @throws {Error} If beta user status check fails.
- */
 const checkBetaUserStatus = async () => {
+	console.log("PROD MODE: Checking Beta User Status...")
 	try {
 		let betaUserStatus = await getBetaUserStatusFromKeytar()
-		if (betaUserStatus === null || betaUserStatus === false) {
-			await console.log("Beta user status not found.")
-			betaUserStatus = await fetchAndSetBetaUserStatus() // Fetch and set beta user status if not found
-			await console.log("Beta user status set")
+		// Check explicitly for null, as false is a valid status
+		if (betaUserStatus === null) {
+			console.log(
+				"PROD MODE: Beta user status not found in Keytar, fetching..."
+			)
+			betaUserStatus = await fetchAndSetBetaUserStatus()
+			console.log("PROD MODE: Beta user status fetched and set.")
 		}
 
-		await console.log("Beta user status checked.")
+		console.log("PROD MODE: Beta user status check complete.")
 	} catch (error) {
-		await console.log(`Error in beta user status check: ${error}`)
+		console.error(
+			`PROD MODE: Error in beta user status check: ${error.message}`
+		)
 		throw new Error("Beta user status check failed.")
 	}
 }
 
-/**
- * Checks pricing status and user session validity. If session is expired due to inactivity
- * (7 days), it triggers logout.
- * @async
- * @returns {Promise<void>}
- * @throws {Error} If pricing check fails or session expired, leading to logout.
- */
 const checkPricingStatus = async () => {
+	console.log("PROD MODE: Checking Pricing Status and Session Activity...")
 	try {
 		const pricing = await getPricingFromKeytar()
-		const lastCheckin = await getCheckinFromKeytar()
+		const lastCheckin = await getCheckinFromKeytar() // Timestamp of last successful refresh/activity
 
 		if (!pricing || !lastCheckin) {
-			await console.log("Pricing or last checkin not found.")
-			await fetchAndSetUserRole() // Fetch and set user role/pricing if not found
-			await console.log("Pricing set")
-			return
+			console.warn(
+				"PROD MODE: Pricing or last checkin not found in Keytar. Fetching user role/pricing..."
+			)
+			await fetchAndSetUserRole() // This should also set the check-in time implicitly via refreshTokens
+			console.log("PROD MODE: User role/pricing fetched and set.")
+			// Re-fetch checkin time after role fetch? Depends on fetchAndSetUserRole implementation. Assuming it's handled.
+			return // Exit check for this run, will be checked next time
 		}
 
 		const currentTimestamp = Math.floor(Date.now() / 1000)
+		const sevenDaysInSeconds = 7 * 24 * 60 * 60
 
 		// Check if last check-in was more than 7 days ago
-		if (currentTimestamp - lastCheckin >= 7 * 24 * 60 * 60) {
-			BrowserWindow.getAllWindows().forEach((win) => win.close())
-			createLogoutWindow() // Create logout window if session expired
-			await console.log("User session expired due to inactivity.")
+		if (currentTimestamp - lastCheckin >= sevenDaysInSeconds) {
+			console.warn(
+				`PROD MODE: User session expired due to inactivity (last check-in ${new Date(lastCheckin * 1000).toISOString()}). Triggering logout.`
+			)
+			// Don't close windows here, let the caller (checkUserInfo) handle it.
 			throw new Error("User session expired due to inactivity.")
 		}
 
-		await console.log("Pricing checked.")
+		console.log(
+			"PROD MODE: Pricing status and session activity check complete."
+		)
 	} catch (error) {
-		await console.log(`Error in pricing check: ${error}`)
-		throw new Error("Pricing check failed.")
+		// Re-throw specific errors or a generic one
+		console.error(
+			`PROD MODE: Error in pricing/session check: ${error.message}`
+		)
+		if (error.message.includes("inactivity")) {
+			throw error // Propagate inactivity error
+		}
+		throw new Error("Pricing status check failed.") // Generic failure
 	}
 }
 
-/**
- * Resets pro credits if the current date is different from the last check-in date.
- * Gives 10 credits to referrers and 5 to regular users.
- * @async
- * @returns {Promise<void>}
- * @throws {Error} If there's an error resetting pro credits.
- */
 const resetCreditsIfNecessary = async () => {
+	console.log("PROD MODE: Checking if Pro Credits need reset...")
 	try {
 		const currentDate = new Date().toDateString()
 		const checkinTimestamp = await getCreditsCheckinFromKeytar()
@@ -414,60 +491,73 @@ const resetCreditsIfNecessary = async () => {
 			? new Date(checkinTimestamp * 1000).toDateString()
 			: null
 
-		// Reset credits only if the check-in date is not today
 		if (checkinDate !== currentDate) {
-			await console.log("Resetting proCredits.")
-			const referrer = getReferrerStatusFromKeytar()
+			console.log(
+				`PROD MODE: Resetting proCredits (Last checkin: ${checkinDate}, Today: ${currentDate}).`
+			)
+			const referrer = await getReferrerStatusFromKeytar() // Ensure await here
 
-			if (referrer === true)
-				await setCreditsInKeytar(10) // 10 credits for referrers
-			else await setCreditsInKeytar(5) // 5 credits for non-referrers
-
-			await console.log("proCredits reset.")
+			// Default to non-referrer if status is null/undefined
+			const creditsToSet = referrer === true ? 10 : 5
+			await setCreditsInKeytar(creditsToSet)
+			console.log(`PROD MODE: proCredits reset to ${creditsToSet}.`)
 
 			await setCreditsCheckinInKeytar() // Update credits check-in timestamp
-			await console.log("proCredits checkin set.")
+			console.log("PROD MODE: proCredits checkin timestamp updated.")
+		} else {
+			console.log("PROD MODE: Pro Credits already checked/reset today.")
 		}
 	} catch (error) {
-		await console.log(`Error resetting proCredits: ${error}`)
-		throw new Error("Error checking proCredits")
+		console.error(`PROD MODE: Error resetting proCredits: ${error.message}`)
+		throw new Error("Error checking/resetting proCredits")
 	}
 }
 
-/**
- * Checks Google credentials by making a request to the authentication server.
- * @async
- * @returns {Promise<void>}
- * @throws {Error} If Google credentials check fails.
- */
 const checkGoogleCredentials = async () => {
+	console.log("PROD MODE: Checking Google Credentials via server...")
 	try {
-		const response = await fetch(
-			"http://127.0.0.1:5000/authenticate-google" // URL to check Google auth status
-		)
+		// Ensure the server URL is correctly defined in your .env
+		const googleAuthCheckUrl = `${process.env.APP_SERVER_URL || "http://127.0.0.1:5000"}/authenticate-google`
+		const response = await fetch(googleAuthCheckUrl) // Assumes GET request is sufficient
+
+		if (!response.ok) {
+			// Try to get more details from the response body
+			let errorDetails = `Server responded with status ${response.status}`
+			try {
+				const data = await response.json()
+				errorDetails = data.error || data.message || errorDetails
+			} catch (e) {
+				/* Ignore if response is not JSON */
+			}
+			throw new Error(`Google credentials check failed: ${errorDetails}`)
+		}
+
 		const data = await response.json()
 
 		if (data.success) {
-			await console.log("Google credentials checked.")
+			console.log("PROD MODE: Google credentials check successful.")
 		} else {
-			throw new Error(data.error)
+			throw new Error(
+				data.error || "Google credentials check indicated failure."
+			)
 		}
 	} catch (error) {
-		await console.log(`Error checking Google credentials: ${error}`)
-		throw new Error("Error checking Google credentials")
+		console.error(
+			`PROD MODE: Error checking Google credentials: ${error.message}`
+		)
+		throw new Error("Error checking Google credentials") // Propagate a standard error message
 	}
 }
 
-/**
- * Acquires a single instance lock for the application. If another instance is already running,
- * this instance will quit. Otherwise, it sets up event listeners for second instances.
- */
+// --- Single Instance Lock ---
 const gotTheLock = app.requestSingleInstanceLock()
 
 if (!gotTheLock) {
-	app.quit() // Quit if another instance is already running
+	console.log("Another instance is already running. Quitting this instance.")
+	app.quit()
 } else {
 	app.on("second-instance", () => {
+		console.log("Second instance detected. Focusing main window.")
 		// Focus on the main window if a second instance is attempted
 		if (mainWindow) {
 			if (mainWindow.isMinimized()) mainWindow.restore()
@@ -476,437 +566,846 @@ if (!gotTheLock) {
 	})
 }
 
+// --- Auto Update Logic (Conditional) ---
+
 /**
- * Checks for application updates using Electron AutoUpdater.
- * Sets the feed URL based on whether the user is a beta user or not.
- * Then creates the main application window and initiates update checks.
+ * Checks for application updates using Electron AutoUpdater (ONLY IN PRODUCTION).
+ * Sets feed URL based on beta status (if implemented) and initiates checks.
+ * Creates the main window AFTER deciding update path.
  * @async
  * @returns {Promise<void>}
  */
-
 const checkForUpdates = async () => {
-	/**
-	 *  Indicates whether the current user is a beta user.
-	 *  If true, the application will check for pre-release (beta) updates.
-	 *  If false, the application will check for stable updates.
-	 */
-	const betaUserStatus = true
+	// This function is only called if app.isPackaged is true.
+	console.log(
+		"PROD MODE: Configuring and checking for application updates..."
+	)
 
-	if (betaUserStatus) {
-		// Configure autoUpdater to check for pre-release updates if the user is a beta user.
-		autoUpdater.setFeedURL({
-			provider: "github", // Specify the update provider as GitHub
-			owner: "existence-master", // The owner of the GitHub repository
-			repo: "Sentient" // The name of the GitHub repository
-		})
-
-		/**
-		 * Allows autoUpdater to check for and download pre-release versions (e.g., beta, alpha).
-		 * This is set to true for beta users to receive beta updates.
-		 */
-		autoUpdater.allowPrerelease = true
-	} else {
-		// Configure autoUpdater to check for stable releases if the user is not a beta user.
-		autoUpdater.setFeedURL({
-			provider: "github", // Specify the update provider as GitHub
-			owner: "existence-master", // The owner of the GitHub repository
-			repo: "Sentient" // The name of the GitHub repository
-		})
-		// autoUpdater.allowPrerelease is not set here, which defaults to false, ensuring only stable releases are checked.
+	// Fetch beta status from keytar to decide update channel (only needed in prod)
+	let isBetaUser = false
+	try {
+		isBetaUser = (await getBetaUserStatusFromKeytar()) || false // Default to false if not set
+		console.log(
+			`PROD MODE: User is ${isBetaUser ? "a beta user" : "not a beta user"}.`
+		)
+	} catch (error) {
+		console.error(
+			"PROD MODE: Failed to get beta user status for update check, defaulting to stable.",
+			error
+		)
+		isBetaUser = false
 	}
 
-	/**
-	 * Creates the main application window.
-	 * This should be called after setting up the update feed to ensure the app window is ready regardless of update status.
-	 */
+	const feedOptions = {
+		provider: "github",
+		owner: "existence-master",
+		repo: "Sentient"
+	}
+
+	autoUpdater.setFeedURL(feedOptions)
+
+	if (isBetaUser) {
+		console.log("PROD MODE: Allowing pre-releases for beta user.")
+		autoUpdater.allowPrerelease = true
+	} else {
+		console.log("PROD MODE: Checking for stable releases only.")
+		autoUpdater.allowPrerelease = false // Explicitly false for stable
+	}
+
+	// Create the window *before* checking for updates, so user sees something
 	createAppWindow()
 
-	/**
-	 * Initiates the update check process and notifies the user if an update is available.
-	 * This asynchronous call checks for updates based on the configured feed URL and displays a notification to the user.
-	 */
-	autoUpdater.checkForUpdatesAndNotify()
+	try {
+		console.log("PROD MODE: Initiating update check...")
+		// Check for updates and notify the user automatically
+		await autoUpdater.checkForUpdatesAndNotify()
+		console.log(
+			"PROD MODE: Update check initiated (notifications handled by autoUpdater)."
+		)
+	} catch (error) {
+		console.error("PROD MODE: Error during update check:", error.message)
+		// Decide how to handle check errors, maybe notify user manually or just log
+		// dialog.showErrorBox("Update Check Failed", `Could not check for updates: ${error.message}`);
+	}
 }
 
 /**
- * Starts the application by checking for updates and then initializing app servers
- * and checking validity after a delay.
+ * Starts the application.
+ * In Production: Checks for updates, then performs validity checks after a delay.
+ * In Development: Skips updates and validity checks, creates window immediately.
  * @async
  * @returns {Promise<void>}
  */
 const startApp = async () => {
-	await checkForUpdates() // Check for application updates
-	setTimeout(async () => {
-		if (process.env.UPDATING !== "true") {
-			await checkValidity() // Check application validity (auth and user info)
-		}
-	}, 10000) // Delay before starting servers and validity check
+	if (app.isPackaged) {
+		// === Production/Packaged App Logic ===
+		console.log("PRODUCTION MODE: Starting application flow.")
+		// checkForUpdates now creates the window internally
+		await checkForUpdates()
+
+		// Delay validity checks to allow window/update process to potentially start/notify
+		const validityCheckDelay = 5000 // 5 seconds
+		console.log(
+			`PRODUCTION MODE: Scheduling validity checks in ${validityCheckDelay}ms.`
+		)
+		setTimeout(async () => {
+			// Check if an update process was flagged (set by 'update-available' listener)
+			if (process.env.UPDATING !== "true") {
+				console.log(
+					"PRODUCTION MODE: Performing scheduled validity checks..."
+				)
+				try {
+					await checkValidity() // Perform auth and status checks
+					console.log(
+						"PRODUCTION MODE: Validity checks completed successfully."
+					)
+				} catch (error) {
+					// Error handling (like showing auth window) is done within checkValidity
+					console.error(
+						"PRODUCTION MODE: Validity check sequence failed.",
+						error.message
+					)
+				}
+			} else {
+				console.log(
+					"PRODUCTION MODE: Skipping scheduled validity check because an update is in progress (UPDATING=true)."
+				)
+			}
+		}, validityCheckDelay)
+	} else {
+		// === Development Environment Logic ===
+		console.log("DEVELOPMENT MODE: Starting application flow.")
+		console.log(
+			"DEVELOPMENT MODE: Skipping auto-updates and validity checks."
+		)
+		// Create the window directly without checking for updates or validity
+		createAppWindow()
+		mainWindow?.webContents.on("did-finish-load", () => {
+			console.log("DEVELOPMENT MODE: Main window finished loading.")
+			// Optional: Send message to renderer if it needs to know it's in dev
+			// mainWindow?.webContents.send('development-mode', true);
+		})
+	}
 }
+
+// --- App Lifecycle Events ---
 
 // Event listener when the app is ready to start
 app.on("ready", startApp)
 
 // Event listener for 'window-all-closed' event
 app.on("window-all-closed", () => {
-	if (process.platform !== "darwin") app.quit() // Quit app when all windows are closed, except on macOS
+	console.log("All windows closed.")
+	if (process.platform !== "darwin") {
+		console.log("Quitting application (not macOS).")
+		app.quit() // Quit app when all windows are closed, except on macOS
+	}
 })
 
-// AutoUpdater event: update available
-autoUpdater.on("update-available", () => {
-	process.env.UPDATING = "true" // Set flag indicating update is in progress
-	mainWindow.webContents.send("update-available") // Send event to renderer process
+app.on("activate", () => {
+	// On macOS it's common to re-create a window in the app when the
+	// dock icon is clicked and there are no other windows open.
+	if (BrowserWindow.getAllWindows().length === 0) {
+		console.log("App activated with no windows open, creating main window.")
+		startApp() // Or just createAppWindow() if startApp logic is complex
+	}
 })
 
-// AutoUpdater event: update downloaded
-autoUpdater.on("update-downloaded", () => {
-	mainWindow.webContents.send("update-downloaded") // Send event to renderer process
-})
+// --- AutoUpdater Event Listeners (Only relevant in Production) ---
 
-// IPC event handler for 'restart-app' to quit and install update
+if (app.isPackaged) {
+	autoUpdater.on("update-available", (info) => {
+		console.log("PROD MODE: Update available:", info)
+		process.env.UPDATING = "true" // Set flag indicating update is in progress
+		mainWindow?.webContents.send("update-available", info) // Send event to renderer process
+	})
+
+	autoUpdater.on("update-not-available", (info) => {
+		console.log("PROD MODE: Update not available:", info)
+		// Optional: Notify renderer or log
+	})
+
+	autoUpdater.on("error", (err) => {
+		console.error("PROD MODE: Error in auto-updater:", err.message)
+		process.env.UPDATING = "false" // Reset flag on error
+		mainWindow?.webContents.send("update-error", err.message) // Notify renderer
+		// Optional: Show error dialog
+		// dialog.showErrorBox("Update Error", `Failed to update: ${err.message}`);
+	})
+
+	autoUpdater.on("download-progress", (progressObj) => {
+		console.log(`PROD MODE: Download progress: ${progressObj.percent}%`)
+		mainWindow?.webContents.send("update-progress", progressObj) // Send progress to renderer
+	})
+
+	autoUpdater.on("update-downloaded", (info) => {
+		console.log("PROD MODE: Update downloaded:", info)
+		process.env.UPDATING = "false" // Reset flag, ready to install
+		mainWindow?.webContents.send("update-downloaded", info) // Send event to renderer process
+		// Optional: Prompt user immediately
+		/*
+        dialog.showMessageBox(mainWindow, {
+            type: 'info',
+            title: 'Update Ready',
+            message: 'A new version has been downloaded. Restart the application to apply the update.',
+            buttons: ['Restart', 'Later']
+        }).then(result => {
+            if (result.response === 0) { // Restart button
+                autoUpdater.quitAndInstall();
+            }
+        });
+        */
+	})
+}
+
+// --- IPC Handlers ---
+
+// IPC event handler for 'restart-app' to quit and install update (only relevant in prod)
 ipcMain.on("restart-app", async () => {
-	autoUpdater.quitAndInstall() // Quit and install the downloaded update
+	if (app.isPackaged) {
+		console.log(
+			"PROD MODE: Received restart-app command. Quitting and installing update."
+		)
+		autoUpdater.quitAndInstall()
+	} else {
+		console.log(
+			"DEV MODE: Received restart-app command, but auto-updates are disabled. Doing nothing."
+		)
+	}
 })
 
-// IPC handler to get user profile
+// IPC handler to get user profile (available in both modes)
 ipcMain.handle("get-profile", async () => {
-	return getProfile()
+	// In dev mode, this might return empty/default data if auth is skipped
+	// Consider returning mock data in dev if needed
+	if (!app.isPackaged) {
+		console.log(
+			"DEV MODE: Handling get-profile. Returning potentially empty profile or mock data."
+		)
+		// Example mock data: return { sub: 'dev-user-id', name: 'Dev User', email: 'dev@example.com'};
+	}
+	try {
+		return await getProfile()
+	} catch (error) {
+		console.error("Error getting profile:", error)
+		return null // Indicate failure
+	}
 })
 
-// IPC handler to get private data
+// IPC handler to get private data (available in both modes)
 ipcMain.handle("get-private-data", async () => {
-	return getPrivateData()
+	if (!app.isPackaged) {
+		console.log("DEV MODE: Handling get-private-data.")
+		// Consider returning mock data if needed
+	}
+	try {
+		return await getPrivateData()
+	} catch (error) {
+		console.error("Error getting private data:", error)
+		return null
+	}
 })
 
-// IPC event handler for 'log-out' to close all windows and create logout window
+// IPC event handler for 'log-out'
 ipcMain.on("log-out", () => {
-	BrowserWindow.getAllWindows().forEach((win) => win.close()) // Close all browser windows
-	createLogoutWindow() // Create logout window
+	console.log("Log-out command received.")
+	// Close all windows except potentially a dedicated logout window if needed
+	BrowserWindow.getAllWindows().forEach((win) => {
+		// Add logic here if you want to keep one window open (like the logout window itself)
+		win.close()
+	})
+	if (app.isPackaged) {
+		console.log("PROD MODE: Creating logout window after logout command.")
+		createLogoutWindow() // Show logout confirmation/status only in production
+	} else {
+		console.log(
+			"DEV MODE: Closing windows on logout command, not showing logout window."
+		)
+		// In dev, maybe just quit or reload the main window to simulate a fresh start
+		app.quit() // Or mainWindow?.reload();
+	}
 })
 
 // IPC handler to fetch pricing plan
 ipcMain.handle("fetch-pricing-plan", async () => {
-	try {
-		const pricing = await getPricingFromKeytar() // Get pricing plan from Keytar
-		return pricing
-	} catch (error) {
-		await console.log(`Error fetching roles: ${error}`)
-		return "free" // Default to 'free' if fetching fails
+	if (!app.isPackaged) {
+		console.log(
+			"DEV MODE: Handling fetch-pricing-plan. Returning 'pro' (or 'free' if preferred)."
+		)
+		return "pro" // Return a default/mock value for development
 	}
-})
-
-// IPC handler to set referrer using referral code
-ipcMain.handle("set-referrer", async (_event, { referralCode }) => {
 	try {
-		const apiUrl = `${process.env.APP_SERVER_URL}/get-user-and-set-referrer-status`
-		// API call to set referrer status
-		const response = await fetch(apiUrl, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json"
-			},
-			body: JSON.stringify({ referral_code: referralCode })
-		})
-
-		if (!response.ok) {
-			throw new Error(`Error from API: ${response.statusText}`)
-		}
-
-		await response.json()
-		return { message: "Referrer updated successfully", status: 200 }
+		const pricing = await getPricingFromKeytar()
+		console.log("PROD MODE: Fetched pricing plan:", pricing)
+		return pricing || "free" // Default to 'free' if not found
 	} catch (error) {
-		await console.log(`Error in sending referral code: ${error}`)
-		return { error: error.message }
-	}
-})
-
-// IPC handler to invert beta user status
-ipcMain.handle("invert-beta-user-status", async () => {
-	try {
-		const apiUrl = `${process.env.UTILS_SERVER_URL}/get-user-and-invert-beta-user-status`
-		const profile = await getProfile() // Get user profile
-
-		console.log(`Inverting beta status for user: ${profile.sub}`)
-
-		// API call to invert beta user status
-		const response = await fetch(apiUrl, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json"
-			},
-			body: JSON.stringify({ user_id: profile.sub })
-		})
-
-		if (!response.ok) {
-			throw new Error(`Error from API: ${response.statusText}`)
-		}
-
-		await response.json()
-
-		const betaUserStatus = await getBetaUserStatusFromKeytar() // Get current beta user status
-
-		console.log(`Beta status before inversion: ${betaUserStatus}`)
-		const newBetaUserStatus = !betaUserStatus // Invert the status
-
-		console.log(`Beta status after inversion: ${newBetaUserStatus}`)
-		await setBetaUserStatusInKeytar(newBetaUserStatus) // Set the new beta user status in Keytar
-		return { message: "Beta status inverted successfully", status: 200 }
-	} catch (error) {
-		await console.log(`Error in inverting beta status: ${error}`)
-		return { error: error.message }
+		console.error(`PROD MODE: Error fetching pricing plan: ${error}`)
+		return "free" // Default to 'free' on error
 	}
 })
 
 // IPC handler to fetch pro credits
 ipcMain.handle("fetch-pro-credits", async () => {
+	if (!app.isPackaged) {
+		console.log(
+			"DEV MODE: Handling fetch-pro-credits. Returning mock value 999."
+		)
+		return 999 // Return a high/mock value for development
+	}
 	try {
-		const credits = await getCreditsFromKeytar() // Get pro credits from Keytar
+		const credits = await getCreditsFromKeytar()
+		console.log("PROD MODE: Fetched pro credits:", credits)
 		return credits
 	} catch (error) {
-		await console.log(`Error fetching credits: ${error}`)
-		return 0 // Return 0 if fetching fails
+		console.error(`PROD MODE: Error fetching pro credits: ${error}`)
+		return 0 // Default to 0 on error
+	}
+})
+
+// IPC handler to decrement pro credits (careful in dev)
+ipcMain.handle("decrement-pro-credits", async () => {
+	if (!app.isPackaged) {
+		console.log(
+			"DEV MODE: Handling decrement-pro-credits. Simulating success without changing stored value."
+		)
+		// Don't actually decrement anything in dev mode to avoid persistence issues
+		return true // Simulate success
+	}
+	try {
+		let credits = await getCreditsFromKeytar()
+		credits = Math.max(0, credits - 1) // Ensure credits don't go below 0
+		await setCreditsInKeytar(credits)
+		console.log(`PROD MODE: Decremented pro credits to ${credits}.`)
+		return true
+	} catch (error) {
+		console.error(`PROD MODE: Error decrementing pro credits: ${error}`)
+		return false
 	}
 })
 
 // IPC handler to fetch referral code
 ipcMain.handle("fetch-referral-code", async () => {
+	if (!app.isPackaged) {
+		console.log(
+			"DEV MODE: Handling fetch-referral-code. Returning mock code 'DEVREFERRAL'."
+		)
+		return "DEVREFERRAL"
+	}
 	try {
-		const referralCode = await getReferralCodeFromKeytar() // Get referral code from Keytar
+		const referralCode = await getReferralCodeFromKeytar()
+		console.log("PROD MODE: Fetched referral code:", referralCode)
 		return referralCode
 	} catch (error) {
-		await console.log(`Error fetching referral code: ${error}`)
-		return null // Return null if fetching fails
+		console.error(`PROD MODE: Error fetching referral code: ${error}`)
+		return null
 	}
 })
 
 // IPC handler to fetch referrer status
 ipcMain.handle("fetch-referrer-status", async () => {
+	if (!app.isPackaged) {
+		console.log(
+			"DEV MODE: Handling fetch-referrer-status. Returning mock status 'true'."
+		)
+		return true // Or false, depending on testing needs
+	}
 	try {
-		const referrerStatus = await getReferrerStatusFromKeytar() // Get referrer status from Keytar
+		const referrerStatus = await getReferrerStatusFromKeytar()
+		console.log("PROD MODE: Fetched referrer status:", referrerStatus)
 		return referrerStatus
 	} catch (error) {
-		await console.log(`Error fetching referral status: ${error}`)
-		return null // Return null if fetching fails
+		console.error(`PROD MODE: Error fetching referrer status: ${error}`)
+		return null
 	}
 })
 
 // IPC handler to fetch beta user status
 ipcMain.handle("fetch-beta-user-status", async () => {
+	// This might be useful in DEV too, to toggle UI elements
+	// Let's allow it but log clearly.
+	let isDev = !app.isPackaged
+	if (isDev) console.log("DEV MODE: Handling fetch-beta-user-status.")
+
 	try {
-		const betaUserStatus = await getBetaUserStatusFromKeytar() // Get beta user status from Keytar
+		const betaUserStatus = await getBetaUserStatusFromKeytar()
+		console.log(
+			`${isDev ? "DEV" : "PROD"} MODE: Fetched beta user status:`,
+			betaUserStatus
+		)
+		// In pure dev mode, maybe default to true/false if needed?
+		// if (isDev && betaUserStatus === null) return true; // Example default for dev
 		return betaUserStatus
 	} catch (error) {
-		await console.log(`Error fetching beta user status: ${error}`)
-		return null // Return null if fetching fails
+		console.error(
+			`${isDev ? "DEV" : "PROD"} MODE: Error fetching beta user status: ${error}`
+		)
+		return null // Return null on error
 	}
 })
 
-// IPC handler to decrement pro credits
-ipcMain.handle("decrement-pro-credits", async () => {
+// IPC handler to set referrer using referral code
+ipcMain.handle("set-referrer", async (_event, { referralCode }) => {
+	const isDev = !app.isPackaged
+	if (isDev) {
+		console.log(
+			`DEV MODE: Simulating set-referrer with code: ${referralCode}. Returning success.`
+		)
+		// Optionally, store mock status locally if needed for dev UI
+		return {
+			message: "DEV: Referrer status simulated successfully",
+			status: 200
+		}
+	}
 	try {
-		let credits = await getCreditsFromKeytar() // Get current credits
-		credits -= 1 // Decrement credits
-		await setCreditsInKeytar(Math.min(credits, 0)) // Set the decremented credits, minimum 0
-		return true
+		const apiUrl = `${process.env.APP_SERVER_URL}/get-user-and-set-referrer-status`
+		console.log(
+			`PROD MODE: Sending referral code ${referralCode} to ${apiUrl}`
+		)
+		const response = await fetch(apiUrl, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ referral_code: referralCode }) // Assumes API expects this body
+		})
+
+		if (!response.ok) {
+			const errorText = await response.text()
+			console.error(
+				`PROD MODE: Error from set-referrer API: ${response.status} ${response.statusText}`,
+				errorText
+			)
+			throw new Error(`Error from API: ${response.statusText}`)
+		}
+
+		const result = await response.json()
+		console.log("PROD MODE: Set referrer API call successful:", result)
+		// We should probably update the status in Keytar here as well
+		await fetchAndSetReferrerStatus() // Re-fetch and save the updated status
+		return {
+			message: result.message || "Referrer updated successfully",
+			status: 200
+		}
 	} catch (error) {
-		await console.log(`Error decrementing credits: ${error}`)
-		return false
+		console.error(`PROD MODE: Error in set-referrer IPC handler: ${error}`)
+		return { error: error.message, status: 500 } // Return error object
 	}
 })
 
-// IPC handler to set data in user profile database
+// IPC handler to invert beta user status
+ipcMain.handle("invert-beta-user-status", async () => {
+	const isDev = !app.isPackaged
+	if (isDev) {
+		console.log("DEV MODE: Simulating invert-beta-user-status.")
+		// Optionally toggle a mock status if needed
+		return { message: "DEV: Beta status inversion simulated", status: 200 }
+	}
+	try {
+		// URL might be different, adjust as needed. Assumed UTILS_SERVER_URL before.
+		const apiUrl = `${process.env.APP_SERVER_URL}/get-user-and-invert-beta-user-status`
+		const profile = await getProfile() // Needed for user_id
+
+		if (!profile || !profile.sub) {
+			throw new Error("User profile or ID not available.")
+		}
+
+		console.log(
+			`PROD MODE: Inverting beta status for user: ${profile.sub} via ${apiUrl}`
+		)
+		const response = await fetch(apiUrl, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ user_id: profile.sub })
+		})
+
+		if (!response.ok) {
+			const errorText = await response.text()
+			console.error(
+				`PROD MODE: Error from invert-beta API: ${response.status} ${response.statusText}`,
+				errorText
+			)
+			throw new Error(`Error from API: ${response.statusText}`)
+		}
+
+		const result = await response.json()
+		console.log(
+			"PROD MODE: Invert beta status API call successful:",
+			result
+		)
+
+		// Update local status in Keytar immediately for UI consistency
+		const currentStatus = await getBetaUserStatusFromKeytar()
+		const newStatus = !currentStatus
+		await setBetaUserStatusInKeytar(newStatus)
+		console.log(
+			`PROD MODE: Updated local beta status in Keytar to: ${newStatus}`
+		)
+
+		return {
+			message: result.message || "Beta status inverted successfully",
+			status: 200
+		}
+	} catch (error) {
+		console.error(
+			`PROD MODE: Error in invert-beta-user-status IPC handler: ${error}`
+		)
+		return { error: error.message, status: 500 }
+	}
+})
+
+// --- Database Handlers (Use FastAPI backend) ---
+
+// Helper function to fetch user_id (needed for memory operations)
+// Uses the same backend endpoint as get-db-data initially
+async function getUserIdForMemoryOps() {
+	const isDev = !app.isPackaged
+	if (isDev) {
+		// Return a consistent mock User ID for development
+		return "dev-user"
+	}
+	try {
+		// In production, fetch the real user ID
+		const response = await fetch(
+			`${process.env.APP_SERVER_URL}/get-db-data`,
+			{
+				method: "POST", // Assuming this returns the user data structure
+				headers: { "Content-Type": "application/json" }
+			}
+		)
+		if (!response.ok) {
+			const errorDetail = await response
+				.json()
+				.catch(() => ({ detail: "Failed to parse error response" }))
+			console.error(
+				`Error fetching user data for ID: ${response.status}`,
+				errorDetail
+			)
+			throw new Error("Failed to fetch user data")
+		}
+		const result = await response.json()
+		// Adjust path based on your actual DB structure from get-db-data
+		const userId = result?.data?.personalInfo?.name || result?.data?.userId
+		if (!userId) {
+			console.error("User ID not found in fetched DB data:", result)
+			throw new Error("User ID could not be determined from DB data")
+		}
+		return userId
+	} catch (error) {
+		console.error("Error fetching user ID for memory operations:", error)
+		throw error // Propagate error
+	}
+}
+
+// IPC handler to set data in user profile database (replaces existing keys)
 ipcMain.handle("set-db-data", async (_event, args) => {
-	/** @type {{ data: object }} */ const { data } = args // Type hinting for args
+	const { data } = args
+	console.log("IPC: set-db-data called with:", data)
 	try {
 		const response = await fetch(
 			`${process.env.APP_SERVER_URL}/set-db-data`,
 			{
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json"
-				},
-				body: JSON.stringify({ data: data }) // Send data as JSON in the request body
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ data: data })
 			}
 		)
-
 		if (!response.ok) {
-			const errorDetail = await response.json() // Try to get error detail from response
+			const errorDetail = await response
+				.json()
+				.catch(() => ({ detail: "Failed to parse error response" }))
 			console.error(
-				`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`
+				`Error from set-db-data API: ${response.status}`,
+				errorDetail
 			)
-			return { message: "Error storing data", status: response.status } // Return HTTP status
+			return {
+				message: `Error storing data: ${errorDetail.detail || response.statusText}`,
+				status: response.status
+			}
 		}
-
 		const result = await response.json()
-		return result // Return the response from FastAPI
+		console.log("IPC: set-db-data successful:", result)
+		return result
 	} catch (error) {
-		console.error(`Error setting data: ${error}`)
-		return { message: "Error storing data", status: 500 } // Generic error status
+		console.error(`IPC Error: set-db-data failed: ${error}`)
+		return {
+			message: "Error storing data",
+			status: 500,
+			error: error.message
+		}
 	}
 })
 
-// IPC handler to add data to user profile database, handles array and object merging
+// IPC handler to add/merge data into user profile database
 ipcMain.handle("add-db-data", async (_event, args) => {
-	/** @type {{ data: object }} */ const { data } = args // Type hinting for args
+	const { data } = args
+	console.log("IPC: add-db-data called with:", data)
 	try {
 		const response = await fetch(
 			`${process.env.APP_SERVER_URL}/add-db-data`,
 			{
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json"
-				},
-				body: JSON.stringify({ data: data }) // Send data as JSON in the request body
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ data: data })
 			}
 		)
-
 		if (!response.ok) {
-			const errorDetail = await response.json() // Try to get error detail from response
+			const errorDetail = await response
+				.json()
+				.catch(() => ({ detail: "Failed to parse error response" }))
 			console.error(
-				`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`
+				`Error from add-db-data API: ${response.status}`,
+				errorDetail
 			)
-			return { message: "Error adding data", status: response.status } // Return HTTP status
+			return {
+				message: `Error adding data: ${errorDetail.detail || response.statusText}`,
+				status: response.status
+			}
 		}
-
 		const result = await response.json()
-		return result // Return the response from FastAPI
+		console.log("IPC: add-db-data successful:", result)
+		return result
 	} catch (error) {
-		console.error(`Error adding data: ${error}`)
-		return { message: "Error adding data", status: 500 } // Generic error status
+		console.error(`IPC Error: add-db-data failed: ${error}`)
+		return {
+			message: "Error adding data",
+			status: 500,
+			error: error.message
+		}
 	}
 })
 
 // IPC handler to get all user profile database data
 ipcMain.handle("get-db-data", async () => {
+	console.log("IPC: get-db-data called")
 	try {
 		const response = await fetch(
 			`${process.env.APP_SERVER_URL}/get-db-data`,
 			{
-				method: "POST", // FastAPI endpoint is defined as POST
-				headers: {
-					"Content-Type": "application/json"
-				}
+				method: "POST", // Still POST as per original code
+				headers: { "Content-Type": "application/json" }
 			}
 		)
-
 		if (!response.ok) {
-			const errorDetail = await response.json() // Try to get error detail from response
+			const errorDetail = await response
+				.json()
+				.catch(() => ({ detail: "Failed to parse error response" }))
 			console.error(
-				`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`
+				`Error from get-db-data API: ${response.status}`,
+				errorDetail
 			)
-			return { message: "Error fetching data", status: response.status } // Return HTTP status
+			return {
+				message: `Error fetching data: ${errorDetail.detail || response.statusText}`,
+				status: response.status
+			}
 		}
-
 		const result = await response.json()
-		return {
-			data: result.data, // Extract user data from the response
-			status: result.status
-		}
+		console.log("IPC: get-db-data successful.") // Don't log the actual data unless debugging
+		return { data: result.data, status: result.status }
 	} catch (error) {
-		console.error(`Error fetching data: ${error}`)
-		return { message: "Error fetching data", status: 500 } // Generic error status
+		console.error(`IPC Error: get-db-data failed: ${error}`)
+		return {
+			message: "Error fetching data",
+			status: 500,
+			error: error.message
+		}
 	}
 })
 
+// --- Chat Handlers ---
+
 ipcMain.handle("fetch-chat-history", async () => {
+	console.log("IPC: fetch-chat-history called")
 	try {
-		const response = await fetch(`http://localhost:5000/get-history`, {
-			method: "GET"
-		})
-		if (!response.ok) throw new Error("Failed to fetch chat history")
+		// Assuming chat history doesn't strictly require prod auth checks
+		const response = await fetch(
+			`${process.env.APP_SERVER_URL || "http://localhost:5000"}/get-history`,
+			{
+				method: "GET" // Assuming GET is appropriate
+			}
+		)
+		if (!response.ok) {
+			const errorText = await response.text()
+			console.error(
+				`Error fetching chat history: ${response.status} ${response.statusText}`,
+				errorText
+			)
+			throw new Error(
+				`Failed to fetch chat history: Status ${response.status}`
+			)
+		}
 		const data = await response.json()
+		console.log("IPC: fetch-chat-history successful.")
 		return { messages: data.messages, status: 200 }
 	} catch (error) {
-		console.log(`Error fetching chat history: ${error}`)
-		return { message: "Error fetching chat history", status: 500 }
+		console.error(`IPC Error: fetch-chat-history failed: ${error}`)
+		return {
+			message: "Error fetching chat history",
+			status: 500,
+			error: error.message
+		}
 	}
 })
 
 ipcMain.handle("send-message", async (_event, { input }) => {
+	console.log(
+		"IPC: send-message called with input:",
+		input.substring(0, 50) + "..."
+	) // Log truncated input
+	let pricing = "pro" // Default to 'pro' in dev
+	let credits = 999 // Default high credits in dev
+
 	try {
-		const pricing = (await getPricingFromKeytar()) || "free"
-		const credits = await getCreditsFromKeytar()
-		console.log(
-			"PAYLOAD:",
-			JSON.stringify({
-				input,
-				pricing,
-				credits,
-				chat_id: "single_chat"
-			})
-		)
+		if (app.isPackaged) {
+			// Fetch real values only in production
+			pricing = (await getPricingFromKeytar()) || "free"
+			credits = await getCreditsFromKeytar()
+			console.log(
+				`PROD MODE: Sending message with pricing=${pricing}, credits=${credits}`
+			)
+		} else {
+			console.log(
+				`DEV MODE: Sending message with mock pricing=${pricing}, credits=${credits}`
+			)
+		}
+
+		const payload = {
+			input,
+			pricing,
+			credits,
+			chat_id: "single_chat" // Assuming this remains constant for now
+		}
+		console.log("Sending payload to /chat:", JSON.stringify(payload))
+
 		const response = await fetch(`${process.env.APP_SERVER_URL}/chat`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				input,
-				pricing,
-				credits,
-				chat_id: "single_chat"
-			})
+			body: JSON.stringify(payload)
 		})
-		if (!response.ok) throw new Error("Error sending message")
 
-		const readable = response.body
+		if (!response.ok) {
+			const errorText = await response.text()
+			console.error(
+				`Error from /chat endpoint: ${response.status} ${response.statusText}`,
+				errorText
+			)
+			throw new Error(`Error sending message: Status ${response.status}`)
+		}
+
+		if (!response.body) {
+			throw new Error("Response body is null, cannot process stream.")
+		}
+
+		// --- Stream Handling ---
+		const reader = response.body.getReader()
 		const decoder = new TextDecoder("utf-8")
 		let buffer = ""
+		let proUsedInStream = false // Track if pro was used during this stream
 
-		for await (const chunk of readable) {
-			buffer += decoder.decode(chunk, { stream: true })
-			const splitMessages = buffer.split("\n")
-			buffer = splitMessages.pop()
+		console.log("IPC: Starting to process chat stream...")
+		while (true) {
+			const { done, value } = await reader.read()
+			if (done) {
+				console.log("IPC: Chat stream finished.")
+				break
+			}
 
-			for (const msg of splitMessages) {
+			buffer += decoder.decode(value, { stream: true })
+			const lines = buffer.split("\n")
+			buffer = lines.pop() || "" // Keep the potentially incomplete last line
+
+			for (const line of lines) {
+				if (line.trim() === "") continue // Skip empty lines
 				try {
-					const parsedMessage = JSON.parse(msg)
+					const parsedMessage = JSON.parse(line)
+					// console.log("Parsed stream chunk:", parsedMessage); // Verbose logging
+
 					if (parsedMessage.type === "assistantStream") {
-						mainWindow.webContents.send("message-stream", {
-							messageId: parsedMessage.messageId || Date.now(),
-							token: parsedMessage.token
+						mainWindow?.webContents.send("message-stream", {
+							// Ensure messageId is unique and consistent if needed across stream parts
+							messageId:
+								parsedMessage.messageId ||
+								`stream-${Date.now()}`,
+							token: parsedMessage.token || "" // Handle potentially empty tokens
 						})
-						if (
-							parsedMessage.done &&
-							parsedMessage.proUsed &&
-							pricing === "free"
-						) {
-							let credits = await getCreditsFromKeytar()
-							credits -= 1
-							await setCreditsInKeytar(Math.max(credits, 0))
+
+						// Check if 'proUsed' is explicitly true in this chunk
+						if (parsedMessage.proUsed === true) {
+							proUsedInStream = true
 						}
+					} else if (parsedMessage.type === "stream_end") {
+						// Handle a potential explicit end signal
+						console.log(
+							"Stream ended signal received:",
+							parsedMessage
+						)
+						if (parsedMessage.proUsed === true) {
+							proUsedInStream = true
+						}
+						// Any final actions based on stream_end data?
 					}
+					// Handle other message types if necessary
 				} catch (parseError) {
-					console.log(
-						`Error parsing streamed message: ${parseError}: ${msg}`
+					console.warn(
+						`Error parsing streamed JSON line: ${parseError}. Line: "${line}"`
 					)
 				}
 			}
 		}
 
+		// Process any remaining data in the buffer (usually none if stream ends cleanly)
 		if (buffer.trim()) {
+			console.warn(
+				"Processing remaining buffer after stream end:",
+				buffer
+			)
 			try {
 				const parsedMessage = JSON.parse(buffer)
-				if (parsedMessage.type === "assistantMessage") {
-					mainWindow.webContents.send("message-stream", {
-						messageId: Date.now(),
-						token: parsedMessage.message
+				if (
+					parsedMessage.type === "assistantStream" ||
+					parsedMessage.type === "assistantMessage"
+				) {
+					mainWindow?.webContents.send("message-stream", {
+						messageId:
+							parsedMessage.messageId || `final-${Date.now()}`,
+						token:
+							parsedMessage.token || parsedMessage.message || ""
 					})
+					if (parsedMessage.proUsed === true) proUsedInStream = true
 				}
 			} catch (parseError) {
-				console.log(`Error parsing final buffer message: ${parseError}`)
+				console.error(
+					`Error parsing final buffer message: ${parseError}`
+				)
 			}
 		}
 
+		// Decrement credits *after* stream completes if pro was used and user is free (in prod)
+		if (app.isPackaged && pricing === "free" && proUsedInStream) {
+			console.log(
+				"PROD MODE: Pro features used on free plan during stream. Decrementing credit."
+			)
+			// Use the specific decrement handler which includes safety checks
+			await ipcMain.handle("decrement-pro-credits")
+		} else if (pricing === "free" && proUsedInStream) {
+			console.log(
+				"DEV MODE: Pro features used (simulated), would decrement credit in prod."
+			)
+		}
+
 		return { message: "Streaming complete", status: 200 }
+		// --- End Stream Handling ---
 	} catch (error) {
-		console.log(`Error sending message: ${error}`)
+		console.error(`IPC Error: send-message failed: ${error}`)
+		mainWindow?.webContents.send("chat-error", {
+			message: `Failed to get response: ${error.message}`
+		})
 		return { message: `Error: ${error.message}`, status: 500 }
 	}
 })
 
-// IPC handler to scrape LinkedIn profile
+// --- Scraper Handlers ---
+
 ipcMain.handle("scrape-linkedin", async (_event, { linkedInProfileUrl }) => {
-	/** @type {{ linkedInProfileUrl: string }} */
+	console.log("IPC: scrape-linkedin called for URL:", linkedInProfileUrl)
 	try {
-		// API call to scrape LinkedIn profile
 		const response = await fetch(
 			`${process.env.APP_SERVER_URL}/scrape-linkedin`,
 			{
@@ -915,126 +1414,34 @@ ipcMain.handle("scrape-linkedin", async (_event, { linkedInProfileUrl }) => {
 				body: JSON.stringify({ url: linkedInProfileUrl })
 			}
 		)
-
 		if (!response.ok) {
-			return { message: "Error scraping LinkedIn profile", status: 500 }
+			const errorText = await response.text()
+			console.error(
+				`Error from scrape-linkedin API: ${response.status} ${response.statusText}`,
+				errorText
+			)
+			return {
+				message: "Error scraping LinkedIn profile",
+				status: response.status,
+				error: errorText
+			}
 		}
-
-		const { profile } = await response.json() // Extract profile data from response
-
+		const { profile } = await response.json()
+		console.log("IPC: scrape-linkedin successful.")
 		return {
 			message: "LinkedIn profile scraped successfully",
 			profile,
 			status: 200
 		}
 	} catch (error) {
-		await console.log(`Error scraping LinkedIn profile: ${error}`)
+		console.error(`IPC Error: scrape-linkedin failed: ${error}`)
 		return { message: `Error: ${error.message}`, status: 500 }
 	}
 })
 
-// IPC handler to create document and graph in the server
-ipcMain.handle("create-document-and-graph", async () => {
-	try {
-		// API call to create document
-		const documentResponse = await fetch(
-			`${process.env.APP_SERVER_URL}/create-document`,
-			{ method: "POST" }
-		)
-
-		if (!documentResponse.ok) {
-			return { message: "Error creating document", status: 500 }
-		}
-
-		const { personality } = await documentResponse.json() // Extract personality from response
-		userProfileDb.data.userData.personality = personality // Store personality in user profile
-
-		// API call to create graph
-		const graphResponse = await fetch(
-			`${process.env.APP_SERVER_URL}/create-graph`,
-			{ method: "POST" }
-		)
-
-		if (!graphResponse.ok) {
-			return { message: "Error creating graph", status: 500 }
-		}
-
-		return { message: "Graph created successfully", status: 200 }
-	} catch (error) {
-		await console.log(`Error creating document and graph: ${error}`)
-		return { message: `Error: ${error.message}`, status: 500 }
-	}
-})
-
-// IPC handler to recreate the user graph
-ipcMain.handle("recreate-graph", async () => {
-	try {
-		// API call to recreate graph
-		const graphResponse = await fetch(
-			`${process.env.APP_SERVER_URL}/create-graph`,
-			{ method: "POST" }
-		)
-
-		if (!graphResponse.ok) {
-			return { message: "Error recreating graph", status: 500 }
-		}
-
-		return { message: "Graph recreated successfully", status: 200 }
-	} catch (error) {
-		await console.log(`Error recreating graph: ${error}`)
-		return { message: `Error: ${error.message}`, status: 500 }
-	}
-})
-
-// IPC handler to customize user graph
-ipcMain.handle("customize-graph", async (_event, { newGraphInfo }) => {
-	/** @type {{ newGraphInfo: string }} */
-	try {
-		let credits = await getCreditsFromKeytar() // Get current pro credits
-		const pricing = await getPricingFromKeytar() // Get pricing plan
-
-		// API call to customize graph
-		const response = await fetch(
-			`${process.env.APP_SERVER_URL}/customize-graph`,
-			{
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					information: newGraphInfo,
-					credits: credits
-				})
-			}
-		)
-
-		if (!response.ok) {
-			return {
-				message: "Error customizing graph",
-				error: `Server responded with status ${response.status}`,
-				status: response.status
-			}
-		}
-
-		if (pricing === "free") {
-			// Decrement credits if customizing graph in free plan
-			credits -= 1
-			await setCreditsInKeytar(Math.max(credits, 0))
-		}
-
-		return {
-			message: "Graph customized successfully",
-			status: 200
-		}
-	} catch (error) {
-		await console.log(`Error customizing graph: ${error}`)
-		return { message: `Error: ${error.message}`, status: 500 }
-	}
-})
-
-// IPC handler to scrape Reddit profile
 ipcMain.handle("scrape-reddit", async (_event, { redditProfileUrl }) => {
-	/** @type {{ redditProfileUrl: string }} */
+	console.log("IPC: scrape-reddit called for URL:", redditProfileUrl)
 	try {
-		// API call to scrape Reddit profile
 		const response = await fetch(
 			`${process.env.APP_SERVER_URL}/scrape-reddit`,
 			{
@@ -1043,29 +1450,34 @@ ipcMain.handle("scrape-reddit", async (_event, { redditProfileUrl }) => {
 				body: JSON.stringify({ url: redditProfileUrl })
 			}
 		)
-
 		if (!response.ok) {
-			return { message: "Error scraping Reddit profile", status: 500 }
+			const errorText = await response.text()
+			console.error(
+				`Error from scrape-reddit API: ${response.status} ${response.statusText}`,
+				errorText
+			)
+			return {
+				message: "Error scraping Reddit profile",
+				status: response.status,
+				error: errorText
+			}
 		}
-
-		const { topics } = await response.json() // Extract topics from response
-
+		const { topics } = await response.json()
+		console.log("IPC: scrape-reddit successful.")
 		return {
 			message: "Reddit profile scraped successfully",
 			topics,
 			status: 200
 		}
 	} catch (error) {
-		await console.log(`Error scraping Reddit profile: ${error}`)
+		console.error(`IPC Error: scrape-reddit failed: ${error}`)
 		return { message: `Error: ${error.message}`, status: 500 }
 	}
 })
 
-// IPC handler to scrape Twitter profile
 ipcMain.handle("scrape-twitter", async (_event, { twitterProfileUrl }) => {
-	/** @type {{ twitterProfileUrl: string }} */
+	console.log("IPC: scrape-twitter called for URL:", twitterProfileUrl)
 	try {
-		// API call to scrape Twitter profile
 		const response = await fetch(
 			`${process.env.APP_SERVER_URL}/scrape-twitter`,
 			{
@@ -1074,40 +1486,192 @@ ipcMain.handle("scrape-twitter", async (_event, { twitterProfileUrl }) => {
 				body: JSON.stringify({ url: twitterProfileUrl })
 			}
 		)
-
 		if (!response.ok) {
-			return { message: "Error scraping Twitter profile", status: 500 }
+			const errorText = await response.text()
+			console.error(
+				`Error from scrape-twitter API: ${response.status} ${response.statusText}`,
+				errorText
+			)
+			return {
+				message: "Error scraping Twitter profile",
+				status: response.status,
+				error: errorText
+			}
 		}
-
-		const { topics } = await response.json() // Extract topics from response
-
+		const { topics } = await response.json()
+		console.log("IPC: scrape-twitter successful.")
 		return {
 			message: "Twitter profile scraped successfully",
 			topics,
 			status: 200
 		}
 	} catch (error) {
-		await console.log(`Error scraping Twitter profile: ${error}`)
+		console.error(`IPC Error: scrape-twitter failed: ${error}`)
 		return { message: `Error: ${error.message}`, status: 500 }
 	}
 })
 
-// IPC handler to get beta user status
-ipcMain.handle("get-beta-user-status", async () => {
+// --- Graph Handlers ---
+
+ipcMain.handle("create-document-and-graph", async () => {
+	console.log("IPC: create-document-and-graph called")
 	try {
-		const betaUserStatus = await getBetaUserStatusFromKeytar() // Get beta user status from Keytar
-		return betaUserStatus
+		console.log("Calling /create-document...")
+		const documentResponse = await fetch(
+			`${process.env.APP_SERVER_URL}/create-document`,
+			{ method: "POST" }
+		)
+		if (!documentResponse.ok) {
+			const errorText = await documentResponse.text()
+			console.error(
+				`Error from /create-document: ${documentResponse.status}`,
+				errorText
+			)
+			return {
+				message: "Error creating document",
+				status: documentResponse.status,
+				error: errorText
+			}
+		}
+		const { personality } = await documentResponse.json()
+		console.log("Document created successfully. Personality:", personality)
+
+		// Update local DB with personality *before* creating graph if graph depends on it
+		console.log("Updating local DB with personality...")
+		await ipcMain.handle("add-db-data", {
+			data: { userData: { personality: personality } }
+		})
+		console.log("Local DB updated with personality.")
+
+		console.log("Calling /create-graph...")
+		const graphResponse = await fetch(
+			`${process.env.APP_SERVER_URL}/create-graph`,
+			{ method: "POST" }
+		)
+		if (!graphResponse.ok) {
+			const errorText = await graphResponse.text()
+			console.error(
+				`Error from /create-graph: ${graphResponse.status}`,
+				errorText
+			)
+			return {
+				message: "Error creating graph",
+				status: graphResponse.status,
+				error: errorText
+			}
+		}
+		console.log("Graph created successfully.")
+		return {
+			message: "Document and Graph created successfully",
+			status: 200
+		}
 	} catch (error) {
-		await console.log(`Error fetching beta user status: ${error}`)
+		console.error(`IPC Error: create-document-and-graph failed: ${error}`)
 		return { message: `Error: ${error.message}`, status: 500 }
 	}
 })
 
-// IPC handler to delete a subgraph from the knowledge graph
-ipcMain.handle("delete-subgraph", async (event, { source_name }) => {
-	/** @type {{ source_name: string }} */
+ipcMain.handle("recreate-graph", async () => {
+	console.log("IPC: recreate-graph called")
 	try {
-		// API call to delete subgraph
+		const response = await fetch(
+			`${process.env.APP_SERVER_URL}/create-graph`,
+			{ method: "POST" }
+		)
+		if (!response.ok) {
+			const errorText = await response.text()
+			console.error(
+				`Error from /create-graph (recreate): ${response.status}`,
+				errorText
+			)
+			return {
+				message: "Error recreating graph",
+				status: response.status,
+				error: errorText
+			}
+		}
+		console.log("Graph recreated successfully.")
+		return { message: "Graph recreated successfully", status: 200 }
+	} catch (error) {
+		console.error(`IPC Error: recreate-graph failed: ${error}`)
+		return { message: `Error: ${error.message}`, status: 500 }
+	}
+})
+
+ipcMain.handle("customize-graph", async (_event, { newGraphInfo }) => {
+	console.log(
+		"IPC: customize-graph called with info:",
+		newGraphInfo.substring(0, 50) + "..."
+	)
+	let credits = 999 // Dev default
+	let pricing = "pro" // Dev default
+
+	try {
+		if (app.isPackaged) {
+			credits = await getCreditsFromKeytar()
+			pricing = await getPricingFromKeytar()
+			console.log(
+				`PROD MODE: Customizing graph with credits=${credits}, pricing=${pricing}`
+			)
+		} else {
+			console.log(
+				`DEV MODE: Customizing graph with mock credits=${credits}, pricing=${pricing}`
+			)
+		}
+
+		const response = await fetch(
+			`${process.env.APP_SERVER_URL}/customize-graph`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					information: newGraphInfo,
+					credits: credits
+				}) // Send current credits
+			}
+		)
+
+		if (!response.ok) {
+			const errorText = await response.text()
+			console.error(
+				`Error from /customize-graph: ${response.status}`,
+				errorText
+			)
+			return {
+				message: "Error customizing graph",
+				status: response.status,
+				error: errorText
+			}
+		}
+
+		const result = await response.json() // Expecting { message: string, pro_used: boolean } from backend?
+		console.log("Customize graph successful:", result)
+
+		// Decrement credit only if in production, on free plan, and if the API indicates pro was used
+		if (app.isPackaged && pricing === "free" && result?.pro_used === true) {
+			console.log(
+				"PROD MODE: Pro customization used on free plan. Decrementing credit."
+			)
+			await ipcMain.handle("decrement-pro-credits")
+		} else if (pricing === "free" && result?.pro_used === true) {
+			console.log(
+				"DEV MODE: Pro customization used (simulated), would decrement credit in prod."
+			)
+		}
+
+		return {
+			message: result.message || "Graph customized successfully",
+			status: 200
+		}
+	} catch (error) {
+		console.error(`IPC Error: customize-graph failed: ${error}`)
+		return { message: `Error: ${error.message}`, status: 500 }
+	}
+})
+
+ipcMain.handle("delete-subgraph", async (_event, { source_name }) => {
+	console.log("IPC: delete-subgraph called for source:", source_name)
+	try {
 		const response = await fetch(
 			`${process.env.APP_SERVER_URL}/delete-subgraph`,
 			{
@@ -1116,258 +1680,323 @@ ipcMain.handle("delete-subgraph", async (event, { source_name }) => {
 				body: JSON.stringify({ source: source_name })
 			}
 		)
-
-		return response.data // Return response data from API
+		// Assuming the API returns JSON with status, e.g., { status: 'success' } or { status: 'failure', error: '...' }
+		const result = await response.json()
+		if (!response.ok || result.status === "failure") {
+			console.error(
+				`Error from /delete-subgraph: ${response.status}`,
+				result.error || "Unknown error"
+			)
+			return {
+				status: "failure",
+				error:
+					result.error || `Server responded with ${response.status}`
+			}
+		}
+		console.log("Delete subgraph successful:", result)
+		return result // Return the full response from API (e.g., { status: 'success' })
 	} catch (error) {
-		console.log(`Error deleting subgraph: ${error}`)
+		console.error(`IPC Error: delete-subgraph failed: ${error}`)
 		return { status: "failure", error: error.message }
 	}
 })
 
+// --- Task Management Handlers ---
+
 ipcMain.handle("fetch-tasks", async () => {
+	console.log("IPC: fetch-tasks called")
 	try {
-		const response = await fetch("http://localhost:5000/fetch-tasks")
+		const response = await fetch(
+			`${process.env.APP_SERVER_URL || "http://localhost:5000"}/fetch-tasks`
+		)
 		if (!response.ok) {
+			const errorText = await response.text()
+			console.error(`Error fetching tasks: ${response.status}`, errorText)
 			throw new Error(`HTTP error! status: ${response.status}`)
 		}
-		return await response.json()
+		const result = await response.json()
+		console.log("IPC: fetch-tasks successful.")
+		return result
 	} catch (error) {
-		console.error("Error fetching tasks:", error)
+		console.error("IPC Error: fetch-tasks failed:", error)
 		return { error: error.message }
 	}
 })
 
-ipcMain.handle("add-task", async (event, taskData) => {
+ipcMain.handle("add-task", async (_event, taskData) => {
+	console.log("IPC: add-task called with:", taskData)
 	try {
-		const response = await fetch("http://localhost:5000/add-task", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(taskData)
-		})
+		const response = await fetch(
+			`${process.env.APP_SERVER_URL || "http://localhost:5000"}/add-task`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(taskData)
+			}
+		)
 		if (!response.ok) {
+			const errorText = await response.text()
+			console.error(`Error adding task: ${response.status}`, errorText)
 			throw new Error(`HTTP error! status: ${response.status}`)
 		}
-		return await response.json()
+		const result = await response.json()
+		console.log("IPC: add-task successful:", result)
+		return result
 	} catch (error) {
-		console.error("Error adding task:", error)
+		console.error("IPC Error: add-task failed:", error)
 		return { error: error.message }
 	}
 })
 
 ipcMain.handle(
 	"update-task",
-	async (event, { taskId, description, priority }) => {
+	async (_event, { taskId, description, priority }) => {
+		console.log(`IPC: update-task called for ID ${taskId} with:`, {
+			description,
+			priority
+		})
 		try {
 			const response = await fetch(
-				`http://localhost:5000/update-task`, // Changed to POST endpoint for update
+				`${process.env.APP_SERVER_URL || "http://localhost:5000"}/update-task`,
 				{
-					method: "POST", // Changed method to POST
+					method: "POST", // Kept POST as per original code
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
 						task_id: taskId,
 						description,
 						priority
-					}) // Included taskId in the body
+					})
 				}
 			)
 			if (!response.ok) {
+				const errorText = await response.text()
+				console.error(
+					`Error updating task ${taskId}: ${response.status}`,
+					errorText
+				)
 				throw new Error(`HTTP error! status: ${response.status}`)
 			}
-			return await response.json()
+			const result = await response.json()
+			console.log(`IPC: update-task for ID ${taskId} successful:`, result)
+			return result
 		} catch (error) {
-			console.error("Error updating task:", error)
+			console.error(
+				`IPC Error: update-task for ID ${taskId} failed:`,
+				error
+			)
 			return { error: error.message }
 		}
 	}
 )
 
-ipcMain.handle("delete-task", async (event, taskId) => {
+ipcMain.handle("delete-task", async (_event, taskId) => {
+	console.log("IPC: delete-task called for ID:", taskId)
 	try {
-		const response = await fetch(`http://localhost:5000/delete-task`, {
-			// Changed to POST endpoint for delete
-			method: "POST", // Changed method to POST
-			headers: { "Content-Type": "application/json" }, // Added Content-Type header as we are sending JSON body
-			body: JSON.stringify({ task_id: taskId }) // Included taskId in the body
-		})
+		const response = await fetch(
+			`${process.env.APP_SERVER_URL || "http://localhost:5000"}/delete-task`,
+			{
+				method: "POST", // Kept POST as per original code
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ task_id: taskId })
+			}
+		)
 		if (!response.ok) {
+			const errorText = await response.text()
+			console.error(
+				`Error deleting task ${taskId}: ${response.status}`,
+				errorText
+			)
 			throw new Error(`HTTP error! status: ${response.status}`)
 		}
-		return await response.json()
+		const result = await response.json()
+		console.log(`IPC: delete-task for ID ${taskId} successful:`, result)
+		return result
 	} catch (error) {
-		console.error("Error deleting task:", error)
+		console.error(`IPC Error: delete-task for ID ${taskId} failed:`, error)
 		return { error: error.message }
 	}
 })
 
-ipcMain.handle("fetch-short-term-memories", async (event, { category }) => {
+// --- Memory Management Handlers (Short-Term / SQLite) ---
+
+ipcMain.handle("fetch-short-term-memories", async (_event, { category }) => {
+	console.log(
+		`IPC: fetch-short-term-memories called for category: ${category}`
+	)
 	try {
-		let response = await fetch(
-			`${process.env.APP_SERVER_URL}/get-db-data`,
+		const userId = await getUserIdForMemoryOps() // Get real or mock user ID
+		console.log(`Using User ID: ${userId} for fetching memories.`)
+
+		const response = await fetch(
+			`${process.env.APP_SERVER_URL || "http://localhost:5000"}/get-short-term-memories`,
 			{
-				method: "POST", // FastAPI endpoint is defined as POST
-				headers: {
-					"Content-Type": "application/json"
-				}
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ user_id: userId, category, limit: 10 }) // Added limit as per original
 			}
 		)
 
 		if (!response.ok) {
-			const errorDetail = await response.json() // Try to get error detail from response
+			const errorText = await response.text()
 			console.error(
-				`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`
+				`Error fetching memories for ${userId}, category ${category}: ${response.status}`,
+				errorText
 			)
-			return { message: "Error fetching data", status: response.status } // Return HTTP status
-		}
-
-		const result = await response.json()
-		const userId = result.data["personalInfo"]["name"]
-		// Make a request to FastAPI endpoint
-		response = await fetch(
-			"http://localhost:5000/get-short-term-memories",
-			{
-				method: "POST", // Specify the method as POST
-				headers: {
-					"Content-Type": "application/json" // Indicate we are sending JSON data
-				},
-				body: JSON.stringify({ user_id: userId, category, limit: 10 }) // Send userId and category in the request body as JSON
-			}
-		)
-
-		if (!response.ok) {
 			throw new Error(
-				`Failed to fetch memories: ${response.status} ${response.statusText}`
-			) // Include status code and text in error message for better debugging
+				`Failed to fetch memories: Status ${response.status}`
+			)
 		}
 
 		const memories = await response.json()
-		return memories
+		console.log(
+			`IPC: fetch-short-term-memories for ${category} successful.`
+		)
+		return memories // Should be the list of memories
 	} catch (error) {
-		console.error("Error fetching SQLite memories:", error)
-		return []
+		console.error("IPC Error: fetch-short-term-memories failed:", error)
+		return [] // Return empty array on error as per original code
 	}
 })
-// Helper function to fetch user_id from the server
-async function getUserId() {
+
+ipcMain.handle("add-memory", async (_event, memoryData) => {
+	console.log("IPC: add-memory called with:", memoryData)
 	try {
+		const userId = await getUserIdForMemoryOps()
+		const requestBody = { user_id: userId, ...memoryData }
+		console.log(`Adding memory for User ID: ${userId}`)
+
 		const response = await fetch(
-			`${process.env.APP_SERVER_URL}/get-db-data`,
+			`${process.env.APP_SERVER_URL || "http://localhost:5000"}/add-short-term-memory`,
 			{
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json"
-				}
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(requestBody)
 			}
 		)
+
 		if (!response.ok) {
-			const errorDetail = await response.json()
+			const errorText = await response.text()
 			console.error(
-				`HTTP error! status: ${response.status}, detail: ${errorDetail.detail}`
+				`Error adding memory for ${userId}: ${response.status}`,
+				errorText
 			)
-			throw new Error("Failed to fetch user data")
+			throw new Error(`HTTP error! status: ${response.status}`)
 		}
+
 		const result = await response.json()
-		return result.data["personalInfo"]["name"]
+		console.log("IPC: add-memory successful:", result)
+		return result
 	} catch (error) {
-		console.error("Error fetching user ID:", error)
-		throw error
-	}
-}
-
-// IPC handler for adding a memory
-ipcMain.handle("add-memory", async (event, memoryData) => {
-	try {
-		const userId = await getUserId()
-		const requestBody = {
-			user_id: userId,
-			...memoryData
-		}
-		const response = await fetch(
-			"http://localhost:5000/add-short-term-memory",
-			{
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify(requestBody)
-			}
-		)
-		if (!response.ok) {
-			throw new Error(`HTTP error! status: ${response.status}`)
-		}
-		return await response.json()
-	} catch (error) {
-		console.error("Error adding memory:", error)
+		console.error("IPC Error: add-memory failed:", error)
 		return { error: error.message }
 	}
 })
 
-// IPC handler for updating a memory
-ipcMain.handle("update-memory", async (event, memoryData) => {
+ipcMain.handle("update-memory", async (_event, memoryData) => {
+	// memoryData should include the memory ID (e.g., memory_id) and updated fields
+	console.log("IPC: update-memory called with:", memoryData)
 	try {
-		const userId = await getUserId()
-		const requestBody = {
-			user_id: userId,
-			...memoryData
-		}
+		const userId = await getUserIdForMemoryOps()
+		const requestBody = { user_id: userId, ...memoryData }
+		console.log(
+			`Updating memory ID ${memoryData.memory_id} for User ID: ${userId}`
+		) // Log ID if available
+
 		const response = await fetch(
-			"http://localhost:5000/update-short-term-memory",
+			`${process.env.APP_SERVER_URL || "http://localhost:5000"}/update-short-term-memory`,
 			{
-				method: "POST",
+				method: "POST", // Assuming POST, adjust if your API uses PUT/PATCH
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(requestBody)
 			}
 		)
+
 		if (!response.ok) {
+			const errorText = await response.text()
+			console.error(
+				`Error updating memory for ${userId}: ${response.status}`,
+				errorText
+			)
 			throw new Error(`HTTP error! status: ${response.status}`)
 		}
-		return await response.json()
+
+		const result = await response.json()
+		console.log("IPC: update-memory successful:", result)
+		return result
 	} catch (error) {
-		console.error("Error updating memory:", error)
+		console.error("IPC Error: update-memory failed:", error)
 		return { error: error.message }
 	}
 })
 
-// IPC handler for deleting a memory
-ipcMain.handle("delete-memory", async (event, memoryData) => {
+ipcMain.handle("delete-memory", async (_event, memoryData) => {
+	// memoryData should include the ID of the memory to delete (e.g., memory_id)
+	console.log("IPC: delete-memory called with:", memoryData)
 	try {
-		const userId = await getUserId()
-		const requestBody = {
-			user_id: userId,
-			...memoryData
-		}
+		const userId = await getUserIdForMemoryOps()
+		const requestBody = { user_id: userId, ...memoryData }
+		console.log(
+			`Deleting memory ID ${memoryData.memory_id} for User ID: ${userId}`
+		) // Log ID if available
+
 		const response = await fetch(
-			"http://localhost:5000/delete-short-term-memory",
+			`${process.env.APP_SERVER_URL || "http://localhost:5000"}/delete-short-term-memory`,
 			{
-				method: "POST",
+				method: "POST", // Assuming POST, adjust if your API uses DELETE with body or different structure
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(requestBody)
 			}
 		)
+
 		if (!response.ok) {
+			const errorText = await response.text()
+			console.error(
+				`Error deleting memory for ${userId}: ${response.status}`,
+				errorText
+			)
 			throw new Error(`HTTP error! status: ${response.status}`)
 		}
-		return await response.json()
+
+		const result = await response.json()
+		console.log("IPC: delete-memory successful:", result)
+		return result
 	} catch (error) {
-		console.error("Error deleting memory:", error)
+		console.error("IPC Error: delete-memory failed:", error)
 		return { error: error.message }
 	}
 })
 
 ipcMain.handle("clear-all-memories", async () => {
+	console.log("IPC: clear-all-memories called")
 	try {
-		const userId = await getUserId()
+		const userId = await getUserIdForMemoryOps()
+		console.log(`Clearing all memories for User ID: ${userId}`)
+
 		const response = await fetch(
-			"http://localhost:5000/clear-all-memories",
+			`${process.env.APP_SERVER_URL || "http://localhost:5000"}/clear-all-memories`,
 			{
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ user_id: userId })
 			}
 		)
+
 		if (!response.ok) {
+			const errorText = await response.text()
+			console.error(
+				`Error clearing memories for ${userId}: ${response.status}`,
+				errorText
+			)
 			throw new Error(`HTTP error! status: ${response.status}`)
 		}
-		return await response.json()
+
+		const result = await response.json()
+		console.log("IPC: clear-all-memories successful:", result)
+		return result
 	} catch (error) {
-		console.error("Error clearing memories:", error)
+		console.error("IPC Error: clear-all-memories failed:", error)
 		return { error: error.message }
 	}
 })
+
+// --- End of File ---
