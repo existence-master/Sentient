@@ -6,7 +6,6 @@ import Sidebar from "@components/Sidebar"
 import {
 	IconSend,
 	IconRefresh,
-	IconPlayerPlayFilled,
 	IconLoader,
 	IconMicrophone,
 	IconMicrophoneOff,
@@ -36,7 +35,6 @@ const Chat = () => {
 	const [input, setInput] = useState("")
 	const [userDetails, setUserDetails] = useState(null)
 	const [thinking, setThinking] = useState(false) // For text chat thinking indicator
-	const [serverStatus, setServerStatus] = useState(true) // Keep for general server check?
 	const [isSidebarVisible, setSidebarVisible] = useState(false)
 	const [currentModel, setCurrentModel] = useState("")
 	const [isLoading, setIsLoading] = useState(true) // For initial history load
@@ -206,14 +204,14 @@ const Chat = () => {
 			}
 		}
 
-		wsRef.current.onerror = (error) => {
-			console.error("WebSocket error:", error)
-			toast.error("Notification connection error.")
-			// Attempt to reconnect after a delay
-			if (wsRef.current && wsRef.current.pingInterval)
-				clearInterval(wsRef.current.pingInterval)
-			setTimeout(connectWebSocket, 5000) // Reconnect after 5s
-		}
+		// wsRef.current.onerror = (error) => {
+		// 	console.error("WebSocket error:", error)
+		// 	toast.error("Notification connection error.")
+		// 	// Attempt to reconnect after a delay
+		// 	if (wsRef.current && wsRef.current.pingInterval)
+		// 		clearInterval(wsRef.current.pingInterval)
+		// 	setTimeout(connectWebSocket, 5000) // Reconnect after 5s
+		// }
 
 		wsRef.current.onclose = (event) => {
 			console.log("WebSocket closed:", event.code, event.reason)

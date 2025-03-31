@@ -58,7 +58,10 @@ export class WebRTCClient {
 					},
 					video: false
 				})
-				console.log("[WebRTCClient] Microphone access granted.")
+				console.log(
+					"[WebRTCClient] MediaStream tracks:",
+					this.mediaStream.getTracks()
+				)
 			} catch (mediaError) {
 				console.error("[WebRTCClient] Media access error:", mediaError)
 				let message = "Failed to get microphone access."
@@ -83,11 +86,22 @@ export class WebRTCClient {
 
 			// 3. Setup Event Listeners for PeerConnection
 			this.peerConnection.onicecandidate = (event) => {
-				// ICE candidates are handled automatically by signaling via HTTP in this setup
-				// console.log('[WebRTCClient] ICE candidate:', event.candidate);
+				if (event.candidate) {
+					console.log(
+						"[WebRTCClient] ICE candidate:",
+						event.candidate
+					)
+				} else {
+					console.log(
+						"[WebRTCClient] ICE candidate gathering complete."
+					)
+				}
 			}
 
 			this.peerConnection.onconnectionstatechange = () => {
+				console.log(
+					`[WebRTCClient] Connection state changed: ${this.peerConnection.connectionState}`
+				)
 				if (!this.peerConnection) return
 				console.log(
 					`[WebRTCClient] Connection state changed: ${this.peerConnection.connectionState}`
@@ -141,6 +155,7 @@ export class WebRTCClient {
 			// 5. Create Offer and Send to Backend
 			const offer = await this.peerConnection.createOffer()
 			await this.peerConnection.setLocalDescription(offer)
+			console.log("[WebRTCClient] Local SDP:", offer.sdp)
 
 			console.log("[WebRTCClient] Sending offer to backend...")
 			// Use the FastRTC endpoint: /<mount_path>/offer
@@ -160,6 +175,38 @@ export class WebRTCClient {
 					})
 				}
 			)
+
+			this.peerConnection.getStats(null).then((stats) => {
+				stats.forEach((report) => {
+					if (
+						report.type === "outbound-rtp" &&
+						report.kind === "audio"
+					) {
+						console.log(
+							"[WebRTCClient] Audio bytes sent:",
+							report.bytesSent
+						)
+					}
+				})
+			})
+
+			setInterval(() => {
+				if (this.peerConnection && this.isConnected) {
+					this.peerConnection.getStats(null).then((stats) => {
+						stats.forEach((report) => {
+							if (
+								report.type === "outbound-rtp" &&
+								report.kind === "audio"
+							) {
+								console.log(
+									"[WebRTCClient] Audio bytes sent:",
+									report.bytesSent
+								)
+							}
+						})
+					})
+				}
+			}, 5000)
 
 			if (!response.ok) {
 				const errorText = await response.text()

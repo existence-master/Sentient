@@ -1101,6 +1101,15 @@ async def voice_handler(audio: tuple[int, np.ndarray]):
     Async generator for FastRTC ReplyOnPause. Handles STT, calls chat logic, generates TTS.
     Yields audio chunks (sr, np.ndarray) and broadcasts state via WebSocket.
     """
+    try:
+        sr_info = audio[0] if audio and len(audio) > 0 else "N/A"
+        shape_info = audio[1].shape if audio and len(audio) > 1 and audio[1] is not None else "N/A"
+        size_info = audio[1].size if audio and len(audio) > 1 and audio[1] is not None else "N/A"
+        dtype_info = audio[1].dtype if audio and len(audio) > 1 and audio[1] is not None else "N/A"
+        print(f"\n\n[DEBUG] === voice_handler invoked! SR={sr_info}, Shape={shape_info}, Size={size_info}, dtype={dtype_info} ===\n\n")
+    except Exception as log_err:
+        print(f"[DEBUG] Error in voice_handler initial log: {log_err}")
+    
     sample_rate, audio_array = audio
     global manager # Access the global WebSocket manager
 
@@ -1211,13 +1220,12 @@ async def voice_handler(audio: tuple[int, np.ndarray]):
             await manager.broadcast_json({"type": "voice_state", "state": "listening"})
             yield None
 
-
-# Create FastRTC Stream Instance
 voice_stream = Stream(
-    # Pass the handler function directly as the first argument to ReplyOnPause
     handler=ReplyOnPause(
-        voice_handler, # <--- Pass the async generator function directly
+        voice_handler,
         can_interrupt=True,
+        input_sample_rate=48000,
+        output_sample_rate=16000,
         algo_options=AlgoOptions(
             audio_chunk_duration=0.6,
             started_talking_threshold=0.25,
@@ -2264,4 +2272,5 @@ print(f"Server startup time: {STARTUP_TIME:.2f} seconds")
 # --- Run the Application ---
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+    voice_stream.ui.launch()
     uvicorn.run(app, host="0.0.0.0", port=5000, reload=False, workers=1)
