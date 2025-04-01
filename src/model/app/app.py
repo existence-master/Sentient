@@ -539,11 +539,11 @@ async def startup_event():
     
     for source in enabled_data_sources:
         if source == "gmail":
-            engine = GmailContextEngine(user_id, task_queue, memory_backend, manager, db_lock)
+            engine = GmailContextEngine(user_id, task_queue, memory_backend, manager, db_lock,notifications_db_lock)
         elif source == "internet_search":
-            engine = InternetSearchContextEngine(user_id, task_queue, memory_backend, manager, db_lock)
+            engine = InternetSearchContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
         elif source == "gcalendar":
-            engine = GCalendarContextEngine(user_id, task_queue, memory_backend, manager, db_lock)
+            engine = GCalendarContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
         else:
             continue  # Skip unrecognized sources
         asyncio.create_task(engine.start())

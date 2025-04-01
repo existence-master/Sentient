@@ -388,3 +388,24 @@ async def save_db(data):
     """Save the data to chatsDb.json."""
     with open(CHAT_DB, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4)
+        
+NOTIFICATIONS_DB = "notificationsDb.json"
+        
+async def load_notifications_db():
+    """Load the notifications database, initializing it if it doesn't exist."""
+    try:
+        with open(NOTIFICATIONS_DB, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            if "notifications" not in data:
+                data["notifications"] = []
+            if "next_notification_id" not in data:
+                data["next_notification_id"] = 1
+            return data
+    except (FileNotFoundError, json.JSONDecodeError):
+        print("Notifications DB NOT FOUND! Initializing with default structure.")
+        return {"notifications": [], "next_notification_id": 1}
+
+async def save_notifications_db(data):
+    """Save the notifications database."""
+    with open(NOTIFICATIONS_DB, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4)

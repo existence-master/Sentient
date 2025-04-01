@@ -4,18 +4,19 @@ from datetime import datetime
 import asyncio
 import os
 import time
-from model.app.helpers import load_db, save_db  # Import here to avoid circular import
+from model.app.helpers import load_db, load_notifications_db, save_notifications_db # Import here to avoid circular import
 
 class BaseContextEngine(ABC):
     """Abstract base class for context engines handling various data sources."""
 
-    def __init__(self, user_id, task_queue, memory_backend, websocket_manager, db_lock):
+    def __init__(self, user_id, task_queue, memory_backend, websocket_manager, chats_db_lock, notifications_db_lock):
         print(f"BaseContextEngine.__init__ started for user_id: {user_id}")
         self.user_id = user_id
         self.task_queue = task_queue
         self.memory_backend = memory_backend
         self.websocket_manager = websocket_manager
-        self.db_lock = db_lock
+        self.chats_db_lock = chats_db_lock
+        self.notifications_db_lock = notifications_db_lock
         self.context_file = "context.json"
         self.context = self.load_context()
         print(f"BaseContextEngine.__init__ finished for user_id: {user_id}")
@@ -125,7 +126,7 @@ class BaseContextEngine(ABC):
     async def get_chat_history(self):
         """Retrieve the last 10 messages from the active chat."""
         print("BaseContextEngine.get_chat_history started")
-        async with self.db_lock:
+        async with self.chats_db_lock:
             print("BaseContextEngine.get_chat_history - acquired db_lock")
             chatsDb = await load_db()
             print("BaseContextEngine.get_chat_history - loaded chatsDb")
@@ -174,15 +175,22 @@ class BaseContextEngine(ABC):
 
         # Add messages to the chat database and notifications database
         if message:
+            
+            new_message = {
+                    "id": str(int(time.time() * 1000)),
+                    "message": message,
+                    "isUser": False,
+                    "isVisible": True,
+                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                }
             print("BaseContextEngine.execute_outputs - processing message:", message)
             # Save to notificationsDB
-            async with notifications_db_lock:
+            async with self.notifications_db_lock:
                 print("BaseContextEngine.execute_outputs - acquired notifications_db_lock")
                 notifications_db = await load_notifications_db()
                 new_notification = {
                     "id": notifications_db["next_notification_id"],
                     "type": "new_message",
-                    "chat_id": active_chat_id,
                     "message_id": new_message["id"],
                     "message": message,
                     "timestamp": new_message["timestamp"]
