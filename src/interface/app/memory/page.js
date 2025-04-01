@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from "react"
 import GraphVisualization from "@components/GraphViz"
 import Sidebar from "@components/Sidebar"
-import { fetchGraphData } from "@utils/neo4j"
 import {
 	IconInfoCircle,
 	IconRefresh,
@@ -30,6 +29,7 @@ const Memories = () => {
 	const [credits, setCredits] = useState(null)
 	const [memoryDisplayType, setMemoryDisplayType] = useState("neo4j")
 	const [clearMemoriesLoading, setClearMemoriesLoading] = useState(false) // New state for clearing memories
+	const [graphLoading, setGraphLoading] = useState(false)
 
 	// Existing fetch functions remain unchanged
 	const fetchUserDetails = async () => {
@@ -70,14 +70,59 @@ const Memories = () => {
 		}
 	}
 
-	const loadGraphData = async () => {
+	const loadGraphData = useCallback(async () => {
+		// Wrap in useCallback
+		console.log("Attempting to load graph data via IPC...")
+		setGraphLoading(true) // Set loading true
+		setGraphData({ nodes: [], edges: [] }) // Clear previous data while loading
 		try {
-			const data = await fetchGraphData()
-			setGraphData(data)
+			// Use the new IPC handler
+			const response = await window.electron?.invoke("fetch-graph-data")
+
+			// Check if the response indicates an error
+			if (response?.error) {
+				console.error(
+					"Error received from fetch-graph-data IPC:",
+					response.error
+				)
+				toast.error(`Error loading graph data: ${response.error}`)
+				setGraphData({ nodes: [], edges: [] }) // Ensure graph is empty on error
+			} else if (response?.nodes && response?.edges) {
+				// Check if data is valid before setting
+				if (
+					Array.isArray(response.nodes) &&
+					Array.isArray(response.edges)
+				) {
+					console.log("Graph data loaded successfully via IPC.")
+					setGraphData({
+						nodes: response.nodes,
+						edges: response.edges
+					})
+				} else {
+					console.error(
+						"Invalid data format received from fetch-graph-data IPC:",
+						response
+					)
+					toast.error("Received invalid graph data format.")
+					setGraphData({ nodes: [], edges: [] })
+				}
+			} else {
+				// Handle unexpected response structure
+				console.error(
+					"Unexpected response structure from fetch-graph-data IPC:",
+					response
+				)
+				toast.error("Failed to load graph data: Unexpected response.")
+				setGraphData({ nodes: [], edges: [] })
+			}
 		} catch (error) {
-			toast.error(`Error loading graph data: ${error}`)
+			console.error("Error invoking fetch-graph-data IPC:", error)
+			toast.error(`Error loading graph data: ${error.message}`)
+			setGraphData({ nodes: [], edges: [] }) // Ensure graph is empty on error
+		} finally {
+			setGraphLoading(false) // Set loading false
 		}
-	}
+	}, []) // Empty dependency array for useCallback
 
 	const handleRecreateGraph = async () => {
 		setRecreateGraphLoading(true)
@@ -259,6 +304,14 @@ const Memories = () => {
 				</div>
 
 				<div className="flex items-start justify-center h-full w-[80%]">
+					{graphLoading && memoryDisplayType === "neo4j" && (
+						<div className="absolute inset-0 flex items-center justify-center bg-matteblack bg-opacity-75 z-10">
+							<p className="text-white text-xl">
+								Loading Graph...
+							</p>
+							{/* Optional: Add a spinner here */}
+						</div>
+					)}
 					{memoryDisplayType === "neo4j" ? (
 						<GraphVisualization
 							nodes={graphData.nodes}
@@ -321,7 +374,7 @@ const Memories = () => {
 							<button
 								className="bg-red-600 text-white py-2 px-6 rounded-lg hover:bg-red-700 transition flex items-center gap-2"
 								onClick={handleRecreateGraph}
-								disabled={recreateGraphLoading}
+								disabled={recreateGraphLoading || graphLoading}
 							>
 								{recreateGraphLoading
 									? "Recreating..."

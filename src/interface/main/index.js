@@ -1999,4 +1999,60 @@ ipcMain.handle("clear-all-memories", async () => {
 	}
 })
 
+handle("fetch-graph-data", async () => {
+	console.log("IPC: fetch-graph-data called")
+	try {
+		// Ensure APP_SERVER_URL is defined in your environment variables
+		const apiUrl = `${process.env.APP_SERVER_URL}/get-graph-data`
+		if (!apiUrl) {
+			throw new Error("APP_SERVER_URL environment variable is not set.")
+		}
+
+		console.log(`Fetching graph data from backend: ${apiUrl}`)
+		const response = await fetch(apiUrl, {
+			method: "POST", // Using POST as defined in FastAPI
+			headers: {
+				"Content-Type": "application/json"
+				// Add any necessary authentication headers here if required by your backend
+				// 'Authorization': `Bearer ${token}`
+			},
+			// No body needed for this specific request, but sending empty JSON
+			// is often good practice for POST if the backend expects it.
+			body: JSON.stringify({})
+		})
+
+		if (!response.ok) {
+			let errorText = response.statusText
+			try {
+				// Try to get more detailed error from FastAPI response body
+				const errorBody = await response.json()
+				errorText = errorBody.detail || errorText
+			} catch (e) {
+				// Ignore if response body isn't JSON
+			}
+			console.error(
+				`Error fetching graph data from backend: ${response.status} ${errorText}`
+			)
+			// Return an error object that the frontend can check
+			return {
+				error: `Failed to fetch graph data: ${errorText}`,
+				status: response.status
+			}
+		}
+
+		// Parse the JSON response which should contain { nodes, edges }
+		const graphData = await response.json()
+		console.log("IPC: fetch-graph-data successful.")
+		// Directly return the data in the expected format
+		return graphData // Should be { nodes: [...], edges: [...] }
+	} catch (error) {
+		console.error(`IPC Error: fetch-graph-data failed: ${error}`)
+		// Return an error object
+		return {
+			error: `Network or processing error: ${error.message}`,
+			status: 500
+		}
+	}
+})
+
 // --- End of File ---

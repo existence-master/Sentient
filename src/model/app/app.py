@@ -1882,6 +1882,67 @@ async def get_db_data() -> Dict[str, Any]: # Request is just for consistency, no
     except Exception as e:
         print(f"Error fetching data: {e}")
         raise HTTPException(status_code=500, detail="Error fetching data")
+    
+@app.post("/get-graph-data")
+async def get_graph_data():
+    """
+    Fetches graph data from Neo4j (all nodes and relationships)
+    and formats it for graph visualization.
+    """
+    nodes = []
+    edges = []
+    node_ids = set() # Keep track of added node IDs to avoid duplicates
+
+    # Use async session if your driver setup supports it, otherwise use sync session
+    # Using sync session here for broader compatibility based on original JS code
+    try:
+        with graph_driver.session() as session:
+            # Using read_transaction for read-only operation
+            result = session.read_transaction(
+                lambda tx: tx.run("MATCH (n)-[r]->(m) RETURN n, r, m").data()
+            )
+
+            for record in result:
+                source_node = record['n']
+                target_node = record['m']
+                relationship = record['r']
+
+                # Process source node
+                source_id = str(source_node.element_id) # Use element_id, convert to string
+                if source_id not in node_ids:
+                    nodes.append({
+                        "id": source_id,
+                        # Use list of labels, take first if exists, otherwise None or default
+                        "label": list(source_node.labels)[0] if source_node.labels else "Unknown",
+                        "properties": dict(source_node) # Convert properties to dict
+                    })
+                    node_ids.add(source_id)
+
+                # Process target node
+                target_id = str(target_node.element_id) # Use element_id, convert to string
+                if target_id not in node_ids:
+                    nodes.append({
+                        "id": target_id,
+                        "label": list(target_node.labels)[0] if target_node.labels else "Unknown",
+                        "properties": dict(target_node)
+                    })
+                    node_ids.add(target_id)
+
+                # Process edge
+                edges.append({
+                    "from": source_id, # Already string
+                    "to": target_id,   # Already string
+                    "label": relationship.type
+                })
+
+        return JSONResponse(status_code = 200, content={"nodes": nodes, "edges": edges})
+
+    except Exception as e:
+        print(f"Error fetching graph data: {e}")
+        # Log the full error for debugging
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"An error occurred while fetching graph data: {str(e)}")
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
