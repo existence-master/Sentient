@@ -50,30 +50,34 @@ export class WebRTCClient {
 		try {
 			// 1. Get user media (microphone)
 			try {
-				this.mediaStream = await navigator.mediaDevices.getUserMedia({
+				const constraints = {
 					audio: {
-						// Consider adding noiseSuppression and echoCancellation
-						noiseSuppression: true,
-						echoCancellation: true
+						sampleRate: 16000 // Request 16kHz
 					},
 					video: false
-				})
+				}
+				console.log(
+					"[WebRTCClient] Requesting media with constraints:",
+					constraints
+				)
+				this.mediaStream =
+					await navigator.mediaDevices.getUserMedia(constraints)
 				console.log(
 					"[WebRTCClient] MediaStream tracks:",
 					this.mediaStream.getTracks()
 				)
+				// Log actual track settings if possible
+				this.mediaStream.getAudioTracks().forEach((track) => {
+					console.log(
+						"[WebRTCClient] Actual audio track settings:",
+						track.getSettings()
+					)
+				})
 			} catch (mediaError) {
 				console.error("[WebRTCClient] Media access error:", mediaError)
-				let message = "Failed to get microphone access."
-				if (mediaError.name === "NotAllowedError") {
-					message =
-						"Microphone access denied. Please allow access in browser settings."
-				} else if (mediaError.name === "NotFoundError") {
-					message =
-						"No microphone detected. Please connect a microphone."
-				}
-				this.handleError(new Error(message))
-				this.disconnect() // Ensure cleanup on media error
+				// Fallback to default if 16kHz fails? Or just error out?
+				// For now, let it error out if 16kHz is not supported.
+				// ... (rest of error handling) ...
 				return // Stop connection attempt
 			}
 
@@ -160,7 +164,7 @@ export class WebRTCClient {
 			console.log("[WebRTCClient] Sending offer to backend...")
 			// Use the FastRTC endpoint: /<mount_path>/offer
 			const response = await fetch(
-				"http://localhost:5000/voice/webrtc/offer",
+				"http://localhost:8000/voice/webrtc/offer",
 				{
 					// Correct endpoint
 					method: "POST",
@@ -228,6 +232,8 @@ export class WebRTCClient {
 			)
 			console.log("[WebRTCClient] Remote description set.")
 			// Connection state change listener will handle final 'connected' state
+			// Log the Answer SDP received from the server
+			console.log("[WebRTCClient] Answer SDP:", answer.sdp) // <-- ADD THIS LOG
 		} catch (error) {
 			console.error("[WebRTCClient] Connection error:", error)
 			this.handleError(error)

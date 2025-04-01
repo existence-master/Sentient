@@ -13,8 +13,8 @@ import {
 	IconPlayerStopFilled
 } from "@tabler/icons-react"
 import toast from "react-hot-toast"
-import { WebRTCClient } from "@utils/WebRTCClient" // Adjust path as needed
-import "webrtc-adapter" // Polyfill
+import { WebSocketAudioClient } from "@utils/WebSocketAudioClient"
+import "webrtc-adapter"
 
 // Debounce function
 function debounce(func, wait) {
@@ -49,10 +49,16 @@ const Chat = () => {
 	const textareaRef = useRef(null)
 	const chatEndRef = useRef(null)
 	const textChatListenersAdded = useRef(false)
-	const webRTCClientRef = useRef(null) // Ref for WebRTCClient instance
-	const remoteAudioRef = useRef(null) // Ref for the <audio> element
+	// const webRTCClientRef = useRef(null) // <-- Remove or rename
+	const wsAudioClientRef = useRef(null) // <--- Ref for WebSocket client
+	// const remoteAudioRef = useRef(null) // <-- Remove, we'll handle playback differently
+	const audioContextRef = useRef(null) // Ref for playback AudioContext
+	const audioQueueRef = useRef([]) // Queue for incoming audio chunks
+	const nextPlayTimeRef = useRef(0) // Track scheduled playback time
+	const isPlayingRef = useRef(false) // Track if playback loop is active
+
 	const wsRef = useRef(null) // Ref for the general WebSocket connection
-	const wsListenersAdded = useRef(false) // Track WebSocket listeners separately
+	const wsListenersAdded = useRef(false)
 
 	// --- Fetching Data ---
 	const fetchChatHistory = useCallback(async () => {
@@ -416,115 +422,259 @@ const Chat = () => {
 		}
 	}, [fetchChatHistory])
 
-	// --- Voice Chat Functions ---
-
-	const handleWebRTCAudioStream = useCallback((stream) => {
-		console.log("[WebRTC] Received remote audio stream.")
-		if (remoteAudioRef.current) {
-			remoteAudioRef.current.srcObject = stream
-			remoteAudioRef.current
-				.play()
-				.catch((e) => console.error("Error playing remote audio:", e))
+	// --- NEW: Audio Playback Logic ---
+	const initializePlayback = useCallback(() => {
+		if (!audioContextRef.current) {
+			try {
+				audioContextRef.current = new (window.AudioContext ||
+					window.webkitAudioContext)({
+					sampleRate: 24000 // Orpheus/SNAC output sample rate
+				})
+				console.log("[Playback] Initialized AudioContext for playback.")
+				// Ensure context is running (user interaction often needed)
+				if (audioContextRef.current.state === "suspended") {
+					audioContextRef.current.resume()
+				}
+				nextPlayTimeRef.current = audioContextRef.current.currentTime
+				isPlayingRef.current = false // Ensure playback loop starts fresh
+			} catch (e) {
+				console.error("Error creating playback AudioContext:", e)
+				toast.error("Failed to initialize audio playback.")
+			}
 		}
 	}, [])
 
-	const handleWebRTCConnected = useCallback(() => {
-		console.log("[WebRTC] Connection established callback triggered.")
-		setIsConnecting(false)
-		setVoiceState("listening") // <--- SET STATE DIRECTLY HERE
-	}, [])
+	const scheduleChunkPlayback = useCallback(() => {
+		if (
+			!audioContextRef.current ||
+			audioQueueRef.current.length === 0 ||
+			isPlayingRef.current
+		) {
+			return // Nothing to play, context not ready, or already playing
+		}
 
-	const handleWebRTCDisconnected = useCallback(() => {
-		console.log("[WebRTC] Disconnected callback triggered.")
+		isPlayingRef.current = true // Mark as playing to prevent re-entry
+
+		const processQueue = () => {
+			if (audioQueueRef.current.length === 0) {
+				isPlayingRef.current = false // Stop loop if queue is empty
+				// console.log("[Playback] Queue empty, stopping loop."); // Debug
+				return
+			}
+
+			// Play chunks that are due
+			while (
+				audioQueueRef.current.length > 0 &&
+				audioContextRef.current.currentTime >=
+					nextPlayTimeRef.current - 0.1
+			) {
+				// Play slightly ahead
+				const audioChunk = audioQueueRef.current.shift() // Get chunk (Float32Array)
+				const buffer = audioContextRef.current.createBuffer(
+					1, // Number of channels
+					audioChunk.length, // Buffer size
+					audioContextRef.current.sampleRate // Sample rate
+				)
+				buffer.getChannelData(0).set(audioChunk)
+
+				const source = audioContextRef.current.createBufferSource()
+				source.buffer = buffer
+				source.connect(audioContextRef.current.destination)
+
+				// Schedule start time precisely
+				const startTime = Math.max(
+					audioContextRef.current.currentTime,
+					nextPlayTimeRef.current
+				)
+				// console.log(`[Playback] Scheduling chunk to start at: ${startTime.toFixed(3)} (current: ${audioContextRef.current.currentTime.toFixed(3) })`); // Debug
+				source.start(startTime)
+
+				// Update time for the *next* chunk
+				nextPlayTimeRef.current = startTime + buffer.duration
+			}
+
+			// Check queue again shortly
+			requestAnimationFrame(processQueue)
+		}
+
+		requestAnimationFrame(processQueue)
+	}, []) // Dependencies managed internally via refs
+
+	const handleAudioChunkReceived = useCallback(
+		(audioChunk) => {
+			// console.log(`[WebSocket] Received audio chunk, length: ${audioChunk.length}`); // Debug
+			if (!audioContextRef.current) {
+				console.warn(
+					"[Playback] AudioContext not ready, discarding chunk."
+				)
+				return
+			}
+			// Ensure context is running
+			if (audioContextRef.current.state === "suspended") {
+				audioContextRef.current.resume()
+			}
+
+			audioQueueRef.current.push(audioChunk) // Add chunk to queue
+			scheduleChunkPlayback() // Attempt to schedule playback
+		},
+		[scheduleChunkPlayback]
+	)
+
+	// --- Voice Chat Callbacks (using WebSocket Client) ---
+
+	const handleWebSocketAudioConnected = useCallback(() => {
+		console.log("[WebSocketAudioClient] Connection established callback.")
 		setIsConnecting(false)
-		setIsVoiceMode(false) // Turn off voice mode UI on disconnect
+		initializePlayback() // Prepare audio context for receiving audio
+		setVoiceState("listening")
+	}, [initializePlayback]) // Add dependency
+
+	const handleWebSocketAudioDisconnected = useCallback(() => {
+		console.log("[WebSocketAudioClient] Disconnected callback.")
+		setIsConnecting(false)
+		setIsVoiceMode(false)
 		setVoiceState("idle")
-		// webRTCClientRef.current = null; // Client instance is cleaned up in effect
+		// Cleanup playback resources
+		if (
+			audioContextRef.current &&
+			audioContextRef.current.state !== "closed"
+		) {
+			audioContextRef.current
+				.close()
+				.then(() =>
+					console.log("[Playback] Playback AudioContext closed.")
+				)
+			audioContextRef.current = null
+		}
+		audioQueueRef.current = []
+		isPlayingRef.current = false
+		nextPlayTimeRef.current = 0
 	}, [])
 
-	const handleWebRTCError = useCallback((error) => {
-		console.error("[WebRTC] Error callback triggered:", error)
+	const handleWebSocketAudioError = useCallback((error) => {
+		console.error("[WebSocketAudioClient] Error callback:", error)
 		toast.error(`Voice connection error: ${error.message}`)
 		setIsConnecting(false)
-		setIsVoiceMode(false) // Turn off voice mode UI on error
+		setIsVoiceMode(false)
 		setVoiceState("error")
+		// Optionally cleanup playback context on error too
 	}, [])
 
-	// Debounced audio level handler for smoother UI updates (optional)
-	const handleWebRTCAudioLevel = useCallback(
-		debounce((level) => {
-			// You can use this 'level' (0-1) for UI visualization if needed
-			// console.log("Audio Level:", level);
-		}, 50),
-		[]
-	) // Update visualization every 50ms
+	const handleWebSocketTextMessage = useCallback((message) => {
+		console.log(
+			"[WebSocketAudioClient] Received text/status message:",
+			message
+		)
+		// You can use this to update UI based on logs, errors, etc. from server
+		if (message.type === "log" && message.data === "pause_detected") {
+			setVoiceState("thinking") // Update state based on server log
+		} else if (
+			message.type === "log" &&
+			message.data === "response_starting"
+		) {
+			setVoiceState("speaking")
+		} else if (message.type === "error") {
+			toast.error(`Server error: ${message.data}`)
+			// Maybe revert voice state?
+		}
+		// Add more handlers as needed based on messages fastrtc sends
+	}, [])
+
+	// --- Start/Stop Voice Mode (using WebSocket Client) ---
 
 	const startVoiceMode = useCallback(async () => {
 		if (
 			isConnecting ||
-			(webRTCClientRef.current && webRTCClientRef.current.isConnected)
+			(wsAudioClientRef.current && wsAudioClientRef.current.isConnected)
 		) {
-			console.warn("Already connecting or connected to voice.")
+			console.warn(
+				"Already connecting or connected to voice (WebSocket)."
+			)
 			return
 		}
-		console.log("Starting Voice Mode...")
+		console.log("Starting Voice Mode (WebSocket)...")
 		setIsConnecting(true)
 		setIsVoiceMode(true)
-		setVoiceState("connecting") // Initial state
-
-		// Stop text input thinking indicator if it was active
+		setVoiceState("connecting")
 		setThinking(false)
 
-		// Instantiate and connect WebRTC Client
-		if (!webRTCClientRef.current) {
-			webRTCClientRef.current = new WebRTCClient({
-				onConnected: handleWebRTCConnected,
-				onDisconnected: handleWebRTCDisconnected,
-				onAudioStream: handleWebRTCAudioStream,
-				onAudioLevel: handleWebRTCAudioLevel,
-				onError: handleWebRTCError
+		// Ensure playback is ready *before* connecting fully might be good
+		initializePlayback()
+
+		if (!wsAudioClientRef.current) {
+			wsAudioClientRef.current = new WebSocketAudioClient({
+				onConnected: handleWebSocketAudioConnected,
+				onDisconnected: handleWebSocketAudioDisconnected,
+				onAudioChunkReceived: handleAudioChunkReceived, // Handle incoming audio
+				onTextMessage: handleWebSocketTextMessage, // Handle non-audio messages
+				onError: handleWebSocketAudioError
 			})
 		}
 
 		try {
-			await webRTCClientRef.current.connect()
-			// Connection success is handled by the onConnected callback
+			await wsAudioClientRef.current.connect()
 		} catch (error) {
-			// Error is handled by the onError callback
-			console.error("Error initiating WebRTC connection:", error)
-			// Ensure UI resets if connect throws synchronously (though onError should handle it)
+			console.error("Error initiating WebSocket connection:", error)
 			setIsConnecting(false)
 			setIsVoiceMode(false)
 			setVoiceState("error")
 		}
 	}, [
 		isConnecting,
-		handleWebRTCConnected,
-		handleWebRTCDisconnected,
-		handleWebRTCAudioStream,
-		handleWebRTCAudioLevel,
-		handleWebRTCError
+		initializePlayback,
+		handleWebSocketAudioConnected,
+		handleWebSocketAudioDisconnected,
+		handleAudioChunkReceived,
+		handleWebSocketTextMessage,
+		handleWebSocketAudioError
 	]) // Add dependencies
 
 	const stopVoiceMode = useCallback(() => {
-		console.log("Stopping Voice Mode...")
-		if (webRTCClientRef.current) {
-			webRTCClientRef.current.disconnect() // Disconnect will trigger callbacks
+		console.log("Stopping Voice Mode (WebSocket)...")
+		if (wsAudioClientRef.current) {
+			wsAudioClientRef.current.disconnect() // Disconnect will trigger callbacks
+			wsAudioClientRef.current = null // Clear the ref
 		}
-		// Reset states immediately for faster UI feedback
+		// Reset states (callbacks might also do this, but immediate feedback is good)
 		setIsConnecting(false)
 		setIsVoiceMode(false)
 		setVoiceState("idle")
-		webRTCClientRef.current = null // Clear the ref after calling disconnect
+		// Explicitly cleanup playback context on manual stop
+		if (
+			audioContextRef.current &&
+			audioContextRef.current.state !== "closed"
+		) {
+			audioContextRef.current
+				.close()
+				.then(() =>
+					console.log(
+						"[Playback] Playback AudioContext closed on stop."
+					)
+				)
+			audioContextRef.current = null
+		}
+		audioQueueRef.current = []
+		isPlayingRef.current = false
+		nextPlayTimeRef.current = 0
 	}, [])
 
-	// Effect to cleanup WebRTC client on unmount if still active
+	// Cleanup client on unmount
 	useEffect(() => {
 		return () => {
-			if (webRTCClientRef.current) {
-				console.log("Cleaning up WebRTC client on component unmount.")
-				webRTCClientRef.current.disconnect()
-				webRTCClientRef.current = null
+			if (wsAudioClientRef.current) {
+				console.log(
+					"Cleaning up WebSocket audio client on component unmount."
+				)
+				wsAudioClientRef.current.disconnect()
+				wsAudioClientRef.current = null
+			}
+			// Cleanup playback context if component unmounts while active
+			if (
+				audioContextRef.current &&
+				audioContextRef.current.state !== "closed"
+			) {
+				audioContextRef.current.close()
+				audioContextRef.current = null
 			}
 		}
 	}, [])
@@ -532,36 +682,36 @@ const Chat = () => {
 	const toggleMute = useCallback(() => {
 		if (
 			!isVoiceMode ||
-			!webRTCClientRef.current ||
-			!webRTCClientRef.current.isConnected
+			!wsAudioClientRef.current ||
+			!wsAudioClientRef.current.isConnected
 		)
 			return
 		const nextMutedState = !isMuted
 		setIsMuted(nextMutedState)
-		webRTCClientRef.current.setMuted(nextMutedState) // Call client method
+		wsAudioClientRef.current.setMuted(nextMutedState)
 		console.log(`Mic ${nextMutedState ? "muted" : "unmuted"}`)
 	}, [isVoiceMode, isMuted])
 
 	// --- Render Logic ---
 
 	const renderVoiceMode = () => (
+		// ... (UI structure remains the same) ...
+		// REMOVE the <audio ref={remoteAudioRef} hidden /> element
+		// Playback is now handled by the Web Audio API logic
 		<div className="flex-grow w-full flex flex-col justify-center items-center gap-8 text-white px-4">
 			{/* Status Display */}
 			<div className="text-center h-20">
-				{" "}
-				{/* Fixed height to prevent layout shifts */}
 				<p className="text-5xl md:text-6xl font-semibold mb-3 capitalize">
 					{voiceState}
 				</p>
 				<div className="h-6">
-					{" "}
-					{/* Placeholder for subtitle text */}
 					{voiceState === "connecting" && (
 						<IconLoader className="w-8 h-8 text-lightblue animate-spin mx-auto" />
 					)}
 					{voiceState === "listening" && (
 						<p className="text-lg text-gray-400 animate-pulse">
-							Listening...
+							{" "}
+							Listening...{" "}
 						</p>
 					)}
 					{voiceState === "thinking" && (
@@ -572,27 +722,21 @@ const Chat = () => {
 					)}
 					{voiceState === "error" && (
 						<p className="text-lg text-red-500">
-							Connection error.
+							{" "}
+							Connection error.{" "}
 						</p>
 					)}
 				</div>
 			</div>
-
 			{/* Controls */}
 			<div className="flex gap-6 mt-8">
+				{/* Mute Button */}
 				<button
 					onClick={toggleMute}
-					className={`p-4 rounded-full transition-colors duration-200 ease-in-out ${
-						isMuted
-							? "bg-red-600 hover:bg-red-700"
-							: "bg-gray-600 hover:bg-gray-500"
-					}`}
-					aria-label={
-						isMuted ? "Unmute Microphone" : "Mute Microphone"
-					}
+					className={`p-4 rounded-full ...`}
 					disabled={
 						voiceState === "connecting" || voiceState === "error"
-					} // Disable mute when not connected
+					}
 				>
 					{isMuted ? (
 						<IconMicrophoneOff className="w-8 h-8 text-white" />
@@ -600,16 +744,15 @@ const Chat = () => {
 						<IconMicrophone className="w-8 h-8 text-white" />
 					)}
 				</button>
+				{/* Disconnect Button */}
 				<button
 					onClick={stopVoiceMode}
-					className="p-4 rounded-full bg-red-600 hover:bg-red-700 transition-colors duration-200 ease-in-out"
-					aria-label="End Voice Call"
+					className="p-4 rounded-full bg-red-600 hover:bg-red-700 ..."
 				>
 					<IconPhoneOff className="w-8 h-8 text-white" />
 				</button>
 			</div>
-			{/* Hidden Audio Element for Playback */}
-			<audio ref={remoteAudioRef} hidden />
+			{/* NO <audio> element needed here anymore */}
 		</div>
 	)
 
