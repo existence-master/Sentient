@@ -2272,5 +2272,4 @@ print(f"Server startup time: {STARTUP_TIME:.2f} seconds")
 # --- Run the Application ---
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    voice_stream.ui.launch()
     uvicorn.run(app, host="0.0.0.0", port=5000, reload=False, workers=1)
