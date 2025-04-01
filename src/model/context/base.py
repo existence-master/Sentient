@@ -152,6 +152,20 @@ class BaseContextEngine(ABC):
         print("BaseContextEngine.execute_outputs - tasks:", tasks)
         print("BaseContextEngine.execute_outputs - memory_operations:", memory_ops)
         print("BaseContextEngine.execute_outputs - message:", message)
+        
+        # Add tasks to the task queue
+        # for task in tasks:
+        #     print("BaseContextEngine.execute_outputs - adding task to queue:", task)
+        #     await self.task_queue.add_task(
+        #         chat_id="context_engine",
+        #         description=task["description"],
+        #         priority=task["priority"],
+        #         username=self.user_id,
+        #         personality=None,
+        #         use_personal_context=False,
+        #         internet="None"
+        #     )
+
 
         # Add memory operations to the memory queue
         for op in memory_ops:

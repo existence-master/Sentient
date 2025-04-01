@@ -385,21 +385,18 @@ async def process_memory_operations():
         await asyncio.sleep(0.1)
 
 async def execute_agent_task(task: dict) -> str:
-    """Execute the agent task asynchronously and return the result."""
+    """Execute the agent task asynchronously and handle approval for email tasks."""
     global agent_runnable, reflection_runnable, inbox_summarizer_runnable, graph_driver, embed_model, text_conversion_runnable, query_classification_runnable, internet_query_reframe_runnable, internet_summary_runnable
 
-    # Extract parameters from task
     transformed_input = task["description"]
     username = task["username"]
     personality = task["personality"]
     use_personal_context = task["use_personal_context"]
     internet = task["internet"]
 
-    # Initialize context variables
     user_context = None
     internet_context = None
 
-    # Compute user_context if required
     if use_personal_context:
         try:
             user_context = query_user_profile(
@@ -413,7 +410,6 @@ async def execute_agent_task(task: dict) -> str:
             print(f"Error computing user_context: {e}")
             user_context = None
 
-    # Compute internet_context if required
     if internet == "Internet":
         try:
             reframed_query = get_reframed_internet_query(internet_query_reframe_runnable, transformed_input)
@@ -423,7 +419,6 @@ async def execute_agent_task(task: dict) -> str:
             print(f"Error computing internet_context: {e}")
             internet_context = None
 
-    # Invoke agent_runnable with all required parameters
     response = agent_runnable.invoke({
         "query": transformed_input,
         "name": username,
@@ -432,14 +427,8 @@ async def execute_agent_task(task: dict) -> str:
         "personality": personality
     })
 
-    print(f"Agent response: {response}")
-
-    # Handle tool calls
     if "tool_calls" not in response or not isinstance(response["tool_calls"], list):
         return "Error: Invalid tool_calls format in response."
-
-    print(f"Executing task: {transformed_input}")
-    print(f"Tool calls: {response['tool_calls']}")
 
     all_tool_results = []
     previous_tool_result = None
@@ -462,26 +451,30 @@ async def execute_agent_task(task: dict) -> str:
 
         tool_result_main = await tool_handler(tool_input)
 
-        print(f"Tool result for {tool_name}: {tool_result_main}")
+        if "action" in tool_result_main and tool_result_main["action"] == "approve":
+            await task_queue.set_task_approval_pending(task["task_id"], tool_result_main["tool_call"])
+            notification = {
+                "type": "task_approval_pending",
+                "task_id": task["task_id"],
+                "description": task["description"]
+            }
+            await manager.broadcast(json.dumps(notification))
+            return "Task set to approval pending"
+        else:
+            tool_result = tool_result_main["tool_result"] if "tool_result" in tool_result_main else tool_result_main
+            previous_tool_result = tool_result
+            all_tool_results.append({"tool_name": tool_name, "task_instruction": task_instruction, "tool_result": tool_result})
 
-        tool_result = tool_result_main["tool_result"] if "tool_result" in tool_result_main else tool_result_main
-        previous_tool_result = tool_result
-        all_tool_results.append({"tool_name": tool_name, "task_instruction": task_instruction, "tool_result": tool_result})
-
-    # Generate final response based on tool results
     if len(all_tool_results) == 1 and all_tool_results[0]["tool_name"] == "search_inbox":
         filtered_tool_result = {
             "response": all_tool_results[0]["tool_result"]["result"]["response"],
             "email_data": [{k: email[k] for k in email if k != "body"} for email in all_tool_results[0]["tool_result"]["result"]["email_data"]],
             "gmail_search_url": all_tool_results[0]["tool_result"]["result"]["gmail_search_url"]
         }
-        # Assuming inbox_summarizer_runnable also supports non-streaming invocation
         result = inbox_summarizer_runnable.invoke({"tool_result": filtered_tool_result})
     else:
-        # Invoke reflection_runnable without streaming
         result = reflection_runnable.invoke({"tool_results": all_tool_results})
 
-    print(f"Final result: {result}")
     return result
 
 async def add_result_to_chat(chat_id: str, result: str, isUser: bool, task_description: str = None):
@@ -659,6 +652,10 @@ class DeleteMemoryRequest(BaseModel):
     user_id: str
     category: str
     id: int
+    
+class TaskIdRequest(BaseModel):
+    """Request model containing just a task ID."""
+    task_id: str
 
 # --- API Endpoints ---
 
@@ -931,7 +928,7 @@ async def elaborate(message: ElaboratorMessage):
 ## Tool Handlers
 @register_tool("gmail")
 async def gmail_tool(tool_call: ToolCall) -> Dict[str, Any]:
-    """Handles Gmail-related tasks using multi-tool support."""
+    """Handles Gmail-related tasks with approval for send_email and reply_email."""
     try:
         with open("userProfileDb.json", "r", encoding="utf-8") as f:
             db = json.load(f)
@@ -947,8 +944,13 @@ async def gmail_tool(tool_call: ToolCall) -> Dict[str, Any]:
             "username": username,
             "previous_tool_response": tool_call["previous_tool_response"]
         })
-        tool_result = await parse_and_execute_tool_calls(tool_call_str)
-        return {"tool_result": tool_result, "tool_call_str": tool_call_str}
+        tool_call_dict = json.loads(tool_call_str)
+        tool_name = tool_call_dict["tool_name"]
+        if tool_name in ["send_email", "reply_email"]:
+            return {"action": "approve", "tool_call": tool_call_dict}
+        else:
+            tool_result = await parse_and_execute_tool_calls(tool_call_str)
+            return {"tool_result": tool_result, "tool_call_str": tool_call_str}
     except Exception as e:
         return {"status": "failure", "error": str(e)}
 
@@ -1971,6 +1973,66 @@ async def get_notifications():
     async with notifications_db_lock:
         notifications_db = await load_notifications_db()
         return {"notifications": notifications_db["notifications"]}
+    
+@app.post("/approve-task", status_code=200) # Use POST, updated path, added response_model
+async def approve_task(request: TaskIdRequest): # Accept Pydantic model in body
+    """Approves a task based on the task_id provided in the request body."""
+    try:
+        task_id = request.task_id # Get task_id from the request body model
+        print(f"Attempting to approve task: {task_id}")
+        result = await task_queue.approve_task(task_id) # Use the extracted task_id
+        print(f"Task {task_id} approved with result: {result}")
+
+        # Broadcast notification (remains the same conceptually)
+        notification = {
+            "type": "task_completed", # Or perhaps 'task_approved' if status changes first
+            "task_id": task_id,
+            "description": "Task approved and processing completed.", # Add description if available
+            "result": result
+        }
+        await manager.broadcast(json.dumps(notification))
+
+        # Return using the response model structure
+        return ApproveTaskResponse(message="Task approved and completed", result=result)
+
+    except ValueError as e:
+        # Specific error for task not found or wrong state
+        print(f"Error approving task {request.task_id}: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        # General server error
+        print(f"Unexpected error approving task {request.task_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+@app.post("/get-task-approval-data", status_code=200)
+async def get_task_approval_data(request: TaskIdRequest): # Accept Pydantic model in body
+    """Gets approval data for a task ID provided in the request body."""
+    task_id = request.task_id # Get task_id from the request body model
+    print(f"Fetching approval data for task: {task_id}")
+    try:
+        async with task_queue.lock:
+            for task in task_queue.tasks:
+                # Ensure comparison is robust
+                if str(task.get("task_id")) == str(task_id) and task.get("status") == "approval_pending":
+                    print(f"Found task {task_id} pending approval. Returning data.")
+                    # Return using the response model structure
+                    return TaskApprovalDataResponse(approval_data=task.get("approval_data"))
+
+            # If loop finishes without finding the task
+            print(f"Task {task_id} not found or not pending approval.")
+            raise HTTPException(status_code=404, detail="Task not found or not in approval_pending status")
+
+    except HTTPException as http_exc:
+        # Re-raise known HTTP exceptions
+        raise http_exc
+    except Exception as e:
+        # Catch unexpected errors during lookup
+        print(f"Unexpected error fetching approval data for task {task_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred while fetching approval data: {str(e)}")
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

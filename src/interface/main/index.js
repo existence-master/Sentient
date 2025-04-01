@@ -2087,4 +2087,127 @@ ipcMain.handle("get-notifications", async () => {
 	}
 })
 
+ipcMain.handle("get-task-approval-data", async (event, { taskId }) => {
+	// Destructure taskId from the input object
+	console.log(`IPC: get-task-approval-data called for taskId: ${taskId}`)
+	if (!taskId) {
+		console.error(
+			"IPC Error: get-task-approval-data called without taskId."
+		)
+		return { status: 400, message: "Task ID is required." }
+	}
+	try {
+		const apiUrl = `http://localhost:5000/get-task-approval-data` // Updated URL (no ID in path)
+		console.log(
+			`Fetching approval data from: ${apiUrl} with taskId: ${taskId}`
+		)
+
+		const response = await fetch(apiUrl, {
+			method: "POST", // Changed to POST
+			headers: {
+				"Content-Type": "application/json" // Essential header for JSON body
+			},
+			body: JSON.stringify({ task_id: taskId }) // Send taskId in the request body
+		})
+
+		// Try to parse JSON regardless of ok status for potential error details
+		let responseBody
+		const contentType = response.headers.get("content-type")
+		if (contentType && contentType.includes("application/json")) {
+			responseBody = await response.json()
+		} else {
+			responseBody = { detail: await response.text() } // Fallback for non-JSON errors
+		}
+
+		if (!response.ok) {
+			console.error(
+				`Error from backend (${response.status}) for get-task-approval-data:`,
+				responseBody
+			)
+			return {
+				status: response.status,
+				message: responseBody.detail || `HTTP error ${response.status}`
+			}
+		}
+
+		console.log(`IPC: get-task-approval-data successful for ${taskId}.`)
+		// Assuming the response body structure is now { approval_data: ... }
+		return { status: 200, approval_data: responseBody.approval_data }
+	} catch (error) {
+		console.error(
+			`IPC Error: Failed to fetch approval data for ${taskId}:`,
+			error
+		)
+		return {
+			status: 500,
+			message: `Error fetching approval data: ${error.message}`
+		}
+	}
+})
+
+// Handler to approve a task - now sends ID in body
+ipcMain.handle("approve-task", async (event, { taskId }) => {
+	// Destructure taskId from the input object
+	console.log(`IPC: approve-task called for taskId: ${taskId}`)
+	if (!taskId) {
+		console.error("IPC Error: approve-task called without taskId.")
+		return { status: 400, message: "Task ID is required." }
+	}
+	try {
+		const apiUrl = `http://localhost:5000/approve-task` // Updated URL (no ID in path)
+		console.log(
+			`Sending approval request to: ${apiUrl} for taskId: ${taskId}`
+		)
+
+		const response = await fetch(apiUrl, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json" // Essential header for JSON body
+			},
+			body: JSON.stringify({ task_id: taskId }) // Send taskId in the request body
+		})
+
+		// Try to parse JSON regardless of ok status
+		let responseBody
+		const contentType = response.headers.get("content-type")
+		if (contentType && contentType.includes("application/json")) {
+			responseBody = await response.json()
+		} else {
+			responseBody = {
+				detail: await response.text(),
+				message: await response.text()
+			} // Fallback
+		}
+
+		if (!response.ok) {
+			console.error(
+				`Error from backend (${response.status}) for approve-task:`,
+				responseBody
+			)
+			// Use 'detail' from FastAPI or 'message' as fallback
+			return {
+				status: response.status,
+				message:
+					responseBody.detail ||
+					responseBody.message ||
+					`HTTP error ${response.status}`
+			}
+		}
+
+		console.log(`IPC: approve-task successful for ${taskId}.`)
+		// Assuming the response body structure is now { message: ..., result: ... }
+		return {
+			status: 200,
+			message: responseBody.message,
+			result: responseBody.result
+		}
+	} catch (error) {
+		console.error(`IPC Error: Failed to approve task ${taskId}:`, error)
+		return {
+			status: 500,
+			message: `Error approving task: ${error.message}`
+		}
+	}
+})
+
 // --- End of File ---

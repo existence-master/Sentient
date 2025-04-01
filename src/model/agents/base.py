@@ -30,7 +30,7 @@ class TaskQueue:
         except FileNotFoundError:
             self.tasks = []
             self.task_id_counter = 0
-            await self.save_tasks() # Create file if not exists
+            await self.save_tasks()  # Create file if it doesn't exist
         except json.JSONDecodeError:
             self.tasks = []
             self.task_id_counter = 0
@@ -60,7 +60,8 @@ class TaskQueue:
                 "created_at": datetime.datetime.utcnow().isoformat() + "Z",
                 "completed_at": None,
                 "result": None,
-                "error": None
+                "error": None,
+                "approval_data": None  # New field for storing approval data
             }
             self.tasks.append(task)
             self.task_id_counter += 1
@@ -73,12 +74,10 @@ class TaskQueue:
             pending_tasks = [task for task in self.tasks if task["status"] == "pending"]
             if not pending_tasks:
                 return None
-
-            # Sort by priority (lower number = higher priority) and then by creation time (FIFO for same priority)
             pending_tasks.sort(key=lambda task: (task["priority"], task["created_at"]))
             next_task = pending_tasks[0]
             next_task["status"] = "processing"
-            await self.save_tasks() # Update task status immediately when processing starts
+            await self.save_tasks()  # Update task status immediately when processing starts
             return next_task
 
     async def complete_task(self, task_id: str, result: Optional[str] = None, error: Optional[str] = None):
@@ -90,8 +89,43 @@ class TaskQueue:
                     task["result"] = result
                     task["error"] = error
                     task["completed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
-                    break # Task ID is unique, no need to continue searching
+                    task.pop("approval_data", None)  # Clear approval_data upon completion
+                    break
             await self.save_tasks()
+
+    async def set_task_approval_pending(self, task_id: str, approval_data: Dict):
+        """Set a task to 'approval_pending' status and store approval data."""
+        async with self.lock:
+            for task in self.tasks:
+                if task["task_id"] == task_id:
+                    task["status"] = "approval_pending"
+                    task["approval_data"] = approval_data
+                    break
+            else:
+                raise ValueError(f"Task {task_id} not found.")
+            await self.save_tasks()
+
+    async def approve_task(self, task_id: str):
+        """Approve a task, execute the tool with stored parameters, and complete it."""
+        async with self.lock:
+            for task in self.tasks:
+                if task["task_id"] == task_id and task["status"] == "approval_pending":
+                    approval_data = task["approval_data"]
+                    tool_name = approval_data["tool_name"]
+                    parameters = approval_data["parameters"]
+                    if tool_name == "send_email":
+                        result = await send_email(**parameters)
+                    elif tool_name == "reply_email":
+                        result = await reply_email(**parameters)
+                    else:
+                        raise ValueError(f"Unknown tool for approval: {tool_name}")
+                    task["status"] = "completed"
+                    task["result"] = result
+                    task["completed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+                    task.pop("approval_data", None)
+                    await self.save_tasks()
+                    return result
+            raise ValueError(f"Task {task_id} not found or not in approval_pending status.")
 
     async def update_task(self, task_id: str, description: str, priority: int):
         """Update a task's description and priority."""
@@ -99,7 +133,7 @@ class TaskQueue:
             for task in self.tasks:
                 if task["task_id"] == task_id:
                     if task["status"] not in ["pending", "processing"]:
-                        raise ValueError(f"Cannot update task with status: {task['status']}. Only pending or processing tasks can be updated.")
+                        raise ValueError(f"Cannot update task with status: {task['status']}.")
                     task["description"] = description
                     task["priority"] = priority
                     break
@@ -116,22 +150,19 @@ class TaskQueue:
     async def get_all_tasks(self) -> List[Dict]:
         """Return a list of all tasks."""
         async with self.lock:
-            return list(self.tasks) # Return a copy to avoid external modification
+            return list(self.tasks)  # Return a copy to avoid external modification
 
     async def delete_old_completed_tasks(self, hours_threshold: int = 1):
         """Delete completed tasks older than the specified hours threshold."""
         async with self.lock:
             now = datetime.datetime.now(datetime.timezone.utc)
             tasks_to_keep = []
-            deleted_task_ids = []
             for task in self.tasks:
                 if task["status"] == "completed" and task["completed_at"]:
                     completed_at_dt = datetime.datetime.fromisoformat(task["completed_at"].replace('Z', '+00:00'))
-                    if now - completed_at_dt > datetime.timedelta(hours=hours_threshold):
-                        deleted_task_ids.append(task["task_id"])
-                        continue # Skip adding to tasks_to_keep, effectively deleting it
-                tasks_to_keep.append(task)
+                    if now - completed_at_dt <= datetime.timedelta(hours=hours_threshold):
+                        tasks_to_keep.append(task)
+                else:
+                    tasks_to_keep.append(task)
             self.tasks = tasks_to_keep
             await self.save_tasks()
-            if deleted_task_ids:
-                print(f"Deleted completed tasks with IDs: {deleted_task_ids} older than {hours_threshold} hours.")

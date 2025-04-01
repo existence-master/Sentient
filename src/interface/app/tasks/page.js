@@ -25,6 +25,7 @@ const Tasks = () => {
 	const [editingTask, setEditingTask] = useState(null)
 	const [filterStatus, setFilterStatus] = useState("all")
 	const [searchTerm, setSearchTerm] = useState("")
+	const [selectedTask, setSelectedTask] = useState(null) // New state for approval modal
 
 	useEffect(() => {
 		fetchTasksData()
@@ -79,7 +80,6 @@ const Tasks = () => {
 			toast.error("Please fill in all fields")
 			return
 		}
-
 		const priorityNumber = priorityStringToNumber(newTaskPriority)
 		if (priorityNumber === null) {
 			toast.error(
@@ -87,11 +87,10 @@ const Tasks = () => {
 			)
 			return
 		}
-
 		try {
 			const taskData = {
 				description: newTaskDescription,
-				priority: priorityNumber // Send number to backend
+				priority: priorityNumber
 			}
 			const response = await window.electron.invoke("add-task", taskData)
 			if (response.error) {
@@ -110,7 +109,7 @@ const Tasks = () => {
 	const handleEditTask = (task) => {
 		setEditingTask({
 			...task,
-			priority: priorityNumberToString(task.priority) // Convert to string for editing
+			priority: priorityNumberToString(task.priority)
 		})
 	}
 
@@ -119,7 +118,6 @@ const Tasks = () => {
 			toast.error("Please fill in all fields")
 			return
 		}
-
 		const priorityNumber = priorityStringToNumber(editingTask.priority)
 		if (priorityNumber === null) {
 			toast.error(
@@ -127,12 +125,11 @@ const Tasks = () => {
 			)
 			return
 		}
-
 		try {
 			const response = await window.electron.invoke("update-task", {
 				taskId: editingTask.task_id,
 				description: editingTask.description,
-				priority: priorityNumber // Send number to backend
+				priority: priorityNumber
 			})
 			if (response.error) {
 				toast.error(response.error)
@@ -157,6 +154,43 @@ const Tasks = () => {
 			}
 		} catch (error) {
 			toast.error("Failed to delete task")
+		}
+	}
+
+	const handleViewApprovalData = async (taskId) => {
+		try {
+			const response = await window.electron.invoke(
+				"get-task-approval-data",
+				taskId
+			)
+			if (response.status === 200) {
+				setSelectedTask({
+					taskId,
+					approvalData: response.approval_data
+				})
+			} else {
+				toast.error("Error fetching approval data.")
+			}
+		} catch (error) {
+			toast.error("Error fetching approval data.")
+		}
+	}
+
+	const handleApproveTask = async (taskId) => {
+		try {
+			const response = await window.electron.invoke(
+				"approve-task",
+				taskId
+			)
+			if (response.status === 200) {
+				toast.success("Task approved and completed.")
+				setSelectedTask(null)
+				fetchTasksData()
+			} else {
+				toast.error("Error approving task.")
+			}
+		} catch (error) {
+			toast.error("Error approving task.")
 		}
 	}
 
@@ -234,53 +268,35 @@ const Tasks = () => {
 						<div className="flex space-x-2">
 							<button
 								onClick={() => setFilterStatus("all")}
-								className={`rounded-md px-3 py-2 text-sm font-medium ${
-									filterStatus === "all"
-										? "bg-lightblue text-white"
-										: "bg-gray-800 hover:bg-gray-700 text-gray-300"
-								}`}
+								className={`rounded-md px-3 py-2 text-sm font-medium ${filterStatus === "all" ? "bg-lightblue text-white" : "bg-gray-800 hover:bg-gray-700 text-gray-300"}`}
 							>
 								All
 							</button>
 							<button
-								onClick={() => setFilterStatus("to do")}
-								className={`rounded-md px-3 py-2 text-sm font-medium ${
-									filterStatus === "to do"
-										? "bg-lightblue text-white"
-										: "bg-gray-800 hover:bg-gray-700 text-gray-300"
-								}`}
+								onClick={() => setFilterStatus("pending")}
+								className={`rounded-md px-3 py-2 text-sm font-medium ${filterStatus === "pending" ? "bg-lightblue text-white" : "bg-gray-800 hover:bg-gray-700 text-gray-300"}`}
 							>
-								To Do
+								Pending
 							</button>
 							<button
-								onClick={() => setFilterStatus("in progress")}
-								className={`rounded-md px-3 py-2 text-sm font-medium ${
-									filterStatus === "in progress"
-										? "bg-lightblue text-white"
-										: "bg-gray-800 hover:bg-gray-700 text-gray-300"
-								}`}
+								onClick={() => setFilterStatus("processing")}
+								className={`rounded-md px-3 py-2 text-sm font-medium ${filterStatus === "processing" ? "bg-lightblue text-white" : "bg-gray-800 hover:bg-gray-700 text-gray-300"}`}
 							>
-								In Progress
+								Processing
 							</button>
 							<button
-								onClick={() => setFilterStatus("done")}
-								className={`rounded-md px-3 py-2 text-sm font-medium ${
-									filterStatus === "done"
-										? "bg-lightblue text-white"
-										: "bg-gray-800 hover:bg-gray-700 text-gray-300"
-								}`}
+								onClick={() =>
+									setFilterStatus("approval_pending")
+								}
+								className={`rounded-md px-3 py-2 text-sm font-medium ${filterStatus === "approval_pending" ? "bg-lightblue text-white" : "bg-gray-800 hover:bg-gray-700 text-gray-300"}`}
 							>
-								Done
+								Approval Pending
 							</button>
 							<button
-								onClick={() => setFilterStatus("error")}
-								className={`rounded-md px-3 py-2 text-sm font-medium ${
-									filterStatus === "error"
-										? "bg-lightblue text-white"
-										: "bg-gray-800 hover:bg-gray-700 text-gray-300"
-								}`}
+								onClick={() => setFilterStatus("completed")}
+								className={`rounded-md px-3 py-2 text-sm font-medium ${filterStatus === "completed" ? "bg-lightblue text-white" : "bg-gray-800 hover:bg-gray-700 text-gray-300"}`}
 							>
-								Error
+								Completed
 							</button>
 						</div>
 					</div>
@@ -300,7 +316,7 @@ const Tasks = () => {
 						</div>
 						<div className="flex flex-col md:flex-row items-center gap-2">
 							<input
-								type="text" // Changed to text input
+								type="text"
 								placeholder="Priority (High, Medium, Low)"
 								value={newTaskPriority}
 								onChange={(e) =>
@@ -360,7 +376,21 @@ const Tasks = () => {
 											className="hover:bg-gray-600 transition-colors"
 										>
 											<td className="py-3 px-4">
-												{task.description}
+												{task.status ===
+												"approval_pending" ? (
+													<button
+														onClick={() =>
+															handleViewApprovalData(
+																task.task_id
+															)
+														}
+														className="text-blue-500 hover:underline"
+													>
+														{task.description}
+													</button>
+												) : (
+													task.description
+												)}
 											</td>
 											<td className="py-3 px-4">
 												{task.created_at}
@@ -368,8 +398,7 @@ const Tasks = () => {
 											<td className="py-3 px-4 text-center">
 												{priorityNumberToString(
 													task.priority
-												)}{" "}
-												{/* Display string priority */}
+												)}
 											</td>
 											<td className="py-3 px-4">
 												{task.status}
@@ -387,14 +416,9 @@ const Tasks = () => {
 													}
 													disabled={
 														task.status ===
-														"in progress"
+														"processing"
 													}
-													className={`p-2 rounded-md hover:bg-yellow-600 transition-colors ${
-														task.status ===
-														"in progress"
-															? "text-gray-400 cursor-not-allowed"
-															: "text-yellow-300"
-													}`}
+													className={`p-2 rounded-md hover:bg-yellow-600 transition-colors ${task.status === "processing" ? "text-gray-400 cursor-not-allowed" : "text-yellow-300"}`}
 												>
 													<IconPencil className="h-4 w-4" />
 												</button>
@@ -451,7 +475,7 @@ const Tasks = () => {
 										Priority (High, Medium, Low)
 									</label>
 									<input
-										type="text" // Changed to text input
+										type="text"
 										id="edit-priority"
 										value={editingTask.priority}
 										onChange={(e) =>
@@ -473,6 +497,65 @@ const Tasks = () => {
 									<button
 										onClick={() => setEditingTask(null)}
 										className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+									>
+										Cancel
+									</button>
+								</div>
+							</div>
+						</div>
+					)}
+
+					{/* Approval Modal */}
+					{selectedTask && (
+						<div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center">
+							<div className="bg-gray-800 p-8 rounded-lg shadow-lg">
+								<h3 className="text-xl font-bold mb-4">
+									Approve Task
+								</h3>
+								<p>
+									<strong>Task ID:</strong>{" "}
+									{selectedTask.taskId}
+								</p>
+								<p>
+									<strong>Tool:</strong>{" "}
+									{selectedTask.approvalData.tool_name}
+								</p>
+								<p>
+									<strong>To:</strong>{" "}
+									{selectedTask.approvalData.parameters.to}
+								</p>
+								<p>
+									<strong>Subject:</strong>{" "}
+									{
+										selectedTask.approvalData.parameters
+											.subject
+									}
+								</p>
+								<p>
+									<strong>Body:</strong>
+								</p>
+								<textarea
+									readOnly
+									className="w-full h-32 p-2 bg-gray-700 text-white"
+									value={
+										selectedTask.approvalData.parameters
+											.body
+									}
+								/>
+								<div className="flex justify-end mt-4">
+									<button
+										onClick={() =>
+											handleApproveTask(
+												selectedTask.taskId
+											)
+										}
+										className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded mr-2"
+									>
+										Approve
+									</button>
+									<button
+										onClick={() => setSelectedTask(null)}
+										className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded"
 									>
 										Cancel
 									</button>
