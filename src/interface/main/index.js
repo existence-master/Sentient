@@ -2055,4 +2055,36 @@ handle("fetch-graph-data", async () => {
 	}
 })
 
+ipcMain.handle("get-notifications", async () => {
+	console.log("IPC: get-notifications called")
+	try {
+		const response = await fetch(
+			`${process.env.APP_SERVER_URL}/get-notifications`
+		)
+		if (!response.ok) {
+			const errorDetail = await response
+				.json()
+				.catch(() => ({ detail: "Failed to parse error response" }))
+			console.error(
+				`Error from get-notifications API: ${response.status}`,
+				errorDetail
+			)
+			return {
+				message: `Error fetching notifications: ${errorDetail.detail || response.statusText}`,
+				status: response.status
+			}
+		}
+		const result = await response.json()
+		console.log("IPC: get-notifications successful.")
+		return { notifications: result.notifications, status: 200 }
+	} catch (error) {
+		console.error(`IPC Error: get-notifications failed: ${error}`)
+		return {
+			message: "Error fetching notifications",
+			status: 500,
+			error: error.message
+		}
+	}
+})
+
 // --- End of File ---

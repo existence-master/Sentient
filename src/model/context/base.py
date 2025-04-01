@@ -153,64 +153,34 @@ class BaseContextEngine(ABC):
         print("BaseContextEngine.execute_outputs - memory_operations:", memory_ops)
         print("BaseContextEngine.execute_outputs - message:", message)
 
-        # Add tasks to the task queue
-        # for task in tasks:
-        #     print("BaseContextEngine.execute_outputs - adding task to queue:", task)
-        #     await self.task_queue.add_task(
-        #         chat_id="context_engine",
-        #         description=task["description"],
-        #         priority=task["priority"],
-        #         username=self.user_id,
-        #         personality=None,
-        #         use_personal_context=False,
-        #         internet="None"
-        #     )
-
         # Add memory operations to the memory queue
         for op in memory_ops:
             print("BaseContextEngine.execute_outputs - processing memory operation:", op)
-            print("BaseContextEngine.execute_outputs - adding memory operation to queue (add):", op)
             await self.memory_backend.memory_queue.add_operation(self.user_id, op["text"])
 
-        # Add messages to the chat database and send notifications
-        print("BaseContextEngine.execute_outputs - processing message:", message)
-        async with self.db_lock:
-            print("BaseContextEngine.execute_outputs - acquired db_lock for message processing")
-            chatsDb = await load_db()
-            print("BaseContextEngine.execute_outputs - loaded chatsDb for message processing")
-            active_chat_id = chatsDb["active_chat_id"]
-            print(f"BaseContextEngine.execute_outputs - active_chat_id for message processing: {active_chat_id}")
-            active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == active_chat_id), None)
-            if active_chat:
-                # Add user message with INTENT_CONTEXT and visibility false
-                intent_context_message = {
-                    "id": str(int(time.time() * 1000)),
-                    "message": "<INTENT_CONTEXT>",
-                    "isUser": True,
-                    "isVisible": False,
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
-                }
-                print("BaseContextEngine.execute_outputs - adding user intent context message:", intent_context_message)
-                active_chat["messages"].append(intent_context_message)
-
-                new_message = {
-                    "id": str(int(time.time() * 1000)),
-                    "message": message,
-                    "isUser": False,
-                    "isVisible": True,
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
-                }
-                
-                print("BaseContextEngine.execute_outputs - adding new system message to active chat:", new_message)
-                active_chat["messages"].append(new_message)
-                await save_db(chatsDb)
-                print("BaseContextEngine.execute_outputs - saved chatsDb after adding message")
-                notification = {
+        # Add messages to the chat database and notifications database
+        if message:
+            print("BaseContextEngine.execute_outputs - processing message:", message)
+            # Save to notificationsDB
+            async with notifications_db_lock:
+                print("BaseContextEngine.execute_outputs - acquired notifications_db_lock")
+                notifications_db = await load_notifications_db()
+                new_notification = {
+                    "id": notifications_db["next_notification_id"],
                     "type": "new_message",
-                    "message": message
+                    "chat_id": active_chat_id,
+                    "message_id": new_message["id"],
+                    "message": message,
+                    "timestamp": new_message["timestamp"]
                 }
+                print("BaseContextEngine.execute_outputs - adding notification:", new_notification)
+                notifications_db["notifications"].append(new_notification)
+                notifications_db["next_notification_id"] += 1
+                await save_notifications_db(notifications_db)
+                print("BaseContextEngine.execute_outputs - saved notificationsDb")
+                notification = {"type": "new_message", "message": message}
                 print("BaseContextEngine.execute_outputs - broadcasting notification:", notification)
                 await self.websocket_manager.broadcast(json.dumps(notification))
-            else:
-                print("BaseContextEngine.execute_outputs - no active chat found, cannot add message")
+        else:
+            print("BaseContextEngine.execute_outputs - no message to process")
         print("BaseContextEngine.execute_outputs finished")
