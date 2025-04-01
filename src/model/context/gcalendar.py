@@ -39,7 +39,7 @@ class GCalendarContextEngine(BaseContextEngine):
             finally:
                 # Ensure sleep happens even if there's an error
                 print("GCalendarContextEngine.start - sleeping for 3600 seconds")
-                await asyncio.sleep(3600)  # Check every hour
+                await asyncio.sleep(10800)  # Check every hour
 
     async def fetch_new_data(self):
         """

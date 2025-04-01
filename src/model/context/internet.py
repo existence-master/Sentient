@@ -23,7 +23,7 @@ class InternetSearchContextEngine(BaseContextEngine):
             print("BaseContextEngine.start - running engine iteration")
             await self.run_engine()
             print("BaseContextEngine.start - engine iteration finished, sleeping for 3600 seconds")
-            await asyncio.sleep(3600)  # Check every hour
+            await asyncio.sleep(10800)  # Check every hour
 
     async def extract_interests(self, context):
         """

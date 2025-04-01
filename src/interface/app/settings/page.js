@@ -10,7 +10,7 @@ import ShiningButton from "@components/ShiningButton"
 import ModalDialog from "@components/ModalDialog"
 import { IconGift, IconBeta, IconRocket } from "@tabler/icons-react"
 import React from "react"
-import { IconTrash } from "@tabler/icons-react"
+import { Switch } from "@radix-ui/react-switch"
 
 const Settings = () => {
 	const [showDisclaimer, setShowDisclaimer] = useState(false)
@@ -37,24 +37,7 @@ const Settings = () => {
 	const [referrerStatus, setReferrerStatus] = useState(false)
 	const [betaUser, setBetaUser] = useState(false)
 	const [showBetaDialog, setShowBetaDialog] = useState(false)
-	const [availableModels, setAvailableModels] = useState([])
-	const [selectedModel, setSelectedModel] = useState("llama3.2:3b")
-	const [apiKeyDialog, setApiKeyDialog] = useState(false)
-	const [apiKey, setApiKey] = useState("")
-	const [selectedProvider, setSelectedProvider] = useState("")
-	const [storedProviders, setStoredProviders] = useState({
-		openai: false,
-		gemini: false,
-		claude: false
-	})
-	const [setModelOnSubmit, setSetModelOnSubmit] = useState(false)
-
-	// Define cloud models to appear at the top of the dropdown
-	const cloudModels = [
-		{ name: "OpenAI", value: "openai" },
-		{ name: "Gemini", value: "gemini" },
-		{ name: "Claude", value: "claude" }
-	]
+	const [dataSources, setDataSources] = useState([])
 
 	useEffect(() => {
 		fetchData()
@@ -62,9 +45,45 @@ const Settings = () => {
 		fetchPricingPlan()
 		fetchReferralDetails()
 		fetchBetaUserStatus()
-		fetchAvailableModels()
-		fetchStoredProviders() // Fetch stored providers on load
+		fetchDataSources()
 	}, [])
+
+	const fetchDataSources = async () => {
+		try {
+			const response = await window.electron.invoke("get-data-sources")
+			if (response.error) {
+				toast.error("Error fetching data sources.")
+			} else {
+				setDataSources(response.data_sources)
+			}
+		} catch (error) {
+			toast.error("Error fetching data sources.")
+		}
+	}
+
+	const handleToggle = async (source, enabled) => {
+		try {
+			const response = await window.electron.invoke(
+				"set-data-source-enabled",
+				source,
+				enabled
+			)
+			if (response.error) {
+				toast.error(`Error updating ${source} data source.`)
+			} else {
+				toast.success(
+					`${source} data source updated. Please restart the application for changes to take effect.`
+				)
+				setDataSources((prev) =>
+					prev.map((ds) =>
+						ds.name === source ? { ...ds, enabled } : ds
+					)
+				)
+			}
+		} catch (error) {
+			toast.error(`Error updating ${source} data source.`)
+		}
+	}
 
 	const fetchUserDetails = async () => {
 		try {
@@ -133,7 +152,6 @@ const Settings = () => {
 					linkedInProfile,
 					redditProfile,
 					twitterProfile,
-					selectedModel
 				} = response.data
 				setIsProfileConnected({
 					LinkedIn:
@@ -144,100 +162,9 @@ const Settings = () => {
 					Twitter:
 						twitterProfile && Object.keys(twitterProfile).length > 0
 				})
-				setSelectedModel(selectedModel || "llama3.2:3b")
 			}
 		} catch (error) {
 			toast.error("Error fetching user data.")
-		}
-	}
-
-	const fetchAvailableModels = async () => {
-		try {
-			const models = await window.electron.invoke("get-ollama-models")
-			setAvailableModels(models)
-			if (models.length > 0 && !models.includes(selectedModel)) {
-				const newModel = models[0]
-				await window.electron.invoke("set-db-data", {
-					data: { selectedModel: newModel }
-				})
-				setSelectedModel(newModel)
-			}
-		} catch (error) {
-			toast.error(
-				"Error fetching available models. Ensure Ollama is running."
-			)
-			setAvailableModels([])
-		}
-	}
-
-	const fetchStoredProviders = async () => {
-		try {
-			const response = await window.electron?.invoke(
-				"get-stored-providers"
-			)
-			setStoredProviders(response)
-		} catch (error) {
-			toast.error("Error fetching stored API keys.")
-		}
-	}
-
-	const handleDeleteKey = async (provider) => {
-		try {
-			await window.electron.invoke("delete-api-key", provider)
-			setStoredProviders((prev) => ({ ...prev, [provider]: false }))
-			toast.success(`API key for ${provider} deleted successfully.`)
-		} catch (error) {
-			toast.error(`Error deleting API key for ${provider}.`)
-		}
-	}
-
-	// Handle model selection change
-	const handleModelChange = async (model) => {
-		if (cloudModels.some((m) => m.value === model)) {
-			setSelectedProvider(model)
-			const hasKey = await window.electron.invoke("check-api-key", model)
-			if (!hasKey) {
-				setSetModelOnSubmit(true) // Set model after saving key
-				setApiKeyDialog(true)
-			} else {
-				setSelectedModel(model)
-				await window.electron.invoke("set-db-data", {
-					data: { selectedModel: model }
-				})
-				toast.success("Model updated successfully.")
-			}
-		} else {
-			setSelectedModel(model)
-			await window.electron.invoke("set-db-data", {
-				data: { selectedModel: model }
-			})
-			toast.success("Model updated successfully.")
-		}
-	}
-
-	// Handle API key submission
-	const handleApiKeySubmit = async () => {
-		try {
-			await window.electron.invoke("set-api-key", {
-				provider: selectedProvider,
-				apiKey
-			})
-			if (setModelOnSubmit) {
-				setSelectedModel(selectedProvider)
-				await window.electron.invoke("set-db-data", {
-					data: { selectedModel: selectedProvider }
-				})
-			}
-			toast.success(
-				setModelOnSubmit
-					? "API key saved and model updated successfully."
-					: "API key saved successfully."
-			)
-			setApiKeyDialog(false)
-			setApiKey("")
-			fetchStoredProviders() // Refresh stored providers
-		} catch (error) {
-			toast.error("Error saving API key.")
 		}
 	}
 
@@ -332,13 +259,6 @@ const Settings = () => {
 
 	const handleDisclaimerDecline = () => {
 		setShowDisclaimer(false)
-	}
-
-	const openAddKeyDialog = (provider) => {
-		setSelectedProvider(provider)
-		setApiKey("")
-		setSetModelOnSubmit(false) // Do not set model after saving key
-		setApiKeyDialog(true)
 	}
 
 	return (
@@ -488,18 +408,19 @@ const Settings = () => {
 					/>
 				</div>
 			</div>
-			{apiKeyDialog && (
-				<ModalDialog
-					title={`Enter API Key for ${selectedProvider}`}
-					description="Please enter your API key to use this model."
-					onCancel={() => setApiKeyDialog(false)}
-					onConfirm={handleApiKeySubmit}
-					confirmButtonText="Save"
-					showInput={true}
-					inputValue={apiKey}
-					onInputChange={setApiKey}
-				/>
-			)}
+
+			<div className="space-y-4">
+                    {dataSources.map((source) => (
+                        <div key={source.name} className="flex items-center justify-between">
+                            <span>{source.name}</span>
+                            <Switch
+                                checked={source.enabled}
+                                onCheckedChange={(enabled) => handleToggle(source.name, enabled)}
+                            />
+                        </div>
+                    ))}
+            </div>
+			
 			{showReferralDialog && (
 				<ModalDialog
 					title="Refer Sentient"

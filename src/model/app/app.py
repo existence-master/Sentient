@@ -59,6 +59,9 @@ from model.context.gmail import GmailContextEngine
 from model.context.internet import InternetSearchContextEngine
 from model.context.gcalendar import GCalendarContextEngine
 
+# Define available data sources (can be extended in the future)
+DATA_SOURCES = ["gmail", "internet_search", "gcalendar"]
+
 # Load environment variables from .env file
 load_dotenv("model/.env")
 
@@ -535,17 +538,24 @@ async def startup_event():
     asyncio.create_task(cleanup_tasks_periodically())
     
     user_id = "user1"  # Replace with dynamic user ID retrieval if needed
-    enabled_data_sources = ["gmail", "internet_search", "gcalendar"]  # Add gcalendar here
+    user_profile = load_user_profile()
+    enabled_data_sources = []
+    if user_profile.get("gmailEnabled", True):
+        enabled_data_sources.append("gmail")
+    if user_profile.get("internetSearchEnabled", True):
+        enabled_data_sources.append("internet_search")
+    if user_profile.get("gcalendarEnabled", True):
+        enabled_data_sources.append("gcalendar")
     
     for source in enabled_data_sources:
         if source == "gmail":
-            engine = GmailContextEngine(user_id, task_queue, memory_backend, manager, db_lock,notifications_db_lock)
+            engine = GmailContextEngine(user_id, task_queue, memory_backend, manager, db_lock)
         elif source == "internet_search":
-            engine = InternetSearchContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
+            engine = InternetSearchContextEngine(user_id, task_queue, memory_backend, manager, db_lock)
         elif source == "gcalendar":
-            engine = GCalendarContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
+            engine = GCalendarContextEngine(user_id, task_queue, memory_backend, manager, db_lock)
         else:
-            continue  # Skip unrecognized sources
+            continue
         asyncio.create_task(engine.start())
 
 @app.on_event("shutdown")
@@ -605,6 +615,10 @@ class TwitterURL(BaseModel):
 
 class LinkedInURL(BaseModel):
     url: str
+    
+class SetDataSourceEnabledRequest(BaseModel):
+    source: str
+    enabled: bool
 
 class CreateTaskRequest(BaseModel):
     chat_id: str
@@ -2033,6 +2047,30 @@ async def get_task_approval_data(request: TaskIdRequest): # Accept Pydantic mode
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred while fetching approval data: {str(e)}")
+
+
+@app.get("/get_data_sources")
+async def get_data_sources():
+    """Return the list of data sources with their enabled states."""
+    user_profile = load_user_profile()
+    data_sources = [
+        {"name": source, "enabled": user_profile.get(f"{source}Enabled", True)}
+        for source in DATA_SOURCES
+    ]
+    return {"data_sources": data_sources}
+
+@app.post("/set_data_source_enabled")
+async def set_data_source_enabled(request: SetDataSourceEnabledRequest):
+    """Update the enabled state of a specific data source in userProfileDb.json."""
+    user_profile = load_user_profile()
+    if request.source not in DATA_SOURCES:
+        raise HTTPException(status_code=400, detail="Invalid data source")
+    key = f"{request.source}Enabled"
+    user_profile[key] = request.enabled
+    if write_user_profile(user_profile):
+        return {"status": "success"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to update user profile")
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

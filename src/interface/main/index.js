@@ -729,6 +729,11 @@ if (app.isPackaged) {
 		console.error("PROD MODE: Error in auto-updater:", err.message)
 		process.env.UPDATING = "false" // Reset flag on error
 		mainWindow?.webContents.send("update-error", err.message) // Notify renderer
+		// Reset progress on error
+		mainWindow?.webContents.send("update-progress", {
+			percent: 0,
+			error: true
+		})
 		// Optional: Show error dialog
 		// dialog.showErrorBox("Update Error", `Failed to update: ${err.message}`);
 	})
@@ -2207,6 +2212,41 @@ ipcMain.handle("approve-task", async (event, { taskId }) => {
 			status: 500,
 			message: `Error approving task: ${error.message}`
 		}
+	}
+})
+
+ipcMain.handle("get-data-sources", async () => {
+	try {
+		const response = await fetch("http://localhost:5000/get_data_sources")
+		if (!response.ok) {
+			throw new Error("Failed to fetch data sources")
+		}
+		const data = await response.json()
+		return data
+	} catch (error) {
+		console.error("Error fetching data sources:", error)
+		return { error: error.message }
+	}
+})
+
+ipcMain.handle("set-data-source-enabled", async (event, source, enabled) => {
+	try {
+		const response = await fetch(
+			"http://localhost:5000/set_data_source_enabled",
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ source, enabled })
+			}
+		)
+		if (!response.ok) {
+			throw new Error("Failed to set data source enabled")
+		}
+		const data = await response.json()
+		return data
+	} catch (error) {
+		console.error("Error setting data source enabled:", error)
+		return { error: error.message }
 	}
 })
 

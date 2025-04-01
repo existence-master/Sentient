@@ -106,6 +106,8 @@ contextBridge.exposeInMainWorld("electron", {
 	 */
 	onUpdateDownloaded: (callback) =>
 		ipcRenderer.on("update-downloaded", callback),
+
+	onUpdateError: (callback) => ipcRenderer.on("update-error", callback),
 	/**
 	 * Sends a 'restart-app' event to the main process to request application restart and update installation.
 	 * This function does not return any value.
@@ -159,5 +161,19 @@ contextBridge.exposeInMainWorld("electron", {
 		ipcRenderer.on("message-stream", (event, data) => {
 			callback(data)
 		})
+	},
+
+	onUpdateProgress: (callback) => {
+		// Define the listener function so we can potentially remove it later if needed
+		const listener = (event, progressObj) => callback(progressObj)
+		ipcRenderer.on("update-progress", listener)
+
+		// Return a cleanup function (optional but good practice)
+		// This allows the frontend to remove the listener if the component unmounts
+		// Note: Requires careful handling in the frontend useEffect cleanup
+		return () => {
+			ipcRenderer.removeListener("update-progress", listener)
+			console.log("Removed update-progress listener") // For debugging
+		}
 	}
 })
