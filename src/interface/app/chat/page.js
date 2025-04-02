@@ -1,5 +1,5 @@
 "use client"
-import React, { useState, useEffect, useRef, useCallback } from "react"
+import React, { useState, useEffect, useRef } from "react"
 import ChatBubble from "@components/ChatBubble"
 import ToolResultBubble from "@components/ToolResultBubble"
 import Sidebar from "@components/Sidebar"
@@ -7,294 +7,92 @@ import {
 	IconSend,
 	IconRefresh,
 	IconLoader,
-	IconMicrophone,
-	IconMicrophoneOff,
-	IconPhoneOff,
-	IconPlayerStopFilled
+	IconMicrophone, // Import microphone icon
+	IconKeyboard // Import keyboard icon
 } from "@tabler/icons-react"
 import toast from "react-hot-toast"
-import { WebSocketAudioClient } from "@utils/WebSocketAudioClient"
-import "webrtc-adapter"
 
-// Debounce function
-function debounce(func, wait) {
-	let timeout
-	return function executedFunction(...args) {
-		const later = () => {
-			clearTimeout(timeout)
-			func(...args)
-		}
-		clearTimeout(timeout)
-		timeout = setTimeout(later, wait)
-	}
-}
+// Import components for Voice Mode
+import { BackgroundCircleProvider } from "@components/voice-test/background-circle-provider"
+import { ThemeToggle } from "@components/voice-test/ui/theme-toggle"
+import { ResetChat } from "@components/voice-test/ui/reset-chat"
 
 const Chat = () => {
-	// Existing State
+	// --- State Variables ---
 	const [messages, setMessages] = useState([])
 	const [input, setInput] = useState("")
-	const [userDetails, setUserDetails] = useState(null)
-	const [thinking, setThinking] = useState(false) // For text chat thinking indicator
+	const [userDetails, setUserDetails] = useState("")
+	const [thinking, setThinking] = useState(false)
+	const [serverStatus, setServerStatus] = useState(true)
 	const [isSidebarVisible, setSidebarVisible] = useState(false)
 	const [currentModel, setCurrentModel] = useState("")
-	const [isLoading, setIsLoading] = useState(true) // For initial history load
+	const [isLoading, setIsLoading] = useState(true)
+	const [chatMode, setChatMode] = useState("voice") // 'text' or 'voice', default 'voice'
 
-	// Voice Mode State
-	const [isVoiceMode, setIsVoiceMode] = useState(false)
-	const [voiceState, setVoiceState] = useState("idle") // idle, connecting, listening, thinking, speaking, error
-	const [isMuted, setIsMuted] = useState(false)
-	const [isConnecting, setIsConnecting] = useState(false) // Explicit connecting state for UI
-
-	// Refs
+	// --- Refs ---
 	const textareaRef = useRef(null)
 	const chatEndRef = useRef(null)
-	const textChatListenersAdded = useRef(false)
-	// const webRTCClientRef = useRef(null) // <-- Remove or rename
-	const wsAudioClientRef = useRef(null) // <--- Ref for WebSocket client
-	// const remoteAudioRef = useRef(null) // <-- Remove, we'll handle playback differently
-	const audioContextRef = useRef(null) // Ref for playback AudioContext
-	const audioQueueRef = useRef([]) // Queue for incoming audio chunks
-	const nextPlayTimeRef = useRef(0) // Track scheduled playback time
-	const isPlayingRef = useRef(false) // Track if playback loop is active
+	const eventListenersAdded = useRef(false)
 
-	const wsRef = useRef(null) // Ref for the general WebSocket connection
-	const wsListenersAdded = useRef(false)
+	// --- Handlers ---
+	const handleInputChange = (e) => {
+		const value = e.target.value
+		setInput(value)
+		// Auto-resize textarea only if it exists (i.e., in text mode)
+		if (textareaRef.current) {
+			textareaRef.current.style.height = "auto"
+			textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`
+		}
+	}
 
-	// --- Fetching Data ---
-	const fetchChatHistory = useCallback(async () => {
-		// Fetch history regardless of mode, maybe filter display later?
-		setIsLoading(true)
-		console.log("Fetching chat history...")
+	const handleToggleMode = () => {
+		setChatMode((prevMode) => (prevMode === "text" ? "voice" : "text"))
+	}
+
+	// --- Data Fetching and IPC ---
+	const fetchChatHistory = async () => {
+		// Only set loading for the initial fetch, not subsequent background fetches
+		if (messages.length === 0) {
+			setIsLoading(true)
+		}
 		try {
 			const response = await window.electron?.invoke("fetch-chat-history")
-			if (response.status === 200) {
-				setMessages(response.messages || []) // Ensure messages is always array
-				console.log(
-					"Chat history fetched:",
-					(response.messages || []).length,
-					"messages"
-				)
-			} else {
-				toast.error(
-					`Error fetching chat history: ${response.message || response.status}`
-				)
-				console.error("Error fetching chat history:", response)
-			}
+			if (response.status === 200) setMessages(response.messages)
+			else toast.error("Error fetching chat history.")
 		} catch (error) {
-			toast.error(`Error fetching chat history: ${error.message}`)
-			console.error("Error fetching chat history:", error)
+			toast.error("Error fetching chat history.")
 		} finally {
-			setIsLoading(false)
+			// Only stop the main loading indicator on the initial fetch
+			if (isLoading) {
+				setIsLoading(false)
+			}
 		}
-	}, []) // useCallback ensures stable reference
+	}
 
-	const fetchUserDetails = useCallback(async () => {
+	const fetchUserDetails = async () => {
 		try {
 			const response = await window.electron?.invoke("get-profile")
 			setUserDetails(response)
 		} catch (error) {
-			toast.error(`Error fetching user details: ${error.message}`)
-			console.error("Error fetching user details:", error)
+			toast.error("Error fetching user details.")
 		}
-	}, [])
+	}
 
-	const fetchCurrentModel = useCallback(async () => {
-		// Replace with actual model fetching if dynamic
-		setCurrentModel("llama3.2:3b / Orpheus") // Indicate both models
-	}, [])
+	const fetchCurrentModel = async () => {
+		// Replace with actual logic if needed
+		setCurrentModel("llama3.2:3b")
+	}
 
-	// Initial data fetch
-	useEffect(() => {
-		fetchUserDetails()
-		fetchCurrentModel()
-		fetchChatHistory()
-	}, [fetchUserDetails, fetchCurrentModel, fetchChatHistory]) // Add deps
-
-	// Scroll to bottom for text chat
-	useEffect(() => {
-		if (!isVoiceMode && messages.length > 0) {
-			// Debounce scrolling slightly to prevent jerky behavior during rapid updates
-			const debouncedScroll = debounce(() => {
-				chatEndRef.current?.scrollIntoView({
-					behavior: "smooth",
-					block: "end"
-				})
-			}, 100) // 100ms delay
-			debouncedScroll()
-		}
-	}, [messages, isVoiceMode])
-
-	// --- WebSocket Connection for State Updates & Notifications ---
-	const connectWebSocket = useCallback(() => {
-		if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-			console.log("WebSocket already connected.")
-			return
-		}
-		console.log("Connecting WebSocket for notifications/state...")
-		// Use ws:// or wss:// based on backend protocol if needed
-		const wsUrl = `ws://localhost:5000/ws?clientId=electron-chat-${Date.now()}`
-		wsRef.current = new WebSocket(wsUrl)
-
-		wsRef.current.onopen = () => {
-			console.log("WebSocket connected.")
-			wsListenersAdded.current = true // Mark listeners as active for this connection
-			// Start ping interval
-			wsRef.current.pingInterval = setInterval(() => {
-				if (
-					wsRef.current &&
-					wsRef.current.readyState === WebSocket.OPEN
-				) {
-					wsRef.current.send(JSON.stringify({ type: "ping" }))
-				}
-			}, 30000) // Send ping every 30s
-		}
-
-		wsRef.current.onmessage = (event) => {
-			try {
-				const data = JSON.parse(event.data)
-				// console.log("WebSocket message received:", data); // Log all messages for debug
-
-				// Handle Voice State Updates
-				if (data.type === "voice_state") {
-					const newState = data.state
-					if (
-						["listening", "thinking", "speaking", "error"].includes(
-							newState
-						)
-					) {
-						console.log(
-							`[WebSocket] Voice state update: ${newState}`
-						)
-						setVoiceState(newState)
-					}
-				}
-				// Handle Task Notifications (keep existing logic if needed)
-				else if (data.type === "task_completed") {
-					console.log(
-						`[WebSocket] Task Completed: ${data.description}`
-					)
-					toast.success(`Task completed: ${data.description}`)
-					fetchChatHistory() // Refresh chat on task completion
-				} else if (data.type === "task_error") {
-					console.error(
-						`[WebSocket] Task Error: ${data.description} - ${data.error}`
-					)
-					toast.error(
-						`Task error: ${data.description} - ${data.error}`
-					)
-					fetchChatHistory() // Refresh chat even on error
-				}
-				// Handle Memory Notifications (keep existing logic if needed)
-				else if (data.type === "memory_operation_completed") {
-					console.log(
-						`[WebSocket] Memory Op Completed: ${data.operation_id}`
-					)
-					// Maybe a subtle toast or log?
-					// toast.success(`Memory updated: ${JSON.stringify(data.fact)}`);
-				} else if (data.type === "memory_operation_error") {
-					console.error(`[WebSocket] Memory Op Error: ${data.error}`)
-					toast.error(`Memory update failed: ${data.error}`)
-				}
-
-				// Handle pong
-				else if (data.type === "pong") {
-					// console.log("WebSocket pong received."); // Optional log
-				}
-			} catch (error) {
-				console.error(
-					"Error processing WebSocket message:",
-					error,
-					"Raw data:",
-					event.data
-				)
-			}
-		}
-
-		// wsRef.current.onerror = (error) => {
-		// 	console.error("WebSocket error:", error)
-		// 	toast.error("Notification connection error.")
-		// 	// Attempt to reconnect after a delay
-		// 	if (wsRef.current && wsRef.current.pingInterval)
-		// 		clearInterval(wsRef.current.pingInterval)
-		// 	setTimeout(connectWebSocket, 5000) // Reconnect after 5s
-		// }
-
-		wsRef.current.onclose = (event) => {
-			console.log("WebSocket closed:", event.code, event.reason)
-			wsListenersAdded.current = false // Mark listeners inactive
-			if (wsRef.current && wsRef.current.pingInterval)
-				clearInterval(wsRef.current.pingInterval)
-			wsRef.current = null
-			// Only reconnect if not closed intentionally (e.g., code 1000 is normal closure)
-			if (event.code !== 1000) {
-				toast.info(
-					"Notification connection closed. Attempting to reconnect..."
-				)
-				setTimeout(connectWebSocket, 5000) // Reconnect after 5s
-			}
-		}
-	}, [fetchChatHistory]) // Add fetchChatHistory dependency
-
-	// Effect to establish WebSocket connection on mount
-	useEffect(() => {
-		connectWebSocket()
-		// Cleanup on unmount
-		return () => {
-			if (wsRef.current) {
-				console.log("Closing WebSocket connection on unmount.")
-				wsRef.current.onclose = null // Prevent reconnect on intentional close
-				if (wsRef.current.pingInterval)
-					clearInterval(wsRef.current.pingInterval)
-				wsRef.current.close(1000, "Component unmounting")
-				wsRef.current = null
-				wsListenersAdded.current = false
-			}
-		}
-	}, [connectWebSocket]) // Run only on mount/unmount
-
-	// --- Text Chat IPC Listeners ---
-	useEffect(() => {
-		if (window.electron && !textChatListenersAdded.current) {
-			console.log("Setting up IPC listeners for text chat")
-			const handleMessageStream = ({
-				messageId,
-				token,
-				done,
-				memoryUsed,
-				agentsUsed,
-				internetUsed,
-				proUsed
-			}) => {
-				setThinking(false) // Stop text thinking indicator
+	const setupIpcListeners = () => {
+		if (!eventListenersAdded.current && window.electron) {
+			const handleMessageStream = ({ messageId, token }) => {
 				setMessages((prev) => {
-					const existingMsgIndex = prev.findIndex(
-						(msg) => msg.id === messageId && !msg.isUser
+					const messageIndex = prev.findIndex(
+						(msg) => msg.id === messageId
 					)
-					if (existingMsgIndex !== -1) {
-						const updatedMessages = [...prev]
-						updatedMessages[existingMsgIndex] = {
-							...updatedMessages[existingMsgIndex],
-							message:
-								updatedMessages[existingMsgIndex].message +
-								token,
-							...(done && {
-								memoryUsed:
-									memoryUsed ??
-									updatedMessages[existingMsgIndex]
-										.memoryUsed,
-								agentsUsed:
-									agentsUsed ??
-									updatedMessages[existingMsgIndex]
-										.agentsUsed,
-								internetUsed:
-									internetUsed ??
-									updatedMessages[existingMsgIndex]
-										.internetUsed
-							})
-						}
-						return updatedMessages
-					} else if (token && !done) {
-						// Only add new if it has token and not just the final empty done message
+					if (messageIndex === -1) {
+						// Ensure new messages are only added if we are in text mode or just switched from it
+						// Or handle based on specific logic if voice can also trigger text stream updates
 						return [
 							...prev,
 							{
@@ -304,592 +102,331 @@ const Chat = () => {
 								memoryUsed: false,
 								agentsUsed: false,
 								internetUsed: false,
-								timestamp: new Date().toISOString(),
-								type: "assistant"
+								type: "text" // Assuming stream is text
 							}
 						]
 					}
-					return prev // No change
-				})
-				// Handle credit deduction if needed (check existing logic)
-				if (done && proUsed) {
-					console.log(
-						"[IPC] Pro feature used, credits might need update."
+					return prev.map((msg, index) =>
+						index === messageIndex
+							? { ...msg, message: msg.message + token }
+							: msg
 					)
-					// window.electron?.invoke("decrement-credits");
-				}
-				if (done) {
-					console.log("[IPC] Stream finished for message:", messageId)
-					// Optionally fetch history again if needed, but updates should be complete
-					// fetchChatHistory();
-				}
+				})
 			}
-
-			if (typeof window.electron.onMessageStream === "function") {
-				const removeListener =
-					window.electron.onMessageStream(handleMessageStream)
-				textChatListenersAdded.current = true
-				return () => {
-					console.log("Cleaning up IPC message stream listener")
-					if (typeof removeListener === "function") removeListener()
-					textChatListenersAdded.current = false
-				}
-			} else {
-				console.warn(
-					"window.electron.onMessageStream is not available."
-				)
-			}
+			window.electron.onMessageStream(handleMessageStream)
+			eventListenersAdded.current = true
+			// Cleanup function might be needed if listeners should be removed/re-added on mode switch
+			// return () => { window.electron.removeListener(...) } // Needs specific API if exists
 		}
-	}, [])
-
-	// --- Text Chat Functions ---
-	const handleInputChange = (e) => {
-		const value = e.target.value
-		setInput(value)
-		if (textareaRef.current) {
-			textareaRef.current.style.height = "auto"
-			textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`
-		}
+		// Consider if cleanup is needed when component unmounts or mode changes
 	}
 
-	const sendMessage = useCallback(async () => {
-		if (input.trim() === "" || thinking) return
-		const timestamp = new Date().toISOString()
+	const sendMessage = async () => {
+		if (input.trim() === "" || chatMode !== "text") return // Only send in text mode
+
 		const newMessage = {
 			message: input,
 			isUser: true,
-			id: `user-${Date.now()}`,
-			timestamp: timestamp,
-			type: "user",
-			isVisible: true
+			id: Date.now(),
+			type: "text"
 		}
 		setMessages((prev) => [...prev, newMessage])
-		const messageToSend = input
 		setInput("")
-		setThinking(true) // Start text thinking indicator
+		if (textareaRef.current) {
+			// Reset textarea height
+			textareaRef.current.style.height = "auto"
+		}
+		setThinking(true)
 
-		if (textareaRef.current) textareaRef.current.style.height = "auto"
+		setupIpcListeners() // Ensure listeners are set up before sending
 
 		try {
-			console.log("[IPC] Sending message:", messageToSend)
-			// Use the globally assumed active chat ID or implement logic to select/pass ID
 			const response = await window.electron?.invoke("send-message", {
-				input: messageToSend,
-				chat_id: "" // No need to pass the chat ID
+				input: newMessage.message
 			})
-			console.log("[IPC] send-message response:", response)
-			if (response.status !== 200) {
-				toast.error(
-					`Failed to send message: ${response.message || "Unknown error"}`
-				)
-				setMessages((prev) =>
-					prev.filter((msg) => msg.id !== newMessage.id)
-				) // Remove optimistic message
-				setThinking(false)
-			}
-			// Thinking state is stopped by the stream listener
-		} catch (error) {
-			toast.error(`Error sending message: ${error.message}`)
-			console.error("Error sending message:", error)
-			setMessages((prev) =>
-				prev.filter((msg) => msg.id !== newMessage.id)
-			)
-			setThinking(false)
-		}
-	}, [input, thinking]) // Add dependencies
-
-	const clearChatHistory = useCallback(async () => {
-		console.log("Attempting to clear chat history...")
-		setMessages([]) // Optimistic UI update
-		try {
-			const response = await fetch(
-				`http://localhost:5000/clear-chat-history`,
-				{ method: "POST" }
-			)
-			if (!response.ok) {
-				const errorData = await response.json().catch(() => ({}))
-				throw new Error(
-					`Failed to clear: ${response.status} ${errorData.message || ""}`
-				)
-			}
-			toast.success("Chat history cleared.")
-			console.log("Chat history cleared successfully.")
-			// No need to fetch history again, it's empty
-		} catch (error) {
-			toast.error(`Error clearing chat history: ${error.message}`)
-			console.error("Error clearing chat history:", error)
-			fetchChatHistory() // Re-fetch if clearing failed to restore state
-		}
-	}, [fetchChatHistory])
-
-	// --- NEW: Audio Playback Logic ---
-	const initializePlayback = useCallback(() => {
-		if (!audioContextRef.current) {
-			try {
-				audioContextRef.current = new (window.AudioContext ||
-					window.webkitAudioContext)({
-					sampleRate: 24000 // Orpheus/SNAC output sample rate
-				})
-				console.log("[Playback] Initialized AudioContext for playback.")
-				// Ensure context is running (user interaction often needed)
-				if (audioContextRef.current.state === "suspended") {
-					audioContextRef.current.resume()
-				}
-				nextPlayTimeRef.current = audioContextRef.current.currentTime
-				isPlayingRef.current = false // Ensure playback loop starts fresh
-			} catch (e) {
-				console.error("Error creating playback AudioContext:", e)
-				toast.error("Failed to initialize audio playback.")
-			}
-		}
-	}, [])
-
-	const scheduleChunkPlayback = useCallback(() => {
-		if (
-			!audioContextRef.current ||
-			audioQueueRef.current.length === 0 ||
-			isPlayingRef.current
-		) {
-			return // Nothing to play, context not ready, or already playing
-		}
-
-		isPlayingRef.current = true // Mark as playing to prevent re-entry
-
-		const processQueue = () => {
-			if (audioQueueRef.current.length === 0) {
-				isPlayingRef.current = false // Stop loop if queue is empty
-				// console.log("[Playback] Queue empty, stopping loop."); // Debug
-				return
-			}
-
-			// Play chunks that are due
-			while (
-				audioQueueRef.current.length > 0 &&
-				audioContextRef.current.currentTime >=
-					nextPlayTimeRef.current - 0.1
-			) {
-				// Play slightly ahead
-				const audioChunk = audioQueueRef.current.shift() // Get chunk (Float32Array)
-				const buffer = audioContextRef.current.createBuffer(
-					1, // Number of channels
-					audioChunk.length, // Buffer size
-					audioContextRef.current.sampleRate // Sample rate
-				)
-				buffer.getChannelData(0).set(audioChunk)
-
-				const source = audioContextRef.current.createBufferSource()
-				source.buffer = buffer
-				source.connect(audioContextRef.current.destination)
-
-				// Schedule start time precisely
-				const startTime = Math.max(
-					audioContextRef.current.currentTime,
-					nextPlayTimeRef.current
-				)
-				// console.log(`[Playback] Scheduling chunk to start at: ${startTime.toFixed(3)} (current: ${audioContextRef.current.currentTime.toFixed(3) })`); // Debug
-				source.start(startTime)
-
-				// Update time for the *next* chunk
-				nextPlayTimeRef.current = startTime + buffer.duration
-			}
-
-			// Check queue again shortly
-			requestAnimationFrame(processQueue)
-		}
-
-		requestAnimationFrame(processQueue)
-	}, []) // Dependencies managed internally via refs
-
-	const handleAudioChunkReceived = useCallback(
-		(audioChunk) => {
-			// console.log(`[WebSocket] Received audio chunk, length: ${audioChunk.length}`); // Debug
-			if (!audioContextRef.current) {
-				console.warn(
-					"[Playback] AudioContext not ready, discarding chunk."
-				)
-				return
-			}
-			// Ensure context is running
-			if (audioContextRef.current.state === "suspended") {
-				audioContextRef.current.resume()
-			}
-
-			audioQueueRef.current.push(audioChunk) // Add chunk to queue
-			scheduleChunkPlayback() // Attempt to schedule playback
-		},
-		[scheduleChunkPlayback]
-	)
-
-	// --- Voice Chat Callbacks (using WebSocket Client) ---
-
-	const handleWebSocketAudioConnected = useCallback(() => {
-		console.log("[WebSocketAudioClient] Connection established callback.")
-		setIsConnecting(false)
-		initializePlayback() // Prepare audio context for receiving audio
-		setVoiceState("listening")
-	}, [initializePlayback]) // Add dependency
-
-	const handleWebSocketAudioDisconnected = useCallback(() => {
-		console.log("[WebSocketAudioClient] Disconnected callback.")
-		setIsConnecting(false)
-		setIsVoiceMode(false)
-		setVoiceState("idle")
-		// Cleanup playback resources
-		if (
-			audioContextRef.current &&
-			audioContextRef.current.state !== "closed"
-		) {
-			audioContextRef.current
-				.close()
-				.then(() =>
-					console.log("[Playback] Playback AudioContext closed.")
-				)
-			audioContextRef.current = null
-		}
-		audioQueueRef.current = []
-		isPlayingRef.current = false
-		nextPlayTimeRef.current = 0
-	}, [])
-
-	const handleWebSocketAudioError = useCallback((error) => {
-		console.error("[WebSocketAudioClient] Error callback:", error)
-		toast.error(`Voice connection error: ${error.message}`)
-		setIsConnecting(false)
-		setIsVoiceMode(false)
-		setVoiceState("error")
-		// Optionally cleanup playback context on error too
-	}, [])
-
-	const handleWebSocketTextMessage = useCallback((message) => {
-		console.log(
-			"[WebSocketAudioClient] Received text/status message:",
-			message
-		)
-		// You can use this to update UI based on logs, errors, etc. from server
-		if (message.type === "log" && message.data === "pause_detected") {
-			setVoiceState("thinking") // Update state based on server log
-		} else if (
-			message.type === "log" &&
-			message.data === "response_starting"
-		) {
-			setVoiceState("speaking")
-		} else if (message.type === "error") {
-			toast.error(`Server error: ${message.data}`)
-			// Maybe revert voice state?
-		}
-		// Add more handlers as needed based on messages fastrtc sends
-	}, [])
-
-	// --- Start/Stop Voice Mode (using WebSocket Client) ---
-
-	const startVoiceMode = useCallback(async () => {
-		if (
-			isConnecting ||
-			(wsAudioClientRef.current && wsAudioClientRef.current.isConnected)
-		) {
-			console.warn(
-				"Already connecting or connected to voice (WebSocket)."
-			)
-			return
-		}
-		console.log("Starting Voice Mode (WebSocket)...")
-		setIsConnecting(true)
-		setIsVoiceMode(true)
-		setVoiceState("connecting")
-		setThinking(false)
-
-		// Ensure playback is ready *before* connecting fully might be good
-		initializePlayback()
-
-		if (!wsAudioClientRef.current) {
-			wsAudioClientRef.current = new WebSocketAudioClient({
-				onConnected: handleWebSocketAudioConnected,
-				onDisconnected: handleWebSocketAudioDisconnected,
-				onAudioChunkReceived: handleAudioChunkReceived, // Handle incoming audio
-				onTextMessage: handleWebSocketTextMessage, // Handle non-audio messages
-				onError: handleWebSocketAudioError
-			})
-		}
-
-		try {
-			await wsAudioClientRef.current.connect()
-		} catch (error) {
-			console.error("Error initiating WebSocket connection:", error)
-			setIsConnecting(false)
-			setIsVoiceMode(false)
-			setVoiceState("error")
-		}
-	}, [
-		isConnecting,
-		initializePlayback,
-		handleWebSocketAudioConnected,
-		handleWebSocketAudioDisconnected,
-		handleAudioChunkReceived,
-		handleWebSocketTextMessage,
-		handleWebSocketAudioError
-	]) // Add dependencies
-
-	const stopVoiceMode = useCallback(() => {
-		console.log("Stopping Voice Mode (WebSocket)...")
-		if (wsAudioClientRef.current) {
-			wsAudioClientRef.current.disconnect() // Disconnect will trigger callbacks
-			wsAudioClientRef.current = null // Clear the ref
-		}
-		// Reset states (callbacks might also do this, but immediate feedback is good)
-		setIsConnecting(false)
-		setIsVoiceMode(false)
-		setVoiceState("idle")
-		// Explicitly cleanup playback context on manual stop
-		if (
-			audioContextRef.current &&
-			audioContextRef.current.state !== "closed"
-		) {
-			audioContextRef.current
-				.close()
-				.then(() =>
-					console.log(
-						"[Playback] Playback AudioContext closed on stop."
-					)
-				)
-			audioContextRef.current = null
-		}
-		audioQueueRef.current = []
-		isPlayingRef.current = false
-		nextPlayTimeRef.current = 0
-	}, [])
-
-	// Cleanup client on unmount
-	useEffect(() => {
-		return () => {
-			if (wsAudioClientRef.current) {
+			// The response might indicate completion, but streaming handles actual message display.
+			// Fetching history might overwrite streamed content, consider flow carefully.
+			// Maybe fetch history only *after* streaming seems complete, or rely solely on stream?
+			// For now, keeping fetchChatHistory after potential stream completion for robustness.
+			if (response.status === 200) {
+				// Let the stream handle the AI response display. Fetching might be redundant or cause jumps.
+				// await fetchChatHistory(); // Re-evaluate if this is needed here or after stream ends
 				console.log(
-					"Cleaning up WebSocket audio client on component unmount."
+					"Message send invoked, waiting for stream/completion."
 				)
-				wsAudioClientRef.current.disconnect()
-				wsAudioClientRef.current = null
+			} else {
+				toast.error("Failed to send message via IPC.")
+				setThinking(false) // Stop thinking if initial send fails
 			}
-			// Cleanup playback context if component unmounts while active
-			if (
-				audioContextRef.current &&
-				audioContextRef.current.state !== "closed"
-			) {
-				audioContextRef.current.close()
-				audioContextRef.current = null
-			}
+		} catch (error) {
+			toast.error("Error sending message.")
+			setThinking(false) // Stop thinking on error
+		} finally {
+			// Thinking state should ideally be turned off when the *stream* ends, not immediately here.
+			// For now, let's keep it simple and turn it off here, assuming stream follows quickly.
+			// A more robust solution would involve an 'end-of-stream' event from IPC.
+			setThinking(false) // Simplified: turn off thinking after invoke call
 		}
-	}, [])
+	}
 
-	const toggleMute = useCallback(() => {
-		if (
-			!isVoiceMode ||
-			!wsAudioClientRef.current ||
-			!wsAudioClientRef.current.isConnected
-		)
-			return
-		const nextMutedState = !isMuted
-		setIsMuted(nextMutedState)
-		wsAudioClientRef.current.setMuted(nextMutedState)
-		console.log(`Mic ${nextMutedState ? "muted" : "unmuted"}`)
-	}, [isVoiceMode, isMuted])
+	const clearChatHistory = async () => {
+		// Confirmation might be good here
+		try {
+			// Assuming clear should work regardless of mode, using IPC if available
+			const response = await window.electron?.invoke("clear-chat-history")
+			if (response.status === 200) {
+				setMessages([])
+				// Optionally clear input if in text mode
+				if (chatMode === "text") setInput("")
+				toast.success("Chat history cleared.")
+			} else {
+				toast.error("Failed to clear chat history via IPC.")
+			}
+		} catch (error) {
+			toast.error("Error clearing chat history.")
+		}
+	}
 
-	// --- Render Logic ---
+	const reinitiateServer = async () => {
+		setServerStatus(false)
+		toast.loading("Restarting server...") // Give user feedback
+		try {
+			// Assuming reinitiate might clear history or require a refresh
+			const response = await window.electron?.invoke("reinitiate-server") // Use a dedicated IPC call if possible
+			if (response.status === 200) {
+				toast.dismiss()
+				toast.success("Server restarted. Fetching history...")
+				await fetchChatHistory() // Fetch fresh history after restart
+			} else {
+				toast.dismiss()
+				toast.error("Failed to restart server.")
+			}
+		} catch (error) {
+			toast.dismiss()
+			toast.error("Error restarting the server.")
+		} finally {
+			setServerStatus(true) // Set status back regardless of success/failure for now
+		}
+	}
 
-	const renderVoiceMode = () => (
-		// ... (UI structure remains the same) ...
-		// REMOVE the <audio ref={remoteAudioRef} hidden /> element
-		// Playback is now handled by the Web Audio API logic
-		<div className="flex-grow w-full flex flex-col justify-center items-center gap-8 text-white px-4">
-			{/* Status Display */}
-			<div className="text-center h-20">
-				<p className="text-5xl md:text-6xl font-semibold mb-3 capitalize">
-					{voiceState}
-				</p>
-				<div className="h-6">
-					{voiceState === "connecting" && (
-						<IconLoader className="w-8 h-8 text-lightblue animate-spin mx-auto" />
-					)}
-					{voiceState === "listening" && (
-						<p className="text-lg text-gray-400 animate-pulse">
-							{" "}
-							Listening...{" "}
-						</p>
-					)}
-					{voiceState === "thinking" && (
-						<IconLoader className="w-8 h-8 text-lightblue animate-spin mx-auto" />
-					)}
-					{voiceState === "speaking" && (
-						<p className="text-lg text-gray-400">Speaking...</p>
-					)}
-					{voiceState === "error" && (
-						<p className="text-lg text-red-500">
-							{" "}
-							Connection error.{" "}
-						</p>
-					)}
-				</div>
-			</div>
-			{/* Controls */}
-			<div className="flex gap-6 mt-8">
-				{/* Mute Button */}
-				<button
-					onClick={toggleMute}
-					className={`p-4 rounded-full ...`}
-					disabled={
-						voiceState === "connecting" || voiceState === "error"
-					}
-				>
-					{isMuted ? (
-						<IconMicrophoneOff className="w-8 h-8 text-white" />
-					) : (
-						<IconMicrophone className="w-8 h-8 text-white" />
-					)}
-				</button>
-				{/* Disconnect Button */}
-				<button
-					onClick={stopVoiceMode}
-					className="p-4 rounded-full bg-red-600 hover:bg-red-700 ..."
-				>
-					<IconPhoneOff className="w-8 h-8 text-white" />
-				</button>
-			</div>
-			{/* NO <audio> element needed here anymore */}
-		</div>
-	)
+	// --- Effects ---
+	useEffect(() => {
+		fetchUserDetails()
+		fetchCurrentModel()
+		fetchChatHistory() // Initial fetch
+		setupIpcListeners() // Setup listeners on mount
 
-	const renderTextMode = () => (
-		<div className="flex-grow w-full flex flex-col overflow-hidden px-4 md:px-10 pb-4">
-			{" "}
-			{/* Changed structure for flex grow */}
-			{/* Chat Messages Area */}
-			<div className="flex-grow overflow-y-auto p-1 md:p-4 bg-matteblack rounded-xl no-scrollbar mb-3">
-				{isLoading ? (
-					<div className="flex justify-center items-center h-full">
-						<IconLoader className="w-8 h-8 text-white animate-spin" />
-					</div>
-				) : messages.length === 0 ? (
-					<div className="font-Poppins h-full flex flex-col justify-center items-center text-gray-500">
-						<p className="text-3xl md:text-4xl text-white mb-4 text-center">
-							Send a message or start voice chat!
-						</p>
-					</div>
-				) : (
-					messages
-						.filter((msg) => msg.isVisible !== false)
-						.map(
-							(
-								msg // Filter hidden messages
-							) => (
-								<div
-									key={msg.id || msg.timestamp}
-									className={`flex ${msg.isUser ? "justify-end" : "justify-start"} my-2`}
-								>
-									{msg.type === "tool_result" ? (
-										<ToolResultBubble
-											task={msg.task || "Task"}
-											result={msg.message}
-											memoryUsed={msg.memoryUsed}
-											agentsUsed={msg.agentsUsed}
-											internetUsed={msg.internetUsed}
-										/>
-									) : (
-										<ChatBubble
-											message={msg.message}
-											isUser={msg.isUser}
-											memoryUsed={msg.memoryUsed}
-											agentsUsed={msg.agentsUsed}
-											internetUsed={msg.internetUsed}
-											timestamp={msg.timestamp}
-										/>
-									)}
-								</div>
-							)
-						)
-				)}
-				{thinking && ( // Show thinking indicator for text chat
-					<div className="flex justify-start items-center gap-2 mt-3 animate-pulse ml-4">
-						<div className="bg-gray-600 rounded-full h-3 w-3"></div>
-						<div className="bg-gray-600 rounded-full h-3 w-3"></div>
-						<div className="bg-gray-600 rounded-full h-3 w-3"></div>
-					</div>
-				)}
-				<div ref={chatEndRef} />
-			</div>
-			{/* Model Info */}
-			<p className="text-gray-400 font-Poppins text-xs md:text-sm mb-2 px-1">
-				Model:{" "}
-				<span className="text-lightblue">
-					{currentModel || "Loading..."}
-				</span>
-			</p>
-			{/* Input Area */}
-			<div className="relative flex flex-row gap-4 w-full px-4 py-1 bg-matteblack border border-gray-600 rounded-lg z-10">
-				{" "}
-				{/* Adjusted border */}
-				<textarea
-					ref={textareaRef}
-					value={input}
-					onChange={handleInputChange}
-					onKeyDown={(e) => {
-						if (e.key === "Enter" && !e.shiftKey) {
-							e.preventDefault()
-							sendMessage()
-						}
-					}}
-					className="flex-grow p-3 pr-36 bg-transparent text-base md:text-lg text-white focus:outline-none resize-none no-scrollbar overflow-y-auto" // Adjusted padding/size
-					placeholder="Start typing..."
-					style={{ maxHeight: "150px", minHeight: "24px" }} // Adjusted height limits
-					rows={1}
-					disabled={thinking}
-				/>
-				<div className="absolute right-2 bottom-1 flex flex-row items-center gap-2">
-					<button
-						onClick={isVoiceMode ? stopVoiceMode : startVoiceMode}
-						className={`p-2.5 hover-button scale-100 hover:scale-105 cursor-pointer rounded-full text-white ${isVoiceMode ? "bg-red-600 hover:bg-red-700" : "bg-gray-600 hover:bg-gray-500"} disabled:opacity-50 transition-all duration-200 ease-in-out`}
-						disabled={isConnecting} // Disable while connecting
-						aria-label={
-							isVoiceMode ? "Stop Voice Chat" : "Start Voice Chat"
-						}
-					>
-						{isConnecting ? (
-							<IconLoader className="w-4 h-4 animate-spin" />
-						) : isVoiceMode ? (
-							<IconPlayerStopFilled className="w-4 h-4" />
-						) : (
-							<IconMicrophone className="w-4 h-4" />
-						)}
-					</button>
-					<button
-						onClick={sendMessage}
-						className="p-2.5 hover-button scale-100 hover:scale-105 cursor-pointer rounded-full text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 transition-colors duration-200 ease-in-out"
-						disabled={thinking || input.trim() === ""}
-						aria-label="Send Message"
-					>
-						<IconSend className="w-4 h-4" />
-					</button>
-					<button
-						onClick={clearChatHistory}
-						className="p-2.5 rounded-full hover-button scale-100 cursor-pointer hover:scale-105 text-white bg-gray-600 hover:bg-gray-500 transition-colors duration-200 ease-in-out"
-						aria-label="Clear Chat History"
-					>
-						<IconRefresh className="w-4 h-4" />
-					</button>
-				</div>
-			</div>
-		</div>
-	)
+		// Cleanup listeners on unmount
+		// This assumes a simple on/off, if electron API allows removal, use that.
+		return () => {
+			eventListenersAdded.current = false // Reset flag
+			// Add specific listener removal logic here if available from electron preload script
+		}
+	}, []) // Run once on mount
+
+	useEffect(() => {
+		// Scroll to bottom only in text mode when messages change
+		if (chatMode === "text") {
+			chatEndRef.current?.scrollIntoView({ behavior: "smooth" })
+		}
+	}, [messages, chatMode]) // Add chatMode dependency
+
+	// Optional: Background refresh (consider if needed with IPC streaming)
+	// useEffect(() => {
+	// 	const intervalId = setInterval(fetchChatHistory, 60000) // Refresh every 60 seconds
+	// 	return () => clearInterval(intervalId)
+	// }, [])
+
+	// Adjust textarea height when switching to text mode and input changes
+	useEffect(() => {
+		if (chatMode === "text" && textareaRef.current) {
+			handleInputChange({ target: textareaRef.current }) // Trigger resize based on current content
+		}
+	}, [chatMode, input]) // Rerun when mode changes or input changes in text mode
 
 	return (
 		<div className="h-screen bg-matteblack flex relative overflow-hidden">
+			{" "}
+			{/* Prevent body scroll */}
 			<Sidebar
 				userDetails={userDetails}
 				isSidebarVisible={isSidebarVisible}
 				setSidebarVisible={setSidebarVisible}
 			/>
 			{/* Main Content Area */}
-			<div className="flex-grow flex flex-col items-start h-full bg-matteblack">
-				{isVoiceMode ? renderVoiceMode() : renderTextMode()}
-			</div>
-		</div>
+			<div className="flex-grow flex flex-col justify-center items-center h-full bg-matteblack relative">
+				{" "}
+				{/* Use flex-grow and center content */}
+				{/* Top Right Buttons (Always Visible) */}
+				<div className="absolute top-5 right-5 z-20 flex gap-3">
+					{/* Server Re-initiate Button */}
+					<button
+						onClick={reinitiateServer}
+						className="p-3 hover-button rounded-full text-white cursor-pointer"
+						title="Restart Server"
+					>
+						{!serverStatus ? (
+							<IconLoader className="w-4 h-4 text-white animate-spin" />
+						) : (
+							// Using Refresh icon might be more intuitive for restarting
+							<IconRefresh className="w-4 h-4 text-white" />
+						)}
+					</button>
+					{/* Theme Toggle (Show based on Voice Mode context or always?) */}
+					{/* Let's place it here for consistency */}
+					<ThemeToggle />
+				</div>
+				{/* Conditional Content: Loading, Text Chat, or Voice Chat */}
+				<div className="w-full h-full flex flex-col items-center justify-center p-5 pt-20">
+					{" "}
+					{/* Added padding top */}
+					{isLoading ? (
+						// Loading State
+						<div className="flex justify-center items-center h-full w-full">
+							<IconLoader className="w-10 h-10 text-white animate-spin" />
+						</div>
+					) : chatMode === "text" ? (
+						// Text Chat Mode UI
+						<div className="w-full max-w-4xl h-full flex flex-col">
+							{" "}
+							{/* Max width for readability */}
+							{/* Message Display Area */}
+							<div className="grow overflow-y-auto p-4 rounded-xl no-scrollbar mb-4 flex flex-col gap-4">
+								{messages.length === 0 ? (
+									<div className="font-Poppins h-full flex flex-col justify-center items-center text-gray-500">
+										<p className="text-3xl text-white mb-4">
+											Send a message to start
+										</p>
+									</div>
+								) : (
+									messages.map((msg) => (
+										<div
+											key={msg.id || Math.random()} // Use a more stable key if possible
+											className={`flex ${msg.isUser ? "justify-end" : "justify-start"} w-full`}
+										>
+											{msg.type === "tool_result" ? (
+												<ToolResultBubble
+													task={msg.task}
+													result={msg.message}
+													memoryUsed={msg.memoryUsed}
+													agentsUsed={msg.agentsUsed}
+													internetUsed={
+														msg.internetUsed
+													}
+												/>
+											) : (
+												<ChatBubble
+													message={msg.message}
+													isUser={msg.isUser}
+													memoryUsed={msg.memoryUsed}
+													agentsUsed={msg.agentsUsed}
+													internetUsed={
+														msg.internetUsed
+													}
+												/>
+											)}
+										</div>
+									))
+								)}
+								{/* Thinking Indicator */}
+								{thinking && (
+									<div className="flex justify-start w-full mt-2">
+										<div className="flex items-center gap-2 p-3 bg-gray-700 rounded-lg">
+											<div className="bg-gray-400 rounded-full h-2 w-2 animate-pulse delay-75"></div>
+											<div className="bg-gray-400 rounded-full h-2 w-2 animate-pulse delay-150"></div>
+											<div className="bg-gray-400 rounded-full h-2 w-2 animate-pulse delay-300"></div>
+										</div>
+									</div>
+								)}
+								<div ref={chatEndRef} /> {/* Scroll target */}
+							</div>
+							{/* Model Info and Input Area Container */}
+							<div className="w-full flex flex-col items-center">
+								<p className="text-gray-400 font-Poppins text-xs mb-2">
+									Model:{" "}
+									<span className="text-lightblue">
+										{currentModel}
+									</span>
+								</p>
+								{/* Input Area */}
+								<div className="relative w-full flex flex-row gap-4 items-end px-4 py-2 bg-matteblack border-[1px] border-gray-600 rounded-lg z-10">
+									<textarea
+										ref={textareaRef}
+										value={input}
+										onChange={handleInputChange}
+										onKeyDown={(e) => {
+											if (
+												e.key === "Enter" &&
+												!e.shiftKey
+											) {
+												e.preventDefault()
+												sendMessage()
+											}
+										}}
+										className="flex-grow p-2 pr-28 rounded-lg bg-transparent text-base text-white focus:outline-none resize-none no-scrollbar overflow-y-auto" // Adjusted padding-right
+										placeholder="Type your message..."
+										style={{
+											maxHeight: "150px",
+											minHeight: "24px"
+										}} // Adjusted heights
+										rows={1}
+									/>
+									{/* Buttons inside input area */}
+									<div className="absolute right-4 bottom-3 flex flex-row items-center gap-2">
+										<button
+											onClick={sendMessage}
+											disabled={
+												thinking || input.trim() === ""
+											}
+											className="p-2 hover-button scale-100 hover:scale-110 cursor-pointer rounded-full text-white disabled:opacity-50 disabled:cursor-not-allowed"
+											title="Send Message"
+										>
+											<IconSend className="w-4 h-4 text-white" />
+										</button>
+										<button
+											onClick={clearChatHistory}
+											className="p-2 rounded-full hover-button scale-100 cursor-pointer hover:scale-110 text-white"
+											title="Clear Chat History"
+										>
+											<IconRefresh className="w-4 h-4 text-white" />
+										</button>
+									</div>
+								</div>
+							</div>
+						</div>
+					) : (
+						// Voice Chat Mode UI
+						<div className="flex flex-col items-center justify-center h-full w-full relative">
+							<BackgroundCircleProvider />
+							{/* ResetChat for voice mode - placed bottom center or corner */}
+							<div className="absolute bottom-24 left-1/2 transform -translate-x-1/2 z-10">
+								<ResetChat />
+							</div>
+							{/* ThemeToggle is now top right */}
+						</div>
+					)}
+				</div>
+				{/* Mode Toggle Button (Always Visible except loading) */}
+				{!isLoading && (
+					<button
+						onClick={handleToggleMode}
+						className="absolute bottom-6 right-6 p-3 hover-button scale-100 hover:scale-110 cursor-pointer rounded-full text-white z-20" // Ensure high z-index
+						title={
+							chatMode === "text"
+								? "Switch to Voice Mode"
+								: "Switch to Text Mode"
+						}
+					>
+						{chatMode === "text" ? (
+							<IconMicrophone className="w-5 h-5 text-white" />
+						) : (
+							<IconKeyboard className="w-5 h-5 text-white" />
+						)}
+					</button>
+				)}
+			</div>{" "}
+			{/* End Main Content Area */}
+		</div> // End Root Div
 	)
 }
 

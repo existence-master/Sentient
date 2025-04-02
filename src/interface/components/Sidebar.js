@@ -81,6 +81,13 @@ const Sidebar = ({ userDetails, setSidebarVisible, isSidebarVisible }) => {
 						<span className="text-base text-white">Memories</span>
 					</button>
 					<button
+						onClick={() => router.push("/voice")}
+						className="cursor-pointer flex items-center gap-3 w-full text-left px-4 py-2 rounded-lg text-white hover:text-lightblue hover:bg-neutral-800 mt-1"
+					>
+						<IconBrain className="w-5 h-5" />
+						<span className="text-base text-white">Voice</span>
+					</button>
+					<button
 						onClick={() => router.push("/settings")}
 						className="cursor-pointer flex items-center gap-3 w-full text-left px-4 py-2 rounded-lg text-white hover:text-lightblue hover:bg-neutral-800 mt-1"
 					>

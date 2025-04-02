@@ -25,9 +25,9 @@ import nest_asyncio
 import uvicorn
 import numpy as np
 import gradio as gr # Still needed for FastRTC internals
-# from fastrtc import Stream, ReplyOnPause, AlgoOptions, SileroVadOptions
-# import httpx
-# import traceback
+from fastrtc import Stream, ReplyOnPause, AlgoOptions, SileroVadOptions
+import httpx
+import traceback
 
 # Import specific functions, runnables, and helpers from respective folders
 from model.agents.runnables import *
@@ -100,11 +100,11 @@ query_classification_runnable = get_query_classification_runnable()
 fact_extraction_runnable = get_fact_extraction_runnable()
 text_summarizer_runnable = get_text_summarizer_runnable()
 text_description_runnable = get_text_description_runnable()
-chat_history = get_chat_history()
+chat_history = None
 
-chat_runnable = get_chat_runnable(chat_history)
-agent_runnable = get_agent_runnable(chat_history)
-unified_classification_runnable = get_unified_classification_runnable(chat_history)
+chat_runnable = None
+agent_runnable = None
+unified_classification_runnable = None
 # Initialize runnables from scraper
 reddit_runnable = get_reddit_runnable()
 twitter_runnable = get_twitter_runnable()
@@ -120,7 +120,74 @@ task_queue = TaskQueue()
 
 stt_model = None
 tts_model = None
+OLLAMA_API_URL = "http://localhost:11434/api/chat" # Keep for reference or potential fallback
+OLLAMA_MODEL = "llama3.2:3b" # Keep for reference
+OLLAMA_REQUEST_TIMEOUT = 60.0
+SELECTED_TTS_VOICE: VoiceId = "tara"
+if SELECTED_TTS_VOICE not in AVAILABLE_VOICES:
+    print(f"Warning: Selected voice '{SELECTED_TTS_VOICE}' not valid. Using default 'tara'.")
+    SELECTED_TTS_VOICE = "tara"
+ORPHEUS_EMOTION_TAGS = [
+    "<giggle>", "<laugh>", "<chuckle>", "<sigh>", "<cough>",
+    "<sniffle>", "<groan>", "<yawn>", "<gasp>"
+]
+EMOTION_TAG_LIST_STR = ", ".join(ORPHEUS_EMOTION_TAGS)
 
+# --- STT/TTS Model Loading ---
+print("Loading STT model...")
+stt_model = FasterWhisperSTT(model_size="base", device="cpu", compute_type="int8")
+print("STT model loaded.")
+
+print("Loading TTS model...")
+try:
+    tts_model = OrpheusTTS(
+        verbose=False,
+        default_voice_id=SELECTED_TTS_VOICE
+    )
+    print("TTS model loaded successfully.")
+except Exception as e:
+    print(f"FATAL ERROR: Could not load TTS model: {e}")
+    exit(1)
+# --- End Voice Specific Initializations ---
+
+async def add_message_to_db(chat_id: str, message_text: str, is_user: bool, is_visible: bool = True, **kwargs):
+    """Adds a message to the specified chat ID in the database."""
+    async with db_lock:
+        try:
+            chatsDb = await load_db()
+            active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == chat_id), None)
+
+            if active_chat:
+                message_id = str(int(time.time() * 1000)) # Simple timestamp-based ID
+                new_message = {
+                    "id": message_id,
+                    "message": message_text,
+                    "isUser": is_user,
+                    "isVisible": is_visible,
+                    "timestamp": datetime.datetime.now(timezone.utc).isoformat() + "Z",
+                    "memoryUsed": kwargs.get("memoryUsed", False),
+                    "agentsUsed": kwargs.get("agentsUsed", False),
+                    "internetUsed": kwargs.get("internetUsed", False),
+                    # Add other relevant fields if needed, like 'type' for tool results
+                }
+                if kwargs.get("type"):
+                    new_message["type"] = kwargs["type"]
+                if kwargs.get("task"):
+                    new_message["task"] = kwargs["task"]
+
+                active_chat["messages"].append(new_message)
+                await save_db(chatsDb)
+                print(f"Message added to DB (Chat ID: {chat_id}, User: {is_user}): {message_text[:50]}...")
+                return message_id # Return the ID if needed
+            else:
+                print(f"Error: Could not find chat with ID {chat_id} to add message.")
+                return None
+        except Exception as e:
+            print(f"Error adding message to DB: {e}")
+            traceback.print_exc()
+            return None
+
+# Tool Registration Decorator
 def register_tool(name: str):
     """Decorator to register a function as a tool handler."""
     def decorator(func: callable):
@@ -531,10 +598,16 @@ app = FastAPI(
     redoc_url=None
 )
 
+origins = [
+    "http://localhost",
+    "http://localhost:3000",
+    "app://.",
+]
+
 # Add CORS middleware to allow cross-origin requests
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"] + origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -696,6 +769,322 @@ class DeleteMemoryRequest(BaseModel):
     id: int
 
 # --- API Endpoints ---
+
+# --- Voice Chat Logic ---
+
+# ... (Configuration, Model Init, Ollama function remain the same) ...
+# --- Configuration ---
+OLLAMA_API_URL = "http://localhost:11434/api/chat"
+OLLAMA_MODEL = "llama3.2:3b"
+OLLAMA_REQUEST_TIMEOUT = 60.0
+
+# --- Select TTS Voice ---
+SELECTED_TTS_VOICE: VoiceId = "tara"
+if SELECTED_TTS_VOICE not in AVAILABLE_VOICES:
+    print(f"Warning: Selected voice '{SELECTED_TTS_VOICE}' not valid. Using default 'tara'.")
+    SELECTED_TTS_VOICE = "tara"
+# --- End Voice Selection ---
+
+
+# --- Orpheus Supported Emotion Tags ---
+ORPHEUS_EMOTION_TAGS = [
+    "<giggle>", "<laugh>", "<chuckle>", "<sigh>", "<cough>",
+    "<sniffle>", "<groan>", "<yawn>", "<gasp>"
+]
+EMOTION_TAG_LIST_STR = ", ".join(ORPHEUS_EMOTION_TAGS)
+
+# --- Model Initialization ---
+print("Loading STT model...")
+stt_model = FasterWhisperSTT(model_size="base", device="cpu", compute_type="int8")
+print("STT model loaded.")
+
+print("Loading TTS model...")
+try:
+    tts_model = OrpheusTTS(
+        verbose=False,
+        default_voice_id=SELECTED_TTS_VOICE
+    )
+    print("TTS model loaded successfully.")
+except Exception as e:
+    print(f"FATAL ERROR: Could not load TTS model: {e}")
+    exit(1)
+
+# --- Modified Async Handler using Chat Endpoint Logic ---
+async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
+    """
+    Handles the voice conversation flow: STT -> LLM (using chat logic) -> TTS.
+    Uses the same classification, context retrieval, and runnable invocation
+    as the /chat endpoint, calling invoke() for the full response.
+    Ensures async functions are awaited.
+    """
+    # Make runnables accessible
+    global embed_model, graph_driver, memory_backend, task_queue
+    global reflection_runnable, inbox_summarizer_runnable, priority_runnable
+    global graph_decision_runnable, information_extraction_runnable, graph_analysis_runnable
+    global text_dissection_runnable, text_conversion_runnable, query_classification_runnable
+    global fact_extraction_runnable, text_summarizer_runnable, text_description_runnable
+    global reddit_runnable, twitter_runnable
+    global internet_query_reframe_runnable, internet_summary_runnable
+
+    print("\n--- Received audio chunk for processing ---")
+    print("Transcribing...")
+    if not stt_model:
+        print("ERROR: STT model not loaded.")
+        return
+    user_text = stt_model.stt(audio)
+    if not user_text or not user_text.strip():
+        print("No valid text transcribed, skipping.")
+        return
+
+    print(f"User (STT): {user_text}")
+
+    bot_response_text = ""
+    active_chat_id = None
+    current_chat_runnable = None
+
+    try:
+        # 1. Load User Profile & Active Chat Info
+        user_profile = load_user_profile()
+        username = user_profile.get("userData", {}).get("personalInfo", {}).get("name", "User")
+        personality_setting = user_profile.get("userData", {}).get("personality", "Default helpful assistant")
+
+        async with db_lock:
+            chatsDb = await load_db()
+            active_chat_id = chatsDb.get("active_chat_id")
+
+        if not active_chat_id:
+            print("ERROR: No active chat ID found. Cannot process voice message.")
+            return
+
+        # 2. Add User Message to DB
+        await add_message_to_db(active_chat_id, user_text, is_user=True, is_visible=True)
+
+        # 3. Get Current Chat History & Initialize Context-Aware Runnables
+        chat_history_obj = get_chat_history()
+        try:
+            # Initialize runnables - check chat runnable specifically
+            temp_chat_runnable = get_chat_runnable(chat_history_obj)
+            print(f"DEBUG: Type returned by get_chat_runnable: {type(temp_chat_runnable)}")
+            # Check if it has the invoke method
+            if not hasattr(temp_chat_runnable, 'invoke') or not callable(temp_chat_runnable.invoke):
+                 print(f"ERROR: get_chat_runnable did not return a valid runnable object with a callable 'invoke' method. Got: {temp_chat_runnable}")
+                 raise ValueError("Invalid chat runnable object received (missing invoke).")
+            current_chat_runnable = temp_chat_runnable
+
+            current_agent_runnable = get_agent_runnable(chat_history_obj)
+            current_unified_classifier = get_unified_classification_runnable(chat_history_obj)
+        except Exception as e:
+            print(f"ERROR initializing history-dependent runnables: {e}")
+            traceback.print_exc()
+            await add_message_to_db(active_chat_id, "[System Error: Failed to initialize core components]", is_user=False, error=True)
+            return
+
+        # 4. Classify User Input
+        print("Classifying input...")
+        # Assuming invoke is synchronous here, adjust if classifier uses ainvoke
+        unified_output = current_unified_classifier.invoke({"query": user_text})
+        category = unified_output.get("category", "chat")
+        use_personal_context = unified_output.get("use_personal_context", False)
+        internet = unified_output.get("internet", "None")
+        transformed_input = unified_output.get("transformed_input", user_text)
+        print(f"Classification: Category='{category}', Use Personal='{use_personal_context}', Internet='{internet}'")
+        print(f"Transformed Input: {transformed_input}")
+
+
+        # 5. Handle Agent Task Category
+        if category == "agent":
+            print("Input classified as agent task.")
+            # Assuming invoke is synchronous here
+            priority_response = priority_runnable.invoke({"task_description": transformed_input})
+            priority = priority_response.get("priority", 3)
+
+            print(f"Adding agent task to queue (Priority: {priority})...")
+            # ---> Use await here <---
+            await task_queue.add_task(
+                chat_id=active_chat_id,
+                description=transformed_input,
+                priority=priority,
+                username=username,
+                personality=personality_setting,
+                use_personal_context=use_personal_context,
+                internet=internet
+            )
+            print("Agent task added.")
+            bot_response_text = "Okay, I'll get right on that." # Canned response for agent task
+
+            await add_message_to_db(active_chat_id, bot_response_text, is_user=False, agentsUsed=True)
+
+        # 6. Handle Chat/Memory Category (Generate Response using invoke)
+        else: # category is "chat" or "memory"
+            print("Input classified as chat/memory.")
+            user_context = None
+            internet_context = None
+            memory_used_flag = False
+            internet_used_flag = False
+
+            # Fetch context if needed (Memory)
+            if use_personal_context or category == "memory":
+                print("Retrieving relevant memories...")
+                try:
+                    # ---> Use await here <---
+                    user_context = await memory_backend.retrieve_memory(username, transformed_input)
+                    # Now user_context should be the actual result (e.g., string or None)
+                    if user_context:
+                        # Check if it's a string before slicing
+                        if isinstance(user_context, str):
+                            print(f"Retrieved user context (memory): {user_context[:100]}...")
+                        else:
+                            # Handle other types if necessary, or just print type
+                            print(f"Retrieved user context (memory) of type: {type(user_context)}")
+                        memory_used_flag = True
+                    else:
+                        print("No relevant memories found.")
+                except Exception as e:
+                    print(f"Error retrieving user context: {e}")
+                    traceback.print_exc() # Keep traceback for debugging
+                # Starting background memory update task is correct with create_task
+                if category == "memory":
+                    print("Queueing memory update operation...")
+                    asyncio.create_task(memory_backend.add_operation(username, transformed_input))
+
+            # Fetch context if needed (Internet)
+            # Assuming these helpers call synchronous invoke methods internally for now
+            if internet == "Internet":
+                print("Searching the internet...")
+                try:
+                    reframed_query = get_reframed_internet_query(internet_query_reframe_runnable, transformed_input)
+                    print(f"Reframed internet query: {reframed_query}")
+                    search_results = get_search_results(reframed_query)
+                    if search_results:
+                        internet_context = get_search_summary(internet_summary_runnable, search_results)
+                        # Check if it's a string before slicing
+                        if internet_context and isinstance(internet_context, str):
+                            print(f"Retrieved internet context (summary): {internet_context[:100]}...")
+                        elif internet_context:
+                            print(f"Retrieved internet context (summary) of type: {type(internet_context)}")
+                        else:
+                            print("Internet summary was empty.")
+                        internet_used_flag = True
+                    else:
+                        print("No search results found or summary failed.")
+                except Exception as e:
+                    print(f"Error retrieving internet context: {e}")
+                    traceback.print_exc()
+
+            # Generate Response using invoke
+            print("Generating response using chat runnable's invoke method...")
+            try:
+                # Check the runnable again before calling invoke
+                if not current_chat_runnable or not hasattr(current_chat_runnable, 'invoke') or not callable(current_chat_runnable.invoke):
+                     print(f"ERROR: current_chat_runnable is invalid before invoking. Value: {current_chat_runnable}")
+                     raise ValueError("Chat runnable became invalid before invoke.")
+
+                # Call invoke (assuming it's synchronous)
+                invocation_result = current_chat_runnable.invoke({
+                    "query": transformed_input,
+                    "user_context": user_context, # Pass the awaited result
+                    "internet_context": internet_context, # Pass the retrieved result
+                    "name": username,
+                    "personality": personality_setting
+                })
+
+                # Process the result
+                if isinstance(invocation_result, str):
+                    bot_response_text = invocation_result.strip()
+                    print(f"Generated response text (invoke): {bot_response_text}")
+                elif invocation_result is None:
+                     print("Warning: Chat runnable invoke returned None.")
+                     bot_response_text = "I couldn't generate a response for that."
+                else:
+                    print(f"Warning: Unexpected response type from invoke: {type(invocation_result)}. Converting to string.")
+                    bot_response_text = str(invocation_result).strip()
+
+                if not bot_response_text:
+                    print("Warning: Generated response was empty.")
+                    bot_response_text = "I don't have a specific response for that right now."
+
+                await add_message_to_db(
+                    active_chat_id,
+                    bot_response_text,
+                    is_user=False,
+                    memoryUsed=memory_used_flag,
+                    internetUsed=internet_used_flag
+                )
+
+            except Exception as e:
+                print(f"Error during chat runnable invocation: {e}")
+                traceback.print_exc()
+                bot_response_text = "Sorry, I encountered an error while generating a response."
+                await add_message_to_db(active_chat_id, bot_response_text, is_user=False, error=True)
+
+        # 7. Synthesize Speech (TTS)
+        if not bot_response_text:
+            print("No bot response text generated (or error occurred), skipping TTS.")
+            return
+
+        if not tts_model:
+            print("ERROR: TTS model not loaded.")
+            return
+
+        print(f"Synthesizing speech for: {bot_response_text[:60]}...")
+        try:
+            tts_options: TTSOptions = {}
+            chunk_count = 0
+            # TTS still uses streaming internally (async for handles await)
+            async for (sample_rate, audio_chunk) in tts_model.stream_tts(bot_response_text, options=tts_options):
+                if audio_chunk is not None and audio_chunk.size > 0:
+                    if chunk_count == 0:
+                         print(f"Streaming TTS audio chunk 1 (sr={sample_rate}, shape={audio_chunk.shape}, dtype={audio_chunk.dtype})...")
+                    yield (sample_rate, audio_chunk)
+                    chunk_count += 1
+                else:
+                    print("Warning: Received empty audio chunk from TTS.")
+
+            if chunk_count == 0:
+                 print("Warning: TTS stream completed without yielding any audio chunks.")
+            else:
+                 print(f"Finished synthesizing and streaming {chunk_count} chunks.")
+
+        except Exception as e:
+            print(f"Error during TTS synthesis or streaming: {e}")
+            traceback.print_exc()
+            return
+
+    except Exception as e:
+        print(f"--- Unhandled error in handle_audio_conversation: {e} ---")
+        traceback.print_exc()
+        if active_chat_id:
+            try:
+                await add_message_to_db(active_chat_id, "[System Error in Voice Processing]", is_user=False, error=True)
+            except:
+                pass
+        return
+
+# --- Set up the Stream (Handler remains the same) ---
+stream = Stream(
+    ReplyOnPause(
+        handle_audio_conversation,
+        # Keep VAD settings as they worked in Gradio
+        algo_options=AlgoOptions(
+            audio_chunk_duration=0.6,
+            started_talking_threshold=0.25,
+            speech_threshold=0.2
+        ),
+        model_options=SileroVadOptions(
+            threshold=0.5,
+            min_speech_duration_ms=200,
+            min_silence_duration_ms=1000
+        ),
+        can_interrupt=False,
+    ),
+    mode="send-receive",
+    modality="audio",
+    additional_outputs=None,
+    additional_outputs_handler=None
+)
+
+stream.mount(app, path="/voice")
+print("FastRTC stream mounted at /voice.")
 
 ## Root Endpoint
 @app.get("/", status_code=200)
@@ -953,146 +1342,6 @@ async def chat(message: Message):
     except Exception as e:
         print(f"Error in chat: {str(e)}")
         return JSONResponse(status_code=500, content={"message": str(e)})
-    
-# # --- Voice Chat Logic ---
-
-# # --- Configuration ---
-# OLLAMA_API_URL = "http://localhost:11434/api/chat"
-# OLLAMA_MODEL = "llama3.2:3b"
-# OLLAMA_REQUEST_TIMEOUT = 60.0
-
-# # --- Select TTS Voice ---
-# # Choose the desired default voice for this session
-# # Make sure it's one of the AVAILABLE_VOICES
-# SELECTED_TTS_VOICE: VoiceId = "tara" # <-- CHANGE THIS TO YOUR DESIRED DEFAULT VOICE
-# if SELECTED_TTS_VOICE not in AVAILABLE_VOICES:
-#     print(f"Warning: Selected voice '{SELECTED_TTS_VOICE}' not valid. Using default 'tara'.")
-#     SELECTED_TTS_VOICE = "tara"
-# # --- End Voice Selection ---
-
-
-# # --- Orpheus Supported Emotion Tags ---
-# ORPHEUS_EMOTION_TAGS = [
-#     "<giggle>", "<laugh>", "<chuckle>", "<sigh>", "<cough>",
-#     "<sniffle>", "<groan>", "<yawn>", "<gasp>"
-# ]
-# EMOTION_TAG_LIST_STR = ", ".join(ORPHEUS_EMOTION_TAGS)
-
-# # --- Ollama API Call Function (remains the same) ---
-# async def get_ollama_response_with_emotions(user_text: str) -> str | None:
-#     """
-#     Sends text to Ollama, requesting emotion tags, and returns the bot's response.
-#     """
-#     print(f"Sending to Ollama ({OLLAMA_MODEL}) with emotion instructions: '{user_text}'")
-#     system_prompt = (
-#         "You are a helpful and expressive assistant. The text responses you generate are going to be passed to a speech generation model."
-#         "This speech generation model supports the usage of emotion tags to generate expressive audio. You can use these special tags to insert non-verbal sounds and express emotions in your response."
-#         f"The available tags are: {EMOTION_TAG_LIST_STR}. "
-#         "ONLY FOLLOW THIS SYNTAX FOR THE TAGS: <tag>. DO NOT USE ANY OTHER SYNTAX LIKE *sigh* OR (sigh). Do not add visual cues like *big smile* or (smiling). The user can't see you smiling."
-#         "Insert these tags naturally within your sentences where appropriate to convey emotion. "
-#         "For example: 'Oh, <gasp> that's surprising!' or 'Well, <sigh> I understand.' or 'That's quite funny! <chuckle>'. "
-#         "Use them sparingly and only when it genuinely enhances the emotional tone of the response. "
-#         "Do not make up tags."
-#     )
-#     payload = {
-#         "model": OLLAMA_MODEL,
-#         "messages": [
-#             {"role": "system", "content": system_prompt},
-#             {"role": "user", "content": user_text}
-#         ],
-#         "stream": False,
-#     }
-#     try:
-#         async with httpx.AsyncClient(timeout=OLLAMA_REQUEST_TIMEOUT) as client:
-#             response = await client.post(OLLAMA_API_URL, json=payload)
-#             response.raise_for_status()
-#             data = response.json()
-#             bot_response = data.get("message", {}).get("content")
-#             if bot_response:
-#                 print(f"Ollama response (with potential tags): '{bot_response}'")
-#                 if any(tag in bot_response for tag in ORPHEUS_EMOTION_TAGS):
-#                     print("Ollama response included emotion tags.")
-#                 return bot_response.strip()
-#             else:
-#                 print("Warning: Ollama response format unexpected or empty content.")
-#                 print(f"Full Ollama response data: {data}")
-#                 return None
-#     except httpx.RequestError as exc:
-#         print(f"Error calling Ollama API: {exc}")
-#         return None
-#     except Exception as e:
-#         print(f"An unexpected error occurred during Ollama API call: {e}")
-#         traceback.print_exc()
-#         return None
-
-# # --- Define the Async Handler ---
-# async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
-#     """
-#     Handles audio: STT -> Chat (with emotion instructions) -> TTS -> Stream back audio.
-#     Uses the TTS model's configured default voice unless overridden in options.
-#     """
-#     global tts_model, stt_model
-#     print("\n--- Received audio ---")
-#     print("Transcribing...")
-#     user_text = stt_model.stt(audio)
-#     if not user_text or not user_text.strip():
-#         print("No valid text transcribed, skipping.")
-#         return
-
-#     print(f"Transcription: '{user_text}'")
-#     yield f"User: {user_text}\n"
-
-#     bot_response_text = await get_ollama_response_with_emotions(user_text)
-#     if not bot_response_text:
-#         print("No response received from Ollama, skipping TTS.")
-#         yield "[LLM Error or No Response]\n"
-#         return
-
-#     yield f"Bot: {bot_response_text}\n"
-
-#     print(f"Synthesizing speech (default voice: {tts_model.instance_default_voice})...")
-#     try:
-#         # --- Let instance default voice be used ---
-#         # tts_options: TTSOptions = {"voice_id": "leo"} # Remove this override
-#         tts_options: TTSOptions = {} # Pass empty options to use instance default
-#         # --- End voice option change ---
-
-#         chunk_count = 0
-#         async for (sample_rate, audio_chunk) in tts_model.stream_tts(bot_response_text, options=tts_options):
-#             if chunk_count == 0:
-#                  print(f"Streaming TTS audio chunk 1 (sr={sample_rate}, shape={audio_chunk.shape}, dtype={audio_chunk.dtype})...")
-#             yield (sample_rate, audio_chunk)
-#             chunk_count += 1
-
-#         print(f"Finished synthesizing and streaming {chunk_count} chunks.")
-
-#     except Exception as e:
-#         print(f"Error during TTS synthesis or streaming: {e}")
-#         traceback.print_exc()
-#         yield f"[TTS Error: {e}]\n"
-
-# # --- Set up the Stream ---
-# voice_stream = Stream(
-#     ReplyOnPause(
-#         handle_audio_conversation,
-#         algo_options=AlgoOptions(
-#             audio_chunk_duration=0.6,
-#             started_talking_threshold=0.25,
-#             speech_threshold=0.2
-#         ),
-#         model_options=SileroVadOptions(
-#             threshold=0.5,
-#             min_speech_duration_ms=200,
-#             min_silence_duration_ms=1000
-#         ),
-#         can_interrupt=False,
-#         ),
-#     mode="send-receive",
-#     modality="audio"
-# )
-
-# # Mount the FastRTC stream (handles /voice/offer etc.)
-# voice_stream.mount(app, path="/voice")
 
 ## Agents Endpoints
 @app.post("/elaborator", status_code=200)
@@ -2120,4 +2369,4 @@ print(f"Server startup time: {STARTUP_TIME:.2f} seconds")
 # --- Run the Application ---
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    uvicorn.run(app, host="0.0.0.0", port=5000, reload=False, workers=1)
+    uvicorn.run(app, host="0.0.0.0", port=5000, lifespan="on", reload=False, workers=1)

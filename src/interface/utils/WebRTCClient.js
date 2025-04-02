@@ -1,309 +1,150 @@
-// src/interface/lib/WebRTCClient.js
-
-/**
- * @typedef {Object} WebRTCClientOptions
- * @property {() => void} [onConnected]
- * @property {() => void} [onDisconnected]
- * @property {(stream: MediaStream) => void} [onAudioStream] - Callback for remote audio stream
- * @property {(level: number) => void} [onAudioLevel] - Callback for local audio level
- * @property {(error: Error) => void} [onError] - Callback for errors
- */
-
 export class WebRTCClient {
-	/** @type {RTCPeerConnection | null} */
 	peerConnection = null
-	/** @type {MediaStream | null} */
 	mediaStream = null
-	/** @type {WebRTCClientOptions} */
-	options = {}
-	/** @type {AudioContext | null} */
+	dataChannel = null
+	options
 	audioContext = null
-	/** @type {AnalyserNode | null} */
 	analyser = null
-	/** @type {Uint8Array | null} */
 	dataArray = null
-	/** @type {number | null} */
 	animationFrameId = null
-	/** @type {string | null} */
-	webrtcId = null
-	/** @type {boolean} */
-	isConnected = false
-	/** @type {MediaStreamAudioSourceNode | null} */
-	audioSourceNode = null // To disconnect analyser
 
-	/**
-	 * @param {WebRTCClientOptions} options
-	 */
 	constructor(options = {}) {
 		this.options = options
-		this.webrtcId = "webrtc_" + Math.random().toString(36).substring(2, 9) // Generate unique ID
-		console.log(`[WebRTCClient] Initialized with ID: ${this.webrtcId}`)
 	}
 
 	async connect() {
-		if (this.isConnected || this.peerConnection) {
-			console.warn("[WebRTCClient] Already connected or connecting.")
-			return
-		}
-		console.log("[WebRTCClient] Attempting to connect...")
-
 		try {
-			// 1. Get user media (microphone)
+			this.peerConnection = new RTCPeerConnection()
+
+			// Get user media
 			try {
-				const constraints = {
-					audio: {
-						sampleRate: 16000 // Request 16kHz
-					},
-					video: false
-				}
-				console.log(
-					"[WebRTCClient] Requesting media with constraints:",
-					constraints
-				)
-				this.mediaStream =
-					await navigator.mediaDevices.getUserMedia(constraints)
-				console.log(
-					"[WebRTCClient] MediaStream tracks:",
-					this.mediaStream.getTracks()
-				)
-				// Log actual track settings if possible
-				this.mediaStream.getAudioTracks().forEach((track) => {
-					console.log(
-						"[WebRTCClient] Actual audio track settings:",
-						track.getSettings()
-					)
+				this.mediaStream = await navigator.mediaDevices.getUserMedia({
+					audio: true
 				})
 			} catch (mediaError) {
-				console.error("[WebRTCClient] Media access error:", mediaError)
-				// Fallback to default if 16kHz fails? Or just error out?
-				// For now, let it error out if 16kHz is not supported.
-				// ... (rest of error handling) ...
-				return // Stop connection attempt
-			}
-
-			// 2. Setup Peer Connection
-			const configuration = {
-				iceServers: [{ urls: "stun:stun.l.google.com:19302" }] // Use a public STUN server
-			}
-			this.peerConnection = new RTCPeerConnection(configuration)
-			this.isConnected = false // Mark as not yet fully connected
-
-			// 3. Setup Event Listeners for PeerConnection
-			this.peerConnection.onicecandidate = (event) => {
-				if (event.candidate) {
-					console.log(
-						"[WebRTCClient] ICE candidate:",
-						event.candidate
+				console.error("Media error:", mediaError)
+				if (mediaError.name === "NotAllowedError") {
+					throw new Error(
+						"Microphone access denied. Please allow microphone access and try again."
+					)
+				} else if (mediaError.name === "NotFoundError") {
+					throw new Error(
+						"No microphone detected. Please connect a microphone and try again."
 					)
 				} else {
-					console.log(
-						"[WebRTCClient] ICE candidate gathering complete."
-					)
+					throw mediaError
 				}
 			}
 
-			this.peerConnection.onconnectionstatechange = () => {
-				console.log(
-					`[WebRTCClient] Connection state changed: ${this.peerConnection.connectionState}`
-				)
-				if (!this.peerConnection) return
-				console.log(
-					`[WebRTCClient] Connection state changed: ${this.peerConnection.connectionState}`
-				)
-				switch (this.peerConnection.connectionState) {
-					case "connected":
-						if (!this.isConnected) {
-							this.isConnected = true
-							console.log(
-								"[WebRTCClient] Successfully connected."
-							)
-							if (this.options.onConnected)
-								this.options.onConnected()
-							this.setupAudioAnalysis() // Start analysis only when connected
-						}
-						break
-					case "disconnected":
-					case "failed":
-						this.handleError(
-							new Error(
-								`Connection ${this.peerConnection.connectionState}`
-							)
-						)
-						this.disconnect()
-						break
-					case "closed":
-						this.isConnected = false
-						if (this.options.onDisconnected)
-							this.options.onDisconnected()
-						break
-				}
-			}
+			this.setupAudioAnalysis()
 
-			this.peerConnection.ontrack = (event) => {
-				console.log("[WebRTCClient] Remote track received.")
-				if (
-					event.track.kind === "audio" &&
-					this.options.onAudioStream
-				) {
-					// Pass the whole stream containing the track
-					this.options.onAudioStream(event.streams[0])
-				}
-			}
-
-			// 4. Add Local Tracks
 			this.mediaStream.getTracks().forEach((track) => {
-				this.peerConnection?.addTrack(track, this.mediaStream)
-				console.log("[WebRTCClient] Local audio track added.")
+				if (this.peerConnection) {
+					this.peerConnection.addTrack(track, this.mediaStream)
+				}
 			})
 
-			// 5. Create Offer and Send to Backend
+			this.peerConnection.addEventListener("track", (event) => {
+				if (this.options.onAudioStream) {
+					this.options.onAudioStream(event.streams[0])
+				}
+			})
+
+			this.dataChannel = this.peerConnection.createDataChannel("text")
+
+			this.dataChannel.addEventListener("message", (event) => {
+				try {
+					const message = JSON.parse(event.data)
+					console.log("Received message:", message)
+
+					if (this.options.onMessage) {
+						this.options.onMessage(message)
+					}
+				} catch (error) {
+					console.error("Error parsing message:", error)
+				}
+			})
+
+			// Create and send offer
 			const offer = await this.peerConnection.createOffer()
 			await this.peerConnection.setLocalDescription(offer)
-			console.log("[WebRTCClient] Local SDP:", offer.sdp)
 
-			console.log("[WebRTCClient] Sending offer to backend...")
-			// Use the FastRTC endpoint: /<mount_path>/offer
+			// Use same-origin request to avoid CORS preflight
 			const response = await fetch(
-				"http://localhost:8000/voice/webrtc/offer",
+				"http://localhost:5000/voice/webrtc/offer",
 				{
-					// Correct endpoint
 					method: "POST",
 					headers: {
-						"Content-Type": "application/json"
+						"Content-Type": "application/json",
+						Accept: "application/json"
 					},
+					mode: "cors", // Explicitly set CORS mode
+					credentials: "same-origin",
 					body: JSON.stringify({
 						sdp: offer.sdp,
 						type: offer.type,
-						webrtc_id: this.webrtcId // Send the unique ID
-						// FastRTC might expect other fields? Check its source/docs if needed.
+						webrtc_id: Math.random().toString(36).substring(7)
 					})
 				}
 			)
 
-			this.peerConnection.getStats(null).then((stats) => {
-				stats.forEach((report) => {
-					if (
-						report.type === "outbound-rtp" &&
-						report.kind === "audio"
-					) {
-						console.log(
-							"[WebRTCClient] Audio bytes sent:",
-							report.bytesSent
-						)
-					}
-				})
-			})
+			const serverResponse = await response.json()
+			await this.peerConnection.setRemoteDescription(serverResponse)
 
-			setInterval(() => {
-				if (this.peerConnection && this.isConnected) {
-					this.peerConnection.getStats(null).then((stats) => {
-						stats.forEach((report) => {
-							if (
-								report.type === "outbound-rtp" &&
-								report.kind === "audio"
-							) {
-								console.log(
-									"[WebRTCClient] Audio bytes sent:",
-									report.bytesSent
-								)
-							}
-						})
-					})
-				}
-			}, 5000)
-
-			if (!response.ok) {
-				const errorText = await response.text()
-				throw new Error(
-					`Backend offer exchange failed: ${response.status} ${errorText}`
-				)
+			if (this.options.onConnected) {
+				this.options.onConnected()
 			}
-
-			const answer = await response.json()
-			console.log("[WebRTCClient] Received answer from backend.")
-
-			if (!answer || !answer.sdp || !answer.type) {
-				throw new Error("Invalid answer received from backend")
-			}
-
-			// 6. Set Remote Description
-			await this.peerConnection.setRemoteDescription(
-				new RTCSessionDescription(answer)
-			)
-			console.log("[WebRTCClient] Remote description set.")
-			// Connection state change listener will handle final 'connected' state
-			// Log the Answer SDP received from the server
-			console.log("[WebRTCClient] Answer SDP:", answer.sdp) // <-- ADD THIS LOG
 		} catch (error) {
-			console.error("[WebRTCClient] Connection error:", error)
-			this.handleError(error)
+			console.error("Error connecting:", error)
 			this.disconnect()
+			throw error
 		}
 	}
 
 	setupAudioAnalysis() {
-		if (!this.mediaStream || this.audioContext) return // Only setup once
-		console.log("[WebRTCClient] Setting up audio analysis...")
-		try {
-			this.audioContext = new (window.AudioContext ||
-				window.webkitAudioContext)()
-			this.analyser = this.audioContext.createAnalyser()
-			this.analyser.fftSize = 256 // Frequency data detail
-			this.analyser.smoothingTimeConstant = 0.3 // Smoothing
+		if (!this.mediaStream) return
 
-			// Connect microphone stream to analyser
-			this.audioSourceNode = this.audioContext.createMediaStreamSource(
+		try {
+			this.audioContext = new AudioContext()
+			this.analyser = this.audioContext.createAnalyser()
+			this.analyser.fftSize = 256
+
+			const source = this.audioContext.createMediaStreamSource(
 				this.mediaStream
 			)
-			this.audioSourceNode.connect(this.analyser)
+			source.connect(this.analyser)
 
-			// Buffer for frequency data
 			const bufferLength = this.analyser.frequencyBinCount
 			this.dataArray = new Uint8Array(bufferLength)
 
-			this.startAnalysisLoop()
-			console.log("[WebRTCClient] Audio analysis setup complete.")
+			this.startAnalysis()
 		} catch (error) {
-			console.error(
-				"[WebRTCClient] Error setting up audio analysis:",
-				error
-			)
-			this.handleError(new Error("Failed to setup audio analysis"))
-			// Don't disconnect here, connection might still work
-			this.stopAnalysis() // Clean up analysis parts
+			console.error("Error setting up audio analysis:", error)
 		}
 	}
 
-	startAnalysisLoop() {
-		if (
-			this.animationFrameId ||
-			!this.analyser ||
-			!this.dataArray ||
-			!this.options.onAudioLevel
-		)
+	startAnalysis() {
+		if (!this.analyser || !this.dataArray || !this.options.onAudioLevel)
 			return
 
+		// Add throttling to prevent too many updates
 		let lastUpdateTime = 0
-		const throttleInterval = 100 // ms - adjust for performance/responsiveness
+		const throttleInterval = 100 // Only update every 100ms
 
 		const analyze = () => {
-			if (!this.analyser || !this.dataArray) {
-				// Check if analyser still exists
-				this.animationFrameId = null // Stop loop if analyser is gone
-				return
-			}
-			this.analyser.getByteFrequencyData(this.dataArray) // Use frequency data
+			this.analyser.getByteFrequencyData(this.dataArray)
 
-			const currentTime = performance.now()
+			const currentTime = Date.now()
+			// Only update if enough time has passed since last update
 			if (currentTime - lastUpdateTime > throttleInterval) {
+				// Calculate average volume level (0-1)
 				let sum = 0
 				for (let i = 0; i < this.dataArray.length; i++) {
 					sum += this.dataArray[i]
 				}
-				// Normalize average volume to 0-1 range
-				// (Frequency data isn't direct volume, but correlates with energy)
-				const averageLevel = sum / this.dataArray.length / 128.0 // Rough normalization
-				this.options.onAudioLevel(Math.min(averageLevel * 1.5, 1.0)) // Amplify slightly and clamp
+				const average = sum / this.dataArray.length / 255
+
+				this.options.onAudioLevel(average)
 				lastUpdateTime = currentTime
 			}
 
@@ -314,85 +155,37 @@ export class WebRTCClient {
 	}
 
 	stopAnalysis() {
-		console.log("[WebRTCClient] Stopping audio analysis...")
 		if (this.animationFrameId !== null) {
 			cancelAnimationFrame(this.animationFrameId)
 			this.animationFrameId = null
 		}
 
-		// Disconnect the analyser node
-		if (this.audioSourceNode) {
-			try {
-				this.audioSourceNode.disconnect()
-			} catch (e) {
-				console.warn("Error disconnecting audio source node:", e)
-			}
-			this.audioSourceNode = null
+		if (this.audioContext) {
+			this.audioContext.close()
+			this.audioContext = null
 		}
-		this.analyser = null // Allow garbage collection
 
-		// Close AudioContext - careful, can affect other audio on the page
-		// It's often better to keep it alive if the app might use audio again.
-		// Let's comment out closing for now, unless resource leak is proven.
-		/*
-        if (this.audioContext && this.audioContext.state !== 'closed') {
-            this.audioContext.close().then(() => {
-                 console.log('[WebRTCClient] AudioContext closed.');
-                 this.audioContext = null;
-            }).catch(e => console.error("Error closing AudioContext:", e));
-        }
-        */
+		this.analyser = null
 		this.dataArray = null
 	}
 
 	disconnect() {
-		console.log("[WebRTCClient] Disconnecting...")
-		this.stopAnalysis() // Stop analysis first
+		this.stopAnalysis()
 
-		// Stop media tracks
 		if (this.mediaStream) {
 			this.mediaStream.getTracks().forEach((track) => track.stop())
-			console.log("[WebRTCClient] Media tracks stopped.")
 			this.mediaStream = null
 		}
 
-		// Close PeerConnection
 		if (this.peerConnection) {
-			// Remove listeners to prevent errors during closing
-			this.peerConnection.onicecandidate = null
-			this.peerConnection.onconnectionstatechange = null
-			this.peerConnection.ontrack = null
 			this.peerConnection.close()
-			console.log("[WebRTCClient] PeerConnection closed.")
 			this.peerConnection = null
 		}
 
-		this.isConnected = false
+		this.dataChannel = null
+
 		if (this.options.onDisconnected) {
 			this.options.onDisconnected()
-		}
-		console.log("[WebRTCClient] Disconnected.")
-	}
-
-	/**
-	 * @param {boolean} muted
-	 */
-	setMuted(muted) {
-		if (this.mediaStream) {
-			this.mediaStream.getAudioTracks().forEach((track) => {
-				track.enabled = !muted
-			})
-			console.log(`[WebRTCClient] Mic track enabled: ${!muted}`)
-		}
-	}
-
-	/**
-	 * @param {Error} error
-	 */
-	handleError(error) {
-		console.error("[WebRTCClient] Error:", error)
-		if (this.options.onError) {
-			this.options.onError(error)
 		}
 	}
 }

@@ -1,6 +1,8 @@
 import "@styles/globals.css" // Import global styles for the application
 import { Toaster } from "react-hot-toast" // Import Toaster component for displaying toast notifications
 import React from "react"
+import { ThemeProvider } from "@components/voice-test/theme-provider"
+import { ThemeTransition } from "@components/voice-test/ui/theme-transition"
 
 /**
  * Metadata for the RootLayout component.
@@ -28,11 +30,19 @@ export default async function RootLayout({ children }) {
 		<html lang="en" suppressHydrationWarning>
 			{/* Root html element with language set to English and hydration warning suppressed */}
 			<body className="bg-black">
-				{/* Body element with a black background using global styles */}
-				<Toaster position="bottom-right" />
-				{/* Toaster component for displaying notifications, positioned at the bottom-right */}
-				{children}
-				{/* Render the child components, which is the main content of the application */}
+				<ThemeProvider
+					attribute="class"
+					defaultTheme="dark"
+					enableSystem
+					disableTransitionOnChange
+				>
+					{/* Body element with a black background using global styles */}
+					<Toaster position="bottom-right" />
+					{/* Toaster component for displaying notifications, positioned at the bottom-right */}
+					{children}
+					<ThemeTransition />
+					{/* Render the child components, which is the main content of the application */}
+				</ThemeProvider>
 			</body>
 		</html>
 	)
