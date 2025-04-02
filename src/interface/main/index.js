@@ -787,7 +787,7 @@ ipcMain.handle("get-profile", async () => {
 		console.log(
 			"DEV MODE: Handling get-profile. Returning potentially empty profile or mock data."
 		)
-		return { "given_name": "John Doe", "picture": null };
+		return { given_name: "John Doe", picture: null }
 	}
 	try {
 		return await getProfile()
@@ -826,7 +826,6 @@ ipcMain.handle("get-beta-user-status", async () => {
 		return { message: `Error: ${error.message}`, status: 500 }
 	}
 })
-
 
 // IPC event handler for 'log-out'
 ipcMain.on("log-out", () => {
@@ -1076,7 +1075,7 @@ ipcMain.handle("invert-beta-user-status", async () => {
 // --- Database Handlers (Use FastAPI backend) ---
 
 // Helper function to fetch user_id (needed for memory operations)
-// Uses the same backend endpoint as get-db-data initially
+// Uses the same backend endpoint as get-user-data initially
 async function getUserIdForMemoryOps() {
 	const isDev = !app.isPackaged
 	if (isDev) {
@@ -1086,7 +1085,7 @@ async function getUserIdForMemoryOps() {
 	try {
 		// In production, fetch the real user ID
 		const response = await fetch(
-			`${process.env.APP_SERVER_URL}/get-db-data`,
+			`${process.env.APP_SERVER_URL}/get-user-data`,
 			{
 				method: "POST", // Assuming this returns the user data structure
 				headers: { "Content-Type": "application/json" }
@@ -1103,7 +1102,7 @@ async function getUserIdForMemoryOps() {
 			throw new Error("Failed to fetch user data")
 		}
 		const result = await response.json()
-		// Adjust path based on your actual DB structure from get-db-data
+		// Adjust path based on your actual DB structure from get-user-data
 		const userId = result?.data?.personalInfo?.name || result?.data?.userId
 		if (!userId) {
 			console.error("User ID not found in fetched DB data:", result)
@@ -1117,12 +1116,12 @@ async function getUserIdForMemoryOps() {
 }
 
 // IPC handler to set data in user profile database (replaces existing keys)
-ipcMain.handle("set-db-data", async (_event, args) => {
+ipcMain.handle("set-user-data", async (_event, args) => {
 	const { data } = args
-	console.log("IPC: set-db-data called with:", data)
+	console.log("IPC: set-user-data called with:", data)
 	try {
 		const response = await fetch(
-			`${process.env.APP_SERVER_URL}/set-db-data`,
+			`${process.env.APP_SERVER_URL}/set-user-data`,
 			{
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -1134,7 +1133,7 @@ ipcMain.handle("set-db-data", async (_event, args) => {
 				.json()
 				.catch(() => ({ detail: "Failed to parse error response" }))
 			console.error(
-				`Error from set-db-data API: ${response.status}`,
+				`Error from set-user-data API: ${response.status}`,
 				errorDetail
 			)
 			return {
@@ -1143,10 +1142,10 @@ ipcMain.handle("set-db-data", async (_event, args) => {
 			}
 		}
 		const result = await response.json()
-		console.log("IPC: set-db-data successful:", result)
+		console.log("IPC: set-user-data successful:", result)
 		return result
 	} catch (error) {
-		console.error(`IPC Error: set-db-data failed: ${error}`)
+		console.error(`IPC Error: set-user-data failed: ${error}`)
 		return {
 			message: "Error storing data",
 			status: 500,
@@ -1195,11 +1194,11 @@ ipcMain.handle("add-db-data", async (_event, args) => {
 })
 
 // IPC handler to get all user profile database data
-ipcMain.handle("get-db-data", async () => {
-	console.log("IPC: get-db-data called")
+ipcMain.handle("get-user-data", async () => {
+	console.log("IPC: get-user-data called")
 	try {
 		const response = await fetch(
-			`${process.env.APP_SERVER_URL}/get-db-data`,
+			`${process.env.APP_SERVER_URL}/get-user-data`,
 			{
 				method: "POST", // Still POST as per original code
 				headers: { "Content-Type": "application/json" }
@@ -1210,7 +1209,7 @@ ipcMain.handle("get-db-data", async () => {
 				.json()
 				.catch(() => ({ detail: "Failed to parse error response" }))
 			console.error(
-				`Error from get-db-data API: ${response.status}`,
+				`Error from get-user-data API: ${response.status}`,
 				errorDetail
 			)
 			return {
@@ -1219,10 +1218,10 @@ ipcMain.handle("get-db-data", async () => {
 			}
 		}
 		const result = await response.json()
-		console.log("IPC: get-db-data successful.") // Don't log the actual data unless debugging
+		console.log("IPC: get-user-data successful.") // Don't log the actual data unless debugging
 		return { data: result.data, status: result.status }
 	} catch (error) {
-		console.error(`IPC Error: get-db-data failed: ${error}`)
+		console.error(`IPC Error: get-user-data failed: ${error}`)
 		return {
 			message: "Error fetching data",
 			status: 500,
@@ -1587,8 +1586,8 @@ ipcMain.handle("scrape-twitter", async (_event, { twitterProfileUrl }) => {
 
 // --- Graph Handlers ---
 
-ipcMain.handle("create-document-and-graph", async () => {
-	console.log("IPC: create-document-and-graph called")
+ipcMain.handle("build-personality", async () => {
+	console.log("IPC: build-personality called")
 	try {
 		console.log("Calling /create-document...")
 		const documentResponse = await fetch(
@@ -1617,15 +1616,15 @@ ipcMain.handle("create-document-and-graph", async () => {
 		})
 		console.log("Local DB updated with personality.")
 
-		console.log("Calling /create-graph...")
+		console.log("Calling /initiate-long-term-memories...")
 		const graphResponse = await fetch(
-			`${process.env.APP_SERVER_URL}/create-graph`,
+			`${process.env.APP_SERVER_URL}/initiate-long-term-memories`,
 			{ method: "POST" }
 		)
 		if (!graphResponse.ok) {
 			const errorText = await graphResponse.text()
 			console.error(
-				`Error from /create-graph: ${graphResponse.status}`,
+				`Error from /initiate-long-term-memories: ${graphResponse.status}`,
 				errorText
 			)
 			return {
@@ -1640,22 +1639,22 @@ ipcMain.handle("create-document-and-graph", async () => {
 			status: 200
 		}
 	} catch (error) {
-		console.error(`IPC Error: create-document-and-graph failed: ${error}`)
+		console.error(`IPC Error: build-personality failed: ${error}`)
 		return { message: `Error: ${error.message}`, status: 500 }
 	}
 })
 
-ipcMain.handle("recreate-graph", async () => {
-	console.log("IPC: recreate-graph called")
+ipcMain.handle("reset-long-term-memories", async () => {
+	console.log("IPC: reset-long-term-memories called")
 	try {
 		const response = await fetch(
-			`${process.env.APP_SERVER_URL}/create-graph`,
+			`${process.env.APP_SERVER_URL}/initiate-long-term-memories`,
 			{ method: "POST" }
 		)
 		if (!response.ok) {
 			const errorText = await response.text()
 			console.error(
-				`Error from /create-graph (recreate): ${response.status}`,
+				`Error from /initiate-long-term-memories (recreate): ${response.status}`,
 				errorText
 			)
 			return {
@@ -1667,81 +1666,90 @@ ipcMain.handle("recreate-graph", async () => {
 		console.log("Graph recreated successfully.")
 		return { message: "Graph recreated successfully", status: 200 }
 	} catch (error) {
-		console.error(`IPC Error: recreate-graph failed: ${error}`)
+		console.error(`IPC Error: reset-long-term-memories failed: ${error}`)
 		return { message: `Error: ${error.message}`, status: 500 }
 	}
 })
 
-ipcMain.handle("customize-graph", async (_event, { newGraphInfo }) => {
-	console.log(
-		"IPC: customize-graph called with info:",
-		newGraphInfo.substring(0, 50) + "..."
-	)
-	let credits = 999 // Dev default
-	let pricing = "pro" // Dev default
-
-	try {
-		if (app.isPackaged) {
-			credits = await getCreditsFromKeytar()
-			pricing = await getPricingFromKeytar()
-			console.log(
-				`PROD MODE: Customizing graph with credits=${credits}, pricing=${pricing}`
-			)
-		} else {
-			console.log(
-				`DEV MODE: Customizing graph with mock credits=${credits}, pricing=${pricing}`
-			)
-		}
-
-		const response = await fetch(
-			`${process.env.APP_SERVER_URL}/customize-graph`,
-			{
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					information: newGraphInfo,
-					credits: credits
-				}) // Send current credits
-			}
+ipcMain.handle(
+	"customize-long-term-memories",
+	async (_event, { newGraphInfo }) => {
+		console.log(
+			"IPC: customize-long-term-memories called with info:",
+			newGraphInfo.substring(0, 50) + "..."
 		)
+		let credits = 999 // Dev default
+		let pricing = "pro" // Dev default
 
-		if (!response.ok) {
-			const errorText = await response.text()
-			console.error(
-				`Error from /customize-graph: ${response.status}`,
-				errorText
-			)
-			return {
-				message: "Error customizing graph",
-				status: response.status,
-				error: errorText
+		try {
+			if (app.isPackaged) {
+				credits = await getCreditsFromKeytar()
+				pricing = await getPricingFromKeytar()
+				console.log(
+					`PROD MODE: Customizing graph with credits=${credits}, pricing=${pricing}`
+				)
+			} else {
+				console.log(
+					`DEV MODE: Customizing graph with mock credits=${credits}, pricing=${pricing}`
+				)
 			}
-		}
 
-		const result = await response.json() // Expecting { message: string, pro_used: boolean } from backend?
-		console.log("Customize graph successful:", result)
-
-		// Decrement credit only if in production, on free plan, and if the API indicates pro was used
-		if (app.isPackaged && pricing === "free" && result?.pro_used === true) {
-			console.log(
-				"PROD MODE: Pro customization used on free plan. Decrementing credit."
+			const response = await fetch(
+				`${process.env.APP_SERVER_URL}/customize-long-term-memories`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						information: newGraphInfo,
+						credits: credits
+					}) // Send current credits
+				}
 			)
-			await ipcMain.handle("decrement-pro-credits")
-		} else if (pricing === "free" && result?.pro_used === true) {
-			console.log(
-				"DEV MODE: Pro customization used (simulated), would decrement credit in prod."
-			)
-		}
 
-		return {
-			message: result.message || "Graph customized successfully",
-			status: 200
+			if (!response.ok) {
+				const errorText = await response.text()
+				console.error(
+					`Error from /customize-long-term-memories: ${response.status}`,
+					errorText
+				)
+				return {
+					message: "Error customizing graph",
+					status: response.status,
+					error: errorText
+				}
+			}
+
+			const result = await response.json() // Expecting { message: string, pro_used: boolean } from backend?
+			console.log("Customize graph successful:", result)
+
+			// Decrement credit only if in production, on free plan, and if the API indicates pro was used
+			if (
+				app.isPackaged &&
+				pricing === "free" &&
+				result?.pro_used === true
+			) {
+				console.log(
+					"PROD MODE: Pro customization used on free plan. Decrementing credit."
+				)
+				await ipcMain.handle("decrement-pro-credits")
+			} else if (pricing === "free" && result?.pro_used === true) {
+				console.log(
+					"DEV MODE: Pro customization used (simulated), would decrement credit in prod."
+				)
+			}
+
+			return {
+				message: result.message || "Graph customized successfully",
+				status: 200
+			}
+		} catch (error) {
+			console.error(
+				`IPC Error: customize-long-term-memories failed: ${error}`
+			)
+			return { message: `Error: ${error.message}`, status: 500 }
 		}
-	} catch (error) {
-		console.error(`IPC Error: customize-graph failed: ${error}`)
-		return { message: `Error: ${error.message}`, status: 500 }
 	}
-})
+)
 
 ipcMain.handle("delete-subgraph", async (_event, { source_name }) => {
 	console.log("IPC: delete-subgraph called for source:", source_name)
@@ -1932,8 +1940,8 @@ ipcMain.handle("fetch-short-term-memories", async (_event, { category }) => {
 	}
 })
 
-ipcMain.handle("add-memory", async (_event, memoryData) => {
-	console.log("IPC: add-memory called with:", memoryData)
+ipcMain.handle("add-short-term-memory", async (_event, memoryData) => {
+	console.log("IPC: add-short-term-memory called with:", memoryData)
 	try {
 		const userId = await getUserIdForMemoryOps()
 		const requestBody = { user_id: userId, ...memoryData }
@@ -1958,17 +1966,17 @@ ipcMain.handle("add-memory", async (_event, memoryData) => {
 		}
 
 		const result = await response.json()
-		console.log("IPC: add-memory successful:", result)
+		console.log("IPC: add-short-term-memory successful:", result)
 		return result
 	} catch (error) {
-		console.error("IPC Error: add-memory failed:", error)
+		console.error("IPC Error: add-short-term-memory failed:", error)
 		return { error: error.message }
 	}
 })
 
-ipcMain.handle("update-memory", async (_event, memoryData) => {
+ipcMain.handle("update-short-term-memory", async (_event, memoryData) => {
 	// memoryData should include the memory ID (e.g., memory_id) and updated fields
-	console.log("IPC: update-memory called with:", memoryData)
+	console.log("IPC: update-short-term-memory called with:", memoryData)
 	try {
 		const userId = await getUserIdForMemoryOps()
 		const requestBody = { user_id: userId, ...memoryData }
@@ -1995,17 +2003,17 @@ ipcMain.handle("update-memory", async (_event, memoryData) => {
 		}
 
 		const result = await response.json()
-		console.log("IPC: update-memory successful:", result)
+		console.log("IPC: update-short-term-memory successful:", result)
 		return result
 	} catch (error) {
-		console.error("IPC Error: update-memory failed:", error)
+		console.error("IPC Error: update-short-term-memory failed:", error)
 		return { error: error.message }
 	}
 })
 
-ipcMain.handle("delete-memory", async (_event, memoryData) => {
+ipcMain.handle("delete-short-term-memory", async (_event, memoryData) => {
 	// memoryData should include the ID of the memory to delete (e.g., memory_id)
-	console.log("IPC: delete-memory called with:", memoryData)
+	console.log("IPC: delete-short-term-memory called with:", memoryData)
 	try {
 		const userId = await getUserIdForMemoryOps()
 		const requestBody = { user_id: userId, ...memoryData }
@@ -2032,22 +2040,22 @@ ipcMain.handle("delete-memory", async (_event, memoryData) => {
 		}
 
 		const result = await response.json()
-		console.log("IPC: delete-memory successful:", result)
+		console.log("IPC: delete-short-term-memory successful:", result)
 		return result
 	} catch (error) {
-		console.error("IPC Error: delete-memory failed:", error)
+		console.error("IPC Error: delete-short-term-memory failed:", error)
 		return { error: error.message }
 	}
 })
 
-ipcMain.handle("clear-all-memories", async () => {
-	console.log("IPC: clear-all-memories called")
+ipcMain.handle("clear-all-short-term-memories", async () => {
+	console.log("IPC: clear-all-short-term-memories called")
 	try {
 		const userId = await getUserIdForMemoryOps()
 		console.log(`Clearing all memories for User ID: ${userId}`)
 
 		const response = await fetch(
-			`${process.env.APP_SERVER_URL || "http://localhost:5000"}/clear-all-memories`,
+			`${process.env.APP_SERVER_URL || "http://localhost:5000"}/clear-all-short-term-memories`,
 			{
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -2065,16 +2073,16 @@ ipcMain.handle("clear-all-memories", async () => {
 		}
 
 		const result = await response.json()
-		console.log("IPC: clear-all-memories successful:", result)
+		console.log("IPC: clear-all-short-term-memories successful:", result)
 		return result
 	} catch (error) {
-		console.error("IPC Error: clear-all-memories failed:", error)
+		console.error("IPC Error: clear-all-short-term-memories failed:", error)
 		return { error: error.message }
 	}
 })
 
-ipcMain.handle("fetch-graph-data", async () => {
-	console.log("IPC: fetch-graph-data called")
+ipcMain.handle("fetch-long-term-memories", async () => {
+	console.log("IPC: fetch-long-term-memories called")
 	try {
 		// Ensure APP_SERVER_URL is defined in your environment variables
 		const apiUrl = `${process.env.APP_SERVER_URL}/get-graph-data`
@@ -2116,11 +2124,11 @@ ipcMain.handle("fetch-graph-data", async () => {
 
 		// Parse the JSON response which should contain { nodes, edges }
 		const graphData = await response.json()
-		console.log("IPC: fetch-graph-data successful.")
+		console.log("IPC: fetch-long-term-memories successful.")
 		// Directly return the data in the expected format
 		return graphData // Should be { nodes: [...], edges: [...] }
 	} catch (error) {
-		console.error(`IPC Error: fetch-graph-data failed: ${error}`)
+		console.error(`IPC Error: fetch-long-term-memories failed: ${error}`)
 		// Return an error object
 		return {
 			error: `Network or processing error: ${error.message}`,

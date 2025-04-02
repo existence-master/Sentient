@@ -42,7 +42,7 @@ const Load = () => {
 		try {
 			// Fetch user data from the database using electron invoke
 			const { data: userData } =
-				await window.electron?.invoke("get-db-data")
+				await window.electron?.invoke("get-user-data")
 
 			setLoading(false) // Set loading to false once initialization is complete (or attempted)
 			setOnboarded(userData?.firstRunCompleted) // Set onboarded state based on 'firstRunCompleted' from user data

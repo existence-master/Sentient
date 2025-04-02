@@ -165,7 +165,7 @@ const Settings = () => {
 
 	const fetchData = async () => {
 		try {
-			const response = await window.electron?.invoke("get-db-data")
+			const response = await window.electron?.invoke("get-user-data")
 			if (response.status === 200 && response.data) {
 				const { linkedInProfile, redditProfile, twitterProfile } =
 					response.data
@@ -240,11 +240,11 @@ const Settings = () => {
 						selectedApp === "LinkedIn"
 							? response.profile
 							: response.topics
-					await window.electron?.invoke("set-db-data", {
+					await window.electron?.invoke("set-user-data", {
 						data: { [profileKey]: dataToSet }
 					})
 					successMessage = `${selectedApp} profile connected successfully.`
-					await window.electron?.invoke("create-document-and-graph") // Call this after successful connect
+					await window.electron?.invoke("build-personality") // Call this after successful connect
 				} else {
 					console.error(
 						`Error scraping ${selectedApp} profile:`,
@@ -256,7 +256,7 @@ const Settings = () => {
 				}
 			} else if (action === "disconnect") {
 				const profileKey = `${selectedApp.toLowerCase()}Profile`
-				await window.electron?.invoke("set-db-data", {
+				await window.electron?.invoke("set-user-data", {
 					data: { [profileKey]: {} }
 				})
 				await window.electron?.invoke("delete-subgraph", {

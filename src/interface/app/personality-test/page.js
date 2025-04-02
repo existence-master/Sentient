@@ -185,7 +185,7 @@ const PersonalityTest = () => {
 		 */
 		const fetchPersonality = async () => {
 			try {
-				const response = await window.electron?.invoke("get-db-data") // Invoke electron to get data from database
+				const response = await window.electron?.invoke("get-user-data") // Invoke electron to get data from database
 				if (response.status === 200 && response.data) {
 					const { personality } = response.data // Extract personality data from response
 					if (personality && Object.keys(personality).length > 0) {
@@ -416,7 +416,7 @@ const PersonalityTest = () => {
 	 */
 	const handleBasicInfoSubmit = async (basicInfo) => {
 		try {
-			const response = await window.electron?.invoke("set-db-data", {
+			const response = await window.electron?.invoke("set-user-data", {
 				data: { personalInfo: basicInfo }
 			})
 
@@ -535,7 +535,7 @@ const PersonalityTest = () => {
 		const personalityType = calculatePersonalityType() // Calculate personality type from scores
 
 		try {
-			const response = await window.electron?.invoke("set-db-data", {
+			const response = await window.electron?.invoke("set-user-data", {
 				// Invoke electron to set data in database
 				data: { personalityType } // Data to set is the calculated personalityType
 			})

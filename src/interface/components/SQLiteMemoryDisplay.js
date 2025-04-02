@@ -79,7 +79,7 @@ const SQLiteMemoryDisplay = ({ userDetails }) => {
 				retention_days: retentionDays
 			}
 			const response = await window.electron.invoke(
-				"add-memory",
+				"add-short-term-memory",
 				memoryData
 			)
 			if (response.error) {
@@ -121,7 +121,7 @@ const SQLiteMemoryDisplay = ({ userDetails }) => {
 				retention_days: retentionDays
 			}
 			const response = await window.electron.invoke(
-				"update-memory",
+				"update-short-term-memory",
 				memoryData
 			)
 			if (response.error) {
@@ -146,7 +146,7 @@ const SQLiteMemoryDisplay = ({ userDetails }) => {
 				id: memory.id
 			}
 			const response = await window.electron.invoke(
-				"delete-memory",
+				"delete-short-term-memory",
 				memoryData
 			)
 			if (response.error) {
@@ -159,7 +159,7 @@ const SQLiteMemoryDisplay = ({ userDetails }) => {
 			toast.error("Failed to delete memory")
 		}
 	}
-	
+
 	if (loading) {
 		return <div className="text-white p-6">Loading memories...</div>
 	}

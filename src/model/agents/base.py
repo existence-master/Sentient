@@ -10,10 +10,10 @@ from typing import Dict, List, Optional, Tuple, Union
 task_lock = asyncio.Lock()
 
 # Path to the JSON file for task persistence
-TASKS_FILE = "tasks.json"
+TASKS_FILE = "agentic_operations.json"
 
 class TaskQueue:
-    def __init__(self, tasks_file="tasks.json"):
+    def __init__(self, tasks_file="agentic_operations.json"):
         self.tasks_file = tasks_file
         self.tasks = []
         self.task_id_counter = 0
@@ -21,7 +21,7 @@ class TaskQueue:
         self.current_task_execution = None  # To hold the currently executing task
 
     async def load_tasks(self):
-        """Load tasks from the tasks.json file."""
+        """Load tasks from the agentic_operations.json file."""
         try:
             with open(self.tasks_file, 'r') as f:
                 data = json.load(f)
@@ -34,11 +34,11 @@ class TaskQueue:
         except json.JSONDecodeError:
             self.tasks = []
             self.task_id_counter = 0
-            print("Error decoding tasks.json, initializing with empty tasks.")
+            print("Error decoding agentic_operations.json, initializing with empty tasks.")
             await self.save_tasks()
 
     async def save_tasks(self):
-        """Save tasks to the tasks.json file."""
+        """Save tasks to the agentic_operations.json file."""
         data = {'tasks': self.tasks, 'task_id_counter': self.task_id_counter}
         with open(self.tasks_file, 'w') as f:
             json.dump(data, f, indent=4)

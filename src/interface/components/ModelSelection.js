@@ -38,7 +38,7 @@ const ModelSelection = ({ onProceed }) => {
 
 	const saveModel = async (model) => {
 		try {
-			await window.electron.invoke("set-db-data", {
+			await window.electron.invoke("set-user-data", {
 				data: { selectedModel: model }
 			})
 		} catch (error) {

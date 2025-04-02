@@ -205,7 +205,7 @@ next-env.d.ts
 !.vscode
 .vscode/*
 !.vscode/settings.json
-!.vscode/tasks.json
+!.vscode/agentic_operations.json
 !.vscode/launch.json
 !.vscode/extensions.json
 !.vscode/*.code-snippets
@@ -239,9 +239,10 @@ uploads
 token.pickle
 chatsDb.json
 userProfileDb.json
-tasks.json
+agentic_operations.json
 context.json
 memory_operations.json
+notificationsDb.json
 ruff_cache
 .db
 token.json

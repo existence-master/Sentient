@@ -76,7 +76,7 @@ const AppIntegration = () => {
 	 */
 	const handleSetOrAddData = async (key, data) => {
 		try {
-			const response = await window.electron?.invoke("get-db-data") // Invoke electron to get data from database
+			const response = await window.electron?.invoke("get-user-data") // Invoke electron to get data from database
 			if (response.status !== 200) {
 				throw new Error("Error fetching existing user data") // Throw error if response status is not 200
 			}
@@ -89,7 +89,7 @@ const AppIntegration = () => {
 				Object.keys(existingData[key]).length === 0 ||
 				existingData[key].length === 0
 			) {
-				await window.electron?.invoke("set-db-data", {
+				await window.electron?.invoke("set-user-data", {
 					// Invoke electron to set data in database
 					data: { [key]: data } // Data to set for the given key
 				})
@@ -194,14 +194,12 @@ const AppIntegration = () => {
 		setIsBuildingProfile(true) // Set building profile state to true to show loading animation
 
 		try {
-			const response = await window.electron?.invoke(
-				"create-document-and-graph"
-			) // Invoke electron to create document and graph in backend
+			const response = await window.electron?.invoke("build-personality") // Invoke electron to create document and graph in backend
 			if (response.status !== 200) {
 				throw new Error("Error creating graph") // Throw error if response status is not 200
 			}
 
-			await window.electron?.invoke("set-db-data", {
+			await window.electron?.invoke("set-user-data", {
 				// Invoke electron to set data in database
 				data: { firstRunCompleted: true } // Mark first run as completed in database
 			})

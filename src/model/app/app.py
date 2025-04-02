@@ -2467,17 +2467,17 @@ async def graphrag(request: GraphRAGRequest):
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"message": f"GraphRAG query failed: {str(e)}"})
 
-@app.post("/create-graph", status_code=200)
+@app.post("/initiate-long-term-memories", status_code=200)
 async def create_graph():
     """Creates a knowledge graph from documents in the input directory."""
-    print(f"[ENDPOINT /create-graph] {datetime.now()}: Endpoint called.")
+    print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Endpoint called.")
     input_dir = "model/input"
     extracted_texts = []
     try:
         # --- Load Username ---
         user_profile = load_user_profile()
         username = user_profile.get("userData", {}).get("personalInfo", {}).get("name", "User")
-        print(f"[ENDPOINT /create-graph] {datetime.now()}: Using username: {username}")
+        print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Using username: {username}")
 
         # --- Check Dependencies ---
         if not all([graph_driver, embed_model, text_dissection_runnable, information_extraction_runnable]):
@@ -2486,7 +2486,7 @@ async def create_graph():
              raise HTTPException(status_code=503, detail=error_msg)
 
         # --- Read Input Files ---
-        print(f"[ENDPOINT /create-graph] {datetime.now()}: Reading text files from input directory: {input_dir}")
+        print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Reading text files from input directory: {input_dir}")
         if not os.path.exists(input_dir):
              print(f"[WARN] {datetime.now()}: Input directory '{input_dir}' does not exist. Creating it.")
              os.makedirs(input_dir)
@@ -2494,57 +2494,57 @@ async def create_graph():
         for file_name in os.listdir(input_dir):
             file_path = os.path.join(input_dir, file_name)
             if os.path.isfile(file_path) and file_name.lower().endswith(".txt"): # Process only .txt files
-                print(f"[ENDPOINT /create-graph] {datetime.now()}: Reading file: {file_name}")
+                print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Reading file: {file_name}")
                 try:
                     with open(file_path, "r", encoding="utf-8") as file:
                         text_content = file.read().strip()
                         if text_content:
                             extracted_texts.append({"text": text_content, "source": file_name})
-                            print(f"[ENDPOINT /create-graph] {datetime.now()}:   - Added content from {file_name}. Length: {len(text_content)}")
+                            print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}:   - Added content from {file_name}. Length: {len(text_content)}")
                         else:
-                             print(f"[ENDPOINT /create-graph] {datetime.now()}:   - Skipped empty file: {file_name}")
+                             print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}:   - Skipped empty file: {file_name}")
                 except Exception as read_e:
                      print(f"[ERROR] {datetime.now()}: Failed to read file {file_name}: {read_e}")
             else:
-                 print(f"[ENDPOINT /create-graph] {datetime.now()}: Skipping non-txt file or directory: {file_name}")
+                 print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Skipping non-txt file or directory: {file_name}")
 
 
         if not extracted_texts:
-            print(f"[ENDPOINT /create-graph] {datetime.now()}: No text content found in input directory. Nothing to build.")
+            print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: No text content found in input directory. Nothing to build.")
             return JSONResponse(status_code=200, content={"message": "No content found in input documents. Graph not modified."}) # Not really an error
 
         # --- Clear Existing Graph (Optional - Be Careful!) ---
         # Consider making this conditional based on a request parameter
         clear_graph = True # Set to False or make configurable if you don't want to wipe the graph every time
         if clear_graph:
-            print(f"[ENDPOINT /create-graph] {datetime.now()}: Clearing existing graph in Neo4j...")
+            print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Clearing existing graph in Neo4j...")
             try:
                 with graph_driver.session(database="neo4j") as session: # Specify DB if not default
                     # Use write_transaction for safety
                     session.execute_write(lambda tx: tx.run("MATCH (n) DETACH DELETE n"))
-                print(f"[ENDPOINT /create-graph] {datetime.now()}: Existing graph cleared successfully.")
+                print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Existing graph cleared successfully.")
             except Exception as clear_e:
                  error_msg = f"Failed to clear existing graph: {clear_e}"
                  print(f"[ERROR] {datetime.now()}: {error_msg}")
                  raise HTTPException(status_code=500, detail=error_msg)
         else:
-             print(f"[ENDPOINT /create-graph] {datetime.now()}: Skipping graph clearing.")
+             print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Skipping graph clearing.")
 
 
         # --- Build Graph ---
-        print(f"[ENDPOINT /create-graph] {datetime.now()}: Building initial knowledge graph from {len(extracted_texts)} document(s)...")
+        print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Building initial knowledge graph from {len(extracted_texts)} document(s)...")
         build_initial_knowledge_graph(
             username, extracted_texts, graph_driver, embed_model,
             text_dissection_runnable, information_extraction_runnable
         ) # This function should contain its own detailed logging
-        print(f"[ENDPOINT /create-graph] {datetime.now()}: Knowledge graph build process completed.")
+        print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Knowledge graph build process completed.")
 
         return JSONResponse(status_code=200, content={"message": f"Graph created/updated successfully from {len(extracted_texts)} documents."})
 
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
-        print(f"[ERROR] {datetime.now()}: Unexpected error in /create-graph: {e}")
+        print(f"[ERROR] {datetime.now()}: Unexpected error in /initiate-long-term-memories: {e}")
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"message": f"Graph creation failed: {str(e)}"})
 
@@ -2651,7 +2651,7 @@ async def create_document():
         os.makedirs(input_dir, exist_ok=True)
         print(f"[ENDPOINT /create-document] {datetime.now()}: Ensured input directory exists: {input_dir}")
 
-        # --- Clear Existing Files (Optional - matching /create-graph behavior) ---
+        # --- Clear Existing Files (Optional - matching /initiate-long-term-memories behavior) ---
         # clear_existing = True
         # if clear_existing:
         #     print(f"[ENDPOINT /create-document] {datetime.now()}: Clearing existing files in {input_dir}...")
@@ -2761,15 +2761,15 @@ async def create_document():
         return JSONResponse(status_code=500, content={"message": f"Document creation failed: {str(e)}"})
 
 
-@app.post("/customize-graph", status_code=200)
+@app.post("/customize-long-term-memories", status_code=200)
 async def customize_graph(request: GraphRequest):
     """Customizes the knowledge graph with new information."""
-    print(f"[ENDPOINT /customize-graph] {datetime.now()}: Endpoint called with information: '{request.information[:50]}...'")
+    print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Endpoint called with information: '{request.information[:50]}...'")
     try:
         # --- Load Username ---
         user_profile = load_user_profile()
         username = user_profile.get("userData", {}).get("personalInfo", {}).get("name", "User")
-        print(f"[ENDPOINT /customize-graph] {datetime.now()}: Using username: {username}")
+        print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Using username: {username}")
 
         # --- Check Dependencies ---
         if not all([fact_extraction_runnable, graph_driver, embed_model, query_classification_runnable,
@@ -2780,22 +2780,22 @@ async def customize_graph(request: GraphRequest):
              raise HTTPException(status_code=503, detail=error_msg)
 
         # --- Extract Facts ---
-        print(f"[ENDPOINT /customize-graph] {datetime.now()}: Extracting facts from provided information...")
+        print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Extracting facts from provided information...")
         points = fact_extraction_runnable.invoke({"paragraph": request.information, "username": username})
         if not isinstance(points, list):
              print(f"[WARN] {datetime.now()}: Fact extraction did not return a list. Got: {type(points)}. Assuming no facts extracted.")
              points = []
-        print(f"[ENDPOINT /customize-graph] {datetime.now()}: Extracted {len(points)} potential facts.")
-        # print(f"[ENDPOINT /customize-graph] {datetime.now()}: Extracted facts: {points}")
+        print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Extracted {len(points)} potential facts.")
+        # print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Extracted facts: {points}")
 
         if not points:
              return JSONResponse(status_code=200, content={"message": "No specific facts extracted from the information. Graph not modified."})
 
         # --- Apply Graph Operations ---
         processed_count = 0
-        print(f"[ENDPOINT /customize-graph] {datetime.now()}: Applying CRUD operations for {len(points)} facts...")
+        print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Applying CRUD operations for {len(points)} facts...")
         for i, point in enumerate(points):
-            print(f"[ENDPOINT /customize-graph] {datetime.now()}: Processing fact {i+1}/{len(points)}: {str(point)[:100]}...")
+            print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Processing fact {i+1}/{len(points)}: {str(point)[:100]}...")
             try:
                 # crud_graph_operations should contain its own logging
                 crud_graph_operations(
@@ -2809,13 +2809,13 @@ async def customize_graph(request: GraphRequest):
                  # Decide whether to continue or stop on error
                  # traceback.print_exc() # Optionally print traceback for failed fact
 
-        print(f"[ENDPOINT /customize-graph] {datetime.now()}: Graph customization process completed. Applied operations for {processed_count}/{len(points)} facts.")
+        print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Graph customization process completed. Applied operations for {processed_count}/{len(points)} facts.")
         return JSONResponse(status_code=200, content={"message": f"Graph customized successfully with {processed_count} facts."})
 
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
-        print(f"[ERROR] {datetime.now()}: Unexpected error in /customize-graph: {e}")
+        print(f"[ERROR] {datetime.now()}: Unexpected error in /customize-long-term-memories: {e}")
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"message": f"Graph customization failed: {str(e)}"})
 
@@ -3093,17 +3093,17 @@ async def delete_memory(request: DeleteMemoryRequest):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error deleting memory: {e}")
 
-@app.post("/clear-all-memories")
+@app.post("/clear-all-short-term-memories")
 async def clear_all_memories(request: Dict):
     """Clears all short-term memories for a given user."""
     user_id = request.get("user_id")
-    print(f"[ENDPOINT /clear-all-memories] {datetime.now()}: Endpoint called for User: {user_id}")
+    print(f"[ENDPOINT /clear-all-short-term-memories] {datetime.now()}: Endpoint called for User: {user_id}")
     if not user_id:
         print(f"[ERROR] {datetime.now()}: 'user_id' is missing in the request.")
         raise HTTPException(status_code=400, detail="user_id is required")
     try:
         memory_backend.memory_manager.clear_all_memories(user_id)
-        print(f"[ENDPOINT /clear-all-memories] {datetime.now()}: All memories cleared successfully for user {user_id}.")
+        print(f"[ENDPOINT /clear-all-short-term-memories] {datetime.now()}: All memories cleared successfully for user {user_id}.")
         return JSONResponse(status_code=200, content={"message": "All memories cleared successfully"})
     except Exception as e:
         print(f"[ERROR] {datetime.now()}: Error clearing memories for user {user_id}: {e}")
@@ -3111,13 +3111,13 @@ async def clear_all_memories(request: Dict):
         raise HTTPException(status_code=500, detail=f"Failed to clear memories: {str(e)}")
 
 ## User Profile DB Endpoints
-@app.post("/set-db-data")
+@app.post("/set-user-data")
 async def set_db_data(request: UpdateUserDataRequest) -> Dict[str, Any]:
     """
     Set data in the user profile database (overwrites existing keys at the top level of userData).
     """
-    print(f"[ENDPOINT /set-db-data] {datetime.now()}: Endpoint called.")
-    # print(f"[ENDPOINT /set-db-data] {datetime.now()}: Request data: {request.data}") # Careful logging potentially sensitive data
+    print(f"[ENDPOINT /set-user-data] {datetime.now()}: Endpoint called.")
+    # print(f"[ENDPOINT /set-user-data] {datetime.now()}: Request data: {request.data}") # Careful logging potentially sensitive data
     try:
         db_data = load_user_profile()
         if "userData" not in db_data: # Ensure userData key exists
@@ -3126,16 +3126,16 @@ async def set_db_data(request: UpdateUserDataRequest) -> Dict[str, Any]:
         # Merge new data, overwriting existing keys at the same level
         # This performs a shallow merge. For deep merge, a recursive function would be needed.
         db_data["userData"].update(request.data)
-        print(f"[ENDPOINT /set-db-data] {datetime.now()}: User data updated (shallow merge).")
+        print(f"[ENDPOINT /set-user-data] {datetime.now()}: User data updated (shallow merge).")
 
         if write_user_profile(db_data):
-            print(f"[ENDPOINT /set-db-data] {datetime.now()}: Data stored successfully.")
+            print(f"[ENDPOINT /set-user-data] {datetime.now()}: Data stored successfully.")
             return JSONResponse(status_code=200, content={"message": "Data stored successfully", "status": 200})
         else:
             print(f"[ERROR] {datetime.now()}: Failed to write updated user profile to disk.")
             raise HTTPException(status_code=500, detail="Error storing data: Failed to write to file")
     except Exception as e:
-        print(f"[ERROR] {datetime.now()}: Unexpected error in /set-db-data: {e}")
+        print(f"[ERROR] {datetime.now()}: Unexpected error in /set-user-data: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error storing data: {str(e)}")
 
@@ -3190,16 +3190,16 @@ async def add_db_data(request: AddUserDataRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Error adding data: {str(e)}")
 
 
-@app.post("/get-db-data")
+@app.post("/get-user-data")
 # Request model not strictly needed as it takes no input, but good for consistency if used elsewhere
 async def get_db_data() -> Dict[str, Any]:
     """Get all user profile database data."""
-    print(f"[ENDPOINT /get-db-data] {datetime.now()}: Endpoint called.")
+    print(f"[ENDPOINT /get-user-data] {datetime.now()}: Endpoint called.")
     try:
         db_data = load_user_profile()
         user_data = db_data.get("userData", {}) # Default to empty dict if not found
-        print(f"[ENDPOINT /get-db-data] {datetime.now()}: Retrieved user data successfully.")
-        # print(f"[ENDPOINT /get-db-data] {datetime.now()}: User data: {user_data}") # Careful logging
+        print(f"[ENDPOINT /get-user-data] {datetime.now()}: Retrieved user data successfully.")
+        # print(f"[ENDPOINT /get-user-data] {datetime.now()}: User data: {user_data}") # Careful logging
         return JSONResponse(status_code=200, content={"data": user_data, "status": 200})
     except Exception as e:
         print(f"[ERROR] {datetime.now()}: Error fetching user data: {e}")

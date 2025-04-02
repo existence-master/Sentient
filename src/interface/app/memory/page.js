@@ -43,7 +43,7 @@ const Memories = () => {
 
 	const fetchPersonalityType = async () => {
 		try {
-			const response = await window.electron?.invoke("get-db-data")
+			const response = await window.electron?.invoke("get-user-data")
 			if (response?.data?.personalityType) {
 				setPersonalityType(response.data.personalityType)
 			}
@@ -77,12 +77,14 @@ const Memories = () => {
 		setGraphData({ nodes: [], edges: [] }) // Clear previous data while loading
 		try {
 			// Use the new IPC handler
-			const response = await window.electron?.invoke("fetch-graph-data")
+			const response = await window.electron?.invoke(
+				"fetch-long-term-memories"
+			)
 
 			// Check if the response indicates an error
 			if (response?.error) {
 				console.error(
-					"Error received from fetch-graph-data IPC:",
+					"Error received from fetch-long-term-memories IPC:",
 					response.error
 				)
 				toast.error(`Error loading graph data: ${response.error}`)
@@ -100,7 +102,7 @@ const Memories = () => {
 					})
 				} else {
 					console.error(
-						"Invalid data format received from fetch-graph-data IPC:",
+						"Invalid data format received from fetch-long-term-memories IPC:",
 						response
 					)
 					toast.error("Received invalid graph data format.")
@@ -109,14 +111,14 @@ const Memories = () => {
 			} else {
 				// Handle unexpected response structure
 				console.error(
-					"Unexpected response structure from fetch-graph-data IPC:",
+					"Unexpected response structure from fetch-long-term-memories IPC:",
 					response
 				)
 				toast.error("Failed to load graph data: Unexpected response.")
 				setGraphData({ nodes: [], edges: [] })
 			}
 		} catch (error) {
-			console.error("Error invoking fetch-graph-data IPC:", error)
+			console.error("Error invoking fetch-long-term-memories IPC:", error)
 			toast.error(`Error loading graph data: ${error.message}`)
 			setGraphData({ nodes: [], edges: [] }) // Ensure graph is empty on error
 		} finally {
@@ -127,7 +129,9 @@ const Memories = () => {
 	const handleRecreateGraph = async () => {
 		setRecreateGraphLoading(true)
 		try {
-			const response = await window.electron?.invoke("recreate-graph")
+			const response = await window.electron?.invoke(
+				"reset-long-term-memories"
+			)
 			if (response?.status === 200) {
 				await loadGraphData()
 				toast.success("Graph recreated successfully!")
@@ -150,9 +154,12 @@ const Memories = () => {
 				toast.error("Graph information cannot be empty.")
 				return
 			}
-			const result = await window.electron?.invoke("customize-graph", {
-				newGraphInfo
-			})
+			const result = await window.electron?.invoke(
+				"customize-long-term-memories",
+				{
+					newGraphInfo
+				}
+			)
 			if (result.status === 200) {
 				await loadGraphData()
 				setNewGraphInfo("")
@@ -172,7 +179,9 @@ const Memories = () => {
 	const handleClearAllMemories = async () => {
 		setClearMemoriesLoading(true)
 		try {
-			const response = await window.electron.invoke("clear-all-memories")
+			const response = await window.electron.invoke(
+				"clear-all-short-term-memories"
+			)
 			if (response.error) {
 				toast.error(response.error)
 			} else {
