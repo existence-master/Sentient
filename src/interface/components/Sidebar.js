@@ -82,6 +82,13 @@ const Sidebar = ({ userDetails, setSidebarVisible, isSidebarVisible }) => {
 						<span className="text-base text-white">Memories</span>
 					</button>
 					<button
+						onClick={() => router.push("/voice")}
+						className="cursor-pointer flex items-center gap-3 w-full text-left px-4 py-2 rounded-lg text-white hover:text-lightblue hover:bg-neutral-800 mt-1"
+					>
+						<IconBrain className="w-5 h-5" />
+						<span className="text-base text-white">Voice</span>
+					</button>
+					<button
 						onClick={() => router.push("/settings")}
 						className="cursor-pointer flex items-center gap-3 w-full text-left px-4 py-2 rounded-lg text-white hover:text-lightblue hover:bg-neutral-800 mt-1"
 					>
@@ -142,7 +149,7 @@ const Sidebar = ({ userDetails, setSidebarVisible, isSidebarVisible }) => {
 						className="flex items-center space-x-3"
 						onClick={toggleUserMenu}
 					>
-						<div className="rounded-full overflow-hidden w-10 h-10 shrink-0">
+						{/* <div className="rounded-full overflow-hidden w-10 h-10 shrink-0">
 							{userDetails["picture"] ? (
 								<img
 									src={userDetails["picture"]}
@@ -154,8 +161,8 @@ const Sidebar = ({ userDetails, setSidebarVisible, isSidebarVisible }) => {
 									<IconUser className="w-6 h-6 text-[#9ca3af]" />
 								</div>
 							)}
-						</div>
-						<div>
+						</div> */}
+						{/* <div>
 							<p className="text-sm text-white cursor-pointer font-medium">
 								{userDetails["given_name"]}
 							</p>
@@ -163,7 +170,7 @@ const Sidebar = ({ userDetails, setSidebarVisible, isSidebarVisible }) => {
 								Current Plan:{" "}
 								{pricing === "free" ? "Free" : "Pro"}
 							</p>
-						</div>
+						</div> */}
 					</div>
 				</div>
 			</div>

@@ -10,11 +10,15 @@ import asyncio
 import pickle
 import multiprocessing
 import requests
+from datetime import datetime, timezone # Keep timezone explicit
+from tzlocal import get_localzone # Keep if needed elsewhere, but use explicit UTC for DB timestamps
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, StreamingResponse
+from contextlib import asynccontextmanager
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse # Added HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles # Added StaticFiles
 from pydantic import BaseModel
-from typing import Optional, Any, Dict, List, Union # Added Union
+from typing import Optional, Any, Dict, List, AsyncGenerator, Union # Added Union
 from neo4j import GraphDatabase
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -23,6 +27,10 @@ from dotenv import load_dotenv
 import nest_asyncio
 import uvicorn
 import traceback # For detailed error printing
+import numpy as np
+import gradio as gr # Still needed for FastRTC internals
+from fastrtc import Stream, ReplyOnPause, AlgoOptions, SileroVadOptions
+import httpx
 
 print(f"[STARTUP] {datetime.now()}: Basic imports completed.")
 
@@ -64,6 +72,9 @@ from model.context.gmail import GmailContextEngine
 from model.context.internet import InternetSearchContextEngine
 from model.context.gcalendar import GCalendarContextEngine
 
+from model.voice.stt import FasterWhisperSTT
+from model.voice.orpheus_tts import OrpheusTTS, TTSOptions, VoiceId, AVAILABLE_VOICES
+
 from datetime import datetime, timezone
 
 
@@ -72,6 +83,7 @@ print(f"[STARTUP] {datetime.now()}: Model components import completed.")
 # Define available data sources (can be extended in the future)
 DATA_SOURCES = ["gmail", "internet_search", "gcalendar"]
 print(f"[CONFIG] {datetime.now()}: Available data sources: {DATA_SOURCES}")
+# Import new/refactored voice modules
 
 # Load environment variables from .env file
 print(f"[STARTUP] {datetime.now()}: Loading environment variables from model/.env...")
@@ -221,6 +233,76 @@ print(f"[INIT] {datetime.now()}: Initializing TaskQueue...")
 task_queue = TaskQueue()
 print(f"[INIT] {datetime.now()}: TaskQueue initialized.")
 
+stt_model = None
+tts_model = None
+OLLAMA_API_URL = "http://localhost:11434/api/chat" # Keep for reference or potential fallback
+OLLAMA_MODEL = "llama3.2:3b" # Keep for reference
+OLLAMA_REQUEST_TIMEOUT = 60.0
+SELECTED_TTS_VOICE: VoiceId = "tara"
+if SELECTED_TTS_VOICE not in AVAILABLE_VOICES:
+    print(f"Warning: Selected voice '{SELECTED_TTS_VOICE}' not valid. Using default 'tara'.")
+    SELECTED_TTS_VOICE = "tara"
+ORPHEUS_EMOTION_TAGS = [
+    "<giggle>", "<laugh>", "<chuckle>", "<sigh>", "<cough>",
+    "<sniffle>", "<groan>", "<yawn>", "<gasp>"
+]
+EMOTION_TAG_LIST_STR = ", ".join(ORPHEUS_EMOTION_TAGS)
+
+# --- STT/TTS Model Loading ---
+print("Loading STT model...")
+stt_model = FasterWhisperSTT(model_size="base", device="cpu", compute_type="int8")
+print("STT model loaded.")
+
+print("Loading TTS model...")
+try:
+    tts_model = OrpheusTTS(
+        verbose=False,
+        default_voice_id=SELECTED_TTS_VOICE
+    )
+    print("TTS model loaded successfully.")
+except Exception as e:
+    print(f"FATAL ERROR: Could not load TTS model: {e}")
+    exit(1)
+# --- End Voice Specific Initializations ---
+
+async def add_message_to_db(chat_id: str, message_text: str, is_user: bool, is_visible: bool = True, **kwargs):
+    """Adds a message to the specified chat ID in the database."""
+    async with db_lock:
+        try:
+            chatsDb = await load_db()
+            active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == chat_id), None)
+
+            if active_chat:
+                message_id = str(int(time.time() * 1000)) # Simple timestamp-based ID
+                new_message = {
+                    "id": message_id,
+                    "message": message_text,
+                    "isUser": is_user,
+                    "isVisible": is_visible,
+                    "timestamp": datetime.datetime.now(timezone.utc).isoformat() + "Z",
+                    "memoryUsed": kwargs.get("memoryUsed", False),
+                    "agentsUsed": kwargs.get("agentsUsed", False),
+                    "internetUsed": kwargs.get("internetUsed", False),
+                    # Add other relevant fields if needed, like 'type' for tool results
+                }
+                if kwargs.get("type"):
+                    new_message["type"] = kwargs["type"]
+                if kwargs.get("task"):
+                    new_message["task"] = kwargs["task"]
+
+                active_chat["messages"].append(new_message)
+                await save_db(chatsDb)
+                print(f"Message added to DB (Chat ID: {chat_id}, User: {is_user}): {message_text[:50]}...")
+                return message_id # Return the ID if needed
+            else:
+                print(f"Error: Could not find chat with ID {chat_id} to add message.")
+                return None
+        except Exception as e:
+            print(f"Error adding message to DB: {e}")
+            traceback.print_exc()
+            return None
+
+# Tool Registration Decorator
 def register_tool(name: str):
     """Decorator to register a function as a tool handler."""
     def decorator(func: callable):
@@ -405,83 +487,147 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
     Function to retrieve the chat history of the currently active chat.
     Checks for inactivity and creates a new chat if needed.
     Returns the list of messages for the active chat, filtering out messages where isVisible is False.
+    Handles timestamp parsing robustly.
     """
     # print(f"[CHAT_HISTORY] {datetime.now()}: get_chat_history_messages called.")
     async with db_lock:
         # print(f"[CHAT_HISTORY] {datetime.now()}: Acquired chat DB lock.")
         chatsDb = await load_db()
-        active_chat_id = chatsDb["active_chat_id"]
-        current_time = datetime.now(timezone.utc) # Use alias dt here
-
-        # print(f"[CHAT_HISTORY] {datetime.now()}: Current active_chat_id: {active_chat_id}")
+        active_chat_id = chatsDb.get("active_chat_id") # Use .get for safety
+        current_time = datetime.datetime.now(timezone.utc)
 
         # If no active chat exists, create a new one
-        if active_chat_id is None or not chatsDb["chats"]:
-            print(f"[CHAT_HISTORY] {datetime.now()}: No active chat found or chats list is empty. Creating a new chat.")
-            new_chat_id = f"chat_{chatsDb['next_chat_id']}"
-            chatsDb["next_chat_id"] += 1
-            new_chat = {"id": new_chat_id, "messages": [], "created_at": current_time.isoformat() + "Z"}
-            chatsDb["chats"].append(new_chat)
-            chatsDb["active_chat_id"] = new_chat_id
-            await save_db(chatsDb)
-            print(f"[CHAT_HISTORY] {datetime.now()}: New chat created (ID: {new_chat_id}). Returning empty messages.")
-            print(f"[CHAT_HISTORY] {datetime.now()}: Releasing chat DB lock.")
-            return []  # Return empty messages for new chat
+        if not active_chat_id: # Check if None or empty
+            # Find if any chats exist at all
+            existing_chats = chatsDb.get("chats", [])
+            if not existing_chats: # No chats exist at all
+                 new_chat_id = f"chat_{chatsDb.get('next_chat_id', 1)}" # Default next_chat_id to 1
+                 chatsDb["next_chat_id"] = chatsDb.get('next_chat_id', 1) + 1
+                 new_chat = {"id": new_chat_id, "messages": []}
+                 chatsDb["chats"] = existing_chats + [new_chat] # Append to potentially empty list
+                 chatsDb["active_chat_id"] = new_chat_id
+                 await save_db(chatsDb)
+                 print(f"No active chat found, created and activated new chat: {new_chat_id}")
+                 return []
+            else:
+                 # Chats exist, but none is active. Activate the latest one? Or first?
+                 # Let's activate the last one added for simplicity.
+                 active_chat_id = existing_chats[-1]['id']
+                 chatsDb['active_chat_id'] = active_chat_id
+                 await save_db(chatsDb)
+                 print(f"No active chat ID set, activating the last chat: {active_chat_id}")
+                 # Continue to fetch messages for this now active chat
 
         # Find the active chat
-        active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == active_chat_id), None)
+        active_chat = next((chat for chat in chatsDb.get("chats", []) if chat.get("id") == active_chat_id), None)
 
-        # Check for inactivity (only if active chat exists and has messages)
-        if active_chat and active_chat["messages"]:
-            last_message = active_chat["messages"][-1]
-            # Robust timestamp parsing
+        # Handle case where active_chat_id exists but the chat itself doesn't (data inconsistency)
+        if not active_chat:
+             print(f"Error: Active chat ID '{active_chat_id}' exists, but no corresponding chat found. Resetting active chat.")
+             chatsDb["active_chat_id"] = None # Reset to avoid repeated errors
+             await save_db(chatsDb)
+             # Recursively call or return empty? Returning empty is safer.
+             # return await get_chat_history_messages() # Risky if DB error persists
+             return []
+
+        # Check for inactivity only if there are messages
+        if active_chat.get("messages"): # Use .get for safety
             try:
-                 # Handle both 'Z' and '+00:00' formats
-                ts_str = last_message["timestamp"].replace('Z', '+00:00')
-                last_timestamp = datetime.fromisoformat(ts_str)
-                # Ensure timezone aware comparison
-                if last_timestamp.tzinfo is None:
-                    last_timestamp = last_timestamp.replace(tzinfo=timezone.utc)
+                last_message = active_chat["messages"][-1]
+                timestamp_str = last_message.get("timestamp") # Use .get
 
-                time_diff_seconds = (current_time - last_timestamp).total_seconds()
-                inactivity_threshold = 600 # 10 minutes
+                if not timestamp_str:
+                     print("Warning: Last message has no timestamp. Skipping inactivity check.")
+                else:
+                    # --- Robust Timestamp Parsing ---
+                    if timestamp_str.endswith('Z'):
+                        # Replace Z only if it's at the very end
+                        timestamp_str = timestamp_str[:-1] + '+00:00'
+                    # --- End Timestamp Parsing Fix ---
 
-                # print(f"[CHAT_HISTORY] {datetime.now()}: Last message timestamp: {last_timestamp}, Current time: {current_time}, Diff (s): {time_diff_seconds}")
+                    try:
+                        last_timestamp = datetime.datetime.fromisoformat(timestamp_str)
+                        # Ensure last_timestamp is offset-aware for comparison
+                        if last_timestamp.tzinfo is None:
+                             # This case shouldn't happen if parsing worked with '+00:00'
+                             # but as a safeguard, assume UTC if naive after parsing attempt
+                             last_timestamp = last_timestamp.replace(tzinfo=timezone.utc)
 
-                if time_diff_seconds > inactivity_threshold:
-                    print(f"[CHAT_HISTORY] {datetime.now()}: Inactivity period ({time_diff_seconds}s > {inactivity_threshold}s) exceeded for chat {active_chat_id}. Creating a new chat.")
-                    new_chat_id = f"chat_{chatsDb['next_chat_id']}"
-                    chatsDb["next_chat_id"] += 1
-                    new_chat = {"id": new_chat_id, "messages": [], "created_at": current_time.isoformat() + "Z"}
-                    chatsDb["chats"].append(new_chat)
-                    chatsDb["active_chat_id"] = new_chat_id
-                    await save_db(chatsDb)
-                    print(f"[CHAT_HISTORY] {datetime.now()}: New chat created due to inactivity (ID: {new_chat_id}). Returning empty messages.")
-                    print(f"[CHAT_HISTORY] {datetime.now()}: Releasing chat DB lock.")
-                    return [] # Return empty messages for new chat
-            except (ValueError, KeyError) as e:
-                 print(f"[WARN] {datetime.now()}: Could not parse timestamp for inactivity check in chat {active_chat_id}: {e}. Skipping inactivity check.")
+                        if (current_time - last_timestamp).total_seconds() > 600:  # 10 minutes = 600 seconds
+                            print(f"Inactivity detected in chat {active_chat_id}. Creating new chat.")
+                            # Inactivity period exceeded, create a new chat
+                            new_chat_id = f"chat_{chatsDb.get('next_chat_id', 1)}"
+                            chatsDb["next_chat_id"] = chatsDb.get('next_chat_id', 1) + 1
+                            new_chat = {"id": new_chat_id, "messages": []}
+                            chatsDb["chats"].append(new_chat) # Append new chat
+                            chatsDb["active_chat_id"] = new_chat_id
+                            await save_db(chatsDb)
+                            return [] # Return empty messages for new chat
+                    except ValueError as e_parse:
+                         print(f"Error parsing timestamp '{timestamp_str}': {e_parse}. Skipping inactivity check.")
+                    except Exception as e_time:
+                         print(f"Error during timestamp comparison: {e_time}. Skipping inactivity check.")
+
+            except IndexError:
+                 print("Chat has an empty messages list, cannot check inactivity.")
+            except Exception as e:
+                 print(f"Unexpected error during inactivity check: {e}. Proceeding...")
 
 
         # Return messages from the active chat, filtering out those with isVisible: False
-        # Re-find active chat in case it was just created
-        active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"]), None)
-        if active_chat and "messages" in active_chat:
+        if active_chat and active_chat.get("messages"):
             filtered_messages = [
                 message for message in active_chat["messages"]
-                # Default to True if 'isVisible' key is missing or its value is not explicitly False
+                # Default isVisible to True if key is missing
+                # Check if the value is explicitly False
                 if message.get("isVisible", True) is not False
             ]
-            # print(f"[CHAT_HISTORY] {datetime.now()}: Returning {len(filtered_messages)} visible messages for chat {chatsDb['active_chat_id']}.")
-            # print(f"[CHAT_HISTORY] {datetime.now()}: Releasing chat DB lock.")
             return filtered_messages
         else:
-            # This case should ideally not be reached if a new chat was created, but handles edge cases
-            print(f"[CHAT_HISTORY] {datetime.now()}: Active chat ({chatsDb['active_chat_id']}) found but has no messages or 'messages' key is missing. Returning empty list.")
-            print(f"[CHAT_HISTORY] {datetime.now()}: Releasing chat DB lock.")
+            # Active chat exists but has no messages
             return []
 
-# --- Background Task Processing ---
+# WebSocket Manager
+class WebSocketManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+        self.client_ids: Dict[WebSocket, str] = {} # Optional: Track clients if needed
+
+    async def connect(self, websocket: WebSocket, client_id: str = "anon"):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        self.client_ids[websocket] = client_id
+        print(f"WebSocket client connected: {client_id} ({len(self.active_connections)} total)")
+
+    def disconnect(self, websocket: WebSocket):
+        client_id = self.client_ids.pop(websocket, "unknown")
+        if websocket in self.active_connections:
+             self.active_connections.remove(websocket)
+        print(f"WebSocket client disconnected: {client_id} ({len(self.active_connections)} total)")
+
+    async def send_personal_message(self, message: str, websocket: WebSocket):
+        try:
+             await websocket.send_text(message)
+        except Exception as e:
+             print(f"Error sending personal message: {e}")
+             self.disconnect(websocket)
+
+    async def broadcast(self, message: str):
+        # Create a list of connections to iterate over, as disconnect modifies the list
+        connections_to_send = list(self.active_connections)
+        for connection in connections_to_send:
+            try:
+                await connection.send_text(message)
+            except Exception as e:
+                client_id = self.client_ids.get(connection, "unknown")
+                print(f"Error broadcasting to {client_id}, disconnecting: {e}")
+                # Disconnect broken connections
+                self.disconnect(connection)
+
+    async def broadcast_json(self, data: dict):
+        await self.broadcast(json.dumps(data))
+
+manager = WebSocketManager()
 
 async def cleanup_tasks_periodically():
     """Periodically clean up old completed tasks."""
@@ -567,7 +713,6 @@ async def process_memory_operations():
     while True:
         # print(f"[MEMORY_PROCESSOR] {datetime.now()}: Checking for next memory operation...")
         operation = await memory_backend.memory_queue.get_next_operation()
-
         if operation:
             op_id = operation.get("operation_id", "N/A")
             user_id = operation.get("user_id", "N/A")
@@ -924,11 +1069,17 @@ app = FastAPI(
 )
 print(f"[FASTAPI] {datetime.now()}: FastAPI app initialized.")
 
+origins = [
+    "http://localhost",
+    "http://localhost:3000",
+    "app://.",
+]
+
 # Add CORS middleware to allow cross-origin requests
 print(f"[FASTAPI] {datetime.now()}: Adding CORS middleware...")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allow all origins (adjust for production)
+    allow_origins=["*"] + origins,
     allow_credentials=True,
     allow_methods=["*"], # Allow all methods
     allow_headers=["*"]  # Allow all headers
@@ -937,85 +1088,62 @@ print(f"[FASTAPI] {datetime.now()}: CORS middleware added.")
 
 # --- Startup and Shutdown Events ---
 
-@app.on_event("startup")
-async def startup_event():
-    """Handles application startup procedures."""
-    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Application startup event triggered.")
-    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Loading tasks from storage...")
+# --- Startup/Shutdown Events ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Code to run on startup
+    print("--- Server Starting ---")
+    # Load tasks and memory operations
     await task_queue.load_tasks()
     print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Loading memory operations from storage...")
     await memory_backend.memory_queue.load_operations()
+    # print("Loading STT model...")
+    # stt_model = FasterWhisperSTT(model_size="base", device="cpu", compute_type="int8")
+    # print("STT model loaded.")
 
-    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Creating background task for processing task queue...")
-    asyncio.create_task(process_queue())
-    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Creating background task for processing memory operations...")
-    asyncio.create_task(process_memory_operations())
-    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Creating background task for periodic task cleanup...")
-    asyncio.create_task(cleanup_tasks_periodically())
+    # print("Loading TTS model...")
+    # try:
+    #     # --- Pass the selected default voice during initialization ---
+    #     tts_model = OrpheusTTS(
+    #         verbose=False,
+    #         default_voice_id=SELECTED_TTS_VOICE, # Pass the selected voice here
+    #     )
+    #     # --- End TTS model initialization change ---
+    #     print("TTS model loaded successfully.") # This confirmation comes after the voice is set in init
+    # except Exception as e:
+    #     print(f"FATAL ERROR: Could not load TTS model: {e}")
+    #     exit(1)
+    # Start background processors
+    app.state.task_processor = asyncio.create_task(process_queue())
+    app.state.memory_processor = asyncio.create_task(process_memory_operations())
+    app.state.cleanup_processor = asyncio.create_task(cleanup_tasks_periodically())
 
-    # Initialize and start context engines based on user profile settings
-    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Initializing context engines based on user profile...")
-    user_id = "user1" # TODO: Replace with dynamic user ID retrieval if needed
-    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Using placeholder user_id: {user_id} for context engines.")
-    user_profile = load_user_profile()
-    enabled_data_sources = []
+    yield # Server runs here
 
-    # Check which data sources are enabled in the profile (default to True if key missing)
-    if user_profile.get("userData", {}).get("gmailEnabled", True):
-        enabled_data_sources.append("gmail")
-    if user_profile.get("userData", {}).get("internetSearchEnabled", True):
-        enabled_data_sources.append("internet_search")
-    if user_profile.get("userData", {}).get("gcalendarEnabled", True):
-        enabled_data_sources.append("gcalendar")
+    # Code to run on shutdown
+    print("--- Server Shutting Down ---")
+    # Gracefully shutdown background tasks (optional, depends on task nature)
+    if hasattr(app.state, 'task_processor') and not app.state.task_processor.done():
+        app.state.task_processor.cancel()
+        try: await app.state.task_processor
+        except asyncio.CancelledError: print("Task processor cancelled.")
+    if hasattr(app.state, 'memory_processor') and not app.state.memory_processor.done():
+        app.state.memory_processor.cancel()
+        try: await app.state.memory_processor
+        except asyncio.CancelledError: print("Memory processor cancelled.")
+    if hasattr(app.state, 'cleanup_processor') and not app.state.cleanup_processor.done():
+        app.state.cleanup_processor.cancel()
+        try: await app.state.cleanup_processor
+        except asyncio.CancelledError: print("Cleanup processor cancelled.")
 
-    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Enabled data sources for context engines: {enabled_data_sources}")
-
-    for source in enabled_data_sources:
-        engine = None
-        print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Setting up context engine for source: {source}")
-        try:
-            if source == "gmail":
-                engine = GmailContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
-            elif source == "internet_search":
-                 # Internet Search engine might not have a continuous process like Gmail/GCalendar
-                 # Adjust if it needs a long-running task
-                # engine = InternetSearchContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
-                print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: InternetSearchContextEngine currently does not require a background task.")
-                continue # Skip starting a task for this one for now
-            elif source == "gcalendar":
-                engine = GCalendarContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
-            else:
-                print(f"[WARN] {datetime.now()}: Unknown data source '{source}' encountered during context engine setup.")
-                continue
-
-            if engine:
-                print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Starting background task for {source} context engine...")
-                asyncio.create_task(engine.start())
-            else:
-                print(f"[WARN] {datetime.now()}: Failed to initialize engine for {source}.")
-
-
-        except Exception as e:
-            print(f"[ERROR] {datetime.now()}: Failed to initialize or start context engine for {source}: {e}")
-            traceback.print_exc()
-
-    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Application startup complete.")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Handles application shutdown procedures."""
-    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Application shutdown event triggered.")
-    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Saving pending tasks to storage...")
+    # Save pending tasks and memory operations
     await task_queue.save_tasks()
     print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Saving pending memory operations to storage...")
     await memory_backend.memory_queue.save_operations()
-    # Close Neo4j driver if it was initialized
+    # Close Neo4j driver
     if graph_driver:
-        print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Closing Neo4j driver connection...")
-        graph_driver.close()
-        print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Neo4j driver closed.")
-    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Application shutdown complete.")
+        await asyncio.to_thread(graph_driver.close) # Use to_thread if close is blocking
+    print("--- Server Shutdown Complete ---")
 
 # --- Pydantic Models ---
 # (No print statements needed in model definitions)
@@ -1135,6 +1263,322 @@ class ApproveTaskResponse(BaseModel):
 
 # --- API Endpoints ---
 
+# --- Voice Chat Logic ---
+
+# ... (Configuration, Model Init, Ollama function remain the same) ...
+# --- Configuration ---
+OLLAMA_API_URL = "http://localhost:11434/api/chat"
+OLLAMA_MODEL = "llama3.2:3b"
+OLLAMA_REQUEST_TIMEOUT = 60.0
+
+# --- Select TTS Voice ---
+SELECTED_TTS_VOICE: VoiceId = "tara"
+if SELECTED_TTS_VOICE not in AVAILABLE_VOICES:
+    print(f"Warning: Selected voice '{SELECTED_TTS_VOICE}' not valid. Using default 'tara'.")
+    SELECTED_TTS_VOICE = "tara"
+# --- End Voice Selection ---
+
+
+# --- Orpheus Supported Emotion Tags ---
+ORPHEUS_EMOTION_TAGS = [
+    "<giggle>", "<laugh>", "<chuckle>", "<sigh>", "<cough>",
+    "<sniffle>", "<groan>", "<yawn>", "<gasp>"
+]
+EMOTION_TAG_LIST_STR = ", ".join(ORPHEUS_EMOTION_TAGS)
+
+# --- Model Initialization ---
+print("Loading STT model...")
+stt_model = FasterWhisperSTT(model_size="base", device="cpu", compute_type="int8")
+print("STT model loaded.")
+
+print("Loading TTS model...")
+try:
+    tts_model = OrpheusTTS(
+        verbose=False,
+        default_voice_id=SELECTED_TTS_VOICE
+    )
+    print("TTS model loaded successfully.")
+except Exception as e:
+    print(f"FATAL ERROR: Could not load TTS model: {e}")
+    exit(1)
+
+# --- Modified Async Handler using Chat Endpoint Logic ---
+async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
+    """
+    Handles the voice conversation flow: STT -> LLM (using chat logic) -> TTS.
+    Uses the same classification, context retrieval, and runnable invocation
+    as the /chat endpoint, calling invoke() for the full response.
+    Ensures async functions are awaited.
+    """
+    # Make runnables accessible
+    global embed_model, graph_driver, memory_backend, task_queue
+    global reflection_runnable, inbox_summarizer_runnable, priority_runnable
+    global graph_decision_runnable, information_extraction_runnable, graph_analysis_runnable
+    global text_dissection_runnable, text_conversion_runnable, query_classification_runnable
+    global fact_extraction_runnable, text_summarizer_runnable, text_description_runnable
+    global reddit_runnable, twitter_runnable
+    global internet_query_reframe_runnable, internet_summary_runnable
+
+    print("\n--- Received audio chunk for processing ---")
+    print("Transcribing...")
+    if not stt_model:
+        print("ERROR: STT model not loaded.")
+        return
+    user_text = stt_model.stt(audio)
+    if not user_text or not user_text.strip():
+        print("No valid text transcribed, skipping.")
+        return
+
+    print(f"User (STT): {user_text}")
+
+    bot_response_text = ""
+    active_chat_id = None
+    current_chat_runnable = None
+
+    try:
+        # 1. Load User Profile & Active Chat Info
+        user_profile = load_user_profile()
+        username = user_profile.get("userData", {}).get("personalInfo", {}).get("name", "User")
+        personality_setting = user_profile.get("userData", {}).get("personality", "Default helpful assistant")
+
+        async with db_lock:
+            chatsDb = await load_db()
+            active_chat_id = chatsDb.get("active_chat_id")
+
+        if not active_chat_id:
+            print("ERROR: No active chat ID found. Cannot process voice message.")
+            return
+
+        # 2. Add User Message to DB
+        await add_message_to_db(active_chat_id, user_text, is_user=True, is_visible=True)
+
+        # 3. Get Current Chat History & Initialize Context-Aware Runnables
+        chat_history_obj = get_chat_history()
+        try:
+            # Initialize runnables - check chat runnable specifically
+            temp_chat_runnable = get_chat_runnable(chat_history_obj)
+            print(f"DEBUG: Type returned by get_chat_runnable: {type(temp_chat_runnable)}")
+            # Check if it has the invoke method
+            if not hasattr(temp_chat_runnable, 'invoke') or not callable(temp_chat_runnable.invoke):
+                 print(f"ERROR: get_chat_runnable did not return a valid runnable object with a callable 'invoke' method. Got: {temp_chat_runnable}")
+                 raise ValueError("Invalid chat runnable object received (missing invoke).")
+            current_chat_runnable = temp_chat_runnable
+
+            current_agent_runnable = get_agent_runnable(chat_history_obj)
+            current_unified_classifier = get_unified_classification_runnable(chat_history_obj)
+        except Exception as e:
+            print(f"ERROR initializing history-dependent runnables: {e}")
+            traceback.print_exc()
+            await add_message_to_db(active_chat_id, "[System Error: Failed to initialize core components]", is_user=False, error=True)
+            return
+
+        # 4. Classify User Input
+        print("Classifying input...")
+        # Assuming invoke is synchronous here, adjust if classifier uses ainvoke
+        unified_output = current_unified_classifier.invoke({"query": user_text})
+        category = unified_output.get("category", "chat")
+        use_personal_context = unified_output.get("use_personal_context", False)
+        internet = unified_output.get("internet", "None")
+        transformed_input = unified_output.get("transformed_input", user_text)
+        print(f"Classification: Category='{category}', Use Personal='{use_personal_context}', Internet='{internet}'")
+        print(f"Transformed Input: {transformed_input}")
+
+
+        # 5. Handle Agent Task Category
+        if category == "agent":
+            print("Input classified as agent task.")
+            # Assuming invoke is synchronous here
+            priority_response = priority_runnable.invoke({"task_description": transformed_input})
+            priority = priority_response.get("priority", 3)
+
+            print(f"Adding agent task to queue (Priority: {priority})...")
+            # ---> Use await here <---
+            await task_queue.add_task(
+                chat_id=active_chat_id,
+                description=transformed_input,
+                priority=priority,
+                username=username,
+                personality=personality_setting,
+                use_personal_context=use_personal_context,
+                internet=internet
+            )
+            print("Agent task added.")
+            bot_response_text = "Okay, I'll get right on that." # Canned response for agent task
+
+            await add_message_to_db(active_chat_id, bot_response_text, is_user=False, agentsUsed=True)
+
+        # 6. Handle Chat/Memory Category (Generate Response using invoke)
+        else: # category is "chat" or "memory"
+            print("Input classified as chat/memory.")
+            user_context = None
+            internet_context = None
+            memory_used_flag = False
+            internet_used_flag = False
+
+            # Fetch context if needed (Memory)
+            if use_personal_context or category == "memory":
+                print("Retrieving relevant memories...")
+                try:
+                    # ---> Use await here <---
+                    user_context = await memory_backend.retrieve_memory(username, transformed_input)
+                    # Now user_context should be the actual result (e.g., string or None)
+                    if user_context:
+                        # Check if it's a string before slicing
+                        if isinstance(user_context, str):
+                            print(f"Retrieved user context (memory): {user_context[:100]}...")
+                        else:
+                            # Handle other types if necessary, or just print type
+                            print(f"Retrieved user context (memory) of type: {type(user_context)}")
+                        memory_used_flag = True
+                    else:
+                        print("No relevant memories found.")
+                except Exception as e:
+                    print(f"Error retrieving user context: {e}")
+                    traceback.print_exc() # Keep traceback for debugging
+                # Starting background memory update task is correct with create_task
+                if category == "memory":
+                    print("Queueing memory update operation...")
+                    asyncio.create_task(memory_backend.add_operation(username, transformed_input))
+
+            # Fetch context if needed (Internet)
+            # Assuming these helpers call synchronous invoke methods internally for now
+            if internet == "Internet":
+                print("Searching the internet...")
+                try:
+                    reframed_query = get_reframed_internet_query(internet_query_reframe_runnable, transformed_input)
+                    print(f"Reframed internet query: {reframed_query}")
+                    search_results = get_search_results(reframed_query)
+                    if search_results:
+                        internet_context = get_search_summary(internet_summary_runnable, search_results)
+                        # Check if it's a string before slicing
+                        if internet_context and isinstance(internet_context, str):
+                            print(f"Retrieved internet context (summary): {internet_context[:100]}...")
+                        elif internet_context:
+                            print(f"Retrieved internet context (summary) of type: {type(internet_context)}")
+                        else:
+                            print("Internet summary was empty.")
+                        internet_used_flag = True
+                    else:
+                        print("No search results found or summary failed.")
+                except Exception as e:
+                    print(f"Error retrieving internet context: {e}")
+                    traceback.print_exc()
+
+            # Generate Response using invoke
+            print("Generating response using chat runnable's invoke method...")
+            try:
+                # Check the runnable again before calling invoke
+                if not current_chat_runnable or not hasattr(current_chat_runnable, 'invoke') or not callable(current_chat_runnable.invoke):
+                     print(f"ERROR: current_chat_runnable is invalid before invoking. Value: {current_chat_runnable}")
+                     raise ValueError("Chat runnable became invalid before invoke.")
+
+                # Call invoke (assuming it's synchronous)
+                invocation_result = current_chat_runnable.invoke({
+                    "query": transformed_input,
+                    "user_context": user_context, # Pass the awaited result
+                    "internet_context": internet_context, # Pass the retrieved result
+                    "name": username,
+                    "personality": personality_setting
+                })
+
+                # Process the result
+                if isinstance(invocation_result, str):
+                    bot_response_text = invocation_result.strip()
+                    print(f"Generated response text (invoke): {bot_response_text}")
+                elif invocation_result is None:
+                     print("Warning: Chat runnable invoke returned None.")
+                     bot_response_text = "I couldn't generate a response for that."
+                else:
+                    print(f"Warning: Unexpected response type from invoke: {type(invocation_result)}. Converting to string.")
+                    bot_response_text = str(invocation_result).strip()
+
+                if not bot_response_text:
+                    print("Warning: Generated response was empty.")
+                    bot_response_text = "I don't have a specific response for that right now."
+
+                await add_message_to_db(
+                    active_chat_id,
+                    bot_response_text,
+                    is_user=False,
+                    memoryUsed=memory_used_flag,
+                    internetUsed=internet_used_flag
+                )
+
+            except Exception as e:
+                print(f"Error during chat runnable invocation: {e}")
+                traceback.print_exc()
+                bot_response_text = "Sorry, I encountered an error while generating a response."
+                await add_message_to_db(active_chat_id, bot_response_text, is_user=False, error=True)
+
+        # 7. Synthesize Speech (TTS)
+        if not bot_response_text:
+            print("No bot response text generated (or error occurred), skipping TTS.")
+            return
+
+        if not tts_model:
+            print("ERROR: TTS model not loaded.")
+            return
+
+        print(f"Synthesizing speech for: {bot_response_text[:60]}...")
+        try:
+            tts_options: TTSOptions = {}
+            chunk_count = 0
+            # TTS still uses streaming internally (async for handles await)
+            async for (sample_rate, audio_chunk) in tts_model.stream_tts(bot_response_text, options=tts_options):
+                if audio_chunk is not None and audio_chunk.size > 0:
+                    if chunk_count == 0:
+                         print(f"Streaming TTS audio chunk 1 (sr={sample_rate}, shape={audio_chunk.shape}, dtype={audio_chunk.dtype})...")
+                    yield (sample_rate, audio_chunk)
+                    chunk_count += 1
+                else:
+                    print("Warning: Received empty audio chunk from TTS.")
+
+            if chunk_count == 0:
+                 print("Warning: TTS stream completed without yielding any audio chunks.")
+            else:
+                 print(f"Finished synthesizing and streaming {chunk_count} chunks.")
+
+        except Exception as e:
+            print(f"Error during TTS synthesis or streaming: {e}")
+            traceback.print_exc()
+            return
+
+    except Exception as e:
+        print(f"--- Unhandled error in handle_audio_conversation: {e} ---")
+        traceback.print_exc()
+        if active_chat_id:
+            try:
+                await add_message_to_db(active_chat_id, "[System Error in Voice Processing]", is_user=False, error=True)
+            except:
+                pass
+        return
+
+# --- Set up the Stream (Handler remains the same) ---
+stream = Stream(
+    ReplyOnPause(
+        handle_audio_conversation,
+        # Keep VAD settings as they worked in Gradio
+        algo_options=AlgoOptions(
+            audio_chunk_duration=0.6,
+            started_talking_threshold=0.25,
+            speech_threshold=0.2
+        ),
+        model_options=SileroVadOptions(
+            threshold=0.5,
+            min_speech_duration_ms=200,
+            min_silence_duration_ms=1000
+        ),
+        can_interrupt=False,
+    ),
+    mode="send-receive",
+    modality="audio",
+    additional_outputs=None,
+    additional_outputs_handler=None
+)
+
+stream.mount(app, path="/voice")
+print("FastRTC stream mounted at /voice.")
+
 ## Root Endpoint
 @app.get("/", status_code=200)
 async def main():
@@ -1160,6 +1604,7 @@ async def get_history():
         raise HTTPException(status_code=500, detail="Failed to retrieve chat history.")
 
 
+# Clear Chat History
 @app.post("/clear-chat-history", status_code=200)
 async def clear_chat_history():
     """Clear all chat history by resetting to the initial database structure."""
@@ -3433,50 +3878,29 @@ async def set_data_source_enabled_endpoint(request: SetDataSourceEnabledRequest)
 ## WebSocket Endpoint
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """Handles WebSocket connections for real-time updates."""
-    await manager.connect(websocket)
-    client_host = websocket.client.host if websocket.client else "unknown"
-    client_port = websocket.client.port if websocket.client else "unknown"
-    print(f"[WEBSOCKET /ws] {datetime.now()}: Client connected from {client_host}:{client_port}")
+    # Simple connect/disconnect, broadcasting happens from other parts of the app
+    client_id = websocket.query_params.get("clientId", "anon-" + str(int(time.time() * 1000))) # Example ID
+    await manager.connect(websocket, client_id)
     try:
         while True:
-            # Keep connection alive and receive potential messages from client
+            # Keep connection alive, receive pings or other messages if needed
             data = await websocket.receive_text()
-            print(f"[WEBSOCKET /ws] {datetime.now()}: Received message from {client_host}:{client_port}: {data[:100]}...")
-            # Process client message if needed (e.g., ping/pong, specific commands)
-            # Example: await manager.send_personal_message(f"You sent: {data}", websocket)
-            # For now, primarily server-to-client communication driven by other events.
-            await websocket.send_text(json.dumps({"type": "ack", "message": "Message received"})) # Send acknowledgment
-
+            # print(f"Received message on /ws from {client_id}: {data}")
+            # Handle ping or other control messages if necessary
+            try:
+                 msg = json.loads(data)
+                 if msg.get("type") == "ping":
+                     await websocket.send_text(json.dumps({"type": "pong"}))
+            except json.JSONDecodeError:
+                 pass # Ignore non-JSON messages or handle as needed
     except WebSocketDisconnect:
-        print(f"[WEBSOCKET /ws] {datetime.now()}: Client {client_host}:{client_port} disconnected.")
-        manager.disconnect(websocket)
+        print(f"/ws client {client_id} disconnected.")
     except Exception as e:
-        print(f"[ERROR] {datetime.now()}: WebSocket error for {client_host}:{client_port}: {e}")
-        traceback.print_exc()
-        manager.disconnect(websocket) # Ensure cleanup on error
-
-# --- Server Startup Time and Run ---
-
-END_TIME = time.time()
-STARTUP_DURATION = END_TIME - START_TIME
-print(f"[STARTUP] {datetime.now()}: ==============================================")
-print(f"[STARTUP] {datetime.now()}: Server initialization completed.")
-print(f"[STARTUP] {datetime.now()}: Total startup time: {STARTUP_DURATION:.2f} seconds")
-print(f"[STARTUP] {datetime.now()}: ==============================================")
+        print(f"/ws error for client {client_id}: {e}")
+    finally:
+        manager.disconnect(websocket)
 
 
 if __name__ == "__main__":
-    print(f"[RUN] {datetime.now()}: Starting Uvicorn server...")
-    multiprocessing.freeze_support() # For Windows compatibility if using multiprocessing
-    # Consider number of workers based on CPU cores, but start with 1 for easier debugging
-    # reload=True is useful for development but should be False in production
-    uvicorn.run(
-        app, # Point to the FastAPI app instance in this file (main.py)
-        host="0.0.0.0",
-        port=5000,
-        reload=False, # Set to True for auto-reload during development
-        workers=1     # Start with 1 worker for simplicity/debugging
-        # log_level="info" # Uvicorn's own logging level
-    )
-    print(f"[RUN] {datetime.now()}: Uvicorn server stopped.")
+    multiprocessing.freeze_support()
+    uvicorn.run(app, host="0.0.0.0", port=5000, lifespan="on", reload=False, workers=1)

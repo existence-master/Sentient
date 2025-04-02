@@ -55,6 +55,7 @@
 		"tsparticles": "^3.8.1",
 		"uuid": "^9.0.0",
 		"vis-network": "^9.1.9",
+		"webrtc-adapter": "^9.0.1",
 		"ws": "^8.18.1"
 	},
 	"devDependencies": {
