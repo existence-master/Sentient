@@ -5,11 +5,11 @@ import {
 	IconChevronRight,
 	IconUser,
 	IconLogout,
-	IconTemplate,
 	IconAdjustments,
 	IconMessage,
 	IconChecklist,
-	IconBrain
+	IconBrain,
+	IconNotification
 } from "@tabler/icons-react"
 import toast from "react-hot-toast"
 
@@ -66,6 +66,7 @@ const Sidebar = ({ userDetails, setSidebarVisible, isSidebarVisible }) => {
 						<IconMessage className="w-5 h-5" />
 						<span className="text-base text-white">Chat</span>
 					</button>
+
 					<button
 						onClick={() => router.push("/tasks")}
 						className="cursor-pointer flex items-center gap-3 w-full text-left px-4 py-2 rounded-lg text-white hover:text-lightblue hover:bg-neutral-800 mt-1"
@@ -86,6 +87,13 @@ const Sidebar = ({ userDetails, setSidebarVisible, isSidebarVisible }) => {
 					>
 						<IconAdjustments className="w-5 h-5" />
 						<span className="text-base text-white">Settings</span>
+					</button>
+					<button
+						onClick={() => router.push("/notifications")}
+						className="cursor-pointer flex items-center gap-3 w-full text-left px-4 py-2 rounded-lg text-white hover:text-lightblue hover:bg-neutral-800 mt-1"
+					>
+						<IconNotification className="w-5 h-5" />
+						<span className="text-base text-white">Notifications</span>
 					</button>
 					<div className="mt-auto mb-6 mx-2">
 						<div className="bg-gradient-to-br from-darkblue to-lightblue rounded-xl p-4 relative overflow-hidden">

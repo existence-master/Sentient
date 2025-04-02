@@ -549,11 +549,11 @@ async def startup_event():
     
     for source in enabled_data_sources:
         if source == "gmail":
-            engine = GmailContextEngine(user_id, task_queue, memory_backend, manager, db_lock)
+            engine = GmailContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
         elif source == "internet_search":
-            engine = InternetSearchContextEngine(user_id, task_queue, memory_backend, manager, db_lock)
+            engine = InternetSearchContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
         elif source == "gcalendar":
-            engine = GCalendarContextEngine(user_id, task_queue, memory_backend, manager, db_lock)
+            engine = GCalendarContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
         else:
             continue
         asyncio.create_task(engine.start())
@@ -1927,65 +1927,48 @@ async def get_db_data() -> Dict[str, Any]: # Request is just for consistency, no
         raise HTTPException(status_code=500, detail="Error fetching data")
     
 @app.post("/get-graph-data")
-async def get_graph_data():
+async def get_graph_data_apoc():
     """
-    Fetches graph data from Neo4j (all nodes and relationships)
-    and formats it for graph visualization.
+    Fetches graph data using APOC procedures (requires APOC install).
     """
-    nodes = []
-    edges = []
-    node_ids = set() # Keep track of added node IDs to avoid duplicates
+    if not graph_driver:
+         raise HTTPException(status_code=503, detail="Database connection not available")
 
-    # Use async session if your driver setup supports it, otherwise use sync session
-    # Using sync session here for broader compatibility based on original JS code
+    # This query uses APOC to structure nodes and relationships
+    # It directly creates the lists, handling deduplication for nodes
+    apoc_query = """
+    MATCH (n)
+    WITH collect(DISTINCT n) as nodes // Collect distinct nodes first
+    MATCH (s)-[r]->(t) // Match relationships
+    WHERE s IN nodes AND t IN nodes // Ensure rels use nodes already collected (optional optimization)
+    WITH nodes, collect(r) as rels // Collect relationships
+    RETURN
+        [node IN nodes | { id: elementId(node), label: labels(node)[0], properties: properties(node) }] AS nodes_list,
+        [rel IN rels | { from: elementId(startNode(rel)), to: elementId(endNode(rel)), label: type(rel) }] AS edges_list
+        // Optionally add relationship properties: , properties: properties(rel)
+    """
+
     try:
-        with graph_driver.session() as session:
-            # Using read_transaction for read-only operation
-            result = session.read_transaction(
-                lambda tx: tx.run("MATCH (n)-[r]->(m) RETURN n, r, m").data()
-            )
+        with graph_driver.session(database="neo4j") as session:
+            result = session.run(apoc_query).single() # Expecting a single row result
 
-            for record in result:
-                source_node = record['n']
-                target_node = record['m']
-                relationship = record['r']
+            if result:
+                nodes = result['nodes_list']
+                edges = result['edges_list']
+                # Ensure labels exist or default
+                for node in nodes:
+                    if node.get('label') is None:
+                        node['label'] = 'Unknown'
 
-                # Process source node
-                source_id = str(source_node.element_id) # Use element_id, convert to string
-                if source_id not in node_ids:
-                    nodes.append({
-                        "id": source_id,
-                        # Use list of labels, take first if exists, otherwise None or default
-                        "label": list(source_node.labels)[0] if source_node.labels else "Unknown",
-                        "properties": dict(source_node) # Convert properties to dict
-                    })
-                    node_ids.add(source_id)
-
-                # Process target node
-                target_id = str(target_node.element_id) # Use element_id, convert to string
-                if target_id not in node_ids:
-                    nodes.append({
-                        "id": target_id,
-                        "label": list(target_node.labels)[0] if target_node.labels else "Unknown",
-                        "properties": dict(target_node)
-                    })
-                    node_ids.add(target_id)
-
-                # Process edge
-                edges.append({
-                    "from": source_id, # Already string
-                    "to": target_id,   # Already string
-                    "label": relationship.type
-                })
-
-        return JSONResponse(status_code = 200, content={"nodes": nodes, "edges": edges})
+                return JSONResponse(status_code=200, content={"nodes": nodes, "edges": edges})
+            else:
+                # Handle case where the graph might be empty
+                 return JSONResponse(status_code=200, content={"nodes": [], "edges": []})
 
     except Exception as e:
         print(f"Error fetching graph data: {e}")
-        # Log the full error for debugging
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"An error occurred while fetching graph data: {str(e)}")
+        # Provide a more generic error message to the client
+        raise HTTPException(status_code=500, detail="An internal error occurred while fetching graph data.")
     
 @app.get("/get-notifications")
 async def get_notifications():

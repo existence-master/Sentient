@@ -1,10 +1,9 @@
 from model.context.base import BaseContextEngine
-from model.agents.functions import authenticate_gcalendar
+from model.agents.functions import authenticate_calendar
 from model.context.runnables import get_gcalendar_context_runnable
 from datetime import datetime, timedelta
 from dateutil import parser
 import asyncio
-import neo4j # Assuming BaseContextEngine or its parent might need this, or for type hinting if used.
 
 class GCalendarContextEngine(BaseContextEngine):
     """Context Engine for processing Google Calendar data, tracking recent events."""
@@ -13,7 +12,7 @@ class GCalendarContextEngine(BaseContextEngine):
         print("GCalendarContextEngine.__init__ started")
         super().__init__(*args, **kwargs)
         print("GCalendarContextEngine.__init__ - calling authenticate_gcalendar()")
-        self.gcalendar_service = authenticate_gcalendar()
+        self.gcalendar_service = authenticate_calendar()
         print("GCalendarContextEngine.__init__ - gcalendar_service authenticated")
         self.category = "gcalendar"
         print(f"GCalendarContextEngine.__init__ - category set to: {self.category}")

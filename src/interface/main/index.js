@@ -787,7 +787,7 @@ ipcMain.handle("get-profile", async () => {
 		console.log(
 			"DEV MODE: Handling get-profile. Returning potentially empty profile or mock data."
 		)
-		// Example mock data: return { sub: 'dev-user-id', name: 'Dev User', email: 'dev@example.com'};
+		return { "given_name": "John Doe", "picture": null };
 	}
 	try {
 		return await getProfile()
@@ -2004,7 +2004,7 @@ ipcMain.handle("clear-all-memories", async () => {
 	}
 })
 
-handle("fetch-graph-data", async () => {
+ipcMain.handle("fetch-graph-data", async () => {
 	console.log("IPC: fetch-graph-data called")
 	try {
 		// Ensure APP_SERVER_URL is defined in your environment variables
