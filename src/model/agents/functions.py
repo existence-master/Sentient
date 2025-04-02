@@ -10,12 +10,17 @@ from email.mime.text import MIMEText
 from base64 import urlsafe_b64encode
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
 import httpx
 from sentence_transformers import SentenceTransformer, util
 from urllib.parse import quote
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from dotenv import load_dotenv
+import time
+import matplotlib.pyplot as plt
+import io
+import requests
+import aiohttp
 
 from model.app.helpers import *
 
@@ -154,6 +159,172 @@ async def create_message(to: str, subject: str, message: str) -> str:
     except Exception as error:
         print(f"Error creating message: {str(error)}")
         raise Exception(f"Error creating message: {error}")
+    
+async def search_unsplash_image(query: str) -> str:
+    """Search for an image on Unsplash and return its URL.
+
+    Args:
+        query (str): The search term to find an image (e.g., 'nature').
+
+    Returns:
+        str: The URL of the first image result, or None if no image is found or an error occurs.
+    """
+    try:
+        access_key = os.getenv("UNSPLASH_ACCESS_KEY")
+        if not access_key:
+            print("Unsplash access key is missing. Please set UNSPLASH_ACCESS_KEY in your .env file.")
+            return None
+
+        url = f"https://api.unsplash.com/search/photos?query={query}"
+        headers = {'Authorization': f'Client-ID {access_key}'}
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code != 200:
+            print(f"API Error: {response.status_code}")
+            return None
+            
+        data = response.json()
+        if data.get("results"):
+            return data["results"][0]["urls"]["regular"]
+            
+        print(f"No images found for query: {query}")
+        return None
+    except requests.RequestException as e:
+        print(f"Error searching Unsplash: {e}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return None
+
+async def upload_image_to_slide(service, drive_service, presentation_id, slide_id, image_url):
+    """Upload an image from a URL to a specific slide.
+
+    Args:
+        service: Google Slides API service instance.
+        drive_service: Google Drive API service instance.
+        presentation_id (str): ID of the presentation.
+        slide_id (str): ID of the slide to add the image to.
+        image_url (str): URL of the image to upload.
+
+    Returns:
+        dict: Status and result or error message.
+    """
+    try:
+        response = requests.get(image_url)
+        if response.status_code != 200:
+            return {"status": "failure", "error": f"Failed to download image from {image_url}"}
+        image_bytes = response.content
+        file_name = f'slide_image_{int(time.time())}.jpg'
+        mimetype = 'image/jpeg'
+        return add_image_to_slide_from_bytes(service, drive_service, presentation_id, slide_id, image_bytes, file_name, mimetype)
+    except Exception as e:
+        return {"status": "failure", "error": str(e)}
+
+def generate_chart_bytes(chart_type, categories, data):
+    """Generate a chart image in memory and return its bytes.
+
+    Args:
+        chart_type (str): Type of chart ('bar', 'pie', 'line').
+        categories (list): Categories for the chart.
+        data (list): Data points for the chart.
+
+    Returns:
+        bytes: The chart image in bytes.
+    """
+    try:
+        plt.figure(figsize=(6, 4))
+        if chart_type == "bar":
+            plt.bar(categories, data)
+        elif chart_type == "pie":
+            plt.pie(data, labels=categories, autopct='%1.1f%%')
+        elif chart_type == "line":
+            plt.plot(categories, data)
+        else:
+            raise ValueError(f"Unsupported chart type: {chart_type}")
+        plt.title("Chart")
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        plt.close()
+        buf.seek(0)
+        return buf.getvalue()
+    except Exception as e:
+        raise RuntimeError(f"Error generating chart: {e}")
+
+def add_image_to_slide_from_bytes(service, drive_service, presentation_id, slide_id, image_bytes, file_name, mimetype):
+    """Upload image bytes to Google Drive and add the image to a specific slide.
+
+    Args:
+        service: Google Slides API service instance.
+        drive_service: Google Drive API service instance.
+        presentation_id (str): ID of the presentation.
+        slide_id (str): ID of the slide to add the image to.
+        image_bytes (bytes): The image data in bytes.
+        file_name (str): The name to give the file in Google Drive.
+        mimetype (str): The MIME type of the image (e.g., 'image/png').
+
+    Returns:
+        dict: Status and result or error message.
+    """
+    try:
+        # Upload to Google Drive
+        file_metadata = {'name': file_name}
+        media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype=mimetype)
+        uploaded_file = drive_service.files().create(
+            body=file_metadata, media_body=media, fields='id'
+        ).execute()
+        file_id = uploaded_file.get('id')
+
+        # Make the file publicly accessible
+        permission = {'type': 'anyone', 'role': 'reader'}
+        drive_service.permissions().create(fileId=file_id, body=permission).execute()
+        image_url = f"https://drive.google.com/uc?id={file_id}"
+
+        # Add the image to the slide
+        create_image_request = {
+            "createImage": {
+                "url": image_url,
+                "elementProperties": {
+                    "pageObjectId": slide_id,
+                    "size": {"width": {"magnitude": 450, "unit": "PT"}, "height": {"magnitude": 300, "unit": "PT"}},
+                    "transform": {"scaleX": 1, "scaleY": 1, "translateX": 50, "translateY": 150, "unit": "PT"}
+                }
+            }
+        }
+        service.presentations().batchUpdate(
+            presentationId=presentation_id, body={"requests": [create_image_request]}
+        ).execute()
+        return {"status": "success", "result": "Image added to slide"}
+    except Exception as e:
+        return {"status": "failure", "error": str(e)}
+
+async def add_chart_to_slide(service, drive_service, presentation_id, slide_id, chart_type, categories, data):
+    """Generate a chart and add it to a specific slide.
+
+    Args:
+        service: Google Slides API service instance.
+        drive_service: Google Drive API service instance.
+        presentation_id (str): ID of the presentation.
+        slide_id (str): ID of the slide to add the chart to.
+        chart_type (str): Type of chart ('bar', 'pie', 'line').
+        categories (list): Categories for the chart.
+        data (list): Data points for the chart.
+
+    Returns:
+        dict: Status and result or error message.
+    """
+    try:
+        # Generate chart bytes
+        image_bytes = generate_chart_bytes(chart_type, categories, data)
+        file_name = f'chart_{chart_type}_{int(time.time())}.png'
+        mimetype = 'image/png'
+
+        # Add chart to slide
+        return add_image_to_slide_from_bytes(
+            service, drive_service, presentation_id, slide_id, image_bytes, file_name, mimetype
+        )
+    except Exception as e:
+        return {"status": "failure", "error": str(e)}
+    
 
 async def create_presentation(service, title: str) -> Dict[str, Any]:
     """
@@ -173,7 +344,182 @@ async def create_presentation(service, title: str) -> Dict[str, Any]:
     except HttpError as error:
         print(str(error))
         raise Exception(error)
+    
+async def create_google_presentation(outline: Dict[str, Any]) -> Dict[str, Any]:
+    """Creates a Google Slides presentation with enhanced features from gslides.py and title slide logic."""
+    print("Starting create_google_presentation function")
+    print(f"Topic: {outline.get('topic')}, Username: {outline.get('username')}")
+    try:
+        print("OUTLINE: ", outline)
+        service = authenticate_slides()
+        drive_service = authenticate_drive()
+        print("Successfully authenticated Google Slides and Drive services.")
+        title = outline["topic"]
+        user_name = outline["username"]
+        presentation = await create_presentation(service, title)
+        presentation_id = presentation["presentationId"]
+        presentation_url = f"https://docs.google.com/presentation/d/{presentation_id}"
+        print(f"Presentation created successfully. ID: {presentation_id}, URL: {presentation_url}")
 
+        # Update title slide with title and subtitle
+        print("Updating title slide...")
+        presentation_data = service.presentations().get(presentationId=presentation_id).execute()
+        default_slide = presentation_data["slides"][0]
+
+        title_placeholder_id = None
+        subtitle_placeholder_id = None
+
+        for element in default_slide.get("pageElements", []):
+            if "shape" in element:
+                if element["shape"]["shapeType"] == "TEXT_BOX":
+                    if title_placeholder_id is None:
+                        title_placeholder_id = element["objectId"]
+                    else:
+                        subtitle_placeholder_id = element["objectId"]
+
+        print(f"Title placeholder ID: {title_placeholder_id}, Subtitle placeholder ID: {subtitle_placeholder_id}")
+
+        if title_placeholder_id:
+            print("Updating title placeholder...")
+            service.presentations().batchUpdate(
+                presentationId=presentation_id,
+                body={
+                    "requests": [
+                        {
+                            "insertText": {
+                                "objectId": title_placeholder_id,
+                                "text": title,
+                                "insertionIndex": 0,
+                            }
+                        }
+                    ]
+                },
+            ).execute()
+            print("Title placeholder updated.")
+
+        if subtitle_placeholder_id:
+            print("Updating subtitle placeholder...")
+            service.presentations().batchUpdate(
+                presentationId=presentation_id,
+                body={
+                    "requests": [
+                        {
+                            "insertText": {
+                                "objectId": subtitle_placeholder_id,
+                                "text": f"Created by {user_name}",
+                                "insertionIndex": 0,
+                            }
+                        }
+                    ]
+                },
+            ).execute()
+            print("Subtitle placeholder updated.")
+        else:
+            print("Subtitle placeholder not found. Creating a new subtitle textbox.")
+            requests = [
+                {
+                    "createShape": {
+                        "objectId": "SubtitleTextBox",
+                        "shapeType": "TEXT_BOX",
+                        "elementProperties": {
+                            "pageObjectId": default_slide["objectId"],
+                            "size": {
+                                "width": {"magnitude": 5000000, "unit": "EMU"},
+                                "height": {"magnitude": 1000000, "unit": "EMU"},
+                            },
+                            "transform": {
+                                "translateX": 1000000,
+                                "translateY": 2000000,
+                                "unit": "EMU",
+                            },
+                        },
+                    }
+                },
+                {
+                    "insertText": {
+                        "objectId": "SubtitleTextBox",
+                        "text": f"Created by {user_name}",
+                        "insertionIndex": 0,
+                    }
+                },
+            ]
+            service.presentations().batchUpdate(
+                presentationId=presentation_id, body={"requests": requests}
+            ).execute()
+            print("New subtitle textbox created and updated.")
+        print("Title slide updated.")
+
+        # Add slides with content, images, and charts
+        print("Adding slides from outline...")
+        for slide in outline["slides"]:
+            slide_title = slide.get("title", "Untitled Slide")
+            slide_content = slide.get("content", ["No content provided."])
+            if not isinstance(slide_content, list):
+                slide_content = [slide_content]
+
+            print(f"Creating slide with title: '{slide_title}' and content: {slide_content}")
+            create_slide_request = {
+                "createSlide": {"slideLayoutReference": {"predefinedLayout": "TITLE_AND_BODY"}}
+            }
+            response = service.presentations().batchUpdate(presentationId=presentation_id, body={"requests": [create_slide_request]}).execute()
+            slide_id = response["replies"][0]["createSlide"]["objectId"]
+            print(f"Slide created with ID: {slide_id}")
+
+            # Add title and content
+            slide_data = service.presentations().get(presentationId=presentation_id).execute()["slides"][-1]
+            title_id = next((e["objectId"] for e in slide_data["pageElements"] if "shape" in e), None)
+            body_id = next((e["objectId"] for e in slide_data["pageElements"] if e["objectId"] != title_id), None)
+            requests = [
+                {"insertText": {"objectId": title_id, "text": slide_title, "insertionIndex": 0}},
+                {"insertText": {"objectId": body_id, "text": "\n".join(slide_content), "insertionIndex": 0}}
+            ]
+            service.presentations().batchUpdate(presentationId=presentation_id, body={"requests": requests}).execute()
+            print("Slide title and content updated.")
+
+            # Add image if present
+            if "image_description" in slide:
+                image_description = slide["image_description"]
+                print(f"Adding image to slide with description: '{image_description}'")
+                image_url = await search_unsplash_image(image_description)
+                if image_url:
+                    print(f"Image URL found: {image_url}. Uploading image...")
+                    await upload_image_to_slide(service, drive_service, presentation_id, slide_id, image_url)
+                    print("Image uploaded to slide.")
+                else:
+                    print("No image URL found for the description.")
+
+            # Add chart if present
+            if "chart" in slide:
+                chart = slide["chart"]
+                print(f"Adding chart to slide: {chart}")
+                chart_result = await add_chart_to_slide(
+                    service, 
+                    drive_service, 
+                    presentation_id, 
+                    slide_id, 
+                    chart["type"], 
+                    chart["categories"], 
+                    chart["data"]
+                )
+                if chart_result["status"] == "success":
+                    print("Chart added to slide successfully.")
+                else:
+                    print(f"Failed to add chart to slide. Error: {chart_result.get('error')}")
+
+        print("All slides added successfully.")
+        print("Presentation creation successful.")
+        return {
+            "status": "success",
+            "result": {
+                "response": "Presentation created successfully",
+                "presentationUrl": presentation_url,
+                "presentation_id": presentation_id
+            }
+        }
+    except Exception as e:
+        error_message = str(e)
+        print(f"Error in create_google_presentation: {error_message}")
+        return {"status": "failure", "error": error_message}
 
 async def create_slide(service, presentation_id: str, title: str, content: List[str]):
     """
@@ -766,9 +1112,74 @@ async def elaborate_text(input_text: str) -> str:
         return input_text
 
 
-async def create_document(service, title: str) -> str:
+async def search_unsplash_image(query: str) -> Tuple[str | None, bytes | None]:
+    """Search for an image on Unsplash and return its URL and raw bytes.
+
+    Args:
+        query (str): The search term to find an image (e.g., 'nature').
+
+    Returns:
+        Tuple[str | None, bytes | None]: The URL of the first image result and its raw bytes,
+        or (None, None) if no image is found or an error occurs.
     """
-    Create a new Google Doc with a specified title and return its document ID.
+    access_key = os.getenv("UNSPLASH_ACCESS_KEY")
+    if not access_key:
+        print("Unsplash access key is missing. Please set UNSPLASH_ACCESS_KEY in your .env file.")
+        return None, None
+
+    url = f"https://api.unsplash.com/search/photos?query={query}&per_page=1"
+    headers = {'Authorization': f'Client-ID {access_key}'}
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status != 200:
+                    print(f"Unsplash API Error: {response.status}")
+                    return None, None
+                data = await response.json()
+                if not data.get("results"):
+                    print(f"No images found for query: {query}")
+                    return None, None
+                image_url = data["results"][0]["urls"]["regular"]
+
+            async with session.get(image_url) as image_response:
+                if image_response.status != 200:
+                    print(f"Failed to download image from {image_url}: {image_response.status}")
+                    return None, None
+                image_bytes = await image_response.read()
+                return image_url, image_bytes
+    except Exception as e:
+        print(f"Error searching Unsplash: {e}")
+        return None, None
+
+async def upload_image_to_drive(drive_service, image_bytes: bytes, file_name: str, mimetype: str) -> str | None:
+    """Upload image bytes to Google Drive and return the public URL.
+
+    Args:
+        drive_service: Authenticated Google Drive API service instance.
+        image_bytes (bytes): The image data in bytes.
+        file_name (str): The name to give the file in Google Drive.
+        mimetype (str): The MIME type of the image (e.g., 'image/jpeg').
+
+    Returns:
+        str | None: The public URL of the uploaded image, or None if upload fails.
+    """
+    try:
+        file_metadata = {'name': file_name}
+        media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype=mimetype)
+        uploaded_file = drive_service.files().create(
+            body=file_metadata, media_body=media, fields='id'
+        ).execute()
+        file_id = uploaded_file.get('id')
+        permission = {'type': 'anyone', 'role': 'reader'}
+        drive_service.permissions().create(fileId=file_id, body=permission).execute()
+        return f"https://drive.google.com/uc?id={file_id}"
+    except Exception as e:
+        print(f"Failed to upload image to Google Drive: {e}")
+        return None
+
+async def create_document(service, title: str) -> str:
+    """Create a new Google Doc with a specified title and return its document ID.
 
     Args:
         service: Authenticated Google Docs API service.
@@ -776,7 +1187,6 @@ async def create_document(service, title: str) -> str:
 
     Returns:
         str: The ID of the newly created Google Document.
-             Raises an exception if there is an error during document creation.
     """
     try:
         document = service.documents().create(body={"title": title}).execute()
@@ -786,40 +1196,166 @@ async def create_document(service, title: str) -> str:
         print(f"An error occurred while creating the document: {error}")
         raise
 
-
-async def update_document(service, document_id: str, text: str) -> Dict[str, Any]:
-    """
-    Update the Google Doc by adding elaborated text at the beginning of the document.
+async def create_google_doc(content: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a Google Document with structured content and return its URL.
 
     Args:
-        service: Authenticated Google Docs API service.
-        document_id (str): ID of the document to update.
-        text (str): The text to insert into the document.
+        content (Dict[str, Any]): Structured content dictionary with title and sections.
+            Expected format:
+            {
+                "title": "Document Title",
+                "sections": [
+                    {
+                        "heading": "Section Title",
+                        "heading_level": "H1" or "H2",
+                        "paragraphs": ["Paragraph 1 text", "Paragraph 2 text"],
+                        "bullet_points": ["Bullet 1 with **bold** text", "Bullet 2"],
+                        "image_description": "Descriptive image search query"  # Optional
+                    }
+                ]
+            }
 
     Returns:
-        Dict[str, Any]: The result of the batch update operation from the Google Docs API.
-                         Raises an exception if there is an error during document update.
+        Dict[str, Any]: Status dictionary indicating success or failure.
+            On success: {"status": "success", "result": {"response": str, "url": str}}
+            On failure: {"status": "failure", "error": str}
     """
     try:
-        requests = [
-            {
-                "insertText": {
-                    "location": {
-                        "index": 1,
-                    },
-                    "text": text,
-                }
+        print("Starting create_google_doc function...")
+        docs_service = authenticate_docs()
+        drive_service = authenticate_drive()
+        document_id = await create_document(docs_service, content["title"])
+        document_url = f"https://docs.google.com/document/d/{document_id}/edit"
+        
+        # Initialize request list and index
+        requests = []
+        current_index = 1
+
+        # Add title
+        title_text = content["title"] + "\n\n"
+        requests.append({"insertText": {"location": {"index": current_index}, "text": title_text}})
+        requests.append({
+            "updateParagraphStyle": {
+                "range": {"startIndex": current_index, "endIndex": current_index + len(content["title"])},
+                "paragraphStyle": {"namedStyleType": "HEADING_1"},
+                "fields": "namedStyleType"
             }
-        ]
-        result = (
-            service.documents()
-            .batchUpdate(documentId=document_id, body={"requests": requests})
-            .execute()
-        )
-        return result
-    except HttpError as error:
-        print(f"An error occurred while updating the document: {error}")
-        raise
+        })
+        current_index += len(title_text)
+
+        # Process each section
+        for section in content["sections"]:
+            # Add heading
+            heading_text = section["heading"] + "\n"
+            requests.append({"insertText": {"location": {"index": current_index}, "text": heading_text}})
+            requests.append({
+                "updateParagraphStyle": {
+                    "range": {"startIndex": current_index, "endIndex": current_index + len(section["heading"])},
+                    "paragraphStyle": {"namedStyleType": f"HEADING_{'1' if section['heading_level'] == 'H1' else '2'}"},
+                    "fields": "namedStyleType"
+                }
+            })
+            current_index += len(heading_text)
+
+            # Add paragraphs
+            for para in section["paragraphs"]:
+                para_text = para + "\n\n"
+                requests.append({"insertText": {"location": {"index": current_index}, "text": para_text}})
+                current_index += len(para_text)
+
+            # Add bullet points with bold formatting
+            for bullet in section["bullet_points"]:
+                bullet_text = bullet + "\n"
+                requests.append({"insertText": {"location": {"index": current_index}, "text": bullet_text}})
+                requests.append({
+                    "createParagraphBullets": {
+                        "range": {"startIndex": current_index, "endIndex": current_index + len(bullet_text) - 1},
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"
+                    }
+                })
+                # Apply bold formatting for **text**
+                bold_starts = [i for i in range(len(bullet)) if bullet.startswith("**", i)]
+                for i in range(0, len(bold_starts), 2):
+                    start = bold_starts[i] + 2
+                    end = bold_starts[i + 1] if i + 1 < len(bold_starts) else len(bullet)
+                    if end > start:
+                        requests.append({
+                            "updateTextStyle": {
+                                "range": {"startIndex": current_index + start, "endIndex": current_index + end},
+                                "textStyle": {"bold": True},
+                                "fields": "bold"
+                            }
+                        })
+                current_index += len(bullet_text)
+
+            # Add image if present
+            if "image_description" in section and section["image_description"]:
+                image_url, image_bytes = await search_unsplash_image(section["image_description"])
+                if image_bytes:
+                    drive_url = await upload_image_to_drive(
+                        drive_service=drive_service,
+                        image_bytes=image_bytes,
+                        file_name=f"{section['image_description'].replace(' ', '_')}.jpg",
+                        mimetype="image/jpeg"
+                    )
+                    if drive_url:
+                        # Add newline before image
+                        requests.append({"insertText": {"location": {"index": current_index}, "text": "\n"}})
+                        current_index += 1
+                        # Add image
+                        requests.append({
+                            "insertInlineImage": {
+                                "location": {"index": current_index},
+                                "uri": drive_url,
+                                "objectSize": {
+                                    "height": {"magnitude": 200, "unit": "PT"},
+                                    "width": {"magnitude": 300, "unit": "PT"}
+                                }
+                            }
+                        })
+                        current_index += 1  # Image counts as 1 character
+                        # Add newline after image
+                        requests.append({"insertText": {"location": {"index": current_index}, "text": "\n"}})
+                        current_index += 1
+                    else:
+                        print(f"Failed to upload image: {section['image_description']}")
+                        requests.append({
+                            "insertText": {
+                                "location": {"index": current_index},
+                                "text": f"[Image failed to load: {section['image_description']}]\n\n"
+                            }
+                        })
+                        current_index += len(f"[Image failed to load: {section['image_description']}]\n\n")
+                else:
+                    print(f"No image found for: {section['image_description']}")
+                    requests.append({
+                        "insertText": {
+                            "location": {"index": current_index},
+                            "text": f"[No image found for: {section['image_description']}]\n\n"
+                        }
+                    })
+                    current_index += len(f"[No image found for: {section['image_description']}]\n\n")
+
+            # Add spacing between sections
+            requests.append({"insertText": {"location": {"index": current_index}, "text": "\n"}})
+            current_index += 1
+
+        # Execute all requests in one batch
+        if requests:
+            print(f"Executing batchUpdate with {len(requests)} requests...")
+            docs_service.documents().batchUpdate(documentId=document_id, body={"requests": requests}).execute()
+            print("Document updated successfully.")
+
+        return {
+            "status": "success",
+            "result": {
+                "response": "Document created successfully",
+                "url": document_url
+            }
+        }
+    except Exception as e:
+        print(f"Error in create_google_doc: {e}")
+        return {"status": "failure", "error": str(e)}
 
 
 async def add_event(
@@ -1045,50 +1581,6 @@ async def search_folder(service, folder_name: str) -> str:
         raise Exception(f"Error searching for folder: {e}")
 
 
-async def create_google_doc(
-    text: str, title: str = "Untitled Document"
-) -> Dict[str, Any]:
-    """
-    Create a Google Document and return its URL in the response.
-
-    This function creates a new Google Doc with the given title, elaborates the provided text,
-    and updates the document with the elaborated text.
-
-    Args:
-        text (str): The text content to be added to the document.
-        title (str): Title of the new Google Document (default is "Untitled Document").
-
-    Returns:
-        Dict[str, Any]: Status dictionary indicating success or failure and document details.
-                         On success, returns:
-                         {
-                             "status": "success",
-                             "result": {
-                                 "response": "Document created successfully",
-                                 "url": str # URL to the created Google Document
-                             }
-                         }
-                         On failure, returns:
-                         {"status": "failure", "error": str(error)}
-    """
-    try:
-        service = authenticate_docs()
-        document_id = await create_document(service, title)
-        document_url = f"https://docs.google.com/document/d/{document_id}/view"
-        elaborated_text = await elaborate_text(text)
-        await update_document(service, document_id, elaborated_text)
-        return {
-            "status": "success",
-            "result": {
-                "response": "Document created successfully",
-                "url": document_url,
-            },
-        }
-    except Exception as e:
-        print(f"An error occurred in create_google_doc: {e}")
-        return {"status": "failure", "error": str(e)}
-
-
 async def upload_file_to_folder(
     service, file_path: str, folder_id: Optional[str]
 ) -> Dict[str, Any]:
@@ -1303,404 +1795,173 @@ async def search_and_download_file_from_gdrive(
         return {"status": "failure", "error": str(e)}
 
 
-async def create_spreadsheet(service, title: str = "New Spreadsheet") -> Dict[str, Any]:
-    """
-    Create a new Google Spreadsheet.
+import asyncio
+import logging
+from typing import Dict, Any, List
 
-    Args:
-        service: Authenticated Google Sheets API service.
-        title (str): Title of the new spreadsheet (default is "New Spreadsheet").
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-    Returns:
-        Dict[str, Any]: Status dictionary indicating success or failure and spreadsheet details.
-                         On success, returns:
-                         {
-                             "status": "success",
-                             "result": {
-                                 "response": "Spreadsheet created successfully",
-                                 "spreadsheet_url": str # URL to the created Google Spreadsheet
-                             }
-                         }
-                         On failure, returns:
-                         {"status": "failure", "error": str(error)}
-    """
-    try:
+# Assuming these are defined elsewhere
+async def create_spreadsheet(service, title: str) -> Dict[str, Any]:
+    def sync_create():
         spreadsheet = {"properties": {"title": title}}
-        request = service.spreadsheets().create(body=spreadsheet)
-        response = request.execute()
-        return {
-            "status": "success",
-            "result": {
-                "response": "Spreadsheet created successfully",
-                "spreadsheet_url": response["spreadsheetUrl"],
-            },
-        }
-    except HttpError as error:
-        print(f"Error creating spreadsheet: {error}")
-        return {"status": "failure", "error": str(error)}
+        return service.spreadsheets().create(body=spreadsheet).execute()
+    return await asyncio.to_thread(sync_create)
 
+async def get_spreadsheet(service, spreadsheet_id: str) -> Dict[str, Any]:
+    def sync_get():
+        return service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    return await asyncio.to_thread(sync_get)
 
-async def store_data_in_spreadsheet(
-    service, spreadsheet_id: str, data: List[List[Any]], range_: str = "Sheet1!A1"
-) -> Dict[str, Any]:
-    """
-    Store data in a Google Spreadsheet, overwriting data in the specified range.
+async def rename_sheet(service, spreadsheet_id: str, sheet_id: int, sheet_title: str) -> None:
+    def sync_rename():
+        requests = [{
+            "updateSheetProperties": {
+                "properties": {"sheetId": sheet_id, "title": sheet_title},
+                "fields": "title"
+            }
+        }]
+        return service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests}).execute()
+    await asyncio.to_thread(sync_rename)
 
-    Args:
-        service: Authenticated Google Sheets API service.
-        spreadsheet_id (str): ID of the spreadsheet to store data in.
-        data (List[List[Any]]): 2D list of data to store in the spreadsheet. Each inner list is a row.
-        range_ (str): The range in A1 notation to write data to (default is 'Sheet1!A1').
+async def add_sheet(service, spreadsheet_id: str, sheet_title: str) -> None:
+    def sync_add():
+        requests = [{"addSheet": {"properties": {"title": sheet_title}}}]
+        return service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests}).execute()
+    await asyncio.to_thread(sync_add)
 
-    Returns:
-        Dict[str, Any]: Status dictionary indicating success or failure and update details.
-                         On success, returns:
-                         {
-                             "status": "success",
-                             "result": {
-                                 "response": "Data stored in spreadsheet",
-                                 "updated_cells": int # Number of cells updated
-                             }
-                         }
-                         On failure, returns:
-                         {"status": "failure", "error": str(error)}
-    """
-    try:
-        if not all(isinstance(row, list) for row in data):
-            raise ValueError("Data must be a list of lists.")
-
-        body = {"values": data}
-        print(f"Storing data in spreadsheet: {body}")
-        result = (
-            service.spreadsheets()
-            .values()
-            .update(
-                spreadsheetId=spreadsheet_id,
-                range=range_,
-                valueInputOption="RAW",
-                body=body,
-            )
-            .execute()
-        )
-
-        return {
-            "status": "success",
-            "result": {
-                "response": "Data stored in spreadsheet",
-                "updated_cells": result.get("updatedCells"),
-            },
-        }
-    except HttpError as error:
-        print(f"Error storing data in spreadsheet: {error}")
-        return {"status": "failure", "error": str(error)}
-
-
-async def append_data_to_spreadsheet(
-    service, spreadsheet_id: str, data: List[Any], range_: str = "Sheet1!A1"
-) -> Dict[str, Any]:
-    """
-    Append data to a Google Spreadsheet, adding new rows after existing data in the specified sheet.
-
-    Args:
-        service: Authenticated Google Sheets API service.
-        spreadsheet_id (str): ID of the spreadsheet to append data to.
-        data (List[Any]): List of data to append as a new row.
-        range_ (str): The range in A1 notation to start appending from (default is 'Sheet1!A1', but append happens after last row).
-
-    Returns:
-        Dict[str, Any]: Status dictionary indicating success or failure and append details.
-                         On success, returns:
-                         {
-                             "status": "success",
-                             "result": {
-                                 "response": "Data appended in spreadsheet",
-                                 "updated_cells": int # Number of cells updated (appended)
-                             }
-                         }
-                         On failure, returns:
-                         {"status": "failure", "error": str(error)}
-    """
-    try:
-        values = [data] if isinstance(data, list) else [[data]]
-
+async def store_data_in_spreadsheet(service, spreadsheet_id: str, values: List[List[Any]], range_name: str) -> Dict[str, Any]:
+    def sync_store():
         body = {"values": values}
-        result = (
-            service.spreadsheets()
-            .values()
-            .append(
-                spreadsheetId=spreadsheet_id,
-                range=range_,
-                valueInputOption="RAW",
-                body=body,
-            )
-            .execute()
-        )
+        result = service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=range_name,
+            valueInputOption="RAW",
+            body=body
+        ).execute()
+        return {"status": "success", "result": {"response": "Data stored", "updated_cells": result.get("updatedCells")}}
+    return await asyncio.to_thread(sync_store)
 
-        return {
-            "status": "success",
-            "result": {
-                "response": "Data appended in spreadsheet",
-                "updated_cells": result.get("updates")["updatedCells"],
-            },
-        }
-    except HttpError as error:
-        print(f"Error appending data in spreadsheet: {error}")
-        return {"status": "failure", "error": str(error)}
+async def format_headers(service, spreadsheet_id: str, sheet_title: str) -> None:
+    async def get_sheet_id():
+        spreadsheet = await get_spreadsheet(service, spreadsheet_id)
+        for sheet in spreadsheet['sheets']:
+            if sheet['properties']['title'] == sheet_title:
+                return sheet['properties']['sheetId']
+        return None
 
+    sheet_id = await get_sheet_id()
+    def sync_format():
+        requests = [{
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1},
+                "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+                "fields": "userEnteredFormat.textFormat.bold"
+            }
+        }]
+        return service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests}).execute()
+    await asyncio.to_thread(sync_format)
 
-async def read_data_from_spreadsheet(
-    service, spreadsheet_id: str, range_: str = "Sheet1!A1"
-) -> Dict[str, Any]:
+async def apply_table_borders(service, spreadsheet_id: str, sheet_title: str, num_rows: int, num_columns: int) -> None:
+    async def get_sheet_id():
+        spreadsheet = await get_spreadsheet(service, spreadsheet_id)
+        for sheet in spreadsheet['sheets']:
+            if sheet['properties']['title'] == sheet_title:
+                return sheet['properties']['sheetId']
+        return None
+
+    sheet_id = await get_sheet_id()
+    def sync_borders():
+        border_style = {"style": "SOLID", "color": {"red": 0.0, "green": 0.0, "blue": 0.0}}
+        requests = [{
+            "updateBorders": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": num_rows,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": num_columns
+                },
+                "top": border_style,
+                "bottom": border_style,
+                "left": border_style,
+                "right": border_style,
+                "innerHorizontal": border_style,
+                "innerVertical": border_style
+            }
+        }]
+        return service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests}).execute()
+    await asyncio.to_thread(sync_borders)
+
+async def create_google_sheet(title: str, sheets: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Read data from a Google Spreadsheet within the specified range.
+    Creates a Google Spreadsheet with multiple sheets, populates them with data, and applies formatting.
 
     Args:
-        service: Authenticated Google Sheets API service.
-        spreadsheet_id (str): ID of the spreadsheet to read data from.
-        range_ (str): The range in A1 notation to read data from (default is 'Sheet1!A1').
+        title (str): The title of the spreadsheet.
+        sheets (List[Dict[str, Any]]): List of sheets, each containing "title" and "table" with "headers" and "rows".
 
     Returns:
-        Dict[str, Any]: Status dictionary indicating success or failure and retrieved data.
-                         On success, returns:
-                         {
-                             "status": "success",
-                             "result": {
-                                 "response": "Data retrieved successfully",
-                                 "values": List[List[Any]] # 2D list of values read from the spreadsheet
-                             }
-                         }
-                         On failure, returns:
-                         {"status": "failure", "error": str(error)}
-    """
-    try:
-        result = (
-            service.spreadsheets()
-            .values()
-            .get(spreadsheetId=spreadsheet_id, range=range_)
-            .execute()
-        )
-
-        values = result.get("values", [])
-        return {
-            "status": "success",
-            "result": {"response": "Data retrieved successfully", "values": values},
-        }
-    except HttpError as error:
-        print(f"Error reading data from spreadsheet: {error}")
-        return {"status": "failure", "error": str(error)}
-
-
-async def create_google_sheet(
-    data: List[List[Any]], title: str = "New Spreadsheet"
-) -> Dict[str, Any]:
-    """
-    Creates a Google Spreadsheet and populates it with the provided data.
-
-    This function creates a new spreadsheet, gets its ID and URL, and then stores the provided data
-    into the first sheet of the newly created spreadsheet.
-
-    Args:
-        data (List[List[Any]]): 2D list of data to populate the spreadsheet with.
-        title (str): Title of the new Google Spreadsheet (default is "New Spreadsheet").
-
-    Returns:
-        Dict[str, Any]: Status dictionary indicating success or failure and spreadsheet details.
-                         On success, returns:
-                         {
-                             "status": "success",
-                             "result": {
-                                 "response": "Spreadsheet creating successfully with data",
-                                 "spreadsheetUrl": str, # URL to the created spreadsheet
-                                 "spreadsheet_id": str # ID of the created spreadsheet
-                             }
-                         }
-                         On failure, returns:
-                         {"status": "failure", "error": str(error)}
+        Dict[str, Any]: {"status": "success", "result": {"response": str, "spreadsheetUrl": str, "spreadsheet_id": str}}
+                        or {"status": "failure", "error": str}
     """
     try:
         service = authenticate_sheets()
-        create_response = await create_spreadsheet(service, title=title)
+        data = {"title": title, "sheets": sheets}
 
-        if create_response["status"] == "success":
-            spreadsheet_url = create_response["result"]["spreadsheet_url"]
-            spreadsheet_id = spreadsheet_url.split("/")[-2]
+        print("Creating spreadsheet...")
+        create_response = await create_spreadsheet(service, data["title"])
+        if "spreadsheetId" not in create_response:
+            return {"status": "failure", "error": "Failed to create spreadsheet"}
+        
+        spreadsheet_id = create_response["spreadsheetId"]
+        spreadsheet_url = create_response.get("spreadsheetUrl", "N/A")
 
-            if not isinstance(data, list) or not all(
-                isinstance(row, list) for row in data
-            ):
-                raise ValueError("Data must be a list of lists (tabular format).")
+        logger.info("Getting spreadsheet metadata...")
+        spreadsheet = await get_spreadsheet(service, spreadsheet_id)
+        default_sheet_id = spreadsheet['sheets'][0]['properties']['sheetId']
 
-            store_response = await store_data_in_spreadsheet(
-                service, spreadsheet_id, data
-            )
-            if store_response["status"] == "success":
-                return {
-                    "status": "success",
-                    "result": {
-                        "response": "Spreadsheet creating successfully with data",
-                        "spreadsheetUrl": spreadsheet_url,
-                        "spreadsheet_id": spreadsheet_id,
-                    },
-                }
+        for i, sheet in enumerate(data["sheets"]):
+            sheet_title = sheet["title"]
+            table = sheet["table"]
+            headers = table["headers"]
+            rows = table["rows"]
+            values = [headers] + rows
+            num_rows = len(rows) + 1
+            num_columns = len(headers)
+
+            if i == 0:
+                logger.info(f"Renaming default sheet to {sheet_title}...")
+                await rename_sheet(service, spreadsheet_id, default_sheet_id, sheet_title)
             else:
-                return {"status": "failure", "error": store_response.get("error")}
-        else:
-            return {"status": "failure", "error": create_response.get("error")}
-    except Exception as e:
-        print(f"Error in create_google_sheet: {str(e)}")
-        return {"status": "failure", "error": str(e)}
+                logger.info(f"Adding sheet {sheet_title}...")
+                await add_sheet(service, spreadsheet_id, sheet_title)
 
+            range_name = f"'{sheet_title}'!A1"
+            logger.info(f"Writing data to {sheet_title}...")
+            store_response = await store_data_in_spreadsheet(service, spreadsheet_id, values, range_name)
+            if store_response["status"] != "success":
+                return store_response
 
-async def create_google_presentation(outline: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Creates a Google Slides presentation and populates it with the provided outline.
-
-    This function creates a new presentation, adds a title slide with a title and subtitle,
-    and then creates slides based on the outline provided, including titles and content for each slide.
-
-    Args:
-        outline (Dict[str, Any]): A dictionary defining the presentation outline, expected to have:
-                                     - "topic" (str): Title of the presentation.
-                                     - "username" (str): Username to include in the subtitle.
-                                     - "slides" (List[Dict]): List of slide dictionaries, each with:
-                                         - "title" (str): Title of the slide.
-                                         - "content" (List[str]): List of strings for slide content.
-
-    Returns:
-        Dict[str, Any]: Status dictionary indicating success or failure and presentation details.
-                         On success, returns:
-                         {
-                             "status": "success",
-                             "result": {
-                                 "response": "Presentation created successfully",
-                                 "presentationUrl": str, # URL to the created presentation
-                                 "presentation_id": str # ID of the created presentation
-                             }
-                         }
-                         On failure, returns:
-                         {"status": "failure", "error": str(error)}
-    """
-    try:
-        service = authenticate_slides()
-        title = outline["topic"]
-        user_name = outline["username"]
-
-        create_response = await create_presentation(service, title=title)
-
-        if not create_response:
-            raise Exception("Failed to create Google Slides presentation.")
-
-        presentation_id = create_response["presentationId"]
-        presentation_url = f"https://docs.google.com/presentation/d/{presentation_id}"
-
-        presentation = (
-            service.presentations().get(presentationId=presentation_id).execute()
-        )
-        default_slide = presentation["slides"][0]
-
-        title_placeholder_id = None
-        subtitle_placeholder_id = None
-
-        for element in default_slide.get("pageElements", []):
-            if "shape" in element:
-                if element["shape"]["shapeType"] == "TEXT_BOX":
-                    if title_placeholder_id == None:
-                        title_placeholder_id = element["objectId"]
-                    else:
-                        subtitle_placeholder_id = element["objectId"]
-
-        if title_placeholder_id:
-            service.presentations().batchUpdate(
-                presentationId=presentation_id,
-                body={
-                    "requests": [
-                        {
-                            "insertText": {
-                                "objectId": title_placeholder_id,
-                                "text": title,
-                                "insertionIndex": 0,
-                            }
-                        }
-                    ]
-                },
-            ).execute()
-
-        if subtitle_placeholder_id:
-            service.presentations().batchUpdate(
-                presentationId=presentation_id,
-                body={
-                    "requests": [
-                        {
-                            "insertText": {
-                                "objectId": subtitle_placeholder_id,
-                                "text": f"Created by {user_name}",
-                                "insertionIndex": 0,
-                            }
-                        }
-                    ]
-                },
-            ).execute()
-        else:
-            requests = [
-                {
-                    "createShape": {
-                        "objectId": "SubtitleTextBox",
-                        "shapeType": "TEXT_BOX",
-                        "elementProperties": {
-                            "pageObjectId": default_slide["objectId"],
-                            "size": {
-                                "width": {"magnitude": 5000000, "unit": "EMU"},
-                                "height": {"magnitude": 1000000, "unit": "EMU"},
-                            },
-                            "transform": {
-                                "translateX": 1000000,
-                                "translateY": 2000000,
-                                "unit": "EMU",
-                            },
-                        },
-                    }
-                },
-                {
-                    "insertText": {
-                        "objectId": "SubtitleTextBox",
-                        "text": f"Created by {user_name}",
-                        "insertionIndex": 0,
-                    }
-                },
-            ]
-            service.presentations().batchUpdate(
-                presentationId=presentation_id, body={"requests": requests}
-            ).execute()
-
-        if (
-            not isinstance(outline, dict)
-            or "slides" not in outline
-            or not isinstance(outline["slides"], list)
-        ):
-            raise ValueError(
-                "Outline must be a dictionary with a 'slides' key containing a list of slides."
-            )
-
-        for slide in outline["slides"]:
-            slide_title = slide.get("title", "Untitled Slide")
-            slide_content = slide.get("content", ["No content provided."])
-
-            if not isinstance(slide_content, list):
-                slide_content = [slide_content]
-
-            await create_slide(service, presentation_id, slide_title, slide_content)
+            logger.info(f"Formatting headers in {sheet_title}...")
+            await format_headers(service, spreadsheet_id, sheet_title)
+            logger.info(f"Applying borders in {sheet_title}...")
+            await apply_table_borders(service, spreadsheet_id, sheet_title, num_rows, num_columns)
 
         return {
             "status": "success",
             "result": {
-                "response": "Presentation created successfully",
-                "presentationUrl": presentation_url,
-                "presentation_id": presentation_id,
-            },
+                "response": "Spreadsheet created successfully with data",
+                "spreadsheetUrl": spreadsheet_url,
+                "spreadsheet_id": spreadsheet_id
+            }
         }
     except Exception as e:
-        print(f"Error in create_google_presentation: {e}")
+        logger.error(f"Error in create_google_sheet: {str(e)}")
         return {"status": "failure", "error": str(e)}
+
+
 
 
 async def generate_streaming_response(

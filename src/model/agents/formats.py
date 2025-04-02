@@ -190,15 +190,46 @@ gdocs_agent_required_format = {
         "tool_name": {"type": "string", "enum": ["create_google_doc"]},
         "parameters": {
             "type": "object",
-            "properties": {"text": {"type": "string"}, "title": {"type": "string"}},
-            "required": ["text", "title"],
-            "additionalProperties": False,
-        },
+            "properties": {
+                "content": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "sections": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "heading": {"type": "string"},
+                                    "heading_level": {"type": "string", "enum": ["H1", "H2"]},
+                                    "paragraphs": {
+                                        "type": "array",
+                                        "items": {"type": "string"}
+                                    },
+                                    "bullet_points": {
+                                        "type": "array",
+                                        "items": {"type": "string"}
+                                    },
+                                    "image_description": {"type": "string"}
+                                },
+                                "required": ["heading", "heading_level", "paragraphs", "bullet_points", "image_description"],
+                                "additionalProperties": False
+                            },
+                            "minItems": 4,
+                            "maxItems": 5
+                        }
+                    },
+                    "required": ["title", "sections"],
+                    "additionalProperties": False
+                }
+            },
+            "required": ["content"],
+            "additionalProperties": False
+        }
     },
     "required": ["tool_name", "parameters"],
-    "additionalProperties": False,
+    "additionalProperties": False
 }
-
 gsheets_agent_required_format = {
     "type": "object",
     "properties": {
@@ -207,19 +238,37 @@ gsheets_agent_required_format = {
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
-                "data": {
+                "sheets": {
                     "type": "array",
-                    "items": {"type": "array", "items": {"type": "string"}},
-                },
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "table": {
+                                "type": "object",
+                                "properties": {
+                                    "headers": {"type": "array", "items": {"type": "string"}},
+                                    "rows": {
+                                        "type": "array",
+                                        "items": {"type": "array", "items": {"type": "string"}}
+                                    }
+                                },
+                                "required": ["headers", "rows"],
+                                "additionalProperties": False
+                            }
+                        },
+                        "required": ["title", "table"],
+                        "additionalProperties": False
+                    }
+                }
             },
-            "required": ["title", "data"],
-            "additionalProperties": False,
-        },
+            "required": ["title", "sheets"],
+            "additionalProperties": False
+        }
     },
     "required": ["tool_name", "parameters"],
-    "additionalProperties": False,
+    "additionalProperties": False
 }
-
 gslides_agent_required_format = {
     "type": "object",
     "properties": {
@@ -241,28 +290,36 @@ gslides_agent_required_format = {
                                     "content": {
                                         "oneOf": [
                                             {"type": "string"},
-                                            {
-                                                "type": "array",
-                                                "items": {"type": "string"},
-                                            },
+                                            {"type": "array", "items": {"type": "string"}}
                                         ]
                                     },
+                                    "image_description": {"type": "string"},
+                                    "chart": {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": {"type": "string", "enum": ["bar", "pie", "line"]},
+                                            "categories": {"type": "array", "items": {"type": "string"}},
+                                            "data": {"type": "array", "items": {"type": "number"}}
+                                        },
+                                        "required": ["type", "categories", "data"],
+                                        "additionalProperties": False
+                                    }
                                 },
-                                "required": ["title", "content"],
-                                "additionalProperties": False,
-                            },
-                        },
+                                "required": ["title", "content","image_description", "chart"],
+                                "additionalProperties": False
+                            }
+                        }
                     },
                     "required": ["topic", "username", "slides"],
-                    "additionalProperties": False,
+                    "additionalProperties": False
                 }
             },
             "required": ["outline"],
-            "additionalProperties": False,
-        },
+            "additionalProperties": False
+        }
     },
     "required": ["tool_name", "parameters"],
-    "additionalProperties": False,
+    "additionalProperties": False
 }
 
 gcalendar_agent_required_format = {

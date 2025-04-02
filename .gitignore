@@ -244,3 +244,4 @@ context.json
 memory_operations.json
 ruff_cache
 .db
+token.json
