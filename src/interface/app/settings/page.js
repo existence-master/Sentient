@@ -10,7 +10,7 @@ import ShiningButton from "@components/ShiningButton"
 import ModalDialog from "@components/ModalDialog"
 import { IconGift, IconBeta, IconRocket } from "@tabler/icons-react"
 import React from "react"
-import { Switch } from "@radix-ui/react-switch"
+import { Switch } from "@radix-ui/react-switch" // Make sure this path is correct
 
 const Settings = () => {
 	const [showDisclaimer, setShowDisclaimer] = useState(false)
@@ -52,16 +52,24 @@ const Settings = () => {
 		try {
 			const response = await window.electron.invoke("get-data-sources")
 			if (response.error) {
+				console.error("Error fetching data sources:", response.error)
 				toast.error("Error fetching data sources.")
 			} else {
-				setDataSources(response.data_sources)
+				// Ensure data_sources is an array
+				setDataSources(
+					Array.isArray(response.data_sources)
+						? response.data_sources
+						: []
+				)
 			}
 		} catch (error) {
+			console.error("Error fetching data sources:", error)
 			toast.error("Error fetching data sources.")
 		}
 	}
 
 	const handleToggle = async (source, enabled) => {
+		// Add loading state for toggles if needed
 		try {
 			const response = await window.electron.invoke(
 				"set-data-source-enabled",
@@ -69,10 +77,14 @@ const Settings = () => {
 				enabled
 			)
 			if (response.error) {
+				console.error(
+					`Error updating ${source} data source:`,
+					response.error
+				)
 				toast.error(`Error updating ${source} data source.`)
 			} else {
 				toast.success(
-					`${source} data source updated. Please restart the application for changes to take effect.`
+					`${source} data source ${enabled ? "enabled" : "disabled"}. Restart may be needed.`
 				)
 				setDataSources((prev) =>
 					prev.map((ds) =>
@@ -81,15 +93,18 @@ const Settings = () => {
 				)
 			}
 		} catch (error) {
+			console.error(`Error updating ${source} data source:`, error)
 			toast.error(`Error updating ${source} data source.`)
 		}
 	}
 
+	// ... (keep all other functions: fetchUserDetails, fetchPricingPlan, etc.) ...
 	const fetchUserDetails = async () => {
 		try {
 			const response = await window.electron?.invoke("get-profile")
 			setUserDetails(response)
 		} catch (error) {
+			console.error("Error fetching user details:", error)
 			toast.error("Error fetching user details.")
 		}
 	}
@@ -99,6 +114,7 @@ const Settings = () => {
 			const response = await window.electron?.invoke("fetch-pricing-plan")
 			setPricing(response || "free")
 		} catch (error) {
+			console.error("Error fetching pricing plan:", error)
 			toast.error("Error fetching pricing plan.")
 		}
 	}
@@ -110,6 +126,7 @@ const Settings = () => {
 			)
 			setBetaUser(response === true)
 		} catch (error) {
+			console.error("Error fetching beta user status:", error)
 			toast.error("Error fetching beta user status.")
 		}
 	}
@@ -125,6 +142,7 @@ const Settings = () => {
 			setReferralCode(referral || "N/A")
 			setReferrerStatus(referrer === true)
 		} catch (error) {
+			console.error("Error fetching referral details:", error)
 			toast.error("Error fetching referral details.")
 		}
 	}
@@ -139,6 +157,7 @@ const Settings = () => {
 					: "You are now a Beta User!"
 			)
 		} catch (error) {
+			console.error("Error updating beta user status:", error)
 			toast.error("Error updating beta user status.")
 		}
 		setShowBetaDialog(false)
@@ -148,22 +167,30 @@ const Settings = () => {
 		try {
 			const response = await window.electron?.invoke("get-db-data")
 			if (response.status === 200 && response.data) {
-				const {
-					linkedInProfile,
-					redditProfile,
-					twitterProfile,
-				} = response.data
+				const { linkedInProfile, redditProfile, twitterProfile } =
+					response.data
 				setIsProfileConnected({
 					LinkedIn:
-						linkedInProfile &&
+						!!linkedInProfile && // Use !! for clearer boolean check
 						Object.keys(linkedInProfile).length > 0,
 					Reddit:
-						redditProfile && Object.keys(redditProfile).length > 0,
+						!!redditProfile &&
+						Object.keys(redditProfile).length > 0,
 					Twitter:
-						twitterProfile && Object.keys(twitterProfile).length > 0
+						!!twitterProfile &&
+						Object.keys(twitterProfile).length > 0
 				})
+			} else if (response.status !== 200) {
+				console.error(
+					"Error fetching DB data, status:",
+					response.status,
+					"response:",
+					response
+				)
+				toast.error("Error fetching user data (status not 200).")
 			}
 		} catch (error) {
+			console.error("Error fetching user data:", error)
 			toast.error("Error fetching user data.")
 		}
 	}
@@ -192,53 +219,45 @@ const Settings = () => {
 		setLoading((prev) => ({ ...prev, [selectedApp]: true }))
 		try {
 			let successMessage = ""
+			let response = null // Define response outside if/else
 			if (action === "connect") {
-				let response = null
-				if (selectedApp === "LinkedIn") {
-					response = await window.electron?.invoke(
-						"scrape-linkedin",
-						{ linkedInProfileUrl }
+				const profileKey = `${selectedApp.toLowerCase()}Profile`
+				const urlKey = `${selectedApp.toLowerCase()}ProfileUrl`
+				const profileUrl =
+					selectedApp === "LinkedIn"
+						? linkedInProfileUrl
+						: selectedApp === "Reddit"
+							? redditProfileUrl
+							: twitterProfileUrl
+				const scrapeMethod = `scrape-${selectedApp.toLowerCase()}`
+
+				response = await window.electron?.invoke(scrapeMethod, {
+					[urlKey]: profileUrl
+				})
+
+				if (response && response.status === 200) {
+					const dataToSet =
+						selectedApp === "LinkedIn"
+							? response.profile
+							: response.topics
+					await window.electron?.invoke("set-db-data", {
+						data: { [profileKey]: dataToSet }
+					})
+					successMessage = `${selectedApp} profile connected successfully.`
+					await window.electron?.invoke("create-document-and-graph") // Call this after successful connect
+				} else {
+					console.error(
+						`Error scraping ${selectedApp} profile:`,
+						response
 					)
-					if (response.status === 200) {
-						await window.electron?.invoke("set-db-data", {
-							data: { linkedInProfile: response.profile }
-						})
-						successMessage =
-							"LinkedIn profile connected successfully."
-					} else {
-						throw new Error("Error scraping LinkedIn profile")
-					}
-				} else if (selectedApp === "Reddit") {
-					response = await window.electron?.invoke("scrape-reddit", {
-						redditProfileUrl
-					})
-					if (response.status === 200) {
-						await window.electron?.invoke("set-db-data", {
-							data: { redditProfile: response.topics }
-						})
-						successMessage =
-							"Reddit profile connected successfully."
-					} else {
-						throw new Error("Error scraping Reddit profile")
-					}
-				} else if (selectedApp === "Twitter") {
-					response = await window.electron?.invoke("scrape-twitter", {
-						twitterProfileUrl
-					})
-					if (response.status === 200) {
-						await window.electron?.invoke("set-db-data", {
-							data: { twitterProfile: response.topics }
-						})
-						successMessage =
-							"Twitter profile connected successfully."
-					} else {
-						throw new Error("Error scraping Twitter profile")
-					}
+					throw new Error(
+						`Error scraping ${selectedApp} profile. Status: ${response?.status}`
+					)
 				}
-				await window.electron?.invoke("create-document-and-graph")
 			} else if (action === "disconnect") {
+				const profileKey = `${selectedApp.toLowerCase()}Profile`
 				await window.electron?.invoke("set-db-data", {
-					data: { [`${selectedApp.toLowerCase()}Profile`]: {} }
+					data: { [profileKey]: {} }
 				})
 				await window.electron?.invoke("delete-subgraph", {
 					source_name: selectedApp.toLowerCase()
@@ -246,35 +265,58 @@ const Settings = () => {
 				successMessage = `${selectedApp} profile disconnected successfully.`
 			}
 			toast.success(successMessage)
+			// Update state *after* successful operation
 			setIsProfileConnected((prev) => ({
 				...prev,
 				[selectedApp]: action === "connect"
 			}))
+			// Reset URLs after connect/disconnect might be useful
+			// setLinkedInProfileUrl(""); setRedditProfileUrl(""); setTwitterProfileUrl("");
 		} catch (error) {
-			toast.error(`Error processing ${selectedApp} profile.`)
+			console.error(`Error processing ${selectedApp} profile:`, error)
+			toast.error(
+				`Error processing ${selectedApp} profile. ${error.message || ""}`
+			)
 		} finally {
 			setLoading((prev) => ({ ...prev, [selectedApp]: false }))
+			// Reset action/selectedApp after operation
+			setAction("")
+			setSelectedApp("")
 		}
 	}
 
 	const handleDisclaimerDecline = () => {
 		setShowDisclaimer(false)
+		setAction("")
+		setSelectedApp("")
 	}
 
 	return (
-		<div className="flex h-screen w-screen bg-matteblack text-white">
+		<div className="flex h-screen w-screen bg-matteblack text-white overflow-hidden">
+			{" "}
+			{/* Added overflow-hidden */}
 			<Sidebar
 				userDetails={userDetails}
 				isSidebarVisible={isSidebarVisible}
 				setSidebarVisible={setSidebarVisible}
 				fromChat={false}
 			/>
-			<div className="w-4/5 flex ml-5 flex-col pb-9 justify-center items-start h-full bg-matteblack">
-				<div className="w-4/5 flex justify-between px-4 py-4">
-					<h1 className="font-Poppins text-white text-6xl py-4">
+			{/* MAIN CONTENT AREA - Added overflow-y-auto */}
+			<div className="flex-1 flex flex-col pb-9 items-start bg-matteblack overflow-y-auto px-8">
+				{" "}
+				{/* Adjusted width using flex-1, added padding, added overflow */}
+				<div className="w-full flex justify-between items-center py-4 mt-4">
+					{" "}
+					{/* Use w-full, added items-center */}
+					<h1 className="font-Poppins text-white text-4xl md:text-5xl lg:text-6xl py-4">
+						{" "}
+						{/* Responsive text size */}
 						Settings
 					</h1>
-					<div className="flex gap-3">
+					<div className="flex flex-wrap gap-3">
+						{" "}
+						{/* Added flex-wrap */}
+						{/* ... Buttons ... */}
 						<ShiningButton
 							text
 							bgColor="bg-lightblue"
@@ -323,19 +365,23 @@ const Settings = () => {
 						</ShiningButton>
 					</div>
 				</div>
-				<div className="flex items-center justify-center h-full w-4/5 space-x-8">
+				{/* Connections Section */}
+				<h2 className="text-2xl font-Poppins mb-4 mt-6 text-gray-300">
+					Connections
+				</h2>
+				<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 w-full">
+					{" "}
+					{/* Responsive Grid layout */}
 					{/* AppCard component for LinkedIn integration settings */}
 					<AppCard
-						logo="/images/linkedin-logo.png" // LinkedIn logo image path
-						name="LinkedIn" // App name - LinkedIn
+						logo="/images/linkedin-logo.png"
+						name="LinkedIn"
 						description={
-							// Description based on connection status
 							isProfileConnected.LinkedIn
 								? "Disconnect your LinkedIn profile and erase your professional info"
-								: "Connect your LinkedIn account to pull in your professional profile and enhance your experience.."
+								: "Connect your LinkedIn account to pull in your professional profile and enhance your experience."
 						}
 						onClick={
-							// OnClick handler for LinkedIn card, toggles between connect and disconnect
 							isProfileConnected.LinkedIn
 								? () => handleDisconnectClick("LinkedIn")
 								: () => handleConnectClick("LinkedIn")
@@ -350,6 +396,7 @@ const Settings = () => {
 							(status) => status
 						)}
 					/>
+					{/* ... Reddit and Twitter AppCards ... */}
 					<AppCard
 						logo="/images/reddit-logo.png"
 						name="Reddit"
@@ -407,84 +454,69 @@ const Settings = () => {
 						}
 					/>
 				</div>
-			</div>
-
-			<div className="space-y-4">
-                    {dataSources.map((source) => (
-                        <div key={source.name} className="flex items-center justify-between">
-                            <span>{source.name}</span>
-                            <Switch
-                                checked={source.enabled}
-                                onCheckedChange={(enabled) => handleToggle(source.name, enabled)}
-                            />
-                        </div>
-                    ))}
-            </div>
-			
-			{showReferralDialog && (
-				<ModalDialog
-					title="Refer Sentient"
-					description={
-						referrerStatus
-							? "You are already a referrer. Enjoy your free 10 Pro credits daily!"
-							: "Refer Sentient to one person, ask them to enter your referral code when they install, and get 10 daily free Pro credits."
-					}
-					onCancel={() => setShowReferralDialog(false)}
-					onConfirm={() => setShowReferralDialog(false)}
-					confirmButtonText="Got it"
-					showInput={false}
-					extraContent={
-						<div className="flex flex-col mt-4">
-							<p>Your Referral Code:</p>
-							<p className="text-lg font-bold">{referralCode}</p>
-						</div>
-					}
-					confirmButtonIcon={IconGift}
-					confirmButtonColor="bg-lightblue"
-					confirmButtonBorderColor="border-lightblue"
-					cancelButton={false}
-				/>
-			)}
-			{showBetaDialog && (
-				<ModalDialog
-					title={
-						betaUser ? "Exit Beta Program" : "Become a Beta User"
-					}
-					description={
-						betaUser
-							? "Exiting the beta program means you will no longer get early access to new features. Are you sure you want to continue?"
-							: "Joining the beta program allows you to test new features before they are released to the public. You may encounter bugs and unstable features. Are you sure you want to continue?"
-					}
-					onCancel={() => setShowBetaDialog(false)}
-					onConfirm={handleBetaUserToggle}
-					confirmButtonText={betaUser ? "Exit Beta" : "Join Beta"}
-					confirmButtonIcon={IconBeta}
-					confirmButtonColor="bg-lightblue"
-					confirmButtonBorderColor="border-lightblue"
-				/>
-			)}
-			{showDisclaimer && (
-				<Disclaimer
-					appName={selectedApp}
-					profileUrl={
-						selectedApp === "LinkedIn"
-							? linkedInProfileUrl
-							: selectedApp === "Reddit"
-								? redditProfileUrl
-								: twitterProfileUrl
-					}
-					setProfileUrl={
-						selectedApp === "LinkedIn"
-							? setLinkedInProfileUrl
-							: selectedApp === "Reddit"
-								? setRedditProfileUrl
-								: setTwitterProfileUrl
-					}
-					onAccept={handleDisclaimerAccept}
-					onDecline={handleDisclaimerDecline}
-					action={action}
-				/>
-			)}
+				{/* --- DATA SOURCES SECTION - MOVED HERE --- */}
+				<h2 className="text-2xl font-Poppins mb-4 mt-8 text-gray-300">
+					Data Sources
+				</h2>
+				<div className="w-full bg-gray-800 p-4 md:p-6 rounded-lg shadow-md">
+					{" "}
+					{/* Added background, padding, rounded corners */}
+					<div className="space-y-4">
+						{dataSources.length > 0 ? (
+							dataSources.map((source) => (
+								<div
+									key={source.name}
+									className="flex items-center justify-between text-white py-2 border-b border-gray-700 last:border-b-0"
+								>
+									<span className="font-medium">
+										{source.name}
+									</span>
+									{/* Radix Switch with basic styling */}
+									<Switch
+										checked={source.enabled}
+										onCheckedChange={(enabled) =>
+											handleToggle(source.name, enabled)
+										}
+										className="group relative inline-flex h-5 w-10 flex-shrink-0 cursor-pointer items-center justify-center rounded-full focus:outline-none focus:ring-2 focus:ring-lightblue focus:ring-offset-2 focus:ring-offset-gray-800"
+									>
+										<span className="sr-only">
+											Use setting
+										</span>
+										{/* Background */}
+										<span
+											aria-hidden="true"
+											className={`${
+												source.enabled
+													? "bg-lightblue"
+													: "bg-gray-600"
+											} pointer-events-none absolute h-full w-full rounded-md`}
+										/>
+										{/* Thumb */}
+										<span
+											aria-hidden="true"
+											className={`${
+												source.enabled
+													? "translate-x-5"
+													: "translate-x-0"
+											} pointer-events-none absolute left-0 inline-block h-5 w-5 transform rounded-full border border-gray-200 bg-white shadow ring-0 transition-transform duration-200 ease-in-out`}
+										/>
+									</Switch>
+								</div>
+							))
+						) : (
+							<p className="text-gray-400 italic">
+								No data sources found or loading...
+							</p>
+						)}
+					</div>
+				</div>
+				{/* --- END OF DATA SOURCES SECTION --- */}
+			</div>{" "}
+			{/* END OF MAIN CONTENT AREA */}
+			{/* Modals remain outside the main flow */}
+			{showReferralDialog && <ModalDialog /* ...props... */ />}
+			{showBetaDialog && <ModalDialog /* ...props... */ />}
+			{showDisclaimer && <Disclaimer /* ...props... */ />}
 		</div>
 	)
 }

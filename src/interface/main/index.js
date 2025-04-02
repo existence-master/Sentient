@@ -811,6 +811,23 @@ ipcMain.handle("get-private-data", async () => {
 	}
 })
 
+ipcMain.handle("get-beta-user-status", async () => {
+	try {
+		if (!app.isPackaged) {
+			console.log(
+				"DEV MODE: Handling fetch-pricing-plan. Returning 'pro' (or 'free' if preferred)."
+			)
+			return "true" // Return a default/mock value for development
+		}
+		const betaUserStatus = await getBetaUserStatusFromKeytar() // Get beta user status from Keytar
+		return betaUserStatus
+	} catch (error) {
+		await console.log(`Error fetching beta user status: ${error}`)
+		return { message: `Error: ${error.message}`, status: 500 }
+	}
+})
+
+
 // IPC event handler for 'log-out'
 ipcMain.on("log-out", () => {
 	console.log("Log-out command received.")
@@ -1249,166 +1266,9 @@ ipcMain.handle("fetch-chat-history", async () => {
 	}
 })
 
-ipcMain.handle("send-message", async (_event, { input }) => {
-	console.log(
-		"IPC: send-message called with input:",
-		input.substring(0, 50) + "..."
-	) // Log truncated input
-	let pricing = "pro" // Default to 'pro' in dev
-	let credits = 999 // Default high credits in dev
-
-	try {
-		if (app.isPackaged) {
-			// Fetch real values only in production
-			pricing = (await getPricingFromKeytar()) || "free"
-			credits = await getCreditsFromKeytar()
-			console.log(
-				`PROD MODE: Sending message with pricing=${pricing}, credits=${credits}`
-			)
-		} else {
-			console.log(
-				`DEV MODE: Sending message with mock pricing=${pricing}, credits=${credits}`
-			)
-		}
-
-		const payload = {
-			input,
-			pricing,
-			credits,
-			chat_id: "single_chat" // Assuming this remains constant for now
-		}
-		console.log("Sending payload to /chat:", JSON.stringify(payload))
-
-		const response = await fetch(`${process.env.APP_SERVER_URL}/chat`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(payload)
-		})
-
-		if (!response.ok) {
-			const errorText = await response.text()
-			console.error(
-				`Error from /chat endpoint: ${response.status} ${response.statusText}`,
-				errorText
-			)
-			throw new Error(`Error sending message: Status ${response.status}`)
-		}
-
-		if (!response.body) {
-			throw new Error("Response body is null, cannot process stream.")
-		}
-
-		// --- Stream Handling ---
-		const reader = response.body.getReader()
-		const decoder = new TextDecoder("utf-8")
-		let buffer = ""
-		let proUsedInStream = false // Track if pro was used during this stream
-
-		console.log("IPC: Starting to process chat stream...")
-		while (true) {
-			const { done, value } = await reader.read()
-			if (done) {
-				console.log("IPC: Chat stream finished.")
-				break
-			}
-
-			buffer += decoder.decode(value, { stream: true })
-			const lines = buffer.split("\n")
-			buffer = lines.pop() || "" // Keep the potentially incomplete last line
-
-			for (const line of lines) {
-				if (line.trim() === "") continue // Skip empty lines
-				try {
-					const parsedMessage = JSON.parse(line)
-					// console.log("Parsed stream chunk:", parsedMessage); // Verbose logging
-
-					if (parsedMessage.type === "assistantStream") {
-						mainWindow?.webContents.send("message-stream", {
-							// Ensure messageId is unique and consistent if needed across stream parts
-							messageId:
-								parsedMessage.messageId ||
-								`stream-${Date.now()}`,
-							token: parsedMessage.token || "" // Handle potentially empty tokens
-						})
-
-						// Check if 'proUsed' is explicitly true in this chunk
-						if (parsedMessage.proUsed === true) {
-							proUsedInStream = true
-						}
-					} else if (parsedMessage.type === "stream_end") {
-						// Handle a potential explicit end signal
-						console.log(
-							"Stream ended signal received:",
-							parsedMessage
-						)
-						if (parsedMessage.proUsed === true) {
-							proUsedInStream = true
-						}
-						// Any final actions based on stream_end data?
-					}
-					// Handle other message types if necessary
-				} catch (parseError) {
-					console.warn(
-						`Error parsing streamed JSON line: ${parseError}. Line: "${line}"`
-					)
-				}
-			}
-		}
-
-		// Process any remaining data in the buffer (usually none if stream ends cleanly)
-		if (buffer.trim()) {
-			console.warn(
-				"Processing remaining buffer after stream end:",
-				buffer
-			)
-			try {
-				const parsedMessage = JSON.parse(buffer)
-				if (
-					parsedMessage.type === "assistantStream" ||
-					parsedMessage.type === "assistantMessage"
-				) {
-					mainWindow?.webContents.send("message-stream", {
-						messageId:
-							parsedMessage.messageId || `final-${Date.now()}`,
-						token:
-							parsedMessage.token || parsedMessage.message || ""
-					})
-					if (parsedMessage.proUsed === true) proUsedInStream = true
-				}
-			} catch (parseError) {
-				console.error(
-					`Error parsing final buffer message: ${parseError}`
-				)
-			}
-		}
-
-		// Decrement credits *after* stream completes if pro was used and user is free (in prod)
-		if (app.isPackaged && pricing === "free" && proUsedInStream) {
-			console.log(
-				"PROD MODE: Pro features used on free plan during stream. Decrementing credit."
-			)
-			// Use the specific decrement handler which includes safety checks
-			await ipcMain.handle("decrement-pro-credits")
-		} else if (pricing === "free" && proUsedInStream) {
-			console.log(
-				"DEV MODE: Pro features used (simulated), would decrement credit in prod."
-			)
-		}
-
-		return { message: "Streaming complete", status: 200 }
-		// --- End Stream Handling ---
-	} catch (error) {
-		console.error(`IPC Error: send-message failed: ${error}`)
-		mainWindow?.webContents.send("chat-error", {
-			message: `Failed to get response: ${error.message}`
-		})
-		return { message: `Error: ${error.message}`, status: 500 }
-	}
-})
-
-// --- Scraper Handlers ---
-
+// Keep the scraper handler from the current code if needed
 ipcMain.handle("scrape-linkedin", async (_event, { linkedInProfileUrl }) => {
+	// ... (keep the scrape-linkedin handler as it was in the "Current code")
 	console.log("IPC: scrape-linkedin called for URL:", linkedInProfileUrl)
 	try {
 		const response = await fetch(
@@ -1440,6 +1300,215 @@ ipcMain.handle("scrape-linkedin", async (_event, { linkedInProfileUrl }) => {
 		}
 	} catch (error) {
 		console.error(`IPC Error: scrape-linkedin failed: ${error}`)
+		return { message: `Error: ${error.message}`, status: 500 }
+	}
+})
+
+// Modified send-message handler
+ipcMain.handle("send-message", async (_event, { input }) => {
+	console.log(
+		"IPC: send-message called with input:",
+		input.substring(0, 50) + "..."
+	) // Log truncated input
+	let pricing = "pro" // Default to 'pro' in dev
+	let credits = 999 // Default high credits in dev
+
+	try {
+		// --- Start: Logic from "Current code" ---
+		if (app.isPackaged) {
+			// Fetch real values only in production
+			pricing = (await getPricingFromKeytar()) || "free"
+			credits = await getCreditsFromKeytar()
+			console.log(
+				`PROD MODE: Sending message with pricing=${pricing}, credits=${credits}`
+			)
+		} else {
+			console.log(
+				`DEV MODE: Sending message with mock pricing=${pricing}, credits=${credits}`
+			)
+		}
+		// --- End: Logic from "Current code" ---
+
+		const payload = {
+			input,
+			pricing,
+			credits,
+			chat_id: "single_chat" // Assuming this remains constant
+		}
+		// Using logging from "Current code"
+		console.log("Sending payload to /chat:", JSON.stringify(payload))
+
+		const response = await fetch(`${process.env.APP_SERVER_URL}/chat`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(payload)
+		})
+
+		// Using error handling from "Current code"
+		if (!response.ok) {
+			const errorText = await response.text()
+			console.error(
+				`Error from /chat endpoint: ${response.status} ${response.statusText}`,
+				errorText
+			)
+			// Send error back to renderer
+			mainWindow?.webContents.send("chat-error", {
+				message: `Server error: ${response.status} ${response.statusText || ""}. ${errorText}`
+			})
+			throw new Error(`Error sending message: Status ${response.status}`)
+		}
+
+		// Using null body check from "Current code"
+		if (!response.body) {
+			throw new Error("Response body is null, cannot process stream.")
+		}
+
+		// --- Start: Stream Handling from "Original node" ---
+		const readable = response.body
+		const decoder = new TextDecoder("utf-8")
+		let buffer = ""
+
+		console.log("IPC: Starting to process chat stream (original method)...") // Added logging
+
+		// Use optional chaining for mainWindow access
+		if (!mainWindow) {
+			console.error("mainWindow is not available to send messages.")
+			throw new Error("Application window not found.")
+		}
+
+		for await (const chunk of readable) {
+			buffer += decoder.decode(chunk, { stream: true })
+			// Use '\n\n' if your server sends messages separated by double newlines
+			// Use '\n' if separated by single newlines (as in original)
+			const splitMessages = buffer.split("\n") // Assuming single newline separation
+			buffer = splitMessages.pop() || "" // Keep incomplete line, handle empty pop result
+
+			for (const msg of splitMessages) {
+				if (msg.trim() === "") continue // Skip empty lines
+				try {
+					const parsedMessage = JSON.parse(msg)
+					// console.log("Parsed stream chunk:", parsedMessage); // Optional verbose logging
+
+					if (parsedMessage.type === "assistantStream") {
+						mainWindow.webContents.send("message-stream", {
+							// Use a consistent or generated ID if needed
+							messageId:
+								parsedMessage.messageId ||
+								`stream-${Date.now()}-${Math.random()}`,
+							token: parsedMessage.token || "" // Ensure token is always a string
+						})
+
+						// Decrement credits *only in production* if pro was used on a free plan
+						// This check is from the original logic, applied conditionally based on app.isPackaged
+						if (
+							app.isPackaged && // Only decrement in production
+							parsedMessage.done && // Check if the message indicates completion *and* pro usage
+							parsedMessage.proUsed &&
+							pricing === "free"
+						) {
+							console.log(
+								"PROD MODE: Pro features used on free plan. Decrementing credit."
+							)
+							let currentCredits = await getCreditsFromKeytar()
+							currentCredits -= 1
+							await setCreditsInKeytar(
+								Math.max(currentCredits, 0)
+							)
+							// Optionally send updated credits back to renderer
+							// mainWindow.webContents.send("credits-updated", Math.max(currentCredits, 0));
+						} else if (
+							!app.isPackaged &&
+							parsedMessage.done &&
+							parsedMessage.proUsed &&
+							pricing === "free"
+						) {
+							console.log(
+								"DEV MODE: Pro feature used on free plan (simulated). Would decrement in prod."
+							)
+						}
+					} else if (parsedMessage.type === "stream_end") {
+						// Handle explicit end message if server sends one
+						console.log(
+							"Stream ended signal received:",
+							parsedMessage
+						)
+						// Potentially handle final proUsed check here as well if 'done' isn't reliable
+						if (
+							app.isPackaged &&
+							parsedMessage.proUsed &&
+							pricing === "free"
+						) {
+							// Potentially decrement here if the 'done' flag wasn't in the last assistantStream chunk
+							// Requires careful coordination with server logic. Sticking to original for now.
+							console.log(
+								"PROD MODE: Stream end signal indicated pro usage on free plan."
+							)
+						}
+					}
+					// Handle other message types if necessary
+				} catch (parseError) {
+					console.warn(
+						// Use warn instead of log for parsing errors
+						`Error parsing streamed JSON message: ${parseError}. Message: "${msg}"`
+					)
+				}
+			}
+		}
+
+		// Process any remaining data in the buffer (less common with newline splitting)
+		if (buffer.trim()) {
+			console.warn(
+				"Processing remaining buffer after stream loop:",
+				buffer
+			)
+			try {
+				const parsedMessage = JSON.parse(buffer)
+				// Handle potential final message (check type carefully)
+				if (
+					parsedMessage.type === "assistantStream" ||
+					parsedMessage.type === "assistantMessage"
+				) {
+					mainWindow.webContents.send("message-stream", {
+						messageId:
+							parsedMessage.messageId ||
+							`final-${Date.now()}-${Math.random()}`,
+						token:
+							parsedMessage.token || parsedMessage.message || ""
+					})
+					// Final check for proUsed if applicable and not caught by 'done' flag earlier
+					if (
+						app.isPackaged &&
+						parsedMessage.proUsed &&
+						!parsedMessage.done && // Avoid double counting if 'done' flag already triggered decrement
+						pricing === "free"
+					) {
+						console.warn(
+							"PROD MODE: Final buffer chunk indicated pro usage on free plan. Decrementing credit."
+						)
+						let currentCredits = await getCreditsFromKeytar()
+						currentCredits -= 1
+						await setCreditsInKeytar(Math.max(currentCredits, 0))
+						// mainWindow.webContents.send("credits-updated", Math.max(currentCredits, 0));
+					}
+				}
+			} catch (parseError) {
+				console.error(
+					// Use error for final buffer parse failure
+					`Error parsing final buffer message: ${parseError}. Buffer: "${buffer}"`
+				)
+			}
+		}
+		// --- End: Stream Handling from "Original node" ---
+
+		console.log("IPC: Streaming complete.") // Added logging
+		return { message: "Streaming complete", status: 200 }
+	} catch (error) {
+		// Using error handling from "Current code"
+		console.error(`IPC Error: send-message handler failed: ${error}`)
+		// Ensure error message is sent to renderer
+		mainWindow?.webContents.send("chat-error", {
+			message: `Failed to process message: ${error.message}`
+		})
 		return { message: `Error: ${error.message}`, status: 500 }
 	}
 })
