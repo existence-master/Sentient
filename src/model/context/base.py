@@ -184,7 +184,7 @@ class BaseContextEngine(ABC):
                     "timestamp": datetime.utcnow().isoformat() + "Z"
                 }
             print("BaseContextEngine.execute_outputs - processing message:", message)
-            # Save to notificationsDB
+            # Save to notificationsDb
             async with self.notifications_db_lock:
                 print("BaseContextEngine.execute_outputs - acquired notifications_db_lock")
                 notifications_db = await load_notifications_db()

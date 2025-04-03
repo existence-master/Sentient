@@ -2163,7 +2163,7 @@ ipcMain.handle("get-notifications", async () => {
 	}
 })
 
-ipcMain.handle("get-task-approval-data", async (event, { taskId }) => {
+ipcMain.handle("get-task-approval-data", async (event, taskId) => {
 	// Destructure taskId from the input object
 	console.log(`IPC: get-task-approval-data called for taskId: ${taskId}`)
 	if (!taskId) {
@@ -2222,7 +2222,7 @@ ipcMain.handle("get-task-approval-data", async (event, { taskId }) => {
 })
 
 // Handler to approve a task - now sends ID in body
-ipcMain.handle("approve-task", async (event, { taskId }) => {
+ipcMain.handle("approve-task", async (event, taskId ) => {
 	// Destructure taskId from the input object
 	console.log(`IPC: approve-task called for taskId: ${taskId}`)
 	if (!taskId) {

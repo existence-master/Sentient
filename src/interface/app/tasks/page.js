@@ -358,6 +358,8 @@ const Tasks = () => {
 		)
 	}
 
+	console.log(filteredTasks)
+
 	// --- Main Render ---
 	return (
 		<div className="h-screen bg-matteblack flex relative overflow-hidden dark">
@@ -476,8 +478,8 @@ const Tasks = () => {
 												{task.status ===
 												"approval_pending" ? (
 													<button
-														onClick={() =>
-															handleViewApprovalData(
+														onClick={async () =>
+															await handleViewApprovalData(
 																task.task_id
 															)
 														}

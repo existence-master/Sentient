@@ -94,7 +94,7 @@ class MemoryManager:
         print("SQLite database initialized.")
 
     def compute_embedding(self, text: str) -> bytes:
-        print(f"Computing embedding for text: '{text[:50]}...'")
+        print(f"Computing embedding for text: '{text}...'")
         embedding = np.array(self.embedding_model.encode(text)).tobytes()
         print("Embedding computed.")
         return embedding
@@ -106,7 +106,7 @@ class MemoryManager:
         return np.dot(a, b) / (norm(a) * norm(b))
 
     def extract_keywords(self, text: str) -> List[str]:
-        print(f"Extracting keywords from text: '{text[:50]}...'")
+        print(f"Extracting keywords from text: '{text}...'")
         doc = nlp(text.lower())
         keywords = [ent.text for ent in doc.ents]
         keywords.extend([token.lemma_ for token in doc if token.pos_ in ['NOUN', 'VERB'] and not token.is_stop and len(token.text) > 2])
@@ -142,7 +142,7 @@ class MemoryManager:
                 input_variables=["query", "formatted_date"],
                 response_type="json"
             )
-            print(f"Invoking expiry date decision for query: '{query[:50]}...'")
+            print(f"Invoking expiry date decision for query: '{query}...'")
             response = runnable.invoke({"query": query, "formatted_date": formatted_date})
             print(f"Expiry date decision response: {response}")
             return response if isinstance(response, dict) else {"retention_days": 7}
@@ -162,7 +162,7 @@ class MemoryManager:
                 response_type="json",
                 required_format=extract_memory_required_format
             )
-            print(f"Invoking memory extraction for query: '{current_query[:50]}...'")
+            print(f"Invoking memory extraction for query: '{current_query}...'")
             response = runnable.invoke({"current_query": current_query, "date_today": date_today})
             print(f"Memory extraction response: {response}")
             return response if isinstance(response, dict) else {"memories": []}
@@ -196,7 +196,7 @@ class MemoryManager:
                         response_type="json",
                         required_format=update_required_format
                     )
-                    print(f"Invoking memory update decision for query: '{mem_text[:50]}...'")
+                    print(f"Invoking memory update decision for query: '{mem_text}...'")
                     response = runnable.invoke({"current_query": mem_text, "memory_context": memory_context})
                     print(f"Memory update decision response: {response}")
                     return response if isinstance(response, dict) else {"update": []}
@@ -254,7 +254,7 @@ class MemoryManager:
             Exception: For other unexpected errors.
         """
         print(f"Attempting CRUD update for memory ID {memory_id} in category '{category}' for user '{user_id}'")
-        print(f"New text: '{new_text[:50]}...', New retention: {retention_days} days")
+        print(f"New text: '{new_text}...', New retention: {retention_days} days")
 
         # 1. Validate Inputs
         category_lower = category.lower()
@@ -331,7 +331,7 @@ class MemoryManager:
                 conn.close()
 
     def store_memory(self, user_id: str, text: str, retention_days: Dict, category: str) -> bool:
-        print(f"Attempting to store memory: '{text[:50]}...' in category '{category}'")
+        print(f"Attempting to store memory: '{text}...' in category '{category}'")
         try:
             keywords = self.extract_keywords(text)
             embedding = self.compute_embedding(text)
@@ -344,7 +344,7 @@ class MemoryManager:
             VALUES (?, ?, ?, ?, ?, ?)
             ''', (user_id, text, ','.join(keywords), embedding, current_time, expiry_time))
             conn.commit()
-            print(f"Inserted memory into {category.lower()}: '{text[:50]}...' with expiry at {expiry_time}")
+            print(f"Inserted memory into {category.lower()}: '{text}...' with expiry at {expiry_time}")
             conn.close()
             return True
         except Exception as e:
@@ -352,7 +352,7 @@ class MemoryManager:
             return False
 
     def get_relevant_memories(self, user_id: str, query: str, category: str, similarity_threshold: float = 0.5) -> List[Dict]:
-        print(f"Retrieving memories for user '{user_id}' in category '{category}' for query: '{query[:50]}...'")
+        print(f"Retrieving memories for user '{user_id}' in category '{category}' for query: '{query}...'")
         query_embedding = self.embedding_model.encode(query)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -372,7 +372,7 @@ class MemoryManager:
                 })
         conn.close()
         memories.sort(key=lambda x: x['similarity'], reverse=True)
-        print(f"Retrieved {len(memories)} relevant memories for query '{query[:50]}...' in category '{category}'")
+        print(f"Retrieved {len(memories)} relevant memories for query '{query}...' in category '{category}'")
         return memories
 
     def process_user_query(self, user_id: str, query: str) -> str:

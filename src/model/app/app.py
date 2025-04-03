@@ -75,6 +75,7 @@ from model.voice.orpheus_tts import OrpheusTTS, TTSOptions, VoiceId, AVAILABLE_V
 
 from datetime import datetime
 
+APPROVAL_PENDING_SIGNAL = "Task requires approval."
 # from datetime import datetime, timezone # Redundant import removed
 
 print(f"[STARTUP] {datetime.now()}: Model components import completed.")
@@ -274,7 +275,7 @@ print(f"[CONFIG] {datetime.now()}: Defining database file paths...")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 USER_PROFILE_DB = os.path.join(BASE_DIR, "..", "..", "userProfileDb.json")
 CHAT_DB = "chatsDb.json"
-NOTIFICATIONS_DB = "notificationsDB.json"
+NOTIFICATIONS_DB = "notificationsDb.json"
 print(f"[CONFIG] {datetime.now()}:   - USER_PROFILE_DB: {USER_PROFILE_DB}")
 print(f"[CONFIG] {datetime.now()}:   - CHAT_DB: {CHAT_DB}")
 print(f"[CONFIG] {datetime.now()}:   - NOTIFICATIONS_DB: {NOTIFICATIONS_DB}")
@@ -638,8 +639,8 @@ async def add_message_to_db(chat_id: Union[int, str], message_text: str, is_user
 
                 active_chat["messages"].append(new_message)
                 await save_db(chatsDb)
-                print(f"Message added to DB (Chat ID: {target_chat_id}, User: {is_user}): {message_text[:50]}...")
-                return message_id
+                print(f"Message added to DB (Chat ID: {target_chat_id}, User: {is_user}): {message_text}...")
+                return message_id # Return the ID if needed
             else:
                 print(f"Error: Could not find chat with ID {target_chat_id} to add message.")
                 return None
@@ -661,50 +662,66 @@ async def process_queue():
     """Continuously process tasks from the queue."""
     print(f"[TASK_PROCESSOR] {datetime.now()}: Starting task processing loop.")
     while True:
-        # print(f"[TASK_PROCESSOR] {datetime.now()}: Checking for next task...")
         task = await task_queue.get_next_task()
         if task:
             task_id = task.get("task_id", "N/A")
             task_desc = task.get("description", "N/A")
-            task_chat_id = task.get("chat_id", "N/A") # Get chat ID associated with the task
-            print(f"[TASK_PROCESSOR] {datetime.now()}: Processing task ID: {task_id}, Chat ID: {task_chat_id}, Description: {task_desc[:50]}...")
+            task_chat_id = task.get("chat_id", "N/A")
+            print(f"[TASK_PROCESSOR] {datetime.now()}: Processing task ID: {task_id}, Chat ID: {task_chat_id}, Description: {task_desc}...")
             try:
                 # Execute task within a new asyncio task to handle cancellations
                 task_queue.current_task_execution = asyncio.create_task(execute_agent_task(task))
                 print(f"[TASK_PROCESSOR] {datetime.now()}: Task {task_id} execution started.")
                 result = await task_queue.current_task_execution
-                print(f"[TASK_PROCESSOR] {datetime.now()}: Task {task_id} execution finished successfully. Result length: {len(str(result))}")
+                print(f"[TASK_PROCESSOR] {datetime.now()}: Task {task_id} execution finished.") # Removed 'successfully' temporarily
 
-                # Add results to chat (use task's chat_id)
-                if task_chat_id != "N/A":
-                    print(f"[TASK_PROCESSOR] {datetime.now()}: Adding task description '{task_desc[:50]}...' to chat {task_chat_id} as user message (hidden).")
-                    # Pass isVisible=False explicitly for the hidden user message
-                    await add_message_to_db(task_chat_id, task["description"], is_user=True, is_visible=False)
-                    print(f"[TASK_PROCESSOR] {datetime.now()}: Adding task result to chat {task_chat_id} as assistant message.")
-                    # Pass isVisible=True explicitly for the visible assistant message
-                    await add_message_to_db(task_chat_id, result, is_user=False, is_visible=True, type="tool_result", task=task["description"], agentsUsed=True)
+                # --- Handle Approval Pending vs. Normal Completion ---
+                if result == APPROVAL_PENDING_SIGNAL:
+                    # Task requires approval, do not complete it here.
+                    # execute_agent_task already set status to pending_approval and broadcasted.
+                    print(f"[TASK_PROCESSOR] {datetime.now()}: Task {task_id} is now pending user approval. No further action in this loop.")
+                    # The task remains 'processing' in the queue's eyes until approved/rejected/timed out,
+                    # but the execute_agent_task set its *status* to 'pending_approval'.
+                    # No complete_task call here.
+
                 else:
-                     print(f"[WARN] {datetime.now()}: Task {task_id} has no associated chat_id. Cannot add result to chat.")
+                    # Task completed normally (or with an error handled within execute_agent_task returning a string)
+                    print(f"[TASK_PROCESSOR] {datetime.now()}: Task {task_id} completed without needing approval. Result length: {len(str(result))}")
 
-                await task_queue.complete_task(task_id, result=result)
-                print(f"[TASK_PROCESSOR] {datetime.now()}: Task {task_id} marked as completed in queue.")
+                    # Add results to chat (use task's chat_id)
+                    if task_chat_id != "N/A":
+                        print(f"[TASK_PROCESSOR] {datetime.now()}: Adding task description '{task_desc}...' to chat {task_chat_id} as user message (hidden).")
+                        await add_message_to_db(task_chat_id, task["description"], is_user=True, is_visible=False)
+                        print(f"[TASK_PROCESSOR] {datetime.now()}: Adding task result to chat {task_chat_id} as assistant message.")
+                        await add_message_to_db(task_chat_id, result, is_user=False, is_visible=True, type="tool_result", task=task["description"], agentsUsed=True)
+                    else:
+                        print(f"[WARN] {datetime.now()}: Task {task_id} has no associated chat_id. Cannot add result to chat.")
 
-                # --- WebSocket Message on Success ---
-                task_completion_message = {
-                    "type": "task_completed",
-                    "task_id": task_id,
-                    "description": task_desc,
-                    "result": result
-                }
-                print(f"[WS_BROADCAST] {datetime.now()}: Broadcasting task completion for {task_id}")
-                await manager.broadcast(json.dumps(task_completion_message))
+                    # Mark task as completed in the queue
+                    await task_queue.complete_task(task_id, result=result) # Status defaults to 'completed'
+                    print(f"[TASK_PROCESSOR] {datetime.now()}: Task {task_id} marked as completed in queue.")
+
+                    # --- WebSocket Message on Success ---
+                    # This broadcast should ideally be handled within task_queue.complete_task
+                    # to ensure consistency, especially when completion happens via approve_task.
+                    # If task_queue.complete_task doesn't broadcast, uncomment and keep this block.
+                    # task_completion_message = {
+                    #     "type": "task_completed",
+                    #     "task_id": task_id,
+                    #     "description": task_desc,
+                    #     "result": result
+                    # }
+                    # print(f"[WS_BROADCAST] {datetime.now()}: Broadcasting task completion for {task_id}")
+                    # await manager.broadcast(json.dumps(task_completion_message))
+
 
             except asyncio.CancelledError:
                 print(f"[TASK_PROCESSOR] {datetime.now()}: Task {task_id} execution was cancelled.")
-                await task_queue.complete_task(task_id, error="Task was cancelled", status="cancelled") # Update status to cancelled
+                await task_queue.complete_task(task_id, error="Task was cancelled", status="cancelled")
                 # --- WebSocket Message on Cancellation ---
+                # Again, ideally handled by complete_task based on status. If not:
                 task_error_message = {
-                    "type": "task_error", # Or maybe "task_cancelled"
+                    "type": "task_cancelled", # Specific type for cancellation
                     "task_id": task_id,
                     "description": task_desc,
                     "error": "Task was cancelled"
@@ -715,9 +732,10 @@ async def process_queue():
             except Exception as e:
                 error_str = str(e)
                 print(f"[ERROR] {datetime.now()}: Error processing task {task_id}: {error_str}")
-                traceback.print_exc() # Print full traceback for debugging
-                await task_queue.complete_task(task_id, error=error_str, status="error") # Update status to error
+                traceback.print_exc()
+                await task_queue.complete_task(task_id, error=error_str, status="error")
                 # --- WebSocket Message on Error ---
+                # Ideally handled by complete_task based on status. If not:
                 task_error_message = {
                     "type": "task_error",
                     "task_id": task_id,
@@ -787,13 +805,15 @@ async def process_memory_operations():
             await asyncio.sleep(0.1)
 
 async def execute_agent_task(task: dict) -> str:
-    """Execute the agent task asynchronously and handle approval for email tasks."""
+    """
+    Execute the agent task asynchronously. Returns the final result string
+    or APPROVAL_PENDING_SIGNAL if user approval is required.
+    Handles setting the task status to 'pending_approval' and broadcasting.
+    """
     task_id = task.get("task_id", "N/A")
     task_desc = task.get("description", "N/A")
-    print(f"[AGENT_EXEC] {datetime.now()}: Executing task ID: {task_id}, Description: {task_desc[:50]}...")
-    print(f"[AGENT_EXEC] {datetime.now()}: Task details: {task}")
-
-    # Explicitly reference globals needed within this function scope
+    print(f"[AGENT_EXEC] {datetime.now()}: Executing task ID: {task_id}, Description: {task_desc}...")
+    # ... (rest of the setup: globals, context computation - remains the same) ...
     global agent_runnable, reflection_runnable, inbox_summarizer_runnable, graph_driver, embed_model
     global text_conversion_runnable, query_classification_runnable, internet_query_reframe_runnable, internet_summary_runnable
 
@@ -806,7 +826,7 @@ async def execute_agent_task(task: dict) -> str:
     user_context = None
     internet_context = None
 
-    # --- Compute User Context ---
+    # --- Compute User Context --- (No changes needed here)
     if use_personal_context:
         print(f"[AGENT_EXEC] {datetime.now()}: Task {task_id} requires personal context. Querying user profile...")
         try:
@@ -825,10 +845,10 @@ async def execute_agent_task(task: dict) -> str:
         except Exception as e:
             print(f"[ERROR] {datetime.now()}: Error computing user_context for task {task_id}: {e}")
             traceback.print_exc()
-            user_context = f"Error retrieving user context: {e}" # Pass error info downstream if needed
+            user_context = f"Error retrieving user context: {e}"
 
-    # --- Compute Internet Context ---
-    if internet: # Check if internet search is actually requested
+    # --- Compute Internet Context --- (No changes needed here)
+    if internet:
         print(f"[AGENT_EXEC] {datetime.now()}: Task {task_id} requires internet search.")
         try:
             print(f"[AGENT_EXEC] {datetime.now()}: Re-framing internet query for task {task_id}...")
@@ -837,7 +857,6 @@ async def execute_agent_task(task: dict) -> str:
 
             print(f"[AGENT_EXEC] {datetime.now()}: Performing internet search for task {task_id}...")
             search_results = get_search_results(reframed_query)
-            # print(f"[AGENT_EXEC] {datetime.now()}: Search results received for task {task_id}: {search_results}") # Can be verbose
 
             print(f"[AGENT_EXEC] {datetime.now()}: Summarizing search results for task {task_id}...")
             internet_context = get_search_summary(internet_summary_runnable, search_results)
@@ -846,11 +865,12 @@ async def execute_agent_task(task: dict) -> str:
         except Exception as e:
             print(f"[ERROR] {datetime.now()}: Error computing internet_context for task {task_id}: {e}")
             traceback.print_exc()
-            internet_context = f"Error retrieving internet context: {e}" # Pass error info
+            internet_context = f"Error retrieving internet context: {e}"
     else:
          print(f"[AGENT_EXEC] {datetime.now()}: Internet search not required for task {task_id}.")
 
-    # --- Invoke Agent Runnable ---
+
+    # --- Invoke Agent Runnable --- (No changes needed here)
     print(f"[AGENT_EXEC] {datetime.now()}: Invoking main agent runnable for task {task_id}...")
     agent_input = {
         "query": transformed_input,
@@ -859,52 +879,40 @@ async def execute_agent_task(task: dict) -> str:
         "internet_context": internet_context,
         "personality": personality
     }
-    # print(f"[AGENT_EXEC] {datetime.now()}: Agent Input for task {task_id}: {agent_input}") # Can be verbose
     try:
-        # Check if agent_runnable requires history and pass it if needed
-        # This depends on how get_agent_runnable was implemented
-        # Assuming it uses the globally managed chat_history object implicitly
         response = agent_runnable.invoke(agent_input)
         print(f"[AGENT_EXEC] {datetime.now()}: Agent response received for task {task_id}.")
-        # print(f"[AGENT_EXEC] {datetime.now()}: Agent Response content: {response}") # Log the raw response
     except Exception as e:
         print(f"[ERROR] {datetime.now()}: Error invoking agent_runnable for task {task_id}: {e}")
         traceback.print_exc()
-        return f"Error during agent execution: {e}"
+        return f"Error during agent execution: {e}" # Return error string
 
-    # --- Process Tool Calls ---
+    # --- Process Tool Calls --- (Main changes here for approval)
     tool_calls = []
     if isinstance(response, dict) and "tool_calls" in response and isinstance(response["tool_calls"], list):
         tool_calls = response["tool_calls"]
         print(f"[AGENT_EXEC] {datetime.now()}: Found {len(tool_calls)} tool calls in agent response dict.")
-    elif isinstance(response, list): # Handle case where the runnable *only* returns the tool calls list
+    elif isinstance(response, list):
         tool_calls = response
         print(f"[AGENT_EXEC] {datetime.now()}: Agent response was a list, treating as {len(tool_calls)} tool calls.")
     else:
-        # Handle cases where response is just a final string answer
         if isinstance(response, str):
              print(f"[AGENT_EXEC] {datetime.now()}: Agent response is a direct string answer (no tool calls).")
              return response # Return the direct answer
-        # Handle cases where the structure is unexpected
         error_msg = f"Error: Invalid or missing 'tool_calls' list in agent response for task {task_id}. Response type: {type(response)}, Response: {str(response)[:200]}"
         print(f"[AGENT_EXEC] {datetime.now()}: {error_msg}")
-        return error_msg # Return error if structure is wrong
-
+        return error_msg
 
     all_tool_results = []
     previous_tool_result = None
     print(f"[AGENT_EXEC] {datetime.now()}: Processing {len(tool_calls)} potential tool calls for task {task_id}.")
 
     for i, tool_call in enumerate(tool_calls):
-        print(f"[AGENT_EXEC] {datetime.now()}: Processing tool call {i+1}/{len(tool_calls)} for task {task_id}...")
-        # print(f"[AGENT_EXEC] {datetime.now()}: Tool call data: {tool_call}")
-
-        # Refined validation for tool call structure
+        # ... (Validation of tool_call structure - remains the same) ...
         tool_content = None
         if isinstance(tool_call, dict) and tool_call.get("response_type") == "tool_call":
             tool_content = tool_call.get("content")
         elif isinstance(tool_call, dict) and "tool_name" in tool_call and "task_instruction" in tool_call:
-            # Support simpler dict structure if runnable returns that directly
             tool_content = tool_call
             print(f"[AGENT_EXEC] {datetime.now()}: Interpreting dict as direct tool call content.")
         else:
@@ -917,16 +925,14 @@ async def execute_agent_task(task: dict) -> str:
 
         tool_name = tool_content.get("tool_name")
         task_instruction = tool_content.get("task_instruction")
-        # Default to False if key is missing
         previous_tool_response_required = tool_content.get("previous_tool_response", False)
 
-        # Basic validation
         if not tool_name or not task_instruction:
             print(f"[AGENT_EXEC] {datetime.now()}: Skipping tool call {i+1} due to missing tool_name or task_instruction.")
             continue
 
         print(f"[AGENT_EXEC] {datetime.now()}:   - Tool Name: {tool_name}")
-        print(f"[AGENT_EXEC] {datetime.now()}:   - Task Instruction: {str(task_instruction)[:100]}...") # Ensure task_instruction is stringifiable
+        print(f"[AGENT_EXEC] {datetime.now()}:   - Task Instruction: {str(task_instruction)[:100]}...")
         print(f"[AGENT_EXEC] {datetime.now()}:   - Previous Tool Response Required: {previous_tool_response_required}")
 
         tool_handler = tool_handlers.get(tool_name)
@@ -934,75 +940,71 @@ async def execute_agent_task(task: dict) -> str:
             error_msg = f"Error: Tool '{tool_name}' not found in registered handlers for task {task_id}."
             print(f"[AGENT_EXEC] {datetime.now()}: {error_msg}")
             all_tool_results.append({"tool_name": tool_name, "task_instruction": task_instruction, "tool_result": error_msg, "status": "error"})
-            continue # Skip to the next tool call
+            continue
 
         # --- Prepare and Execute Tool Handler ---
-        # Ensure input is stringifiable
         tool_input = {"input": str(task_instruction)}
         if previous_tool_response_required:
-            if previous_tool_result:
-                print(f"[AGENT_EXEC] {datetime.now()}:   - Providing previous tool result to '{tool_name}'.")
-                tool_input["previous_tool_response"] = previous_tool_result
-            else:
-                print(f"[WARN] {datetime.now()}: Tool '{tool_name}' requires previous result, but none is available. Passing 'None'.")
-                tool_input["previous_tool_response"] = "Previous tool result was expected but not available." # Or pass None
-        # else: # No need for explicit "Not Required" key
-        #     pass
-            # tool_input["previous_tool_response"] = "Not Required"
+             if previous_tool_result:
+                 print(f"[AGENT_EXEC] {datetime.now()}:   - Providing previous tool result to '{tool_name}'.")
+                 tool_input["previous_tool_response"] = previous_tool_result
+             else:
+                 print(f"[WARN] {datetime.now()}: Tool '{tool_name}' requires previous result, but none is available. Passing 'None'.")
+                 tool_input["previous_tool_response"] = "Previous tool result was expected but not available."
 
         print(f"[AGENT_EXEC] {datetime.now()}: Invoking tool handler '{tool_handler.__name__}' for tool '{tool_name}'...")
         try:
             tool_result_main = await tool_handler(tool_input)
             print(f"[AGENT_EXEC] {datetime.now()}: Tool handler '{tool_handler.__name__}' executed.")
-            # print(f"[AGENT_EXEC] {datetime.now()}: Tool handler raw result: {tool_result_main}")
         except Exception as e:
             error_msg = f"Error executing tool handler '{tool_handler.__name__}' for tool '{tool_name}': {e}"
             print(f"[ERROR] {datetime.now()}: {error_msg}")
             traceback.print_exc()
             all_tool_results.append({"tool_name": tool_name, "task_instruction": str(task_instruction), "tool_result": error_msg, "status": "error"})
-            previous_tool_result = error_msg # Pass error as previous result if needed
-            continue # Skip to next tool call
+            previous_tool_result = error_msg
+            continue
 
-        # --- Handle Approval Flow ---
+        # --- <<< MODIFICATION START >>> Handle Approval Flow ---
         if isinstance(tool_result_main, dict) and tool_result_main.get("action") == "approve":
             print(f"[AGENT_EXEC] {datetime.now()}: Task {task_id} requires approval for tool '{tool_name}'. Setting task to pending.")
-            approval_data = tool_result_main.get("tool_call", {}) # Get the data needing approval
+            approval_data = tool_result_main.get("tool_call", {})
+            # Set the task status to 'pending_approval' in the queue
             await task_queue.set_task_approval_pending(task_id, approval_data)
 
             # --- WebSocket Notification for Approval ---
             notification = {
                 "type": "task_approval_pending",
                 "task_id": task_id,
-                "description": f"Approval needed for: {tool_name} - {str(task_instruction)[:50]}...", # Provide context
+                "description": f"Approval needed for: {tool_name} - {str(task_instruction)}...",
                 "tool_name": tool_name,
-                "approval_data": approval_data # Send data needing approval to frontend
+                "approval_data": approval_data
             }
             print(f"[WS_BROADCAST] {datetime.now()}: Broadcasting task approval pending for {task_id}")
             await manager.broadcast(json.dumps(notification))
-            return "Task requires approval." # Signal that execution is paused
+
+            # Return the specific signal to process_queue
+            return APPROVAL_PENDING_SIGNAL
+        # --- <<< MODIFICATION END >>> Handle Approval Flow ---
 
         # --- Store Normal Tool Result ---
         else:
-            # Extract the actual result, handling potential variations in the handler's return format
             if isinstance(tool_result_main, dict) and "tool_result" in tool_result_main:
                 tool_result = tool_result_main["tool_result"]
             else:
-                # Assume the handler returned the result directly
                 tool_result = tool_result_main
 
             print(f"[AGENT_EXEC] {datetime.now()}: Tool '{tool_name}' executed successfully. Storing result.")
-            previous_tool_result = tool_result # Store for potential use by the next tool
+            previous_tool_result = tool_result
             all_tool_results.append({
                 "tool_name": tool_name,
-                "task_instruction": str(task_instruction), # Ensure string
+                "task_instruction": str(task_instruction),
                 "tool_result": tool_result,
                 "status": "success"
             })
 
-    # --- Final Reflection/Summarization ---
+    # --- Final Reflection/Summarization --- (No changes needed here, runs only if no approval was needed)
     if not all_tool_results:
         print(f"[AGENT_EXEC] {datetime.now()}: No successful tool calls executed for task {task_id}.")
-        # Check if the initial response dict contained a final answer besides tool calls
         if isinstance(response, dict) and response.get("response_type") == "final_answer" and response.get("content"):
              print(f"[AGENT_EXEC] {datetime.now()}: Using agent's final answer from initial response dict.")
              return response["content"]
@@ -1012,24 +1014,21 @@ async def execute_agent_task(task: dict) -> str:
 
 
     print(f"[AGENT_EXEC] {datetime.now()}: All tool calls processed for task {task_id}. Preparing final result.")
-    final_result_str = "No final result generated." # Default value
+    final_result_str = "No final result generated."
 
     try:
         # Special handling for inbox search summarization
         if len(all_tool_results) == 1 and all_tool_results[0].get("tool_name") == "search_inbox" and all_tool_results[0].get("status") == "success":
             print(f"[AGENT_EXEC] {datetime.now()}: Task {task_id} involved only 'search_inbox'. Invoking inbox summarizer...")
             tool_result_data = all_tool_results[0]["tool_result"]
-            # Ensure the result structure is as expected by the summarizer
-            # Adjusted check based on potential structure returned by parse_and_execute_tool_calls
             result_content = None
             if isinstance(tool_result_data, dict):
                 if "result" in tool_result_data and isinstance(tool_result_data["result"], dict):
                     result_content = tool_result_data["result"]
-                elif "email_data" in tool_result_data: # Handle if result is directly the content dict
+                elif "email_data" in tool_result_data:
                     result_content = tool_result_data
 
             if result_content:
-                # Filter email data, keeping only non-body fields
                 filtered_email_data = []
                 if "email_data" in result_content and isinstance(result_content["email_data"], list):
                     filtered_email_data = [
@@ -1042,7 +1041,6 @@ async def execute_agent_task(task: dict) -> str:
                     "email_data": filtered_email_data,
                     "gmail_search_url": result_content.get("gmail_search_url", "URL not available.")
                 }
-                # print(f"[AGENT_EXEC] {datetime.now()}: Filtered inbox data for summarizer: {filtered_tool_result}")
                 final_result_str = inbox_summarizer_runnable.invoke({"tool_result": filtered_tool_result})
                 print(f"[AGENT_EXEC] {datetime.now()}: Inbox summarizer finished for task {task_id}.")
             else:
@@ -1052,7 +1050,6 @@ async def execute_agent_task(task: dict) -> str:
                 print(f"[AGENT_EXEC] {datetime.now()}: Reflection finished for task {task_id}.")
         else:
             print(f"[AGENT_EXEC] {datetime.now()}: Task {task_id} requires reflection on multiple/different tool results.")
-            # print(f"[AGENT_EXEC] {datetime.now()}: Input to reflection: {all_tool_results}") # Can be verbose
             final_result_str = reflection_runnable.invoke({"tool_results": all_tool_results})
             print(f"[AGENT_EXEC] {datetime.now()}: Reflection finished for task {task_id}.")
 
@@ -1060,10 +1057,10 @@ async def execute_agent_task(task: dict) -> str:
         error_msg = f"Error during final result generation (reflection/summarization) for task {task_id}: {e}"
         print(f"[ERROR] {datetime.now()}: {error_msg}")
         traceback.print_exc()
-        final_result_str = f"{error_msg}\n\nRaw Tool Results:\n{json.dumps(all_tool_results, indent=2)}" # Return error and raw results formatted
+        final_result_str = f"{error_msg}\n\nRaw Tool Results:\n{json.dumps(all_tool_results, indent=2)}"
 
     print(f"[AGENT_EXEC] {datetime.now()}: Task {task_id} execution complete. Final result length: {len(final_result_str)}")
-    return final_result_str
+    return final_result_str # Return the actual result string
 
 
 async def add_result_to_chat(chat_id: Union[int, str], result: str, isUser: bool, task_description: str = None):
@@ -1657,7 +1654,7 @@ async def chat(message: Message):
     """Handles incoming chat messages, classifies, determines active chat, and responds via streaming."""
     endpoint_start_time = time.time()
     print(f"[ENDPOINT /chat] {datetime.now()}: Endpoint called.")
-    print(f"[ENDPOINT /chat] {datetime.now()}: Incoming message data: Input='{message.input[:50]}...', Pricing='{message.pricing}', Credits={message.credits}")
+    print(f"[ENDPOINT /chat] {datetime.now()}: Incoming message data: Input='{message.input}...', Pricing='{message.pricing}', Credits={message.credits}")
 
     # Ensure global variables are accessible if modified or reassigned inside
     global embed_model, chat_runnable, fact_extraction_runnable, text_conversion_runnable
@@ -1706,7 +1703,7 @@ async def chat(message: Message):
         print(f"[ENDPOINT /chat] {datetime.now()}: Runnables ready.")
 
         # --- Unified Classification ---
-        print(f"[ENDPOINT /chat] {datetime.now()}: Performing unified classification for input: '{message.input[:50]}...'")
+        print(f"[ENDPOINT /chat] {datetime.now()}: Performing unified classification for input: '{message.input}...'")
         unified_output = unified_classification_runnable.invoke({"query": message.input})
         print(f"[ENDPOINT /chat] {datetime.now()}: Unified classification output: {unified_output}")
         category = unified_output.get("category", "chat") # Default to chat if missing
@@ -2001,7 +1998,7 @@ async def chat(message: Message):
 async def elaborate(message: ElaboratorMessage):
     """Elaborates on an input string based on a specified purpose."""
     print(f"[ENDPOINT /elaborator] {datetime.now()}: Endpoint called.")
-    print(f"[ENDPOINT /elaborator] {datetime.now()}: Input: '{message.input[:50]}...', Purpose: '{message.purpose}'")
+    print(f"[ENDPOINT /elaborator] {datetime.now()}: Input: '{message.input}...', Purpose: '{message.purpose}'")
     try:
         # Initialize runnable within the endpoint or ensure it's globally available
         # Assuming get_tool_runnable is lightweight or already cached
@@ -2913,7 +2910,7 @@ async def authenticate_google():
 @app.post("/graphrag", status_code=200)
 async def graphrag(request: GraphRAGRequest):
     """Processes a user profile query using GraphRAG."""
-    print(f"[ENDPOINT /graphrag] {datetime.now()}: Endpoint called with query: '{request.query[:50]}...'")
+    print(f"[ENDPOINT /graphrag] {datetime.now()}: Endpoint called with query: '{request.query}...'")
     try:
         # Check dependencies
         if not all([graph_driver, embed_model, text_conversion_runnable, query_classification_runnable]):
@@ -3241,7 +3238,7 @@ async def create_document():
 @app.post("/customize-long-term-memories", status_code=200)
 async def customize_graph(request: GraphRequest):
     """Customizes the knowledge graph with new information."""
-    print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Endpoint called with information: '{request.information[:50]}...'")
+    print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Endpoint called with information: '{request.information}...'")
     loop = asyncio.get_event_loop()
     try:
         # --- Load Username ---
@@ -3288,7 +3285,7 @@ async def customize_graph(request: GraphRequest):
         errors = []
         for i, res in enumerate(results):
             if isinstance(res, Exception):
-                 print(f"[ERROR] {datetime.now()}: Failed to process fact {i+1} ('{str(points[i])[:50]}...'): {res}")
+                 print(f"[ERROR] {datetime.now()}: Failed to process fact {i+1} ('{str(points[i])}...'): {res}")
                  errors.append(str(res))
             else:
                  processed_count += 1
@@ -3335,7 +3332,7 @@ async def add_task(task_request: CreateTaskRequest): # Use CreateTaskRequest
     Adds a new task with dynamically determined chat_id, personality, context needs, priority etc.
     Input only requires the task description. Associates task with the currently active chat.
     """
-    print(f"[ENDPOINT /add-task] {datetime.now()}: Endpoint called with description: '{task_request.description[:50]}...'")
+    print(f"[ENDPOINT /add-task] {datetime.now()}: Endpoint called with description: '{task_request.description}...'")
     loop = asyncio.get_event_loop()
     try:
         # --- Determine Active Chat ID ---
@@ -3354,7 +3351,7 @@ async def add_task(task_request: CreateTaskRequest): # Use CreateTaskRequest
         user_profile = load_user_profile()
         username = user_profile.get("userData", {}).get("personalInfo", {}).get("name", "User")
         personality = user_profile.get("userData", {}).get("personality", "Default helpful assistant")
-        print(f"[ENDPOINT /add-task] {datetime.now()}: Using username: '{username}', personality: '{str(personality)[:50]}...'")
+        print(f"[ENDPOINT /add-task] {datetime.now()}: Using username: '{username}', personality: '{str(personality)}...'")
 
         # --- Classify Task Needs (Run potentially blocking invoke in threadpool) ---
         print(f"[ENDPOINT /add-task] {datetime.now()}: Classifying task needs (context, internet)...")
@@ -3429,7 +3426,7 @@ async def update_task(update_request: UpdateTaskRequest):
     new_desc = update_request.description
     new_priority = update_request.priority
     print(f"[ENDPOINT /update-task] {datetime.now()}: Endpoint called for task ID: {task_id}")
-    print(f"[ENDPOINT /update-task] {datetime.now()}: New Description: '{new_desc[:50]}...', New Priority: {new_priority}")
+    print(f"[ENDPOINT /update-task] {datetime.now()}: New Description: '{new_desc}...', New Priority: {new_priority}")
     try:
         updated_task = await task_queue.update_task(task_id, new_desc, new_priority)
         if not updated_task: # Check if update was successful (task found and modifiable)
@@ -3528,7 +3525,7 @@ async def add_memory(request: AddMemoryRequest):
     category = request.category
     retention = request.retention_days
     print(f"[ENDPOINT /add-short-term-memory] {datetime.now()}: Endpoint called for User: {user_id}, Category: {category}, Retention: {retention} days")
-    print(f"[ENDPOINT /add-short-term-memory] {datetime.now()}: Text: '{text[:50]}...'")
+    print(f"[ENDPOINT /add-short-term-memory] {datetime.now()}: Text: '{text}...'")
     loop = asyncio.get_event_loop()
     try:
         # Run blocking DB store in threadpool
@@ -3555,7 +3552,7 @@ async def update_memory(request: UpdateMemoryRequest):
     text = request.text
     retention = request.retention_days
     print(f"[ENDPOINT /update-short-term-memory] {datetime.now()}: Endpoint called for User: {user_id}, Category: {category}, ID: {mem_id}")
-    print(f"[ENDPOINT /update-short-term-memory] {datetime.now()}: New Text: '{text[:50]}...', New Retention: {retention} days")
+    print(f"[ENDPOINT /update-short-term-memory] {datetime.now()}: New Text: '{text}...', New Retention: {retention} days")
     loop = asyncio.get_event_loop()
     try:
         # Run blocking DB update in threadpool
@@ -3973,7 +3970,7 @@ async def websocket_endpoint(websocket: WebSocket):
                      await websocket.send_text(json.dumps({"type": "pong"}))
             except json.JSONDecodeError:
                  # Ignore non-JSON messages or handle as needed
-                 print(f"[WS /ws] {datetime.now()}: Received non-JSON message from {client_id}: {data[:50]}...")
+                 print(f"[WS /ws] {datetime.now()}: Received non-JSON message from {client_id}: {data}...")
             except Exception as e:
                  print(f"[WS /ws] {datetime.now()}: Error processing message from {client_id}: {e}")
 
