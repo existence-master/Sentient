@@ -6,7 +6,6 @@ import {
 	IconLoader,
 	IconPencil,
 	IconTrash,
-	IconPlus,
 	IconX,
 	IconHelpCircle,
 	IconSearch,
@@ -18,36 +17,59 @@ import {
 	IconAlertCircle,
 	IconFilter,
 	IconChevronUp, // For potential drop-up visual cue if needed
-	IconSend // Using send icon for add task button
+	IconPlus // Using Plus icon for add task button again
 } from "@tabler/icons-react"
 import Sidebar from "@components/Sidebar"
 import toast from "react-hot-toast"
-import { Tooltip } from "react-tooltip" // Keep tooltip if used elsewhere
-import "react-tooltip/dist/react-tooltip.css" // Keep tooltip CSS
-import { cn } from "@utils/cn" // Assuming cn utility is available
+import { Tooltip } from "react-tooltip"
+import "react-tooltip/dist/react-tooltip.css"
+import { cn } from "@utils/cn"
 
 // --- Task Status Mapping ---
 // ADDED: Mapping status strings to icons and colors for visual feedback
 const statusMap = {
-	pending: { icon: IconClock, color: "text-yellow-500", label: "Pending" },
+	pending: {
+		icon: IconClock,
+		color: "text-yellow-500",
+		borderColor: "border-yellow-500",
+		label: "Pending"
+	},
 	processing: {
 		icon: IconPlayerPlay,
 		color: "text-blue-500",
+		borderColor: "border-blue-500",
 		label: "Processing"
 	},
 	completed: {
 		icon: IconCircleCheck,
 		color: "text-green-500",
+		borderColor: "border-green-500",
 		label: "Completed"
 	},
-	error: { icon: IconAlertCircle, color: "text-red-500", label: "Error" },
+	error: {
+		icon: IconAlertCircle,
+		color: "text-red-500",
+		borderColor: "border-red-500",
+		label: "Error"
+	},
 	approval_pending: {
 		icon: IconMailQuestion,
 		color: "text-purple-500",
+		borderColor: "border-purple-500",
 		label: "Approval Pending"
 	},
-	cancelled: { icon: IconX, color: "text-gray-500", label: "Cancelled" }, // Assuming IconX exists
-	default: { icon: IconHelpCircle, color: "text-gray-400", label: "Unknown" } // Assuming IconHelpCircle exists
+	cancelled: {
+		icon: IconX,
+		color: "text-gray-500",
+		borderColor: "border-gray-500",
+		label: "Cancelled"
+	},
+	default: {
+		icon: IconHelpCircle,
+		color: "text-gray-400",
+		borderColor: "border-gray-400",
+		label: "Unknown"
+	}
 }
 
 // ADDED: Mapping for priority levels
@@ -65,18 +87,19 @@ const Tasks = () => {
 	const [userDetails, setUserDetails] = useState({})
 	const [isSidebarVisible, setSidebarVisible] = useState(false)
 	const [newTaskDescription, setNewTaskDescription] = useState("")
-	// MODIFIED: State for new task priority uses numbers (0, 1, 2), default to Medium
-	const [newTaskPriorityLevel, setNewTaskPriorityLevel] = useState(1)
-	const [editingTask, setEditingTask] = useState(null) // State to hold the task being edited
-	const [filterStatus, setFilterStatus] = useState("all") // 'all', 'pending', 'processing', etc.
+	const [newTaskPriorityLevel, setNewTaskPriorityLevel] = useState(1) // Default to Medium (1)
+	const [editingTask, setEditingTask] = useState(null)
+	const [filterStatus, setFilterStatus] = useState("all")
 	const [searchTerm, setSearchTerm] = useState("")
-	const [selectedTask, setSelectedTask] = useState(null) // For approval modal data
+	const [selectedTask, setSelectedTask] = useState(null)
 
 	// --- Fetching Data ---
-	// MODIFIED: Wrapped fetch logic in useCallback
 	const fetchTasksData = useCallback(async () => {
 		console.log("Fetching tasks data...")
-		setLoading(true) // Set loading true at the start of fetch
+		// MODIFIED: Only set global loading true if tasks array is currently empty
+		if (tasks.length === 0) {
+			setLoading(true)
+		}
 		setError(null)
 		try {
 			const response = await window.electron.invoke("fetch-tasks")
@@ -84,9 +107,9 @@ const Tasks = () => {
 			if (response.error) {
 				console.error("Error fetching tasks:", response.error)
 				setError(response.error)
-				setTasks([]) // Clear tasks on error
+				setTasks([])
 			} else if (Array.isArray(response.tasks)) {
-				// Sort tasks primarily by status (pending/processing first), then by priority, then by date
+				// Sort tasks
 				const sortedTasks = response.tasks.sort((a, b) => {
 					const statusOrder = {
 						processing: 0,
@@ -98,11 +121,9 @@ const Tasks = () => {
 					}
 					const statusA = statusOrder[a.status] ?? 99
 					const statusB = statusOrder[b.status] ?? 99
-
-					if (statusA !== statusB) return statusA - statusB // Sort by status first
+					if (statusA !== statusB) return statusA - statusB
 					if (a.priority !== b.priority)
-						return a.priority - b.priority // Then by priority (lower number = higher priority)
-					// Then by creation date (newest first) - ensure created_at is available and comparable
+						return a.priority - b.priority
 					try {
 						const dateA = a.created_at
 							? new Date(a.created_at).getTime()
@@ -110,10 +131,10 @@ const Tasks = () => {
 						const dateB = b.created_at
 							? new Date(b.created_at).getTime()
 							: 0
-						return dateB - dateA // Descending order for date
+						return dateB - dateA
 					} catch (dateError) {
 						console.warn("Error comparing task dates:", dateError)
-						return 0 // Keep original order if date parsing fails
+						return 0
 					}
 				})
 				setTasks(sortedTasks)
@@ -129,14 +150,14 @@ const Tasks = () => {
 			setTasks([])
 		} finally {
 			console.log("Finished fetching tasks, setting loading false.")
-			setLoading(false) // Always set loading false at the end
+			setLoading(false) // Always ensure loading is false after attempt
 		}
-	}, []) // useCallback dependency array is empty
+	}, [tasks.length]) // MODIFIED: Add tasks.length dependency to re-evaluate initial loading state
 
 	const fetchUserDetails = async () => {
 		try {
 			const response = await window.electron?.invoke("get-profile")
-			setUserDetails(response || {}) // Ensure userDetails is an object
+			setUserDetails(response || {})
 		} catch (error) {
 			toast.error("Error fetching user details for sidebar.")
 			console.error("Error fetching user details for sidebar:", error)
@@ -146,22 +167,17 @@ const Tasks = () => {
 	// --- Effects ---
 	useEffect(() => {
 		fetchUserDetails()
-		fetchTasksData() // Initial fetch
-		// Setup interval for refetching tasks data
-		const intervalId = setInterval(fetchTasksData, 60000) // Refresh every 60 seconds
-		// Cleanup interval on component unmount
+		fetchTasksData()
+		const intervalId = setInterval(fetchTasksData, 60000)
 		return () => clearInterval(intervalId)
-	}, [fetchTasksData]) // Include fetchTasksData in dependency array due to useCallback
+	}, [fetchTasksData])
 
 	// --- Task Actions ---
 	const handleAddTask = async () => {
 		if (!newTaskDescription.trim()) {
-			// Check trimmed description
 			toast.error("Please enter a task description.")
 			return
 		}
-		// Priority is now guaranteed by the dropdown state
-
 		console.log("Adding task:", {
 			description: newTaskDescription,
 			priority: newTaskPriorityLevel
@@ -169,7 +185,7 @@ const Tasks = () => {
 		try {
 			const taskData = {
 				description: newTaskDescription,
-				priority: newTaskPriorityLevel // Use the numeric state
+				priority: newTaskPriorityLevel
 			}
 			const response = await window.electron.invoke("add-task", taskData)
 			if (response.error) {
@@ -177,9 +193,9 @@ const Tasks = () => {
 				toast.error(`Failed to add task: ${response.error}`)
 			} else {
 				toast.success("Task added successfully!")
-				setNewTaskDescription("") // Clear input
-				setNewTaskPriorityLevel(1) // Reset priority dropdown to Medium
-				await fetchTasksData() // Refresh list immediately
+				setNewTaskDescription("")
+				setNewTaskPriorityLevel(1)
+				await fetchTasksData()
 			}
 		} catch (error) {
 			console.error("Exception adding task:", error)
@@ -189,16 +205,10 @@ const Tasks = () => {
 
 	const handleEditTask = (task) => {
 		console.log("Editing task:", task)
-		// Set the editing task state, including the numeric priority
-		setEditingTask({
-			...task
-			// Priority is already a number in the task object, no conversion needed
-			// priority: priorityNumberToString(task.priority) // OLD logic removed
-		})
+		setEditingTask({ ...task })
 	}
 
 	const handleUpdateTask = async () => {
-		// Validate editing task data
 		if (!editingTask || !editingTask.description?.trim()) {
 			toast.error("Task description cannot be empty.")
 			return
@@ -211,25 +221,23 @@ const Tasks = () => {
 			toast.error("Invalid priority selected.")
 			return
 		}
-
 		console.log("Updating task:", editingTask.task_id, {
 			description: editingTask.description,
 			priority: editingTask.priority
 		})
 		try {
-			// Call IPC invoke with the task ID and updated data (using numeric priority)
 			const response = await window.electron.invoke("update-task", {
 				taskId: editingTask.task_id,
 				description: editingTask.description,
-				priority: editingTask.priority // Use the numeric priority from state
+				priority: editingTask.priority
 			})
 			if (response.error) {
 				console.error("Error updating task via IPC:", response.error)
 				toast.error(`Failed to update task: ${response.error}`)
 			} else {
 				toast.success("Task updated successfully!")
-				setEditingTask(null) // Close the modal
-				await fetchTasksData() // Refresh list
+				setEditingTask(null)
+				await fetchTasksData()
 			}
 		} catch (error) {
 			console.error("Exception updating task:", error)
@@ -240,16 +248,14 @@ const Tasks = () => {
 	const handleDeleteTask = async (taskId) => {
 		if (!taskId) return
 		console.log("Deleting task:", taskId)
-		// Optional: Add confirmation dialog here
-		// if (!confirm("Are you sure you want to delete this task?")) { return; }
 		try {
-			const response = await window.electron.invoke("delete-task", taskId) // Pass only taskId
+			const response = await window.electron.invoke("delete-task", taskId)
 			if (response.error) {
 				console.error("Error deleting task via IPC:", response.error)
 				toast.error(`Failed to delete task: ${response.error}`)
 			} else {
 				toast.success("Task deleted successfully!")
-				await fetchTasksData() // Refresh list
+				await fetchTasksData()
 			}
 		} catch (error) {
 			console.error("Exception deleting task:", error)
@@ -268,7 +274,6 @@ const Tasks = () => {
 			console.log("Approval data response:", response)
 			if (response.status === 200 && response.approval_data) {
 				setSelectedTask({
-					// Store task ID and the approval data
 					taskId,
 					approvalData: response.approval_data
 				})
@@ -300,8 +305,8 @@ const Tasks = () => {
 			console.log("Approve task response:", response)
 			if (response.status === 200) {
 				toast.success("Task approved and completed!")
-				setSelectedTask(null) // Close modal
-				await fetchTasksData() // Refresh list
+				setSelectedTask(null)
+				await fetchTasksData()
 			} else {
 				console.error(
 					"Error approving task:",
@@ -319,41 +324,38 @@ const Tasks = () => {
 
 	// --- Filtering Logic ---
 	const filteredTasks = tasks.filter((task) => {
-		// Filter by status
-		if (filterStatus !== "all" && task.status !== filterStatus) {
-			return false
-		}
-		// Filter by search term (case-insensitive)
+		if (filterStatus !== "all" && task.status !== filterStatus) return false
 		if (
 			searchTerm &&
 			!task.description?.toLowerCase().includes(searchTerm.toLowerCase())
-		) {
+		)
 			return false
-		}
-		return true // Include task if it passes filters
+		return true
 	})
 
 	// --- Render Loading/Error States ---
 	if (loading && tasks.length === 0) {
-		// Show full screen loader only on initial load
+		// Show loader only on initial load
 		return (
 			<div className="flex justify-center items-center h-screen bg-matteblack">
-				<IconLoader className="w-10 h-10 animate-spin text-white" />
-				<span className="ml-2 text-white">Loading tasks...</span>
+				{" "}
+				<IconLoader className="w-10 h-10 animate-spin text-white" />{" "}
+				<span className="ml-2 text-white">Loading tasks...</span>{" "}
 			</div>
 		)
 	}
-
-	if (error) {
+	if (error && tasks.length === 0) {
+		// Show error only if there are no tasks to display
 		return (
-			<div className="flex justify-center items-center h-screen bg-matteblack text-red-500">
-				Error loading tasks: {error}
+			<div className="flex flex-col justify-center items-center h-screen bg-matteblack text-red-500">
+				{" "}
+				<p>Error loading tasks: {error}</p>{" "}
 				<button
 					onClick={fetchTasksData}
-					className="ml-4 p-2 bg-lightblue text-white rounded"
+					className="mt-4 py-2 px-4 bg-lightblue text-white rounded hover:bg-blue-700"
 				>
 					Retry
-				</button>
+				</button>{" "}
 			</div>
 		)
 	}
@@ -362,36 +364,41 @@ const Tasks = () => {
 
 	// --- Main Render ---
 	return (
-		// MODIFIED: Use flex for overall page structure
 		<div className="h-screen bg-matteblack flex relative overflow-hidden dark">
 			<Sidebar
 				userDetails={userDetails}
 				isSidebarVisible={isSidebarVisible}
 				setSidebarVisible={setSidebarVisible}
 			/>
-			{/* MODIFIED: Main content area takes remaining space */}
-			<div className="flex-grow flex flex-col h-full bg-matteblack text-white relative overflow-hidden">
-				{/* --- MODIFIED: Top Bar for Search/Filter --- */}
-				<div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-30 w-full max-w-2xl px-4">
-					<div className="flex items-center space-x-2 bg-neutral-800/80 backdrop-blur-sm rounded-full p-2 shadow-lg">
-						{/* Search Input */}
-						<IconSearch className="h-5 w-5 text-gray-400 ml-2 flex-shrink-0" />
+			{/* MODIFIED: Added flex-grow and padding */}
+			<div className="flex-grow flex flex-col h-full bg-matteblack text-white relative overflow-hidden p-6">
+				{/* --- Top Bar for Search/Filter --- */}
+				{/* MODIFIED: Increased padding and text size */}
+				<div className="absolute top-6 left-1/2 transform -translate-x-1/2 z-30 w-full max-w-3xl px-4">
+					{" "}
+					{/* Increased max-width */}
+					<div className="flex items-center space-x-3 bg-neutral-800/80 backdrop-blur-sm rounded-full p-3 shadow-lg border border-neutral-700">
+						{" "}
+						{/* Increased padding */}
+						<IconSearch className="h-6 w-6 text-gray-400 ml-2 flex-shrink-0" />{" "}
+						{/* Increased icon size */}
 						<input
 							type="text"
 							placeholder="Search tasks..."
 							value={searchTerm}
 							onChange={(e) => setSearchTerm(e.target.value)}
-							className="bg-transparent text-white focus:outline-none w-full flex-grow px-2 placeholder-gray-500 text-sm"
+							className="bg-transparent text-white focus:outline-none w-full flex-grow px-2 placeholder-gray-500 text-base rounded-md py-1"
 						/>
 						{/* Filter Dropdown */}
 						<div className="relative flex-shrink-0">
-							<IconFilter className="absolute left-2 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+							<IconFilter className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
 							<select
 								value={filterStatus}
 								onChange={(e) =>
 									setFilterStatus(e.target.value)
 								}
-								className="appearance-none bg-neutral-700 border border-neutral-600 text-white text-xs rounded-full pl-8 pr-3 py-1.5 focus:outline-none focus:border-lightblue cursor-pointer"
+								// MODIFIED: Increased padding and text size
+								className="appearance-none bg-neutral-700 border border-neutral-600 text-white text-sm rounded-full pl-9 pr-4 py-2 focus:outline-none focus:border-lightblue cursor-pointer"
 								title="Filter tasks by status"
 							>
 								<option value="all">All</option>
@@ -408,19 +415,20 @@ const Tasks = () => {
 					</div>
 				</div>
 
-				{/* --- MODIFIED: Refresh Button (Top Right) --- */}
-				<div className="absolute top-5 right-5 z-30">
+				{/* --- Refresh Button (Top Right) --- */}
+				{/* MODIFIED: Adjusted position slightly */}
+				<div className="absolute top-6 right-6 z-30">
 					<button
 						onClick={fetchTasksData}
-						className="p-2 rounded-full hover:bg-neutral-700/60 transition-colors text-gray-300"
+						className="p-2.5 rounded-full hover:bg-neutral-700/60 transition-colors text-gray-300" // Increased padding
 						data-tooltip-id="refresh-tooltip"
-						disabled={loading} // Disable while loading
+						disabled={loading && tasks.length > 0} // Only disable if actively loading more
 					>
-						{/* Show loader when loading, otherwise refresh icon */}
-						{loading ? (
-							<IconLoader className="h-5 w-5 animate-spin" />
+						{/* MODIFIED: Increased icon size */}
+						{loading && tasks.length > 0 ? (
+							<IconLoader className="h-6 w-6 animate-spin" />
 						) : (
-							<IconRefresh className="h-5 w-5" />
+							<IconRefresh className="h-6 w-6" />
 						)}
 					</button>
 					<Tooltip
@@ -434,52 +442,58 @@ const Tasks = () => {
 					/>
 				</div>
 
-				{/* --- MODIFIED: Task List Container --- */}
-				{/* Takes remaining vertical space, centered horizontally, scrolls internally */}
-				{/* Added padding top/bottom to avoid overlap */}
-				<div className="flex-grow w-full max-w-5xl mx-auto px-6 pt-24 pb-28 flex flex-col overflow-hidden">
-					{/* Centered Heading */}
-					{/* <h2 className="text-2xl font-semibold text-center mb-6 text-gray-300">Tasks</h2> */}
+				{/* --- Task List Container --- */}
+				{/* MODIFIED: Increased top/bottom padding, adjusted max-width */}
+				<div className="flex-grow w-full max-w-4xl mx-auto px-0 pt-24 pb-28 flex flex-col overflow-hidden">
+					{" "}
+					{/* Adjusted padding/width */}
 					{/* Task List Area */}
-					<div className="flex-grow overflow-y-auto space-y-3 pr-2">
+					<div className="flex-grow overflow-y-auto space-y-4 pr-2 custom-scrollbar">
 						{" "}
-						{/* Added pr-2 for scrollbar */}
-						{filteredTasks.length === 0 ? (
-							<p className="text-gray-500 text-center py-10">
+						{/* Increased space-y, added custom scrollbar class (define in global css if needed) */}
+						{filteredTasks.length === 0 && !loading ? ( // Ensure loader isn't showing before "No tasks"
+							<p className="text-gray-500 text-center py-16">
 								No tasks found matching your criteria.
-							</p>
+							</p> // Increased padding
 						) : (
 							filteredTasks.map((task) => {
-								const StatusIcon =
-									statusMap[task.status]?.icon ||
-									statusMap.default.icon
-								const statusColor =
-									statusMap[task.status]?.color ||
-									statusMap.default.color
+								const statusInfo =
+									statusMap[task.status] || statusMap.default
 								const priorityInfo =
 									priorityMap[task.priority] ||
 									priorityMap.default
 								return (
-									// MODIFIED: Task item using flexbox divs
+									// MODIFIED: Task item with border-left for status color, increased padding/sizes
 									<div
 										key={task.task_id}
-										className="flex items-center gap-4 bg-neutral-800 p-3 rounded-lg shadow hover:bg-neutral-700/60 transition-colors duration-150"
+										// ADDED: Dynamic border color based on status
+										className={cn(
+											"flex items-center gap-4 bg-neutral-800 p-4 rounded-lg shadow hover:bg-neutral-700/60 transition-colors duration-150",
+											"border-l-4", // Add left border width
+											statusInfo.borderColor // Add dynamic border color class
+										)}
 									>
 										{/* Status Icon & Priority */}
-										<div className="flex flex-col items-center w-16 flex-shrink-0">
-											<StatusIcon
-												className={`h-6 w-6 ${statusColor}`}
-											/>
+										{/* MODIFIED: Increased icon size */}
+										<div className="flex flex-col items-center w-20 flex-shrink-0">
+											{" "}
+											{/* Increased width */}
+											<statusInfo.icon
+												className={`h-7 w-7 ${statusInfo.color}`}
+											/>{" "}
+											{/* Increased icon size */}
 											<span
-												className={`text-xs mt-1 font-medium ${priorityInfo.color}`}
+												className={`text-xs mt-1.5 font-semibold ${priorityInfo.color}`}
 											>
 												{priorityInfo.label}
-											</span>
+											</span>{" "}
+											{/* Increased margin */}
 										</div>
 										{/* Task Details */}
 										<div className="flex-grow min-w-0">
+											{/* MODIFIED: Increased font size */}
 											<p
-												className="text-sm font-medium text-white truncate"
+												className="text-base font-medium text-white truncate"
 												title={task.description}
 											>
 												{task.status ===
@@ -498,7 +512,8 @@ const Tasks = () => {
 													task.description
 												)}
 											</p>
-											<p className="text-xs text-gray-400 mt-1">
+											{/* MODIFIED: Increased font size */}
+											<p className="text-sm text-gray-400 mt-1">
 												ID: {task.task_id} | Added:{" "}
 												{task.created_at
 													? new Date(
@@ -524,6 +539,7 @@ const Tasks = () => {
 											)}
 										</div>
 										{/* Actions */}
+										{/* MODIFIED: Increased padding/icon size */}
 										<div className="flex items-center gap-2 flex-shrink-0">
 											<button
 												onClick={() =>
@@ -532,10 +548,11 @@ const Tasks = () => {
 												disabled={
 													task.status === "processing"
 												}
-												className={`p-1.5 rounded-md transition-colors ${task.status === "processing" ? "text-gray-600 cursor-not-allowed" : "text-yellow-400 hover:bg-neutral-700"}`}
+												className={`p-2 rounded-md transition-colors ${task.status === "processing" ? "text-gray-600 cursor-not-allowed" : "text-yellow-400 hover:bg-neutral-700"}`}
 												title="Edit Task"
 											>
-												<IconPencil className="h-4 w-4" />
+												<IconPencil className="h-5 w-5" />{" "}
+												{/* Increased icon size */}
 											</button>
 											<button
 												onClick={() =>
@@ -543,10 +560,11 @@ const Tasks = () => {
 														task.task_id
 													)
 												}
-												className="p-1.5 rounded-md text-red-400 hover:bg-neutral-700 transition-colors"
+												className="p-2 rounded-md text-red-400 hover:bg-neutral-700 transition-colors"
 												title="Delete Task"
 											>
-												<IconTrash className="h-4 w-4" />
+												<IconTrash className="h-5 w-5" />{" "}
+												{/* Increased icon size */}
 											</button>
 										</div>
 									</div>
@@ -556,9 +574,14 @@ const Tasks = () => {
 					</div>
 				</div>
 
-				{/* --- MODIFIED: Add Task Bar (Bottom) --- */}
-				<div className="absolute bottom-0 left-0 right-0 z-30 p-4">
-					<div className="max-w-5xl mx-auto flex items-center gap-2 bg-neutral-800/80 backdrop-blur-sm rounded-lg p-2 shadow-lg">
+				{/* --- Add Task Bar (Bottom) --- */}
+				{/* MODIFIED: Increased padding/sizes */}
+				<div className="absolute bottom-0 left-0 right-0 z-30 p-5">
+					{" "}
+					{/* Increased padding */}
+					<div className="max-w-5xl mx-auto flex items-center gap-3 border border-neutral-600 bg-neutral-800/80 backdrop-blur-sm rounded-full p-3 shadow-lg">
+						{" "}
+						{/* Increased padding */}
 						{/* Text Area */}
 						<textarea
 							placeholder="Enter new task description..."
@@ -566,8 +589,9 @@ const Tasks = () => {
 							onChange={(e) =>
 								setNewTaskDescription(e.target.value)
 							}
-							rows={1} // Start with 1 row, auto-expands slightly
-							className="flex-grow p-2 bg-transparent text-white text-sm focus:outline-none resize-none placeholder-gray-500 min-h-[40px] max-h-[100px]" // Added min/max height
+							rows={1}
+							// MODIFIED: Increased sizes and added border
+							className="flex-grow p-2.5 bg-transparent text-white text-base focus:outline-none resize-none placeholder-gray-500 min-h-[48px] max-h-[120px] rounded-md"
 						/>
 						{/* Priority Dropdown */}
 						<div className="relative flex-shrink-0">
@@ -578,44 +602,51 @@ const Tasks = () => {
 										Number(e.target.value)
 									)
 								}
-								className="appearance-none bg-neutral-700 border border-neutral-600 text-white text-xs rounded-full px-3 py-1.5 focus:outline-none focus:border-lightblue cursor-pointer"
+								// MODIFIED: Increased sizes
+								className="appearance-none bg-neutral-700 border border-neutral-600 text-white text-sm rounded-full px-4 py-2.5 focus:outline-none focus:border-lightblue cursor-pointer"
 								title="Set task priority"
 							>
 								<option value={0}>High</option>
 								<option value={1}>Medium</option>
 								<option value={2}>Low</option>
 							</select>
-							<IconChevronUp className="absolute right-2 top-1/2 transform -translate-y-1/2 h-3 w-3 text-gray-400 pointer-events-none" />{" "}
-							{/* Visual cue */}
+							<IconChevronUp className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
 						</div>
 						{/* Add Button */}
+						{/* MODIFIED: Increased padding/size */}
 						<button
 							onClick={handleAddTask}
-							className="p-2 rounded-full bg-lightblue text-white hover:bg-blue-700 focus:outline-none transition-colors flex-shrink-0"
+							className="p-3 rounded-full bg-lightblue text-white hover:bg-blue-700 focus:outline-none transition-colors flex-shrink-0"
 							title="Add Task"
 						>
-							<IconSend className="h-5 w-5" />{" "}
-							{/* Changed to Send icon */}
+							<IconPlus className="h-6 w-6" />{" "}
+							{/* Back to Plus icon, increased size */}
 						</button>
 					</div>
 				</div>
 
 				{/* --- Edit Task Modal --- */}
-				{/* MODIFIED: Styling and Priority input */}
+				{/* MODIFIED: Increased sizes/padding */}
 				{editingTask && (
-					<div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50">
-						<div className="bg-neutral-800 p-6 rounded-lg shadow-xl w-full max-w-md mx-4">
-							<h3 className="text-lg font-semibold mb-4 text-white">
+					<div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50 p-4">
+						<div className="bg-neutral-800 p-8 rounded-lg shadow-xl w-full max-w-lg mx-auto">
+							{" "}
+							{/* Increased padding/max-width */}
+							<h3 className="text-xl font-semibold mb-6 text-white">
 								Edit Task
-							</h3>
-							<div className="mb-4">
+							</h3>{" "}
+							{/* Increased size/margin */}
+							<div className="mb-5">
+								{" "}
+								{/* Increased margin */}
 								<label
 									htmlFor="edit-description"
-									className="block text-gray-400 text-sm font-medium mb-1"
+									className="block text-gray-300 text-sm font-medium mb-2"
 								>
 									{" "}
 									Description{" "}
-								</label>
+								</label>{" "}
+								{/* Adjusted color/margin */}
 								<input
 									type="text"
 									id="edit-description"
@@ -626,45 +657,51 @@ const Tasks = () => {
 											description: e.target.value
 										})
 									}
-									className="p-2 rounded-md bg-neutral-700 border border-neutral-600 text-white focus:outline-none w-full focus:border-lightblue"
+									// MODIFIED: Increased padding/text size
+									className="p-3 rounded-md bg-neutral-700 border border-neutral-600 text-white focus:outline-none w-full focus:border-lightblue text-base"
 								/>
 							</div>
-							<div className="mb-6">
+							<div className="mb-8">
+								{" "}
+								{/* Increased margin */}
 								<label
 									htmlFor="edit-priority"
-									className="block text-gray-400 text-sm font-medium mb-1"
+									className="block text-gray-300 text-sm font-medium mb-2"
 								>
 									{" "}
 									Priority{" "}
 								</label>
-								{/* MODIFIED: Use select dropdown for priority */}
+								{/* MODIFIED: Increased padding/text size */}
 								<select
 									id="edit-priority"
-									value={editingTask.priority} // Use the numeric priority
+									value={editingTask.priority}
 									onChange={(e) =>
 										setEditingTask({
 											...editingTask,
 											priority: Number(e.target.value)
 										})
 									}
-									className="p-2 rounded-md bg-neutral-700 border border-neutral-600 text-white focus:outline-none w-full focus:border-lightblue appearance-none"
+									className="p-3 rounded-md bg-neutral-700 border border-neutral-600 text-white focus:outline-none w-full focus:border-lightblue appearance-none text-base"
 								>
 									<option value={0}>High</option>
 									<option value={1}>Medium</option>
 									<option value={2}>Low</option>
 								</select>
 							</div>
-							<div className="flex justify-end gap-3">
+							<div className="flex justify-end gap-4">
+								{" "}
+								{/* Increased gap */}
+								{/* MODIFIED: Increased padding/text size */}
 								<button
 									onClick={() => setEditingTask(null)}
-									className="py-2 px-4 rounded bg-neutral-600 hover:bg-neutral-500 text-white text-sm font-medium transition-colors"
+									className="py-2.5 px-5 rounded bg-neutral-600 hover:bg-neutral-500 text-white text-sm font-medium transition-colors"
 								>
 									{" "}
 									Cancel{" "}
 								</button>
 								<button
 									onClick={handleUpdateTask}
-									className="py-2 px-4 rounded bg-green-600 hover:bg-green-500 text-white text-sm font-medium transition-colors"
+									className="py-2.5 px-5 rounded bg-green-600 hover:bg-green-500 text-white text-sm font-medium transition-colors"
 								>
 									{" "}
 									Save Changes{" "}
@@ -675,14 +712,19 @@ const Tasks = () => {
 				)}
 
 				{/* --- Approval Modal --- */}
-				{/* MODIFIED: Styling */}
+				{/* MODIFIED: Increased sizes/padding */}
 				{selectedTask && (
-					<div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50">
-						<div className="bg-neutral-800 p-6 rounded-lg shadow-xl w-full max-w-lg mx-4 text-gray-300">
-							<h3 className="text-lg font-semibold mb-4 text-white">
+					<div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50 p-4">
+						<div className="bg-neutral-800 p-8 rounded-lg shadow-xl w-full max-w-xl mx-auto text-gray-300">
+							{" "}
+							{/* Increased padding/max-width */}
+							<h3 className="text-xl font-semibold mb-6 text-white">
 								Approve Task Action
-							</h3>
-							<div className="space-y-2 text-sm mb-4">
+							</h3>{" "}
+							{/* Increased size/margin */}
+							<div className="space-y-3 text-base mb-6">
+								{" "}
+								{/* Increased size/spacing/margin */}
 								<p>
 									<strong>Task ID:</strong>{" "}
 									<span className="text-white font-mono">
@@ -696,13 +738,12 @@ const Tasks = () => {
 											"N/A"}
 									</span>
 								</p>
-								{/* Display parameters dynamically */}
 								{selectedTask.approvalData?.parameters &&
 									Object.entries(
 										selectedTask.approvalData.parameters
 									).map(
 										([key, value]) =>
-											key !== "body" && ( // Don't display body here
+											key !== "body" && (
 												<p key={key}>
 													<strong>
 														{key
@@ -712,32 +753,37 @@ const Tasks = () => {
 														:
 													</strong>{" "}
 													<span className="text-white">
-														{value}
+														{String(value)}
 													</span>
 												</p>
-											)
+											) // Ensure value is string
 									)}
 								{selectedTask.approvalData?.parameters
 									?.body && (
 									<>
-										<p className="mt-2">
+										<p className="mt-3">
 											<strong>Body:</strong>
-										</p>
+										</p>{" "}
+										{/* Increased margin */}
 										<textarea
 											readOnly
-											className="w-full h-32 p-2 mt-1 bg-neutral-700 border border-neutral-600 text-white rounded text-xs font-mono focus:outline-none"
+											className="w-full h-40 p-3 mt-1 bg-neutral-700 border border-neutral-600 text-white rounded text-sm font-mono focus:outline-none"
 											value={
 												selectedTask.approvalData
 													.parameters.body
 											}
-										/>
+										/>{" "}
+										{/* Increased size/padding */}
 									</>
 								)}
 							</div>
-							<div className="flex justify-end gap-3">
+							<div className="flex justify-end gap-4">
+								{" "}
+								{/* Increased gap */}
+								{/* MODIFIED: Increased padding/text size */}
 								<button
 									onClick={() => setSelectedTask(null)}
-									className="py-2 px-4 rounded bg-neutral-600 hover:bg-neutral-500 text-white text-sm font-medium transition-colors"
+									className="py-2.5 px-5 rounded bg-neutral-600 hover:bg-neutral-500 text-white text-sm font-medium transition-colors"
 								>
 									{" "}
 									Cancel{" "}
@@ -746,7 +792,7 @@ const Tasks = () => {
 									onClick={() =>
 										handleApproveTask(selectedTask.taskId)
 									}
-									className="py-2 px-4 rounded bg-green-600 hover:bg-green-500 text-white text-sm font-medium transition-colors"
+									className="py-2.5 px-5 rounded bg-green-600 hover:bg-green-500 text-white text-sm font-medium transition-colors"
 								>
 									{" "}
 									Approve{" "}
@@ -755,6 +801,44 @@ const Tasks = () => {
 						</div>
 					</div>
 				)}
+
+				{/* --- ADDED: Status Legend --- */}
+				<div className="absolute bottom-24 right-6 z-30 bg-neutral-800/80 backdrop-blur-sm rounded-lg p-3 shadow-lg text-xs">
+					<h4 className="font-semibold text-gray-300 mb-2 text-center">
+						Status Legend
+					</h4>
+					<div className="space-y-1.5">
+						{Object.entries(statusMap).map(
+							([key, { label, color, borderColor }]) => {
+								if (key === "default") return null // Skip default entry
+								const borderClass =
+									borderColor || "border-transparent" // Fallback if borderColor isn't defined
+								const textClass = color || "text-gray-400"
+								return (
+									<div
+										key={key}
+										className="flex items-center gap-2"
+									>
+										<span
+											className={cn(
+												"block w-3 h-3 rounded-sm border-l-4",
+												borderClass
+											)}
+										></span>
+										<span
+											className={cn(
+												"capitalize",
+												textClass
+											)}
+										>
+											{label}
+										</span>
+									</div>
+								)
+							}
+						)}
+					</div>
+				</div>
 			</div>{" "}
 			{/* End Main Content Area */}
 		</div> // End Page Container
