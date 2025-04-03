@@ -1,56 +1,58 @@
 "use client"
 
 import { useState, useEffect, useRef, useCallback } from "react"
-import { BackgroundCircles } from "@components/voice-test/ui/background-circles"
+// REMOVED: BackgroundCircles import
+// ADDED: VoiceBlobs import
+import { VoiceBlobs } from "@components/voice-visualization/VoiceBlobs"
 import { AIVoiceInput } from "@components/voice-test/ui/ai-voice-input"
 import { WebRTCClient } from "@utils/WebRTCClient"
 import React from "react"
 
 export function BackgroundCircleProvider() {
-	const [currentVariant, setCurrentVariant] = useState("octonary")
+	// REMOVED: currentVariant state
 	const [isConnected, setIsConnected] = useState(false)
 	const [webrtcClient, setWebrtcClient] = useState(null)
-	const [audioLevel, setAudioLevel] = useState(0)
-	const audioRef = useRef(null)
+	const [audioLevel, setAudioLevel] = useState(0) // Audio level from 0 to 1
+	const audioRef = useRef(null) // For playing back audio from server (if needed)
 
-	// Memoize callbacks to prevent recreation on each render
+	// Memoize callbacks to prevent unnecessary re-renders
 	const handleConnected = useCallback(() => setIsConnected(true), [])
-	const handleDisconnected = useCallback(() => setIsConnected(false), [])
+	const handleDisconnected = useCallback(() => {
+		setIsConnected(false)
+		setAudioLevel(0) // Reset audio level on disconnect
+	}, [])
 
 	const handleAudioStream = useCallback((stream) => {
+		// This handles the audio *coming back* from the server, if any
 		if (audioRef.current) {
 			audioRef.current.srcObject = stream
 		}
 	}, [])
 
 	const handleAudioLevel = useCallback((level) => {
-		// Apply some smoothing to the audio level
+		// Apply some smoothing to the audio level to prevent jerky movements
+		// Adjust smoothing factor (e.g., 0.7) as needed
 		setAudioLevel((prev) => prev * 0.7 + level * 0.3)
 	}, [])
 
-	// Get all available variants
-	const variants = Object.keys(COLOR_VARIANTS)
-
-	// Function to change to the next color variant
-	const changeVariant = () => {
-		const currentIndex = variants.indexOf(currentVariant)
-		const nextVariant = variants[(currentIndex + 1) % variants.length]
-		setCurrentVariant(nextVariant)
-	}
+	// REMOVED: variants and changeVariant logic
 
 	useEffect(() => {
 		// Initialize WebRTC client with memoized callbacks
 		const client = new WebRTCClient({
 			onConnected: handleConnected,
 			onDisconnected: handleDisconnected,
-			onAudioStream: handleAudioStream,
-			onAudioLevel: handleAudioLevel
+			onAudioStream: handleAudioStream, // Handles incoming audio from backend
+			onAudioLevel: handleAudioLevel // Receives mic level from client
 		})
 		setWebrtcClient(client)
 
+		// Cleanup function: disconnect client when component unmounts
 		return () => {
+			console.log("Disconnecting WebRTC client on component unmount")
 			client.disconnect()
 		}
+		// Dependencies ensure effect runs only when callbacks change (which they shouldn't due to useCallback)
 	}, [
 		handleConnected,
 		handleDisconnected,
@@ -59,68 +61,36 @@ export function BackgroundCircleProvider() {
 	])
 
 	const handleStart = () => {
+		console.log("Attempting to connect WebRTC client...")
 		webrtcClient?.connect()
 	}
 
 	const handleStop = () => {
+		console.log("Disconnecting WebRTC client...")
 		webrtcClient?.disconnect()
 	}
 
 	return (
-		<div
-			className="relative w-full h-full"
-			onClick={changeVariant} // Add click handler to change color
-		>
-			<BackgroundCircles
-				variant={currentVariant}
-				audioLevel={audioLevel}
-				isActive={isConnected}
-			/>
-			<div className="absolute inset-0 flex items-center justify-center">
+		// MODIFIED: Removed onClick handler, full height/width container
+		<div className="relative w-full h-full flex items-center justify-center">
+			{/* MODIFIED: Render VoiceBlobs instead of BackgroundCircles */}
+			<VoiceBlobs audioLevel={audioLevel} isActive={isConnected} />
+			{/* AIVoiceInput remains in the center overlay */}
+			<div className="absolute inset-0 flex items-center justify-center z-10">
+				{" "}
+				{/* Ensure button is above blobs */}
 				<AIVoiceInput
 					onStart={handleStart}
 					onStop={handleStop}
 					isConnected={isConnected}
 				/>
 			</div>
+			{/* Audio element for playback from server */}
 			<audio ref={audioRef} autoPlay hidden />
 		</div>
 	)
 }
 
-export default { BackgroundCircleProvider }
+export default BackgroundCircleProvider // MODIFIED: Export default
 
-const COLOR_VARIANTS = {
-	primary: {
-		border: [
-			"border-emerald-500/60",
-			"border-cyan-400/50",
-			"border-slate-600/30"
-		],
-		gradient: "from-emerald-500/30"
-	},
-	secondary: {
-		border: [
-			"border-violet-500/60",
-			"border-fuchsia-400/50",
-			"border-slate-600/30"
-		],
-		gradient: "from-violet-500/30"
-	},
-	senary: {
-		border: [
-			"border-blue-500/60",
-			"border-sky-400/50",
-			"border-slate-600/30"
-		],
-		gradient: "from-blue-500/30"
-	}, // blue
-	octonary: {
-		border: [
-			"border-red-500/60",
-			"border-rose-400/50",
-			"border-slate-600/30"
-		],
-		gradient: "from-red-500/30"
-	}
-}
+// REMOVED: COLOR_VARIANTS definition
