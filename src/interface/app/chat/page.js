@@ -80,7 +80,7 @@ const Chat = () => {
 
 	const fetchCurrentModel = async () => {
 		// Replace with actual logic if needed
-		setCurrentModel("llama3.2:3b")
+		setCurrentModel("phi4-mini")
 	}
 
 	const setupIpcListeners = () => {

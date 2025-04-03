@@ -236,7 +236,7 @@ print(f"[INIT] {datetime.now()}: TaskQueue initialized.")
 stt_model = None
 tts_model = None
 OLLAMA_API_URL = "http://localhost:11434/api/chat" # Keep for reference or potential fallback
-OLLAMA_MODEL = "llama3.2:3b" # Keep for reference
+OLLAMA_MODEL = "phi4-mini" # Keep for reference
 OLLAMA_REQUEST_TIMEOUT = 60.0
 SELECTED_TTS_VOICE: VoiceId = "tara"
 if SELECTED_TTS_VOICE not in AVAILABLE_VOICES:
@@ -279,7 +279,7 @@ async def add_message_to_db(chat_id: str, message_text: str, is_user: bool, is_v
                     "message": message_text,
                     "isUser": is_user,
                     "isVisible": is_visible,
-                    "timestamp": datetime.datetime.now(timezone.utc).isoformat() + "Z",
+                    "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
                     "memoryUsed": kwargs.get("memoryUsed", False),
                     "agentsUsed": kwargs.get("agentsUsed", False),
                     "internetUsed": kwargs.get("internetUsed", False),
@@ -494,7 +494,7 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
         # print(f"[CHAT_HISTORY] {datetime.now()}: Acquired chat DB lock.")
         chatsDb = await load_db()
         active_chat_id = chatsDb.get("active_chat_id") # Use .get for safety
-        current_time = datetime.datetime.now(timezone.utc)
+        current_time = datetime.now(timezone.utc)
 
         # If no active chat exists, create a new one
         if not active_chat_id: # Check if None or empty
@@ -804,7 +804,7 @@ async def execute_agent_task(task: dict) -> str:
             user_context = f"Error retrieving user context: {e}" # Pass error info downstream if needed
 
     # --- Compute Internet Context ---
-    if internet == "Internet":
+    if internet:
         print(f"[AGENT_EXEC] {datetime.now()}: Task {task_id} requires internet search.")
         try:
             print(f"[AGENT_EXEC] {datetime.now()}: Re-framing internet query for task {task_id}...")
@@ -1268,7 +1268,7 @@ class ApproveTaskResponse(BaseModel):
 # ... (Configuration, Model Init, Ollama function remain the same) ...
 # --- Configuration ---
 OLLAMA_API_URL = "http://localhost:11434/api/chat"
-OLLAMA_MODEL = "llama3.2:3b"
+OLLAMA_MODEL = "phi4-mini"
 OLLAMA_REQUEST_TIMEOUT = 60.0
 
 # --- Select TTS Voice ---
@@ -1442,7 +1442,7 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
 
             # Fetch context if needed (Internet)
             # Assuming these helpers call synchronous invoke methods internally for now
-            if internet == "Internet":
+            if internet:
                 print("Searching the internet...")
                 try:
                     reframed_query = get_reframed_internet_query(internet_query_reframe_runnable, transformed_input)
@@ -1838,7 +1838,7 @@ async def chat(message: Message):
                     note = "Sorry friend, memory updates are a pro feature and your daily credits have expired. Upgrade to pro in settings!"
                     yield json.dumps({"type": "intermediary", "message": "Retrieving memories (read-only)...", "id": assistant_msg_id}) + "\n"
                     memory_used = True # Still retrieving
-                    user_context = memory_backend.retrieve_memory(username, transformed_input)
+                    user_context = await memory_backend.retrieve_memory(username, transformed_input)
                     print(f"[STREAM /chat] {datetime.now()}: Memory retrieved (read-only). Context length: {len(str(user_context)) if user_context else 0}")
                 elif category == "memory": # Pro or has credits
                     print(f"[STREAM /chat] {datetime.now()}: Memory category with credits/pro plan. Retrieving and queueing update.")
@@ -1846,7 +1846,7 @@ async def chat(message: Message):
                     memory_used = True
                     pro_used = True # Memory update is a pro feature use
                     # Retrieve existing memories first
-                    user_context = memory_backend.retrieve_memory(username, transformed_input)
+                    user_context = await memory_backend.retrieve_memory(username, transformed_input)
                     print(f"[STREAM /chat] {datetime.now()}: Memory retrieved. Context length: {len(str(user_context)) if user_context else 0}")
                     # Queue memory update in the background
                     print(f"[STREAM /chat] {datetime.now()}: Queueing memory update operation for user '{username}'.")
@@ -1855,12 +1855,12 @@ async def chat(message: Message):
                     print(f"[STREAM /chat] {datetime.now()}: Retrieving personal context (not memory category).")
                     yield json.dumps({"type": "intermediary", "message": "Retrieving relevant context...", "id": assistant_msg_id}) + "\n"
                     memory_used = True # Mark as used context
-                    user_context = memory_backend.retrieve_memory(username, transformed_input)
+                    user_context = await memory_backend.retrieve_memory(username, transformed_input)
                     print(f"[STREAM /chat] {datetime.now()}: Personal context retrieved. Context length: {len(str(user_context)) if user_context else 0}")
                 assistant_msg["memoryUsed"] = memory_used # Update status
 
             # --- Handle Internet Search ---
-            if internet == "Internet":
+            if internet:
                 print(f"[STREAM /chat] {datetime.now()}: Internet search required.")
                 if pricing_plan == "free" and credits <= 0:
                     print(f"[STREAM /chat] {datetime.now()}: Internet search required but free plan credits exhausted. Skipping.")
@@ -1887,7 +1887,7 @@ async def chat(message: Message):
             if category in ["chat", "memory"]:
                 print(f"[STREAM /chat] {datetime.now()}: Category is '{category}'. Generating chat response...")
                 personality_description = db.get("userData", {}).get("personality", "Default helpful assistant")
-                print(f"[STREAM /chat] {datetime.now()}: Using personality: '{personality_description[:50]}...'")
+                print(f"[STREAM /chat] {datetime.now()}: Using personality: '{personality_description}...'")
 
                 # Prepare input for the chat runnable
                 chat_inputs = {

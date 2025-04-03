@@ -17,7 +17,7 @@ from orpheus_tts import OrpheusTTS, TTSOptions, VoiceId, AVAILABLE_VOICES
 # ... (Configuration, Model Init, Ollama function remain the same) ...
 # --- Configuration ---
 OLLAMA_API_URL = "http://localhost:11434/api/chat"
-OLLAMA_MODEL = "llama3.2:3b"
+OLLAMA_MODEL = "phi4-mini"
 OLLAMA_REQUEST_TIMEOUT = 60.0
 
 # --- Select TTS Voice ---

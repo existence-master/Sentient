@@ -2327,4 +2327,59 @@ ipcMain.handle("set-data-source-enabled", async (event, source, enabled) => {
 	}
 })
 
+ipcMain.handle("clear-chat-history", async (event) => {
+	console.log("[IPC Main] Received clear-chat-history request.")
+	const targetUrl = `${process.env.APP_SERVER_URL || "http://localhost:5000"}/clear-chat-history`
+
+	try {
+		const response = await fetch(targetUrl, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json"
+				// Add any other necessary headers like Authorization if needed
+			}
+			// No body is needed for this specific endpoint based on the Python code
+		})
+
+		// Check if the fetch itself was successful (status code 2xx)
+		if (!response.ok) {
+			// Try to get error details from the backend response body
+			let errorDetail = `Backend responded with status ${response.status}`
+			try {
+				const errorData = await response.json()
+				errorDetail = errorData.detail || JSON.stringify(errorData) // FastAPI often uses 'detail' for HTTPException
+			} catch (jsonError) {
+				// If the error response is not JSON, use the status text
+				errorDetail = response.statusText
+			}
+			console.error(
+				`[IPC Main] Failed to clear chat history on backend: ${errorDetail}`
+			)
+			// Return an object that includes the status for the renderer to check
+			return {
+				status: response.status,
+				error: `Failed to clear history: ${errorDetail}`
+			}
+		}
+
+		// If the request was successful (e.g., 200 OK)
+		const responseData = await response.json() // Even if successful, parse the response
+		console.log("[IPC Main] Backend successfully cleared chat history.")
+		return {
+			status: response.status, // Should be 200
+			message: responseData.message // Pass the success message along
+		}
+	} catch (error) {
+		console.error(
+			"[IPC Main] Network or fetch error calling clear-chat-history:",
+			error
+		)
+		// Return an error structure consistent with other failures
+		return {
+			status: 500, // Indicate an internal/communication error
+			error: `Failed to communicate with backend: ${error.message}`
+		}
+	}
+})
+
 // --- End of File ---

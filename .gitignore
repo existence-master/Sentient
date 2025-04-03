@@ -245,6 +245,6 @@ context.json
 memory_operations.json
 notificationsDb.json
 ruff_cache
-.db
+memory.db
 token.json
 .wav

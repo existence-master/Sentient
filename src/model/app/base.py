@@ -17,11 +17,11 @@ def get_selected_model() -> Tuple[str, str]:
 
     Reads the `userProfileDb.json` file to determine the currently selected
     language model. If the database file is not found or the 'selectedModel'
-    key is missing, it defaults to 'llama3.2:3b' as the model and provider.
+    key is missing, it defaults to 'phi4-mini' as the model and provider.
 
     Returns:
         Tuple[str, str]: A tuple containing the selected model name and the provider.
-                         For example: ('gpt-4o', 'openai') or ('llama3.2:3b', 'llama3.2:3b').
+                         For example: ('gpt-4o', 'openai') or ('phi4-mini', 'phi4-mini').
 
     Raises:
         ValueError: If the `userProfileDb.json` file path is not set or the file does not exist.
@@ -31,7 +31,7 @@ def get_selected_model() -> Tuple[str, str]:
         raise ValueError("USER_PROFILE_DB_PATH not set or file not found")
     with open(db_path, "r", encoding="utf-8") as f:
         db = json.load(f)
-    selected_model = db["userData"].get("selectedModel", "llama3.2:3b")  # Default to llama3.2:3b
+    selected_model = db["userData"].get("selectedModel", "phi4-mini")  # Default to phi4-mini
     if selected_model == "openai":
         return "gpt-4o", "openai"
     elif selected_model == "claude":
