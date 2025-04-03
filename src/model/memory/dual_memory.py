@@ -234,6 +234,101 @@ class MemoryManager:
                     ''', (updated_text, new_embedding, ','.join(query_keywords), memory_id))
             conn.commit()
             conn.close()
+            
+    def update_memory_crud(self, user_id: str, category: str, memory_id: int, new_text: str, retention_days: int):
+        """
+        Updates an existing memory record using direct CRUD operations.
+
+        Args:
+            user_id (str): The ID of the user owning the memory.
+            category (str): The category table where the memory resides.
+            memory_id (int): The ID of the memory record to update.
+            new_text (str): The new text content for the memory.
+            retention_days (int): The new retention period in days (e.g., 1-90).
+
+        Raises:
+            ValueError: If the category is invalid, retention_days is out of range,
+                        the memory is not found, or the memory does not belong to the user.
+            sqlite3.Error: If a database error occurs.
+            RuntimeError: If embedding computation fails.
+            Exception: For other unexpected errors.
+        """
+        print(f"Attempting CRUD update for memory ID {memory_id} in category '{category}' for user '{user_id}'")
+        print(f"New text: '{new_text[:50]}...', New retention: {retention_days} days")
+
+        # 1. Validate Inputs
+        category_lower = category.lower()
+        if category_lower not in [cat.lower() for cat in self.categories.keys()]:
+            raise ValueError(f"Invalid category specified: {category}")
+
+        if not (1 <= retention_days <= 90): # Use consistent bounds (e.g., 1-90)
+            raise ValueError("Retention days must be between 1 and 90.")
+
+        if not new_text:
+            raise ValueError("Memory text cannot be empty.")
+
+        conn = None # Initialize conn to None for finally block
+        try:
+            # 2. Connect to DB
+            conn = sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+            cursor = conn.cursor()
+
+            # 3. Verify Ownership and Existence
+            cursor.execute(f'SELECT user_id FROM {category_lower} WHERE id = ?', (memory_id,))
+            result = cursor.fetchone()
+
+            if not result:
+                raise ValueError(f"Memory with ID {memory_id} not found in category '{category_lower}'")
+
+            if result[0] != user_id:
+                # Security: Raise an error indicating forbidden access or not found
+                raise ValueError(f"Memory ID {memory_id} does not belong to user {user_id} or access denied.")
+
+            # 4. Prepare Data for Update
+            new_embedding = self.compute_embedding(new_text) # Can raise RuntimeError
+            new_keywords = self.extract_keywords(new_text)
+            new_keywords_str = ','.join(new_keywords)
+            new_expiry_at = datetime.datetime.now() + timedelta(days=retention_days) # Use adapter-compatible datetime
+
+            # 5. Execute SQL UPDATE
+            sql = f'''
+                UPDATE {category_lower}
+                SET original_text = ?,
+                    keywords = ?,
+                    embedding = ?,
+                    expiry_at = ?
+                    -- Optionally update other fields like is_active=1 if needed
+                WHERE id = ? AND user_id = ?
+            '''
+            params = (new_text, new_keywords_str, new_embedding, new_expiry_at, memory_id, user_id)
+            cursor.execute(sql, params)
+
+            # Check if the update actually affected a row (optional but good practice)
+            if cursor.rowcount == 0:
+                 # This shouldn't happen due to the checks above, but handle defensively
+                 raise sqlite3.Error(f"Failed to update memory ID {memory_id}. Row not found or conditions not met.")
+
+            # 6. Commit Transaction
+            conn.commit()
+            print(f"Successfully updated memory ID {memory_id} in category '{category_lower}'")
+
+        except (sqlite3.Error, ValueError, RuntimeError) as e:
+            print(f"Error during CRUD update for memory ID {memory_id}: {e}")
+            if conn:
+                conn.rollback() # Rollback changes on error
+            raise # Re-raise the specific exception for FastAPI to handle
+
+        except Exception as e:
+            print(f"Unexpected error during CRUD update for memory ID {memory_id}: {e}")
+            if conn:
+                conn.rollback()
+            # Re-raise a generic exception or the original one
+            raise Exception(f"An unexpected error occurred while updating memory: {e}")
+
+        finally:
+            # 7. Close Connection
+            if conn:
+                conn.close()
 
     def store_memory(self, user_id: str, text: str, retention_days: Dict, category: str) -> bool:
         print(f"Attempting to store memory: '{text[:50]}...' in category '{category}'")
@@ -406,9 +501,27 @@ class MemoryManager:
             conn.close()
             
     def clear_all_memories(self, user_id: str):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        for table in self.categories.values():
-            cursor.execute(f'DELETE FROM {table.lower()} WHERE user_id = ?', (user_id,))
-        conn.commit()
-        conn.close()
+        """Deletes all memories for a specific user across all categories."""
+        print(f"Clearing all memories for user ID: {user_id}")
+        conn = None
+        total_deleted = 0
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            for category in self.categories.keys():
+                table_name = category.lower()
+                cursor.execute(f'DELETE FROM {table_name} WHERE user_id = ?', (user_id,))
+                total_deleted += cursor.rowcount
+            conn.commit()
+            print(f"Cleared a total of {total_deleted} memories for user {user_id}.")
+        except sqlite3.Error as e:
+            print(f"Database error clearing memories for user {user_id}: {e}")
+            if conn: conn.rollback()
+            raise # Re-raise the error
+        except Exception as e:
+             print(f"Unexpected error clearing memories for user {user_id}: {e}")
+             if conn: conn.rollback()
+             raise
+        finally:
+            if conn:
+                conn.close()
