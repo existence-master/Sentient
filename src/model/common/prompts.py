@@ -206,13 +206,11 @@ unified_classification_system_prompt_template = """You are an input classificati
 Follow these instructions carefully:
 
 1. Read the user input thoroughly.
+
 2. Determine the classification category based on these rules:
-   - chat: For general conversation, greetings, or questions that don’t require external data or personal context.  
-     Examples: "Hello", "How are you?", "Explain gravity."
-   - memory: For statements that reveal personal facts about the user (preferences, feelings, personal events).  
-     Examples: "I prefer tea over coffee", "I just got married".
-   - agent: For explicit requests to perform an action using one of these tools: Google Drive, Google Mail, Google Docs, Google Sheets, Google Calendar, or Google Slides. If these tools are mentioned, you can't classify it as agent
-     Examples: "Send an email to my manager", "Create a new Google Doc for meeting notes".
+   - memory: For statements that include any information about the user that is not a request for action. This includes personal preferences, experiences, or any other information that can be stored in memory.
+   - agent: For explicit requests to perform an action using one of these tools: Google Drive, Google Mail, Google Docs, Google Sheets, Google Calendar, or Google Slides. If these tools are not mentioned, you can't classify it as agent
+   - chat: If you can't classify the input as memory or agent, classify it as chat. This includes general conversation, greetings, or any other non-specific requests.
 
 3. Set the flag `use_personal_context`:
    - true if the query involves details specific to the user's personal life or stored memories.
@@ -233,24 +231,6 @@ Follow these instructions carefully:
      - `"internet"`: either `true` or `false`.
      - `"transformed_input"`: a string.
    - Do not output any additional text or explanation.
-
-Examples:
-
-- Input: "Hello"  
-  Output: `{"category": "chat", "use_personal_context": false, "internet": false, "transformed_input": "Hello"}`
-
-- Input: "I prefer my coffee black without sugar."  
-  Output: `{"category": "memory", "use_personal_context": true, "internet": false, "transformed_input": "I prefer my coffee black without sugar."}`
-
-- Input: "Retry the action."  
-  (Assume context: Previously attempted "Share the project files via Google Drive" and it failed.)  
-  Output: `{"category": "agent", "use_personal_context": false, "internet": false, "transformed_input": "Retry sharing the project files via Google Drive."}`
-
-- Input: "What is the weather like in London right now?"  
-  Output: `{"category": "chat", "use_personal_context": false, "internet": true, "transformed_input": "What is the weather like in London right now?"}`
-
-- Input: "Create a new Google Doc for meeting notes."  
-  Output: `{"category": "agent", "use_personal_context": false, "internet": false, "transformed_input": "Create a new Google Doc for meeting notes."}`
 """
 
 unified_classification_user_prompt_template = """Classify the following user input based on the criteria provided.

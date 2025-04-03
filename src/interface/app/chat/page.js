@@ -208,16 +208,6 @@ const Chat = () => {
 
 	// --- Data Fetching and IPC --- (Existing logic mostly okay)
 	const fetchChatHistory = async () => {
-		if (messages.length === 0) {
-			console.log(
-				"fetchChatHistory: No messages, setting isLoading to true."
-			)
-			setIsLoading(true)
-		} else {
-			console.log(
-				"fetchChatHistory: Messages exist, not setting isLoading."
-			)
-		}
 		try {
 			const response = await window.electron?.invoke("fetch-chat-history")
 			if (response?.status === 200) {
@@ -479,14 +469,14 @@ const Chat = () => {
 				chatEndRef.current.scrollIntoView({ behavior: "smooth" })
 			}
 			// Fetch logic
-			if (messages.length === 0 && !isLoading) {
+			if (!isLoading) {
 				console.log(
 					"ChatPage: Switched to text mode, fetching history."
 				)
 				fetchChatHistory()
 			}
 		}
-	}, [chatMode, messages, isLoading]) // Correct dependencies
+	}, [chatMode]) // Correct dependencies
 
 	// Effect for textarea resize (Corrected Structure)
 	useEffect(() => {
