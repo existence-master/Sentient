@@ -548,8 +548,8 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
                      print(f"[CHAT_HISTORY] {datetime.now()}: Warning: Last message in chat {active_chat_id} has no timestamp. Skipping inactivity check.")
                 else:
                     # Robust Timestamp Parsing
-                    if timestamp_str.endswith('Z'):
-                        timestamp_str = timestamp_str[:-1] + '+00:00'
+                    # if timestamp_str.endswith('Z'):
+                    #     timestamp_str = timestamp_str[:-1] + '+00:00'
 
                     try:
                         last_timestamp = datetime.fromisoformat(timestamp_str)
@@ -689,7 +689,6 @@ async def process_queue():
                 else:
                      print(f"[WARN] {datetime.now()}: Task {task_id} has no associated chat_id. Cannot add result to chat.")
 
-
                 await task_queue.complete_task(task_id, result=result)
                 print(f"[TASK_PROCESSOR] {datetime.now()}: Task {task_id} marked as completed in queue.")
 
@@ -789,7 +788,6 @@ async def process_memory_operations():
         else:
             # No operation found, sleep briefly
             await asyncio.sleep(0.1)
-
 
 async def execute_agent_task(task: dict) -> str:
     """Execute the agent task asynchronously and handle approval for email tasks."""
@@ -1071,15 +1069,15 @@ async def execute_agent_task(task: dict) -> str:
     return final_result_str
 
 
-# async def add_result_to_chat(chat_id: Union[int, str], result: str, isUser: bool, task_description: str = None):
-#     """
-#     Add the task result or hidden user message to the corresponding chat.
-#     This function seems redundant as add_message_to_db handles this logic now.
-#     Refactor calls to use add_message_to_db directly with appropriate `isVisible` flag.
-#     """
-#     print(f"[DEPRECATED] {datetime.now()}: add_result_to_chat called. Use add_message_to_db instead.")
-#     is_visible = not isUser # User messages (task descriptions) should be hidden, assistant results visible
-#     await add_message_to_db(chat_id, result, is_user=isUser, is_visible=is_visible, task=task_description)
+async def add_result_to_chat(chat_id: Union[int, str], result: str, isUser: bool, task_description: str = None):
+    """
+    Add the task result or hidden user message to the corresponding chat.
+    This function seems redundant as add_message_to_db handles this logic now.
+    Refactor calls to use add_message_to_db directly with appropriate `isVisible` flag.
+    """
+    print(f"[DEPRECATED] {datetime.now()}: add_result_to_chat called. Use add_message_to_db instead.")
+    is_visible = not isUser # User messages (task descriptions) should be hidden, assistant results visible
+    await add_message_to_db(chat_id, result, is_user=isUser, is_visible=is_visible, task=task_description)
 
 
 # --- FastAPI Application Setup ---
@@ -1109,28 +1107,69 @@ app.add_middleware(
 )
 print(f"[FASTAPI] {datetime.now()}: CORS middleware added.")
 
-# --- Startup and Shutdown Events ---
-@app.on_event("startup")
+# --- Startup and Shutdown Events ---@app.on_event("startup")
 async def startup_event():
+    """Handles application startup procedures."""
+    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Application startup event triggered.")
+    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Loading tasks from storage...")
     await task_queue.load_tasks()
+    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Loading memory operations from storage...")
     await memory_backend.memory_queue.load_operations()
+
+    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Creating background task for processing task queue...")
     asyncio.create_task(process_queue())
+    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Creating background task for processing memory operations...")
     asyncio.create_task(process_memory_operations())
+    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Creating background task for periodic task cleanup...")
     asyncio.create_task(cleanup_tasks_periodically())
-    
-    user_id = "user1"  # Replace with dynamic user ID retrieval if needed
-    enabled_data_sources = []  # Add gcalendar here
-    
+
+    # Initialize and start context engines based on user profile settings
+    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Initializing context engines based on user profile...")
+    user_id = "user1" # TODO: Replace with dynamic user ID retrieval if needed
+    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Using placeholder user_id: {user_id} for context engines.")
+    user_profile = load_user_profile()
+    enabled_data_sources = []
+
+    # Check which data sources are enabled in the profile (default to True if key missing)
+    if user_profile.get("userData", {}).get("gmailEnabled", True):
+        enabled_data_sources.append("gmail")
+    if user_profile.get("userData", {}).get("internetSearchEnabled", True):
+        enabled_data_sources.append("internet_search")
+    if user_profile.get("userData", {}).get("gcalendarEnabled", True):
+        enabled_data_sources.append("gcalendar")
+
+    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Enabled data sources for context engines: {enabled_data_sources}")
+
     for source in enabled_data_sources:
-        if source == "gmail":
-            engine = GmailContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
-        elif source == "internet_search":
-            engine = InternetSearchContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
-        elif source == "gcalendar":
-            engine = GCalendarContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
-        else:
-            continue  # Skip unrecognized sources
-        asyncio.create_task(engine.start())
+        engine = None
+        print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Setting up context engine for source: {source}")
+        try:
+            if source == "gmail":
+                engine = GmailContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
+            elif source == "internet_search":
+                 # Internet Search engine might not have a continuous process like Gmail/GCalendar
+                 # Adjust if it needs a long-running task
+                # engine = InternetSearchContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
+                print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: InternetSearchContextEngine currently does not require a background task.")
+                continue # Skip starting a task for this one for now
+            elif source == "gcalendar":
+                engine = GCalendarContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
+            else:
+                print(f"[WARN] {datetime.now()}: Unknown data source '{source}' encountered during context engine setup.")
+                continue
+
+            if engine:
+                print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Starting background task for {source} context engine...")
+                asyncio.create_task(engine.start())
+            else:
+                print(f"[WARN] {datetime.now()}: Failed to initialize engine for {source}.")
+
+
+        except Exception as e:
+            print(f"[ERROR] {datetime.now()}: Failed to initialize or start context engine for {source}: {e}")
+            traceback.print_exc()
+
+    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Application startup complete.")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -1869,98 +1908,66 @@ async def chat(message: Message):
 
             # --- Handle Chat and Memory Categories (Generate Response) ---
             if category in ["chat", "memory"]:
-                print(f"[STREAM /chat] {datetime.now()}: Category is '{category}'. Generating chat response...")
-                personality_description = db.get("userData", {}).get("personality", "Default helpful assistant")
-                print(f"[STREAM /chat] {datetime.now()}: Using personality: '{personality_description}...'")
+                with open("userProfileDb.json", "r", encoding="utf-8") as f:
+                    db = json.load(f)
+                personality_description = db["userData"].get("personality", "None")
 
-                # Prepare input for the chat runnable
-                chat_inputs = {
-                    "query": transformed_input,
-                    "user_context": user_context,
-                    "internet_context": internet_context,
-                    "name": username,
-                    "personality": personality_description
-                }
-
-                # Add placeholder assistant message to DB before streaming starts
-                # Let's skip the placeholder and add the *final* message after the stream.
-                # This simplifies DB management but means the message only appears once complete.
-                # Alternative: Add placeholder, then update. Sticking with final add for now.
-
-                # Stream the response
-                print(f"[STREAM /chat] {datetime.now()}: Starting LLM stream generation...")
-                full_response = ""
-                try:
-                    async for token in generate_streaming_response(
-                        chat_runnable,
-                        inputs=chat_inputs,
-                        stream=True # Explicitly request streaming
-                    ):
-                        if isinstance(token, str):
-                            full_response += token
-                            # Yield the token to the client
-                            yield json.dumps({
-                                "type": "assistantStream",
-                                "token": token,
-                                "done": False,
-                                "messageId": assistant_msg_id_ts # Link token to message ID
-                            }) + "\n"
-                            await asyncio.sleep(0.01) # Small delay between tokens
-                        else:
-                             # Ignore non-string tokens (like potential end-of-stream objects)
-                             pass
-                except Exception as e:
-                    print(f"[ERROR] {datetime.now()}: Error during LLM stream generation: {e}")
-                    traceback.print_exc()
-                    full_response += f"\n\n[Error generating response: {e}]" # Append error to output
-
-                print(f"[STREAM /chat] {datetime.now()}: LLM stream generation finished. Full response length: {len(full_response)}")
-
-                # Append notes if any
-                if note:
-                    full_response += "\n\n" + note.strip()
-                    print(f"[STREAM /chat] {datetime.now()}: Appended note: '{note.strip()[:50]}...'")
-
-                # Add the final assistant message to the DB
-                assistant_msg["message"] = full_response
-                assistant_msg["timestamp"] = datetime.now(timezone.utc).isoformat() + "Z" # Final timestamp
                 assistant_msg["memoryUsed"] = memory_used
                 assistant_msg["internetUsed"] = internet_used
-                assistant_msg["agentsUsed"] = agents_used # Should be False here
-
-                final_assistant_msg_id = await add_message_to_db(
-                    active_chat_id,
-                    assistant_msg["message"],
-                    is_user=False,
-                    is_visible=True,
-                    id=assistant_msg_id_ts, # Use the pre-generated ID
-                    memoryUsed=memory_used,
-                    internetUsed=internet_used,
-                    agentsUsed=agents_used
-                    # Add timestamp manually if add_message_to_db doesn't take it
-                    # timestamp=assistant_msg["timestamp"] # Assuming add_message_to_db generates its own
-                )
-
-                if not final_assistant_msg_id:
-                     print(f"[ERROR] {datetime.now()}: Failed to add final assistant message to DB for chat {active_chat_id}.")
-                     # Yield error?
-                     yield json.dumps({"type": "error", "message": "Failed to save my response."}) + "\n"
-                     return
-
-
-                # Yield the final "done" signal with all metadata
-                print(f"[STREAM /chat] {datetime.now()}: Yielding final 'done' signal.")
-                yield json.dumps({
-                    "type": "assistantStream",
-                    "token": "", # No more tokens
-                    "done": True,
-                    "memoryUsed": memory_used,
-                    "agentsUsed": agents_used,
-                    "internetUsed": internet_used,
-                    "proUsed": pro_used,
-                    "messageId": final_assistant_msg_id or assistant_msg_id_ts # Use ID from DB or generated one
-                }) + "\n"
-                await asyncio.sleep(0.01)
+                print("USER CONTEXT: ", user_context)
+                async for token in generate_streaming_response(
+                    chat_runnable,
+                    inputs={
+                        "query": transformed_input,
+                        "user_context": user_context,
+                        "internet_context": internet_context,
+                        "name": username,
+                        "personality": personality_description
+                    },
+                    stream=True
+                ):
+                    if isinstance(token, str):
+                        assistant_msg["message"] += token
+                        async with db_lock:
+                            chatsDb = await load_db()
+                            active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                            for msg in active_chat["messages"]:
+                                if msg["id"] == assistant_msg["id"]:
+                                    msg["message"] = assistant_msg["message"]
+                                    break
+                            else:
+                                active_chat["messages"].append(assistant_msg)
+                            await save_db(chatsDb)
+                        yield json.dumps({
+                            "type": "assistantStream",
+                            "token": token,
+                            "done": False,
+                            "messageId": assistant_msg["id"]
+                        }) + "\n"
+                    else:
+                        if note:
+                            assistant_msg["message"] += "\n\n" + note
+                        async with db_lock:
+                            chatsDb = await load_db()
+                            active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                            for msg in active_chat["messages"]:
+                                if msg["id"] == assistant_msg["id"]:
+                                    msg.update(assistant_msg)
+                                    break
+                            else:
+                                active_chat["messages"].append(assistant_msg)
+                            await save_db(chatsDb)
+                        yield json.dumps({
+                            "type": "assistantStream",
+                            "token": "\n\n" + note if note else "",
+                            "done": True,
+                            "memoryUsed": memory_used,
+                            "agentsUsed": agents_used,
+                            "internetUsed": internet_used,
+                            "proUsed": pro_used,
+                            "messageId": assistant_msg["id"]
+                        }) + "\n"
+                    await asyncio.sleep(0.05)
 
             stream_duration = time.time() - stream_start_time
             print(f"[STREAM /chat] {datetime.now()}: Response generation stream finished for chat {active_chat_id}. Duration: {stream_duration:.2f}s")
@@ -1985,7 +1992,6 @@ async def chat(message: Message):
     finally:
         endpoint_duration = time.time() - endpoint_start_time
         print(f"[ENDPOINT /chat] {datetime.now()}: Endpoint execution finished. Duration: {endpoint_duration:.2f}s")
-
 
 ## Agents Endpoints
 @app.post("/elaborator", status_code=200)
@@ -3551,7 +3557,7 @@ async def update_memory(request: UpdateMemoryRequest):
     try:
         # Run blocking DB update in threadpool
         await loop.run_in_executor(
-            None, memory_backend.memory_manager.update_memory,
+            None, memory_backend.memory_manager.update_memory_crud,
             user_id, category, mem_id, text, retention
         )
         print(f"[ENDPOINT /update-short-term-memory] {datetime.now()}: Memory ID {mem_id} updated successfully.")
@@ -3613,7 +3619,6 @@ async def clear_all_memories(request: Dict):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to clear memories: {str(e)}")
 
-## User Profile DB Endpoints
 @app.post("/set-user-data")
 async def set_db_data(request: UpdateUserDataRequest) -> Dict[str, Any]:
     """
@@ -3643,7 +3648,6 @@ async def set_db_data(request: UpdateUserDataRequest) -> Dict[str, Any]:
         print(f"[ERROR] {datetime.now()}: Unexpected error in /set-user-data: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error storing data: {str(e)}")
-
 
 @app.post("/add-db-data")
 async def add_db_data(request: AddUserDataRequest) -> Dict[str, Any]:
@@ -3700,7 +3704,6 @@ async def add_db_data(request: AddUserDataRequest) -> Dict[str, Any]:
         print(f"[ERROR] {datetime.now()}: Unexpected error in /add-db-data: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error adding data: {str(e)}")
-
 
 @app.post("/get-user-data")
 async def get_db_data() -> Dict[str, Any]:
@@ -3979,7 +3982,6 @@ async def websocket_endpoint(websocket: WebSocket):
         # Optionally try to send an error message before disconnecting? Risky.
     finally:
         manager.disconnect(websocket)
-
 
 # Mount FastRTC stream AFTER FastAPI app is initialized and lifespan is attached
 stream.mount(app, path="/voice")
