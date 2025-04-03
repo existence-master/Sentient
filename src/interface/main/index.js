@@ -222,7 +222,7 @@ export const createAppWindow = () => {
 			.catch((err) => console.error("Failed to serve packaged app:", err))
 	} else {
 		// Development mode
-		const devUrl = process.env.ELECTRON_APP_URL || "http://localhost:5173" // Provide a fallback default
+		const devUrl = process.env.ELECTRON_APP_URL
 		console.log(`Attempting to load URL: ${devUrl}`)
 		mainWindow
 			.loadURL(devUrl)
@@ -1326,7 +1326,7 @@ ipcMain.handle("send-message", async (_event, { input }) => {
 		const payload = {
 			input,
 			pricing,
-			credits,
+			credits
 		}
 		// Using logging from "Current code"
 		console.log("Sending payload to /chat:", JSON.stringify(payload))

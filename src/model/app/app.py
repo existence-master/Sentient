@@ -241,9 +241,6 @@ print(f"[INIT] {datetime.now()}: TaskQueue initialized.")
 # Voice Model Placeholders & Config
 stt_model = None
 tts_model = None
-OLLAMA_API_URL = "http://localhost:11434/api/chat" # Keep for reference or potential fallback
-OLLAMA_MODEL = "llama3.2:3b" # Keep for reference
-OLLAMA_REQUEST_TIMEOUT = 60.0
 SELECTED_TTS_VOICE: VoiceId = "tara"
 if SELECTED_TTS_VOICE not in AVAILABLE_VOICES:
     print(f"Warning: Selected voice '{SELECTED_TTS_VOICE}' not valid. Using default 'tara'.")

@@ -35,7 +35,7 @@ class TTSOptions(TypedDict, total=False):
     voice_id: VoiceId # Use the defined Literal type
 
 # --- Constants ---
-DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "Orpheus-3b-FT-Q8_0.gguf")
+DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "orpheus-3b-0.1-ft-q4_k_m.gguf")
 DEFAULT_N_GPU_LAYERS = int(os.getenv("ORPHEUS_N_GPU_LAYERS", 30))
 SAMPLE_RATE = 24000
 AVAILABLE_VOICES: list[VoiceId] = ["tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"]
