@@ -831,7 +831,7 @@ async def execute_agent_task(task: dict) -> str:
             user_context = f"Error retrieving user context: {e}" # Pass error info downstream if needed
 
     # --- Compute Internet Context ---
-    if internet and internet.lower() != 'none': # Check if internet search is actually requested
+    if internet: # Check if internet search is actually requested
         print(f"[AGENT_EXEC] {datetime.now()}: Task {task_id} requires internet search.")
         try:
             print(f"[AGENT_EXEC] {datetime.now()}: Re-framing internet query for task {task_id}...")
@@ -1108,6 +1108,7 @@ app.add_middleware(
 print(f"[FASTAPI] {datetime.now()}: CORS middleware added.")
 
 # --- Startup and Shutdown Events ---@app.on_event("startup")
+@app.on_event("startup")
 async def startup_event():
     """Handles application startup procedures."""
     print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Application startup event triggered.")
@@ -1440,7 +1441,7 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]) -> AsyncGener
                     asyncio.create_task(memory_backend.add_operation(username, transformed_input))
 
             # Fetch context if needed (Internet)
-            if internet and internet.lower() != 'none':
+            if internet:
                 print("Searching the internet...")
                 try:
                     reframed_query = get_reframed_internet_query(internet_query_reframe_runnable, transformed_input)
@@ -1779,6 +1780,11 @@ async def chat(message: Message):
                 print(f"[STREAM /chat] {datetime.now()}: Category is 'agent'. Preparing to add task to queue.")
                 agents_used = True # Mark agent as used
                 assistant_msg["agentsUsed"] = True
+                user_profile_data = load_user_profile()
+                if not user_profile_data or "userData" not in user_profile_data:
+                    print(f"[ERROR] {datetime.now()}: Failed to load valid user profile data.")
+                    raise HTTPException(status_code=500, detail="User profile could not be loaded.")
+                db = user_profile_data # Use loaded data
                 personality_description = db.get("userData", {}).get("personality", "Default helpful assistant") # Get personality
                 print(f"[STREAM /chat] {datetime.now()}: Determining task priority for: '{transformed_input}...'")
                 try:
@@ -1883,7 +1889,7 @@ async def chat(message: Message):
                 assistant_msg["memoryUsed"] = memory_used # Update status
 
             # --- Handle Internet Search ---
-            if internet and internet.lower() != 'none':
+            if internet:
                 print(f"[STREAM /chat] {datetime.now()}: Internet search required.")
                 if pricing_plan == "free" and credits <= 0:
                     print(f"[STREAM /chat] {datetime.now()}: Internet search required but free plan credits exhausted. Skipping.")
@@ -3986,7 +3992,6 @@ async def websocket_endpoint(websocket: WebSocket):
 # Mount FastRTC stream AFTER FastAPI app is initialized and lifespan is attached
 stream.mount(app, path="/voice")
 print("FastRTC stream mounted at /voice.")
-
 
 if __name__ == "__main__":
     # Ensure freeze_support is called for multiprocessing if packaging

@@ -418,6 +418,7 @@ const Chat = () => {
 			if (chatEndRef.current) {
 				chatEndRef.current.scrollIntoView({ behavior: "smooth" })
 			}
+			// Fetch logic
 			if (!isLoading) {
 				console.log(
 					"ChatPage: Switched to text mode, fetching history."
@@ -425,7 +426,7 @@ const Chat = () => {
 				fetchChatHistory()
 			}
 		}
-	}, [chatMode])
+	}, [chatMode]) // Correct dependencies
 
 	// Effect for textarea resize
 	useEffect(() => {
