@@ -26,7 +26,6 @@ import "react-tooltip/dist/react-tooltip.css"
 import { cn } from "@utils/cn"
 
 // --- Task Status Mapping ---
-// ADDED: Mapping status strings to icons and colors for visual feedback
 const statusMap = {
 	pending: {
 		icon: IconClock,
@@ -72,7 +71,7 @@ const statusMap = {
 	}
 }
 
-// ADDED: Mapping for priority levels
+// --- Priority Mapping ---
 const priorityMap = {
 	0: { label: "High", color: "text-red-400" },
 	1: { label: "Medium", color: "text-yellow-400" },
@@ -87,7 +86,7 @@ const Tasks = () => {
 	const [userDetails, setUserDetails] = useState({})
 	const [isSidebarVisible, setSidebarVisible] = useState(false)
 	const [newTaskDescription, setNewTaskDescription] = useState("")
-	const [newTaskPriorityLevel, setNewTaskPriorityLevel] = useState(1) // Default to Medium (1)
+	const [newTaskPriorityLevel, setNewTaskPriorityLevel] = useState(1)
 	const [editingTask, setEditingTask] = useState(null)
 	const [filterStatus, setFilterStatus] = useState("all")
 	const [searchTerm, setSearchTerm] = useState("")
@@ -96,7 +95,6 @@ const Tasks = () => {
 	// --- Fetching Data ---
 	const fetchTasksData = useCallback(async () => {
 		console.log("Fetching tasks data...")
-		// MODIFIED: Only set global loading true if tasks array is currently empty
 		if (tasks.length === 0) {
 			setLoading(true)
 		}
@@ -150,9 +148,9 @@ const Tasks = () => {
 			setTasks([])
 		} finally {
 			console.log("Finished fetching tasks, setting loading false.")
-			setLoading(false) // Always ensure loading is false after attempt
+			setLoading(false)
 		}
-	}, [tasks.length]) // MODIFIED: Add tasks.length dependency to re-evaluate initial loading state
+	}, [tasks.length])
 
 	const fetchUserDetails = async () => {
 		try {
@@ -368,26 +366,18 @@ const Tasks = () => {
 				isSidebarVisible={isSidebarVisible}
 				setSidebarVisible={setSidebarVisible}
 			/>
-			{/* MODIFIED: Added flex-grow and padding */}
 			<div className="flex-grow flex flex-col h-full bg-matteblack text-white relative overflow-hidden p-6">
 				{/* --- Top Bar for Search/Filter --- */}
-				{/* MODIFIED: Increased padding and text size */}
 				<div className="absolute top-6 left-1/2 transform -translate-x-1/2 z-30 w-full max-w-3xl px-4">
-					{" "}
-					{/* Increased max-width */}
 					<div className="flex items-center space-x-3 bg-neutral-800/80 backdrop-blur-sm rounded-full p-3 shadow-lg border border-neutral-700">
-						{" "}
-						{/* Increased padding */}
-						<IconSearch className="h-6 w-6 text-gray-400 ml-2 flex-shrink-0" />{" "}
-						{/* Increased icon size */}
+						<IconSearch className="h-6 w-6 text-gray-400 ml-2 flex-shrink-0" />
 						<input
 							type="text"
 							placeholder="Search tasks..."
 							value={searchTerm}
 							onChange={(e) => setSearchTerm(e.target.value)}
-							className="bg-transparent text-white focus:outline-none w-full flex-grow px-2 placeholder-gray-500 text-base rounded-md py-1"
+							className="bg-transparent text-white focus:outline-none w-full flex-grow px-2 placeholder-gray-500 text-base rounded-md py-1" // Removed redundant border
 						/>
-						{/* Filter Dropdown */}
 						<div className="relative flex-shrink-0">
 							<IconFilter className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
 							<select
@@ -395,7 +385,6 @@ const Tasks = () => {
 								onChange={(e) =>
 									setFilterStatus(e.target.value)
 								}
-								// MODIFIED: Increased padding and text size
 								className="appearance-none bg-neutral-700 border border-neutral-600 text-white text-sm rounded-full pl-9 pr-4 py-2 focus:outline-none focus:border-lightblue cursor-pointer"
 								title="Filter tasks by status"
 							>
@@ -414,15 +403,13 @@ const Tasks = () => {
 				</div>
 
 				{/* --- Refresh Button (Top Right) --- */}
-				{/* MODIFIED: Adjusted position slightly */}
 				<div className="absolute top-6 right-6 z-30">
 					<button
 						onClick={fetchTasksData}
-						className="p-2.5 rounded-full hover:bg-neutral-700/60 transition-colors text-gray-300" // Increased padding
+						className="p-2.5 rounded-full hover:bg-neutral-700/60 transition-colors text-gray-300"
 						data-tooltip-id="refresh-tooltip"
-						disabled={loading && tasks.length > 0} // Only disable if actively loading more
+						disabled={loading && tasks.length > 0}
 					>
-						{/* MODIFIED: Increased icon size */}
 						{loading && tasks.length > 0 ? (
 							<IconLoader className="h-6 w-6 animate-spin" />
 						) : (
@@ -441,18 +428,12 @@ const Tasks = () => {
 				</div>
 
 				{/* --- Task List Container --- */}
-				{/* MODIFIED: Increased top/bottom padding, adjusted max-width */}
 				<div className="flex-grow w-full max-w-4xl mx-auto px-0 pt-24 pb-28 flex flex-col overflow-hidden">
-					{" "}
-					{/* Adjusted padding/width */}
-					{/* Task List Area */}
 					<div className="flex-grow overflow-y-auto space-y-4 pr-2 custom-scrollbar">
-						{" "}
-						{/* Increased space-y, added custom scrollbar class (define in global css if needed) */}
-						{filteredTasks.length === 0 && !loading ? ( // Ensure loader isn't showing before "No tasks"
+						{filteredTasks.length === 0 && !loading ? (
 							<p className="text-gray-500 text-center py-16">
 								No tasks found matching your criteria.
-							</p> // Increased padding
+							</p>
 						) : (
 							filteredTasks.map((task) => {
 								const statusInfo =
@@ -461,35 +442,33 @@ const Tasks = () => {
 									priorityMap[task.priority] ||
 									priorityMap.default
 								return (
-									// MODIFIED: Task item with border-left for status color, increased padding/sizes
 									<div
 										key={task.task_id}
-										// ADDED: Dynamic border color based on status
 										className={cn(
 											"flex items-center gap-4 bg-neutral-800 p-4 rounded-lg shadow hover:bg-neutral-700/60 transition-colors duration-150",
-											"border-l-4", // Add left border width
-											statusInfo.borderColor // Add dynamic border color class
+											"border-l-4",
+											statusInfo.borderColor
 										)}
 									>
 										{/* Status Icon & Priority */}
-										{/* MODIFIED: Increased icon size */}
 										<div className="flex flex-col items-center w-20 flex-shrink-0">
-											{" "}
-											{/* Increased width */}
 											<statusInfo.icon
-												className={`h-7 w-7 ${statusInfo.color}`}
-											/>{" "}
-											{/* Increased icon size */}
+												className={cn(
+													"h-7 w-7",
+													statusInfo.color
+												)}
+											/>
 											<span
-												className={`text-xs mt-1.5 font-semibold ${priorityInfo.color}`}
+												className={cn(
+													"text-xs mt-1.5 font-semibold",
+													priorityInfo.color
+												)}
 											>
 												{priorityInfo.label}
-											</span>{" "}
-											{/* Increased margin */}
+											</span>
 										</div>
 										{/* Task Details */}
 										<div className="flex-grow min-w-0">
-											{/* MODIFIED: Increased font size */}
 											<p
 												className="text-base font-medium text-white truncate"
 												title={task.description}
@@ -504,40 +483,66 @@ const Tasks = () => {
 														}
 														className="hover:underline text-blue-400"
 													>
-														{task.description}
+														{" "}
+														{task.description}{" "}
 													</button>
 												) : (
 													task.description
 												)}
 											</p>
-											{/* MODIFIED: Increased font size */}
 											<p className="text-sm text-gray-400 mt-1">
+												{" "}
 												ID: {task.task_id} | Added:{" "}
 												{task.created_at
 													? new Date(
 															task.created_at
 														).toLocaleString()
-													: "N/A"}
+													: "N/A"}{" "}
 											</p>
-											{task.result && (
-												<p
-													className="text-xs text-gray-500 mt-1 truncate"
-													title={task.result}
-												>
-													Result: {task.result}
-												</p>
-											)}
-											{task.error && (
-												<p
-													className="text-xs text-red-500 mt-1 truncate"
-													title={task.error}
-												>
-													Error: {task.error}
-												</p>
-											)}
+											{/* --- MODIFIED: Safely render result/error --- */}
+											{task.result != null &&
+												task.result !== "" && (
+													<p
+														className="text-xs text-gray-500 mt-1 truncate"
+														title={
+															typeof task.result ===
+															"string"
+																? task.result
+																: JSON.stringify(
+																		task.result
+																	)
+														}
+													>
+														Result:{" "}
+														{typeof task.result ===
+														"string"
+															? task.result
+															: "[Details in Modal/Log]"}
+													</p>
+												)}
+											{task.error != null &&
+												task.error !== "" && (
+													<p
+														className="text-xs text-red-500 mt-1 truncate"
+														title={
+															typeof task.error ===
+															"string"
+																? task.error
+																: JSON.stringify(
+																		task.error
+																	)
+														}
+													>
+														Error:{" "}
+														{typeof task.error ===
+														"string"
+															? task.error
+															: "[Error Details]"}
+													</p>
+												)}
+											{/* --- End Fix --- */}
 										</div>
 										{/* Actions */}
-										{/* MODIFIED: Increased padding/icon size */}
 										<div className="flex items-center gap-2 flex-shrink-0">
 											<button
 												onClick={() =>
@@ -546,11 +551,16 @@ const Tasks = () => {
 												disabled={
 													task.status === "processing"
 												}
-												className={`p-2 rounded-md transition-colors ${task.status === "processing" ? "text-gray-600 cursor-not-allowed" : "text-yellow-400 hover:bg-neutral-700"}`}
+												className={cn(
+													"p-2 rounded-md transition-colors",
+													task.status === "processing"
+														? "text-gray-600 cursor-not-allowed"
+														: "text-yellow-400 hover:bg-neutral-700"
+												)}
 												title="Edit Task"
 											>
+												{" "}
 												<IconPencil className="h-5 w-5" />{" "}
-												{/* Increased icon size */}
 											</button>
 											<button
 												onClick={() =>
@@ -561,8 +571,8 @@ const Tasks = () => {
 												className="p-2 rounded-md text-red-400 hover:bg-neutral-700 transition-colors"
 												title="Delete Task"
 											>
+												{" "}
 												<IconTrash className="h-5 w-5" />{" "}
-												{/* Increased icon size */}
 											</button>
 										</div>
 									</div>
@@ -573,13 +583,8 @@ const Tasks = () => {
 				</div>
 
 				{/* --- Add Task Bar (Bottom) --- */}
-				{/* MODIFIED: Increased padding/sizes */}
 				<div className="absolute bottom-0 left-0 right-0 z-30 p-5">
-					{" "}
-					{/* Increased padding */}
 					<div className="max-w-5xl mx-auto flex items-center gap-3 border border-neutral-600 bg-neutral-800/80 backdrop-blur-sm rounded-full p-3 shadow-lg">
-						{" "}
-						{/* Increased padding */}
 						{/* Text Area */}
 						<textarea
 							placeholder="Enter new task description..."
@@ -588,8 +593,7 @@ const Tasks = () => {
 								setNewTaskDescription(e.target.value)
 							}
 							rows={1}
-							// MODIFIED: Increased sizes and added border
-							className="flex-grow p-2.5 bg-transparent text-white text-base focus:outline-none resize-none placeholder-gray-500 min-h-[48px] max-h-[120px] rounded-md"
+							className="flex-grow p-2.5 bg-transparent text-white text-base focus:outline-none resize-none placeholder-gray-500 min-h-[48px] max-h-[120px] rounded-md" // Removed border here as parent has one
 						/>
 						{/* Priority Dropdown */}
 						<div className="relative flex-shrink-0">
@@ -600,7 +604,6 @@ const Tasks = () => {
 										Number(e.target.value)
 									)
 								}
-								// MODIFIED: Increased sizes
 								className="appearance-none bg-neutral-700 border border-neutral-600 text-white text-sm rounded-full px-4 py-2.5 focus:outline-none focus:border-lightblue cursor-pointer"
 								title="Set task priority"
 							>
@@ -611,40 +614,31 @@ const Tasks = () => {
 							<IconChevronUp className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
 						</div>
 						{/* Add Button */}
-						{/* MODIFIED: Increased padding/size */}
 						<button
 							onClick={handleAddTask}
 							className="p-3 rounded-full bg-lightblue text-white hover:bg-blue-700 focus:outline-none transition-colors flex-shrink-0"
 							title="Add Task"
 						>
-							<IconPlus className="h-6 w-6" />{" "}
-							{/* Back to Plus icon, increased size */}
+							<IconPlus className="h-6 w-6" />
 						</button>
 					</div>
 				</div>
 
 				{/* --- Edit Task Modal --- */}
-				{/* MODIFIED: Increased sizes/padding */}
 				{editingTask && (
 					<div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50 p-4">
 						<div className="bg-neutral-800 p-8 rounded-lg shadow-xl w-full max-w-lg mx-auto">
-							{" "}
-							{/* Increased padding/max-width */}
 							<h3 className="text-xl font-semibold mb-6 text-white">
 								Edit Task
-							</h3>{" "}
-							{/* Increased size/margin */}
+							</h3>
 							<div className="mb-5">
-								{" "}
-								{/* Increased margin */}
 								<label
 									htmlFor="edit-description"
 									className="block text-gray-300 text-sm font-medium mb-2"
 								>
 									{" "}
 									Description{" "}
-								</label>{" "}
-								{/* Adjusted color/margin */}
+								</label>
 								<input
 									type="text"
 									id="edit-description"
@@ -655,13 +649,10 @@ const Tasks = () => {
 											description: e.target.value
 										})
 									}
-									// MODIFIED: Increased padding/text size
 									className="p-3 rounded-md bg-neutral-700 border border-neutral-600 text-white focus:outline-none w-full focus:border-lightblue text-base"
 								/>
 							</div>
 							<div className="mb-8">
-								{" "}
-								{/* Increased margin */}
 								<label
 									htmlFor="edit-priority"
 									className="block text-gray-300 text-sm font-medium mb-2"
@@ -669,7 +660,6 @@ const Tasks = () => {
 									{" "}
 									Priority{" "}
 								</label>
-								{/* MODIFIED: Increased padding/text size */}
 								<select
 									id="edit-priority"
 									value={editingTask.priority}
@@ -687,9 +677,6 @@ const Tasks = () => {
 								</select>
 							</div>
 							<div className="flex justify-end gap-4">
-								{" "}
-								{/* Increased gap */}
-								{/* MODIFIED: Increased padding/text size */}
 								<button
 									onClick={() => setEditingTask(null)}
 									className="py-2.5 px-5 rounded bg-neutral-600 hover:bg-neutral-500 text-white text-sm font-medium transition-colors"
@@ -710,19 +697,13 @@ const Tasks = () => {
 				)}
 
 				{/* --- Approval Modal --- */}
-				{/* MODIFIED: Increased sizes/padding */}
 				{selectedTask && (
 					<div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50 p-4">
 						<div className="bg-neutral-800 p-8 rounded-lg shadow-xl w-full max-w-xl mx-auto text-gray-300">
-							{" "}
-							{/* Increased padding/max-width */}
 							<h3 className="text-xl font-semibold mb-6 text-white">
 								Approve Task Action
-							</h3>{" "}
-							{/* Increased size/margin */}
+							</h3>
 							<div className="space-y-3 text-base mb-6">
-								{" "}
-								{/* Increased size/spacing/margin */}
 								<p>
 									<strong>Task ID:</strong>{" "}
 									<span className="text-white font-mono">
@@ -754,15 +735,14 @@ const Tasks = () => {
 														{String(value)}
 													</span>
 												</p>
-											) // Ensure value is string
+											)
 									)}
 								{selectedTask.approvalData?.parameters
 									?.body && (
 									<>
 										<p className="mt-3">
 											<strong>Body:</strong>
-										</p>{" "}
-										{/* Increased margin */}
+										</p>
 										<textarea
 											readOnly
 											className="w-full h-40 p-3 mt-1 bg-neutral-700 border border-neutral-600 text-white rounded text-sm font-mono focus:outline-none"
@@ -770,15 +750,11 @@ const Tasks = () => {
 												selectedTask.approvalData
 													.parameters.body
 											}
-										/>{" "}
-										{/* Increased size/padding */}
+										/>
 									</>
 								)}
 							</div>
 							<div className="flex justify-end gap-4">
-								{" "}
-								{/* Increased gap */}
-								{/* MODIFIED: Increased padding/text size */}
 								<button
 									onClick={() => setSelectedTask(null)}
 									className="py-2.5 px-5 rounded bg-neutral-600 hover:bg-neutral-500 text-white text-sm font-medium transition-colors"
@@ -800,7 +776,7 @@ const Tasks = () => {
 					</div>
 				)}
 
-				{/* --- ADDED: Status Legend --- */}
+				{/* --- Status Legend --- */}
 				<div className="absolute bottom-24 right-6 z-30 bg-neutral-800/80 backdrop-blur-sm rounded-lg p-3 shadow-lg text-xs">
 					<h4 className="font-semibold text-gray-300 mb-2 text-center">
 						Status Legend
@@ -808,9 +784,9 @@ const Tasks = () => {
 					<div className="space-y-1.5">
 						{Object.entries(statusMap).map(
 							([key, { label, color, borderColor }]) => {
-								if (key === "default") return null // Skip default entry
+								if (key === "default") return null
 								const borderClass =
-									borderColor || "border-transparent" // Fallback if borderColor isn't defined
+									borderColor || "border-transparent"
 								const textClass = color || "text-gray-400"
 								return (
 									<div

@@ -604,7 +604,6 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
 
 async def add_message_to_db(chat_id: Union[int, str], message_text: str, is_user: bool, is_visible: bool = True, **kwargs):
     """Adds a message to the specified chat ID (now integer) in the database."""
-    # Ensure chat_id is integer for lookup
     try:
         target_chat_id = int(chat_id)
     except (ValueError, TypeError):
@@ -614,35 +613,33 @@ async def add_message_to_db(chat_id: Union[int, str], message_text: str, is_user
     async with db_lock:
         try:
             chatsDb = await load_db()
-            # Find chat using integer comparison
             active_chat = next((chat for chat in chatsDb["chats"] if chat.get("id") == target_chat_id), None)
 
             if active_chat:
-                message_id = str(int(time.time() * 1000)) # Simple timestamp-based ID for message
+                message_id = str(int(time.time() * 1000))
                 new_message = {
                     "id": message_id,
                     "message": message_text,
                     "isUser": is_user,
                     "isVisible": is_visible,
-                    "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+                    # MODIFIED: Removed the redundant "+ "Z"" at the end
+                    "timestamp": datetime.now(timezone.utc).isoformat(), # .isoformat() on timezone-aware datetime includes offset
                     "memoryUsed": kwargs.get("memoryUsed", False),
                     "agentsUsed": kwargs.get("agentsUsed", False),
                     "internetUsed": kwargs.get("internetUsed", False),
-                    # Add other relevant fields if needed, like 'type' for tool results
                 }
                 if kwargs.get("type"):
                     new_message["type"] = kwargs["type"]
                 if kwargs.get("task"):
                     new_message["task"] = kwargs["task"]
 
-                # Ensure messages list exists
                 if "messages" not in active_chat:
                      active_chat["messages"] = []
 
                 active_chat["messages"].append(new_message)
                 await save_db(chatsDb)
                 print(f"Message added to DB (Chat ID: {target_chat_id}, User: {is_user}): {message_text[:50]}...")
-                return message_id # Return the ID if needed
+                return message_id
             else:
                 print(f"Error: Could not find chat with ID {target_chat_id} to add message.")
                 return None
