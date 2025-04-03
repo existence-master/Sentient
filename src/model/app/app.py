@@ -3525,7 +3525,7 @@ async def add_memory(request: AddMemoryRequest):
         # Run blocking DB store in threadpool
         memory_id = await loop.run_in_executor(
             None, memory_backend.memory_manager.store_memory,
-            user_id, text, category, retention
+            user_id, text, retention, category
         )
         print(f"[ENDPOINT /add-short-term-memory] {datetime.now()}: Memory stored successfully with ID: {memory_id}")
         return JSONResponse(status_code=201, content={"memory_id": memory_id, "message": "Memory added successfully"})

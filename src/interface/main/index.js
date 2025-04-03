@@ -1077,11 +1077,6 @@ ipcMain.handle("invert-beta-user-status", async () => {
 // Helper function to fetch user_id (needed for memory operations)
 // Uses the same backend endpoint as get-user-data initially
 async function getUserIdForMemoryOps() {
-	const isDev = !app.isPackaged
-	if (isDev) {
-		// Return a consistent mock User ID for development
-		return "dev-user"
-	}
 	try {
 		// In production, fetch the real user ID
 		const response = await fetch(
