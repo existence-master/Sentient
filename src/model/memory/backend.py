@@ -155,7 +155,7 @@ class MemoryBackend:
                 retention_days = expiry_info.get("retention_days", 7)
                 memory_info = self.memory_manager.extract_and_invoke_memory(fact)
                 category = memory_info.get("memories", [{}])[0].get("category", "tasks")
-                self.memory_manager.store_memory(user_id, fact, {"retention_days": retention_days}, category)
+                self.memory_manager.store_memory(user_id, fact, retention_days, category)
                 print("Fact stored in Short Term memory.")
             else:
                 print("Storing fact in Long Term memory (Neo4j)...")
