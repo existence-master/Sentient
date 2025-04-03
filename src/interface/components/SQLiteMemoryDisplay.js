@@ -23,7 +23,8 @@ import {
 	IconSchool,
 	IconCar,
 	IconDeviceGamepad2,
-	IconChecklist
+	IconChecklist,
+	IconLoader
 } from "@tabler/icons-react" // Added more icons
 import { cn } from "@utils/cn"
 

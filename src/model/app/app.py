@@ -343,11 +343,6 @@ CREDENTIALS_DICT = {
         "redirect_uris": ["http://localhost"] # Make sure this matches your setup
     }
 }
-# Mask sensitive parts for logging if desired
-masked_creds = CREDENTIALS_DICT.copy()
-masked_creds['installed']['client_secret'] = '***REDACTED***' if masked_creds['installed'].get('client_secret') else None
-print(f"[CONFIG] {datetime.now()}:   - CREDENTIALS_DICT configured (secrets redacted): {masked_creds}")
-print(f"[CONFIG] {datetime.now()}: Google OAuth2 configuration complete.")
 
 # Auth0 configuration from utils
 print(f"[CONFIG] {datetime.now()}: Setting up Auth0 configuration...")
@@ -2835,76 +2830,22 @@ async def scrape_twitter(twitter_url: TwitterURL):
 @app.get("/authenticate-google")
 async def authenticate_google():
     """Authenticates with Google using OAuth 2.0."""
-    print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Endpoint called.")
-    token_file = "model/token.pickle"
-    creds = None
-    loop = asyncio.get_event_loop()
-
     try:
-        # 1. Check for existing, valid token
-        if os.path.exists(token_file):
-            print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Found existing token file: {token_file}")
-            try:
-                with open(token_file, "rb") as token:
-                    creds = pickle.load(token)
-                print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Token loaded from file.")
-                # Validate token
-                if creds and creds.valid:
-                    print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Existing token is valid.")
-                    return JSONResponse(status_code=200, content={"success": True, "message": "Already authenticated."})
-                else:
-                    print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Existing token is invalid or expired.")
-            except (pickle.UnpicklingError, EOFError, FileNotFoundError) as load_err:
-                 print(f"[WARN] {datetime.now()}: Failed to load or parse token file '{token_file}': {load_err}. Proceeding to auth flow.")
-                 creds = None # Ensure flow runs
-
-        # 2. Refresh token if possible
-        if creds and creds.expired and creds.refresh_token:
-            print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Attempting to refresh expired token...")
-            try:
-                # Run refresh in threadpool as it might block
-                await loop.run_in_executor(None, creds.refresh, Request())
-                print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Token refreshed successfully.")
-                # Save the refreshed token
-                with open(token_file, "wb") as token:
-                    pickle.dump(creds, token)
-                print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Refreshed token saved to {token_file}.")
-                return JSONResponse(status_code=200, content={"success": True, "message": "Authentication refreshed."})
-            except Exception as refresh_err:
-                 print(f"[ERROR] {datetime.now()}: Failed to refresh token: {refresh_err}. Proceeding to full authentication flow.")
-                 creds = None # Ensure we trigger the flow
-
-        # 3. Run full OAuth flow if no valid/refreshable token
-        if not creds:
-            print(f"[ENDPOINT /authenticate-google] {datetime.now()}: No valid token found. Starting OAuth flow...")
-            # Ensure credentials dictionary is valid
-            if not CREDENTIALS_DICT or not CREDENTIALS_DICT.get("installed") or not CREDENTIALS_DICT["installed"].get("client_id"):
-                 error_msg = "Google API credentials configuration is missing or invalid."
-                 print(f"[ERROR] {datetime.now()}: {error_msg}")
-                 raise HTTPException(status_code=500, detail=error_msg)
-
-            flow = InstalledAppFlow.from_client_config(CREDENTIALS_DICT, SCOPES)
-            # Run the blocking local server flow in a threadpool executor
-            print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Launching local server for user authentication (in background thread)...")
-            try:
-                creds = await loop.run_in_executor(None, flow.run_local_server, 0) # port=0 for random
-                print(f"[ENDPOINT /authenticate-google] {datetime.now()}: OAuth flow completed by user. Credentials obtained.")
-            except Exception as flow_err:
-                 print(f"[ERROR] {datetime.now()}: Error during OAuth flow (run_local_server): {flow_err}")
-                 raise HTTPException(status_code=500, detail=f"Authentication flow failed: {flow_err}")
-
-            # Save the new credentials
-            with open(token_file, "wb") as token:
+        creds = None
+        if os.path.exists("model/token.pickle"):
+            with open("model/token.pickle", "rb") as token:
+                creds = pickle.load(token)
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_config(CREDENTIALS_DICT, SCOPES)
+                creds = flow.run_local_server(port=0)
+            with open("model/token.pickle", "wb") as token:
                 pickle.dump(creds, token)
-            print(f"[ENDPOINT /authenticate-google] {datetime.now()}: New token saved to {token_file}.")
-            return JSONResponse(status_code=200, content={"success": True, "message": "Authentication successful."})
-
-    except HTTPException as http_exc:
-        raise http_exc # Re-raise already handled exceptions
+        return JSONResponse(status_code=200, content={"success": True})
     except Exception as e:
-        print(f"[ERROR] {datetime.now()}: Unexpected error during Google authentication: {e}")
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"success": False, "error": f"Authentication failed: {str(e)}"})
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 ## Memory Endpoints
 @app.post("/graphrag", status_code=200)

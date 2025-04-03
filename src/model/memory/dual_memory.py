@@ -330,7 +330,7 @@ class MemoryManager:
             if conn:
                 conn.close()
 
-    def store_memory(self, user_id: str, text: str, retention_days: Dict, category: str) -> bool:
+    def store_memory(self, user_id: str, text: str, retention_days: int, category: str) -> bool:
         print(f"Attempting to store memory: '{text}...' in category '{category}'")
         try:
             keywords = self.extract_keywords(text)
@@ -338,7 +338,7 @@ class MemoryManager:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             current_time = datetime.datetime.now()
-            expiry_time = current_time + timedelta(days=int(retention_days.get("retention_days", 7)))
+            expiry_time = current_time + timedelta(days=retention_days)
             cursor.execute(f'''
             INSERT INTO {category.lower()} (user_id, original_text, keywords, embedding, created_at, expiry_at)
             VALUES (?, ?, ?, ?, ?, ?)

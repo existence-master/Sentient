@@ -156,7 +156,7 @@ const Sidebar = ({ userDetails, setSidebarVisible, isSidebarVisible }) => {
 			{/* MODIFIED: Added higher z-index (z-30) to ensure it's above the main content (z-10) but below the active sidebar (z-40) */}
 			{/* Added `fixed` positioning to align with the sidebar */}
 			<div
-				className="fixed top-0 left-0 bg-matteblack w-[5%] h-full z-30 flex items-center justify-start"
+				className="fixed top-0 left-0 bg-transparent w-[5%] h-full z-30 flex items-center justify-start"
 				onMouseEnter={() => setSidebarVisible(true)} // Keep mouse enter behavior
 			>
 				<div className="ml-3">
