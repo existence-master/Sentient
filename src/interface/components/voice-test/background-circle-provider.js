@@ -1,5 +1,6 @@
 "use client"
 
+// MODIFIED: Removed initialMuteState from props, removed related useEffects and state
 import {
 	useState,
 	useEffect,
@@ -13,25 +14,19 @@ import { WebRTCClient } from "@utils/WebRTCClient"
 import React from "react"
 
 // Component definition wrapped in forwardRef
+// REMOVED: initialMuteState, selectedDeviceId props
 const BackgroundCircleProviderComponent = (
-	{
-		onStatusChange,
-		connectionStatusProp,
-		initialMuteState,
-		selectedDeviceId
-	},
+	{ onStatusChange, connectionStatusProp },
 	ref
 ) => {
-	// ADDED: initialMuteState, selectedDeviceId props
 	const [webrtcClient, setWebrtcClient] = useState(null)
 	const [isConnected, setIsConnected] = useState(false)
 	const [internalStatus, setInternalStatus] = useState("disconnected")
 	const [audioLevel, setAudioLevel] = useState(0)
 	const audioRef = useRef(null)
-	// ADDED: State to track mute status internally, synchronized with parent
-	const [isMuted, setIsMuted] = useState(initialMuteState || false)
+	// REMOVED: isMuted internal state
 
-	// Effect to sync internal status from prop
+	// Effect to sync internal status from prop (no changes needed here)
 	useEffect(() => {
 		if (connectionStatusProp !== internalStatus) {
 			console.log(
@@ -45,19 +40,9 @@ const BackgroundCircleProviderComponent = (
 		}
 	}, [connectionStatusProp, internalStatus])
 
-	// ADDED: Effect to sync internal mute state from prop (if parent changes it)
-	useEffect(() => {
-		if (initialMuteState !== undefined && initialMuteState !== isMuted) {
-			console.log(
-				`Provider: Syncing mute state from prop: ${initialMuteState}`
-			)
-			setIsMuted(initialMuteState)
-			// Also apply to webrtcClient if it exists
-			webrtcClient?.toggleMute(initialMuteState)
-		}
-	}, [initialMuteState, isMuted, webrtcClient]) // Include webrtcClient dependency
+	// REMOVED: Effect to sync mute state from prop
 
-	// --- Callbacks for WebRTCClient ---
+	// --- Callbacks for WebRTCClient --- (no changes needed here)
 	const handleConnected = useCallback(() => {
 		console.log("Provider: WebRTC Connected")
 		setIsConnected(true)
@@ -100,19 +85,18 @@ const BackgroundCircleProviderComponent = (
 
 	// --- WebRTC Client Initialization ---
 	useEffect(() => {
+		// MODIFIED: Removed initialMuteState and selectedDeviceId from options passed to client
 		console.log(
-			"Provider: Initializing WebRTCClient instance with options:",
-			{ initialMuteState, selectedDeviceId }
+			"Provider: Initializing WebRTCClient instance with basic options"
 		)
-		// MODIFIED: Pass down initialMuteState and selectedDeviceId to the client constructor
 		const client = new WebRTCClient({
 			onConnected: handleConnected,
 			onDisconnected: handleDisconnected,
 			onConnectError: handleConnectError,
 			onAudioStream: handleAudioStream,
-			onAudioLevel: handleAudioLevel,
-			initialMuteState: isMuted, // Pass current internal mute state
-			selectedDeviceId: selectedDeviceId // Pass selected device ID
+			onAudioLevel: handleAudioLevel
+			// initialMuteState: isMuted, // REMOVED
+			// selectedDeviceId: selectedDeviceId // REMOVED
 		})
 		setWebrtcClient(client)
 
@@ -123,39 +107,33 @@ const BackgroundCircleProviderComponent = (
 			)
 			client.disconnect()
 		}
-		// MODIFIED: Added selectedDeviceId and isMuted to dependencies
+		// MODIFIED: Removed selectedDeviceId and isMuted from dependencies
 	}, [
 		handleConnected,
 		handleDisconnected,
 		handleConnectError,
 		handleAudioStream,
-		handleAudioLevel,
-		selectedDeviceId,
-		isMuted
+		handleAudioLevel
 	])
 
-	// --- Expose connect/disconnect/toggleMute methods via ref ---
+	// --- Expose connect/disconnect methods via ref ---
 	useImperativeHandle(ref, () => ({
 		connect: async () => {
+			// Connect method remains
 			if (webrtcClient && internalStatus === "disconnected") {
 				console.log("Provider: connect() called via ref")
 				setInternalStatus("connecting")
 				onStatusChange?.("connecting")
 				try {
-					// MODIFIED: Ensure client uses latest selectedDeviceId - RECREATE client instance on connect?
-					// Alternative: Pass options directly to connect if client supports it
-					// For simplicity now, assume client uses options passed during construction
-					console.log(
-						`Provider: Attempting connection with deviceId: ${selectedDeviceId}`
-					)
-					await webrtcClient.connect()
+					// MODIFIED: Removed logging related to deviceId
+					// console.log(`Provider: Attempting connection with deviceId: ${selectedDeviceId}`);
+					await webrtcClient.connect() // Calls the reverted client's connect
 				} catch (error) {
 					console.error(
 						"Provider: Error during connect() call:",
 						error
 					)
-					// Error handled by onConnectError callback
-					throw error // Re-throw for parent
+					throw error
 				}
 			} else {
 				console.warn(
@@ -164,6 +142,7 @@ const BackgroundCircleProviderComponent = (
 			}
 		},
 		disconnect: () => {
+			// Disconnect method remains
 			if (webrtcClient && internalStatus !== "disconnected") {
 				console.log("Provider: disconnect() called via ref")
 				webrtcClient.disconnect()
@@ -172,30 +151,15 @@ const BackgroundCircleProviderComponent = (
 					"Provider: disconnect() called but client not connected or already disconnecting."
 				)
 			}
-		},
-		// ADDED: Expose toggleMute method
-		toggleMute: (newMuteState) => {
-			if (webrtcClient) {
-				console.log(
-					`Provider: toggleMute(${newMuteState}) called via ref`
-				)
-				webrtcClient.toggleMute(newMuteState)
-				setIsMuted(newMuteState) // Update internal state as well
-			} else {
-				console.warn(
-					"Provider: toggleMute called but webrtcClient is not available."
-				)
-			}
-		},
-		// ADDED: Expose device enumeration (delegating to static method)
-		enumerateDevices: async () => {
-			return WebRTCClient.enumerateAudioInputDevices()
 		}
+		// REMOVED: toggleMute method is no longer exposed
+		// REMOVED: enumerateDevices method is no longer exposed
 	}))
 
 	// --- Render Logic ---
 	return (
 		<div className="relative w-full h-full flex items-center justify-center">
+			{/* VoiceBlobs rendering remains the same */}
 			<VoiceBlobs
 				audioLevel={audioLevel}
 				isActive={internalStatus === "connected"}
@@ -217,5 +181,5 @@ ForwardedBackgroundCircleProvider.displayName = "BackgroundCircleProvider"
 // Export the forwardRef-wrapped component as default
 export default ForwardedBackgroundCircleProvider
 
-// Export unwrapped component type if needed (less common)
+// Keep named export if needed (exports the unwrapped component)
 export { BackgroundCircleProviderComponent as BackgroundCircleProvider }

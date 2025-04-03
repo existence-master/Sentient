@@ -1,33 +1,29 @@
 "use client"
-// ADDED: useCallback and forwardRef imports (forwardRef needed for provider)
 import React, {
 	useState,
 	useEffect,
 	useRef,
-	useCallback,
-	forwardRef // Keep forwardRef import
+	useCallback
+	// No longer need forwardRef here
 } from "react"
 import ChatBubble from "@components/ChatBubble"
 import ToolResultBubble from "@components/ToolResultBubble"
 import Sidebar from "@components/Sidebar"
-// ADDED: Import the new TopControlBar component
 import TopControlBar from "@components/TopControlBar"
 import {
 	IconSend,
 	IconRefresh,
 	IconLoader,
-	// ADDED: Icons for call controls
 	IconPhone,
-	IconPhoneOff,
-	IconMicrophone,
-	IconMicrophoneOff
+	IconPhoneOff
+	// REMOVED: Mute/unmute icons are no longer needed here
+	// IconMicrophone,
+	// IconMicrophoneOff,
 } from "@tabler/icons-react"
 import toast from "react-hot-toast"
 
-// MODIFIED: Import the DEFAULT export from background-circle-provider
+// Import the DEFAULT export (forwardRef-wrapped component)
 import BackgroundCircleProvider from "@components/voice-test/background-circle-provider"
-
-// REMOVED: Separate forwardRef wrapping was incorrect here. It's done inside the provider file.
 
 const Chat = () => {
 	// --- State Variables ---
@@ -38,29 +34,22 @@ const Chat = () => {
 	const [serverStatus, setServerStatus] = useState(true)
 	const [isSidebarVisible, setSidebarVisible] = useState(false)
 	const [currentModel, setCurrentModel] = useState("")
-	const [chatMode, setChatMode] = useState("voice") // Initial mode
-	// MODIFIED: Initialize isLoading based on initial chat mode
+	const [chatMode, setChatMode] = useState("voice")
 	const [isLoading, setIsLoading] = useState(() => chatMode === "text")
 	const [connectionStatus, setConnectionStatus] = useState("disconnected")
-	// ADDED: State for mute status
-	const [isMuted, setIsMuted] = useState(false)
-	// ADDED: State for call duration timer
-	const [callDuration, setCallDuration] = useState(0)
-	// ADDED: State for available audio input devices
+	// REMOVED: isMuted state
+	// REMOVED: callDuration state
 	const [audioInputDevices, setAudioInputDevices] = useState([])
-	// ADDED: State for the selected audio input device ID
 	const [selectedAudioInputDevice, setSelectedAudioInputDevice] = useState("")
 
 	// --- Refs ---
 	const textareaRef = useRef(null)
 	const chatEndRef = useRef(null)
 	const eventListenersAdded = useRef(false)
-	// MODIFIED: Ref for the BackgroundCircleProvider (which is forwardRef'd)
 	const backgroundCircleProviderRef = useRef(null)
 	const ringtoneAudioRef = useRef(null)
 	const connectedAudioRef = useRef(null)
-	// ADDED: Ref to store the timer interval ID
-	const timerIntervalRef = useRef(null)
+	// REMOVED: timerIntervalRef
 
 	// --- Handlers ---
 	const handleInputChange = (e) => {
@@ -80,84 +69,63 @@ const Chat = () => {
 		}
 	}
 
-	// ADDED: Helper to format seconds into MM:SS
-	const formatDuration = (seconds) => {
-		const mins = Math.floor(seconds / 60)
-		const secs = seconds % 60
-		return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
-	}
+	// REMOVED: formatDuration helper
 
 	// --- Connection Status and Timer Handling ---
 	const handleStatusChange = useCallback((status) => {
 		console.log("Connection status changed:", status)
-		setConnectionStatus(status) // Update state
+		setConnectionStatus(status)
 
-		// Stop ringing sound if not connecting
+		// Stop ringing sound
 		if (status !== "connecting" && ringtoneAudioRef.current) {
 			ringtoneAudioRef.current.pause()
 			ringtoneAudioRef.current.currentTime = 0
 		}
 
-		// Handle connected state: play sound, start timer
+		// Play connected sound
 		if (status === "connected") {
-			setCallDuration(0) // Reset duration
+			// REMOVED: Reset duration
 			if (connectedAudioRef.current) {
-				connectedAudioRef.current.volume = 0.4 // Set volume
+				connectedAudioRef.current.volume = 0.4 // Keep volume adjustment
 				connectedAudioRef.current
 					.play()
 					.catch((e) =>
 						console.error("Error playing connected sound:", e)
 					)
 			}
-			// Clear previous timer just in case
-			if (timerIntervalRef.current) {
-				clearInterval(timerIntervalRef.current)
-			}
-			// Start new timer
-			timerIntervalRef.current = setInterval(() => {
-				setCallDuration((prevDuration) => prevDuration + 1)
-			}, 1000)
+			// REMOVED: Timer starting logic
 		} else {
-			// Handle disconnected or connecting state: clear timer
-			if (timerIntervalRef.current) {
-				clearInterval(timerIntervalRef.current)
-				timerIntervalRef.current = null
-			}
-			// Reset duration if fully disconnected
-			if (status === "disconnected") {
-				setCallDuration(0)
-			}
+			// REMOVED: Timer clearing logic
+			// REMOVED: Reset duration logic
 		}
-	}, []) // Keep dependency array empty as it doesn't depend on component state/props directly
+	}, [])
 
 	// --- Voice Control Handlers ---
 	const handleStartVoice = async () => {
+		// MODIFIED: No longer needs to pass deviceId to connect
 		if (
 			connectionStatus !== "disconnected" ||
 			!backgroundCircleProviderRef.current
 		)
 			return
 		console.log("ChatPage: handleStartVoice called")
-		setConnectionStatus("connecting") // Set connecting state
-
-		// Play ringing sound
+		setConnectionStatus("connecting")
 		if (ringtoneAudioRef.current) {
-			ringtoneAudioRef.current.volume = 0.3 // Set volume
+			ringtoneAudioRef.current.volume = 0.3
 			ringtoneAudioRef.current.loop = true
 			ringtoneAudioRef.current
 				.play()
 				.catch((e) => console.error("Error playing ringtone:", e))
 		}
 		try {
-			// Call connect method via ref
+			// Call connect without arguments
 			await backgroundCircleProviderRef.current?.connect()
 		} catch (error) {
-			// Handle connection errors (e.g., permissions)
 			console.error("ChatPage: Error starting voice connection:", error)
 			toast.error(
 				`Failed to connect: ${error.message || "Unknown error"}`
 			)
-			handleStatusChange("disconnected") // Reset status via the callback
+			handleStatusChange("disconnected")
 		}
 	}
 
@@ -168,45 +136,25 @@ const Chat = () => {
 		)
 			return
 		console.log("ChatPage: handleStopVoice called")
-		backgroundCircleProviderRef.current?.disconnect() // Call disconnect via ref
-		// Status change and timer clearing handled by handleStatusChange triggered by provider's callback
+		backgroundCircleProviderRef.current?.disconnect()
 	}
 
-	// ADDED: Handler for toggling mute state
-	const handleToggleMute = () => {
-		const newMuteState = !isMuted
-		setIsMuted(newMuteState)
-		// Call the toggleMute method exposed by the provider via ref
-		backgroundCircleProviderRef.current?.toggleMute(newMuteState)
-		console.log("ChatPage: Toggled mute to:", newMuteState)
-	}
+	// REMOVED: handleToggleMute handler
 
-	// ADDED: Handler for changing the selected audio input device
+	// MODIFIED: Device change handler - only updates state
 	const handleDeviceChange = (event) => {
 		const deviceId = event.target.value
 		console.log("ChatPage: Selected audio input device changed:", deviceId)
 		setSelectedAudioInputDevice(deviceId)
-		// If currently connected, inform user and potentially reconnect
-		if (connectionStatus === "connected") {
-			toast.error("Mic change needs reconnect. Restarting call...")
-			// Simple reconnect: Stop then start after short delay
-			handleStopVoice()
-			setTimeout(() => {
-				// Ensure state is ready before starting again
-				if (connectionStatus === "disconnected") {
-					handleStartVoice()
-				} else {
-					// If disconnect didn't happen quickly enough, wait and try again or handle error
-					console.warn(
-						"Delaying startVoice after device change as disconnect hasn't completed yet."
-					)
-					setTimeout(handleStartVoice, 300) // Longer delay
-				}
-			}, 150) // Short delay to allow disconnect to process
-		}
+		// Inform user that a reconnect is needed for the change to take effect
+		toast.success(
+			"Microphone selection changed. Please restart the call to use the new device.",
+			{ duration: 4000 }
+		)
+		// REMOVED: Automatic reconnect logic
 	}
 
-	// --- Data Fetching and IPC --- (Existing logic mostly okay)
+	// --- Data Fetching and IPC ---
 	const fetchChatHistory = async () => {
 		try {
 			const response = await window.electron?.invoke("fetch-chat-history")
@@ -232,7 +180,7 @@ const Chat = () => {
 			console.log(
 				"fetchChatHistory: Setting isLoading to false in finally block."
 			)
-			setIsLoading(false) // Always clear loading state
+			setIsLoading(false)
 		}
 	}
 
@@ -358,47 +306,55 @@ const Chat = () => {
 	}
 
 	// --- Effects ---
-	// Initial setup effect (Corrected Structure)
+	// Initial setup effect
 	useEffect(() => {
 		console.log("ChatPage: Initial Mount Effect - chatMode:", chatMode)
 		fetchUserDetails()
 		fetchCurrentModel()
 
-		// ADDED: Fetch audio input devices on mount
+		// ADDED: Fetch audio input devices on mount directly using navigator
 		const getDevices = async () => {
 			try {
-				// Attempt to get devices via ref if available, fallback to static method
-				let devices = []
-				if (backgroundCircleProviderRef.current?.enumerateDevices) {
-					devices =
-						await backgroundCircleProviderRef.current.enumerateDevices()
-				} else if (BackgroundCircleProvider.enumerateDevices) {
-					// Check if static method exists on component type
-					devices = await BackgroundCircleProvider.enumerateDevices()
-				} else {
-					// Fallback if neither ref nor static method is ready/available
-					// Note: WebRTCClient itself has the static method, could call directly if imported
-					// import { WebRTCClient } from '@utils/WebRTCClient'; // Would need this import
-					// devices = await WebRTCClient.enumerateAudioInputDevices();
-					console.warn(
-						"Could not access enumerateDevices via provider ref or static property yet."
-					)
+				if (
+					!navigator.mediaDevices ||
+					!navigator.mediaDevices.enumerateDevices
+				) {
+					console.warn("ChatPage: enumerateDevices() not supported.")
+					setAudioInputDevices([])
+					return
 				}
+				const devices = await navigator.mediaDevices.enumerateDevices()
+				const audioInputDevices = devices.filter(
+					(device) => device.kind === "audioinput"
+				)
 
-				if (devices && devices.length > 0) {
-					console.log("ChatPage: Fetched audio devices:", devices)
-					setAudioInputDevices(devices)
-					// Set default selected device
-					const defaultDevice =
-						devices.find((d) => d.deviceId === "default") ||
-						devices[0]
-					if (defaultDevice && !selectedAudioInputDevice) {
-						// Set only if not already set
-						setSelectedAudioInputDevice(defaultDevice.deviceId)
-						console.log(
-							"ChatPage: Set default audio input device:",
-							defaultDevice.deviceId
-						)
+				if (audioInputDevices.length > 0) {
+					console.log(
+						"ChatPage: Fetched audio devices:",
+						audioInputDevices
+					)
+					setAudioInputDevices(
+						audioInputDevices.map((d) => ({
+							// Store only needed info
+							deviceId: d.deviceId,
+							label:
+								d.label ||
+								`Microphone ${audioInputDevices.indexOf(d) + 1}`
+						}))
+					)
+					// Set default selected device only if not already set
+					if (!selectedAudioInputDevice) {
+						const defaultDevice =
+							audioInputDevices.find(
+								(d) => d.deviceId === "default"
+							) || audioInputDevices[0]
+						if (defaultDevice) {
+							setSelectedAudioInputDevice(defaultDevice.deviceId)
+							console.log(
+								"ChatPage: Set default audio input device:",
+								defaultDevice.deviceId
+							)
+						}
 					}
 				} else {
 					console.log("ChatPage: No audio input devices found.")
@@ -426,15 +382,11 @@ const Chat = () => {
 		}
 		setupIpcListeners()
 
-		// Cleanup function for the effect
+		// Cleanup
 		return () => {
 			console.log("ChatPage: Unmount Cleanup")
 			eventListenersAdded.current = false
-			// Clear timer interval
-			if (timerIntervalRef.current) {
-				clearInterval(timerIntervalRef.current)
-			}
-			// Disconnect voice if active
+			// REMOVED: Timer cleanup
 			if (
 				backgroundCircleProviderRef.current &&
 				connectionStatus !== "disconnected"
@@ -442,7 +394,6 @@ const Chat = () => {
 				console.log("ChatPage: Disconnecting voice on unmount")
 				backgroundCircleProviderRef.current.disconnect()
 			}
-			// Stop and reset sounds
 			if (ringtoneAudioRef.current) {
 				ringtoneAudioRef.current.pause()
 				ringtoneAudioRef.current.currentTime = 0
@@ -453,9 +404,9 @@ const Chat = () => {
 			}
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, []) // Dependency array IS correctly empty here for mount/unmount logic
+	}, [])
 
-	// Effect for scrolling and fetching history on mode switch (Corrected Structure)
+	// Effect for scrolling and fetching history on mode switch
 	useEffect(() => {
 		console.log(
 			"ChatPage: Mode/Messages Effect - chatMode:",
@@ -464,7 +415,6 @@ const Chat = () => {
 			isLoading
 		)
 		if (chatMode === "text") {
-			// Scroll logic
 			if (chatEndRef.current) {
 				chatEndRef.current.scrollIntoView({ behavior: "smooth" })
 			}
@@ -478,13 +428,13 @@ const Chat = () => {
 		}
 	}, [chatMode]) // Correct dependencies
 
-	// Effect for textarea resize (Corrected Structure)
+	// Effect for textarea resize
 	useEffect(() => {
 		if (chatMode === "text" && textareaRef.current) {
 			handleInputChange({ target: textareaRef.current })
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [chatMode, input]) // Correct dependencies
+	}, [chatMode, input])
 
 	// --- Component Return (JSX) ---
 	return (
@@ -494,11 +444,12 @@ const Chat = () => {
 				isSidebarVisible={isSidebarVisible}
 				setSidebarVisible={setSidebarVisible}
 			/>
-			{/* Render TopControlBar - Render immediately */}
+
 			<TopControlBar
 				chatMode={chatMode}
 				onToggleMode={handleToggleMode}
 			/>
+
 			{/* Main Content Area */}
 			<div className="absolute inset-0 flex flex-col justify-center items-center h-full w-full bg-matteblack z-10 pt-20">
 				{/* Top Right Buttons */}
@@ -518,22 +469,22 @@ const Chat = () => {
 
 				{/* Conditional Content Container */}
 				<div className="w-full h-full flex flex-col items-center justify-center p-5 text-white">
-					{/* Loading State */}
-					{isLoading ? (
+					{isLoading ? ( // Simple loading check
 						<div className="flex justify-center items-center h-full w-full">
 							<IconLoader className="w-10 h-10 text-white animate-spin" />
 						</div>
 					) : chatMode === "text" ? (
-						// Text Chat Mode UI
+						// --- Text Chat UI ---
 						<div className="w-full max-w-4xl h-full flex flex-col">
-							{/* Message Display Area */}
+							{/* Message Display */}
 							<div className="grow overflow-y-auto p-4 rounded-xl no-scrollbar mb-4 flex flex-col gap-4">
 								{messages.length === 0 && !thinking ? (
 									<div className="font-Poppins h-full flex flex-col justify-center items-center text-gray-400">
+										{" "}
 										<p className="text-3xl text-white mb-4">
 											{" "}
 											Send a message to start{" "}
-										</p>
+										</p>{" "}
 									</div>
 								) : (
 									messages.map((msg) => (
@@ -582,12 +533,14 @@ const Chat = () => {
 							{/* Input Area */}
 							<div className="w-full flex flex-col items-center">
 								<p className="text-gray-400 font-Poppins text-xs mb-2">
-									{" "}
-									Model:{" "}
-									<span className="text-lightblue">
-										{" "}
-										{currentModel}{" "}
-									</span>{" "}
+									Check out our{" "}
+									<a
+										href="https://sentient-2.gitbook.io/docs"
+										className="text-lightblue hover:text-lightblue/80"
+									>
+										docs
+									</a>{" "}
+									to see what Sentient can do.
 								</p>
 								<div className="relative w-full flex flex-row gap-4 items-end px-4 py-2 bg-matteblack border-[1px] border-gray-600 rounded-lg z-10">
 									<textarea
@@ -636,124 +589,87 @@ const Chat = () => {
 							</div>
 						</div>
 					) : (
-						// Voice Chat Mode UI
+						// --- Voice Chat UI ---
 						<div className="flex flex-col items-center justify-center h-full w-full relative">
 							{/* Background Blobs */}
 							<BackgroundCircleProvider
 								ref={backgroundCircleProviderRef}
 								onStatusChange={handleStatusChange}
 								connectionStatusProp={connectionStatus}
-								initialMuteState={isMuted}
-								selectedDeviceId={selectedAudioInputDevice}
+								// REMOVED: Props related to mute/device as client doesn't handle them now
+								// initialMuteState={isMuted}
+								// selectedDeviceId={selectedAudioInputDevice}
 							/>
 
-							{/* Centered Call Controls Overlay */}
+							{/* MODIFIED: Central Call Controls (Simpler) */}
 							<div className="absolute inset-0 flex flex-col items-center justify-center z-20 pointer-events-none">
-								<div className="flex flex-col items-center pointer-events-auto bg-neutral-800/70 backdrop-blur-sm p-6 rounded-2xl shadow-xl">
-									{/* Disconnected State */}
+								<div className="flex flex-col items-center pointer-events-auto">
+									{" "}
+									{/* Removed background box for cleaner look */}
+									{/* Disconnected State: Show Start Button */}
 									{connectionStatus === "disconnected" && (
 										<button
 											onClick={handleStartVoice}
-											className="p-4 bg-green-600 hover:bg-green-500 rounded-full text-white transition-colors duration-200"
+											className="p-4 bg-green-600 hover:bg-green-500 rounded-full text-white transition-colors duration-200 shadow-lg"
 											title="Start Call"
 										>
-											<IconPhone size={28} />
+											<IconPhone size={32} />
 										</button>
 									)}
-									{/* Connecting State - Display handled by TopControlBar or potentially here */}
+									{/* Connecting State: Show Loader */}
 									{connectionStatus === "connecting" && (
-										<div className="flex items-center justify-center p-4 text-yellow-400">
+										<div className="p-4 text-yellow-400">
 											<IconLoader
-												size={28}
+												size={40}
 												className="animate-spin"
 											/>
-											<span className="ml-2 text-sm">
-												Connecting...
-											</span>
 										</div>
 									)}
-									{/* Connected State */}
+									{/* Connected State: Show Hang Up Button */}
 									{connectionStatus === "connected" && (
-										<div className="flex flex-col items-center gap-4">
-											{/* Duration */}
-											<div className="text-sm font-mono text-neutral-300 mb-2">
-												{formatDuration(callDuration)}
-											</div>
-											{/* Controls Row */}
-											<div className="flex items-center justify-center gap-4">
-												{/* Mute/Unmute */}
-												<button
-													onClick={handleToggleMute}
-													className={`p-3 rounded-full transition-colors duration-200 ${isMuted ? "bg-red-600 hover:bg-red-500" : "bg-neutral-600 hover:bg-neutral-500"} text-white`}
-													title={
-														isMuted
-															? "Unmute"
-															: "Mute"
-													}
-												>
-													{isMuted ? (
-														<IconMicrophoneOff
-															size={20}
-														/>
-													) : (
-														<IconMicrophone
-															size={20}
-														/>
-													)}
-												</button>
-												{/* Mic Select */}
-												<select
-													value={
-														selectedAudioInputDevice
-													}
-													onChange={
-														handleDeviceChange
-													}
-													className="bg-neutral-700 border border-neutral-600 text-white text-xs rounded px-2 py-1 focus:outline-none focus:border-lightblue appearance-none max-w-[150px] truncate"
-													title="Select Microphone"
-												>
-													{audioInputDevices.length ===
-														0 && (
-														<option value="">
-															No mics found
-														</option>
-													)}
-													{audioInputDevices.map(
-														(device) => (
-															<option
-																key={
-																	device.deviceId
-																}
-																value={
-																	device.deviceId
-																}
-															>
-																{" "}
-																{
-																	device.label
-																}{" "}
-															</option>
-														)
-													)}
-												</select>
-												{/* Hang Up */}
-												<button
-													onClick={handleStopVoice}
-													className="p-4 bg-red-600 hover:bg-red-500 rounded-full text-white transition-colors duration-200"
-													title="Hang Up"
-												>
-													<IconPhoneOff size={28} />
-												</button>
-											</div>
-										</div>
+										<button
+											onClick={handleStopVoice}
+											className="p-4 bg-red-600 hover:bg-red-500 rounded-full text-white transition-colors duration-200 shadow-lg"
+											title="Hang Up"
+										>
+											<IconPhoneOff size={32} />
+										</button>
 									)}
+									{/* REMOVED: Timer, Mute Button */}
 								</div>
 							</div>
 						</div>
 					)}
 				</div>
-			</div>{" "}
-			{/* Audio elements */}
+			</div>
+
+			{/* --- ADDED: Mic Selection Dropdown (Bottom Right) --- */}
+			{/* Always visible when not loading */}
+			{!isLoading && (
+				<div className="absolute bottom-6 right-6 z-30">
+					<select
+						value={selectedAudioInputDevice}
+						onChange={handleDeviceChange}
+						className="bg-neutral-700/80 backdrop-blur-sm border border-neutral-600 text-white text-xs rounded px-3 py-2 focus:outline-none focus:border-lightblue appearance-none max-w-[200px] truncate shadow-lg"
+						title="Select Microphone (Restart call to apply)" // Updated tooltip
+					>
+						{audioInputDevices.length === 0 ? (
+							<option value="">Loading mics...</option> // Changed default message
+						) : (
+							audioInputDevices.map((device) => (
+								<option
+									key={device.deviceId}
+									value={device.deviceId}
+								>
+									{device.label}
+								</option>
+							))
+						)}
+					</select>
+				</div>
+			)}
+
+			{/* Audio elements (volume adjusted) */}
 			<audio
 				ref={ringtoneAudioRef}
 				src="/audio/ringing.mp3"
@@ -767,6 +683,6 @@ const Chat = () => {
 			></audio>
 		</div>
 	)
-} // THIS CLOSING BRACE was likely the cause of the syntax errors
+}
 
-export default Chat // Export statement should be outside the component function
+export default Chat
