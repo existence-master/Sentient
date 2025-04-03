@@ -358,6 +358,8 @@ const Tasks = () => {
 		)
 	}
 
+	console.log(filteredTasks)
+
 	// --- Main Render ---
 	return (
 		// MODIFIED: Use flex for overall page structure
@@ -483,8 +485,8 @@ const Tasks = () => {
 												{task.status ===
 												"approval_pending" ? (
 													<button
-														onClick={() =>
-															handleViewApprovalData(
+														onClick={async () =>
+															await handleViewApprovalData(
 																task.task_id
 															)
 														}

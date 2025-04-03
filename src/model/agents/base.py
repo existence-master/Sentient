@@ -6,6 +6,8 @@ import aiofiles
 import json
 from typing import Dict, List, Optional, Tuple, Union
 
+from model.agents.functions import send_email, reply_email
+
 # Global lock for thread-safe access to task data
 task_lock = asyncio.Lock()
 
@@ -42,6 +44,16 @@ class TaskQueue:
         data = {'tasks': self.tasks, 'task_id_counter': self.task_id_counter}
         with open(self.tasks_file, 'w') as f:
             json.dump(data, f, indent=4)
+    
+    async def get_task_by_id(self, task_id: str) -> Optional[Dict]:
+        """Retrieves a specific task by its ID."""
+        async with self.lock:
+            for task in self.tasks:
+                if task.get("task_id") == task_id:
+                    # Return a copy to prevent accidental modification by the caller
+                    # The endpoint only reads, but this is safer practice generally
+                    return task.copy()
+            return None # Task not found
 
     async def add_task(self, chat_id: str, description: str, priority: int, username: str, personality: Union[Dict, str, None], use_personal_context: bool, internet: str) -> str:
         """Add a new task to the queue."""
