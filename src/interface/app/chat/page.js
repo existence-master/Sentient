@@ -12,10 +12,9 @@ import {
 } from "@tabler/icons-react"
 import toast from "react-hot-toast"
 
-// Import components for Voice Mode
+// Import the provider which renders VoiceBlobs
 import { BackgroundCircleProvider } from "@components/voice-test/background-circle-provider"
-import { ThemeToggle } from "@components/voice-test/ui/theme-toggle"
-import { ResetChat } from "@components/voice-test/ui/reset-chat"
+// Removed ResetChat as it wasn't in your latest provided code for this page
 
 const Chat = () => {
 	// --- State Variables ---
@@ -38,7 +37,6 @@ const Chat = () => {
 	const handleInputChange = (e) => {
 		const value = e.target.value
 		setInput(value)
-		// Auto-resize textarea only if it exists (i.e., in text mode)
 		if (textareaRef.current) {
 			textareaRef.current.style.height = "auto"
 			textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`
@@ -51,7 +49,6 @@ const Chat = () => {
 
 	// --- Data Fetching and IPC ---
 	const fetchChatHistory = async () => {
-		// Only set loading for the initial fetch, not subsequent background fetches
 		if (messages.length === 0) {
 			setIsLoading(true)
 		}
@@ -62,7 +59,6 @@ const Chat = () => {
 		} catch (error) {
 			toast.error("Error fetching chat history.")
 		} finally {
-			// Only stop the main loading indicator on the initial fetch
 			if (isLoading) {
 				setIsLoading(false)
 			}
@@ -79,7 +75,6 @@ const Chat = () => {
 	}
 
 	const fetchCurrentModel = async () => {
-		// Replace with actual logic if needed
 		setCurrentModel("llama3.2:3b")
 	}
 
@@ -91,8 +86,6 @@ const Chat = () => {
 						(msg) => msg.id === messageId
 					)
 					if (messageIndex === -1) {
-						// Ensure new messages are only added if we are in text mode or just switched from it
-						// Or handle based on specific logic if voice can also trigger text stream updates
 						return [
 							...prev,
 							{
@@ -102,7 +95,7 @@ const Chat = () => {
 								memoryUsed: false,
 								agentsUsed: false,
 								internetUsed: false,
-								type: "text" // Assuming stream is text
+								type: "text"
 							}
 						]
 					}
@@ -115,14 +108,11 @@ const Chat = () => {
 			}
 			window.electron.onMessageStream(handleMessageStream)
 			eventListenersAdded.current = true
-			// Cleanup function might be needed if listeners should be removed/re-added on mode switch
-			// return () => { window.electron.removeListener(...) } // Needs specific API if exists
 		}
-		// Consider if cleanup is needed when component unmounts or mode changes
 	}
 
 	const sendMessage = async () => {
-		if (input.trim() === "" || chatMode !== "text") return // Only send in text mode
+		if (input.trim() === "" || chatMode !== "text") return
 
 		const newMessage = {
 			message: input,
@@ -133,50 +123,36 @@ const Chat = () => {
 		setMessages((prev) => [...prev, newMessage])
 		setInput("")
 		if (textareaRef.current) {
-			// Reset textarea height
 			textareaRef.current.style.height = "auto"
 		}
 		setThinking(true)
-
-		setupIpcListeners() // Ensure listeners are set up before sending
+		setupIpcListeners()
 
 		try {
 			const response = await window.electron?.invoke("send-message", {
 				input: newMessage.message
 			})
-			// The response might indicate completion, but streaming handles actual message display.
-			// Fetching history might overwrite streamed content, consider flow carefully.
-			// Maybe fetch history only *after* streaming seems complete, or rely solely on stream?
-			// For now, keeping fetchChatHistory after potential stream completion for robustness.
 			if (response.status === 200) {
-				// Let the stream handle the AI response display. Fetching might be redundant or cause jumps.
-				// await fetchChatHistory(); // Re-evaluate if this is needed here or after stream ends
 				console.log(
 					"Message send invoked, waiting for stream/completion."
 				)
 			} else {
 				toast.error("Failed to send message via IPC.")
-				setThinking(false) // Stop thinking if initial send fails
+				setThinking(false)
 			}
 		} catch (error) {
 			toast.error("Error sending message.")
-			setThinking(false) // Stop thinking on error
+			setThinking(false)
 		} finally {
-			// Thinking state should ideally be turned off when the *stream* ends, not immediately here.
-			// For now, let's keep it simple and turn it off here, assuming stream follows quickly.
-			// A more robust solution would involve an 'end-of-stream' event from IPC.
-			setThinking(false) // Simplified: turn off thinking after invoke call
+			setThinking(false)
 		}
 	}
 
 	const clearChatHistory = async () => {
-		// Confirmation might be good here
 		try {
-			// Assuming clear should work regardless of mode, using IPC if available
 			const response = await window.electron?.invoke("clear-chat-history")
 			if (response.status === 200) {
 				setMessages([])
-				// Optionally clear input if in text mode
 				if (chatMode === "text") setInput("")
 				toast.success("Chat history cleared.")
 			} else {
@@ -189,14 +165,13 @@ const Chat = () => {
 
 	const reinitiateServer = async () => {
 		setServerStatus(false)
-		toast.loading("Restarting server...") // Give user feedback
+		toast.loading("Restarting server...")
 		try {
-			// Assuming reinitiate might clear history or require a refresh
-			const response = await window.electron?.invoke("reinitiate-server") // Use a dedicated IPC call if possible
+			const response = await window.electron?.invoke("reinitiate-server")
 			if (response.status === 200) {
 				toast.dismiss()
 				toast.success("Server restarted. Fetching history...")
-				await fetchChatHistory() // Fetch fresh history after restart
+				await fetchChatHistory()
 			} else {
 				toast.dismiss()
 				toast.error("Failed to restart server.")
@@ -205,7 +180,7 @@ const Chat = () => {
 			toast.dismiss()
 			toast.error("Error restarting the server.")
 		} finally {
-			setServerStatus(true) // Set status back regardless of success/failure for now
+			setServerStatus(true)
 		}
 	}
 
@@ -213,53 +188,39 @@ const Chat = () => {
 	useEffect(() => {
 		fetchUserDetails()
 		fetchCurrentModel()
-		fetchChatHistory() // Initial fetch
-		setupIpcListeners() // Setup listeners on mount
-
-		// Cleanup listeners on unmount
-		// This assumes a simple on/off, if electron API allows removal, use that.
+		fetchChatHistory()
+		setupIpcListeners()
 		return () => {
-			eventListenersAdded.current = false // Reset flag
-			// Add specific listener removal logic here if available from electron preload script
+			eventListenersAdded.current = false
 		}
-	}, []) // Run once on mount
+	}, [])
 
 	useEffect(() => {
-		// Scroll to bottom only in text mode when messages change
 		if (chatMode === "text") {
 			chatEndRef.current?.scrollIntoView({ behavior: "smooth" })
 		}
-	}, [messages, chatMode]) // Add chatMode dependency
+	}, [messages, chatMode])
 
-	// Optional: Background refresh (consider if needed with IPC streaming)
-	// useEffect(() => {
-	// 	const intervalId = setInterval(fetchChatHistory, 60000) // Refresh every 60 seconds
-	// 	return () => clearInterval(intervalId)
-	// }, [])
-
-	// Adjust textarea height when switching to text mode and input changes
 	useEffect(() => {
 		if (chatMode === "text" && textareaRef.current) {
-			handleInputChange({ target: textareaRef.current }) // Trigger resize based on current content
+			handleInputChange({ target: textareaRef.current })
 		}
-	}, [chatMode, input]) // Rerun when mode changes or input changes in text mode
+	}, [chatMode, input])
 
 	return (
-		<div className="h-screen bg-matteblack flex relative overflow-hidden">
-			{" "}
-			{/* Prevent body scroll */}
+		// MODIFIED: Removed flex, added relative positioning for absolute children
+		<div className="h-screen bg-matteblack relative overflow-hidden dark">
+			{/* Sidebar remains, its own z-index will handle overlay */}
 			<Sidebar
 				userDetails={userDetails}
 				isSidebarVisible={isSidebarVisible}
 				setSidebarVisible={setSidebarVisible}
 			/>
-			{/* Main Content Area */}
-			<div className="flex-grow flex flex-col justify-center items-center h-full bg-matteblack relative">
-				{" "}
-				{/* Use flex-grow and center content */}
-				{/* Top Right Buttons (Always Visible) */}
+			{/* MODIFIED: Main Content Area is now absolutely positioned to fill screen */}
+			{/* It has a lower z-index (z-10) than the active sidebar (z-40) */}
+			<div className="absolute inset-0 flex flex-col justify-center items-center h-full w-full bg-matteblack z-10">
+				{/* Top Right Buttons (Positioned relative to this absolute container) */}
 				<div className="absolute top-5 right-5 z-20 flex gap-3">
-					{/* Server Re-initiate Button */}
 					<button
 						onClick={reinitiateServer}
 						className="p-3 hover-button rounded-full text-white cursor-pointer"
@@ -268,32 +229,24 @@ const Chat = () => {
 						{!serverStatus ? (
 							<IconLoader className="w-4 h-4 text-white animate-spin" />
 						) : (
-							// Using Refresh icon might be more intuitive for restarting
 							<IconRefresh className="w-4 h-4 text-white" />
 						)}
 					</button>
-					{/* Theme Toggle (Show based on Voice Mode context or always?) */}
-					{/* Let's place it here for consistency */}
-					<ThemeToggle />
 				</div>
-				{/* Conditional Content: Loading, Text Chat, or Voice Chat */}
-				<div className="w-full h-full flex flex-col items-center justify-center p-5 pt-20">
-					{" "}
-					{/* Added padding top */}
+
+				{/* Conditional Content Container (centers its children within the absolute container) */}
+				<div className="w-full h-full flex flex-col items-center justify-center p-5 pt-20 text-white">
 					{isLoading ? (
-						// Loading State
 						<div className="flex justify-center items-center h-full w-full">
 							<IconLoader className="w-10 h-10 text-white animate-spin" />
 						</div>
 					) : chatMode === "text" ? (
-						// Text Chat Mode UI
+						// Text Chat Mode UI (remains the same)
 						<div className="w-full max-w-4xl h-full flex flex-col">
-							{" "}
-							{/* Max width for readability */}
 							{/* Message Display Area */}
 							<div className="grow overflow-y-auto p-4 rounded-xl no-scrollbar mb-4 flex flex-col gap-4">
 								{messages.length === 0 ? (
-									<div className="font-Poppins h-full flex flex-col justify-center items-center text-gray-500">
+									<div className="font-Poppins h-full flex flex-col justify-center items-center text-gray-400">
 										<p className="text-3xl text-white mb-4">
 											Send a message to start
 										</p>
@@ -301,7 +254,7 @@ const Chat = () => {
 								) : (
 									messages.map((msg) => (
 										<div
-											key={msg.id || Math.random()} // Use a more stable key if possible
+											key={msg.id || Math.random()}
 											className={`flex ${msg.isUser ? "justify-end" : "justify-start"} w-full`}
 										>
 											{msg.type === "tool_result" ? (
@@ -363,12 +316,12 @@ const Chat = () => {
 												sendMessage()
 											}
 										}}
-										className="flex-grow p-2 pr-28 rounded-lg bg-transparent text-base text-white focus:outline-none resize-none no-scrollbar overflow-y-auto" // Adjusted padding-right
+										className="flex-grow p-2 pr-28 rounded-lg bg-transparent text-base text-white focus:outline-none resize-none no-scrollbar overflow-y-auto"
 										placeholder="Type your message..."
 										style={{
 											maxHeight: "150px",
 											minHeight: "24px"
-										}} // Adjusted heights
+										}}
 										rows={1}
 									/>
 									{/* Buttons inside input area */}
@@ -396,21 +349,21 @@ const Chat = () => {
 						</div>
 					) : (
 						// Voice Chat Mode UI
+						// Container remains centered within the main absolute container
 						<div className="flex flex-col items-center justify-center h-full w-full relative">
+							{/* BackgroundCircleProvider renders VoiceBlobs, which will now be screen-centered */}
 							<BackgroundCircleProvider />
-							{/* ResetChat for voice mode - placed bottom center or corner */}
-							<div className="absolute bottom-24 left-1/2 transform -translate-x-1/2 z-10">
-								<ResetChat />
-							</div>
-							{/* ThemeToggle is now top right */}
 						</div>
 					)}
 				</div>
-				{/* Mode Toggle Button (Always Visible except loading) */}
+
+				{/* Mode Toggle Button (Positioned relative to the absolute main container) */}
+				{/* It needs a higher z-index than the main content (z-10) but lower than sidebar (z-40) */}
 				{!isLoading && (
 					<button
 						onClick={handleToggleMode}
-						className="absolute bottom-6 right-6 p-3 hover-button scale-100 hover:scale-110 cursor-pointer rounded-full text-white z-20" // Ensure high z-index
+						// MODIFIED: Increased z-index to z-20 to be above main content but below sidebar
+						className="absolute bottom-6 right-6 p-3 hover-button scale-100 hover:scale-110 cursor-pointer rounded-full text-white z-20"
 						title={
 							chatMode === "text"
 								? "Switch to Voice Mode"

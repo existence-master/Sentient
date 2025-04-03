@@ -1119,7 +1119,7 @@ async def startup_event():
     asyncio.create_task(cleanup_tasks_periodically())
     
     user_id = "user1"  # Replace with dynamic user ID retrieval if needed
-    enabled_data_sources = ["gmail", "internet_search", "gcalendar"]  # Add gcalendar here
+    enabled_data_sources = []  # Add gcalendar here
     
     for source in enabled_data_sources:
         if source == "gmail":
