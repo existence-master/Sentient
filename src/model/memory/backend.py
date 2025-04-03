@@ -57,7 +57,7 @@ class MemoryBackend:
         print("Initializing memory type classifier (Short Term vs Long Term for facts)...")
         classifier = OllamaRunnable(
             model_url="http://localhost:11434/api/chat/",
-            model_name="phi4-mini",
+            model_name="llama3.2:3b",
             system_prompt_template="""
             You are an AI designed to classify user-provided facts into 'Short Term' or 'Long Term' memory types.
             - 'Short Term' memories are transient (e.g., tasks, recent events) and typically expire within days or weeks.
@@ -76,7 +76,7 @@ class MemoryBackend:
         print("Initializing query memory type classifier (Short Term vs Long Term for queries)...")
         classifier = OllamaRunnable(
             model_url="http://localhost:11434/api/chat/",
-            model_name="phi4-mini",
+            model_name="llama3.2:3b",
             system_prompt_template="""
             You are an AI designed to classify user queries into 'Short Term' or 'Long Term' memory types based on the kind of information being requested.
             - 'Short Term' queries are about recent events, tasks, or transient information (e.g., days or weeks). Examples: "What did I have for lunch yesterday?" or "Do I have meetings tomorrow?"

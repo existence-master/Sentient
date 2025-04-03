@@ -1332,7 +1332,6 @@ ipcMain.handle("send-message", async (_event, { input }) => {
 			input,
 			pricing,
 			credits,
-			chat_id: "single_chat" // Assuming this remains constant
 		}
 		// Using logging from "Current code"
 		console.log("Sending payload to /chat:", JSON.stringify(payload))

@@ -9,11 +9,9 @@ import json
 import asyncio
 import pickle
 import multiprocessing
-import requests
-from datetime import datetime, timezone # Keep timezone explicit
+# from datetime import datetime, timezone # Keep timezone explicit - Redundant import removed
 from tzlocal import get_localzone # Keep if needed elsewhere, but use explicit UTC for DB timestamps
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from contextlib import asynccontextmanager
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse # Added HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles # Added StaticFiles
@@ -75,8 +73,9 @@ from model.context.gcalendar import GCalendarContextEngine
 from model.voice.stt import FasterWhisperSTT
 from model.voice.orpheus_tts import OrpheusTTS, TTSOptions, VoiceId, AVAILABLE_VOICES
 
-from datetime import datetime, timezone
+from datetime import datetime
 
+# from datetime import datetime, timezone # Redundant import removed
 
 print(f"[STARTUP] {datetime.now()}: Model components import completed.")
 
@@ -120,46 +119,52 @@ except Exception as e:
     print(f"[ERROR] {datetime.now()}: Failed to initialize or connect Neo4j Driver: {e}")
     graph_driver = None # Handle potential failure gracefully
 
+# --- WebSocket Manager --- V1 (Used by most of the app)
 class WebSocketManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
+        self.client_ids: Dict[WebSocket, str] = {} # Optional: Track clients if needed
         print(f"[WS_MANAGER] {datetime.now()}: WebSocketManager initialized.")
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, client_id: str = "anon"):
         await websocket.accept()
         self.active_connections.append(websocket)
-        print(f"[WS_MANAGER] {datetime.now()}: WebSocket connected: {websocket.client}. Total connections: {len(self.active_connections)}")
+        self.client_ids[websocket] = client_id
+        print(f"[WS_MANAGER] {datetime.now()}: WebSocket client connected: {client_id} ({len(self.active_connections)} total)")
 
     def disconnect(self, websocket: WebSocket):
+        client_id = self.client_ids.pop(websocket, "unknown")
         if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-            print(f"[WS_MANAGER] {datetime.now()}: WebSocket disconnected: {websocket.client}. Total connections: {len(self.active_connections)}")
-        else:
-            print(f"[WS_MANAGER] {datetime.now()}: WebSocket already disconnected or not found: {websocket.client}")
-
+             self.active_connections.remove(websocket)
+        print(f"[WS_MANAGER] {datetime.now()}: WebSocket client disconnected: {client_id} ({len(self.active_connections)} total)")
 
     async def send_personal_message(self, message: str, websocket: WebSocket):
         try:
-            await websocket.send_text(message)
-            # print(f"[WS_MANAGER] {datetime.now()}: Sent personal message to {websocket.client}: {message[:100]}...") # Avoid logging large messages
+             await websocket.send_text(message)
         except Exception as e:
-            print(f"[WS_MANAGER] {datetime.now()}: Error sending personal message to {websocket.client}: {e}")
-            self.disconnect(websocket)
+             print(f"[WS_MANAGER] {datetime.now()}: Error sending personal message to {self.client_ids.get(websocket, 'unknown')}: {e}")
+             self.disconnect(websocket) # Disconnect on send error
 
     async def broadcast(self, message: str):
-        # print(f"[WS_MANAGER] {datetime.now()}: Broadcasting message: {message[:100]}...") # Avoid logging large messages
+        # Create a list of connections to iterate over, as disconnect modifies the list
+        connections_to_send = list(self.active_connections)
         disconnected_websockets = []
-        for connection in self.active_connections:
+        for connection in connections_to_send:
             try:
                 await connection.send_text(message)
             except Exception as e:
-                print(f"[WS_MANAGER] {datetime.now()}: Error broadcasting message to {connection.client}: {e}")
-                disconnected_websockets.append(connection) # Mark for removal
+                client_id = self.client_ids.get(connection, "unknown")
+                print(f"[WS_MANAGER] {datetime.now()}: Error broadcasting to {client_id}, marking for disconnect: {e}")
+                # Mark for removal instead of removing directly while iterating
+                disconnected_websockets.append(connection)
 
         # Remove broken connections outside the iteration loop
         for ws in disconnected_websockets:
             self.disconnect(ws)
         # print(f"[WS_MANAGER] {datetime.now()}: Broadcast finished. Active connections: {len(self.active_connections)}")
+
+    async def broadcast_json(self, data: dict):
+        await self.broadcast(json.dumps(data))
 
 manager = WebSocketManager()
 print(f"[INIT] {datetime.now()}: WebSocketManager instance created.")
@@ -233,10 +238,11 @@ print(f"[INIT] {datetime.now()}: Initializing TaskQueue...")
 task_queue = TaskQueue()
 print(f"[INIT] {datetime.now()}: TaskQueue initialized.")
 
+# Voice Model Placeholders & Config
 stt_model = None
 tts_model = None
 OLLAMA_API_URL = "http://localhost:11434/api/chat" # Keep for reference or potential fallback
-OLLAMA_MODEL = "phi4-mini" # Keep for reference
+OLLAMA_MODEL = "llama3.2:3b" # Keep for reference
 OLLAMA_REQUEST_TIMEOUT = 60.0
 SELECTED_TTS_VOICE: VoiceId = "tara"
 if SELECTED_TTS_VOICE not in AVAILABLE_VOICES:
@@ -248,7 +254,7 @@ ORPHEUS_EMOTION_TAGS = [
 ]
 EMOTION_TAG_LIST_STR = ", ".join(ORPHEUS_EMOTION_TAGS)
 
-# --- STT/TTS Model Loading ---
+#--- STT/TTS Model Loading (Moved to lifespan for potentially faster startup) ---
 print("Loading STT model...")
 stt_model = FasterWhisperSTT(model_size="base", device="cpu", compute_type="int8")
 print("STT model loaded.")
@@ -265,42 +271,43 @@ except Exception as e:
     exit(1)
 # --- End Voice Specific Initializations ---
 
-async def add_message_to_db(chat_id: str, message_text: str, is_user: bool, is_visible: bool = True, **kwargs):
-    """Adds a message to the specified chat ID in the database."""
-    async with db_lock:
-        try:
-            chatsDb = await load_db()
-            active_chat = next((chat for chat in chatsDb["chats"] if chat["id"] == chat_id), None)
+# --- Database and State Management ---
+# Database paths
+print(f"[CONFIG] {datetime.now()}: Defining database file paths...")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+USER_PROFILE_DB = os.path.join(BASE_DIR, "..", "..", "userProfileDb.json")
+CHAT_DB = "chatsDb.json"
+NOTIFICATIONS_DB = "notificationsDB.json"
+print(f"[CONFIG] {datetime.now()}:   - USER_PROFILE_DB: {USER_PROFILE_DB}")
+print(f"[CONFIG] {datetime.now()}:   - CHAT_DB: {CHAT_DB}")
+print(f"[CONFIG] {datetime.now()}:   - NOTIFICATIONS_DB: {NOTIFICATIONS_DB}")
+print(f"[CONFIG] {datetime.now()}: Database file paths defined.")
 
-            if active_chat:
-                message_id = str(int(time.time() * 1000)) # Simple timestamp-based ID
-                new_message = {
-                    "id": message_id,
-                    "message": message_text,
-                    "isUser": is_user,
-                    "isVisible": is_visible,
-                    "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
-                    "memoryUsed": kwargs.get("memoryUsed", False),
-                    "agentsUsed": kwargs.get("agentsUsed", False),
-                    "internetUsed": kwargs.get("internetUsed", False),
-                    # Add other relevant fields if needed, like 'type' for tool results
-                }
-                if kwargs.get("type"):
-                    new_message["type"] = kwargs["type"]
-                if kwargs.get("task"):
-                    new_message["task"] = kwargs["task"]
+# Locks
+db_lock = asyncio.Lock()  # Lock for synchronizing chat database access
+notifications_db_lock = asyncio.Lock() # Lock for notifications database access
+print(f"[INIT] {datetime.now()}: Database locks initialized.")
 
-                active_chat["messages"].append(new_message)
-                await save_db(chatsDb)
-                print(f"Message added to DB (Chat ID: {chat_id}, User: {is_user}): {message_text[:50]}...")
-                return message_id # Return the ID if needed
-            else:
-                print(f"Error: Could not find chat with ID {chat_id} to add message.")
-                return None
-        except Exception as e:
-            print(f"Error adding message to DB: {e}")
-            traceback.print_exc()
-            return None
+# Initial DB Structure - Updated active_chat_id and next_chat_id
+initial_db = {
+    "chats": [],
+    "active_chat_id": 0, # Start with 0 (no active chat)
+    "next_chat_id": 1   # The ID for the *first* chat to be created
+}
+print(f"[CONFIG] {datetime.now()}: Initial chat DB structure defined (active_chat_id=0, next_chat_id=1).")
+
+# Global variable for active chat ID (reflecting the DB state) - Start at 0
+# This might be redundant if we always read from DB, but can be useful for quick checks
+# Let's remove it to rely solely on the DB read for consistency.
+# active_chat_id = 0
+# print(f"[INIT] {datetime.now()}: Global active_chat_id set to 0.")
+
+# --- Memory Backend Initialization ---
+print(f"[INIT] {datetime.now()}: Initializing MemoryBackend...")
+memory_backend = MemoryBackend()
+print(f"[INIT] {datetime.now()}: MemoryBackend initialized. Performing cleanup...")
+memory_backend.cleanup() # Ensure cleanup happens after initialization
+print(f"[INIT] {datetime.now()}: MemoryBackend cleanup complete.")
 
 # Tool Registration Decorator
 def register_tool(name: str):
@@ -354,27 +361,6 @@ print(f"[CONFIG] {datetime.now()}:   - MANAGEMENT_CLIENT_ID: {'Set' if MANAGEMEN
 print(f"[CONFIG] {datetime.now()}:   - MANAGEMENT_CLIENT_SECRET: {'Set' if MANAGEMENT_CLIENT_SECRET else 'Not Set'}")
 print(f"[CONFIG] {datetime.now()}: Auth0 configuration complete.")
 
-# Database paths
-print(f"[CONFIG] {datetime.now()}: Defining database file paths...")
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-USER_PROFILE_DB = os.path.join(BASE_DIR, "..", "..", "userProfileDb.json")
-CHAT_DB = "chatsDb.json"
-NOTIFICATIONS_DB = "notificationsDB.json"
-print(f"[CONFIG] {datetime.now()}:   - USER_PROFILE_DB: {USER_PROFILE_DB}")
-print(f"[CONFIG] {datetime.now()}:   - CHAT_DB: {CHAT_DB}")
-print(f"[CONFIG] {datetime.now()}:   - NOTIFICATIONS_DB: {NOTIFICATIONS_DB}")
-print(f"[CONFIG] {datetime.now()}: Database file paths defined.")
-
-db_lock = asyncio.Lock()  # Lock for synchronizing chat database access
-notifications_db_lock = asyncio.Lock() # Lock for notifications database access
-print(f"[INIT] {datetime.now()}: Database locks initialized.")
-
-initial_db = {
-    "chats": [],
-    "active_chat_id": None,
-    "next_chat_id": 1
-}
-print(f"[CONFIG] {datetime.now()}: Initial chat DB structure defined.")
 
 # --- Helper Functions with Logging ---
 
@@ -439,11 +425,6 @@ async def save_notifications_db(data):
     except Exception as e:
         print(f"[ERROR] {datetime.now()}: Error saving notifications DB to {NOTIFICATIONS_DB}: {e}")
 
-print(f"[INIT] {datetime.now()}: Initializing MemoryBackend...")
-memory_backend = MemoryBackend()
-print(f"[INIT] {datetime.now()}: MemoryBackend initialized. Performing cleanup...")
-memory_backend.cleanup() # Ensure cleanup happens after initialization
-print(f"[INIT] {datetime.now()}: MemoryBackend cleanup complete.")
 
 async def load_db():
     """Load the chat database from chatsDb.json, initializing if it doesn't exist or is invalid."""
@@ -451,16 +432,29 @@ async def load_db():
     try:
         with open(CHAT_DB, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            # Validate structure
+            # Validate structure (with new defaults)
             if "chats" not in data:
                 print(f"[DB_HELPER] {datetime.now()}: 'chats' key missing in {CHAT_DB}, adding.")
                 data["chats"] = []
             if "active_chat_id" not in data:
-                print(f"[DB_HELPER] {datetime.now()}: 'active_chat_id' key missing in {CHAT_DB}, setting to None.")
-                data["active_chat_id"] = None
+                print(f"[DB_HELPER] {datetime.now()}: 'active_chat_id' key missing in {CHAT_DB}, setting to 0.")
+                data["active_chat_id"] = 0 # Default to 0
             if "next_chat_id" not in data:
-                print(f"[DB_HELPER] {datetime.now()}: 'next_chat_id' key missing in {CHAT_DB}, adding.")
-                data["next_chat_id"] = 1
+                print(f"[DB_HELPER] {datetime.now()}: 'next_chat_id' key missing in {CHAT_DB}, setting to 1.")
+                data["next_chat_id"] = 1 # Default to 1
+            # Ensure IDs are integers if loaded from old file
+            if data.get("active_chat_id") is not None:
+                try:
+                    data["active_chat_id"] = int(data["active_chat_id"])
+                except (ValueError, TypeError):
+                     print(f"[DB_HELPER] {datetime.now()}: Invalid 'active_chat_id' found ('{data['active_chat_id']}'), resetting to 0.")
+                     data["active_chat_id"] = 0
+            if data.get("next_chat_id") is not None:
+                try:
+                     data["next_chat_id"] = int(data["next_chat_id"])
+                except (ValueError, TypeError):
+                     print(f"[DB_HELPER] {datetime.now()}: Invalid 'next_chat_id' found ('{data['next_chat_id']}'), resetting to 1.")
+                     data["next_chat_id"] = 1
             # print(f"[DB_HELPER] {datetime.now()}: Chat DB loaded successfully from {CHAT_DB}")
             return data
     except (FileNotFoundError, json.JSONDecodeError) as e:
@@ -475,6 +469,15 @@ async def save_db(data):
     """Save the data to chatsDb.json."""
     # print(f"[DB_HELPER] {datetime.now()}: Attempting to save chat DB to {CHAT_DB}")
     try:
+        # Ensure IDs are integers before saving
+        if data.get("active_chat_id") is not None:
+             data["active_chat_id"] = int(data["active_chat_id"])
+        if data.get("next_chat_id") is not None:
+             data["next_chat_id"] = int(data["next_chat_id"])
+        for chat in data.get("chats", []):
+             if chat.get("id") is not None:
+                 chat["id"] = int(chat["id"])
+
         with open(CHAT_DB, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4)
         # print(f"[DB_HELPER] {datetime.now()}: Chat DB saved successfully to {CHAT_DB}")
@@ -484,150 +487,172 @@ async def save_db(data):
 
 async def get_chat_history_messages() -> List[Dict[str, Any]]:
     """
-    Function to retrieve the chat history of the currently active chat.
-    Checks for inactivity and creates a new chat if needed.
-    Returns the list of messages for the active chat, filtering out messages where isVisible is False.
-    Handles timestamp parsing robustly.
+    Retrieves the chat history of the currently active chat.
+    Handles initial state (active_chat_id=0), inactivity, and creates new chats as needed.
+    Chat IDs are now integers starting from 1. Active ID 0 means no chat is currently active.
+    Returns the list of messages for the active chat, filtering out invisible messages.
     """
-    # print(f"[CHAT_HISTORY] {datetime.now()}: get_chat_history_messages called.")
+    print(f"[CHAT_HISTORY] {datetime.now()}: get_chat_history_messages called.")
     async with db_lock:
-        # print(f"[CHAT_HISTORY] {datetime.now()}: Acquired chat DB lock.")
+        print(f"[CHAT_HISTORY] {datetime.now()}: Acquired chat DB lock.")
         chatsDb = await load_db()
-        active_chat_id = chatsDb.get("active_chat_id") # Use .get for safety
+        active_chat_id = chatsDb.get("active_chat_id", 0) # Default to 0 if missing
+        next_chat_id = chatsDb.get("next_chat_id", 1)   # Default to 1 if missing
         current_time = datetime.now(timezone.utc)
+        existing_chats = chatsDb.get("chats", [])
+        active_chat = None
 
-        # If no active chat exists, create a new one
-        if not active_chat_id: # Check if None or empty
-            # Find if any chats exist at all
-            existing_chats = chatsDb.get("chats", [])
-            if not existing_chats: # No chats exist at all
-                 new_chat_id = f"chat_{chatsDb.get('next_chat_id', 1)}" # Default next_chat_id to 1
-                 chatsDb["next_chat_id"] = chatsDb.get('next_chat_id', 1) + 1
-                 new_chat = {"id": new_chat_id, "messages": []}
-                 chatsDb["chats"] = existing_chats + [new_chat] # Append to potentially empty list
-                 chatsDb["active_chat_id"] = new_chat_id
-                 await save_db(chatsDb)
-                 print(f"No active chat found, created and activated new chat: {new_chat_id}")
-                 return []
+        print(f"[CHAT_HISTORY] {datetime.now()}: Current DB state - active_chat_id: {active_chat_id}, next_chat_id: {next_chat_id}, num_chats: {len(existing_chats)}")
+
+        # --- Handle Active Chat ID ---
+        if active_chat_id == 0:
+            # No chat is currently active
+            if not existing_chats:
+                # No chats exist at all, create the first one (ID 1)
+                new_chat_id = next_chat_id # Should be 1 initially
+                print(f"[CHAT_HISTORY] {datetime.now()}: No chats exist. Creating first chat with ID: {new_chat_id}.")
+                new_chat = {"id": new_chat_id, "messages": []}
+                chatsDb["chats"] = [new_chat] # Initialize chats list
+                chatsDb["active_chat_id"] = new_chat_id
+                chatsDb["next_chat_id"] = new_chat_id + 1 # Increment next ID
+                await save_db(chatsDb)
+                print(f"[CHAT_HISTORY] {datetime.now()}: First chat (ID: {new_chat_id}) created and activated. DB saved.")
+                return [] # Return empty messages for the new chat
             else:
-                 # Chats exist, but none is active. Activate the latest one? Or first?
-                 # Let's activate the last one added for simplicity.
-                 active_chat_id = existing_chats[-1]['id']
-                 chatsDb['active_chat_id'] = active_chat_id
-                 await save_db(chatsDb)
-                 print(f"No active chat ID set, activating the last chat: {active_chat_id}")
-                 # Continue to fetch messages for this now active chat
+                # Chats exist, but none is active (e.g., after clearing history and getting new message). Activate the latest.
+                latest_chat_id = existing_chats[-1]['id'] # Get ID of the last chat in the list
+                print(f"[CHAT_HISTORY] {datetime.now()}: Active chat ID is 0, but chats exist. Activating the latest chat (ID: {latest_chat_id}).")
+                chatsDb['active_chat_id'] = latest_chat_id
+                active_chat_id = latest_chat_id # Update local variable
+                await save_db(chatsDb)
+                print(f"[CHAT_HISTORY] {datetime.now()}: Activated latest chat (ID: {latest_chat_id}). DB saved.")
+                # Proceed to find this chat below
+        # else: active_chat_id is > 0
 
-        # Find the active chat
-        active_chat = next((chat for chat in chatsDb.get("chats", []) if chat.get("id") == active_chat_id), None)
+        # --- Find the Active Chat Object ---
+        # (Could be set above if ID was 0, or loaded directly if ID was > 0)
+        active_chat = next((chat for chat in existing_chats if chat.get("id") == active_chat_id), None)
 
         # Handle case where active_chat_id exists but the chat itself doesn't (data inconsistency)
         if not active_chat:
-             print(f"Error: Active chat ID '{active_chat_id}' exists, but no corresponding chat found. Resetting active chat.")
-             chatsDb["active_chat_id"] = None # Reset to avoid repeated errors
+             print(f"[ERROR] {datetime.now()}: Active chat ID '{active_chat_id}' exists, but no corresponding chat found. Resetting active chat to 0.")
+             chatsDb["active_chat_id"] = 0 # Reset to avoid repeated errors
              await save_db(chatsDb)
-             # Recursively call or return empty? Returning empty is safer.
-             # return await get_chat_history_messages() # Risky if DB error persists
+             # Return empty list; next call will try to activate latest or create new
              return []
 
-        # Check for inactivity only if there are messages
-        if active_chat.get("messages"): # Use .get for safety
+        # --- Check for Inactivity (only if chat has messages) ---
+        if active_chat.get("messages"):
             try:
                 last_message = active_chat["messages"][-1]
-                timestamp_str = last_message.get("timestamp") # Use .get
+                timestamp_str = last_message.get("timestamp")
 
                 if not timestamp_str:
-                     print("Warning: Last message has no timestamp. Skipping inactivity check.")
+                     print(f"[CHAT_HISTORY] {datetime.now()}: Warning: Last message in chat {active_chat_id} has no timestamp. Skipping inactivity check.")
                 else:
-                    # --- Robust Timestamp Parsing ---
+                    # Robust Timestamp Parsing
                     if timestamp_str.endswith('Z'):
-                        # Replace Z only if it's at the very end
                         timestamp_str = timestamp_str[:-1] + '+00:00'
-                    # --- End Timestamp Parsing Fix ---
 
                     try:
-                        last_timestamp = datetime.datetime.fromisoformat(timestamp_str)
-                        # Ensure last_timestamp is offset-aware for comparison
+                        last_timestamp = datetime.fromisoformat(timestamp_str)
                         if last_timestamp.tzinfo is None:
-                             # This case shouldn't happen if parsing worked with '+00:00'
-                             # but as a safeguard, assume UTC if naive after parsing attempt
                              last_timestamp = last_timestamp.replace(tzinfo=timezone.utc)
 
-                        if (current_time - last_timestamp).total_seconds() > 600:  # 10 minutes = 600 seconds
-                            print(f"Inactivity detected in chat {active_chat_id}. Creating new chat.")
-                            # Inactivity period exceeded, create a new chat
-                            new_chat_id = f"chat_{chatsDb.get('next_chat_id', 1)}"
-                            chatsDb["next_chat_id"] = chatsDb.get('next_chat_id', 1) + 1
+                        # Check inactivity (e.g., 10 minutes)
+                        inactivity_threshold = 600 # seconds
+                        if (current_time - last_timestamp).total_seconds() > inactivity_threshold:
+                            print(f"[CHAT_HISTORY] {datetime.now()}: Inactivity detected in chat {active_chat_id} (>{inactivity_threshold}s). Creating new chat.")
+                            new_chat_id = next_chat_id
+                            print(f"[CHAT_HISTORY] {datetime.now()}: Creating new chat due to inactivity with ID: {new_chat_id}.")
                             new_chat = {"id": new_chat_id, "messages": []}
-                            chatsDb["chats"].append(new_chat) # Append new chat
+                            chatsDb["chats"].append(new_chat)
                             chatsDb["active_chat_id"] = new_chat_id
+                            chatsDb["next_chat_id"] = new_chat_id + 1
                             await save_db(chatsDb)
-                            return [] # Return empty messages for new chat
+                            print(f"[CHAT_HISTORY] {datetime.now()}: New chat (ID: {new_chat_id}) created and activated due to inactivity. DB saved.")
+                            return [] # Return empty messages for the new chat
+                        # else: # Not inactive, continue with current active chat
+                        #    print(f"[CHAT_HISTORY] {datetime.now()}: Chat {active_chat_id} is active and not inactive.")
+
                     except ValueError as e_parse:
-                         print(f"Error parsing timestamp '{timestamp_str}': {e_parse}. Skipping inactivity check.")
+                         print(f"[CHAT_HISTORY] {datetime.now()}: Error parsing timestamp '{timestamp_str}' in chat {active_chat_id}: {e_parse}. Skipping inactivity check.")
                     except Exception as e_time:
-                         print(f"Error during timestamp comparison: {e_time}. Skipping inactivity check.")
+                         print(f"[CHAT_HISTORY] {datetime.now()}: Error during timestamp comparison in chat {active_chat_id}: {e_time}. Skipping inactivity check.")
 
             except IndexError:
-                 print("Chat has an empty messages list, cannot check inactivity.")
+                 print(f"[CHAT_HISTORY] {datetime.now()}: Chat {active_chat_id} has an empty messages list, cannot check inactivity.")
             except Exception as e:
-                 print(f"Unexpected error during inactivity check: {e}. Proceeding...")
+                 print(f"[CHAT_HISTORY] {datetime.now()}: Unexpected error during inactivity check for chat {active_chat_id}: {e}. Proceeding...")
 
-
-        # Return messages from the active chat, filtering out those with isVisible: False
+        # --- Return Visible Messages from the Active Chat ---
         if active_chat and active_chat.get("messages"):
             filtered_messages = [
                 message for message in active_chat["messages"]
-                # Default isVisible to True if key is missing
-                # Check if the value is explicitly False
-                if message.get("isVisible", True) is not False
+                if message.get("isVisible", True) is not False # Default isVisible to True if missing
             ]
+            print(f"[CHAT_HISTORY] {datetime.now()}: Returning {len(filtered_messages)} visible messages for active chat {active_chat_id}.")
             return filtered_messages
         else:
-            # Active chat exists but has no messages
+            # Active chat exists but has no messages (or messages list is missing)
+            print(f"[CHAT_HISTORY] {datetime.now()}: Active chat {active_chat_id} exists but has no messages. Returning empty list.")
             return []
+        # finally:
+        #     print(f"[CHAT_HISTORY] {datetime.now()}: Releasing chat DB lock.")
 
-# WebSocket Manager
-class WebSocketManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-        self.client_ids: Dict[WebSocket, str] = {} # Optional: Track clients if needed
 
-    async def connect(self, websocket: WebSocket, client_id: str = "anon"):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        self.client_ids[websocket] = client_id
-        print(f"WebSocket client connected: {client_id} ({len(self.active_connections)} total)")
+# WebSocket Manager V2 (Duplicate from above, remove one if not needed)
+# Removing the second definition as the first one (`manager`) is used globally.
+# class WebSocketManager: ... (Removed duplicate definition)
 
-    def disconnect(self, websocket: WebSocket):
-        client_id = self.client_ids.pop(websocket, "unknown")
-        if websocket in self.active_connections:
-             self.active_connections.remove(websocket)
-        print(f"WebSocket client disconnected: {client_id} ({len(self.active_connections)} total)")
+async def add_message_to_db(chat_id: Union[int, str], message_text: str, is_user: bool, is_visible: bool = True, **kwargs):
+    """Adds a message to the specified chat ID (now integer) in the database."""
+    # Ensure chat_id is integer for lookup
+    try:
+        target_chat_id = int(chat_id)
+    except (ValueError, TypeError):
+        print(f"[ERROR] {datetime.now()}: Invalid chat_id format provided to add_message_to_db: '{chat_id}'. Expected integer.")
+        return None
 
-    async def send_personal_message(self, message: str, websocket: WebSocket):
+    async with db_lock:
         try:
-             await websocket.send_text(message)
+            chatsDb = await load_db()
+            # Find chat using integer comparison
+            active_chat = next((chat for chat in chatsDb["chats"] if chat.get("id") == target_chat_id), None)
+
+            if active_chat:
+                message_id = str(int(time.time() * 1000)) # Simple timestamp-based ID for message
+                new_message = {
+                    "id": message_id,
+                    "message": message_text,
+                    "isUser": is_user,
+                    "isVisible": is_visible,
+                    "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+                    "memoryUsed": kwargs.get("memoryUsed", False),
+                    "agentsUsed": kwargs.get("agentsUsed", False),
+                    "internetUsed": kwargs.get("internetUsed", False),
+                    # Add other relevant fields if needed, like 'type' for tool results
+                }
+                if kwargs.get("type"):
+                    new_message["type"] = kwargs["type"]
+                if kwargs.get("task"):
+                    new_message["task"] = kwargs["task"]
+
+                # Ensure messages list exists
+                if "messages" not in active_chat:
+                     active_chat["messages"] = []
+
+                active_chat["messages"].append(new_message)
+                await save_db(chatsDb)
+                print(f"Message added to DB (Chat ID: {target_chat_id}, User: {is_user}): {message_text[:50]}...")
+                return message_id # Return the ID if needed
+            else:
+                print(f"Error: Could not find chat with ID {target_chat_id} to add message.")
+                return None
         except Exception as e:
-             print(f"Error sending personal message: {e}")
-             self.disconnect(websocket)
-
-    async def broadcast(self, message: str):
-        # Create a list of connections to iterate over, as disconnect modifies the list
-        connections_to_send = list(self.active_connections)
-        for connection in connections_to_send:
-            try:
-                await connection.send_text(message)
-            except Exception as e:
-                client_id = self.client_ids.get(connection, "unknown")
-                print(f"Error broadcasting to {client_id}, disconnecting: {e}")
-                # Disconnect broken connections
-                self.disconnect(connection)
-
-    async def broadcast_json(self, data: dict):
-        await self.broadcast(json.dumps(data))
-
-manager = WebSocketManager()
+            print(f"Error adding message to DB: {e}")
+            traceback.print_exc()
+            return None
 
 async def cleanup_tasks_periodically():
     """Periodically clean up old completed tasks."""
@@ -647,7 +672,8 @@ async def process_queue():
         if task:
             task_id = task.get("task_id", "N/A")
             task_desc = task.get("description", "N/A")
-            print(f"[TASK_PROCESSOR] {datetime.now()}: Processing task ID: {task_id}, Description: {task_desc[:50]}...")
+            task_chat_id = task.get("chat_id", "N/A") # Get chat ID associated with the task
+            print(f"[TASK_PROCESSOR] {datetime.now()}: Processing task ID: {task_id}, Chat ID: {task_chat_id}, Description: {task_desc[:50]}...")
             try:
                 # Execute task within a new asyncio task to handle cancellations
                 task_queue.current_task_execution = asyncio.create_task(execute_agent_task(task))
@@ -655,11 +681,17 @@ async def process_queue():
                 result = await task_queue.current_task_execution
                 print(f"[TASK_PROCESSOR] {datetime.now()}: Task {task_id} execution finished successfully. Result length: {len(str(result))}")
 
-                # Add results to chat
-                print(f"[TASK_PROCESSOR] {datetime.now()}: Adding task description '{task_desc[:50]}...' to chat {task['chat_id']} as user message (hidden).")
-                await add_result_to_chat(task["chat_id"], task["description"], True) # Add hidden user message
-                print(f"[TASK_PROCESSOR] {datetime.now()}: Adding task result to chat {task['chat_id']} as assistant message.")
-                await add_result_to_chat(task["chat_id"], result, False, task["description"]) # Add visible assistant message
+                # Add results to chat (use task's chat_id)
+                if task_chat_id != "N/A":
+                    print(f"[TASK_PROCESSOR] {datetime.now()}: Adding task description '{task_desc[:50]}...' to chat {task_chat_id} as user message (hidden).")
+                    # Pass isVisible=False explicitly for the hidden user message
+                    await add_message_to_db(task_chat_id, task["description"], is_user=True, is_visible=False)
+                    print(f"[TASK_PROCESSOR] {datetime.now()}: Adding task result to chat {task_chat_id} as assistant message.")
+                    # Pass isVisible=True explicitly for the visible assistant message
+                    await add_message_to_db(task_chat_id, result, is_user=False, is_visible=True, type="tool_result", task=task["description"], agentsUsed=True)
+                else:
+                     print(f"[WARN] {datetime.now()}: Task {task_id} has no associated chat_id. Cannot add result to chat.")
+
 
                 await task_queue.complete_task(task_id, result=result)
                 print(f"[TASK_PROCESSOR] {datetime.now()}: Task {task_id} marked as completed in queue.")
@@ -804,7 +836,7 @@ async def execute_agent_task(task: dict) -> str:
             user_context = f"Error retrieving user context: {e}" # Pass error info downstream if needed
 
     # --- Compute Internet Context ---
-    if internet:
+    if internet and internet.lower() != 'none': # Check if internet search is actually requested
         print(f"[AGENT_EXEC] {datetime.now()}: Task {task_id} requires internet search.")
         try:
             print(f"[AGENT_EXEC] {datetime.now()}: Re-framing internet query for task {task_id}...")
@@ -823,6 +855,8 @@ async def execute_agent_task(task: dict) -> str:
             print(f"[ERROR] {datetime.now()}: Error computing internet_context for task {task_id}: {e}")
             traceback.print_exc()
             internet_context = f"Error retrieving internet context: {e}" # Pass error info
+    else:
+         print(f"[AGENT_EXEC] {datetime.now()}: Internet search not required for task {task_id}.")
 
     # --- Invoke Agent Runnable ---
     print(f"[AGENT_EXEC] {datetime.now()}: Invoking main agent runnable for task {task_id}...")
@@ -835,6 +869,9 @@ async def execute_agent_task(task: dict) -> str:
     }
     # print(f"[AGENT_EXEC] {datetime.now()}: Agent Input for task {task_id}: {agent_input}") # Can be verbose
     try:
+        # Check if agent_runnable requires history and pass it if needed
+        # This depends on how get_agent_runnable was implemented
+        # Assuming it uses the globally managed chat_history object implicitly
         response = agent_runnable.invoke(agent_input)
         print(f"[AGENT_EXEC] {datetime.now()}: Agent response received for task {task_id}.")
         # print(f"[AGENT_EXEC] {datetime.now()}: Agent Response content: {response}") # Log the raw response
@@ -844,47 +881,72 @@ async def execute_agent_task(task: dict) -> str:
         return f"Error during agent execution: {e}"
 
     # --- Process Tool Calls ---
-    if "tool_calls" not in response or not isinstance(response["tool_calls"], list):
-        error_msg = f"Error: Invalid or missing 'tool_calls' list in agent response for task {task_id}."
-        print(f"[AGENT_EXEC] {datetime.now()}: {error_msg} Response was: {response}")
-        return error_msg
+    tool_calls = []
+    if isinstance(response, dict) and "tool_calls" in response and isinstance(response["tool_calls"], list):
+        tool_calls = response["tool_calls"]
+        print(f"[AGENT_EXEC] {datetime.now()}: Found {len(tool_calls)} tool calls in agent response dict.")
+    elif isinstance(response, list): # Handle case where the runnable *only* returns the tool calls list
+        tool_calls = response
+        print(f"[AGENT_EXEC] {datetime.now()}: Agent response was a list, treating as {len(tool_calls)} tool calls.")
+    else:
+        # Handle cases where response is just a final string answer
+        if isinstance(response, str):
+             print(f"[AGENT_EXEC] {datetime.now()}: Agent response is a direct string answer (no tool calls).")
+             return response # Return the direct answer
+        # Handle cases where the structure is unexpected
+        error_msg = f"Error: Invalid or missing 'tool_calls' list in agent response for task {task_id}. Response type: {type(response)}, Response: {str(response)[:200]}"
+        print(f"[AGENT_EXEC] {datetime.now()}: {error_msg}")
+        return error_msg # Return error if structure is wrong
+
 
     all_tool_results = []
     previous_tool_result = None
-    print(f"[AGENT_EXEC] {datetime.now()}: Processing {len(response['tool_calls'])} potential tool calls for task {task_id}.")
+    print(f"[AGENT_EXEC] {datetime.now()}: Processing {len(tool_calls)} potential tool calls for task {task_id}.")
 
-    for i, tool_call in enumerate(response["tool_calls"]):
-        print(f"[AGENT_EXEC] {datetime.now()}: Processing tool call {i+1}/{len(response['tool_calls'])} for task {task_id}...")
+    for i, tool_call in enumerate(tool_calls):
+        print(f"[AGENT_EXEC] {datetime.now()}: Processing tool call {i+1}/{len(tool_calls)} for task {task_id}...")
         # print(f"[AGENT_EXEC] {datetime.now()}: Tool call data: {tool_call}")
 
-        if not isinstance(tool_call, dict) or tool_call.get("response_type") != "tool_call":
-            print(f"[AGENT_EXEC] {datetime.now()}: Skipping item {i+1} as it's not a valid tool call (type: {tool_call.get('response_type', 'N/A')}).")
+        # Refined validation for tool call structure
+        tool_content = None
+        if isinstance(tool_call, dict) and tool_call.get("response_type") == "tool_call":
+            tool_content = tool_call.get("content")
+        elif isinstance(tool_call, dict) and "tool_name" in tool_call and "task_instruction" in tool_call:
+            # Support simpler dict structure if runnable returns that directly
+            tool_content = tool_call
+            print(f"[AGENT_EXEC] {datetime.now()}: Interpreting dict as direct tool call content.")
+        else:
+            print(f"[AGENT_EXEC] {datetime.now()}: Skipping item {i+1} as it's not a valid tool call structure. Item: {str(tool_call)[:100]}")
             continue
 
-        tool_content = tool_call.get("content")
         if not isinstance(tool_content, dict):
-             print(f"[AGENT_EXEC] {datetime.now()}: Skipping tool call {i+1} due to invalid 'content' structure.")
+             print(f"[AGENT_EXEC] {datetime.now()}: Skipping tool call {i+1} due to invalid 'content' structure. Content: {tool_content}")
              continue
 
         tool_name = tool_content.get("tool_name")
         task_instruction = tool_content.get("task_instruction")
+        # Default to False if key is missing
         previous_tool_response_required = tool_content.get("previous_tool_response", False)
 
+        # Basic validation
+        if not tool_name or not task_instruction:
+            print(f"[AGENT_EXEC] {datetime.now()}: Skipping tool call {i+1} due to missing tool_name or task_instruction.")
+            continue
+
         print(f"[AGENT_EXEC] {datetime.now()}:   - Tool Name: {tool_name}")
-        print(f"[AGENT_EXEC] {datetime.now()}:   - Task Instruction: {task_instruction[:100]}...")
+        print(f"[AGENT_EXEC] {datetime.now()}:   - Task Instruction: {str(task_instruction)[:100]}...") # Ensure task_instruction is stringifiable
         print(f"[AGENT_EXEC] {datetime.now()}:   - Previous Tool Response Required: {previous_tool_response_required}")
 
         tool_handler = tool_handlers.get(tool_name)
         if not tool_handler:
             error_msg = f"Error: Tool '{tool_name}' not found in registered handlers for task {task_id}."
             print(f"[AGENT_EXEC] {datetime.now()}: {error_msg}")
-            # Decide whether to fail the whole task or just skip this tool call
-            # Skipping for now, but might need adjustment based on desired behavior
             all_tool_results.append({"tool_name": tool_name, "task_instruction": task_instruction, "tool_result": error_msg, "status": "error"})
             continue # Skip to the next tool call
 
         # --- Prepare and Execute Tool Handler ---
-        tool_input = {"input": task_instruction}
+        # Ensure input is stringifiable
+        tool_input = {"input": str(task_instruction)}
         if previous_tool_response_required:
             if previous_tool_result:
                 print(f"[AGENT_EXEC] {datetime.now()}:   - Providing previous tool result to '{tool_name}'.")
@@ -892,8 +954,9 @@ async def execute_agent_task(task: dict) -> str:
             else:
                 print(f"[WARN] {datetime.now()}: Tool '{tool_name}' requires previous result, but none is available. Passing 'None'.")
                 tool_input["previous_tool_response"] = "Previous tool result was expected but not available." # Or pass None
-        else:
-            tool_input["previous_tool_response"] = "Not Required"
+        # else: # No need for explicit "Not Required" key
+        #     pass
+            # tool_input["previous_tool_response"] = "Not Required"
 
         print(f"[AGENT_EXEC] {datetime.now()}: Invoking tool handler '{tool_handler.__name__}' for tool '{tool_name}'...")
         try:
@@ -904,7 +967,7 @@ async def execute_agent_task(task: dict) -> str:
             error_msg = f"Error executing tool handler '{tool_handler.__name__}' for tool '{tool_name}': {e}"
             print(f"[ERROR] {datetime.now()}: {error_msg}")
             traceback.print_exc()
-            all_tool_results.append({"tool_name": tool_name, "task_instruction": task_instruction, "tool_result": error_msg, "status": "error"})
+            all_tool_results.append({"tool_name": tool_name, "task_instruction": str(task_instruction), "tool_result": error_msg, "status": "error"})
             previous_tool_result = error_msg # Pass error as previous result if needed
             continue # Skip to next tool call
 
@@ -918,7 +981,7 @@ async def execute_agent_task(task: dict) -> str:
             notification = {
                 "type": "task_approval_pending",
                 "task_id": task_id,
-                "description": f"Approval needed for: {tool_name} - {task_instruction[:50]}...", # Provide context
+                "description": f"Approval needed for: {tool_name} - {str(task_instruction)[:50]}...", # Provide context
                 "tool_name": tool_name,
                 "approval_data": approval_data # Send data needing approval to frontend
             }
@@ -939,23 +1002,21 @@ async def execute_agent_task(task: dict) -> str:
             previous_tool_result = tool_result # Store for potential use by the next tool
             all_tool_results.append({
                 "tool_name": tool_name,
-                "task_instruction": task_instruction,
+                "task_instruction": str(task_instruction), # Ensure string
                 "tool_result": tool_result,
                 "status": "success"
             })
 
     # --- Final Reflection/Summarization ---
     if not all_tool_results:
-        print(f"[AGENT_EXEC] {datetime.now()}: No successful tool calls executed for task {task_id}. Returning empty result string.")
-        # Maybe return a message indicating no tools were run or check agent's initial response?
-        # For now, returning a generic message based on the agent's initial non-tool response might be better.
-        # Let's check if the initial response had a direct answer before tool calls.
-        if response.get("response_type") == "final_answer" and response.get("content"):
-            print(f"[AGENT_EXEC] {datetime.now()}: Using agent's final answer as no tools were executed.")
-            return response["content"]
+        print(f"[AGENT_EXEC] {datetime.now()}: No successful tool calls executed for task {task_id}.")
+        # Check if the initial response dict contained a final answer besides tool calls
+        if isinstance(response, dict) and response.get("response_type") == "final_answer" and response.get("content"):
+             print(f"[AGENT_EXEC] {datetime.now()}: Using agent's final answer from initial response dict.")
+             return response["content"]
         else:
-            print(f"[AGENT_EXEC] {datetime.now()}: No tools run and no direct final answer from agent for task {task_id}. Returning generic message.")
-            return "No specific actions were taken or information gathered."
+             print(f"[AGENT_EXEC] {datetime.now()}: No tools run and no direct final answer from agent for task {task_id}. Returning generic message.")
+             return "No specific actions were taken or information gathered."
 
 
     print(f"[AGENT_EXEC] {datetime.now()}: All tool calls processed for task {task_id}. Preparing final result.")
@@ -967,8 +1028,15 @@ async def execute_agent_task(task: dict) -> str:
             print(f"[AGENT_EXEC] {datetime.now()}: Task {task_id} involved only 'search_inbox'. Invoking inbox summarizer...")
             tool_result_data = all_tool_results[0]["tool_result"]
             # Ensure the result structure is as expected by the summarizer
-            if isinstance(tool_result_data, dict) and "result" in tool_result_data and isinstance(tool_result_data["result"], dict):
-                result_content = tool_result_data["result"]
+            # Adjusted check based on potential structure returned by parse_and_execute_tool_calls
+            result_content = None
+            if isinstance(tool_result_data, dict):
+                if "result" in tool_result_data and isinstance(tool_result_data["result"], dict):
+                    result_content = tool_result_data["result"]
+                elif "email_data" in tool_result_data: # Handle if result is directly the content dict
+                    result_content = tool_result_data
+
+            if result_content:
                 # Filter email data, keeping only non-body fields
                 filtered_email_data = []
                 if "email_data" in result_content and isinstance(result_content["email_data"], list):
@@ -1000,63 +1068,21 @@ async def execute_agent_task(task: dict) -> str:
         error_msg = f"Error during final result generation (reflection/summarization) for task {task_id}: {e}"
         print(f"[ERROR] {datetime.now()}: {error_msg}")
         traceback.print_exc()
-        final_result_str = f"{error_msg}\n\nRaw Tool Results:\n{all_tool_results}" # Return error and raw results
+        final_result_str = f"{error_msg}\n\nRaw Tool Results:\n{json.dumps(all_tool_results, indent=2)}" # Return error and raw results formatted
 
     print(f"[AGENT_EXEC] {datetime.now()}: Task {task_id} execution complete. Final result length: {len(final_result_str)}")
     return final_result_str
 
 
-async def add_result_to_chat(chat_id: str, result: str, isUser: bool, task_description: str = None):
-    """Add the task result or hidden user message to the corresponding chat."""
-    # print(f"[CHAT_UPDATE] {datetime.now()}: Adding message to chat_id '{chat_id}'. IsUser: {isUser}, Task Desc (if any): {task_description[:50] if task_description else 'N/A'}")
-    async with db_lock:
-        # print(f"[CHAT_UPDATE] {datetime.now()}: Acquired chat DB lock for '{chat_id}'.")
-        chatsDb = await load_db()
-        chat = next((c for c in chatsDb["chats"] if c.get("id") == chat_id), None)
-
-        if chat:
-            message_id = str(int(time.time() * 1000)) # Generate unique ID
-            timestamp = datetime.now(timezone.utc).isoformat() + "Z" # Use alias dt
-
-            if not isUser:
-                # This is an assistant message, likely a tool result
-                result_message = {
-                    "id": message_id,
-                    "type": "tool_result", # Indicate it's from a tool/agent task
-                    "message": result,
-                    "task": task_description, # Include the original task description
-                    "isUser": False,
-                    "memoryUsed": False, # Context about memory/internet usage isn't directly available here
-                    "agentsUsed": True,  # Assume agent was used if it's a tool result
-                    "internetUsed": False, # Context about memory/internet usage isn't directly available here
-                    "timestamp": timestamp,
-                    "isVisible": True # Tool results should be visible
-                }
-                # print(f"[CHAT_UPDATE] {datetime.now()}: Creating assistant message (tool result) for chat '{chat_id}'.")
-            else:
-                # This is a user message, likely the original task description being hidden
-                result_message = {
-                    "id": message_id,
-                    "type": "user_message", # Standard user message type
-                    "message": result, # This 'result' is the task description here
-                    "isUser": True,
-                    "isVisible": False, # Make this message hidden
-                    "memoryUsed": False,
-                    "agentsUsed": False,
-                    "internetUsed": False,
-                    "timestamp": timestamp
-                }
-                # print(f"[CHAT_UPDATE] {datetime.now()}: Creating hidden user message (task description) for chat '{chat_id}'.")
-
-            # Append the message
-            if "messages" not in chat:
-                chat["messages"] = []
-            chat["messages"].append(result_message)
-            await save_db(chatsDb)
-            # print(f"[CHAT_UPDATE] {datetime.now()}: Message (ID: {message_id}) added to chat '{chat_id}' and DB saved.")
-        else:
-            print(f"[ERROR] {datetime.now()}: Failed to add message. Chat with ID '{chat_id}' not found.")
-        # print(f"[CHAT_UPDATE] {datetime.now()}: Releasing chat DB lock for '{chat_id}'.")
+# async def add_result_to_chat(chat_id: Union[int, str], result: str, isUser: bool, task_description: str = None):
+#     """
+#     Add the task result or hidden user message to the corresponding chat.
+#     This function seems redundant as add_message_to_db handles this logic now.
+#     Refactor calls to use add_message_to_db directly with appropriate `isVisible` flag.
+#     """
+#     print(f"[DEPRECATED] {datetime.now()}: add_result_to_chat called. Use add_message_to_db instead.")
+#     is_visible = not isUser # User messages (task descriptions) should be hidden, assistant results visible
+#     await add_message_to_db(chat_id, result, is_user=isUser, is_visible=is_visible, task=task_description)
 
 
 # --- FastAPI Application Setup ---
@@ -1087,63 +1113,32 @@ app.add_middleware(
 print(f"[FASTAPI] {datetime.now()}: CORS middleware added.")
 
 # --- Startup and Shutdown Events ---
-
-# --- Startup/Shutdown Events ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Code to run on startup
-    print("--- Server Starting ---")
-    # Load tasks and memory operations
+@app.on_event("startup")
+async def startup_event():
     await task_queue.load_tasks()
-    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Loading memory operations from storage...")
     await memory_backend.memory_queue.load_operations()
-    # print("Loading STT model...")
-    # stt_model = FasterWhisperSTT(model_size="base", device="cpu", compute_type="int8")
-    # print("STT model loaded.")
+    asyncio.create_task(process_queue())
+    asyncio.create_task(process_memory_operations())
+    asyncio.create_task(cleanup_tasks_periodically())
+    
+    user_id = "user1"  # Replace with dynamic user ID retrieval if needed
+    enabled_data_sources = ["gmail", "internet_search", "gcalendar"]  # Add gcalendar here
+    
+    for source in enabled_data_sources:
+        if source == "gmail":
+            engine = GmailContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
+        elif source == "internet_search":
+            engine = InternetSearchContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
+        elif source == "gcalendar":
+            engine = GCalendarContextEngine(user_id, task_queue, memory_backend, manager, db_lock, notifications_db_lock)
+        else:
+            continue  # Skip unrecognized sources
+        asyncio.create_task(engine.start())
 
-    # print("Loading TTS model...")
-    # try:
-    #     # --- Pass the selected default voice during initialization ---
-    #     tts_model = OrpheusTTS(
-    #         verbose=False,
-    #         default_voice_id=SELECTED_TTS_VOICE, # Pass the selected voice here
-    #     )
-    #     # --- End TTS model initialization change ---
-    #     print("TTS model loaded successfully.") # This confirmation comes after the voice is set in init
-    # except Exception as e:
-    #     print(f"FATAL ERROR: Could not load TTS model: {e}")
-    #     exit(1)
-    # Start background processors
-    app.state.task_processor = asyncio.create_task(process_queue())
-    app.state.memory_processor = asyncio.create_task(process_memory_operations())
-    app.state.cleanup_processor = asyncio.create_task(cleanup_tasks_periodically())
-
-    yield # Server runs here
-
-    # Code to run on shutdown
-    print("--- Server Shutting Down ---")
-    # Gracefully shutdown background tasks (optional, depends on task nature)
-    if hasattr(app.state, 'task_processor') and not app.state.task_processor.done():
-        app.state.task_processor.cancel()
-        try: await app.state.task_processor
-        except asyncio.CancelledError: print("Task processor cancelled.")
-    if hasattr(app.state, 'memory_processor') and not app.state.memory_processor.done():
-        app.state.memory_processor.cancel()
-        try: await app.state.memory_processor
-        except asyncio.CancelledError: print("Memory processor cancelled.")
-    if hasattr(app.state, 'cleanup_processor') and not app.state.cleanup_processor.done():
-        app.state.cleanup_processor.cancel()
-        try: await app.state.cleanup_processor
-        except asyncio.CancelledError: print("Cleanup processor cancelled.")
-
-    # Save pending tasks and memory operations
+@app.on_event("shutdown")
+async def shutdown_event():
     await task_queue.save_tasks()
-    print(f"[FASTAPI_LIFECYCLE] {datetime.now()}: Saving pending memory operations to storage...")
     await memory_backend.memory_queue.save_operations()
-    # Close Neo4j driver
-    if graph_driver:
-        await asyncio.to_thread(graph_driver.close) # Use to_thread if close is blocking
-    print("--- Server Shutdown Complete ---")
 
 # --- Pydantic Models ---
 # (No print statements needed in model definitions)
@@ -1151,7 +1146,6 @@ class Message(BaseModel):
     input: str
     pricing: str
     credits: int
-    chat_id: Optional[str] = None # Make chat_id optional, will be determined if None
 
 class ToolCall(BaseModel):
     input: str
@@ -1204,7 +1198,7 @@ class SetDataSourceEnabledRequest(BaseModel):
     enabled: bool
 
 class CreateTaskRequest(BaseModel):
-    # chat_id: str # Removed, will be determined dynamically
+    # chat_id: Union[int, str] # Removed, will be determined dynamically
     description: str
     # priority: int # Removed, will be determined dynamically
     # username: str # Removed, will be determined dynamically
@@ -1265,59 +1259,25 @@ class ApproveTaskResponse(BaseModel):
 
 # --- Voice Chat Logic ---
 
-# ... (Configuration, Model Init, Ollama function remain the same) ...
-# --- Configuration ---
-OLLAMA_API_URL = "http://localhost:11434/api/chat"
-OLLAMA_MODEL = "phi4-mini"
-OLLAMA_REQUEST_TIMEOUT = 60.0
+# --- Configuration --- (Already defined globally)
 
-# --- Select TTS Voice ---
-SELECTED_TTS_VOICE: VoiceId = "tara"
-if SELECTED_TTS_VOICE not in AVAILABLE_VOICES:
-    print(f"Warning: Selected voice '{SELECTED_TTS_VOICE}' not valid. Using default 'tara'.")
-    SELECTED_TTS_VOICE = "tara"
-# --- End Voice Selection ---
-
-
-# --- Orpheus Supported Emotion Tags ---
-ORPHEUS_EMOTION_TAGS = [
-    "<giggle>", "<laugh>", "<chuckle>", "<sigh>", "<cough>",
-    "<sniffle>", "<groan>", "<yawn>", "<gasp>"
-]
-EMOTION_TAG_LIST_STR = ", ".join(ORPHEUS_EMOTION_TAGS)
-
-# --- Model Initialization ---
-print("Loading STT model...")
-stt_model = FasterWhisperSTT(model_size="base", device="cpu", compute_type="int8")
-print("STT model loaded.")
-
-print("Loading TTS model...")
-try:
-    tts_model = OrpheusTTS(
-        verbose=False,
-        default_voice_id=SELECTED_TTS_VOICE
-    )
-    print("TTS model loaded successfully.")
-except Exception as e:
-    print(f"FATAL ERROR: Could not load TTS model: {e}")
-    exit(1)
-
-# --- Modified Async Handler using Chat Endpoint Logic ---
-async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
+# --- Async Handler using Chat Endpoint Logic ---
+async def handle_audio_conversation(audio: tuple[int, np.ndarray]) -> AsyncGenerator[tuple[int, np.ndarray], None]:
     """
     Handles the voice conversation flow: STT -> LLM (using chat logic) -> TTS.
     Uses the same classification, context retrieval, and runnable invocation
     as the /chat endpoint, calling invoke() for the full response.
-    Ensures async functions are awaited.
+    Ensures async functions are awaited. Yields audio chunks.
     """
-    # Make runnables accessible
-    global embed_model, graph_driver, memory_backend, task_queue
+    # Make runnables and models accessible
+    global embed_model, graph_driver, memory_backend, task_queue, stt_model, tts_model
     global reflection_runnable, inbox_summarizer_runnable, priority_runnable
     global graph_decision_runnable, information_extraction_runnable, graph_analysis_runnable
     global text_dissection_runnable, text_conversion_runnable, query_classification_runnable
     global fact_extraction_runnable, text_summarizer_runnable, text_description_runnable
     global reddit_runnable, twitter_runnable
     global internet_query_reframe_runnable, internet_summary_runnable
+    global chat_runnable, agent_runnable, unified_classification_runnable # Core runnables
 
     print("\n--- Received audio chunk for processing ---")
     print("Transcribing...")
@@ -1332,49 +1292,54 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
     print(f"User (STT): {user_text}")
 
     bot_response_text = ""
-    active_chat_id = None
-    current_chat_runnable = None
+    active_chat_id = 0 # Start assuming no chat
+    current_chat_runnable = None # Initialize
 
     try:
-        # 1. Load User Profile & Active Chat Info
+        # 1. Load User Profile & Determine Active Chat Info
         user_profile = load_user_profile()
         username = user_profile.get("userData", {}).get("personalInfo", {}).get("name", "User")
         personality_setting = user_profile.get("userData", {}).get("personality", "Default helpful assistant")
 
-        async with db_lock:
+        # Get current active chat ID (will create/activate if needed)
+        # This ensures active_chat_id is set correctly before proceeding
+        await get_chat_history_messages() # Call this primarily for its side effect of setting active_chat_id
+        async with db_lock: # Reload DB to get the *potentially updated* active_chat_id
             chatsDb = await load_db()
-            active_chat_id = chatsDb.get("active_chat_id")
+            active_chat_id = chatsDb.get("active_chat_id", 0)
 
-        if not active_chat_id:
-            print("ERROR: No active chat ID found. Cannot process voice message.")
+        if active_chat_id == 0: # Should not happen if get_chat_history_messages worked
+            print("ERROR: Failed to determine or create an active chat ID. Cannot process voice message.")
             return
+
+        print(f"Voice message will be added to active chat ID: {active_chat_id}")
 
         # 2. Add User Message to DB
         await add_message_to_db(active_chat_id, user_text, is_user=True, is_visible=True)
 
         # 3. Get Current Chat History & Initialize Context-Aware Runnables
+        # It's crucial these use the history associated with the *active_chat_id*
+        # get_chat_history() should implicitly handle this if it manages history correctly
         chat_history_obj = get_chat_history()
         try:
-            # Initialize runnables - check chat runnable specifically
-            temp_chat_runnable = get_chat_runnable(chat_history_obj)
-            print(f"DEBUG: Type returned by get_chat_runnable: {type(temp_chat_runnable)}")
-            # Check if it has the invoke method
-            if not hasattr(temp_chat_runnable, 'invoke') or not callable(temp_chat_runnable.invoke):
-                 print(f"ERROR: get_chat_runnable did not return a valid runnable object with a callable 'invoke' method. Got: {temp_chat_runnable}")
-                 raise ValueError("Invalid chat runnable object received (missing invoke).")
-            current_chat_runnable = temp_chat_runnable
-
+            # Re-initialize runnables with the potentially updated history context
+            current_chat_runnable = get_chat_runnable(chat_history_obj)
             current_agent_runnable = get_agent_runnable(chat_history_obj)
             current_unified_classifier = get_unified_classification_runnable(chat_history_obj)
+
+            # Basic validation
+            if not hasattr(current_chat_runnable, 'invoke') or not callable(current_chat_runnable.invoke):
+                 print(f"ERROR: get_chat_runnable did not return a valid runnable object with 'invoke'. Got type: {type(current_chat_runnable)}")
+                 raise ValueError("Invalid chat runnable object received (missing invoke).")
+            print("History-dependent runnables initialized/verified.")
         except Exception as e:
             print(f"ERROR initializing history-dependent runnables: {e}")
             traceback.print_exc()
-            await add_message_to_db(active_chat_id, "[System Error: Failed to initialize core components]", is_user=False, error=True)
+            await add_message_to_db(active_chat_id, "[System Error: Failed to initialize core components]", is_user=False, error=True, is_visible=True)
             return
 
         # 4. Classify User Input
         print("Classifying input...")
-        # Assuming invoke is synchronous here, adjust if classifier uses ainvoke
         unified_output = current_unified_classifier.invoke({"query": user_text})
         category = unified_output.get("category", "chat")
         use_personal_context = unified_output.get("use_personal_context", False)
@@ -1387,14 +1352,12 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
         # 5. Handle Agent Task Category
         if category == "agent":
             print("Input classified as agent task.")
-            # Assuming invoke is synchronous here
             priority_response = priority_runnable.invoke({"task_description": transformed_input})
             priority = priority_response.get("priority", 3)
 
             print(f"Adding agent task to queue (Priority: {priority})...")
-            # ---> Use await here <---
             await task_queue.add_task(
-                chat_id=active_chat_id,
+                chat_id=active_chat_id, # Use the determined active chat ID
                 description=transformed_input,
                 priority=priority,
                 username=username,
@@ -1405,7 +1368,10 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
             print("Agent task added.")
             bot_response_text = "Okay, I'll get right on that." # Canned response for agent task
 
-            await add_message_to_db(active_chat_id, bot_response_text, is_user=False, agentsUsed=True)
+            # Add assistant confirmation to DB (visible)
+            await add_message_to_db(active_chat_id, bot_response_text, is_user=False, agentsUsed=True, is_visible=True)
+            # Add hidden user message (task description) to DB
+            await add_message_to_db(active_chat_id, transformed_input, is_user=True, is_visible=False)
 
         # 6. Handle Chat/Memory Category (Generate Response using invoke)
         else: # category is "chat" or "memory"
@@ -1419,30 +1385,26 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
             if use_personal_context or category == "memory":
                 print("Retrieving relevant memories...")
                 try:
-                    # ---> Use await here <---
                     user_context = await memory_backend.retrieve_memory(username, transformed_input)
-                    # Now user_context should be the actual result (e.g., string or None)
                     if user_context:
-                        # Check if it's a string before slicing
                         if isinstance(user_context, str):
                             print(f"Retrieved user context (memory): {user_context[:100]}...")
                         else:
-                            # Handle other types if necessary, or just print type
                             print(f"Retrieved user context (memory) of type: {type(user_context)}")
                         memory_used_flag = True
                     else:
                         print("No relevant memories found.")
                 except Exception as e:
                     print(f"Error retrieving user context: {e}")
-                    traceback.print_exc() # Keep traceback for debugging
-                # Starting background memory update task is correct with create_task
-                if category == "memory":
+                    traceback.print_exc()
+
+                if category == "memory": # Queue update only if explicitly memory category
                     print("Queueing memory update operation...")
+                    # Run in background, don't await here
                     asyncio.create_task(memory_backend.add_operation(username, transformed_input))
 
             # Fetch context if needed (Internet)
-            # Assuming these helpers call synchronous invoke methods internally for now
-            if internet:
+            if internet and internet.lower() != 'none':
                 print("Searching the internet...")
                 try:
                     reframed_query = get_reframed_internet_query(internet_query_reframe_runnable, transformed_input)
@@ -1450,7 +1412,6 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
                     search_results = get_search_results(reframed_query)
                     if search_results:
                         internet_context = get_search_summary(internet_summary_runnable, search_results)
-                        # Check if it's a string before slicing
                         if internet_context and isinstance(internet_context, str):
                             print(f"Retrieved internet context (summary): {internet_context[:100]}...")
                         elif internet_context:
@@ -1467,16 +1428,15 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
             # Generate Response using invoke
             print("Generating response using chat runnable's invoke method...")
             try:
-                # Check the runnable again before calling invoke
+                # Ensure runnable is valid before calling
                 if not current_chat_runnable or not hasattr(current_chat_runnable, 'invoke') or not callable(current_chat_runnable.invoke):
                      print(f"ERROR: current_chat_runnable is invalid before invoking. Value: {current_chat_runnable}")
                      raise ValueError("Chat runnable became invalid before invoke.")
 
-                # Call invoke (assuming it's synchronous)
                 invocation_result = current_chat_runnable.invoke({
                     "query": transformed_input,
-                    "user_context": user_context, # Pass the awaited result
-                    "internet_context": internet_context, # Pass the retrieved result
+                    "user_context": user_context,
+                    "internet_context": internet_context,
                     "name": username,
                     "personality": personality_setting
                 })
@@ -1484,7 +1444,6 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
                 # Process the result
                 if isinstance(invocation_result, str):
                     bot_response_text = invocation_result.strip()
-                    print(f"Generated response text (invoke): {bot_response_text}")
                 elif invocation_result is None:
                      print("Warning: Chat runnable invoke returned None.")
                      bot_response_text = "I couldn't generate a response for that."
@@ -1496,19 +1455,24 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
                     print("Warning: Generated response was empty.")
                     bot_response_text = "I don't have a specific response for that right now."
 
+                print(f"Generated response text (invoke): {bot_response_text[:100]}...")
+
+                # Add the final bot response to the DB (visible)
                 await add_message_to_db(
                     active_chat_id,
                     bot_response_text,
                     is_user=False,
                     memoryUsed=memory_used_flag,
-                    internetUsed=internet_used_flag
+                    internetUsed=internet_used_flag,
+                    is_visible=True # Explicitly visible
                 )
 
             except Exception as e:
                 print(f"Error during chat runnable invocation: {e}")
                 traceback.print_exc()
                 bot_response_text = "Sorry, I encountered an error while generating a response."
-                await add_message_to_db(active_chat_id, bot_response_text, is_user=False, error=True)
+                # Add error message to DB (visible)
+                await add_message_to_db(active_chat_id, bot_response_text, is_user=False, error=True, is_visible=True)
 
         # 7. Synthesize Speech (TTS)
         if not bot_response_text:
@@ -1523,16 +1487,16 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
         try:
             tts_options: TTSOptions = {}
             chunk_count = 0
-            # TTS still uses streaming internally (async for handles await)
-            async for (sample_rate, audio_chunk) in tts_model.stream_tts(bot_response_text, options=tts_options):
+            # Use async for to handle the async generator from TTS
+            async for sample_rate, audio_chunk in tts_model.stream_tts(bot_response_text, options=tts_options):
                 if audio_chunk is not None and audio_chunk.size > 0:
                     if chunk_count == 0:
                          print(f"Streaming TTS audio chunk 1 (sr={sample_rate}, shape={audio_chunk.shape}, dtype={audio_chunk.dtype})...")
-                    yield (sample_rate, audio_chunk)
+                    yield (sample_rate, audio_chunk) # Yield chunk to FastRTC
                     chunk_count += 1
                 else:
-                    print("Warning: Received empty audio chunk from TTS.")
-
+                    # This might happen at the end of the stream or if there's an issue
+                    print("Warning: Received empty audio chunk from TTS stream.")
             if chunk_count == 0:
                  print("Warning: TTS stream completed without yielding any audio chunks.")
             else:
@@ -1541,17 +1505,18 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]):
         except Exception as e:
             print(f"Error during TTS synthesis or streaming: {e}")
             traceback.print_exc()
-            return
+            # Don't yield anything if TTS fails
 
     except Exception as e:
         print(f"--- Unhandled error in handle_audio_conversation: {e} ---")
         traceback.print_exc()
-        if active_chat_id:
+        if active_chat_id and active_chat_id != 0: # Check if chat ID was determined
             try:
-                await add_message_to_db(active_chat_id, "[System Error in Voice Processing]", is_user=False, error=True)
-            except:
-                pass
-        return
+                await add_message_to_db(active_chat_id, "[System Error in Voice Processing]", is_user=False, error=True, is_visible=True)
+            except Exception as db_err:
+                 print(f"Failed to log system error to DB: {db_err}")
+        # Don't yield anything on major error
+
 
 # --- Set up the Stream (Handler remains the same) ---
 stream = Stream(
@@ -1566,9 +1531,9 @@ stream = Stream(
         model_options=SileroVadOptions(
             threshold=0.5,
             min_speech_duration_ms=200,
-            min_silence_duration_ms=1000
+            min_silence_duration_ms=1000 # Adjust silence duration if needed
         ),
-        can_interrupt=False,
+        can_interrupt=False, # Keep interruption disabled for now
     ),
     mode="send-receive",
     modality="audio",
@@ -1576,8 +1541,11 @@ stream = Stream(
     additional_outputs_handler=None
 )
 
-stream.mount(app, path="/voice")
-print("FastRTC stream mounted at /voice.")
+# Mount FastRTC stream AFTER FastAPI app is initialized
+# stream.mount(app, path="/voice")
+# print("FastRTC stream mounted at /voice.")
+# Delay mounting until after lifespan setup to ensure models are loaded
+# Mounting moved after lifespan context manager attachment
 
 ## Root Endpoint
 @app.get("/", status_code=200)
@@ -1591,13 +1559,23 @@ async def main():
 @app.get("/get-history", status_code=200)
 async def get_history():
     """
-    Endpoint to retrieve the chat history. Calls the get_chat_history_messages function.
+    Endpoint to retrieve the chat history for the currently active chat.
+    Calls get_chat_history_messages which handles activation/creation.
     """
     print(f"[ENDPOINT /get-history] {datetime.now()}: Endpoint called.")
     try:
         messages = await get_chat_history_messages()
-        # print(f"[ENDPOINT /get-history] {datetime.now()}: Retrieved {len(messages)} messages.")
-        return JSONResponse(status_code=200, content={"messages": messages})
+        # print(f"[ENDPOINT /get-history] {datetime.now()}: Retrieved {len(messages)} messages for active chat.")
+
+        # Also return the current active chat ID to the frontend
+        async with db_lock:
+            chatsDb = await load_db()
+            current_active_chat_id = chatsDb.get("active_chat_id", 0)
+
+        return JSONResponse(status_code=200, content={
+            "messages": messages,
+            "activeChatId": current_active_chat_id
+        })
     except Exception as e:
         print(f"[ERROR] {datetime.now()}: Error in /get-history: {e}")
         traceback.print_exc()
@@ -1607,36 +1585,45 @@ async def get_history():
 # Clear Chat History
 @app.post("/clear-chat-history", status_code=200)
 async def clear_chat_history():
-    """Clear all chat history by resetting to the initial database structure."""
+    """
+    Clear all chat history by resetting to the initial database structure.
+    Resets active_chat_id to 0 and next_chat_id to 1.
+    """
     print(f"[ENDPOINT /clear-chat-history] {datetime.now()}: Endpoint called.")
     async with db_lock:
         print(f"[ENDPOINT /clear-chat-history] {datetime.now()}: Acquired chat DB lock.")
         try:
-            chatsDb = initial_db.copy() # Reset to initial state
+            # Reset to the defined initial state
+            chatsDb = initial_db.copy()
             await save_db(chatsDb)
-            print(f"[ENDPOINT /clear-chat-history] {datetime.now()}: Chat database reset and saved.")
+            print(f"[ENDPOINT /clear-chat-history] {datetime.now()}: Chat database reset to initial state (active_id=0, next_id=1) and saved.")
 
-            # Clear in-memory history components as well
-            chat_runnable.clear_history()
-            agent_runnable.clear_history()
-            unified_classification_runnable.clear_history()
-            print(f"[ENDPOINT /clear-chat-history] {datetime.now()}: In-memory chat histories cleared.")
+            # Clear in-memory history components as well (important!)
+            # Assuming these runnables have a method to clear internal history state
+            if hasattr(chat_runnable, 'clear_history'): chat_runnable.clear_history()
+            if hasattr(agent_runnable, 'clear_history'): agent_runnable.clear_history()
+            if hasattr(unified_classification_runnable, 'clear_history'): unified_classification_runnable.clear_history()
+            # If get_chat_history() manages state, reset it too if possible
+            # chat_history = get_chat_history(force_reload=True) # Or similar mechanism if available
 
-            print(f"[ENDPOINT /clear-chat-history] {datetime.now()}: Releasing chat DB lock.")
-            return JSONResponse(status_code=200, content={"message": "Chat history cleared"})
+            print(f"[ENDPOINT /clear-chat-history] {datetime.now()}: In-memory chat histories cleared (if methods exist).")
+
+            # print(f"[ENDPOINT /clear-chat-history] {datetime.now()}: Releasing chat DB lock.") # Lock released automatically by 'async with'
+            return JSONResponse(status_code=200, content={"message": "Chat history cleared", "activeChatId": 0}) # Return new active ID
         except Exception as e:
              print(f"[ERROR] {datetime.now()}: Error in /clear-chat-history: {e}")
              traceback.print_exc()
-             # Ensure lock is released even on error
-             print(f"[ENDPOINT /clear-chat-history] {datetime.now()}: Releasing chat DB lock due to error.")
+             # Ensure lock is released even on error (handled by 'async with')
+             # print(f"[ENDPOINT /clear-chat-history] {datetime.now()}: Releasing chat DB lock due to error.")
              raise HTTPException(status_code=500, detail="Failed to clear chat history.")
+
 
 @app.post("/chat", status_code=200)
 async def chat(message: Message):
-    """Handles incoming chat messages, classifies, and responds via streaming."""
+    """Handles incoming chat messages, classifies, determines active chat, and responds via streaming."""
     endpoint_start_time = time.time()
     print(f"[ENDPOINT /chat] {datetime.now()}: Endpoint called.")
-    print(f"[ENDPOINT /chat] {datetime.now()}: Incoming message data: Input='{message.input[:50]}...', Pricing='{message.pricing}', Credits={message.credits}, ChatID='{message.chat_id}'")
+    print(f"[ENDPOINT /chat] {datetime.now()}: Incoming message data: Input='{message.input[:50]}...', Pricing='{message.pricing}', Credits={message.credits}")
 
     # Ensure global variables are accessible if modified or reassigned inside
     global embed_model, chat_runnable, fact_extraction_runnable, text_conversion_runnable
@@ -1644,6 +1631,7 @@ async def chat(message: Message):
     global query_classification_runnable, agent_runnable, text_description_runnable
     global reflection_runnable, internet_query_reframe_runnable, internet_summary_runnable, priority_runnable
     global unified_classification_runnable, memory_backend
+    # Removed global active_chat_id, will read from DB
 
     try:
         # --- Load User Profile ---
@@ -1656,36 +1644,31 @@ async def chat(message: Message):
         username = db.get("userData", {}).get("personalInfo", {}).get("name", "User") # Safer access
         print(f"[ENDPOINT /chat] {datetime.now()}: User profile loaded for username: {username}")
 
-        # --- Determine Active Chat ---
-        active_chat_id = message.chat_id
-        if not active_chat_id:
-            print(f"[ENDPOINT /chat] {datetime.now()}: No chat_id provided in request, determining active chat...")
-            async with db_lock:
-                chatsDb = await load_db()
-                active_chat_id = chatsDb.get("active_chat_id")
-                if not active_chat_id:
-                     # If still no active chat, trigger history logic which creates one
-                     print(f"[ENDPOINT /chat] {datetime.now()}: No active chat in DB, triggering history logic to potentially create one.")
-                     await get_chat_history_messages() # This ensures a chat exists
-                     chatsDb = await load_db() # Reload DB after potential creation
-                     active_chat_id = chatsDb.get("active_chat_id")
-                     if not active_chat_id:
-                         print(f"[ERROR] {datetime.now()}: Failed to determine or create an active chat ID.")
-                         raise HTTPException(status_code=500, detail="Could not determine active chat.")
-            print(f"[ENDPOINT /chat] {datetime.now()}: Determined active chat ID: {active_chat_id}")
-        else:
-             print(f"[ENDPOINT /chat] {datetime.now()}: Using provided chat ID: {active_chat_id}")
+        # --- Determine Active Chat ID (Crucial Step) ---
+        # Call get_chat_history_messages to ensure a chat is active/created
+        # This function now handles the logic for active_chat_id=0
+        print(f"[ENDPOINT /chat] {datetime.now()}: Ensuring an active chat exists...")
+        await get_chat_history_messages() # Call for side effect of activating/creating chat
 
+        # Now, load the guaranteed active chat ID from the DB
+        async with db_lock:
+            chatsDb = await load_db()
+            active_chat_id = chatsDb.get("active_chat_id", 0) # Should be > 0 now
+
+        if active_chat_id == 0:
+             # This case should ideally not be reached if get_chat_history_messages worked
+             print(f"[ERROR] {datetime.now()}: Failed to determine or create an active chat ID even after check.")
+             raise HTTPException(status_code=500, detail="Could not determine active chat.")
+
+        print(f"[ENDPOINT /chat] {datetime.now()}: Confirmed active chat ID: {active_chat_id}")
 
         # --- Ensure Runnables use Correct History ---
-        # This might be redundant if history is managed globally correctly, but good for clarity
+        # Re-initialize runnables based on the current history state managed by get_chat_history()
         print(f"[ENDPOINT /chat] {datetime.now()}: Ensuring runnables use current history context...")
-        current_chat_history = get_chat_history() # Ensure it reflects the latest state if needed
-        # Re-initialize runnables if their history scope needs explicit update per request (depends on LangChain implementation)
-        # Assuming get_chat_history() manages the state correctly for now.
-        # chat_runnable = get_chat_runnable(current_chat_history)
-        # agent_runnable = get_agent_runnable(current_chat_history)
-        # unified_classification_runnable = get_unified_classification_runnable(current_chat_history)
+        current_chat_history = get_chat_history() # Get the history object
+        chat_runnable = get_chat_runnable(current_chat_history)
+        agent_runnable = get_agent_runnable(current_chat_history)
+        unified_classification_runnable = get_unified_classification_runnable(current_chat_history)
         print(f"[ENDPOINT /chat] {datetime.now()}: Runnables ready.")
 
         # --- Unified Classification ---
@@ -1712,33 +1695,23 @@ async def chat(message: Message):
             pro_used = False # Tracks if a pro feature (memory update, internet) was successfully used
             note = "" # For credit limit messages
 
-            # 1. Add User Message to DB
-            user_msg_id = str(int(time.time() * 1000))
-            user_msg = {
-                "id": user_msg_id,
-                "message": message.input,
-                "isUser": True,
-                "memoryUsed": False, # User message doesn't use these directly
-                "agentsUsed": False,
-                "internetUsed": False,
-                "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
-                "isVisible": True # User messages are visible
-            }
-            async with db_lock:
-                # print(f"[STREAM /chat] {datetime.now()}: Acquired chat DB lock to add user message.")
-                chatsDb = await load_db()
-                # Find the correct chat to add the message to
-                active_chat_obj = next((chat for chat in chatsDb["chats"] if chat["id"] == active_chat_id), None)
-                if active_chat_obj:
-                    if "messages" not in active_chat_obj: active_chat_obj["messages"] = []
-                    active_chat_obj["messages"].append(user_msg)
-                    await save_db(chatsDb)
-                    # print(f"[STREAM /chat] {datetime.now()}: User message (ID: {user_msg_id}) added to chat {active_chat_id} in DB.")
-                else:
-                    print(f"[ERROR] {datetime.now()}: Could not find active chat {active_chat_id} in DB to add user message.")
-                # print(f"[STREAM /chat] {datetime.now()}: Released chat DB lock.")
+            # 1. Add User Message to DB (Visible)
+            user_msg_id = await add_message_to_db(
+                active_chat_id,
+                message.input,
+                is_user=True,
+                is_visible=True # User message is visible
+            )
+            if not user_msg_id:
+                 print(f"[ERROR] {datetime.now()}: Failed to add user message to DB for chat {active_chat_id}. Aborting stream.")
+                 # Optionally yield an error message?
+                 yield json.dumps({"type": "error", "message": "Failed to save your message."}) + "\n"
+                 return
+
 
             # 2. Yield User Message Confirmation to Client
+            # Fetch the timestamp from the saved message if needed, or generate again
+            user_msg_timestamp = datetime.now(timezone.utc).isoformat() + "Z"
             print(f"[STREAM /chat] {datetime.now()}: Yielding user message confirmation.")
             yield json.dumps({
                 "type": "userMessage",
@@ -1747,23 +1720,23 @@ async def chat(message: Message):
                 "memoryUsed": False,
                 "agentsUsed": False,
                 "internetUsed": False,
-                 "timestamp": user_msg["timestamp"] # Include timestamp
+                 "timestamp": user_msg_timestamp # Include timestamp
             }) + "\n"
             await asyncio.sleep(0.01) # Small delay
 
             # 3. Prepare Assistant Message Structure (will be filled and updated)
-            assistant_msg_id = str(int(time.time() * 1000))
+            assistant_msg_id_ts = str(int(time.time() * 1000)) # Timestamp-based message ID
             assistant_msg = {
-                "id": assistant_msg_id,
+                "id": assistant_msg_id_ts,
                 "message": "",
                 "isUser": False,
                 "memoryUsed": False, # Will be updated
                 "agentsUsed": False, # Will be updated
                 "internetUsed": False, # Will be updated
                 "timestamp": datetime.now(timezone.utc).isoformat() + "Z", # Initial timestamp
-                "isVisible": True
+                "isVisible": True # Assistant messages are typically visible
             }
-            print(f"[STREAM /chat] {datetime.now()}: Prepared initial assistant message structure (ID: {assistant_msg_id}).")
+            print(f"[STREAM /chat] {datetime.now()}: Prepared initial assistant message structure (ID: {assistant_msg_id_ts}).")
 
             # --- Handle Agent Category (Task Creation) ---
             if category == "agent":
@@ -1771,7 +1744,7 @@ async def chat(message: Message):
                 agents_used = True # Mark agent as used
                 assistant_msg["agentsUsed"] = True
                 personality_description = db.get("userData", {}).get("personality", "Default helpful assistant") # Get personality
-                print(f"[STREAM /chat] {datetime.now()}: Determining task priority for: '{transformed_input[:50]}...'")
+                print(f"[STREAM /chat] {datetime.now()}: Determining task priority for: '{transformed_input}...'")
                 try:
                     priority_response = priority_runnable.invoke({"task_description": transformed_input})
                     priority = priority_response.get("priority", 3) # Default priority if parse fails
@@ -1782,7 +1755,7 @@ async def chat(message: Message):
 
                 print(f"[STREAM /chat] {datetime.now()}: Adding task to queue...")
                 try:
-                    await task_queue.add_task(
+                    task_id = await task_queue.add_task(
                         chat_id=active_chat_id, # Use the determined active chat ID
                         description=transformed_input,
                         priority=priority,
@@ -1791,40 +1764,54 @@ async def chat(message: Message):
                         use_personal_context=use_personal_context,
                         internet=internet
                     )
-                    print(f"[STREAM /chat] {datetime.now()}: Task added to queue successfully.")
+                    print(f"[STREAM /chat] {datetime.now()}: Task added to queue successfully with ID: {task_id}")
                     assistant_msg["message"] = "Got it! I'll work on that task for you." # Confirmation message
+
+                    # Add hidden user message (task description)
+                    await add_message_to_db(active_chat_id, transformed_input, is_user=True, is_visible=False)
+
+                    # --- Broadcast Task Addition via WebSocket ---
+                    task_added_message = {
+                        "type": "task_added",
+                        "task_id": task_id,
+                        "description": transformed_input,
+                        "priority": priority,
+                        "status": "pending",
+                        "chat_id": active_chat_id, # Include chat ID
+                    }
+                    print(f"[WS_BROADCAST] {datetime.now()}: Broadcasting task addition for {task_id}")
+                    await manager.broadcast(json.dumps(task_added_message))
+
                 except Exception as e:
                     print(f"[ERROR] {datetime.now()}: Failed to add task to queue: {e}")
                     traceback.print_exc()
                     assistant_msg["message"] = "Sorry, I encountered an error trying to schedule that task." # Error message
 
-                # Add agent confirmation/error message to DB
-                async with db_lock:
-                    # print(f"[STREAM /chat] {datetime.now()}: Acquired chat DB lock to add agent confirmation message.")
-                    chatsDb = await load_db()
-                    active_chat_obj = next((chat for chat in chatsDb["chats"] if chat["id"] == active_chat_id), None)
-                    if active_chat_obj:
-                        if "messages" not in active_chat_obj: active_chat_obj["messages"] = []
-                        # Update timestamp just before saving
-                        assistant_msg["timestamp"] = datetime.now(timezone.utc).isoformat() + "Z"
-                        active_chat_obj["messages"].append(assistant_msg)
-                        await save_db(chatsDb)
-                        # print(f"[STREAM /chat] {datetime.now()}: Agent confirmation message (ID: {assistant_msg_id}) added to chat {active_chat_id} in DB.")
-                    else:
-                        print(f"[ERROR] {datetime.now()}: Could not find active chat {active_chat_id} in DB to add agent confirmation.")
-                    # print(f"[STREAM /chat] {datetime.now()}: Released chat DB lock.")
+
+                # Add final agent confirmation/error message to DB (Visible)
+                # Update timestamp before saving
+                assistant_msg["timestamp"] = datetime.now(timezone.utc).isoformat() + "Z"
+                final_assistant_msg_id = await add_message_to_db(
+                    active_chat_id,
+                    assistant_msg["message"],
+                    is_user=False,
+                    agentsUsed=agents_used,
+                    is_visible=True,
+                    id=assistant_msg_id_ts # Use pre-generated ID
+                )
+
 
                 # Yield final agent confirmation/error message
                 print(f"[STREAM /chat] {datetime.now()}: Yielding final agent confirmation/error message.")
                 yield json.dumps({
                     "type": "assistantMessage", # Final message, not stream
                     "message": assistant_msg["message"],
-                    "id": assistant_msg_id,
+                    "id": final_assistant_msg_id or assistant_msg_id_ts, # Use ID from DB or generated one
                     "memoryUsed": memory_used, # False for agent category start
                     "agentsUsed": agents_used, # True for agent category start
                     "internetUsed": internet_used, # False for agent category start
                     "proUsed": pro_used,
-                    "timestamp": assistant_msg["timestamp"]
+                    "timestamp": assistant_msg["timestamp"] # Use final timestamp
                 }) + "\n"
                 await asyncio.sleep(0.01)
                 print(f"[STREAM /chat] {datetime.now()}: Agent task creation flow finished.")
@@ -1836,13 +1823,13 @@ async def chat(message: Message):
                 if category == "memory" and pricing_plan == "free" and credits <= 0:
                     print(f"[STREAM /chat] {datetime.now()}: Memory category but free plan credits exhausted. Skipping memory update, retrieving only.")
                     note = "Sorry friend, memory updates are a pro feature and your daily credits have expired. Upgrade to pro in settings!"
-                    yield json.dumps({"type": "intermediary", "message": "Retrieving memories (read-only)...", "id": assistant_msg_id}) + "\n"
+                    yield json.dumps({"type": "intermediary", "message": "Retrieving memories (read-only)...", "id": assistant_msg_id_ts}) + "\n"
                     memory_used = True # Still retrieving
                     user_context = await memory_backend.retrieve_memory(username, transformed_input)
                     print(f"[STREAM /chat] {datetime.now()}: Memory retrieved (read-only). Context length: {len(str(user_context)) if user_context else 0}")
                 elif category == "memory": # Pro or has credits
                     print(f"[STREAM /chat] {datetime.now()}: Memory category with credits/pro plan. Retrieving and queueing update.")
-                    yield json.dumps({"type": "intermediary", "message": "Retrieving and updating memories...", "id": assistant_msg_id}) + "\n"
+                    yield json.dumps({"type": "intermediary", "message": "Retrieving and updating memories...", "id": assistant_msg_id_ts}) + "\n"
                     memory_used = True
                     pro_used = True # Memory update is a pro feature use
                     # Retrieve existing memories first
@@ -1853,21 +1840,21 @@ async def chat(message: Message):
                     asyncio.create_task(memory_backend.add_operation(username, transformed_input))
                 else: # Just use_personal_context (not explicitly 'memory' category)
                     print(f"[STREAM /chat] {datetime.now()}: Retrieving personal context (not memory category).")
-                    yield json.dumps({"type": "intermediary", "message": "Retrieving relevant context...", "id": assistant_msg_id}) + "\n"
+                    yield json.dumps({"type": "intermediary", "message": "Retrieving relevant context...", "id": assistant_msg_id_ts}) + "\n"
                     memory_used = True # Mark as used context
                     user_context = await memory_backend.retrieve_memory(username, transformed_input)
                     print(f"[STREAM /chat] {datetime.now()}: Personal context retrieved. Context length: {len(str(user_context)) if user_context else 0}")
                 assistant_msg["memoryUsed"] = memory_used # Update status
 
             # --- Handle Internet Search ---
-            if internet:
+            if internet and internet.lower() != 'none':
                 print(f"[STREAM /chat] {datetime.now()}: Internet search required.")
                 if pricing_plan == "free" and credits <= 0:
                     print(f"[STREAM /chat] {datetime.now()}: Internet search required but free plan credits exhausted. Skipping.")
                     note += " Sorry friend, could have searched the internet for more context, but your daily credits have expired. You can always upgrade to pro from the settings page"
                 else:
                     print(f"[STREAM /chat] {datetime.now()}: Performing internet search (pro/credits available).")
-                    yield json.dumps({"type": "intermediary", "message": "Searching the internet...", "id": assistant_msg_id}) + "\n"
+                    yield json.dumps({"type": "intermediary", "message": "Searching the internet...", "id": assistant_msg_id_ts}) + "\n"
                     try:
                         reframed_query = get_reframed_internet_query(internet_query_reframe_runnable, transformed_input)
                         print(f"[STREAM /chat] {datetime.now()}: Internet query reframed: '{reframed_query}'")
@@ -1897,27 +1884,11 @@ async def chat(message: Message):
                     "name": username,
                     "personality": personality_description
                 }
-                # print(f"[STREAM /chat] {datetime.now()}: Input to chat_runnable: {chat_inputs}") # Can be verbose
 
                 # Add placeholder assistant message to DB before streaming starts
-                async with db_lock:
-                    # print(f"[STREAM /chat] {datetime.now()}: Acquired chat DB lock to add placeholder assistant message.")
-                    chatsDb = await load_db()
-                    active_chat_obj = next((chat for chat in chatsDb["chats"] if chat["id"] == active_chat_id), None)
-                    if active_chat_obj:
-                         if "messages" not in active_chat_obj: active_chat_obj["messages"] = []
-                         # Ensure flags are set correctly before initial save
-                         assistant_msg["memoryUsed"] = memory_used
-                         assistant_msg["internetUsed"] = internet_used
-                         assistant_msg["agentsUsed"] = agents_used # Should be False here
-                         assistant_msg["timestamp"] = datetime.now(timezone.utc).isoformat() + "Z"
-                         active_chat_obj["messages"].append(assistant_msg.copy()) # Add a copy initially
-                         await save_db(chatsDb)
-                        #  print(f"[STREAM /chat] {datetime.now()}: Placeholder assistant message (ID: {assistant_msg_id}) added to chat {active_chat_id} in DB.")
-                    else:
-                         print(f"[ERROR] {datetime.now()}: Could not find active chat {active_chat_id} in DB to add placeholder.")
-                    # print(f"[STREAM /chat] {datetime.now()}: Released chat DB lock.")
-
+                # Let's skip the placeholder and add the *final* message after the stream.
+                # This simplifies DB management but means the message only appears once complete.
+                # Alternative: Add placeholder, then update. Sticking with final add for now.
 
                 # Stream the response
                 print(f"[STREAM /chat] {datetime.now()}: Starting LLM stream generation...")
@@ -1935,13 +1906,12 @@ async def chat(message: Message):
                                 "type": "assistantStream",
                                 "token": token,
                                 "done": False,
-                                "messageId": assistant_msg_id # Link token to message ID
+                                "messageId": assistant_msg_id_ts # Link token to message ID
                             }) + "\n"
                             await asyncio.sleep(0.01) # Small delay between tokens
                         else:
-                            # End of stream signal or other object (handle potential errors/metadata if LangChain changes)
-                            # print(f"[STREAM /chat] {datetime.now()}: Received non-string token (end of stream?): {token}")
-                            pass # Assume end of stream for now
+                             # Ignore non-string tokens (like potential end-of-stream objects)
+                             pass
                 except Exception as e:
                     print(f"[ERROR] {datetime.now()}: Error during LLM stream generation: {e}")
                     traceback.print_exc()
@@ -1954,35 +1924,31 @@ async def chat(message: Message):
                     full_response += "\n\n" + note.strip()
                     print(f"[STREAM /chat] {datetime.now()}: Appended note: '{note.strip()[:50]}...'")
 
-                # Update the final assistant message in the DB
+                # Add the final assistant message to the DB
                 assistant_msg["message"] = full_response
                 assistant_msg["timestamp"] = datetime.now(timezone.utc).isoformat() + "Z" # Final timestamp
+                assistant_msg["memoryUsed"] = memory_used
+                assistant_msg["internetUsed"] = internet_used
+                assistant_msg["agentsUsed"] = agents_used # Should be False here
 
-                async with db_lock:
-                    # print(f"[STREAM /chat] {datetime.now()}: Acquired chat DB lock to update final assistant message.")
-                    chatsDb = await load_db()
-                    active_chat_obj = next((chat for chat in chatsDb["chats"] if chat["id"] == active_chat_id), None)
-                    if active_chat_obj and "messages" in active_chat_obj:
-                        # Find the message by ID and update it
-                        message_updated = False
-                        for i, msg in enumerate(active_chat_obj["messages"]):
-                            if msg.get("id") == assistant_msg_id:
-                                active_chat_obj["messages"][i] = assistant_msg.copy() # Update with final data
-                                message_updated = True
-                                break
-                        if message_updated:
-                           await save_db(chatsDb)
-                        #    print(f"[STREAM /chat] {datetime.now()}: Final assistant message (ID: {assistant_msg_id}) updated in chat {active_chat_id} DB.")
-                        else:
-                            # This shouldn't happen if placeholder was added correctly
-                            print(f"[ERROR] {datetime.now()}: Could not find message ID {assistant_msg_id} to update in chat {active_chat_id}.")
-                            # Optionally append if not found?
-                            # active_chat_obj["messages"].append(assistant_msg.copy())
-                            # await save_db(chatsDb)
+                final_assistant_msg_id = await add_message_to_db(
+                    active_chat_id,
+                    assistant_msg["message"],
+                    is_user=False,
+                    is_visible=True,
+                    id=assistant_msg_id_ts, # Use the pre-generated ID
+                    memoryUsed=memory_used,
+                    internetUsed=internet_used,
+                    agentsUsed=agents_used
+                    # Add timestamp manually if add_message_to_db doesn't take it
+                    # timestamp=assistant_msg["timestamp"] # Assuming add_message_to_db generates its own
+                )
 
-                    else:
-                         print(f"[ERROR] {datetime.now()}: Could not find active chat {active_chat_id} or messages list in DB to update.")
-                    # print(f"[STREAM /chat] {datetime.now()}: Released chat DB lock.")
+                if not final_assistant_msg_id:
+                     print(f"[ERROR] {datetime.now()}: Failed to add final assistant message to DB for chat {active_chat_id}.")
+                     # Yield error?
+                     yield json.dumps({"type": "error", "message": "Failed to save my response."}) + "\n"
+                     return
 
 
                 # Yield the final "done" signal with all metadata
@@ -1995,7 +1961,7 @@ async def chat(message: Message):
                     "agentsUsed": agents_used,
                     "internetUsed": internet_used,
                     "proUsed": pro_used,
-                    "messageId": assistant_msg_id # Link to the completed message
+                    "messageId": final_assistant_msg_id or assistant_msg_id_ts # Use ID from DB or generated one
                 }) + "\n"
                 await asyncio.sleep(0.01)
 
@@ -2014,10 +1980,15 @@ async def chat(message: Message):
         # Catch-all for unexpected errors
         print(f"[ERROR] {datetime.now()}: Unexpected error in /chat endpoint: {str(e)}")
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={"message": f"An internal server error occurred: {str(e)}"})
+        # Try to return a JSON error response if possible
+        try:
+            return JSONResponse(status_code=500, content={"type": "error", "message": f"An internal server error occurred: {str(e)}"})
+        except: # Fallback if JSON response fails
+            raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
     finally:
         endpoint_duration = time.time() - endpoint_start_time
         print(f"[ENDPOINT /chat] {datetime.now()}: Endpoint execution finished. Duration: {endpoint_duration:.2f}s")
+
 
 ## Agents Endpoints
 @app.post("/elaborator", status_code=200)
@@ -2056,7 +2027,7 @@ async def gmail_tool(tool_call_input: dict) -> Dict[str, Any]: # Renamed input v
     tool_name = "gmail"
     input_instruction = tool_call_input.get("input", "No instruction provided")
     print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Handler called.")
-    print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Input instruction: {input_instruction[:100]}...")
+    print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Input instruction: {str(input_instruction)[:100]}...") # Ensure stringifiable
     # print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Full input: {tool_call_input}")
 
     try:
@@ -2076,22 +2047,26 @@ async def gmail_tool(tool_call_input: dict) -> Dict[str, Any]: # Renamed input v
 
         # Invoke the runnable to get the specific tool call details (like 'send_email')
         tool_call_str = tool_runnable.invoke({
-            "query": tool_call_input["input"],
+            "query": str(tool_call_input["input"]), # Ensure string
             "username": username,
             "previous_tool_response": tool_call_input.get("previous_tool_response", "Not Provided")
         })
-        print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Runnable invoked. Raw output string: {tool_call_str}")
+        print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Runnable invoked. Raw output string length: {len(tool_call_str)}")
 
         try:
-            tool_call_dict = json.loads(tool_call_str)
+            # Parse the JSON string from the runnable
+            # Use strict=False if the JSON might have control characters like newlines
+            tool_call_dict = tool_call_str
             actual_tool_name = tool_call_dict.get("tool_name")
-            print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Parsed tool call: {tool_call_dict}")
+            print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Parsed tool call: {actual_tool_name}")
+            # print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Parsed tool call dict: {tool_call_dict}") # Can be verbose
+
         except json.JSONDecodeError as json_e:
-            error_msg = f"Failed to parse JSON response from tool runnable: {json_e}. Response was: {tool_call_str}"
+            error_msg = f"Failed to parse JSON response from tool runnable: {json_e}. Response was: {tool_call_str[:500]}..." # Show start of problematic string
             print(f"[ERROR] {datetime.now()}: [TOOL HANDLER {tool_name}] {error_msg}")
             return {"status": "failure", "error": error_msg}
         except Exception as e: # Catch other potential errors during parsing/access
-            error_msg = f"Error processing tool runnable response: {e}. Response was: {tool_call_str}"
+            error_msg = f"Error processing tool runnable response: {e}. Response was: {tool_call_str[:500]}..."
             print(f"[ERROR] {datetime.now()}: [TOOL HANDLER {tool_name}] {error_msg}")
             return {"status": "failure", "error": error_msg}
 
@@ -2099,11 +2074,17 @@ async def gmail_tool(tool_call_input: dict) -> Dict[str, Any]: # Renamed input v
         # Check for approval requirement
         if actual_tool_name in ["send_email", "reply_email"]:
             print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Action '{actual_tool_name}' requires approval. Returning approval request.")
+            # Ensure the dict being returned is valid
+            if not isinstance(tool_call_dict, dict):
+                 error_msg = f"Approval required but tool_call_dict is not a dict: {type(tool_call_dict)}"
+                 print(f"[ERROR] {datetime.now()}: [TOOL HANDLER {tool_name}] {error_msg}")
+                 return {"status": "failure", "error": error_msg}
             return {"action": "approve", "tool_call": tool_call_dict}
         else:
             print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Action '{actual_tool_name}' does not require approval. Executing directly.")
             # Execute the tool call (e.g., search_inbox, get_drafts)
-            tool_result = await parse_and_execute_tool_calls(tool_call_str) # Assuming this handles the actual execution
+            # parse_and_execute_tool_calls expects a string, so pass the original or re-serialized dict
+            tool_result = await parse_and_execute_tool_calls(json.dumps(tool_call_dict)) # Re-serialize
             print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Tool execution completed.")
             # print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Tool result: {tool_result}")
             return {"tool_result": tool_result, "tool_call_str": tool_call_str} # Return result and original call str
@@ -2120,7 +2101,7 @@ async def drive_tool(tool_call_input: dict) -> Dict[str, Any]:
     tool_name = "gdrive"
     input_instruction = tool_call_input.get("input", "No instruction provided")
     print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Handler called.")
-    print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Input instruction: {input_instruction[:100]}...")
+    print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Input instruction: {str(input_instruction)[:100]}...")
     # print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Full input: {tool_call_input}")
 
     try:
@@ -2133,10 +2114,10 @@ async def drive_tool(tool_call_input: dict) -> Dict[str, Any]:
         print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: GDrive tool runnable obtained.")
 
         tool_call_str = tool_runnable.invoke({
-            "query": tool_call_input["input"],
+            "query": str(tool_call_input["input"]),
             "previous_tool_response": tool_call_input.get("previous_tool_response", "Not Provided")
         })
-        print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Runnable invoked. Raw output string: {tool_call_str}")
+        print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Runnable invoked. Raw output string length: {len(tool_call_str)}")
 
         tool_result = await parse_and_execute_tool_calls(tool_call_str)
         print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Tool execution completed.")
@@ -2158,7 +2139,7 @@ async def gdoc_tool(tool_call_input: dict) -> Dict[str, Any]:
     tool_name = "gdocs"
     input_instruction = tool_call_input.get("input", "No instruction provided")
     print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Handler called.")
-    print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Input instruction: {input_instruction[:100]}...")
+    print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Input instruction: {str(input_instruction)[:100]}...")
     # print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Full input: {tool_call_input}")
 
     try:
@@ -2171,10 +2152,10 @@ async def gdoc_tool(tool_call_input: dict) -> Dict[str, Any]:
         print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: GDocs tool runnable obtained.")
 
         tool_call_str = tool_runnable.invoke({
-            "query": tool_call_input["input"],
+            "query": str(tool_call_input["input"]),
             "previous_tool_response": tool_call_input.get("previous_tool_response", "Not Provided"),
         })
-        print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Runnable invoked. Raw output string: {tool_call_str}")
+        print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Runnable invoked. Raw output string length: {len(tool_call_str)}")
 
         tool_result = await parse_and_execute_tool_calls(tool_call_str)
         print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Tool execution completed.")
@@ -2194,7 +2175,7 @@ async def gsheet_tool(tool_call_input: dict) -> Dict[str, Any]:
     tool_name = "gsheets"
     input_instruction = tool_call_input.get("input", "No instruction provided")
     print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Handler called.")
-    print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Input instruction: {input_instruction[:100]}...")
+    print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Input instruction: {str(input_instruction)[:100]}...")
     # print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Full input: {tool_call_input}")
 
     try:
@@ -2207,10 +2188,10 @@ async def gsheet_tool(tool_call_input: dict) -> Dict[str, Any]:
         print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: GSheets tool runnable obtained.")
 
         tool_call_str = tool_runnable.invoke({
-             "query": tool_call_input["input"],
+             "query": str(tool_call_input["input"]),
              "previous_tool_response": tool_call_input.get("previous_tool_response", "Not Provided"),
         })
-        print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Runnable invoked. Raw output string: {tool_call_str}")
+        print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Runnable invoked. Raw output string length: {len(tool_call_str)}")
 
         tool_result = await parse_and_execute_tool_calls(tool_call_str)
         print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Tool execution completed.")
@@ -2230,7 +2211,7 @@ async def gslides_tool(tool_call_input: dict) -> Dict[str, Any]:
     tool_name = "gslides"
     input_instruction = tool_call_input.get("input", "No instruction provided")
     print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Handler called.")
-    print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Input instruction: {input_instruction[:100]}...")
+    print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Input instruction: {str(input_instruction)[:100]}...")
     # print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Full input: {tool_call_input}")
 
     try:
@@ -2248,11 +2229,11 @@ async def gslides_tool(tool_call_input: dict) -> Dict[str, Any]:
         print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: GSlides tool runnable obtained.")
 
         tool_call_str = tool_runnable.invoke({
-            "query": tool_call_input["input"],
+            "query": str(tool_call_input["input"]),
             "user_name": username,
             "previous_tool_response": tool_call_input.get("previous_tool_response", "Not Provided"),
         })
-        print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Runnable invoked. Raw output string: {tool_call_str}")
+        print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Runnable invoked. Raw output string length: {len(tool_call_str)}")
 
         tool_result = await parse_and_execute_tool_calls(tool_call_str)
         print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Tool execution completed.")
@@ -2272,24 +2253,25 @@ async def gcalendar_tool(tool_call_input: dict) -> Dict[str, Any]:
     tool_name = "gcalendar"
     input_instruction = tool_call_input.get("input", "No instruction provided")
     print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Handler called.")
-    print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Input instruction: {input_instruction[:100]}...")
+    print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Input instruction: {str(input_instruction)[:100]}...")
     # print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Full input: {tool_call_input}")
 
     try:
         # Get current time and timezone dynamically
-        current_time_iso = datetime.now(timezone.utc).isoformat() # Use UTC for consistency
+        current_time_iso = datetime.now(timezone.utc).isoformat() + "Z" # Use UTC for consistency
         local_timezone_key = "UTC" # Default or get dynamically if possible/needed
         try:
             # Attempt to get local timezone; might not work reliably on all servers
             from tzlocal import get_localzone
             local_tz = get_localzone()
-            local_timezone_key = local_tz.key
+            local_timezone_key = str(local_tz) # Use string representation
+            print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Detected local timezone: {local_timezone_key}")
         except ImportError:
             print(f"[WARN] {datetime.now()}: [TOOL HANDLER {tool_name}] tzlocal not installed. Using UTC as timezone.")
         except Exception as tz_e:
              print(f"[WARN] {datetime.now()}: [TOOL HANDLER {tool_name}] Error getting local timezone: {tz_e}. Using UTC.")
 
-        print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Using Current Time (ISO): {current_time_iso}, Timezone Key: {local_timezone_key}")
+        print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Using Current Time (ISO UTC): {current_time_iso}, Timezone Key: {local_timezone_key}")
 
         tool_runnable = get_tool_runnable(
             gcalendar_agent_system_prompt_template,
@@ -2300,12 +2282,12 @@ async def gcalendar_tool(tool_call_input: dict) -> Dict[str, Any]:
         print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: GCalendar tool runnable obtained.")
 
         tool_call_str = tool_runnable.invoke({
-            "query": tool_call_input["input"],
+            "query": str(tool_call_input["input"]),
             "current_time": current_time_iso,
             "timezone": local_timezone_key,
             "previous_tool_response": tool_call_input.get("previous_tool_response", "Not Provided"),
         })
-        print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Runnable invoked. Raw output string: {tool_call_str}")
+        print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Runnable invoked. Raw output string length: {len(tool_call_str)}")
 
         tool_result = await parse_and_execute_tool_calls(tool_call_str)
         print(f"[TOOL HANDLER {tool_name}] {datetime.now()}: Tool execution completed.")
@@ -2335,7 +2317,10 @@ async def get_role(request: UserInfoRequest) -> JSONResponse:
         roles_url = f"https://{AUTH0_DOMAIN}/api/v2/users/{request.user_id}/roles"
         headers = {"Authorization": f"Bearer {token}"}
         print(f"[ENDPOINT /get-role] {datetime.now()}: Making request to Auth0: GET {roles_url}")
-        roles_response = requests.get(roles_url, headers=headers)
+
+        # Use httpx for async requests
+        async with httpx.AsyncClient() as client:
+            roles_response = await client.get(roles_url, headers=headers)
 
         print(f"[ENDPOINT /get-role] {datetime.now()}: Auth0 response status: {roles_response.status_code}")
         if roles_response.status_code != 200:
@@ -2374,7 +2359,9 @@ async def get_beta_user_status(request: UserInfoRequest) -> JSONResponse:
         user_url = f"https://{AUTH0_DOMAIN}/api/v2/users/{request.user_id}"
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
         print(f"[ENDPOINT /get-beta-user-status] {datetime.now()}: Making request to Auth0: GET {user_url}")
-        response = requests.get(user_url, headers=headers)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(user_url, headers=headers)
 
         print(f"[ENDPOINT /get-beta-user-status] {datetime.now()}: Auth0 response status: {response.status_code}")
         if response.status_code != 200:
@@ -2387,12 +2374,13 @@ async def get_beta_user_status(request: UserInfoRequest) -> JSONResponse:
         print(f"[ENDPOINT /get-beta-user-status] {datetime.now()}: Beta user status from metadata: {beta_user_status}")
 
         if beta_user_status is None:
-            print(f"[ENDPOINT /get-beta-user-status] {datetime.now()}: Beta user status not found for user {request.user_id}.")
-            # Decide default: return 404 or default to False? Returning 404 for clarity.
-            return JSONResponse(status_code=404, content={"message": "Beta user status not found in app_metadata."})
+            print(f"[ENDPOINT /get-beta-user-status] {datetime.now()}: Beta user status not found for user {request.user_id}. Defaulting to False.")
+            # Default to False if not found
+            status_bool = False
+        else:
+            # Ensure boolean response
+            status_bool = str(beta_user_status).lower() == 'true'
 
-        # Ensure boolean response
-        status_bool = str(beta_user_status).lower() == 'true'
         print(f"[ENDPOINT /get-beta-user-status] {datetime.now()}: Returning betaUserStatus: {status_bool}")
         return JSONResponse(status_code=200, content={"betaUserStatus": status_bool})
 
@@ -2417,7 +2405,9 @@ async def get_referral_code(request: UserInfoRequest) -> JSONResponse:
         url = f"https://{AUTH0_DOMAIN}/api/v2/users/{request.user_id}"
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
         print(f"[ENDPOINT /get-referral-code] {datetime.now()}: Making request to Auth0: GET {url}")
-        response = requests.get(url, headers=headers)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
 
         print(f"[ENDPOINT /get-referral-code] {datetime.now()}: Auth0 response status: {response.status_code}")
         if response.status_code != 200:
@@ -2457,7 +2447,9 @@ async def get_referrer_status(request: UserInfoRequest) -> JSONResponse:
         url = f"https://{AUTH0_DOMAIN}/api/v2/users/{request.user_id}"
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
         print(f"[ENDPOINT /get-referrer-status] {datetime.now()}: Making request to Auth0: GET {url}")
-        response = requests.get(url, headers=headers)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
 
         print(f"[ENDPOINT /get-referrer-status] {datetime.now()}: Auth0 response status: {response.status_code}")
         if response.status_code != 200:
@@ -2469,11 +2461,12 @@ async def get_referrer_status(request: UserInfoRequest) -> JSONResponse:
         print(f"[ENDPOINT /get-referrer-status] {datetime.now()}: Referrer status from metadata: {referrer_status}")
 
         if referrer_status is None:
-            print(f"[ENDPOINT /get-referrer-status] {datetime.now()}: Referrer status not found for user {request.user_id}.")
-            return JSONResponse(status_code=404, content={"message": "Referrer status not found."})
+            print(f"[ENDPOINT /get-referrer-status] {datetime.now()}: Referrer status not found for user {request.user_id}. Defaulting to False.")
+            status_bool = False # Default to False
+        else:
+            # Ensure boolean response
+            status_bool = str(referrer_status).lower() == 'true'
 
-        # Ensure boolean response
-        status_bool = str(referrer_status).lower() == 'true'
         print(f"[ENDPOINT /get-referrer-status] {datetime.now()}: Returning referrerStatus: {status_bool}")
         return JSONResponse(status_code=200, content={"referrerStatus": status_bool})
 
@@ -2501,7 +2494,9 @@ async def set_referrer_status(request: ReferrerStatusRequest) -> JSONResponse:
         payload = {"app_metadata": {"referrer": request.referrer_status}} # Key is 'referrer'
 
         print(f"[ENDPOINT /set-referrer-status] {datetime.now()}: Making request to Auth0: PATCH {url} with payload: {payload}")
-        response = requests.patch(url, headers=headers, json=payload)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(url, headers=headers, json=payload)
 
         print(f"[ENDPOINT /set-referrer-status] {datetime.now()}: Auth0 response status: {response.status_code}")
         if response.status_code != 200:
@@ -2537,7 +2532,9 @@ async def get_user_and_set_referrer_status(request: SetReferrerRequest) -> JSONR
         search_url = f"https://{AUTH0_DOMAIN}/api/v2/users"
         params = {'q': search_query, 'search_engine': 'v3'} # Use v3 search engine
         print(f"[ENDPOINT /get-user-and-set-referrer-status] {datetime.now()}: Making request to Auth0: GET {search_url} with query: {params}")
-        search_response = requests.get(search_url, headers=headers, params=params)
+
+        async with httpx.AsyncClient() as client:
+            search_response = await client.get(search_url, headers=headers, params=params)
 
         print(f"[ENDPOINT /get-user-and-set-referrer-status] {datetime.now()}: Auth0 search response status: {search_response.status_code}")
         if search_response.status_code != 200:
@@ -2565,7 +2562,9 @@ async def get_user_and_set_referrer_status(request: SetReferrerRequest) -> JSONR
         update_payload = {"app_metadata": {"referrer": True}} # Set referrer to true
 
         print(f"[ENDPOINT /get-user-and-set-referrer-status] {datetime.now()}: Making request to Auth0: PATCH {update_url} with payload: {update_payload}")
-        set_status_response = requests.patch(update_url, headers=update_headers, json=update_payload)
+
+        async with httpx.AsyncClient() as client:
+            set_status_response = await client.patch(update_url, headers=update_headers, json=update_payload)
 
         print(f"[ENDPOINT /get-user-and-set-referrer-status] {datetime.now()}: Auth0 update response status: {set_status_response.status_code}")
         if set_status_response.status_code != 200:
@@ -2584,7 +2583,7 @@ async def get_user_and_set_referrer_status(request: SetReferrerRequest) -> JSONR
 
 
 @app.post("/set-beta-user-status")
-def set_beta_user_status(request: BetaUserStatusRequest) -> JSONResponse:
+async def set_beta_user_status(request: BetaUserStatusRequest) -> JSONResponse: # Made async
     """Sets the beta user status in Auth0 app_metadata."""
     print(f"[ENDPOINT /set-beta-user-status] {datetime.now()}: Endpoint called for user_id: {request.user_id}, status: {request.beta_user_status}")
     try:
@@ -2599,7 +2598,9 @@ def set_beta_user_status(request: BetaUserStatusRequest) -> JSONResponse:
         payload = {"app_metadata": {"betaUser": request.beta_user_status}} # Key is 'betaUser'
 
         print(f"[ENDPOINT /set-beta-user-status] {datetime.now()}: Making request to Auth0: PATCH {url} with payload: {payload}")
-        response = requests.patch(url, headers=headers, json=payload)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(url, headers=headers, json=payload)
 
         print(f"[ENDPOINT /set-beta-user-status] {datetime.now()}: Auth0 response status: {response.status_code}")
         if response.status_code != 200:
@@ -2614,14 +2615,11 @@ def set_beta_user_status(request: BetaUserStatusRequest) -> JSONResponse:
     except Exception as e:
         print(f"[ERROR] {datetime.now()}: Unexpected error in /set-beta-user-status: {str(e)}")
         traceback.print_exc()
-        # FastAPI needs async here, but this function is sync.
-        # If running sync, this return is fine. If async context needed, refactor.
-        # Assuming sync context is okay for this specific endpoint based on original code.
         return JSONResponse(status_code=500, content={"message": f"Internal server error: {str(e)}"})
 
 
 @app.post("/get-user-and-invert-beta-user-status")
-def get_user_and_invert_beta_user_status(request: UserInfoRequest) -> JSONResponse:
+async def get_user_and_invert_beta_user_status(request: UserInfoRequest) -> JSONResponse: # Made async
     """Gets a user's current beta status and inverts it."""
     print(f"[ENDPOINT /get-user-and-invert-beta-user-status] {datetime.now()}: Endpoint called for user_id: {request.user_id}")
     try:
@@ -2635,7 +2633,9 @@ def get_user_and_invert_beta_user_status(request: UserInfoRequest) -> JSONRespon
         get_url = f"https://{AUTH0_DOMAIN}/api/v2/users/{request.user_id}"
         get_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
         print(f"[ENDPOINT /get-user-and-invert-beta-user-status] {datetime.now()}: Making request to Auth0: GET {get_url}")
-        get_response = requests.get(get_url, headers=get_headers)
+
+        async with httpx.AsyncClient() as client:
+            get_response = await client.get(get_url, headers=get_headers)
 
         print(f"[ENDPOINT /get-user-and-invert-beta-user-status] {datetime.now()}: Auth0 get response status: {get_response.status_code}")
         if get_response.status_code != 200:
@@ -2657,7 +2657,9 @@ def get_user_and_invert_beta_user_status(request: UserInfoRequest) -> JSONRespon
         set_payload = {"app_metadata": {"betaUser": inverted_status}}
 
         print(f"[ENDPOINT /get-user-and-invert-beta-user-status] {datetime.now()}: Making request to Auth0: PATCH {set_url} with payload: {set_payload}")
-        set_response = requests.patch(set_url, headers=set_headers, json=set_payload)
+
+        async with httpx.AsyncClient() as client:
+            set_response = await client.patch(set_url, headers=set_headers, json=set_payload)
 
         print(f"[ENDPOINT /get-user-and-invert-beta-user-status] {datetime.now()}: Auth0 set response status: {set_response.status_code}")
         if set_response.status_code != 200:
@@ -2672,7 +2674,6 @@ def get_user_and_invert_beta_user_status(request: UserInfoRequest) -> JSONRespon
     except Exception as e:
         print(f"[ERROR] {datetime.now()}: Unexpected error in /get-user-and-invert-beta-user-status: {str(e)}")
         traceback.print_exc()
-        # Assuming sync context is okay based on original code.
         return JSONResponse(status_code=500, content={"message": f"Internal server error: {str(e)}"})
 
 @app.post("/encrypt")
@@ -2711,9 +2712,10 @@ async def scrape_linkedin(profile: LinkedInURL):
     print(f"[ENDPOINT /scrape-linkedin] {datetime.now()}: Endpoint called for URL: {profile.url}")
     try:
         # Ensure the scraping function exists and is imported
-        # from model.scraper.functions import scrape_linkedin_profile # Assuming it's here
+        from model.scraper.functions import scrape_linkedin_profile # Assuming it's here
         print(f"[ENDPOINT /scrape-linkedin] {datetime.now()}: Starting LinkedIn scrape...")
-        linkedin_profile = scrape_linkedin_profile(profile.url) # This function needs to be defined/imported
+        # This function needs to be async or run in a threadpool if it's blocking
+        linkedin_profile = await asyncio.to_thread(scrape_linkedin_profile, profile.url)
         print(f"[ENDPOINT /scrape-linkedin] {datetime.now()}: LinkedIn scrape completed.")
         # print(f"[ENDPOINT /scrape-linkedin] {datetime.now()}: Scraped profile data: {linkedin_profile}") # Can be verbose
         return JSONResponse(status_code=200, content={"profile": linkedin_profile})
@@ -2732,7 +2734,8 @@ async def scrape_reddit(reddit_url: RedditURL):
     print(f"[ENDPOINT /scrape-reddit] {datetime.now()}: Endpoint called for URL: {reddit_url.url}")
     try:
         print(f"[ENDPOINT /scrape-reddit] {datetime.now()}: Starting Reddit scrape...")
-        subreddits = reddit_scraper(reddit_url.url) # Assuming reddit_scraper is imported
+        # Assuming reddit_scraper is blocking, run in threadpool
+        subreddits = await asyncio.to_thread(reddit_scraper, reddit_url.url)
         print(f"[ENDPOINT /scrape-reddit] {datetime.now()}: Reddit scrape completed. Found {len(subreddits)} potential subreddits/posts.")
         # print(f"[ENDPOINT /scrape-reddit] {datetime.now()}: Scraped subreddits/posts: {subreddits}")
 
@@ -2741,21 +2744,28 @@ async def scrape_reddit(reddit_url: RedditURL):
              return JSONResponse(status_code=200, content={"topics": []})
 
         print(f"[ENDPOINT /scrape-reddit] {datetime.now()}: Invoking Reddit runnable for topic extraction...")
-        response = reddit_runnable.invoke({"subreddits": subreddits})
+        # Assuming runnable invoke is potentially blocking
+        response = await asyncio.to_thread(reddit_runnable.invoke, {"subreddits": subreddits})
         print(f"[ENDPOINT /scrape-reddit] {datetime.now()}: Reddit runnable finished.")
         # print(f"[ENDPOINT /scrape-reddit] {datetime.now()}: Runnable response: {response}")
 
+        # Handle response format variations
+        topics = []
         if isinstance(response, list):
-            print(f"[ENDPOINT /scrape-reddit] {datetime.now()}: Returning {len(response)} topics.")
-            return JSONResponse(status_code=200, content={"topics": response})
+            topics = response
         elif isinstance(response, dict) and 'topics' in response and isinstance(response['topics'], list):
-             # Handle cases where the runnable might return a dict with a 'topics' key
-             print(f"[ENDPOINT /scrape-reddit] {datetime.now()}: Runnable returned dict, extracting topics list. Returning {len(response['topics'])} topics.")
-             return JSONResponse(status_code=200, content={"topics": response['topics']})
+             topics = response['topics']
+        elif isinstance(response, str): # If LLM just returns a string
+             print(f"[WARN] {datetime.now()}: Reddit runnable returned a string, attempting to parse.")
+             # Try simple splitting, might need more robust parsing
+             topics = [t.strip() for t in response.split(',') if t.strip()]
         else:
-            error_msg = f"Invalid response format from the Reddit language model. Expected list or dict with 'topics' list, got {type(response)}."
+            error_msg = f"Invalid response format from the Reddit language model. Expected list or dict with 'topics', got {type(response)}."
             print(f"[ERROR] {datetime.now()}: {error_msg}")
             raise HTTPException(status_code=500, detail=error_msg)
+
+        print(f"[ENDPOINT /scrape-reddit] {datetime.now()}: Returning {len(topics)} topics.")
+        return JSONResponse(status_code=200, content={"topics": topics})
 
     except NameError as ne:
          error_msg = f"Scraping or runnable function not available: {ne}"
@@ -2775,8 +2785,8 @@ async def scrape_twitter(twitter_url: TwitterURL):
     num_tweets = 20 # Define how many tweets to fetch
     try:
         print(f"[ENDPOINT /scrape-twitter] {datetime.now()}: Starting Twitter scrape for {num_tweets} tweets...")
-        # Ensure scrape_twitter_data is imported/defined
-        tweets = scrape_twitter_data(twitter_url.url, num_tweets)
+        # Ensure scrape_twitter_data is imported/defined and run in threadpool if blocking
+        tweets = await asyncio.to_thread(scrape_twitter_data, twitter_url.url, num_tweets)
         print(f"[ENDPOINT /scrape-twitter] {datetime.now()}: Twitter scrape completed. Found {len(tweets)} tweets.")
         # print(f"[ENDPOINT /scrape-twitter] {datetime.now()}: Scraped tweets: {tweets}")
 
@@ -2785,20 +2795,27 @@ async def scrape_twitter(twitter_url: TwitterURL):
              return JSONResponse(status_code=200, content={"topics": []})
 
         print(f"[ENDPOINT /scrape-twitter] {datetime.now()}: Invoking Twitter runnable for topic extraction...")
-        response = twitter_runnable.invoke({"tweets": tweets})
+        # Run runnable in threadpool
+        response = await asyncio.to_thread(twitter_runnable.invoke, {"tweets": tweets})
         print(f"[ENDPOINT /scrape-twitter] {datetime.now()}: Twitter runnable finished.")
         # print(f"[ENDPOINT /scrape-twitter] {datetime.now()}: Runnable response: {response}")
 
+        # Handle response format variations
+        topics = []
         if isinstance(response, list):
-            print(f"[ENDPOINT /scrape-twitter] {datetime.now()}: Returning {len(response)} topics.")
-            return JSONResponse(status_code=200, content={"topics": response})
+            topics = response
         elif isinstance(response, dict) and 'topics' in response and isinstance(response['topics'], list):
-            print(f"[ENDPOINT /scrape-twitter] {datetime.now()}: Runnable returned dict, extracting topics list. Returning {len(response['topics'])} topics.")
-            return JSONResponse(status_code=200, content={"topics": response['topics']})
+            topics = response['topics']
+        elif isinstance(response, str):
+             print(f"[WARN] {datetime.now()}: Twitter runnable returned a string, attempting to parse.")
+             topics = [t.strip() for t in response.split(',') if t.strip()]
         else:
-            error_msg = f"Invalid response format from the Twitter language model. Expected list or dict with 'topics' list, got {type(response)}."
+            error_msg = f"Invalid response format from the Twitter language model. Expected list or dict with 'topics', got {type(response)}."
             print(f"[ERROR] {datetime.now()}: {error_msg}")
             raise HTTPException(status_code=500, detail=error_msg)
+
+        print(f"[ENDPOINT /scrape-twitter] {datetime.now()}: Returning {len(topics)} topics.")
+        return JSONResponse(status_code=200, content={"topics": topics})
 
     except NameError as ne:
          error_msg = f"Scraping or runnable function not available: {ne}"
@@ -2818,25 +2835,32 @@ async def authenticate_google():
     print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Endpoint called.")
     token_file = "model/token.pickle"
     creds = None
+    loop = asyncio.get_event_loop()
+
     try:
         # 1. Check for existing, valid token
         if os.path.exists(token_file):
             print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Found existing token file: {token_file}")
-            with open(token_file, "rb") as token:
-                creds = pickle.load(token)
-            print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Token loaded from file.")
-            # Validate token
-            if creds and creds.valid:
-                print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Existing token is valid.")
-                return JSONResponse(status_code=200, content={"success": True, "message": "Already authenticated."})
-            else:
-                print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Existing token is invalid or expired.")
+            try:
+                with open(token_file, "rb") as token:
+                    creds = pickle.load(token)
+                print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Token loaded from file.")
+                # Validate token
+                if creds and creds.valid:
+                    print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Existing token is valid.")
+                    return JSONResponse(status_code=200, content={"success": True, "message": "Already authenticated."})
+                else:
+                    print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Existing token is invalid or expired.")
+            except (pickle.UnpicklingError, EOFError, FileNotFoundError) as load_err:
+                 print(f"[WARN] {datetime.now()}: Failed to load or parse token file '{token_file}': {load_err}. Proceeding to auth flow.")
+                 creds = None # Ensure flow runs
 
         # 2. Refresh token if possible
         if creds and creds.expired and creds.refresh_token:
             print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Attempting to refresh expired token...")
             try:
-                creds.refresh(Request())
+                # Run refresh in threadpool as it might block
+                await loop.run_in_executor(None, creds.refresh, Request())
                 print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Token refreshed successfully.")
                 # Save the refreshed token
                 with open(token_file, "wb") as token:
@@ -2857,11 +2881,14 @@ async def authenticate_google():
                  raise HTTPException(status_code=500, detail=error_msg)
 
             flow = InstalledAppFlow.from_client_config(CREDENTIALS_DICT, SCOPES)
-            # The `run_local_server` will block until the user completes the flow in their browser.
-            # It opens a local server temporarily (default port 8080, use port=0 for random).
-            print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Launching local server for user authentication...")
-            creds = flow.run_local_server(port=0) # Use random available port
-            print(f"[ENDPOINT /authenticate-google] {datetime.now()}: OAuth flow completed by user. Credentials obtained.")
+            # Run the blocking local server flow in a threadpool executor
+            print(f"[ENDPOINT /authenticate-google] {datetime.now()}: Launching local server for user authentication (in background thread)...")
+            try:
+                creds = await loop.run_in_executor(None, flow.run_local_server, 0) # port=0 for random
+                print(f"[ENDPOINT /authenticate-google] {datetime.now()}: OAuth flow completed by user. Credentials obtained.")
+            except Exception as flow_err:
+                 print(f"[ERROR] {datetime.now()}: Error during OAuth flow (run_local_server): {flow_err}")
+                 raise HTTPException(status_code=500, detail=f"Authentication flow failed: {flow_err}")
 
             # Save the new credentials
             with open(token_file, "wb") as token:
@@ -2869,20 +2896,11 @@ async def authenticate_google():
             print(f"[ENDPOINT /authenticate-google] {datetime.now()}: New token saved to {token_file}.")
             return JSONResponse(status_code=200, content={"success": True, "message": "Authentication successful."})
 
-    except FileNotFoundError:
-        # This might happen if the pickle file is corrupted during load before check
-        print(f"[WARN] {datetime.now()}: Token file not found during load (should have been caught by os.path.exists). Proceeding to auth flow.")
-        # Rerun the flow part (could refactor this)
-        flow = InstalledAppFlow.from_client_config(CREDENTIALS_DICT, SCOPES)
-        creds = flow.run_local_server(port=0)
-        with open(token_file, "wb") as token:
-            pickle.dump(creds, token)
-        print(f"[ENDPOINT /authenticate-google] {datetime.now()}: New token saved after FileNotFoundError during load.")
-        return JSONResponse(status_code=200, content={"success": True, "message": "Authentication successful."})
+    except HTTPException as http_exc:
+        raise http_exc # Re-raise already handled exceptions
     except Exception as e:
-        print(f"[ERROR] {datetime.now()}: Error during Google authentication: {e}")
+        print(f"[ERROR] {datetime.now()}: Unexpected error during Google authentication: {e}")
         traceback.print_exc()
-        # Return failure response
         return JSONResponse(status_code=500, content={"success": False, "error": f"Authentication failed: {str(e)}"})
 
 ## Memory Endpoints
@@ -2898,13 +2916,15 @@ async def graphrag(request: GraphRAGRequest):
             raise HTTPException(status_code=503, detail=error_msg)
 
         print(f"[ENDPOINT /graphrag] {datetime.now()}: Querying user profile...")
-        context = query_user_profile(
+        # Run blocking function in threadpool
+        context = await asyncio.to_thread(
+            query_user_profile,
             request.query, graph_driver, embed_model,
             text_conversion_runnable, query_classification_runnable
         )
         print(f"[ENDPOINT /graphrag] {datetime.now()}: User profile query completed. Context length: {len(str(context)) if context else 0}")
         # print(f"[ENDPOINT /graphrag] {datetime.now()}: Retrieved context: {context}") # Can be verbose
-        return JSONResponse(status_code=200, content={"context": context})
+        return JSONResponse(status_code=200, content={"context": context or "No relevant context found."}) # Provide default message
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
@@ -2918,6 +2938,8 @@ async def create_graph():
     print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Endpoint called.")
     input_dir = "model/input"
     extracted_texts = []
+    loop = asyncio.get_event_loop()
+
     try:
         # --- Load Username ---
         user_profile = load_user_profile()
@@ -2930,43 +2952,51 @@ async def create_graph():
              print(f"[ERROR] {datetime.now()}: {error_msg}")
              raise HTTPException(status_code=503, detail=error_msg)
 
-        # --- Read Input Files ---
+        # --- Read Input Files (Sync operation, potential block) ---
         print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Reading text files from input directory: {input_dir}")
         if not os.path.exists(input_dir):
              print(f"[WARN] {datetime.now()}: Input directory '{input_dir}' does not exist. Creating it.")
-             os.makedirs(input_dir)
+             await loop.run_in_executor(None, os.makedirs, input_dir) # Run mkdir in thread
 
-        for file_name in os.listdir(input_dir):
-            file_path = os.path.join(input_dir, file_name)
-            if os.path.isfile(file_path) and file_name.lower().endswith(".txt"): # Process only .txt files
-                print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Reading file: {file_name}")
-                try:
-                    with open(file_path, "r", encoding="utf-8") as file:
-                        text_content = file.read().strip()
-                        if text_content:
-                            extracted_texts.append({"text": text_content, "source": file_name})
-                            print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}:   - Added content from {file_name}. Length: {len(text_content)}")
-                        else:
-                             print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}:   - Skipped empty file: {file_name}")
-                except Exception as read_e:
-                     print(f"[ERROR] {datetime.now()}: Failed to read file {file_name}: {read_e}")
-            else:
-                 print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Skipping non-txt file or directory: {file_name}")
+        # Run file listing and reading in threadpool
+        def read_files():
+            texts = []
+            files = os.listdir(input_dir)
+            print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Found {len(files)} items in {input_dir}.")
+            for file_name in files:
+                file_path = os.path.join(input_dir, file_name)
+                if os.path.isfile(file_path) and file_name.lower().endswith(".txt"): # Process only .txt files
+                    print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Reading file: {file_name}")
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as file:
+                            text_content = file.read().strip()
+                            if text_content:
+                                texts.append({"text": text_content, "source": file_name})
+                                print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}:   - Added content from {file_name}. Length: {len(text_content)}")
+                            else:
+                                print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}:   - Skipped empty file: {file_name}")
+                    except Exception as read_e:
+                         print(f"[ERROR] {datetime.now()}: Failed to read file {file_name}: {read_e}")
+                else:
+                     print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Skipping non-txt file or directory: {file_name}")
+            return texts
 
+        extracted_texts = await loop.run_in_executor(None, read_files)
 
         if not extracted_texts:
             print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: No text content found in input directory. Nothing to build.")
             return JSONResponse(status_code=200, content={"message": "No content found in input documents. Graph not modified."}) # Not really an error
 
-        # --- Clear Existing Graph (Optional - Be Careful!) ---
-        # Consider making this conditional based on a request parameter
-        clear_graph = True # Set to False or make configurable if you don't want to wipe the graph every time
+        # --- Clear Existing Graph (Potentially blocking Neo4j operation) ---
+        clear_graph = True # Set to False or make configurable
         if clear_graph:
             print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Clearing existing graph in Neo4j...")
             try:
-                with graph_driver.session(database="neo4j") as session: # Specify DB if not default
-                    # Use write_transaction for safety
-                    session.execute_write(lambda tx: tx.run("MATCH (n) DETACH DELETE n"))
+                def clear_neo4j_graph(driver):
+                    with driver.session(database="neo4j") as session:
+                        # Use write_transaction for safety
+                        session.execute_write(lambda tx: tx.run("MATCH (n) DETACH DELETE n"))
+                await loop.run_in_executor(None, clear_neo4j_graph, graph_driver)
                 print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Existing graph cleared successfully.")
             except Exception as clear_e:
                  error_msg = f"Failed to clear existing graph: {clear_e}"
@@ -2976,12 +3006,15 @@ async def create_graph():
              print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Skipping graph clearing.")
 
 
-        # --- Build Graph ---
+        # --- Build Graph (Run blocking function in threadpool) ---
         print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Building initial knowledge graph from {len(extracted_texts)} document(s)...")
-        build_initial_knowledge_graph(
+        await loop.run_in_executor(
+            None, # Use default executor
+            build_initial_knowledge_graph, # Function to run
+            # Arguments for the function:
             username, extracted_texts, graph_driver, embed_model,
             text_dissection_runnable, information_extraction_runnable
-        ) # This function should contain its own detailed logging
+        )
         print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Knowledge graph build process completed.")
 
         return JSONResponse(status_code=200, content={"message": f"Graph created/updated successfully from {len(extracted_texts)} documents."})
@@ -3000,6 +3033,7 @@ async def delete_subgraph(request: DeleteSubgraphRequest):
     source_key = request.source # e.g., "linkedin", "reddit"
     print(f"[ENDPOINT /delete-subgraph] {datetime.now()}: Endpoint called for source key: {source_key}")
     input_dir = "model/input"
+    loop = asyncio.get_event_loop()
 
     try:
         # --- Load Username and Map Source Key to Filename ---
@@ -3007,20 +3041,22 @@ async def delete_subgraph(request: DeleteSubgraphRequest):
         username = user_profile.get("userData", {}).get("personalInfo", {}).get("name", "User").lower()
         print(f"[ENDPOINT /delete-subgraph] {datetime.now()}: Using username: {username}")
 
-        # Define the mapping from source key to expected filename pattern
+        # Define the mapping (Ensure consistency with create_document filenames)
         SOURCES = {
             "linkedin": f"{username}_linkedin_profile.txt",
             "reddit": f"{username}_reddit_profile.txt",
             "twitter": f"{username}_twitter_profile.txt",
-            # Add mappings for personality traits if they should be deletable
+            # Add mappings for personality traits if they were saved as separate files
             "extroversion": f"{username}_extroversion.txt",
             "introversion": f"{username}_introversion.txt",
-            # ... add all personality traits used in create_document ...
-            "personality": f"{username}_personality.txt", # If a unified file exists
+            "sensing": f"{username}_sensing.txt",
+            "intuition": f"{username}_intuition.txt",
+            "thinking": f"{username}_thinking.txt",
+            "feeling": f"{username}_feeling.txt",
+            "judging": f"{username}_judging.txt",
+            "perceiving": f"{username}_perceiving.txt",
+            # "personality_summary": f"{username}_personality_summary.txt", # If unified file exists
         }
-        # Add dynamic personality trait filenames based on constants if needed
-        # for trait in PERSONALITY_DESCRIPTIONS.keys():
-        #     SOURCES[trait.lower()] = f"{username}_{trait.lower()}.txt"
 
         file_name = SOURCES.get(source_key.lower()) # Use lower case for matching
         if not file_name:
@@ -3035,22 +3071,33 @@ async def delete_subgraph(request: DeleteSubgraphRequest):
              print(f"[ERROR] {datetime.now()}: {error_msg}")
              raise HTTPException(status_code=503, detail=error_msg)
 
-        # --- Delete Subgraph from Neo4j ---
+        # --- Delete Subgraph from Neo4j (Run blocking in threadpool) ---
         print(f"[ENDPOINT /delete-subgraph] {datetime.now()}: Deleting subgraph related to source '{file_name}' from Neo4j...")
-        # Assuming delete_source_subgraph handles the Neo4j deletion logic
-        delete_source_subgraph(graph_driver, file_name)
+        await loop.run_in_executor(None, delete_source_subgraph, graph_driver, file_name)
         print(f"[ENDPOINT /delete-subgraph] {datetime.now()}: Subgraph deletion from Neo4j completed for '{file_name}'.")
 
-        # --- Delete Corresponding Input File ---
+        # --- Delete Corresponding Input File (Run blocking in threadpool) ---
         file_path_to_delete = os.path.join(input_dir, file_name)
-        if os.path.exists(file_path_to_delete):
-            try:
-                os.remove(file_path_to_delete)
-                print(f"[ENDPOINT /delete-subgraph] {datetime.now()}: Deleted input file: {file_path_to_delete}")
-            except OSError as remove_e:
-                 print(f"[WARN] {datetime.now()}: Failed to delete input file {file_path_to_delete}: {remove_e}. Subgraph was still deleted from Neo4j.")
+
+        def remove_file_sync(path):
+             if os.path.exists(path):
+                 try:
+                     os.remove(path)
+                     return True, None
+                 except OSError as remove_e:
+                     return False, str(remove_e)
+             else:
+                 return False, "File not found"
+
+        deleted, error = await loop.run_in_executor(None, remove_file_sync, file_path_to_delete)
+
+        if deleted:
+            print(f"[ENDPOINT /delete-subgraph] {datetime.now()}: Deleted input file: {file_path_to_delete}")
         else:
-             print(f"[WARN] {datetime.now()}: Input file {file_path_to_delete} not found. No file deleted.")
+            if error == "File not found":
+                print(f"[WARN] {datetime.now()}: Input file {file_path_to_delete} not found. No file deleted.")
+            else:
+                print(f"[WARN] {datetime.now()}: Failed to delete input file {file_path_to_delete}: {error}. Subgraph was still deleted from Neo4j.")
 
 
         return JSONResponse(status_code=200, content={"message": f"Subgraph related to source '{source_key}' (file: {file_name}) deleted successfully."})
@@ -3070,6 +3117,7 @@ async def create_document():
     input_dir = "model/input"
     created_files = []
     unified_personality_description = ""
+    loop = asyncio.get_event_loop()
 
     try:
         # --- Load User Profile Data ---
@@ -3078,7 +3126,7 @@ async def create_document():
         # Ensure personalityType is a list
         personality_type = db.get("personalityType", [])
         if isinstance(personality_type, str): # Handle case where it might be saved as string
-            personality_type = [p.strip() for p in personality_type.split(',') if p.strip()]
+            personality_type = [p.strip().lower() for p in personality_type.split(',') if p.strip()] # Normalize to lower
         structured_linkedin_profile = db.get("linkedInProfile", {}) # Assuming dict/string
         # Ensure social profiles are lists of strings/topics
         reddit_profile = db.get("redditProfile", [])
@@ -3089,90 +3137,65 @@ async def create_document():
         print(f"[ENDPOINT /create-document] {datetime.now()}: Processing for user: {username}")
         print(f"[ENDPOINT /create-document] {datetime.now()}: Personality Traits: {personality_type}")
         print(f"[ENDPOINT /create-document] {datetime.now()}: LinkedIn data present: {bool(structured_linkedin_profile)}")
-        print(f"[ENDPOINT /create-document] {datetime.now()}: Reddit topics: {reddit_profile}")
-        print(f"[ENDPOINT /create-document] {datetime.now()}: Twitter topics: {twitter_profile}")
+        print(f"[ENDPOINT /create-document] {datetime.now()}: Reddit topics: {len(reddit_profile)}")
+        print(f"[ENDPOINT /create-document] {datetime.now()}: Twitter topics: {len(twitter_profile)}")
 
         # --- Ensure Input Directory Exists ---
-        os.makedirs(input_dir, exist_ok=True)
+        await loop.run_in_executor(None, os.makedirs, input_dir, True) # exist_ok=True
         print(f"[ENDPOINT /create-document] {datetime.now()}: Ensured input directory exists: {input_dir}")
 
-        # --- Clear Existing Files (Optional - matching /initiate-long-term-memories behavior) ---
-        # clear_existing = True
-        # if clear_existing:
-        #     print(f"[ENDPOINT /create-document] {datetime.now()}: Clearing existing files in {input_dir}...")
-        #     cleared_count = 0
-        #     for file in os.listdir(input_dir):
-        #          try:
-        #              os.remove(os.path.join(input_dir, file))
-        #              cleared_count += 1
-        #          except OSError as rm_e:
-        #              print(f"[WARN] Failed to remove file {file}: {rm_e}")
-        #     print(f"[ENDPOINT /create-document] {datetime.now()}: Cleared {cleared_count} existing files.")
-
+        # --- Helper function to summarize and write (to run in threadpool) ---
+        def summarize_and_write(user, text, filename):
+            if not text:
+                 print(f"[SUMMARIZE_WRITE] {datetime.now()}: Skipping empty text for {filename}.")
+                 return False, None
+            print(f"[SUMMARIZE_WRITE] {datetime.now()}: Summarizing content for {filename}...")
+            try:
+                summarized_paragraph = text_summarizer_runnable.invoke({"user_name": user, "text": text})
+                file_path = os.path.join(input_dir, filename)
+                print(f"[SUMMARIZE_WRITE] {datetime.now()}: Writing summarized content to {file_path}...")
+                with open(file_path, "w", encoding="utf-8") as file:
+                    file.write(summarized_paragraph)
+                return True, filename
+            except Exception as e:
+                 print(f"[ERROR] {datetime.now()}: Failed to summarize or write file {filename}: {e}")
+                 return False, filename
 
         # --- Process Personality Traits ---
         trait_descriptions = []
+        tasks = []
         print(f"[ENDPOINT /create-document] {datetime.now()}: Processing {len(personality_type)} personality traits...")
         for trait in personality_type:
-            if trait in PERSONALITY_DESCRIPTIONS:
-                description = f"{trait}: {PERSONALITY_DESCRIPTIONS[trait]}"
+            trait_lower = trait.lower() # Use lowercase consistently
+            if trait_lower in PERSONALITY_DESCRIPTIONS:
+                description = f"{trait}: {PERSONALITY_DESCRIPTIONS[trait_lower]}"
                 trait_descriptions.append(description)
-                filename = f"{username.lower()}_{trait.lower()}.txt"
-                file_path = os.path.join(input_dir, filename)
-                print(f"[ENDPOINT /create-document] {datetime.now()}: Summarizing description for trait '{trait}'...")
-                try:
-                    summarized_paragraph = text_summarizer_runnable.invoke({"user_name": username, "text": description})
-                    print(f"[ENDPOINT /create-document] {datetime.now()}: Writing summarized trait to {filename}...")
-                    with open(file_path, "w", encoding="utf-8") as file:
-                        file.write(summarized_paragraph)
-                    created_files.append(filename)
-                except Exception as e:
-                     print(f"[ERROR] {datetime.now()}: Failed to summarize or write file for trait '{trait}': {e}")
+                filename = f"{username.lower()}_{trait_lower}.txt" # Use lowercase trait in filename
+                # Add task to run summarize_and_write in threadpool
+                tasks.append(loop.run_in_executor(None, summarize_and_write, username, description, filename))
             else:
                  print(f"[WARN] {datetime.now()}: Personality trait '{trait}' not found in PERSONALITY_DESCRIPTIONS. Skipping.")
 
         unified_personality_description = f"{username}'s Personality Traits:\n\n" + "\n".join(trait_descriptions)
-        # Optionally, save the unified description to a file as well?
+        # Optionally, save the unified description (also in threadpool if needed)
         # unified_filename = f"{username.lower()}_personality_summary.txt"
-        # with open(os.path.join(input_dir, unified_filename), "w", encoding="utf-8") as file:
-        #     file.write(unified_personality_description)
-        # created_files.append(unified_filename)
+        # tasks.append(loop.run_in_executor(None, summarize_and_write, username, unified_personality_description, unified_filename))
 
         # --- Process LinkedIn Profile ---
         if structured_linkedin_profile:
             print(f"[ENDPOINT /create-document] {datetime.now()}: Processing LinkedIn profile...")
-            # Convert dict to string representation if necessary
             linkedin_text = json.dumps(structured_linkedin_profile, indent=2) if isinstance(structured_linkedin_profile, dict) else str(structured_linkedin_profile)
             linkedin_file = f"{username.lower()}_linkedin_profile.txt"
-            file_path = os.path.join(input_dir, linkedin_file)
-            print(f"[ENDPOINT /create-document] {datetime.now()}: Summarizing LinkedIn profile...")
-            try:
-                summarized_paragraph = text_summarizer_runnable.invoke({"user_name": username, "text": linkedin_text})
-                print(f"[ENDPOINT /create-document] {datetime.now()}: Writing summarized LinkedIn profile to {linkedin_file}...")
-                with open(file_path, "w", encoding="utf-8") as file:
-                    file.write(summarized_paragraph)
-                created_files.append(linkedin_file)
-            except Exception as e:
-                 print(f"[ERROR] {datetime.now()}: Failed to summarize or write LinkedIn file: {e}")
+            tasks.append(loop.run_in_executor(None, summarize_and_write, username, linkedin_text, linkedin_file))
         else:
             print(f"[ENDPOINT /create-document] {datetime.now()}: No LinkedIn profile data found.")
-
 
         # --- Process Reddit Profile ---
         if reddit_profile:
             print(f"[ENDPOINT /create-document] {datetime.now()}: Processing Reddit profile topics...")
             reddit_text = "User's Reddit Interests: " + ", ".join(reddit_profile)
             reddit_file = f"{username.lower()}_reddit_profile.txt"
-            file_path = os.path.join(input_dir, reddit_file)
-            print(f"[ENDPOINT /create-document] {datetime.now()}: Summarizing Reddit interests...")
-            try:
-                summarized_paragraph = text_summarizer_runnable.invoke({"user_name": username, "text": reddit_text})
-                print(f"[ENDPOINT /create-document] {datetime.now()}: Writing summarized Reddit interests to {reddit_file}...")
-                with open(file_path, "w", encoding="utf-8") as file:
-                    file.write(summarized_paragraph)
-                created_files.append(reddit_file)
-            except Exception as e:
-                 print(f"[ERROR] {datetime.now()}: Failed to summarize or write Reddit file: {e}")
+            tasks.append(loop.run_in_executor(None, summarize_and_write, username, reddit_text, reddit_file))
         else:
             print(f"[ENDPOINT /create-document] {datetime.now()}: No Reddit profile data found.")
 
@@ -3181,22 +3204,25 @@ async def create_document():
             print(f"[ENDPOINT /create-document] {datetime.now()}: Processing Twitter profile topics...")
             twitter_text = "User's Twitter Interests: " + ", ".join(twitter_profile)
             twitter_file = f"{username.lower()}_twitter_profile.txt"
-            file_path = os.path.join(input_dir, twitter_file)
-            print(f"[ENDPOINT /create-document] {datetime.now()}: Summarizing Twitter interests...")
-            try:
-                summarized_paragraph = text_summarizer_runnable.invoke({"user_name": username, "text": twitter_text})
-                print(f"[ENDPOINT /create-document] {datetime.now()}: Writing summarized Twitter interests to {twitter_file}...")
-                with open(file_path, "w", encoding="utf-8") as file:
-                    file.write(summarized_paragraph)
-                created_files.append(twitter_file)
-            except Exception as e:
-                 print(f"[ERROR] {datetime.now()}: Failed to summarize or write Twitter file: {e}")
+            tasks.append(loop.run_in_executor(None, summarize_and_write, username, twitter_text, twitter_file))
         else:
             print(f"[ENDPOINT /create-document] {datetime.now()}: No Twitter profile data found.")
 
-        print(f"[ENDPOINT /create-document] {datetime.now()}: Document creation process finished. Created {len(created_files)} files: {created_files}")
+        # --- Wait for all summarize/write tasks to complete ---
+        print(f"[ENDPOINT /create-document] {datetime.now()}: Waiting for {len(tasks)} summarization/write tasks to complete...")
+        results = await asyncio.gather(*tasks)
+        created_files = [filename for success, filename in results if success and filename]
+        failed_files = [filename for success, filename in results if not success and filename]
+
+        print(f"[ENDPOINT /create-document] {datetime.now()}: Document creation process finished.")
+        print(f"[ENDPOINT /create-document] {datetime.now()}: Successfully created {len(created_files)} files: {created_files}")
+        if failed_files:
+            print(f"[ENDPOINT /create-document] {datetime.now()}: Failed to create/summarize {len(failed_files)} files: {failed_files}")
+
         return JSONResponse(status_code=200, content={
-            "message": f"Documents created successfully: {', '.join(created_files)}",
+            "message": f"Documents processed. Created: {len(created_files)}, Failed: {len(failed_files)}.",
+            "created_files": created_files,
+            "failed_files": failed_files,
             "personality": unified_personality_description # Return the combined description
         })
 
@@ -3210,6 +3236,7 @@ async def create_document():
 async def customize_graph(request: GraphRequest):
     """Customizes the knowledge graph with new information."""
     print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Endpoint called with information: '{request.information[:50]}...'")
+    loop = asyncio.get_event_loop()
     try:
         # --- Load Username ---
         user_profile = load_user_profile()
@@ -3224,9 +3251,11 @@ async def customize_graph(request: GraphRequest):
              print(f"[ERROR] {datetime.now()}: {error_msg}")
              raise HTTPException(status_code=503, detail=error_msg)
 
-        # --- Extract Facts ---
+        # --- Extract Facts (Run blocking in threadpool) ---
         print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Extracting facts from provided information...")
-        points = fact_extraction_runnable.invoke({"paragraph": request.information, "username": username})
+        points = await loop.run_in_executor(
+            None, fact_extraction_runnable.invoke, {"paragraph": request.information, "username": username}
+        )
         if not isinstance(points, list):
              print(f"[WARN] {datetime.now()}: Fact extraction did not return a list. Got: {type(points)}. Assuming no facts extracted.")
              points = []
@@ -3236,26 +3265,34 @@ async def customize_graph(request: GraphRequest):
         if not points:
              return JSONResponse(status_code=200, content={"message": "No specific facts extracted from the information. Graph not modified."})
 
-        # --- Apply Graph Operations ---
-        processed_count = 0
+        # --- Apply Graph Operations (Run each blocking operation in threadpool concurrently) ---
+        tasks = []
         print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Applying CRUD operations for {len(points)} facts...")
         for i, point in enumerate(points):
-            print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Processing fact {i+1}/{len(points)}: {str(point)[:100]}...")
-            try:
-                # crud_graph_operations should contain its own logging
-                crud_graph_operations(
-                    point, graph_driver, embed_model, query_classification_runnable,
-                    information_extraction_runnable, graph_analysis_runnable,
-                    graph_decision_runnable, text_description_runnable
-                )
-                processed_count += 1
-            except Exception as crud_e:
-                 print(f"[ERROR] {datetime.now()}: Failed to process fact {i+1} ('{str(point)[:50]}...'): {crud_e}")
-                 # Decide whether to continue or stop on error
-                 # traceback.print_exc() # Optionally print traceback for failed fact
+             # Pass necessary arguments to the threadpool function
+             tasks.append(loop.run_in_executor(
+                 None, crud_graph_operations, point, graph_driver, embed_model,
+                 query_classification_runnable, information_extraction_runnable,
+                 graph_analysis_runnable, graph_decision_runnable, text_description_runnable
+             ))
+
+        # Wait for all operations to complete and handle results/errors
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        processed_count = 0
+        errors = []
+        for i, res in enumerate(results):
+            if isinstance(res, Exception):
+                 print(f"[ERROR] {datetime.now()}: Failed to process fact {i+1} ('{str(points[i])[:50]}...'): {res}")
+                 errors.append(str(res))
+            else:
+                 processed_count += 1
 
         print(f"[ENDPOINT /customize-long-term-memories] {datetime.now()}: Graph customization process completed. Applied operations for {processed_count}/{len(points)} facts.")
-        return JSONResponse(status_code=200, content={"message": f"Graph customized successfully with {processed_count} facts."})
+        message = f"Graph customized successfully for {processed_count} facts."
+        if errors:
+             message += f" Failed for {len(errors)} facts."
+
+        return JSONResponse(status_code=200 if not errors else 207, content={"message": message, "errors": errors}) # 207 Multi-Status if partial success
 
     except HTTPException as http_exc:
         raise http_exc
@@ -3272,7 +3309,15 @@ async def get_tasks():
     try:
         tasks = await task_queue.get_all_tasks()
         # print(f"[ENDPOINT /fetch-tasks] {datetime.now()}: Fetched {len(tasks)} tasks from queue.")
-        return JSONResponse(content={"tasks": tasks})
+        # Ensure tasks are JSON serializable (e.g., convert datetime)
+        serializable_tasks = []
+        for task in tasks:
+             if isinstance(task.get('created_at'), datetime):
+                 task['created_at'] = task['created_at'].isoformat()
+             if isinstance(task.get('completed_at'), datetime):
+                  task['completed_at'] = task['completed_at'].isoformat()
+             serializable_tasks.append(task)
+        return JSONResponse(content={"tasks": serializable_tasks})
     except Exception as e:
         print(f"[ERROR] {datetime.now()}: Error fetching tasks: {e}")
         traceback.print_exc()
@@ -3282,22 +3327,20 @@ async def get_tasks():
 async def add_task(task_request: CreateTaskRequest): # Use CreateTaskRequest
     """
     Adds a new task with dynamically determined chat_id, personality, context needs, priority etc.
-    Input only requires the task description.
+    Input only requires the task description. Associates task with the currently active chat.
     """
     print(f"[ENDPOINT /add-task] {datetime.now()}: Endpoint called with description: '{task_request.description[:50]}...'")
+    loop = asyncio.get_event_loop()
     try:
         # --- Determine Active Chat ID ---
         print(f"[ENDPOINT /add-task] {datetime.now()}: Determining active chat ID...")
+        # Ensure active chat exists and get its ID
+        await get_chat_history_messages() # Ensure activation/creation
         async with db_lock:
             chatsDb = await load_db()
-            active_chat_id = chatsDb.get("active_chat_id")
-            if not active_chat_id:
-                 # Ensure chat exists if none is active
-                 await get_chat_history_messages()
-                 chatsDb = await load_db()
-                 active_chat_id = chatsDb.get("active_chat_id")
-                 if not active_chat_id:
-                     raise HTTPException(status_code=500, detail="Failed to determine or create an active chat ID.")
+            active_chat_id = chatsDb.get("active_chat_id", 0)
+            if active_chat_id == 0:
+                 raise HTTPException(status_code=500, detail="Failed to determine or create an active chat ID for the task.")
         print(f"[ENDPOINT /add-task] {datetime.now()}: Using active chat ID: {active_chat_id}")
 
         # --- Load User Profile Info ---
@@ -3307,20 +3350,21 @@ async def add_task(task_request: CreateTaskRequest): # Use CreateTaskRequest
         personality = user_profile.get("userData", {}).get("personality", "Default helpful assistant")
         print(f"[ENDPOINT /add-task] {datetime.now()}: Using username: '{username}', personality: '{str(personality)[:50]}...'")
 
-        # --- Classify Task Needs ---
+        # --- Classify Task Needs (Run potentially blocking invoke in threadpool) ---
         print(f"[ENDPOINT /add-task] {datetime.now()}: Classifying task needs (context, internet)...")
-        # Assuming unified classifier handles this based on description
-        unified_output = unified_classification_runnable.invoke({"query": task_request.description})
+        unified_output = await loop.run_in_executor(
+            None, unified_classification_runnable.invoke, {"query": task_request.description}
+        )
         use_personal_context = unified_output.get("use_personal_context", False)
         internet = unified_output.get("internet", "None")
-        # Use the potentially transformed input from classification? Or original description? Using original for now.
-        # transformed_input = unified_output.get("transformed_input", task_request.description)
         print(f"[ENDPOINT /add-task] {datetime.now()}: Task needs: Use Context={use_personal_context}, Internet='{internet}'")
 
-        # --- Determine Priority ---
+        # --- Determine Priority (Run potentially blocking invoke in threadpool) ---
         print(f"[ENDPOINT /add-task] {datetime.now()}: Determining task priority...")
         try:
-            priority_response = priority_runnable.invoke({"task_description": task_request.description})
+            priority_response = await loop.run_in_executor(
+                None, priority_runnable.invoke, {"task_description": task_request.description}
+            )
             priority = priority_response.get("priority", 3) # Default priority
             print(f"[ENDPOINT /add-task] {datetime.now()}: Determined priority: {priority}")
         except Exception as e:
@@ -3330,7 +3374,7 @@ async def add_task(task_request: CreateTaskRequest): # Use CreateTaskRequest
         # --- Add Task to Queue ---
         print(f"[ENDPOINT /add-task] {datetime.now()}: Adding task to queue...")
         task_id = await task_queue.add_task(
-            chat_id=active_chat_id,
+            chat_id=active_chat_id, # Use the active chat ID
             description=task_request.description, # Use original description
             priority=priority,
             username=username,
@@ -3342,21 +3386,23 @@ async def add_task(task_request: CreateTaskRequest): # Use CreateTaskRequest
 
         # --- Add User Message (Hidden) ---
         print(f"[ENDPOINT /add-task] {datetime.now()}: Adding hidden user message to chat {active_chat_id} for task description.")
-        await add_result_to_chat(active_chat_id, task_request.description, isUser=True) # isVisible defaults to False for user=True
+        await add_message_to_db(active_chat_id, task_request.description, is_user=True, is_visible=False)
 
         # --- Add Assistant Confirmation (Visible) ---
         confirmation_message = f"OK, I've added the task: '{task_request.description[:40]}...' to my list."
         print(f"[ENDPOINT /add-task] {datetime.now()}: Adding visible assistant confirmation to chat {active_chat_id}.")
-        await add_result_to_chat(active_chat_id, confirmation_message, isUser=False, task_description=task_request.description)
+        await add_message_to_db(active_chat_id, confirmation_message, is_user=False, is_visible=True, agentsUsed=True, task=task_request.description)
 
         # --- Broadcast Task Addition via WebSocket ---
+        task_details = await task_queue.get_task_by_id(task_id) # Get full details including timestamp
         task_added_message = {
             "type": "task_added",
             "task_id": task_id,
             "description": task_request.description,
             "priority": priority,
             "status": "pending", # Initial status
-            # Add other relevant fields if needed by the frontend
+            "chat_id": active_chat_id,
+            "created_at": task_details.get("created_at").isoformat() if task_details and task_details.get("created_at") else datetime.now(timezone.utc).isoformat(),
         }
         print(f"[WS_BROADCAST] {datetime.now()}: Broadcasting task addition for {task_id}")
         await manager.broadcast(json.dumps(task_added_message))
@@ -3368,8 +3414,6 @@ async def add_task(task_request: CreateTaskRequest): # Use CreateTaskRequest
     except Exception as e:
         print(f"[ERROR] {datetime.now()}: Error adding task: {e}")
         traceback.print_exc()
-        # Return error but maybe not raise HTTPException if adding message failed?
-        # Or just raise the HTTP Exception
         raise HTTPException(status_code=500, detail=f"Failed to add task: {str(e)}")
 
 @app.post("/update-task", status_code=200)
@@ -3381,7 +3425,9 @@ async def update_task(update_request: UpdateTaskRequest):
     print(f"[ENDPOINT /update-task] {datetime.now()}: Endpoint called for task ID: {task_id}")
     print(f"[ENDPOINT /update-task] {datetime.now()}: New Description: '{new_desc[:50]}...', New Priority: {new_priority}")
     try:
-        await task_queue.update_task(task_id, new_desc, new_priority)
+        updated_task = await task_queue.update_task(task_id, new_desc, new_priority)
+        if not updated_task: # Check if update was successful (task found and modifiable)
+             raise ValueError(f"Task '{task_id}' not found or could not be updated.")
         print(f"[ENDPOINT /update-task] {datetime.now()}: Task {task_id} updated successfully in queue.")
 
         # --- Broadcast Task Update via WebSocket ---
@@ -3390,14 +3436,14 @@ async def update_task(update_request: UpdateTaskRequest):
             "task_id": task_id,
             "description": new_desc,
             "priority": new_priority,
-            # Include status if it might change or is relevant
-            # "status": updated_task_status # Need to fetch updated status if needed
+            "status": updated_task.get("status", "unknown"), # Include current status
+            # Include other relevant fields if needed
         }
         print(f"[WS_BROADCAST] {datetime.now()}: Broadcasting task update for {task_id}")
         await manager.broadcast(json.dumps(task_update_message))
 
         return JSONResponse(content={"message": "Task updated successfully"})
-    except ValueError as e: # Task not found
+    except ValueError as e: # Task not found or cannot be updated
         print(f"[ERROR] {datetime.now()}: Error updating task {task_id}: {e}")
         raise HTTPException(status_code=404, detail=str(e)) # Use 404 for not found
     except Exception as e:
@@ -3411,7 +3457,9 @@ async def delete_task(delete_request: DeleteTaskRequest):
     task_id = delete_request.task_id
     print(f"[ENDPOINT /delete-task] {datetime.now()}: Endpoint called for task ID: {task_id}")
     try:
-        await task_queue.delete_task(task_id)
+        deleted = await task_queue.delete_task(task_id)
+        if not deleted:
+             raise ValueError(f"Task '{task_id}' not found or could not be deleted.")
         print(f"[ENDPOINT /delete-task] {datetime.now()}: Task {task_id} deleted successfully from queue.")
 
          # --- Broadcast Task Deletion via WebSocket ---
@@ -3439,30 +3487,30 @@ async def get_short_term_memories(request: GetShortTermMemoriesRequest) -> List[
     category = request.category
     limit = request.limit
     print(f"[ENDPOINT /get-short-term-memories] {datetime.now()}: Endpoint called for User: {user_id}, Category: {category}, Limit: {limit}")
+    loop = asyncio.get_event_loop()
     try:
-        memories = memory_backend.memory_manager.fetch_memories_by_category(
-            user_id=user_id,
-            category=category,
-            limit=limit
+        # Run blocking DB fetch in threadpool
+        memories = await loop.run_in_executor(
+            None, memory_backend.memory_manager.fetch_memories_by_category,
+            user_id, category, limit
         )
         print(f"[ENDPOINT /get-short-term-memories] {datetime.now()}: Fetched {len(memories)} memories.")
         # print(f"[ENDPOINT /get-short-term-memories] {datetime.now()}: Fetched memories: {memories}") # Can be verbose
+
         # Ensure return is JSON serializable (datetime objects might need conversion)
         serializable_memories = []
         for mem in memories:
              # Convert datetime objects to ISO format strings if they exist
              if isinstance(mem.get('created_at'), datetime):
-                 mem['created_at'] = mem['created_at'].isoformat()
+                 mem['created_at'] = mem['created_at'].isoformat() + "Z"
              if isinstance(mem.get('expires_at'), datetime):
-                  mem['expires_at'] = mem['expires_at'].isoformat()
+                  mem['expires_at'] = mem['expires_at'].isoformat() + "Z"
              serializable_memories.append(mem)
 
         return JSONResponse(content=serializable_memories) # Return as JSON response
     except Exception as e:
         print(f"[ERROR] {datetime.now()}: Error in /get-short-term-memories: {e}")
         traceback.print_exc()
-        # Return empty list in case of error, maybe should be 500?
-        # Returning 500 might be better to signal failure
         raise HTTPException(status_code=500, detail=f"Failed to fetch memories: {str(e)}")
 
 
@@ -3475,8 +3523,11 @@ async def add_memory(request: AddMemoryRequest):
     retention = request.retention_days
     print(f"[ENDPOINT /add-short-term-memory] {datetime.now()}: Endpoint called for User: {user_id}, Category: {category}, Retention: {retention} days")
     print(f"[ENDPOINT /add-short-term-memory] {datetime.now()}: Text: '{text[:50]}...'")
+    loop = asyncio.get_event_loop()
     try:
-        memory_id = memory_backend.memory_manager.store_memory(
+        # Run blocking DB store in threadpool
+        memory_id = await loop.run_in_executor(
+            None, memory_backend.memory_manager.store_memory,
             user_id, text, category, retention
         )
         print(f"[ENDPOINT /add-short-term-memory] {datetime.now()}: Memory stored successfully with ID: {memory_id}")
@@ -3499,8 +3550,11 @@ async def update_memory(request: UpdateMemoryRequest):
     retention = request.retention_days
     print(f"[ENDPOINT /update-short-term-memory] {datetime.now()}: Endpoint called for User: {user_id}, Category: {category}, ID: {mem_id}")
     print(f"[ENDPOINT /update-short-term-memory] {datetime.now()}: New Text: '{text[:50]}...', New Retention: {retention} days")
+    loop = asyncio.get_event_loop()
     try:
-        memory_backend.memory_manager.update_memory(
+        # Run blocking DB update in threadpool
+        await loop.run_in_executor(
+            None, memory_backend.memory_manager.update_memory,
             user_id, category, mem_id, text, retention
         )
         print(f"[ENDPOINT /update-short-term-memory] {datetime.now()}: Memory ID {mem_id} updated successfully.")
@@ -3524,8 +3578,11 @@ async def delete_memory(request: DeleteMemoryRequest):
     category = request.category
     mem_id = request.id
     print(f"[ENDPOINT /delete-short-term-memory] {datetime.now()}: Endpoint called for User: {user_id}, Category: {category}, ID: {mem_id}")
+    loop = asyncio.get_event_loop()
     try:
-        memory_backend.memory_manager.delete_memory(
+        # Run blocking DB delete in threadpool
+        await loop.run_in_executor(
+            None, memory_backend.memory_manager.delete_memory,
             user_id, category, mem_id
         )
         print(f"[ENDPOINT /delete-short-term-memory] {datetime.now()}: Memory ID {mem_id} deleted successfully.")
@@ -3546,8 +3603,12 @@ async def clear_all_memories(request: Dict):
     if not user_id:
         print(f"[ERROR] {datetime.now()}: 'user_id' is missing in the request.")
         raise HTTPException(status_code=400, detail="user_id is required")
+    loop = asyncio.get_event_loop()
     try:
-        memory_backend.memory_manager.clear_all_memories(user_id)
+        # Run blocking DB clear in threadpool
+        await loop.run_in_executor(
+            None, memory_backend.memory_manager.clear_all_memories, user_id
+        )
         print(f"[ENDPOINT /clear-all-short-term-memories] {datetime.now()}: All memories cleared successfully for user {user_id}.")
         return JSONResponse(status_code=200, content={"message": "All memories cleared successfully"})
     except Exception as e:
@@ -3563,17 +3624,19 @@ async def set_db_data(request: UpdateUserDataRequest) -> Dict[str, Any]:
     """
     print(f"[ENDPOINT /set-user-data] {datetime.now()}: Endpoint called.")
     # print(f"[ENDPOINT /set-user-data] {datetime.now()}: Request data: {request.data}") # Careful logging potentially sensitive data
+    loop = asyncio.get_event_loop()
     try:
-        db_data = load_user_profile()
+        db_data = await loop.run_in_executor(None, load_user_profile) # Load sync in thread
         if "userData" not in db_data: # Ensure userData key exists
             db_data["userData"] = {}
 
-        # Merge new data, overwriting existing keys at the same level
-        # This performs a shallow merge. For deep merge, a recursive function would be needed.
+        # Merge new data (shallow merge)
         db_data["userData"].update(request.data)
         print(f"[ENDPOINT /set-user-data] {datetime.now()}: User data updated (shallow merge).")
 
-        if write_user_profile(db_data):
+        # Write sync in thread
+        success = await loop.run_in_executor(None, write_user_profile, db_data)
+        if success:
             print(f"[ENDPOINT /set-user-data] {datetime.now()}: Data stored successfully.")
             return JSONResponse(status_code=200, content={"message": "Data stored successfully", "status": 200})
         else:
@@ -3592,20 +3655,25 @@ async def add_db_data(request: AddUserDataRequest) -> Dict[str, Any]:
     """
     print(f"[ENDPOINT /add-db-data] {datetime.now()}: Endpoint called.")
     # print(f"[ENDPOINT /add-db-data] {datetime.now()}: Request data: {request.data}") # Careful logging
+    loop = asyncio.get_event_loop()
     try:
-        db_data = load_user_profile()
+        db_data = await loop.run_in_executor(None, load_user_profile) # Load sync in thread
         existing_data = db_data.get("userData", {}) # Ensure userData exists
         data_to_add = request.data
 
         print(f"[ENDPOINT /add-db-data] {datetime.now()}: Starting merge process...")
+        # Merge logic is synchronous CPU bound, can stay in main thread or run in executor if complex
         for key, value in data_to_add.items():
             # print(f"[ENDPOINT /add-db-data] {datetime.now()}: Merging key: '{key}'")
             if key in existing_data:
                 if isinstance(existing_data[key], list) and isinstance(value, list):
                     # Merge lists and remove duplicates
-                    merged_list = existing_data[key] + [item for item in value if item not in existing_data[key]]
-                    existing_data[key] = merged_list
-                    # print(f"[ENDPOINT /add-db-data] {datetime.now()}:   - Merged list for key '{key}'. New length: {len(merged_list)}")
+                    existing_items = set(existing_data[key])
+                    for item in value:
+                        if item not in existing_items:
+                             existing_data[key].append(item)
+                             existing_items.add(item) # Keep track of added items
+                    # print(f"[ENDPOINT /add-db-data] {datetime.now()}:   - Merged list for key '{key}'. New length: {len(existing_data[key])}")
                 elif isinstance(existing_data[key], dict) and isinstance(value, dict):
                     # Merge dictionaries (shallow merge)
                     existing_data[key].update(value)
@@ -3622,7 +3690,9 @@ async def add_db_data(request: AddUserDataRequest) -> Dict[str, Any]:
         db_data["userData"] = existing_data # Update userData in the main structure
         print(f"[ENDPOINT /add-db-data] {datetime.now()}: Merge process complete.")
 
-        if write_user_profile(db_data):
+        # Write sync in thread
+        success = await loop.run_in_executor(None, write_user_profile, db_data)
+        if success:
             print(f"[ENDPOINT /add-db-data] {datetime.now()}: Data added/merged successfully.")
             return JSONResponse(status_code=200, content={"message": "Data added successfully", "status": 200})
         else:
@@ -3636,12 +3706,12 @@ async def add_db_data(request: AddUserDataRequest) -> Dict[str, Any]:
 
 
 @app.post("/get-user-data")
-# Request model not strictly needed as it takes no input, but good for consistency if used elsewhere
 async def get_db_data() -> Dict[str, Any]:
     """Get all user profile database data."""
     print(f"[ENDPOINT /get-user-data] {datetime.now()}: Endpoint called.")
+    loop = asyncio.get_event_loop()
     try:
-        db_data = load_user_profile()
+        db_data = await loop.run_in_executor(None, load_user_profile) # Load sync in thread
         user_data = db_data.get("userData", {}) # Default to empty dict if not found
         print(f"[ENDPOINT /get-user-data] {datetime.now()}: Retrieved user data successfully.")
         # print(f"[ENDPOINT /get-user-data] {datetime.now()}: User data: {user_data}") # Careful logging
@@ -3652,52 +3722,50 @@ async def get_db_data() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Error fetching data: {str(e)}")
 
 ## Graph Data Endpoint
-@app.post("/get-graph-data") # Changed to POST maybe? Or keep GET if no body needed. Keeping POST for now.
+@app.post("/get-graph-data") # Changed back to GET as it fetches data without body
 async def get_graph_data_apoc():
     """Fetches graph data using APOC procedures."""
     print(f"[ENDPOINT /get-graph-data] {datetime.now()}: Endpoint called.")
+    loop = asyncio.get_event_loop()
     if not graph_driver:
          print(f"[ERROR] {datetime.now()}: Neo4j driver not available.")
          raise HTTPException(status_code=503, detail="Database connection not available")
 
-    # APOC query to get nodes and relationships in a suitable format
     apoc_query = """
     MATCH (n)
     WITH collect(DISTINCT n) as nodes // Collect distinct nodes first
-    OPTIONAL MATCH (s)-[r]->(t) // Use OPTIONAL MATCH for relationships in case graph is only nodes
+    OPTIONAL MATCH (s)-[r]->(t) // Use OPTIONAL MATCH for relationships
     WHERE s IN nodes AND t IN nodes // Ensure rels use nodes already collected
     WITH nodes, collect(DISTINCT r) as rels // Collect distinct relationships
     RETURN
         [node IN nodes | { id: elementId(node), label: coalesce(labels(node)[0], 'Unknown'), properties: properties(node) }] AS nodes_list,
         [rel IN rels | { id: elementId(rel), from: elementId(startNode(rel)), to: elementId(endNode(rel)), label: type(rel), properties: properties(rel) }] AS edges_list
     """
-    # Note: Added elementId(rel) as 'id' for edges and properties(rel) for edge properties. Added coalesce for labels.
 
     print(f"[ENDPOINT /get-graph-data] {datetime.now()}: Executing APOC query on Neo4j...")
+
+    def run_neo4j_query(driver, query):
+        try:
+            with driver.session(database="neo4j") as session:
+                result = session.run(query).single()
+                if result:
+                    nodes = result['nodes_list'] if result['nodes_list'] else []
+                    edges = result['edges_list'] if result['edges_list'] else []
+                    return nodes, edges
+                else:
+                    return [], [] # Empty graph
+        except Exception as e:
+             # Propagate exception to be caught by the endpoint handler
+             raise e
+
     try:
-        with graph_driver.session(database="neo4j") as session: # Specify DB if needed
-            result = session.run(apoc_query).single() # Expecting a single row result
-
-            if result:
-                nodes = result['nodes_list'] if result['nodes_list'] else []
-                edges = result['edges_list'] if result['edges_list'] else []
-                print(f"[ENDPOINT /get-graph-data] {datetime.now()}: Query successful. Found {len(nodes)} nodes and {len(edges)} edges.")
-
-                # Optional: Further validation or transformation if needed
-                # for node in nodes:
-                #     if node.get('label') is None: node['label'] = 'Unknown' # Already handled by coalesce
-
-                return JSONResponse(status_code=200, content={"nodes": nodes, "edges": edges})
-            else:
-                # Handle case where the query returns no rows (e.g., graph is completely empty)
-                print(f"[ENDPOINT /get-graph-data] {datetime.now()}: Query returned no result row (graph might be empty).")
-                return JSONResponse(status_code=200, content={"nodes": [], "edges": []})
+        nodes, edges = await loop.run_in_executor(None, run_neo4j_query, graph_driver, apoc_query)
+        print(f"[ENDPOINT /get-graph-data] {datetime.now()}: Query successful. Found {len(nodes)} nodes and {len(edges)} edges.")
+        return JSONResponse(status_code=200, content={"nodes": nodes, "edges": edges})
 
     except Exception as e:
-        # Catch Cypher errors or connection issues
         error_msg = f"Error fetching graph data from Neo4j: {e}"
         print(f"[ERROR] {datetime.now()}: {error_msg}")
-        # Check if it's an APOC specific error (optional)
         if "apoc" in str(e).lower():
             print(f"[ERROR] {datetime.now()}: This might be due to APOC procedures not being installed/available in Neo4j.")
         traceback.print_exc()
@@ -3711,15 +3779,20 @@ async def get_notifications():
     async with notifications_db_lock:
         # print(f"[ENDPOINT /get-notifications] {datetime.now()}: Acquired notifications DB lock.")
         try:
-            notifications_db = await load_notifications_db()
+            notifications_db = await load_notifications_db() # Already async
             notifications = notifications_db.get("notifications", [])
+            # Serialize datetimes if necessary
+            for notif in notifications:
+                if isinstance(notif.get('timestamp'), datetime):
+                     notif['timestamp'] = notif['timestamp'].isoformat() + "Z"
+
             print(f"[ENDPOINT /get-notifications] {datetime.now()}: Retrieved {len(notifications)} notifications.")
             return JSONResponse(content={"notifications": notifications})
         except Exception as e:
-            print(f"[ERROR] {datetime.now()}: Failed to load notifications DB: {e}")
+            print(f"[ERROR] {datetime.now()}: Failed to load/process notifications DB: {e}")
             traceback.print_exc()
             raise HTTPException(status_code=500, detail="Failed to retrieve notifications.")
-        # finally:
+        # finally: # Lock released by async with
             # print(f"[ENDPOINT /get-notifications] {datetime.now()}: Released notifications DB lock.")
 
 ## Task Approval Endpoints
@@ -3731,38 +3804,47 @@ async def approve_task(request: TaskIdRequest):
     try:
         # The approve_task method in TaskQueue should handle the execution
         print(f"[ENDPOINT /approve-task] {datetime.now()}: Calling task_queue.approve_task for {task_id}...")
-        result_data = await task_queue.approve_task(task_id)
+        result_data = await task_queue.approve_task(task_id) # approve_task is already async
         print(f"[ENDPOINT /approve-task] {datetime.now()}: Task {task_id} approved and execution completed by TaskQueue.")
         # print(f"[ENDPOINT /approve-task] {datetime.now()}: Result from approve_task: {result_data}")
 
         # --- Add results to chat after approval ---
         task_details = await task_queue.get_task_by_id(task_id) # Get details like description, chat_id
+        description = "Approved Task" # Default description
+        chat_id = None
         if task_details:
             chat_id = task_details.get("chat_id")
-            description = task_details.get("description", "N/A")
+            description = task_details.get("description", description) # Use task desc if available
             if chat_id:
                 print(f"[ENDPOINT /approve-task] {datetime.now()}: Adding approved task result to chat {chat_id}.")
-                # Add hidden user message (original prompt) - might already exist? Check TaskQueue logic.
-                # await add_result_to_chat(chat_id, description, True)
                 # Add visible assistant message (final result)
-                await add_result_to_chat(chat_id, result_data, False, description)
+                # The hidden user message (prompt) should have been added when the task was created.
+                await add_message_to_db(
+                    chat_id,
+                    result_data,
+                    is_user=False,
+                    is_visible=True,
+                    type="tool_result",
+                    task=description,
+                    agentsUsed=True # Agent was used to get to approval state
+                )
             else:
                 print(f"[WARN] {datetime.now()}: Could not find chat_id for completed task {task_id}. Cannot add result to chat.")
         else:
             print(f"[WARN] {datetime.now()}: Could not retrieve details for completed task {task_id} after approval.")
 
         # --- Broadcast Task Completion via WebSocket ---
-        # Note: execute_agent_task -> complete_task *might* already broadcast completion
-        # if approve_task triggers it internally. If approve_task *returns* the result
-        # and we want to broadcast here, we do it. Let's assume we broadcast here for clarity.
-        task_completion_message = {
-            "type": "task_completed", # Task is now fully complete
-            "task_id": task_id,
-            "description": description if task_details else "Task Approved", # Use description if found
-            "result": result_data
-        }
-        print(f"[WS_BROADCAST] {datetime.now()}: Broadcasting task completion (after approval) for {task_id}")
-        await manager.broadcast(json.dumps(task_completion_message))
+        # TaskQueue's complete_task (called by approve_task) should already broadcast completion.
+        # Broadcasting here might be redundant. If needed, uncomment below.
+        # task_completion_message = {
+        #     "type": "task_completed",
+        #     "task_id": task_id,
+        #     "description": description,
+        #     "result": result_data,
+        #     "status": "completed", # Explicitly set status
+        # }
+        # print(f"[WS_BROADCAST] {datetime.now()}: Broadcasting task completion (after approval) for {task_id}")
+        # await manager.broadcast(json.dumps(task_completion_message))
 
         print(f"[ENDPOINT /approve-task] {datetime.now()}: Returning success response for task {task_id}.")
         return ApproveTaskResponse(message="Task approved and completed", result=result_data)
@@ -3770,7 +3852,10 @@ async def approve_task(request: TaskIdRequest):
     except ValueError as e:
         # Specific error for task not found or wrong state (e.g., not pending approval)
         print(f"[ERROR] {datetime.now()}: Error approving task {task_id}: {e}")
-        raise HTTPException(status_code=404, detail=str(e)) # Use 404 or 400 depending on error
+        if "not found" in str(e).lower():
+             raise HTTPException(status_code=404, detail=str(e))
+        else: # Wrong state, etc.
+             raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         # General server error during approval/execution
         print(f"[ERROR] {datetime.now()}: Unexpected error approving task {task_id}: {e}")
@@ -3784,37 +3869,26 @@ async def get_task_approval_data(request: TaskIdRequest):
     print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Endpoint called for task ID: {task_id}")
     try:
         print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Accessing task queue data...")
-        async with task_queue.lock: # Ensure thread-safe access if needed
-            print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Acquired task queue lock.")
-            task = next((t for t in task_queue.tasks if str(t.get("task_id")) == str(task_id)), None)
+        # TaskQueue methods are async, no lock needed here externally
+        task = await task_queue.get_task_by_id(task_id)
 
-            if task and task.get("status") == "approval_pending":
-                approval_data = task.get("approval_data")
-                print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Found task {task_id} pending approval. Returning data.")
-                # print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Approval data: {approval_data}")
-                print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Releasing task queue lock.")
-                return TaskApprovalDataResponse(approval_data=approval_data)
-            elif task:
-                status = task.get("status", "unknown")
-                print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Task {task_id} found but status is '{status}', not 'approval_pending'.")
-                print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Releasing task queue lock.")
-                raise HTTPException(status_code=400, detail=f"Task '{task_id}' is not pending approval (status: {status}).")
-            else:
-                print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Task {task_id} not found in the queue.")
-                print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Releasing task queue lock.")
-                raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
+        if task and task.get("status") == "approval_pending":
+            approval_data = task.get("approval_data")
+            print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Found task {task_id} pending approval. Returning data.")
+            # print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Approval data: {approval_data}")
+            return TaskApprovalDataResponse(approval_data=approval_data)
+        elif task:
+            status = task.get("status", "unknown")
+            print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Task {task_id} found but status is '{status}', not 'approval_pending'.")
+            raise HTTPException(status_code=400, detail=f"Task '{task_id}' is not pending approval (status: {status}).")
+        else:
+            print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Task {task_id} not found in the queue.")
+            raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
 
     except HTTPException as http_exc:
-         # Ensure lock is released if exception occurs after acquiring it
-         if task_queue.lock.locked():
-              task_queue.lock.release()
-              print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Released task queue lock due to HTTPException.")
          raise http_exc
     except Exception as e:
         # Catch unexpected errors during lookup
-        if task_queue.lock.locked():
-             task_queue.lock.release()
-             print(f"[ENDPOINT /get-task-approval-data] {datetime.now()}: Released task queue lock due to unexpected exception.")
         print(f"[ERROR] {datetime.now()}: Unexpected error fetching approval data for task {task_id}: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
@@ -3824,13 +3898,15 @@ async def get_task_approval_data(request: TaskIdRequest):
 async def get_data_sources_endpoint(): # Renamed to avoid conflict
     """Return the list of available data sources and their enabled states."""
     print(f"[ENDPOINT /get_data_sources] {datetime.now()}: Endpoint called.")
+    loop = asyncio.get_event_loop()
     try:
-        user_profile = load_user_profile().get("userData", {})
+        user_profile = await loop.run_in_executor(None, load_user_profile) # Load sync in thread
+        user_data = user_profile.get("userData", {})
         data_sources_status = []
         for source in DATA_SOURCES:
             key = f"{source}Enabled"
             # Default to True if the key doesn't exist in the profile
-            enabled = user_profile.get(key, True)
+            enabled = user_data.get(key, True)
             data_sources_status.append({"name": source, "enabled": enabled})
             # print(f"[ENDPOINT /get_data_sources] {datetime.now()}:   - Source: {source}, Enabled: {enabled}")
 
@@ -3847,23 +3923,24 @@ async def set_data_source_enabled_endpoint(request: SetDataSourceEnabledRequest)
     source = request.source
     enabled = request.enabled
     print(f"[ENDPOINT /set_data_source_enabled] {datetime.now()}: Endpoint called. Source: {source}, Enabled: {enabled}")
+    loop = asyncio.get_event_loop()
 
     if source not in DATA_SOURCES:
         print(f"[ERROR] {datetime.now()}: Invalid data source provided: {source}")
         raise HTTPException(status_code=400, detail=f"Invalid data source: {source}. Valid sources are: {DATA_SOURCES}")
 
     try:
-        db_data = load_user_profile()
+        db_data = await loop.run_in_executor(None, load_user_profile) # Load sync
         if "userData" not in db_data: db_data["userData"] = {}
 
         key = f"{source}Enabled"
         db_data["userData"][key] = enabled
         print(f"[ENDPOINT /set_data_source_enabled] {datetime.now()}: Updated '{key}' to {enabled} in user profile data.")
 
-        if write_user_profile(db_data):
+        success = await loop.run_in_executor(None, write_user_profile, db_data) # Write sync
+        if success:
             print(f"[ENDPOINT /set_data_source_enabled] {datetime.now()}: User profile saved successfully.")
              # TODO: Trigger restart/reload of the corresponding context engine if necessary
-             # This might involve signaling the engine's background task or restarting the server
             print(f"[ACTION_NEEDED] {datetime.now()}: Context engine for '{source}' might need restart/reload to reflect changes.")
             return JSONResponse(status_code=200, content={"status": "success", "message": f"Data source '{source}' status set to {enabled}. Restart may be needed."})
         else:
@@ -3892,15 +3969,44 @@ async def websocket_endpoint(websocket: WebSocket):
                  if msg.get("type") == "ping":
                      await websocket.send_text(json.dumps({"type": "pong"}))
             except json.JSONDecodeError:
-                 pass # Ignore non-JSON messages or handle as needed
+                 # Ignore non-JSON messages or handle as needed
+                 print(f"[WS /ws] {datetime.now()}: Received non-JSON message from {client_id}: {data[:50]}...")
+            except Exception as e:
+                 print(f"[WS /ws] {datetime.now()}: Error processing message from {client_id}: {e}")
+
     except WebSocketDisconnect:
-        print(f"/ws client {client_id} disconnected.")
+        print(f"[WS /ws] {datetime.now()}: Client {client_id} disconnected (WebSocketDisconnect).")
     except Exception as e:
-        print(f"/ws error for client {client_id}: {e}")
+        # Catch other errors that might break the connection loop
+        print(f"[WS /ws] {datetime.now()}: WebSocket error for client {client_id}: {e}")
+        # Optionally try to send an error message before disconnecting? Risky.
     finally:
         manager.disconnect(websocket)
 
 
+# Mount FastRTC stream AFTER FastAPI app is initialized and lifespan is attached
+stream.mount(app, path="/voice")
+print("FastRTC stream mounted at /voice.")
+
+
 if __name__ == "__main__":
+    # Ensure freeze_support is called for multiprocessing if packaging
     multiprocessing.freeze_support()
-    uvicorn.run(app, host="0.0.0.0", port=5000, lifespan="on", reload=False, workers=1)
+
+    # Configure Uvicorn logging to be less verbose or match project style if desired
+    log_config = uvicorn.config.LOGGING_CONFIG
+    log_config["formatters"]["access"]["fmt"] = "%(asctime)s %(levelprefix)s %(client_addr)s - \"%(request_line)s\" %(status_code)s"
+    log_config["formatters"]["default"]["fmt"] = "%(asctime)s %(levelprefix)s %(message)s"
+    log_config["loggers"]["uvicorn.access"]["handlers"] = ["access"] # Use custom access formatter
+    log_config["loggers"]["uvicorn.error"]["level"] = "INFO" # Set error logger level
+
+    print(f"[UVICORN] {datetime.now()}: Starting Uvicorn server on 0.0.0.0:5000...")
+    uvicorn.run(
+        "__main__:app", # Point to the app instance in this file
+        host="0.0.0.0",
+        port=5000,
+        lifespan="on",
+        reload=False, # Disable reload for production/stability
+        workers=1, # Run with a single worker process
+        log_config=log_config # Apply custom logging config
+    )

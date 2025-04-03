@@ -9,8 +9,7 @@ unified_classification_format = {
       "type": "boolean"
     },
     "internet": {
-      "type": "string",
-      "enum": ["Internet", "None"]
+      "type": "boolean",
     },
     "transformed_input": {
       "type": "string"

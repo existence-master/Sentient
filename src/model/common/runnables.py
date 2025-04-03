@@ -68,7 +68,7 @@ def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
 # These functions create and configure instances of CustomRunnable for different tasks.
 # They encapsulate the specific prompts, model settings, and response formats for each functionality.
 
-def get_unified_classification_runnable(chat_history):
+def get_unified_classification_runnable(chat_history) -> BaseRunnable:
     model_name, provider = get_selected_model()
     model_mapping = {
         "openai": OpenAIRunnable,

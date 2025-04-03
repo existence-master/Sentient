@@ -196,7 +196,7 @@ Install the following to start contributing to Sentient:
     After that, pull the model you wish to use from Ollama. For example,
 
     ```bash
-     ollama pull phi4-mini
+     ollama pull llama3.2:3b
     ```
 
 -   Neo4j Community: Download Neo4j Community Edition [from here.](https://neo4j.com/deployment-center/)
@@ -242,7 +242,7 @@ For the Electron Frontend, you will need to create a `.env` file in the `src/int
   APP_SERVER_INITIATED= "false"
   NEO4J_SERVER_URL= "http://localhost:7474"
   NEO4J_SERVER_STARTED= "false"
-  BASE_MODEL_REPO_ID= "phi4-mini"
+  BASE_MODEL_REPO_ID= "llama3.2:3b"
   AUTH0_DOMAIN = "abcdxyz.us.auth0.com"
   AUTH0_CLIENT_ID = "abcd1234"
 ```
@@ -255,7 +255,7 @@ For the Python Backend, you will need to create a `.env` file and place it in th
   NEO4J_PASSWORD=abcd1234
   EMBEDDING_MODEL_REPO_ID=sentence-transformers/all-MiniLM-L6-v2
   BASE_MODEL_URL=http://localhost:11434/api/chat
-  BASE_MODEL_REPO_ID=phi4-mini
+  BASE_MODEL_REPO_ID=llama3.2:3b
   LINKEDIN_USERNAME=email@address.com
   LINKEDIN_PASSWORD=password123
   BRAVE_SUBSCRIPTION_TOKEN=YOUR_TOKEN_HERE
