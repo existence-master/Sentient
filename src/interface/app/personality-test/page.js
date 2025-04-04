@@ -9,7 +9,6 @@ import AnimatedLogo from "@components/AnimatedLogo" // Component for displaying 
 import ShiningButton from "@components/ShiningButton" // Custom button component with a shining effect
 import AnimatedBeam from "@components/AnimatedBeam" // Component for animated beam effect
 import ShinyCard from "@components/ShinyCard" // Custom card component with a shiny effect
-import ModelSelection from "@components/ModelSelection"
 import toast from "react-hot-toast" // Library for displaying toast notifications
 
 /**
@@ -170,7 +169,6 @@ const PersonalityTest = () => {
 	const [isReferred, setIsReferred] = useState(null) // isReferred: boolean | null
 	// State to store the referral code entered by the user.
 	const [referralCode, setReferralCode] = useState("") // referralCode: string
-	const [showModelSelection, setShowModelSelection] = useState(false)
 
 	/**
 	 * useEffect hook to fetch existing personality data on component mount.
@@ -422,7 +420,6 @@ const PersonalityTest = () => {
 
 			if (response.status === 200) {
 				setShowBasicInfoForm(false)
-				setShowModelSelection(true) // Show model selection after basic info
 			} else {
 				throw new Error("Error saving basic information")
 			}
@@ -719,27 +716,6 @@ const PersonalityTest = () => {
 			<div className="min-h-screen flex justify-center items-center bg-black">
 				<BasicInfoForm onSubmit={handleBasicInfoSubmit} />
 			</div>
-		)
-	}
-
-	/**
-	 * Main return statement for the PersonalityTest component, rendering the personality test UI.
-	 *
-	 * Includes animated beam background, header with animated logo and info tooltip,
-	 * conditional rendering for personality results or question cards, and motion-animated elements for transitions.
-	 *
-	 * @returns {React.ReactNode} - The main UI for the PersonalityTest component.
-	 */
-
-	if (showModelSelection) {
-		return (
-			<AnimatedBeam className={"w-screen h-screen"}>
-				<div className="min-h-screen flex justify-center items-center">
-					<ModelSelection
-						onProceed={() => setShowModelSelection(false)}
-					/>
-				</div>
-			</AnimatedBeam>
 		)
 	}
 
