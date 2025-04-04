@@ -1605,9 +1605,26 @@ ipcMain.handle("build-personality", async () => {
 
 		// Update local DB with personality *before* creating graph if graph depends on it
 		console.log("Updating local DB with personality...")
-		await ipcMain.handle("add-db-data", {
-			data: { userData: { personality: personality } }
-		})
+		const addDataResponse = await fetch(
+			`${process.env.APP_SERVER_URL}/add-db-data`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ data: { userData: { personality } } })
+			}
+		)
+		if (!addDataResponse.ok) {
+			const errorText = await addDataResponse.text()
+			console.error(
+				`Error from /add-db-data: ${addDataResponse.status}`,
+				errorText
+			)
+			return {
+				message: "Error updating local DB with personality",
+				status: addDataResponse.status,
+				error: errorText
+			}
+		}
 		console.log("Local DB updated with personality.")
 
 		console.log("Calling /initiate-long-term-memories...")
@@ -2222,7 +2239,7 @@ ipcMain.handle("get-task-approval-data", async (event, taskId) => {
 })
 
 // Handler to approve a task - now sends ID in body
-ipcMain.handle("approve-task", async (event, taskId ) => {
+ipcMain.handle("approve-task", async (event, taskId) => {
 	// Destructure taskId from the input object
 	console.log(`IPC: approve-task called for taskId: ${taskId}`)
 	if (!taskId) {

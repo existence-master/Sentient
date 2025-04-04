@@ -127,7 +127,7 @@ class MemoryManager:
         print(f"Determined category: {determined_category}")
         return determined_category
 
-    def expiry_date_decision(self, query: str) -> Dict:
+    def expiry_date_decision(self, query: str) -> int:
         today = date.today()
         formatted_date = today.strftime("%d %B %Y %A")
         try:
@@ -146,7 +146,7 @@ class MemoryManager:
             print(f"Invoking expiry date decision for query: '{query}...'")
             response = runnable.invoke({"query": query, "formatted_date": formatted_date})
             print(f"Expiry date decision response: {response}")
-            return response if isinstance(response, dict) else {"retention_days": 7}
+            return response.get("retention_days", 7) if isinstance(response, dict) else 7
         except Exception as e:
             print(f"Error in expiry_date_decision: {e}")
             return {"retention_days": 7}
@@ -226,8 +226,7 @@ class MemoryManager:
                         continue
                     new_embedding = self.compute_embedding(updated_text)
                     query_keywords = self.extract_keywords(updated_text)
-                    expiry_info = self.expiry_date_decision(updated_text)
-                    retention_days = expiry_info.get("retention_days", 7)
+                    retention_days = self.expiry_date_decision(updated_text)
                     cursor.execute(f'''
                     UPDATE {original_category}
                     SET original_text = ?, embedding = ?, keywords = ?, expiry_at = datetime('now', '+{retention_days} days')
