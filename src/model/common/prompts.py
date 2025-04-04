@@ -292,84 +292,24 @@ internet_query_reframe_user_prompt_template = """Below, you will find a query. R
 """
 
 internet_summary_system_prompt_template = """
-You are tasked with summarizing a list of search results provided as a list of dictionaries into a concise, coherent, and unstructured paragraph. Each dictionary contains "title", "url", and "description". Your summary should integrate relevant URLs to enhance its utility and provide direct access to sources.
+You are tasked with summarizing a list of search results into a concise, coherent, single paragraph. The input is a list of dictionaries, each containing "title", "url", and "description".
 
 Instructions:
-1. Combine information from the "title" and "description" of each search result into a single paragraph that captures the key points across all items.
-2. Avoid repeating information but ensure no important detail is omitted.
-3. Maintain a neutral and professional tone.
-4. Do not list the results as individual items; instead, weave them seamlessly into a cohesive narrative.
-5. Use appropriate transitions to link related points.
-6. Avoid directly quoting unless necessary for clarity or emphasis.
-7. Integrate relevant URLs within the summary paragraph to provide context and direct access to sources. Focus on including URLs for primary sources or when a direct link significantly benefits the reader. Be selective and strategic in URL inclusion to maximize the summary's value. You are not required to include every URL.
-8. You can mention the source name (from the title if appropriate) and then include the URL in parentheses, or find other natural ways to integrate URLs.
+1.  **Synthesize Information:** Combine the key points from the "title" and "description" of all provided search results into *one single paragraph*.
+2.  **Cohesion:** Create a smooth narrative flow. Do not list results individually. Use transition words and phrases to connect related ideas seamlessly.
+3.  **Conciseness:** Avoid repetition while ensuring all essential information from the results is captured.
+4.  **Tone:** Maintain a neutral and informative tone throughout the summary.
+5.  **Integrate URLs:** Strategically include relevant URLs within the paragraph to provide context and direct access to sources. You might mention the source name (if appropriate from the title) or weave the URL naturally into the text (e.g., in parentheses). Focus on including URLs that add significant value (e.g., primary sources). You do *not* need to include every URL; be selective.
+6.  **Output:** Your response must be *only* the final summary paragraph as plain text. Do not include any introductory phrases or formatting beyond the paragraph itself.
 
-Input Format:
-- A list of dictionaries, where each dictionary represents a search result and contains the keys: "title", "url", and "description".
-
-Output Format:
-- A single unstructured paragraph that summarizes the key points from the input, incorporating relevant URLs.
-
-Examples:
-
-#Example 1:
-Input:
-[
-    {"title": "Climate change is causing rising temperatures worldwide.", "url": "url1", "description": "Global warming is leading to increased temperatures across the planet."},
-    {"title": "Polar regions are experiencing faster ice melting.", "url": "url2", "description": "Due to global warming, ice is melting rapidly in polar areas."},
-    {"title": "Melting ice causes rising sea levels.", "url": "url3", "description": "The melting of polar ice contributes to the increase in sea levels, posing risks to coastal regions."}
-]
-
-Output:
-Climate change, also known as global warming, is causing rising temperatures worldwide, especially impacting polar regions where ice is melting at an accelerated rate. This melting ice is a significant contributor to rising sea levels, which threatens coastal areas. Sources indicate these effects are globally observed (url1), particularly pronounced in polar regions (url2), and lead to sea level rise (url3).
-
-#Example 2:
-Input:
-[
-    {"title": "Balanced diet includes fruits, vegetables.", "url": "url4", "description": "A healthy diet should consist of fruits and vegetables."},
-    {"title": "Hydration is crucial for health.", "url": "url5", "description": "Staying hydrated is very important for maintaining good health."},
-    {"title": "Exercise improves cardiovascular health.", "url": "url6", "description": "Regular physical activity benefits the heart and blood vessels."}
-]
-
-Output:
-A healthy lifestyle includes a balanced diet with fruits and vegetables (url4), and staying hydrated is crucial for overall health (url5). Furthermore, regular exercise is beneficial for improving cardiovascular health (url6).
-
-#Example 3:
-Input:
-[
-    {
-        "title": "Breaking News, Latest News and Videos | CNN",
-        "url": "https://www.cnn.com/",
-        "description": "View the latest news and breaking news today for U.S., world, weather, entertainment, politics and health at CNN.com."
-    },
-    {
-        "title": "Fox News - Breaking News Updates | Latest News Headlines | Photos & News Videos",
-        "url": "https://www.foxnews.com/",
-        "description": "Breaking News, Latest News and Current News from FOXNews.com. Breaking news and video. Latest Current News: U.S., World, Entertainment, Health, Business, Technology, Politics, Sports"
-    },
-    {
-        "title": "NBC News - Breaking News & Top Stories - Latest World, US & Local News | NBC News",
-        "url": "https://www.nbcnews.com/",
-        "description": "Go to NBCNews.com for breaking news, videos, and the latest top stories in world news, business, politics, health and pop culture."
-    },
-    {
-        "title": "Associated Press News: Breaking News, Latest Headlines and Videos | AP News",
-        "url": "https://apnews.com/",
-        "description": "Read the latest headlines, breaking news, and videos at APNews.com, the definitive source for independent journalism from every corner of the globe."
-    },
-    {
-        "title": "Google News",
-        "url": "https://news.google.com/",
-        "description": "Search the world's information, including webpages, images, videos and more. Google has many special features to help you find exactly what you're looking for."
-    }
-]
-
-Output:
-Major news outlets such as CNN (https://www.cnn.com/), Fox News (https://www.foxnews.com/), NBC News (https://www.nbcnews.com/), and Associated Press (AP) (https://apnews.com/) offer breaking and current news coverage spanning U.S. and world events, alongside topics like weather, entertainment, politics, health, business, technology, sports, and pop culture, typically through articles and videos.  Google News (https://news.google.com/) also provides a comprehensive news aggregation service, sourcing information from across the globe.
+Input Format Reminder (For Your Context Only):
+- You will receive a list of dictionaries: `[{"title": "...", "url": "...", "description": "..."}, ...]`
 """
 
-internet_summary_user_prompt_template = """Summarize the provided list of search results into a single, coherent paragraph, including relevant source URLs.
-
+internet_summary_user_prompt_template = """INSTRUCTIONS:
+Summarize the following list of search results (contained in the {query} variable) into a single, coherent paragraph. Integrate relevant URLs naturally as instructed in the system prompt. Output *only* the summary paragraph.
 
 {query}
+
+Summary:
 """
