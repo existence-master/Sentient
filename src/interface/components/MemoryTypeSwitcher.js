@@ -15,7 +15,7 @@ const MemoryTypeSwitcher = ({ currentType, onTypeChange }) => {
 		)
 
 	return (
-		<div className="flex items-center space-x-1 bg-neutral-800/80 backdrop-blur-sm rounded-full p-1.5 shadow-lg border border-neutral-700 w-fit">
+		<div className="flex items-center space-x-1 bg-neutral-800/80 backdrop-blur-sm rounded-full p-1.5 shadow-lg border border-neutral-700 w-1/4">
 			{" "}
 			{/* Increased padding */}
 			{/* Graph (Long-Term) Button */}
@@ -25,7 +25,7 @@ const MemoryTypeSwitcher = ({ currentType, onTypeChange }) => {
 				title="View Long-Term Knowledge Graph"
 			>
 				<IconDatabase className="w-5 h-5" /> {/* Increased size */}
-				<span>Graph</span>
+				<span>Long-Term</span>
 			</button>
 			{/* List (Short-Term) Button */}
 			<button
@@ -34,7 +34,7 @@ const MemoryTypeSwitcher = ({ currentType, onTypeChange }) => {
 				title="View Short-Term Memories List"
 			>
 				<IconBrain className="w-5 h-5" /> {/* Increased size */}
-				<span>List</span>
+				<span>Short-Term</span>
 			</button>
 		</div>
 	)

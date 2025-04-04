@@ -13,7 +13,6 @@ import {
 	IconPlus, // For add memory button
 	IconSettingsCog, // Placeholder for Customize/Recreate actions
 	IconLoader,
-	IconUser
 } from "@tabler/icons-react"
 import toast from "react-hot-toast"
 import ProIcon from "@components/ProIcon"

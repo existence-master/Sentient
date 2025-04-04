@@ -1,84 +1,116 @@
-/**
- * AppCard Component - Reusable card component for app integrations.
- *
- * This component is designed to display information about app integrations,
- * such as LinkedIn, Reddit, and Twitter. It includes a logo, name, description,
- * and a button for actions like "connect" or "disconnect". The card has a gradient
- * border and interactive hover effects.
- *
- * @param {object} props - Component props.
- * @param {string} props.logo - URL or path to the app logo image.
- * @param {string} props.name - Name of the application (e.g., LinkedIn, Reddit).
- * @param {string} props.description - Description of the app integration.
- * @param {function} props.onClick - Handler function to be called when the button is clicked.
- * @param {string} [props.action="connect"] - Text to display on the button, defaults to "connect".
- * @param {boolean} [props.loading=false] - Boolean to indicate if the button is in a loading state.
- * @param {boolean} [props.disabled=false] - Boolean to disable the button.
- * @param {string} [props.fromColor="#1E90FF"] - Starting color of the gradient border.
- * @param {string} [props.viaColor="#4682B4"] - Middle color of the gradient border.
- * @param {string} [props.toColor="#ADD8E6"] - Ending color of the gradient border.
- *
- * @returns {React.ReactNode} - The AppCard component UI.
- */
-
+"use client" // Ensure client-side rendering
 import React from "react"
+import {
+	IconLoader,
+	IconPlugConnected,
+	IconPlugOff,
+	IconX
+} from "@tabler/icons-react" // Added icons
+import ProIcon from "@components/ProIcon" // Keep ProIcon import
+import { cn } from "@utils/cn" // Assuming cn utility is available
 
+// MODIFIED: Component signature and props
 const AppCard = ({
-	logo, // URL or path to the app logo image - logo: string
-	name, // Name of the application (e.g., LinkedIn, Reddit) - name: string
-	description, // Description of the app integration - description: string
-	onClick, // Handler function for button click - onClick: () => void
-	action = "connect", // Text to display on the button, defaults to "connect" - action: string
-	loading = false, // Boolean to indicate loading state, defaults to false - loading: boolean
-	disabled = false, // Boolean to disable the button, defaults to false - disabled: boolean
-	fromColor = "#1E90FF", // Starting color for gradient border, defaults to light blue - fromColor: string
-	viaColor = "#4682B4", // Middle color for gradient border, defaults to steel blue - viaColor: string
-	toColor = "#ADD8E6" // Ending color for gradient border, defaults to light steel blue - toColor: string
+	logo,
+	name,
+	description,
+	onClick,
+	action = "connect", // 'connect', 'disconnect', or 'pro'
+	loading = false,
+	disabled = false,
+	isConnected = false, // ADDED: Explicitly pass connection status
+	requiresUrl = false, // ADDED: Does this action need a URL input?
+	profileUrl = "", // ADDED: State for URL input
+	setProfileUrl, // ADDED: Function to update URL state
+	icon: IconComponent // ADDED: Specific icon for the app
 }) => {
+	// Determine button text and style based on action and loading state
+	let buttonText = "Connect"
+	let buttonStyle = "bg-lightblue hover:bg-blue-700" // Default connect style
+	let showProIcon = false
+
+	if (action === "disconnect") {
+		buttonText = loading ? "Disconnecting..." : "Disconnect"
+		buttonStyle = "bg-red-600 hover:bg-red-500" // Disconnect style
+	} else if (action === "connect") {
+		buttonText = loading ? "Connecting..." : "Connect"
+		buttonStyle = "bg-lightblue hover:bg-blue-700"
+	} else if (action === "pro") {
+		buttonText = "Connect" // Show connect text but disable and show Pro icon
+		buttonStyle = "bg-neutral-600" // Disabled style for Pro requirement
+		showProIcon = true
+		disabled = true // Ensure button is disabled if action is 'pro'
+	}
+
 	return (
-		<div
-			className="rounded-3xl w-1/3 bg-linear-to-r p-0.5 hover:shadow-glow hover:brightness-150"
-			// Base styles for the card: rounded corners, width, gradient background, padding, hover effects for shadow and brightness
-			style={{
-				transition: "box-shadow 0.5s ease, filter 0.5s ease", // Smooth transition for hover effects
-				backgroundImage: `linear-gradient(to right, ${fromColor}, ${viaColor}, ${toColor})` // Dynamic gradient background
-			}}
-		>
-			<div className="flex flex-col items-center justify-center bg-gray-800 rounded-3xl p-6 shadow-lg">
-				{/* Inner container for card content: flex column layout, center alignment, dark background, rounded corners, padding, shadow */}
-				<img
-					src={logo}
-					alt={`${name} Logo`}
-					className="w-16 h-16 mb-4"
-				/>
-				{/* Logo image: dynamic src and alt attributes, fixed width and height, margin at bottom */}
-				<h2 className="text-white text-2xl mb-2">{name}</h2>
-				{/* App name: white text color, text size 2xl, margin at bottom */}
-				<p className="text-gray-400 text-center mb-4">{description}</p>
-				{/* Description text: gray-400 text color, centered text alignment, margin at bottom */}
-				<button
-					className={`rounded-full text-white font-bold py-2 px-4 transition ${
-						disabled
-							? "opacity-50 cursor-not-allowed"
-							: "gradient-bg cursor-pointer" // Dynamic classes: opacity and cursor for disabled state, gradient-bg for enabled
-					}`}
-					onClick={onClick} // Calls the onClick handler passed as prop
-					disabled={disabled} // Disables the button based on the disabled prop
-				>
-					{/* Button element: rounded full corners, white text color, bold font, padding, transition for effects */}
-					{
-						action === "connect"
-							? loading
-								? "Connecting..." // Display "Connecting..." if loading is true and action is "connect"
-								: "Connect" // Display "Connect" if loading is false and action is "connect"
-							: action === "disconnect"
-								? loading
-									? "Disconnecting..." // Display "Disconnecting..." if loading is true and action is "disconnect"
-									: "Disconnect" // Display "Disconnect" if loading is false and action is "disconnect"
-								: action // Display the action prop value directly if action is neither "connect" nor "disconnect"
-					}
-				</button>
+		// MODIFIED: Card Styling - removed gradient border, using theme colors
+		<div className="flex flex-col bg-neutral-800 rounded-xl p-5 shadow-md border border-neutral-700/50 h-full transition-shadow hover:shadow-lg">
+			{/* Header */}
+			<div className="flex items-center gap-4 mb-4">
+				{/* Use passed icon or fallback */}
+				{IconComponent ? (
+					<IconComponent className="w-10 h-10 text-lightblue flex-shrink-0" />
+				) : (
+					<img
+						src={logo}
+						alt={`${name} Logo`}
+						className="w-10 h-10 flex-shrink-0"
+					/> // Fallback to image
+				)}
+				<h2 className="text-white text-xl font-semibold">{name}</h2>
+				{/* Connection Status Indicator */}
+				{isConnected ? (
+					<span
+						title="Connected"
+						className="ml-auto p-1.5 bg-green-500/20 text-green-400 rounded-full"
+					>
+						<IconPlugConnected size={16} />
+					</span>
+				) : (
+					<span
+						title="Disconnected"
+						className="ml-auto p-1.5 bg-neutral-700 text-neutral-400 rounded-full"
+					>
+						<IconPlugOff size={16} />
+					</span>
+				)}
 			</div>
+			{/* Description */}
+			<p className="text-gray-400 text-sm mb-4 flex-grow">
+				{description}
+			</p>
+
+			{/* Conditionally render URL input */}
+			{requiresUrl && action !== "disconnect" && !isConnected && (
+				<input
+					type="text"
+					placeholder={`Enter ${name} Profile URL`}
+					value={profileUrl}
+					onChange={(e) => setProfileUrl(e.target.value)}
+					className="border border-neutral-600 p-2 rounded-md mb-4 w-full text-sm bg-neutral-700 text-white focus:outline-none focus:border-lightblue"
+					disabled={loading || disabled || showProIcon} // Disable if loading or pro needed
+				/>
+			)}
+
+			{/* Action Button */}
+			<button
+				// MODIFIED: Button Styling - using theme colors, adjusted padding/text size
+				className={cn(
+					"w-full rounded-md text-white font-medium py-2.5 px-4 text-sm transition-colors duration-150 flex items-center justify-center gap-2",
+					disabled || loading
+						? "opacity-60 cursor-not-allowed" // Apply disabled styles
+						: "cursor-pointer", // Apply cursor pointer only if enabled
+					buttonStyle // Apply dynamic background color
+				)}
+				onClick={onClick}
+				disabled={disabled || loading} // Disable based on props
+			>
+				{loading && <IconLoader size={18} className="animate-spin" />}{" "}
+				{/* Show loader when loading */}
+				{buttonText}
+				{showProIcon && <ProIcon />}{" "}
+				{/* Show Pro icon if action is 'pro' */}
+			</button>
 		</div>
 	)
 }
