@@ -54,7 +54,7 @@ const Settings = () => {
 	const [isSidebarVisible, setSidebarVisible] = useState(false)
 	const [pricing, setPricing] = useState("free")
 	const [showReferralDialog, setShowReferralDialog] = useState(false)
-	const [referralCode, setReferralCode] = useState("")
+	const [referralCode, setReferralCode] = useState("DUMMY")
 	const [referrerStatus, setReferrerStatus] = useState(false)
 	const [betaUser, setBetaUser] = useState(false)
 	const [showBetaDialog, setShowBetaDialog] = useState(false)
@@ -153,7 +153,7 @@ const Settings = () => {
 
 	const handleBetaUserToggle = async () => {
 		try {
-			await window.electron?.invoke("invert-beta-user-status")
+			// await window.electron?.invoke("invert-beta-user-status")
 			setBetaUser((prev) => !prev)
 			toast.success(
 				betaUser ? "Exited Beta Program." : "You are now a Beta User!"
@@ -326,35 +326,6 @@ const Settings = () => {
 		setShowDisclaimer(false)
 		setAction("")
 		setSelectedApp("")
-	}
-
-	// ADDED: Handler for customize graph input
-	const handleCustomizeGraphSubmit = async () => {
-		if (!newGraphInfo.trim()) {
-			toast.error("Information cannot be empty.")
-			return
-		}
-		setCustomizeLoading(true)
-		try {
-			const result = await window.electron?.invoke(
-				"customize-long-term-memories",
-				{ information: newGraphInfo }
-			) // Pass info correctly
-			if (result.status === 200) {
-				setNewGraphInfo("")
-				toast.success("Graph memory updated!")
-			} // Don't reload graph here, maybe add a manual refresh
-			else {
-				toast.error(
-					`Failed to update memory: ${result.error || "Unknown error"}`
-				)
-			}
-		} catch (error) {
-			toast.error(`Error updating memory: ${error.message}`)
-		} finally {
-			setCustomizeLoading(false)
-			setCustomizeInputVisible(false)
-		}
 	}
 
 	return (
