@@ -264,6 +264,7 @@ const Chat = () => {
 			setThinking(false)
 		} finally {
 			setThinking(false)
+			fetchChatHistory() // Fetch history after sending
 		}
 	}
 
