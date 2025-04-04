@@ -1392,9 +1392,10 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]) -> AsyncGener
             bot_response_text = "Okay, I'll get right on that." # Canned response for agent task
 
             # Add assistant confirmation to DB (visible)
+            await add_message_to_db(active_chat_id, transformed_input, is_user=True, is_visible=False)
             await add_message_to_db(active_chat_id, bot_response_text, is_user=False, agentsUsed=True, is_visible=True)
             # Add hidden user message (task description) to DB
-            await add_message_to_db(active_chat_id, transformed_input, is_user=True, is_visible=False)
+            
 
         # 6. Handle Chat/Memory Category (Generate Response using invoke)
         else: # category is "chat" or "memory"
@@ -1763,28 +1764,15 @@ async def chat(message: Message):
 
             # --- Handle Agent Category (Task Creation) ---
             if category == "agent":
-                print(f"[STREAM /chat] {datetime.now()}: Category is 'agent'. Preparing to add task to queue.")
-                agents_used = True # Mark agent as used
-                assistant_msg["agentsUsed"] = True
-                user_profile_data = load_user_profile()
-                if not user_profile_data or "userData" not in user_profile_data:
-                    print(f"[ERROR] {datetime.now()}: Failed to load valid user profile data.")
-                    raise HTTPException(status_code=500, detail="User profile could not be loaded.")
-                db = user_profile_data # Use loaded data
-                personality_description = db.get("userData", {}).get("personality", "Default helpful assistant") # Get personality
-                print(f"[STREAM /chat] {datetime.now()}: Determining task priority for: '{transformed_input}...'")
-                try:
+                    with open("userProfileDb.json", "r", encoding="utf-8") as f:
+                        db = json.load(f)
+                    personality_description = db["userData"].get("personality", "None")
                     priority_response = priority_runnable.invoke({"task_description": transformed_input})
-                    priority = priority_response.get("priority", 3) # Default priority if parse fails
-                    print(f"[STREAM /chat] {datetime.now()}: Determined task priority: {priority}")
-                except Exception as e:
-                    print(f"[ERROR] {datetime.now()}: Failed to determine priority: {e}. Using default (3).")
-                    priority = 3
+                    priority = priority_response["priority"]
 
-                print(f"[STREAM /chat] {datetime.now()}: Adding task to queue...")
-                try:
-                    task_id = await task_queue.add_task(
-                        chat_id=active_chat_id, # Use the determined active chat ID
+                    print("Adding task to queue")
+                    await task_queue.add_task(
+                        chat_id=active_chat_id,
                         description=transformed_input,
                         priority=priority,
                         username=username,
@@ -1792,58 +1780,24 @@ async def chat(message: Message):
                         use_personal_context=use_personal_context,
                         internet=internet
                     )
-                    print(f"[STREAM /chat] {datetime.now()}: Task added to queue successfully with ID: {task_id}")
-                    assistant_msg["message"] = "Got it! I'll work on that task for you." # Confirmation message
+                    print("Task added to queue")
 
-                    # Add hidden user message (task description)
-                    await add_message_to_db(active_chat_id, transformed_input, is_user=True, is_visible=False)
+                    assistant_msg["message"] = "On it"
+                    async with db_lock:
+                        chatsDb = await load_db()
+                        active_chat = next(chat for chat in chatsDb["chats"] if chat["id"] == chatsDb["active_chat_id"])
+                        active_chat["messages"].append(assistant_msg)
+                        await save_db(chatsDb)
 
-                    # --- Broadcast Task Addition via WebSocket ---
-                    task_added_message = {
-                        "type": "task_added",
-                        "task_id": task_id,
-                        "description": transformed_input,
-                        "priority": priority,
-                        "status": "pending",
-                        "chat_id": active_chat_id, # Include chat ID
-                    }
-                    print(f"[WS_BROADCAST] {datetime.now()}: Broadcasting task addition for {task_id}")
-                    await manager.broadcast(json.dumps(task_added_message))
-
-                except Exception as e:
-                    print(f"[ERROR] {datetime.now()}: Failed to add task to queue: {e}")
-                    traceback.print_exc()
-                    assistant_msg["message"] = "Sorry, I encountered an error trying to schedule that task." # Error message
-
-
-                # Add final agent confirmation/error message to DB (Visible)
-                # Update timestamp before saving
-                assistant_msg["timestamp"] = datetime.now(timezone.utc).isoformat() + "Z"
-                final_assistant_msg_id = await add_message_to_db(
-                    active_chat_id,
-                    assistant_msg["message"],
-                    is_user=False,
-                    agentsUsed=agents_used,
-                    is_visible=True,
-                    id=assistant_msg_id_ts # Use pre-generated ID
-                )
-
-
-                # Yield final agent confirmation/error message
-                print(f"[STREAM /chat] {datetime.now()}: Yielding final agent confirmation/error message.")
-                yield json.dumps({
-                    "type": "assistantMessage", # Final message, not stream
-                    "message": assistant_msg["message"],
-                    "id": final_assistant_msg_id or assistant_msg_id_ts, # Use ID from DB or generated one
-                    "memoryUsed": memory_used, # False for agent category start
-                    "agentsUsed": agents_used, # True for agent category start
-                    "internetUsed": internet_used, # False for agent category start
-                    "proUsed": pro_used,
-                    "timestamp": assistant_msg["timestamp"] # Use final timestamp
-                }) + "\n"
-                await asyncio.sleep(0.01)
-                print(f"[STREAM /chat] {datetime.now()}: Agent task creation flow finished.")
-                return # End stream for agent category
+                    yield json.dumps({
+                        "type": "assistantMessage",
+                        "message": "On it",
+                        "memoryUsed": False,
+                        "agentsUsed": False,
+                        "internetUsed": False
+                    }) + "\n"
+                    await asyncio.sleep(0.05)
+                    return
 
             # --- Handle Memory/Context Retrieval ---
             if category == "memory" or use_personal_context:
