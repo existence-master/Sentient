@@ -194,3 +194,62 @@ interest_extraction_required_format = {
     "type": "string"
   }
 }
+
+extract_memory_required_format = {
+    "type": "object",
+    "properties": {
+        "memories": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The complete memory statement with context, reasoning, and specific dates"
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": [
+                            "personal",
+                            "work",
+                            "social",
+                            "relationship",
+                            "finance",
+                            "spiritual",
+                            "career",
+                            "technology",
+                            "health",
+                            "education",
+                            "transportation",
+                            "entertainment",
+                            "tasks"
+                        ],
+                        "description": "The category that best describes the memory"
+                    }
+                },
+                "required": ["text", "category"]
+            },
+            "description": "A list of extracted memories with their categories based on the user query. Each memory should be clear, standalone, and factual."
+        }
+    },
+    "required": ["memories"]
+}
+
+
+update_required_format = {
+    "type": "object",
+    "properties": {
+        "update": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "number"},  # Changed from string to number
+                    "text": {"type": "string"}
+                },
+                "required": ["id", "text"]
+            }
+        }
+    },
+    "required": ["update"]
+}

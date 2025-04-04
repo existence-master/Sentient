@@ -489,8 +489,8 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
     async with db_lock:
         print(f"[CHAT_HISTORY] {datetime.now()}: Acquired chat DB lock.")
         chatsDb = await load_db()
-        active_chat_id = chatsDb.get("active_chat_id", 0) # Default to 0 if missing
-        next_chat_id = chatsDb.get("next_chat_id", 1)   # Default to 1 if missing
+        active_chat_id = chatsDb.get("active_chat_id", 0)  # Default to 0 if missing
+        next_chat_id = chatsDb.get("next_chat_id", 1)     # Default to 1 if missing
         current_time = datetime.now(timezone.utc)
         existing_chats = chatsDb.get("chats", [])
         active_chat = None
@@ -502,21 +502,21 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
             # No chat is currently active
             if not existing_chats:
                 # No chats exist at all, create the first one (ID 1)
-                new_chat_id = next_chat_id # Should be 1 initially
+                new_chat_id = next_chat_id  # Should be 1 initially
                 print(f"[CHAT_HISTORY] {datetime.now()}: No chats exist. Creating first chat with ID: {new_chat_id}.")
                 new_chat = {"id": new_chat_id, "messages": []}
-                chatsDb["chats"] = [new_chat] # Initialize chats list
+                chatsDb["chats"] = [new_chat]  # Initialize chats list
                 chatsDb["active_chat_id"] = new_chat_id
-                chatsDb["next_chat_id"] = new_chat_id + 1 # Increment next ID
+                chatsDb["next_chat_id"] = new_chat_id + 1  # Increment next ID
                 await save_db(chatsDb)
                 print(f"[CHAT_HISTORY] {datetime.now()}: First chat (ID: {new_chat_id}) created and activated. DB saved.")
-                return [] # Return empty messages for the new chat
+                return []  # Return empty messages for the new chat
             else:
                 # Chats exist, but none is active (e.g., after clearing history and getting new message). Activate the latest.
-                latest_chat_id = existing_chats[-1]['id'] # Get ID of the last chat in the list
+                latest_chat_id = existing_chats[-1]['id']  # Get ID of the last chat in the list
                 print(f"[CHAT_HISTORY] {datetime.now()}: Active chat ID is 0, but chats exist. Activating the latest chat (ID: {latest_chat_id}).")
                 chatsDb['active_chat_id'] = latest_chat_id
-                active_chat_id = latest_chat_id # Update local variable
+                active_chat_id = latest_chat_id  # Update local variable
                 await save_db(chatsDb)
                 print(f"[CHAT_HISTORY] {datetime.now()}: Activated latest chat (ID: {latest_chat_id}). DB saved.")
                 # Proceed to find this chat below
@@ -528,11 +528,11 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
 
         # Handle case where active_chat_id exists but the chat itself doesn't (data inconsistency)
         if not active_chat:
-             print(f"[ERROR] {datetime.now()}: Active chat ID '{active_chat_id}' exists, but no corresponding chat found. Resetting active chat to 0.")
-             chatsDb["active_chat_id"] = 0 # Reset to avoid repeated errors
-             await save_db(chatsDb)
-             # Return empty list; next call will try to activate latest or create new
-             return []
+            print(f"[ERROR] {datetime.now()}: Active chat ID '{active_chat_id}' exists, but no corresponding chat found. Resetting active chat to 0.")
+            chatsDb["active_chat_id"] = 0  # Reset to avoid repeated errors
+            await save_db(chatsDb)
+            # Return empty list; next call will try to activate latest or create new
+            return []
 
         # --- Check for Inactivity (only if chat has messages) ---
         if active_chat.get("messages"):
@@ -541,19 +541,19 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
                 timestamp_str = last_message.get("timestamp")
 
                 if not timestamp_str:
-                     print(f"[CHAT_HISTORY] {datetime.now()}: Warning: Last message in chat {active_chat_id} has no timestamp. Skipping inactivity check.")
+                    print(f"[CHAT_HISTORY] {datetime.now()}: Warning: Last message in chat {active_chat_id} has no timestamp. Skipping inactivity check.")
                 else:
-                    # Robust Timestamp Parsing
-                    # if timestamp_str.endswith('Z'):
-                    #     timestamp_str = timestamp_str[:-1] + '+00:00'
+                    # Preprocess timestamp to handle invalid format (e.g., '+00:00Z')
+                    if timestamp_str.endswith('Z') and ('+' in timestamp_str or '-' in timestamp_str):
+                        timestamp_str = timestamp_str[:-1]  # Remove 'Z' if offset exists
 
                     try:
                         last_timestamp = datetime.fromisoformat(timestamp_str)
                         if last_timestamp.tzinfo is None:
-                             last_timestamp = last_timestamp.replace(tzinfo=timezone.utc)
+                            last_timestamp = last_timestamp.replace(tzinfo=timezone.utc)
 
                         # Check inactivity (e.g., 10 minutes)
-                        inactivity_threshold = 600 # seconds
+                        inactivity_threshold = 600  # seconds
                         if (current_time - last_timestamp).total_seconds() > inactivity_threshold:
                             print(f"[CHAT_HISTORY] {datetime.now()}: Inactivity detected in chat {active_chat_id} (>{inactivity_threshold}s). Creating new chat.")
                             new_chat_id = next_chat_id
@@ -564,25 +564,24 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
                             chatsDb["next_chat_id"] = new_chat_id + 1
                             await save_db(chatsDb)
                             print(f"[CHAT_HISTORY] {datetime.now()}: New chat (ID: {new_chat_id}) created and activated due to inactivity. DB saved.")
-                            return [] # Return empty messages for the new chat
-                        # else: # Not inactive, continue with current active chat
-                        #    print(f"[CHAT_HISTORY] {datetime.now()}: Chat {active_chat_id} is active and not inactive.")
+                            return []  # Return empty messages for the new chat
+                        # else: Not inactive, continue with current active chat
 
                     except ValueError as e_parse:
-                         print(f"[CHAT_HISTORY] {datetime.now()}: Error parsing timestamp '{timestamp_str}' in chat {active_chat_id}: {e_parse}. Skipping inactivity check.")
+                        print(f"[CHAT_HISTORY] {datetime.now()}: Error parsing timestamp '{timestamp_str}' in chat {active_chat_id}: {e_parse}. Skipping inactivity check.")
                     except Exception as e_time:
-                         print(f"[CHAT_HISTORY] {datetime.now()}: Error during timestamp comparison in chat {active_chat_id}: {e_time}. Skipping inactivity check.")
+                        print(f"[CHAT_HISTORY] {datetime.now()}: Error during timestamp comparison in chat {active_chat_id}: {e_time}. Skipping inactivity check.")
 
             except IndexError:
-                 print(f"[CHAT_HISTORY] {datetime.now()}: Chat {active_chat_id} has an empty messages list, cannot check inactivity.")
+                print(f"[CHAT_HISTORY] {datetime.now()}: Chat {active_chat_id} has an empty messages list, cannot check inactivity.")
             except Exception as e:
-                 print(f"[CHAT_HISTORY] {datetime.now()}: Unexpected error during inactivity check for chat {active_chat_id}: {e}. Proceeding...")
+                print(f"[CHAT_HISTORY] {datetime.now()}: Unexpected error during inactivity check for chat {active_chat_id}: {e}. Proceeding...")
 
         # --- Return Visible Messages from the Active Chat ---
         if active_chat and active_chat.get("messages"):
             filtered_messages = [
                 message for message in active_chat["messages"]
-                if message.get("isVisible", True) is not False # Default isVisible to True if missing
+                if message.get("isVisible", True) is not False  # Default isVisible to True if missing
             ]
             print(f"[CHAT_HISTORY] {datetime.now()}: Returning {len(filtered_messages)} visible messages for active chat {active_chat_id}.")
             return filtered_messages
@@ -590,8 +589,6 @@ async def get_chat_history_messages() -> List[Dict[str, Any]]:
             # Active chat exists but has no messages (or messages list is missing)
             print(f"[CHAT_HISTORY] {datetime.now()}: Active chat {active_chat_id} exists but has no messages. Returning empty list.")
             return []
-        # finally:
-        #     print(f"[CHAT_HISTORY] {datetime.now()}: Releasing chat DB lock.")
 
 
 # WebSocket Manager V2 (Duplicate from above, remove one if not needed)

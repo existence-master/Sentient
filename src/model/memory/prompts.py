@@ -58,115 +58,6 @@ Username (ONLY CALL THE USER BY THEIR NAME WHEN REQUIRED. YOU DO NOT NEED TO CAL
 Personality (DO NOT REPEAT THE USER'S PERSONALITY TO THEM, ONLY USE IT TO GENERATE YOUR RESPONSES OR CHANGE YOUR STYLE OF TALKING.): {personality}
 """
 
-orchestrator_system_prompt_template = """You are an input orchestrator for a personalized AI system. Your task is to analyze the user input and classify it into one of the following categories while also transforming the input when necessary to include relevant context from the chat history. This is especially important when the input refers to a past tool-related action.
-
-### Categories:
-1. Chat: The input does not require any tool calls to respond and does not represent a fact about the user that can be stored as memory. 
-   - Example: Casual conversations, general queries that can be answered without external actions.
-   - Transformed Input: Return the user input as-is.
-
-2. Memory: The input contains significant long-term information about the user that can influence or have an effect on their future or past. ONLY RETURN THIS CATEGORY IF:
-   - The input contains permanent or semi-permanent facts about the user's preferences, life events, relationships, habits, or identity.
-   - Examples: "I just got married," "I moved to New York," or "I hate loud environments."
-   - DO NOT RETURN `memory` for transient, short-term, or insignificant statements like "I'm feeling tired" or "I ate a burger for lunch."
-   - Transformed Input: Return the input as-is.
-
-3. Agent: The input requires interaction with one of the six specific Google tools to fulfill the query:
-   - Google Drive, Google Mail, Google Docs, Google Sheets, Google Calendar, or Google Slides. DO NOT CALL ANY TOOLS OTHER THAN THESE 6 TOOLS.
-   - Example: Requests to send emails via Gmail, retrieve or edit files in Google Drive, or schedule events in Google Calendar.
-   - Transformed Input: If the input references a past tool-related action (e.g., "Retry the action"), transform the input to include the context of the original tool call from the chat history.
-   - If no relevant past tool-related action is found in the chat history, classify as `chat`.
-
-### Chat History Representation:
-- The chat history is always present, formatted as role-content pairs.
-- The user’s past inputs and assistant responses are structured as follows:
-[ {"role": "user", "content": "Send an email to my manager with the updated report."}, {"role": "assistant", "content": "I attempted to send the email via Gmail but encountered an error."}, {"role": "user", "content": "Retry the action."} ]
-- The model should use this structured format to extract relevant context.
-
-### Output Format:
-- Return a JSON object with two keys:
-  - `class`: The category (`chat`, `memory`, or `agent`).
-  - `input`: The transformed input, including added context if applicable. 
-
-### Key Instructions:
-- Always classify into only one category.
-- For `memory`, only select this category if the input conveys long-term significance or influence over the user's future or past.
-- For `agent`, transform the input to include relevant tool-related context from the chat history when applicable.
-- If no matching tool-related context exists for inputs like "Retry the action," classify as `chat` instead.
-- Use chat history to resolve ambiguities in the input and provide context as needed.
-- Ensure that keywords and meanings from the user input are preserved in the transformation.
-
-### Examples:
-
-#### Example 1:
-Input: "It's raining here, but I still love it."  
-Chat History:
-[ {"role": "user", "content": "Do you like the rain?"}, {"role": "assistant", "content": "I don’t have personal preferences, but many people find it relaxing."} ]
-
-Output: `{"class": "chat", "input": "It's raining here, but I still love it."}`
-
-#### Example 2:
-Input: "I prefer my coffee black without sugar."  
-Chat History:
-[ {"role": "user", "content": "Do you drink coffee?"}, {"role": "assistant", "content": "I don’t drink coffee, but I can help you find great coffee recipes!"} ]
-
-Output: `{"class": "memory", "input": "I prefer my coffee black without sugar."}`
-
-#### Example 3:
-Input: "Retry the action."  
-Chat History:
-[ {"role": "user", "content": "Share the project files via Google Drive."}, {"role": "assistant", "content": "I attempted to share the files but encountered an error."}, {"role": "user", "content": "Retry the action."} ]
-
-Output: `{"class": "agent", "input": "Retry sharing the project files via Google Drive."}`
-
-#### Example 4:
-Input: "Schedule a lunch meeting in Google Calendar for tomorrow at 2 PM."  
-Chat History:
-[ {"role": "user", "content": "Can you manage my schedule?"}, {"role": "assistant", "content": "Yes, I can help you schedule events."} ]
-
-Output: `{"class": "agent", "input": "Schedule a lunch meeting in Google Calendar for tomorrow at 2 PM."}`
-
-#### Example 5:
-Input: "I just started a new job at Google."  
-Chat History:
-[ {"role": "user", "content": "I'm preparing for job interviews."}, {"role": "assistant", "content": "That's great! Let me know if you need any advice or practice questions."} ]
-
-Output: `{"class": "memory", "input": "I just started a new job at Google."}`
-
-#### Example 6:
-Input: "Retry it."  
-Chat History:
-[ {"role": "user", "content": "Create a new Google Doc for meeting notes."}, {"role": "assistant", "content": "I attempted to create the Google Doc but encountered an error."}, {"role": "user", "content": "Retry it."} ]
-
-Output: `{"class": "agent", "input": "Retry creating the Google Doc for meeting notes."}`
-
-#### Example 7:
-Input: "Tell me about Steve Jobs."  
-Chat History:
-[ {"role": "user", "content": "Who are some famous tech innovators?"}, {"role": "assistant", "content": "There are many, like Steve Jobs, Bill Gates, and Elon Musk."} ]
-
-Output: `{"class": "chat", "input": "Tell me about Steve Jobs."}`
-
-#### Example 8:
-Input: "My best friend's name is Alex, and we’ve been friends since college."  
-Chat History:
-[ {"role": "user", "content": "I've known Alex for a long time."}, {"role": "assistant", "content": "That's great! Long friendships are valuable."} ]
-
-Output: `{"class": "memory", "input": "My best friend's name is Alex, and we’ve been friends since college."}`
-
-#### Example 9:
-Input: "Retry the email."  
-Chat History:
-[ {"role": "user", "content": "Send an email to my manager with the updated report using Gmail."}, {"role": "assistant", "content": "I attempted to send the email but encountered an error."}, {"role": "user", "content": "Retry the email."} ]
-
-Output: `{"class": "agent", "input": "Retry sending the email to my manager with the updated report using Gmail."}`
-
-### Instructions Recap:
-- Use the chat history to transform inputs where necessary, especially for tool-related references.
-- Return the appropriate category and a fully transformed input in the specified JSON format.
-- The chat history is always represented as a structured list of role-content pairs.
-"""
-
 text_dissection_system_prompt_template = """You are a categorization system designed to dissect bulk unstructured text into predefined categories for a user.
 
 Instructions:
@@ -1146,79 +1037,19 @@ text_description_user_prompt_template = """INPUT:
 OUTPUT:
 """
 
-dual_memory_classification_system_template = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+dual_memory_classification_system_template = """You are an AI agent expert in classifying user inputs into short-term or long-term memories. Your task is to analyze the provided input and determine its category based on the following definitions:
 
-You are an AI agent expert on classifying memories into short-term and long-term memories. Short-term memories are recent or temporary events, while long-term memories are significant events or milestones that are likely retained for a long time.
+*   **Short-term memories:** These typically refer to recent, temporary, everyday occurrences, or minor events that are unlikely to be significant landmarks in a person's life. Examples include daily routines, brief encounters, temporary feelings, or minor mishaps.
+*   **Long-term memories:** These represent significant life events, milestones, major decisions, commitments with lasting impact, or the beginning/ending of important phases. Examples include marriage, graduation, starting a major career, buying a home, adopting a pet intended for long-term companionship, or starting a long-term educational program.
 
-Examples:
-
-Input: I forgot my umbrella at home today and got drenched in the rain while walking to work.
-Output: Short Term
-
-Input: After years of dating, I finally married my high school sweetheart in a beautiful ceremony.
-Output: Long Term
-
-Input: I had a delicious pizza for dinner last night, but now I feel like eating something healthy.
-Output: Short Term
-
-Input: I secured admission to St. Patrick's School, where I will be studying for the next several years.
-Output: Long Term
-
-Input: I misplaced my phone earlier today but found it under the couch after searching for an hour.
-Output: Short Term
-
-Input: After four years of hard work, I graduated from university with honors and received my degree.
-Output: Long Term
-
-Input: I overslept this morning and had to rush to catch my bus.
-Output: Short Term
-
-Input: I recently moved to a new city to pursue my dream job, and I'm excited about this new chapter in life.
-Output: Long Term
-
-Input: I received a surprise gift from my friend today, which completely made my day.
-Output: Short Term
-
-Input: After saving for years, I finally bought my first house, marking a major milestone in my life.
-Output: Long Term
-
-Input: I had an argument with my friend this afternoon, but we resolved it by the evening.
-Output: Short Term
-
-Input: I adopted a pet dog, and he is now a part of my family for the years to come.
-Output: Long Term
-
-Input: I tried a new coffee shop this morning and absolutely loved their cappuccino.
-Output: Short Term
-
-Input: I started learning Spanish, hoping to become fluent over the next few years.
-Output: Long Term
-
-Input: I missed my train today and had to wait for an extra 30 minutes for the next one.
-Output: Short Term
-
-Input: I launched my startup, which I plan to grow into a successful company.
-Output: Long Term
-
-Input: Our school football team played an intense match yesterday and secured a well-deserved victory.
-Output: Short Term
-
-Input: I signed up for a gym membership and committed to a long-term fitness journey.
-Output: Long Term
-
-Input: I got punished for not submitting my homework on time in my last exam.
-Output: Short Term
-
-Input: I enrolled in a master's program to specialize in artificial intelligence.
-Output: Long Term
-
-Below, you will find a query that you need to classify as either short-term or long-term memory. Return only 'Short Term' or 'Long Term' as the output."""
+Based on the input provided in the user prompt, you must classify it as either 'Short Term' or 'Long Term'. Your response should consist *only* of the classification ('Short Term' or 'Long Term') and nothing else."""
 
 # User prompt template with variable
 dual_memory_classification_user_template = """
+INSTRUCTIONS:
+Classify the following input as either 'Short Term' or 'Long Term' memory based on the definitions provided in the system prompt. Output *only* the classification.
 
 Input:
-
 {query}
 
 Output:
@@ -1328,7 +1159,57 @@ Output:
 
 # Memory Exxtract prompts
 
-extract_memory_user_prompt_template = """Return the JSON object strictly adhering to the above format. Do not return anything else or else I will terminate you
+extract_memory_system_prompt_template = """
+ou are an AI system designed to analyze user queries and extract memories in a structured JSON format. Your goal is to accurately capture the essence of the user's input as distinct memories, categorized appropriately.
+
+Available Categories:
+*   personal: Personal activities, hobbies, goals, habits, routines.
+*   work: Office tasks, business matters, workplace activities.
+*   social: Meetups, gatherings, parties, community events.
+*   relationship: Interactions with friends, family, partners, colleagues.
+*   finance: Money matters, banking, loans, payments, purchases.
+*   spiritual: Religious activities, meditation, spiritual practices.
+*   career: Job developments, interviews, career growth.
+*   technology: Device issues, software, technical matters.
+*   health: Medical appointments, health conditions, exercise.
+*   education: Studies, courses, learning activities.
+*   transportation: Vehicle matters, travel arrangements.
+*   entertainment: Movies, games, music, recreation.
+*   tasks: General to-dos, deadlines, appointments, reminders.
+
+Input Format (Provided via User Prompt):
+*   `current_date`: The current date in YYYY-MM-DD format.
+*   `current_query`: The user's input text.
+
+Output Format Schema (Strictly adhere to this JSON structure):
+{
+  "memories": [
+    {
+      "text": "memory_statement_reflecting_query_part_1",
+      "category": "MOST_RELEVANT_CATEGORY_NAME"
+    },
+    {
+      "text": "memory_statement_reflecting_query_part_2",
+      "category": "MOST_RELEVANT_CATEGORY_NAME"
+    }
+    // ... potentially more memories if the query clearly contains multiple distinct points
+  ]
+}
+
+Instructions:
+1.  **Analyze Query:** Carefully examine the `current_query` provided.
+2.  **Extract Memories:** Create one or more memory objects based on the query.
+    *   Split the query into separate memories *only* if it clearly contains distinct actions or ideas (e.g., separated by "and", or discussing different topics). If it's a single event or task, create only one memory.
+    *   The `text` for each memory must closely reflect the original wording and intent of the corresponding part of the query. Make minimal transformations.
+    *   Convert relative time references (e.g., "yesterday", "tomorrow", "next month", "this weekend") to absolute dates (YYYY-MM-DD) using the provided `current_date`. Include specific times (e.g., "3 PM") if mentioned.
+    *   Do NOT add details, interpretations, or context not explicitly present in the original query.
+3.  **Categorize:** Assign *only one* `category` to each memory from the provided list that is most relevant to its content.
+4.  **Format Output:** Structure the entire response as a single, valid JSON object matching the `Output Format Schema` above. Ensure correct syntax.
+5.  **Return JSON Only:** Your final output must be *only* the JSON object. Do not include any introductory text, explanations, or other content outside the JSON structure.
+"""
+
+extract_memory_user_prompt_template = """INSTRUCTIONS:
+Analyze the Current Query using Today's date. Extract memories and format them as a JSON object according to the system prompt's schema and instructions. Return *only* the valid JSON object and nothing else.
 
 Input:
 
@@ -1338,430 +1219,44 @@ Today's date: {date_today}
 Output:
 """
 
-extract_memory_required_format = {
-    "type": "object",
-    "properties": {
-        "memories": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "text": {
-                        "type": "string",
-                        "description": "The complete memory statement with context, reasoning, and specific dates"
-                    },
-                    "category": {
-                        "type": "string",
-                        "enum": [
-                            "personal",
-                            "work",
-                            "social",
-                            "relationship",
-                            "finance",
-                            "spiritual",
-                            "career",
-                            "technology",
-                            "health",
-                            "education",
-                            "transportation",
-                            "entertainment",
-                            "tasks"
-                        ],
-                        "description": "The category that best describes the memory"
-                    }
-                },
-                "required": ["text", "category"]
-            },
-            "description": "A list of extracted memories with their categories based on the user query. Each memory should be clear, standalone, and factual."
-        }
-    },
-    "required": ["memories"]
-}
 
-
-
-extract_memory_system_prompt_template = """
-You are an AI system designed to analyze user queries and extract memories in a structured JSON format. Each memory should closely reflect the original query while maintaining necessary context and appropriate category classification.
-
-Available Categories:
-- personal: For personal activities, hobbies, goals, habits, routines
-- work: For office-related tasks, business matters, workplace activities
-- social: For meetups, gatherings, parties, community events
-- relationship: For interactions with friends, family, partners, colleagues
-- finance: For money matters, banking, loans, payments, purchases
-- spiritual: For religious activities, meditation, spiritual practices
-- career: For job-related developments, interviews, career growth
-- technology: For device-related matters, software, technical issues
-- health: For medical appointments, health conditions, exercise
-- education: For studies, courses, learning activities
-- transportation: For vehicle-related matters, travel arrangements
-- entertainment: For movies, games, music, recreational activities
-- tasks: For general to-dos, deadlines, appointments, reminders
-
-Input Format:
-current_date: [Current date in YYYY-MM-DD format]
-current_query: [User's input text]
-
-Output Format Schema:
-{
-"memories": [
-{
-  "text": "memory statement that closely reflects the original query with minimal transformation",
-  "category": "CATEGORY_NAME"
-},
-{
-  "text": "memory statement that closely reflects the original query with minimal transformation",
-  "category": "CATEGORY_NAME"
-}
-]
-}
+update_decision_system_prompt = """
+You are a memory management AI specializing in deciding whether existing memory records need updates based on new user input. Your primary goal is accuracy and relevance.
 
 Instructions:
-- Each memory must stay close to the original query's wording and intent
-- Only add absolute dates when converting relative time references
-- Split complex queries into separate memories only when there are clear break points (e.g., "and")
-- DO NOT add speculative details or embellishments not present in the original query
-- Choose only ONE most relevant category per memory
-- DO NOT generate unnecessary memories
-- Include only the context that is explicitly stated in the query
+You will be given a `current_query` (the user's latest input) and `memory_context` (a list of relevant stored memories). Analyze these inputs to determine if any memories in the `memory_context` contradict or are superseded by the `current_query`.
 
-Examples:
+Input Format:
+*   `current_query`: The user's new input text.
+*   `memory_context`: A list of strings, each representing a stored memory in the format:
+    `Memory N: <text> (ID: <number>, Created: <timestamp>, Expires: <timestamp>)`
 
-Example 1:
-current_date: "2025-02-03"
-current_query: "I went to the school yesterday morning and I felt on bench"
-{
-"memories": [
-{
-  "text": "I went to the school on February 2, 2025 morning",
-  "category": "education"
-},
-{
-  "text": "I felt on bench on February 2, 2025 while at school",
-  "category": "education"
-}
-]
-}
+Decision Rules:
+1.  **Identify Need for Update:** Only propose an update if the `current_query` explicitly provides new information that contradicts or replaces information in an existing memory record found in `memory_context`. Do not update if the query is just asking a question or doesn't conflict with existing memories.
+2.  **Extract ID:** If an update is needed, you MUST extract the exact numeric `ID` from the relevant memory string in `memory_context`. It appears after `(ID: `.
+3.  **Use ID Correctly:** The extracted `ID` MUST be used as a number (integer) in the output JSON, exactly as it appeared in the memory context. DO NOT modify or convert the ID format.
+4.  **Formulate Update Text:** The `text` in the update should reflect the new information from the `current_query`, concisely replacing the outdated part of the original memory.
 
-Example 2:
-current_date: "2025-01-30"
-current_query: "Need to submit thesis draft by next month"
+Output Format (Strict JSON):
+Return your decision in the following JSON structure. The `update` list should contain objects only for memories that require updating based on the rules above. If no updates are needed, return an empty list (`[]`).
+
 {
-"memories": [
-{
-  "text": "Need to submit thesis draft by February 28, 2025",
-  "category": "education"
-}
-]
+    "update": [
+        {
+            "id": <exact_numeric_id_from_memory>,  // Must be number, not string
+            "text": "<new_concise_memory_text>"
+        }
+        // ... include additional objects if multiple memories need updates
+    ]
 }
 
-Example 3:
-current_date: "2025-01-30"
-current_query: "Doctor appointment tomorrow at 3 PM"
-{
-"memories": [
-{
-  "text": "Doctor appointment on January 31, 2025 at 3 PM",
-  "category": "health"
-}
-]
-}
-
-Example 4:
-current_date: "2025-01-30"
-current_query: "Buy groceries and pick up dry cleaning"
-{
-"memories": [
-{
-  "text": "Buy groceries",
-  "category": "tasks"
-},
-{
-  "text": "Pick up dry cleaning",
-  "category": "tasks"
-}
-]
-}
-
-Example 5:
-current_date: "2025-01-30"
-current_query: "Meeting with team leads next Tuesday to discuss Q1 goals"
-{
-"memories": [
-{
-  "text": "Meeting with team leads on February 4, 2025 to discuss Q1 goals",
-  "category": "work"
-}
-]
-}
-
-Example 6:
-current_date: "2025-02-15"
-current_query: "Call mom this evening"
-{
-"memories": [
-{
-  "text": "Call mom on February 15, 2025 evening",
-  "category": "relationship"
-}
-]
-}
-
-Example 7:
-current_date: "2025-03-05"
-current_query: "Fix the leaking kitchen tap"
-{
-"memories": [
-{
-  "text": "Fix the leaking kitchen tap",
-  "category": "tasks"
-}
-]
-}
-
-Example 8:
-current_date: "2025-04-10"
-current_query: "Weekly team sync at 2 PM"
-{
-"memories": [
-{
-  "text": "Weekly team sync on April 10, 2025 at 2 PM",
-  "category": "work"
-}
-]
-}
-
-Example 9:
-current_date: "2025-05-22"
-current_query: "Pay electricity bill by month end"
-{
-"memories": [
-{
-  "text": "Pay electricity bill by May 31, 2025",
-  "category": "tasks"
-}
-]
-}
-
-Example 10:
-current_date: "2025-06-07"
-current_query: "John's birthday party this weekend"
-{
-"memories": [
-{
-  "text": "John's birthday party on June 8, 2025",
-  "category": "social"
-}
-]
-}
+Your response MUST be *only* this JSON object.
 """
 
-# Update memory decision
 update_user_prompt_template = """Return the JSON object strictly adhering to the above format. Do not return anything else or else I will terminate you
 Input:
 Current Query: {current_query}
 Memory Context: {memory_context}
-Output:
-"""
-
-update_required_format = {
-    "type": "object",
-    "properties": {
-        "update": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "number"},  # Changed from string to number
-                    "text": {"type": "string"}
-                },
-                "required": ["id", "text"]
-            }
-        }
-    },
-    "required": ["update"]
-}
-
-update_decision_system_prompt = """
-You are a memory management AI designed to make precise, context-aware decisions about updating memory records. Your goal is to ensure that memory records are always relevant, accurate, and comprehensive.
-
-Instructions:
-Given the following information:
-current_query: [The current user input]
-memory_context: [Relevant stored memory records]
-
-Important Rules:
-1. The memory ID MUST be extracted exactly as it appears in the memory context (after "ID: ")
-2. DO NOT modify or convert the ID - use it exactly as shown
-3. Only update memories when there is a clear contradiction or new information
-4. Maintain the exact same format for IDs as they appear in the context
-
-Format for Memory Context:
-Each memory will be provided in this format:
-Memory N: <text> (ID: <number>, Created: <timestamp>, Expires: <timestamp>)
-
-Return the response in the following JSON format:
-{
-    "update": [
-        {
-            "id": <number>,  // Must be a number, not a string
-            "text": "<updated_memory_text>"
-        }
-    ]
-}
-
-Examples:
-
-Example 1 - Correct ID Handling:
-Query: "I changed my mind, I want to go to the beach instead of the park."
-Memory Context: ["Memory 1: Planning to visit the park this weekend (ID: 101, Created: 2025-01-22T10:00:00, Expires: 2025-02-10T10:00:00)"]
-Response:
-{
-    "update": [
-        {
-            "id": 101,
-            "text": "Planning to visit the beach this weekend"
-        }
-    ]
-}
-
-Example 2 - Multiple Updates:
-Query: "The project deadline is now Friday, and we need to include Sarah in the team."
-Memory Context: ["Memory 1: Project deadline is Monday (ID: 202, Created: 2025-01-22T10:00:00, Expires: 2025-02-10T10:00:00)", "Memory 2: Team members are John and Emily (ID: 203, Created: 2025-01-22T10:00:00, Expires: 2025-02-10T10:00:00)"]
-Response:
-{
-    "update": [
-        {
-            "id": 202,
-            "text": "Project deadline is Friday"
-        },
-        {
-            "id": 203,
-            "text": "Team members are John, Emily, and Sarah"
-        }
-    ]
-}
-
-Example 3 - No Update Needed:
-Query: "What’s the plan for the weekend?"
-Memory Context: ["Memory 1: Planning to visit the beach this weekend (ID: 101, Created: 2025-01-22T10:00:00, Expires: 2025-02-10T10:00:00)"]
-Response:
-{
-    "update": []
-}
-Example 4 - Correct ID Handling:
-Query: "I no longer need to buy milk, but I still need eggs."
-Memory Context: ["Memory 1: Need to buy milk and eggs (ID: 303, Created: 2025-01-22T10:00:00, Expires: 2025-02-10T10:00:00)"]
-Response:
-{
-    "update": [
-        {
-            "id": 303,
-            "text": "Need to buy eggs"
-        }
-    ]
-}
-
-Example 5 - Multiple Updates:
-Query: "The conference is now online, and the date has been moved to March 15th."
-Memory Context: ["Memory 1: Conference is in-person on March 10th (ID: 404, Created: 2025-01-22T10:00:00, Expires: 2025-02-10T10:00:00)"]
-Response:
-{
-    "update": [
-        {
-            "id": 404,
-            "text": "Conference is online on March 15th"
-        }
-    ]
-}
-
-Example 6 - No Update Needed:
-Query: "What’s the agenda for the conference?"
-Memory Context: ["Memory 1: Conference agenda includes keynote speeches and workshops (ID: 505, Created: 2025-01-22T10:00:00, Expires: 2025-02-10T10:00:00)"]
-Response:
-{
-    "update": []
-}
-
-Example 7 - Correct ID Handling:
-Query: "I decided to cancel my gym membership."
-Memory Context: ["Memory 1: I have an active gym membership (ID: 606, Created: 2025-01-22T10:00:00, Expires: 2025-02-10T10:00:00)"]
-Response:
-{
-    "update": [
-        {
-            "id": 606,
-            "text": "Gym membership has been canceled"
-        }
-    ]
-}
-
-Example 8 - Multiple Updates:
-Query: "The flight is now at 8 PM, and I upgraded to business class."
-Memory Context: ["Memory 1: User's Flight is at 6 PM in economy class (ID: 707, Created: 2025-01-22T10:00:00, Expires: 2025-02-10T10:00:00)"]
-Response:
-{
-    "update": [
-        {
-            "id": 707,
-            "text": "User's Flight is at 8 PM in business class"
-        }
-    ]
-}
-
-Example 9 - No Update Needed:
-Query: "What’s the status of my flight?"
-Memory Context: ["Memory 1: Flight is at 8 PM in business class (ID: 707, Created: 2025-01-22T10:00:00, Expires: 2025-02-10T10:00:00)"]
-Response:
-{
-    "update": []
-}
-
-Example 10 - Correct ID Handling:
-Query: "I finished reading the book, so I no longer need to borrow it."
-Memory Context: ["Memory 1: Need to borrow a book from the library (ID: 808, Created: 2025-01-22T10:00:00, Expires: 2025-02-10T10:00:00)"]
-Response:
-{
-    "update": [
-        {
-            "id": 808,
-            "text": "Finished reading the book, no longer need to borrow it"
-        }
-    ]
-}
-
-Example 11 - Multiple Updates:
-Query: "The restaurant reservation is now for 7 PM, and we added two more guests."
-Memory Context: ["Memory 1: Restaurant reservation for 6 PM for 4 people (ID: 909, Created: 2025-01-22T10:00:00, Expires: 2025-02-10T10:00:00)"]
-Response:
-{
-    "update": [
-        {
-            "id": 909,
-            "text": "Restaurant reservation for 7 PM for 6 people"
-        }
-    ]
-}
-
-Example 12 - No Update Needed:
-Query: "What’s the address of the restaurant?"
-Memory Context: ["Memory 1: Restaurant address is 123 Main Street (ID: 1001, Created: 2025-01-22T10:00:00, Expires: 2025-02-10T10:00:00)"]
-Response:
-{
-    "update": []
-}
-"""
-
-# System prompt template
-system_general_template = """You are an AI expert designed to generate precise, user-friendly, and detailed responses to the provided query. Your task is to respond directly to the query in a clear, comprehensive, and actionable manner. Focus solely on the information relevant to the query, ensuring your response is well-explained, sufficiently detailed, and informative. Avoid fabricating information or hallucinating content."""
-
-# User prompt template with variables
-user_general_template = """
-
-Input:
-
-Query: {query}
-
 Output:
 """
 
