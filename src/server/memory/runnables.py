@@ -9,7 +9,7 @@ from .constants import *  # Importing constant variables from constants.py
 from server.app.base import *
 from server.app.helpers import *  # Importing helper functions from helpers.py
 
-load_dotenv("model/.env")
+load_dotenv("server/.env")
 
 def get_chat_runnable(chat_history: list[dict]) -> BaseRunnable:
     """

@@ -24,7 +24,7 @@ import aiohttp
 
 from server.app.helpers import *
 
-load_dotenv("model/.env")  # Load environment variables from .env file
+load_dotenv("server/.env")  # Load environment variables from .env file
 
 
 def authenticate_service(api_name: str, api_version: str):
@@ -44,8 +44,8 @@ def authenticate_service(api_name: str, api_version: str):
     """
     creds = None
 
-    if os.path.exists("model/token.pickle"):
-        with open("model/token.pickle", "rb") as token:
+    if os.path.exists("server/token.pickle"):
+        with open("server/token.pickle", "rb") as token:
             creds = pickle.load(token)
 
     return build(api_name, api_version, credentials=creds)

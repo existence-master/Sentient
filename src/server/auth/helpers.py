@@ -6,7 +6,7 @@ import platform
 from typing import Union, Dict, List, Any
 from dotenv import load_dotenv
 
-load_dotenv("model/.env")  # Load environment variables from .env file
+load_dotenv("server/.env")  # Load environment variables from .env file
 
 # --- Logging Configuration ---
 # Determine log file path based on the operating system.

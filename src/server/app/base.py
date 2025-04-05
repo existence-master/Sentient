@@ -9,7 +9,7 @@ from .helpers import *  # Importing helper functions from helpers.py
 from sys import platform  # To get system platform information
 from fastapi import WebSocket
 
-load_dotenv("model/.env")
+load_dotenv("server/.env")
 
 def get_selected_model() -> Tuple[str, str]:
     """

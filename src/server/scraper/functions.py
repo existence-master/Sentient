@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from .prompts import *  # Importing prompt templates and related utilities from prompts.py
 
-load_dotenv("model/.env")  # Load environment variables from .env file
+load_dotenv("server/.env")  # Load environment variables from .env file
 
 def scrape_linkedin_profile(url: str) -> dict:
     """

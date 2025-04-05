@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from .prompts import *
 from server.app.helpers import *
 
-load_dotenv("model/.env")  # Load environment variables from .env file
+load_dotenv("server/.env")  # Load environment variables from .env file
 
 async def generate_streaming_response(
     runnable, inputs: Dict[str, Any], stream: bool = False

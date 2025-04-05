@@ -8,7 +8,7 @@ from wrapt_timeout_decorator import *  # Importing timeout decorator for functio
 from sys import platform  # To get system platform information
 from fastapi import WebSocket
 
-load_dotenv("model/.env")
+load_dotenv("server/.env")
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Union, Generator

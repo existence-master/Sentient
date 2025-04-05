@@ -9,7 +9,7 @@ from server.memory.dual_memory import MemoryManager
 from  server.memory.base import *  # Import the new MemoryQueue
 from server.app.base import *
 
-load_dotenv("model/.env")
+load_dotenv("server/.env")
 
 class MemoryBackend:
     def __init__(self):

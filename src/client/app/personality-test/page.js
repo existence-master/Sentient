@@ -751,7 +751,7 @@ const PersonalityTest = () => {
 									</h2>
 									<p>
 										We use this information to personalize
-										your experience. All data stays local.
+										your experience.
 									</p>
 								</div>
 							)}

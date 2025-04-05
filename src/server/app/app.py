@@ -86,8 +86,8 @@ print(f"[CONFIG] {datetime.now()}: Available data sources: {DATA_SOURCES}")
 # Import new/refactored voice modules
 
 # Load environment variables from .env file
-print(f"[STARTUP] {datetime.now()}: Loading environment variables from model/.env...")
-load_dotenv("model/.env")
+print(f"[STARTUP] {datetime.now()}: Loading environment variables from server/.env...")
+load_dotenv("server/.env")
 print(f"[STARTUP] {datetime.now()}: Environment variables loaded.")
 
 # Apply nest_asyncio to allow nested event loops (useful for development environments)
@@ -2783,8 +2783,8 @@ async def authenticate_google():
     """Authenticates with Google using OAuth 2.0."""
     try:
         creds = None
-        if os.path.exists("model/token.pickle"):
-            with open("model/token.pickle", "rb") as token:
+        if os.path.exists("server/token.pickle"):
+            with open("server/token.pickle", "rb") as token:
                 creds = pickle.load(token)
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
@@ -2792,7 +2792,7 @@ async def authenticate_google():
             else:
                 flow = InstalledAppFlow.from_client_config(CREDENTIALS_DICT, SCOPES)
                 creds = flow.run_local_server(port=0)
-            with open("model/token.pickle", "wb") as token:
+            with open("server/token.pickle", "wb") as token:
                 pickle.dump(creds, token)
         return JSONResponse(status_code=200, content={"success": True})
     except Exception as e:

@@ -356,7 +356,7 @@ const AppIntegration = () => {
 					</ShiningButton>
 					<div
 						data-tooltip-id="integrations" // Tooltip ID for integrations info
-						data-tooltip-content="You can always connect or disconnect the apps from the Settings page later. All data stays local." // Tooltip content
+						data-tooltip-content="You can always connect or disconnect the apps from the Settings page later." // Tooltip content
 						className="absolute top-4 right-4" // Positioning classes
 					>
 						<button className="text-gray-300 hover-button p-2 rounded-[50%] text-sm cursor-default">

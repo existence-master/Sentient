@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from .prompts import *  # Importing prompt templates and related utilities from prompts.py
 from server.app.helpers import *  # Importing helper functions from helpers.py
 
-load_dotenv("model/.env")  # Load environment variables from .env file
+load_dotenv("server/.env")  # Load environment variables from .env file
 
 
 async def generate_streaming_response(runnable, inputs: dict, stream: bool = False):

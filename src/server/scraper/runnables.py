@@ -8,7 +8,7 @@ from .formats import *  # Importing format specifications or utilities from form
 from server.app.helpers import *  # Importing helper functions from helpers.py
 from server.app.base import *
 
-load_dotenv("model/.env")  # Load environment variables from .env file
+load_dotenv("server/.env")  # Load environment variables from .env file
 
 
 def get_reddit_runnable() -> BaseRunnable:

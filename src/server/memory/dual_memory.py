@@ -13,7 +13,7 @@ from .helpers import *
 from .prompts import *
 from server.app.base import *
 
-load_dotenv("model/.env")
+load_dotenv("server/.env")
 
 nlp = spacy.load("en_core_web_sm")
 

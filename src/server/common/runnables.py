@@ -8,7 +8,7 @@ from .formats import *  # Importing format specifications or utilities from form
 from server.app.base import *
 from server.app.helpers import *  # Importing helper functions from helpers.py
 
-load_dotenv("model/.env")
+load_dotenv("server/.env")
 
 def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
     """

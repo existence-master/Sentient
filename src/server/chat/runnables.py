@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from server.app.base import *
 from .prompts import *
 
-load_dotenv("model/.env")
+load_dotenv("server/.env")
 
 def get_chat_runnable(chat_history: List[Dict[str, str]]) -> BaseRunnable:
     """
