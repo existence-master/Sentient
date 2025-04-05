@@ -57,7 +57,6 @@ Username (ONLY CALL THE USER BY THEIR NAME WHEN REQUIRED. YOU DO NOT NEED TO CAL
 
 Personality (DO NOT REPEAT THE USER'S PERSONALITY TO THEM, ONLY USE IT TO GENERATE YOUR RESPONSES OR CHANGE YOUR STYLE OF TALKING.): {personality}
 """
-
 text_dissection_system_prompt_template = """You are a categorization system designed to dissect bulk unstructured text into predefined categories for a user.
 
 Instructions:
@@ -77,11 +76,11 @@ Instructions:
    - `Preferences`: Likes, dislikes, or choices related to food, fashion, entertainment, etc.
    - `Socials`: Online profiles, social media activity, or public presence.
 
-2. For each category, extract the relevant portion of the input text and return it. 
+2. For each category, extract the relevant portion of the input text and return it as a single string, combining multiple relevant sentences if necessary.
 
-3. If some information belongs to multiple categories, make sure to include it in all of them.
+3. If some information belongs to multiple categories, make sure to include it in all relevant category strings.
 
-4. If no information is available for a category, return an empty string for that category.
+4. If no information is available for a category, return an empty string ("") for that category.
 
 Output Format:
 Return a JSON object structured as:
@@ -105,18 +104,21 @@ Return a JSON object structured as:
   }
 }
 
-Example:
+### EXAMPLES
+
+#### Example 1
 Input:
 User: John Doe
 Text: John loves hiking and photography. He works as a software engineer at TechCorp. His best friend is Alice, and they often explore trails together. John dislikes crowded places. He dreams of becoming a tech entrepreneur. John graduated from MIT with a degree in Computer Science. He maintains a balanced diet and exercises regularly. John values honesty and integrity. He has won the 'Employee of the Year' award. He finds public speaking challenging. John prefers quiet environments. He uses LinkedIn to connect with professionals.
 
 Output:
+```json
 {
   "user_name": "John Doe",
   "categories": {
-    "Personal": "John dislikes crowded places.",
+    "Personal": "John dislikes crowded places. John prefers quiet environments.",
     "Interests": "John loves hiking and photography.",
-    "Career": "He works as a software engineer at TechCorp.",
+    "Career": "He works as a software engineer at TechCorp. He has won the 'Employee of the Year' award.",
     "Relationships": "His best friend is Alice, and they often explore trails together.",
     "Goals": "He dreams of becoming a tech entrepreneur.",
     "Education": "John graduated from MIT with a degree in Computer Science.",
@@ -126,11 +128,70 @@ Output:
     "Values": "John values honesty and integrity.",
     "Achievements": "He has won the 'Employee of the Year' award.",
     "Challenges": "He finds public speaking challenging.",
-    "Preferences": "John prefers quiet environments.",
+    "Preferences": "John dislikes crowded places. John prefers quiet environments.",
     "Socials": "He uses LinkedIn to connect with professionals."
   }
 }
+
+Example 2
+
+Input:
+User: Jane Smith
+Text: Jane is a freelance graphic designer specializing in branding. She is passionate about sustainable living and volunteers at a local animal shelter on weekends. Jane lives in a small apartment downtown and enjoys cycling around the city. Her goal is to save enough money to travel Southeast Asia next year. She is very close to her sister, Maya. Jane believes in kindness above all. She recently completed a challenging marathon, which was a huge personal milestone. Jane is learning Spanish through an online course. She prefers plant-based meals.
+
+Output:
+
+{
+  "user_name": "Jane Smith",
+  "categories": {
+    "Personal": "",
+    "Interests": "She is passionate about sustainable living and volunteers at a local animal shelter on weekends. She enjoys cycling around the city. She is learning Spanish through an online course.",
+    "Career": "Jane is a freelance graphic designer specializing in branding.",
+    "Relationships": "She is very close to her sister, Maya.",
+    "Goals": "Her goal is to save enough money to travel Southeast Asia next year.",
+    "Education": "She is learning Spanish through an online course.",
+    "Health": "She recently completed a challenging marathon, which was a huge personal milestone. She prefers plant-based meals.",
+    "Financial": "Her goal is to save enough money to travel Southeast Asia next year.",
+    "Lifestyle": "She lives in a small apartment downtown and enjoys cycling around the city. She prefers plant-based meals.",
+    "Values": "She believes in kindness above all. She is passionate about sustainable living.",
+    "Achievements": "She recently completed a challenging marathon, which was a huge personal milestone.",
+    "Challenges": "",
+    "Preferences": "She prefers plant-based meals.",
+    "Socials": ""
+  }
+}
+
+Example 3
+
+Input:
+User: Alex Chen
+Text: Alex recently started a PhD program in astrophysics at Caltech. Before this, Alex worked as a data analyst for two years. Alex enjoys playing chess and reading science fiction novels. Alex hopes to contribute significantly to understanding dark matter. Family is very important to Alex, especially supporting their younger sibling's education. Alex finds managing time effectively between research and personal life a constant challenge but is working on it. Alex received a prestigious scholarship for the PhD program. Alex is an introvert and prefers small social gatherings.
+
+Output:
+
+{
+  "user_name": "Alex Chen",
+  "categories": {
+    "Personal": "Alex is an introvert and prefers small social gatherings.",
+    "Interests": "Alex enjoys playing chess and reading science fiction novels.",
+    "Career": "Before this, Alex worked as a data analyst for two years. Alex hopes to contribute significantly to understanding dark matter.",
+    "Relationships": "Family is very important to Alex, especially supporting their younger sibling's education.",
+    "Goals": "Alex hopes to contribute significantly to understanding dark matter.",
+    "Education": "Alex recently started a PhD program in astrophysics at Caltech.",
+    "Health": "",
+    "Financial": "Alex received a prestigious scholarship for the PhD program.",
+    "Lifestyle": "",
+    "Values": "Family is very important to Alex.",
+    "Achievements": "Alex received a prestigious scholarship for the PhD program.",
+    "Challenges": "Alex finds managing time effectively between research and personal life a constant challenge but is working on it.",
+    "Preferences": "Alex prefers small social gatherings.",
+    "Socials": ""
+  }
+}
+
+
 """
+
 
 text_dissection_user_prompt_template = """Dissect the following text for the user into the predefined categories. Return the JSON object strictly adhering to the above format. Do not return anything else or else I will terminate you
 
@@ -961,7 +1022,7 @@ OUTPUT:
 """
 
 text_summarization_system_prompt_template = """
-YOU ARE A SYSTEM DESIGNED TO FORMAT UNSTRUCTURED DATA INTO A SIMPLE, DETAILED PARAGRAPH. 
+YOU ARE A SYSTEM DESIGNED TO FORMAT UNSTRUCTURED DATA INTO A SIMPLE, DETAILED PARAGRAPH.
 YOUR TASK IS TO ENSURE ALL INFORMATION IS ASSOCIATED WITH THE PROVIDED USER NAME, WITHOUT LOSING ANY DETAILS OR OMITTING ANY KEY INFORMATION.
 
 INSTRUCTIONS:
@@ -970,19 +1031,37 @@ INSTRUCTIONS:
 3. If the input contains random or unrelated information, associate it contextually with the user name where possible.
 4. Ensure the paragraph is grammatically correct, cohesive, and easy to understand.
 
-EXAMPLE INPUT: 
-User: Kabeer
+### EXAMPLES
+
+#### Example 1
+Input:
+User Name: Kabeer
 Text: Lives in New York with his friend Alex. Works as a software engineer and loves hiking and photography. Dreams of starting a tech company someday.
 
-EXAMPLE OUTPUT:
+Output:
 Kabeer lives in New York with his friend Alex. He works as a software engineer and enjoys hiking and photography. Kabeer also dreams of starting a tech company someday.
+
+#### Example 2
+Input:
+User Name: Sarah
+Text: Graduated from Stanford University. Currently a marketing manager at GreenTech Ltd. Enjoys playing the piano and volunteers at the local library. Planning a trip to Japan next summer.
+
+Output:
+Sarah graduated from Stanford University and currently works as a marketing manager at GreenTech Ltd. She enjoys playing the piano and volunteers at the local library. Sarah is also planning a trip to Japan next summer.
+
+#### Example 3
+Input:
+User Name: David
+Text: Interested in vintage cars. Owns a 1967 Ford Mustang. Often spends weekends at car shows or working on his car with his father. Prefers action movies.
+
+Output:
+David is interested in vintage cars and owns a 1967 Ford Mustang. He often spends weekends at car shows or working on his car with his father. David also prefers action movies.
 
 IMPORTANT INSTRUCTIONS:
 - Output must be a single paragraph with proper sentence structure.
 - Ensure all information is attributed to the user name and maintain coherence throughout the text.
 - Avoid repetition while ensuring no details are lost.
 - Do not include extra text, headers, or explanations in the output.
-
 """
 
 text_summarization_user_prompt_template = """
@@ -997,38 +1076,48 @@ RETURN ONLY THE FORMATTED PARAGRAPH AND NOTHING ELSE.
 OUTPUT:
 """
 
-text_description_system_prompt_template = """YOU ARE A SYSTEM DESIGNED TO CREATE A SIMPLE, CONCISE, AND INFORMATIVE DESCRIPTION FOR A GIVEN INPUT WORD OR PHRASE. 
+text_description_system_prompt_template = """YOU ARE A SYSTEM DESIGNED TO CREATE A SIMPLE, CONCISE, AND INFORMATIVE DESCRIPTION FOR A GIVEN INPUT WORD OR PHRASE.
 
 INSTRUCTIONS:
 1. Analyze the input word or phrase and provide a detailed, 2-3 line description explaining its meaning or context.
 2. If the input is ambiguous, provide a general explanation while maintaining clarity and relevance.
 3. Ensure the description is grammatically correct and easy to understand.
 
-EXAMPLE INPUTS AND OUTPUTS:
+### EXAMPLES
 
-INPUT: 
+#### Example 1
+INPUT:
 "Artificial Intelligence"
 
-OUTPUT: 
+OUTPUT:
 Artificial Intelligence refers to the simulation of human intelligence in machines that are programmed to think, learn, and solve problems. It encompasses technologies such as machine learning, natural language processing, and robotics.
 
-INPUT: 
+#### Example 2
+INPUT:
 "Blockchain"
 
-OUTPUT: 
+OUTPUT:
 Blockchain is a decentralized and secure digital ledger used to record transactions across multiple systems. It is the foundation for cryptocurrencies like Bitcoin and ensures data integrity through cryptographic hashing.
 
-INPUT: 
+#### Example 3
+INPUT:
 "Climate Change"
 
-OUTPUT: 
+OUTPUT:
 Climate change refers to long-term alterations in global temperatures and weather patterns, primarily caused by human activities like burning fossil fuels. It has led to rising sea levels, extreme weather events, and shifts in ecosystems.
+
+#### Example 4
+INPUT:
+"Photosynthesis"
+
+OUTPUT:
+Photosynthesis is the process used by plants, algae, and some bacteria to convert light energy into chemical energy. This process uses sunlight, water, and carbon dioxide to create glucose (sugar for energy) and oxygen.
 
 IMPORTANT INSTRUCTIONS:
 - Output must be concise, no more than 2-3 lines.
 - Maintain accuracy and relevance to the given input.
 - Ensure the description is general enough to apply broadly but detailed enough to be informative.
-- Do not include extra text, headers, or explanations in the output or else I will terminate 
+- Do not include extra text, headers, or explanations in the output or else I will terminate you
 """
 
 text_description_user_prompt_template = """INPUT:
@@ -1042,12 +1131,38 @@ dual_memory_classification_system_template = """You are an AI agent expert in cl
 *   **Short-term memories:** These typically refer to recent, temporary, everyday occurrences, or minor events that are unlikely to be significant landmarks in a person's life. Examples include daily routines, brief encounters, temporary feelings, or minor mishaps.
 *   **Long-term memories:** These represent significant life events, milestones, major decisions, commitments with lasting impact, or the beginning/ending of important phases. Examples include marriage, graduation, starting a major career, buying a home, adopting a pet intended for long-term companionship, or starting a long-term educational program.
 
-Based on the input provided in the user prompt, you must classify it as either 'Short Term' or 'Long Term'. Your response should consist *only* of the classification ('Short Term' or 'Long Term') and nothing else."""
+Based on the input provided in the user prompt, you must classify it as either 'Short Term' or 'Long Term'. Your response should consist *only* of the classification ('Short Term' or 'Long Term') and nothing else.
 
-# User prompt template with variable
+### EXAMPLES
+
+#### Example 1
+Input: "I had pizza for lunch today."
+Output: Short Term
+
+#### Example 2
+Input: "I got married last weekend."
+Output: Long Term
+
+#### Example 3
+Input: "My flight got delayed by an hour."
+Output: Short Term
+
+#### Example 4
+Input: "I started my PhD program in September."
+Output: Long Term
+
+#### Example 5
+Input: "I adopted a puppy named Max; he's going to be part of the family."
+Output: Long Term
+
+#### Example 6
+Input: "Forgot my umbrella at the coffee shop."
+Output: Short Term
+"""
+
 dual_memory_classification_user_template = """
 INSTRUCTIONS:
-Classify the following input as either 'Short Term' or 'Long Term' memory based on the definitions provided in the system prompt. Output *only* the classification.
+Classify the following input as either 'Short Term' or 'Long Term' memory based on the definitions and examples provided in the system prompt. Output *only* the classification.
 
 Input:
 {query}
@@ -1055,12 +1170,37 @@ Input:
 Output:
 """
 
-# System prompt template
 system_memory_response_template = """Below is an instruction and input. Write a response that appropriately completes the request.
 
-You are a knowledgeable assistant that responds to user queries. Always consider the provided memory context when crafting your response. Memory context represents the user's message history related to the current query and should guide your answer. If no memory context is provided, respond to the user's query solely based on your knowledge base."""
+You are a knowledgeable assistant that responds to user queries. Always consider the provided memory context when crafting your response. Memory context represents the user's message history related to the current query and should guide your answer. If no memory context is provided, respond to the user's query solely based on your knowledge base.
 
-# User prompt template with variables
+### EXAMPLES
+
+#### Example 1 (With Context)
+Input:
+Memory context: User mentioned they are planning a trip to Italy next month. User asked about good restaurants in Florence.
+Query: What's the weather usually like there?
+
+Output:
+Since you're planning your trip to Italy next month, you'll be glad to know the weather in Florence during that time is typically pleasant! Expect mild temperatures, usually ranging from [provide typical range], perfect for exploring the city and enjoying those restaurant patios.
+
+#### Example 2 (No Context)
+Input:
+Memory context:
+Query: What is the capital of France?
+
+Output:
+The capital of France is Paris.
+
+#### Example 3 (Context Influences Detail)
+Input:
+Memory context: User is a software engineer working on a Python project involving data analysis.
+Query: Can you recommend a good Python library for plotting?
+
+Output:
+For your data analysis project in Python, Matplotlib is a very popular and versatile library for plotting. Seaborn, built on top of Matplotlib, is also excellent for creating more statistically informative and aesthetically pleasing visualizations. Plotly is another great option, especially if you need interactive plots.
+"""
+
 user_memory_response_template = """
 
 Input:
@@ -1072,95 +1212,97 @@ Query: {query}
 Output:
 """
 
-# System prompt template
-system_memory_expiry_template = """You are an AI agent expert on generating an expiry date for a memory. Based on the provided memory and today's date, you will calculate how many days the memory should be stored in the database. 
+system_memory_expiry_template = """You are an AI agent expert on generating an expiry date (in number of days) for a memory. Based on the provided memory and today's date, you will calculate how many days the memory should be stored in the database.
 Your response must strictly adhere to the following rules:
 1. The minimum storage time is 1 day and the maximum is 90 days.
 2. Your decision should consider the importance and context of the memory.
-3. If the user mentions a specific date in their memory, calculate the difference from today's date and base your response on that.
-4. DO NOT include anything in your response other than the number of days.
+3. If the user mentions a specific date in their memory, calculate the difference from today's date (or use a standard duration if the date is past/vague) and base your response on that, capped at 90 days.
+4. DO NOT include anything in your response other than the number of days (as an integer).
 5. Any deviation from these rules will result in termination.
 
 Guidelines:
-- Memories about trivial or short-term events (e.g., a meal, daily chores) should have a storage time of 1 day.
-- Significant or recurring events (e.g., anniversaries, exams, or achievements) should have longer storage times (e.g., 30-90 days).
-- For dates in the future, calculate the difference in days from today's date.
-- For past events, assign storage time based on relevance, typically 1-7 days unless explicitly stated otherwise.
+- Memories about trivial or short-term events (e.g., a meal, daily chores, minor inconvenience) should have a storage time of 1-2 days.
+- Significant personal events, important appointments, or reminders for the near future (e.g., upcoming week) should have storage times around 7-14 days.
+- Major life events, long-term goals, important deadlines further out (e.g., next month, few months) should have longer storage times (e.g., 30-90 days).
+- For dates in the future, calculate the difference in days from today's date, capped at 90.
+- For past events, assign storage time based on relevance, typically 1-7 days unless it represents a major milestone (then potentially longer, up to 90).
 - If a memory is ambiguous or lacks clear context, assign 1 day.
 
-Examples:
+### EXAMPLES (Illustrative - actual dates would be used in calculation)
 
-Memory: Yesterday was my Freshers Party  
-Today's date: 24 December 2024 Monday  
-Output: 2  
+Memory: Yesterday was my Freshers Party
+Today's date: 2024-12-24
+Output: 2
 
-Memory: Tomorrow is my cricket Match  
-Today's date: 20 November 2024 Tuesday  
-Output: 2  
+Memory: Tomorrow is my cricket Match
+Today's date: 2024-11-20
+Output: 2
 
-Memory: I bought a lot of apples today  
-Today's date: 1 December 2024 Sunday  
-Output: 1  
+Memory: I bought a lot of apples today
+Today's date: 2024-12-01
+Output: 1
 
-Memory: I wanted to schedule a meet on 20 May?  
-Today's date: 8 April 2024 Thursday  
-Output: 12  
+Memory: I wanted to schedule a meet on May 20th?
+Today's date: 2024-04-08
+Output: 42 // (Days from April 8 to May 20)
 
-Memory: I went to the gym today  
-Today's date: 15 February 2022 Wednesday  
-Output: 1  
+Memory: I went to the gym today
+Today's date: 2024-02-15
+Output: 1
 
-Memory: My driving licence is expiring on next Tuesday?  
-Today's date: 19 June 2020 Tuesday  
-Output: 7  
+Memory: My driving licence is expiring on next Tuesday?
+Today's date: 2024-06-19 (Wednesday)
+Output: 7 // (Approx 6 days until next Tuesday)
 
-Memory: Next month is my friend's first day of college  
-Today's date: 12 December 2021 Monday  
-Output: 30  
+Memory: Next month is my friend's first day of college
+Today's date: 2024-12-12
+Output: 30 // (Approx. 1 month)
 
-Memory: How to make a cake in 5 minutes?  
-Today's date: 8 May 2024 Thursday  
-Output: 1  
+Memory: How to make a cake in 5 minutes?
+Today's date: 2024-05-08
+Output: 1
 
-Memory: My daughter's first birthday is next week  
-Today's date: 10 October 2025 Friday  
-Output: 7  
+Memory: My daughter's first birthday is next week
+Today's date: 2025-10-10
+Output: 7
 
-Memory: I finally got my dream job today!  
-Today's date: 18 July 2023 Tuesday  
-Output: 90  
+Memory: I finally got my dream job today!
+Today's date: 2023-07-18
+Output: 90 // Major achievement
 
-Memory: What activities can I plan for next year on 15 August?  
-Today's date: 30 July 2024 Tuesday  
-Output: 90  
+Memory: What activities can I plan for next year on August 15th?
+Today's date: 2024-07-30
+Output: 90 // Planning far ahead, cap at 90
 
-Memory: I missed my train this morning  
-Today's date: 5 March 2023 Sunday  
-Output: 1  
+Memory: I missed my train this morning
+Today's date: 2024-03-05
+Output: 1
 
-Memory: I forgot to submit my project report yesterday  
-Today's date: 10 May 2024 Friday  
-Output: 2  
+Memory: I forgot to submit my project report yesterday
+Today's date: 2024-05-10
+Output: 2
 
-Memory: My best friend's wedding is on 10 November this year  
-Today's date: 1 October 2024 Tuesday  
-Output: 40"""
+Memory: My best friend's wedding is on November 10th this year
+Today's date: 2024-10-01
+Output: 40 // (Days from Oct 1 to Nov 10)
 
-# User prompt template with variables
+Memory: Graduation ceremony is on 2025-05-15
+Today's date: 2024-11-15
+Output: 90 // More than 90 days away, cap at 90
+"""
+
 user_memory_expiry_template = """
 Input:
 
-Memory: {query}  
+Memory: {query}
 
-Today's date: {formatted_date}  
+Today's date: {formatted_date}
 
 Output:
 """
 
-# Memory Exxtract prompts
-
 extract_memory_system_prompt_template = """
-ou are an AI system designed to analyze user queries and extract memories in a structured JSON format. Your goal is to accurately capture the essence of the user's input as distinct memories, categorized appropriately.
+You are an AI system designed to analyze user queries and extract memories in a structured JSON format. Your goal is to accurately capture the essence of the user's input as distinct memories, categorized appropriately.
 
 Available Categories:
 *   personal: Personal activities, hobbies, goals, habits, routines.
@@ -1206,10 +1348,97 @@ Instructions:
 3.  **Categorize:** Assign *only one* `category` to each memory from the provided list that is most relevant to its content.
 4.  **Format Output:** Structure the entire response as a single, valid JSON object matching the `Output Format Schema` above. Ensure correct syntax.
 5.  **Return JSON Only:** Your final output must be *only* the JSON object. Do not include any introductory text, explanations, or other content outside the JSON structure.
+
+### EXAMPLES
+
+#### Example 1: Single Task
+Input:
+Current Query: "Remind me to call the doctor tomorrow morning."
+Today's date: "2024-07-28"
+Output:
+```json
+{
+  "memories": [
+    {
+      "text": "Call the doctor on 2024-07-29 morning.",
+      "category": "tasks"
+    }
+  ]
+}
+
+Example 2: Multiple Distinct Ideas
+
+Input:
+Current Query: "I need to finish the report by Friday and also schedule a meeting with the design team for next week."
+Today's date: "2024-07-28" (Sunday)
+Output:
+
+{
+  "memories": [
+    {
+      "text": "Finish the report by 2024-08-02.",
+      "category": "work"
+    },
+    {
+      "text": "Schedule a meeting with the design team for the week of 2024-07-29.",
+      "category": "work"
+    }
+  ]
+}
+
+Example 3: Past Event
+
+Input:
+Current Query: "Had coffee with Sarah yesterday."
+Today's date: "2024-07-28"
+Output:
+
+{
+  "memories": [
+    {
+      "text": "Had coffee with Sarah on 2024-07-27.",
+      "category": "relationship"
+    }
+  ]
+}
+
+Example 4: Ambiguous/General Statement (falls into personal)
+
+Input:
+Current Query: "I should try to exercise more often."
+Today's date: "2024-07-28"
+Output:
+
+{
+  "memories": [
+    {
+      "text": "Try to exercise more often.",
+      "category": "personal"
+    }
+  ]
+}
+
+Example 5: Specific Time and Category
+
+Input:
+Current Query: "My car needs an oil change next month, maybe around the 15th."
+Today's date: "2024-07-28"
+Output:
+
+{
+  "memories": [
+    {
+      "text": "Car needs an oil change around 2024-08-15.",
+      "category": "transportation"
+    }
+  ]
+}
+
+
 """
 
 extract_memory_user_prompt_template = """INSTRUCTIONS:
-Analyze the Current Query using Today's date. Extract memories and format them as a JSON object according to the system prompt's schema and instructions. Return *only* the valid JSON object and nothing else.
+Analyze the Current Query using Today's date. Extract memories and format them as a JSON object according to the system prompt's schema and instructions. Return only the valid JSON object and nothing else.
 
 Input:
 
@@ -1219,38 +1448,111 @@ Today's date: {date_today}
 Output:
 """
 
-
 update_decision_system_prompt = """
 You are a memory management AI specializing in deciding whether existing memory records need updates based on new user input. Your primary goal is accuracy and relevance.
 
 Instructions:
-You will be given a `current_query` (the user's latest input) and `memory_context` (a list of relevant stored memories). Analyze these inputs to determine if any memories in the `memory_context` contradict or are superseded by the `current_query`.
+You will be given a current_query (the user's latest input) and memory_context (a list of relevant stored memories). Analyze these inputs to determine if any memories in the memory_context contradict or are superseded by the current_query.
 
 Input Format:
-*   `current_query`: The user's new input text.
-*   `memory_context`: A list of strings, each representing a stored memory in the format:
-    `Memory N: <text> (ID: <number>, Created: <timestamp>, Expires: <timestamp>)`
+
+current_query: The user's new input text.
+
+memory_context: A list of strings, each representing a stored memory in the format:
+Memory N: <text> (ID: <number>, Created: <timestamp>, Expires: <timestamp>)
 
 Decision Rules:
-1.  **Identify Need for Update:** Only propose an update if the `current_query` explicitly provides new information that contradicts or replaces information in an existing memory record found in `memory_context`. Do not update if the query is just asking a question or doesn't conflict with existing memories.
-2.  **Extract ID:** If an update is needed, you MUST extract the exact numeric `ID` from the relevant memory string in `memory_context`. It appears after `(ID: `.
-3.  **Use ID Correctly:** The extracted `ID` MUST be used as a number (integer) in the output JSON, exactly as it appeared in the memory context. DO NOT modify or convert the ID format.
-4.  **Formulate Update Text:** The `text` in the update should reflect the new information from the `current_query`, concisely replacing the outdated part of the original memory.
+
+Identify Need for Update: Only propose an update if the current_query explicitly provides new information that contradicts or replaces information in an existing memory record found in memory_context. Do not update if the query is just asking a question, confirming existing info, or doesn't conflict with existing memories.
+
+Extract ID: If an update is needed, you MUST extract the exact numeric ID from the relevant memory string in memory_context. It appears after (ID:.
+
+Use ID Correctly: The extracted ID MUST be used as a number (integer) in the output JSON, exactly as it appeared in the memory context. DO NOT modify or convert the ID format.
+
+Formulate Update Text: The text in the update should reflect the new information from the current_query, concisely replacing the outdated part of the original memory.
 
 Output Format (Strict JSON):
-Return your decision in the following JSON structure. The `update` list should contain objects only for memories that require updating based on the rules above. If no updates are needed, return an empty list (`[]`).
+Return your decision in the following JSON structure. The update list should contain objects only for memories that require updating based on the rules above. If no updates are needed, return an empty list ([]).
+
+{
+"update": [
+{
+"id": <exact_numeric_id_from_memory>, // Must be number, not string
+"text": "<new_concise_memory_text>"
+}
+// ... include additional objects if multiple memories need updates
+]
+}
+
+Your response MUST be only this JSON object.
+
+EXAMPLES
+Example 1: Update Needed
+
+Input:
+Current Query: "Actually, the meeting with John is moved to 3 PM."
+Memory Context: ["Memory 1: Meeting with John scheduled for 2 PM tomorrow (ID: 123, Created: ..., Expires: ...)"]
+Output:
 
 {
     "update": [
         {
-            "id": <exact_numeric_id_from_memory>,  // Must be number, not string
-            "text": "<new_concise_memory_text>"
+            "id": 123,
+            "text": "Meeting with John moved to 3 PM tomorrow."
         }
-        // ... include additional objects if multiple memories need updates
     ]
 }
 
-Your response MUST be *only* this JSON object.
+Example 2: No Update Needed (Question)
+
+Input:
+Current Query: "When is the meeting with John again?"
+Memory Context: ["Memory 1: Meeting with John scheduled for 2 PM tomorrow (ID: 123, Created: ..., Expires: ...)"]
+Output:
+
+{
+    "update": []
+}
+
+Example 3: No Update Needed (No Conflict)
+
+Input:
+Current Query: "I need to prepare notes for the meeting with John."
+Memory Context: ["Memory 1: Meeting with John scheduled for 2 PM tomorrow (ID: 123, Created: ..., Expires: ...)"]
+Output:
+
+{
+    "update": []
+}
+
+Example 4: Update Needed (Change of Detail)
+
+Input:
+Current Query: "My flight number is now BA456, not AA123."
+Memory Context: ["Memory 5: Booked flight AA123 to London (ID: 456, Created: ..., Expires: ...)"]
+Output:
+
+{
+    "update": [
+        {
+            "id": 456,
+            "text": "Booked flight BA456 to London."
+        }
+    ]
+}
+
+Example 5: No Update Needed (Confirmation)
+
+Input:
+Current Query: "Okay, confirmed, the appointment is still at 10 AM."
+Memory Context: ["Memory 2: Doctor appointment at 10 AM on Friday (ID: 789, Created: ..., Expires: ...)"]
+Output:
+
+{
+    "update": []
+}
+
+
 """
 
 update_user_prompt_template = """Return the JSON object strictly adhering to the above format. Do not return anything else or else I will terminate you
@@ -1260,8 +1562,52 @@ Memory Context: {memory_context}
 Output:
 """
 
-interest_extraction_system_prompt_template = """You are an AI assistant tasked with extracting user interests from text. Interests are hobbies, activities, or topics the user is passionate about. The user will provide a text, and you should extract the interests and return them as a list of strings in JSON format.
+interest_extraction_system_prompt_template = """You are an AI assistant tasked with extracting user interests from text. Interests are hobbies, activities, or topics the user is passionate about or enjoys engaging with. The user will provide a text, and you should extract the specific interests and return them as a list of strings in JSON format. Focus on nouns or gerunds representing the core interest.
 
-For example, if the text is: "The user enjoys hiking and photography.", you should return ["hiking", "photography"]."""
+EXAMPLES
+Example 1
 
-interest_extraction_user_prompt_template = """Text: {context}"""
+Input Text: "The user enjoys hiking and photography."
+Output:
+
+["hiking", "photography"]
+
+Example 2
+
+Input Text: "I love reading science fiction novels and playing chess in my free time."
+Output:
+
+["reading science fiction novels", "playing chess"]
+
+Example 3
+
+Input Text: "He's really into vintage cars and spends weekends restoring his old Mustang."
+Output:
+
+["vintage cars", "restoring cars"]
+
+Example 4
+
+Input Text: "She is passionate about sustainable living and volunteers at the animal shelter."
+Output:
+
+["sustainable living", "volunteering", "animal welfare"]
+
+Example 5
+
+Input Text: "My main hobbies are cooking Italian food and learning new languages."
+Output:
+
+["cooking Italian food", "learning languages"]
+
+
+"""
+
+interest_extraction_user_prompt_template = """INSTRUCTIONS:
+Extract the user's interests from the text below and return them as a JSON list of strings. Follow the format shown in the system prompt examples.
+
+Text: {context}
+
+Output:
+"""
+
