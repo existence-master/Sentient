@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 
 from .prompts import *  # Importing prompt templates and related utilities from prompts.py
 from .formats import *  # Importing format specifications or utilities from formats.py
-from model.app.helpers import *  # Importing helper functions from helpers.py
-from model.app.base import *
+from server.app.helpers import *  # Importing helper functions from helpers.py
+from server.app.base import *
 
 load_dotenv("model/.env")  # Load environment variables from .env file
 

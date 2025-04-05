@@ -2,7 +2,7 @@ import os
 from typing import Dict, List, Optional
 from dotenv import load_dotenv
 
-from model.app.base import *
+from server.app.base import *
 from .prompts import *
 
 load_dotenv("model/.env")

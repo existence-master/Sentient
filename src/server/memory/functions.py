@@ -11,7 +11,7 @@ from .runnables import *  # Importing runnable classes or functions from runnabl
 from .functions import *  # Importing functions from functions.py
 from .constants import *  # Importing constant variables from constants.py
 from .prompts import *  # Importing prompt templates and related utilities from prompts.py
-from model.app.helpers import *  # Importing helper functions from helpers.py
+from server.app.helpers import *  # Importing helper functions from helpers.py
 
 load_dotenv("model/.env")  # Load environment variables from .env file
 

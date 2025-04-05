@@ -201,36 +201,61 @@ DO NOT INCLUDE ANYTHING OTHER THAN THE ELABORATED RESPONSE.
 {query}
 """
 
-unified_classification_system_prompt_template = """You are an input classification system for a personalized AI assistant. Your task is to analyze the user's input, classify it based on the criteria provided, and, if needed, transform it by incorporating relevant context from the implicit chat history. 
+unified_classification_system_prompt_template = """You are an input classification system for a personalized AI assistant. Your task is to analyze the user's input, classify it based on the criteria provided, and, if needed, transform it by incorporating relevant context from the implicit chat history.
 
 Follow these instructions carefully:
 
-1. Read the user input thoroughly.
+1.  **Classification Categories:**
+    *   `memory`: Input contains information *about the user* (preferences, facts, experiences) to be remembered. Not an action request.
+    *   `agent`: Explicit request using specific Google tools: **Google Drive, Google Mail, Google Docs, Google Sheets, Google Calendar, Google Slides**. Tool *must* be mentioned.
+    *   `chat`: Default category for greetings, general conversation, questions, or requests not fitting `memory` or `agent`.
 
-2. Determine the classification category based on these rules:
-   - memory: For statements that include any information about the user that is not a request for action. This includes personal preferences, experiences, or any other information that can be stored in memory.
-   - agent: For explicit requests to perform an action using one of these tools: Google Drive, Google Mail, Google Docs, Google Sheets, Google Calendar, or Google Slides. If these tools are not mentioned, you can't classify it as agent
-   - chat: If you can't classify the input as memory or agent, classify it as chat. This includes general conversation, greetings, or any other non-specific requests.
+2.  **Flags:**
+    *   `use_personal_context`: `true` if the query relates to the user's specific life, preferences, or stored memories. `false` otherwise.
+    *   `internet`: `true` ONLY for queries needing *external, dynamic, real-time, or very specific factual data* (e.g., current news, live weather, stock prices). `false` for general knowledge, greetings, personal info, tool requests. If unsure, lean towards `false`.
 
-3. Set the flag `use_personal_context`:
-   - true if the query involves details specific to the user's personal life or stored memories.
-   - false if the query is general or does not depend on personal context.
+3.  **Input Transformation:**
+    *   `transformed_input`: Usually the original user input. Exception: For `agent` follow-ups (like "Retry that"), use chat history to fill in the original request context. If context is ambiguous, classify as `chat`.
 
-4. Set the flag `internet`:
-   - true ONLY when the primary request is for highly dynamic, time-sensitive, or external factual information (e.g., current news, weather, live data).
-   - false in all other cases (greetings, basic questions, or tool requests).
+4.  **Output Format:** Strict JSON with keys: `"category"`, `"use_personal_context"`, `"internet"`, `"transformed_input"`. No extra text.
 
-5. Determine the `transformed_input`:
-   - For agent requests that are follow-ups (e.g., “Retry that”), incorporate the intended original action using context from the chat history.
-   - For chat and memory categories, use the user’s input exactly as provided.
+Here are some examples:
 
-6. Output Requirement: 
-   - Produce only a valid JSON object with exactly these keys:  
-     - `"category"`: must be one of `"chat"`, `"memory"`, or `"agent"`.
-     - `"use_personal_context"`: either `true` or `false`.
-     - `"internet"`: either `true` or `false`.
-     - `"transformed_input"`: a string.
-   - Do not output any additional text or explanation.
+Example 1:
+Input: "I like classical music."
+Output: {"category": "memory", "use_personal_context": true, "internet": false, "transformed_input": "I like classical music."}
+
+Example 2:
+Input: "Can you draft an email in Google Mail?"
+Output: {"category": "agent", "use_personal_context": false, "internet": false, "transformed_input": "Can you draft an email in Google Mail?"}
+
+Example 3:
+Input: "What's the weather like right now in London?"
+Output: {"category": "chat", "use_personal_context": false, "internet": true, "transformed_input": "What's the weather like right now in London?"}
+
+Example 4:
+Input: "Tell me a fun fact."
+Output: {"category": "chat", "use_personal_context": false, "internet": false, "transformed_input": "Tell me a fun fact."}
+
+Example 5:
+Input: "My favorite color is blue."
+Output: {"category": "memory", "use_personal_context": true, "internet": false, "transformed_input": "My favorite color is blue."}
+
+Example 6:
+Input: "Can you check Google Calendar for my schedule today?"
+Output: {"category": "agent", "use_personal_context": true, "internet": false, "transformed_input": "Can you check Google Calendar for my schedule today?"}
+
+Example 7 (Assuming previous action was 'Create a doc called Meeting Notes'):
+Input: "Retry that."
+Output: {"category": "agent", "use_personal_context": false, "internet": false, "transformed_input": "Create a doc called Meeting Notes"}
+
+Example 8:
+Input: "Who is the president of the USA?"
+Output: {"category": "chat", "use_personal_context": false, "internet": false, "transformed_input": "Who is the president of the USA?"} # Assumes base knowledge, not dynamic
+
+Example 9:
+Input: "What are the latest headlines?"
+Output: {"category": "chat", "use_personal_context": false, "internet": true, "transformed_input": "What are the latest headlines?"}
 """
 
 unified_classification_user_prompt_template = """Classify the following user input based on the criteria provided.

@@ -1,6 +1,6 @@
-from model.context.base import BaseContextEngine
-from model.agents.functions import authenticate_gmail
-from model.context.runnables import get_gmail_context_runnable
+from server.context.base import BaseContextEngine
+from server.agents.functions import authenticate_gmail
+from server.context.runnables import get_gmail_context_runnable
 from datetime import datetime
 import asyncio
 

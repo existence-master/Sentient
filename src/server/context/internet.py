@@ -1,8 +1,8 @@
-from model.context.base import BaseContextEngine
-from model.context.runnables import get_internet_search_context_runnable
-from model.common.runnables import *
-from model.memory.runnables import *
-from model.chat.functions import get_reframed_internet_query, get_search_results, get_search_summary
+from server.context.base import BaseContextEngine
+from server.context.runnables import get_internet_search_context_runnable
+from server.common.runnables import *
+from server.memory.runnables import *
+from server.chat.functions import get_reframed_internet_query, get_search_results, get_search_summary
 from datetime import datetime
 import random
 

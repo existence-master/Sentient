@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 from .formats import *  # Importing format specifications or utilities from formats.py
 from .prompts import *  # Importing prompt templates and related utilities from prompts.py
 from .constants import *  # Importing constant variables from constants.py
-from model.app.base import *
-from model.app.helpers import *  # Importing helper functions from helpers.py
+from server.app.base import *
+from server.app.helpers import *  # Importing helper functions from helpers.py
 
 load_dotenv("model/.env")
 

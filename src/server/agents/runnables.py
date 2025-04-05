@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 from .formats import *
 from .prompts import *
-from model.app.base import *
+from server.app.base import *
 
 load_dotenv("model/.env")
 

@@ -1,6 +1,6 @@
-from model.context.base import BaseContextEngine
-from model.agents.functions import authenticate_calendar
-from model.context.runnables import get_gcalendar_context_runnable
+from server.context.base import BaseContextEngine
+from server.agents.functions import authenticate_calendar
+from server.context.runnables import get_gcalendar_context_runnable
 from datetime import datetime, timedelta
 from dateutil import parser
 import asyncio

@@ -6,7 +6,7 @@ import aiofiles
 import json
 from typing import Dict, List, Optional, Tuple, Union
 
-from model.agents.functions import send_email, reply_email
+from server.agents.functions import send_email, reply_email
 
 # Global lock for thread-safe access to task data
 task_lock = asyncio.Lock()

@@ -1,7 +1,7 @@
 import os
-from model.app.base import *
-from model.context.prompts import *
-from model.context.formats import *
+from server.app.base import *
+from server.context.prompts import *
+from server.context.formats import *
 
 def get_gmail_context_runnable():
     """Configure and return a Runnable for the Gmail Context Engine."""

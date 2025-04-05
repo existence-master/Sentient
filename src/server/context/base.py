@@ -4,7 +4,7 @@ from datetime import datetime
 import asyncio
 import os
 import time
-from model.app.helpers import load_db, load_notifications_db, save_notifications_db # Import here to avoid circular import
+from server.app.helpers import load_db, load_notifications_db, save_notifications_db # Import here to avoid circular import
 
 class BaseContextEngine(ABC):
     """Abstract base class for context engines handling various data sources."""

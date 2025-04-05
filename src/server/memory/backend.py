@@ -3,11 +3,11 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 import os
 from dotenv import load_dotenv
 import json
-from model.memory.runnables import *
-from model.memory.functions import *
-from model.memory.dual_memory import MemoryManager
-from  model.memory.base import *  # Import the new MemoryQueue
-from model.app.base import *
+from server.memory.runnables import *
+from server.memory.functions import *
+from server.memory.dual_memory import MemoryManager
+from  server.memory.base import *  # Import the new MemoryQueue
+from server.app.base import *
 
 load_dotenv("model/.env")
 

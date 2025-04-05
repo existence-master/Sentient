@@ -5,8 +5,8 @@ from wrapt_timeout_decorator import *  # Importing timeout decorator for functio
 
 from .prompts import *  # Importing prompt templates and related utilities from prompts.py
 from .formats import *  # Importing format specifications or utilities from formats.py
-from model.app.base import *
-from model.app.helpers import *  # Importing helper functions from helpers.py
+from server.app.base import *
+from server.app.helpers import *  # Importing helper functions from helpers.py
 
 load_dotenv("model/.env")
 

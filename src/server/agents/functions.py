@@ -22,7 +22,7 @@ import io
 import requests
 import aiohttp
 
-from model.app.helpers import *
+from server.app.helpers import *
 
 load_dotenv("model/.env")  # Load environment variables from .env file
 

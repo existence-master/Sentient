@@ -34,44 +34,44 @@ print(f"[STARTUP] {datetime.now()}: Basic imports completed.")
 
 # Import specific functions, runnables, and helpers from respective folders
 print(f"[STARTUP] {datetime.now()}: Importing model components...")
-from model.agents.runnables import *
-from model.agents.functions import *
-from model.agents.prompts import *
-from model.agents.formats import *
-from model.agents.base import *
-from model.agents.helpers import *
+from server.agents.runnables import *
+from server.agents.functions import *
+from server.agents.prompts import *
+from server.agents.formats import *
+from server.agents.base import *
+from server.agents.helpers import *
 
-from model.memory.runnables import *
-from model.memory.functions import *
-from model.memory.prompts import *
-from model.memory.constants import *
-from model.memory.formats import *
-from model.memory.backend import MemoryBackend
+from server.memory.runnables import *
+from server.memory.functions import *
+from server.memory.prompts import *
+from server.memory.constants import *
+from server.memory.formats import *
+from server.memory.backend import MemoryBackend
 
-from model.utils.helpers import *
+from server.utils.helpers import *
 
-from model.scraper.runnables import *
-from model.scraper.functions import *
-from model.scraper.prompts import *
-from model.scraper.formats import *
+from server.scraper.runnables import *
+from server.scraper.functions import *
+from server.scraper.prompts import *
+from server.scraper.formats import *
 
-from model.auth.helpers import *
+from server.auth.helpers import *
 
-from model.common.functions import *
-from model.common.runnables import *
-from model.common.prompts import *
-from model.common.formats import *
+from server.common.functions import *
+from server.common.runnables import *
+from server.common.prompts import *
+from server.common.formats import *
 
-from model.chat.runnables import *
-from model.chat.prompts import *
-from model.chat.functions import *
+from server.chat.runnables import *
+from server.chat.prompts import *
+from server.chat.functions import *
 
-from model.context.gmail import GmailContextEngine
-from model.context.internet import InternetSearchContextEngine
-from model.context.gcalendar import GCalendarContextEngine
+from server.context.gmail import GmailContextEngine
+from server.context.internet import InternetSearchContextEngine
+from server.context.gcalendar import GCalendarContextEngine
 
-from model.voice.stt import FasterWhisperSTT
-from model.voice.orpheus_tts import OrpheusTTS, TTSOptions, VoiceId, AVAILABLE_VOICES
+from server.voice.stt import FasterWhisperSTT
+from server.voice.orpheus_tts import OrpheusTTS, TTSOptions, VoiceId, AVAILABLE_VOICES
 
 from datetime import datetime
 
@@ -2661,7 +2661,7 @@ async def scrape_linkedin(profile: LinkedInURL):
     print(f"[ENDPOINT /scrape-linkedin] {datetime.now()}: Endpoint called for URL: {profile.url}")
     try:
         # Ensure the scraping function exists and is imported
-        from model.scraper.functions import scrape_linkedin_profile # Assuming it's here
+        from server.scraper.functions import scrape_linkedin_profile # Assuming it's here
         print(f"[ENDPOINT /scrape-linkedin] {datetime.now()}: Starting LinkedIn scrape...")
         # This function needs to be async or run in a threadpool if it's blocking
         linkedin_profile = await asyncio.to_thread(scrape_linkedin_profile, profile.url)

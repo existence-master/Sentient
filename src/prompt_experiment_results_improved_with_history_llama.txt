@@ -1,0 +1,1407 @@
+Prompt Experiment Results with Targeted History
+Model: llama3.2:3b
+===
+
+---
+Input: What is the capital of France?
+---
+Selected History Context: Empty
+---
+--- original ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": true,
+  "transformed_input": "What is the capital of which country?"
+}
+
+--- few_shot_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "capital of what country"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Retry"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "[\"what\", \"is\", \"the\", \"capital\", \"of\", \"france\"]"
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What is the capital of France?"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "What is the capital of France?"
+}
+
+--- schema_example_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "capital of france"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "retry"
+}
+
+--- role_contextual_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "what is the capital of France ?"
+}
+
+
+---
+Input: I like to play chess.
+---
+Selected History Context: Empty
+---
+--- original ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "I'd like to know more about playing chess."
+}
+
+--- few_shot_improved ---
+{
+  "category": "memory",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "This user enjoys playing chess."
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "memory",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Hobby"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "I like to play chess."
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "I like to play chess."
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "I want to learn more about chess."
+}
+
+--- schema_example_improved ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "What kind of chess do you like to play?"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": ""
+}
+
+--- role_contextual_improved ---
+{
+  "category": "memory",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "I like playing chess."
+}
+
+
+---
+Input: Can you schedule a meeting in Google Calendar?
+---
+Selected History Context: Empty
+---
+--- original ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Can you retry scheduling a meeting in Google Calendar?"
+}
+
+--- few_shot_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Schedule a meeting in Google Calendar"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Can I schedule a meeting in Google Calendar?"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": ""
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Can you schedule a meeting in Google Calendar?"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Can you retry scheduling a meeting in Google Calendar?"
+}
+
+--- schema_example_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Can you retry scheduling a meeting in Google Calendar?"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "schedule a meeting in google calendar"
+}
+
+--- role_contextual_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Can you schedule a meeting in Google Calendar?"
+}
+
+
+---
+Input: Tell me about the latest tech news.
+---
+Selected History Context: ChatInternet
+---
+--- original ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What kind of tech news would you like to know about?"
+}
+
+--- few_shot_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Tell me about the latest tech news."
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Tell me about the latest tech news."
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "<input>Tell me about the latest tech news.</input>"
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Tell me about the latest tech news"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Tell me about the latest tech news."
+}
+
+--- schema_example_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Tell me about the latest tech news."
+}
+
+--- error_corrective_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Tell me about the latest tech news."
+}
+
+--- role_contextual_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Tell me about the latest tech news"
+}
+
+
+---
+Input: Retry that last action.
+---
+Selected History Context: AgentRetryClear
+---
+--- original ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "I will create a new document in Google Docs named 'Project Plan'."
+}
+
+--- few_shot_improved ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Create a doc called Project Plan"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Create a document in Google Docs named 'Project Plan'"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "<input>Retry that last action.</input>"
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Retry that last action in Google Drive"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Can you retry that last action."
+}
+
+--- schema_example_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Retry that last action"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Retry that last action."
+}
+
+--- role_contextual_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Retry that last action"
+}
+
+
+---
+Input: Add this to my preferences: I'm allergic to nuts
+---
+Selected History Context: Empty
+---
+--- original ---
+{
+  "category": "memory",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Add this to your preferences. You are allergic to nuts."
+}
+
+--- few_shot_improved ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Add this to your preferences: I'm allergic to nuts"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "memory",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "I am allergic to nuts"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": true,
+  "transformed_input": "<input>Add this to your preferences: I'm allergic to nuts</input>"
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": true,
+  "transformed_input": "I\u2019m allergic to nuts"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "memory",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Add this to my preferences: I'm allergic to nuts."
+}
+
+--- schema_example_improved ---
+{
+  "category": "memory",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Add this to your preferences: You are allergic to nuts"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Add 'nut allergy' to your preferences"
+}
+
+--- role_contextual_improved ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "I'm allergic to nuts"
+}
+
+
+---
+Input: Make a spreadsheet in Google Sheets for Q2 sales
+---
+Selected History Context: Empty
+---
+--- original ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Make a new spreadsheet in Google Sheets for Q2 sales"
+}
+
+--- few_shot_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Make a spreadsheet in Google Sheets"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Make a new spreadsheet in Google Sheets for Q2 sales"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "memory",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Q2 Sales"
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "memory",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "spreadsheet in Google Sheets for Q2 sales"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": ""
+}
+
+--- schema_example_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Make a spreadsheet in Google Sheets"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Make a spreadsheet in Google Sheets for Q2 sales"
+}
+
+--- role_contextual_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "agent name and location"
+}
+
+
+---
+Input: What's happening in the stock market today?
+---
+Selected History Context: ChatInternet
+---
+--- original ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": ""
+}
+
+--- few_shot_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What's happening in the stock market today?"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What's happening in the stock market today?"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "<input>What's happening in the stock market today?</input>"
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What is the current stock market information?"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What's happening in the stock market today?"
+}
+
+--- schema_example_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What's the current stock market news today?"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What's happening in the stock market today?"
+}
+
+--- role_contextual_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What's happening in the stock market today?"
+}
+
+
+---
+Input: Remember that I use Android not iPhone
+---
+Selected History Context: Empty
+---
+--- original ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "What phone do you use?"
+}
+
+--- few_shot_improved ---
+{
+  "category": "memory",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "phone_type"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Use an Android device"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "memory",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "I use Android as my device"
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "memory",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "remember that you use android not iphone"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "memory",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": ""
+}
+
+--- schema_example_improved ---
+{
+  "category": "memory",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Remember that you use Android not iPhone"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": true,
+  "transformed_input": "Android phone"
+}
+
+--- role_contextual_improved ---
+{
+  "category": "memory",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "input from user"
+}
+
+
+---
+Input: Check my Google Calendar for today
+---
+Selected History Context: MemoryContext
+---
+--- original ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Check your Google Calendar for today"
+}
+
+--- few_shot_improved ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Check my Google Calendar for today"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Check my Google Calendar for today"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "<input>Check my Google Calendar for today</input>"
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Check my Google Calendar for today"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Check my Google Calendar for today"
+}
+
+--- schema_example_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Check the user's schedule in their Google Calendar"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Check my Google Calendar for today"
+}
+
+--- role_contextual_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Check my Google Calendar"
+}
+
+
+---
+Input: How does photosynthesis work?
+---
+Selected History Context: Empty
+---
+--- original ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": true,
+  "transformed_input": "How can I do photosynthesis?"
+}
+
+--- few_shot_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What do plants use to undergo photosynthesis?"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "retry"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "memory",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "<input>How does photosynthesis work?</input>"
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "{\"definition\": \"Photosynthesis is the process by which green plants, algae, and some bacteria convert light energy from the sun into chemical energy in the form of organic compounds, such as glucose.\"}"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "How does photosynthesis work? (Retrying)"
+}
+
+--- schema_example_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What specific aspects of photosynthesis would you like to know more about?"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "photosynthesis (search for definition)"
+}
+
+--- role_contextual_improved ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": true,
+  "transformed_input": "How does photosynthesis work?"
+}
+
+
+---
+Input: What time is sunset in Tokyo tomorrow?
+---
+Selected History Context: Empty
+---
+--- original ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": true,
+  "transformed_input": "search for \"Tokyo sunset tomorrow\""
+}
+
+--- few_shot_improved ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": true,
+  "transformed_input": "sunset at what time will it be in Tokyo tomorrow?"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "retry"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Forum:  Chat, Time: Tomorrow's sunset in Tokyo was not found. Please try another search question."
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "memory",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What time is sunset in Tokyo tomorrow?"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "retry"
+}
+
+--- schema_example_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What time is sunset in Tokyo tomorrow?"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": true,
+  "transformed_input": "What time is sunset in Tokyo? (rephrase)"
+}
+
+--- role_contextual_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Tokyo sunset tomorrow"
+}
+
+
+---
+Input: Please email the report to my team using Google Mail
+---
+Selected History Context: Empty
+---
+--- original ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Please retry sending the report to my team using Gmail"
+}
+
+--- few_shot_improved ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Please retry emailing the report to your team using Gmail"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Please use Gmail to send the report to your team."
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "memory",
+  "use_personal_context": true,
+  "internet": true,
+  "transformed_input": "Please email the report to my team using Gmail."
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "memory",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Please email the report to my team using Google Mail"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "retry"
+}
+
+--- schema_example_improved ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Please retry sending the report to your team using Google Mail"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "retry"
+}
+
+--- role_contextual_improved ---
+{
+  "category": "memory",
+  "use_personal_context": true,
+  "internet": true,
+  "transformed_input": "Please email the report to my team using Google Mail"
+}
+
+
+---
+Input: I prefer tea over coffee
+---
+Selected History Context: Empty
+---
+--- original ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "I'd like to know more about tea."
+}
+
+--- few_shot_improved ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "I prefer tea"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "I'm looking for a recipe, can you help?"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "I preffer te ovr coffie"
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "I prefer tea over coffee"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Ipreferteaovercoffee"
+}
+
+--- schema_example_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "I'd be happy to help you with that."
+}
+
+--- error_corrective_improved ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "I prefer tea over coffee, I'd like to know if you have a favorite beverage."
+}
+
+--- role_contextual_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "I like tea better than coffee"
+}
+
+
+---
+Input: Create a presentation in Google Slides about Q3 results
+---
+Selected History Context: Empty
+---
+--- original ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Create a new Google Slides presentation"
+}
+
+--- few_shot_improved ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Create a presentation in Google Slides"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Create a new presentation in Google Slides and add the Q3 results data."
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Create a presentation in Google Slides about Q3 results"
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Create a presentation in Google Slides about Q3 results"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Create a presentation in Google Slides about Q3 results"
+}
+
+--- schema_example_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Create a new presentation in Google Slides to view the Q3 results"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Create a new presentation in Google Slides about Q3 results"
+}
+
+--- role_contextual_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "{\"title\": \"Q3 Results Presentation\", \"description\": \"A presentation in Google Slides about Q3 results\"}"
+}
+
+
+---
+Input: Just saying hello
+---
+Selected History Context: Empty
+---
+--- original ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Just saying hello"
+}
+
+--- few_shot_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Just saying hello"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Just saying hello"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Just saying hello"
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Hello"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Unknown"
+}
+
+--- schema_example_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "hello"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Just saying hello"
+}
+
+--- role_contextual_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "hello"
+}
+
+
+---
+Input: What was the score of the big game last night?
+---
+Selected History Context: Empty
+---
+--- original ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What was the score of the big game on 02/06/2024?"
+}
+
+--- few_shot_improved ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": true,
+  "transformed_input": "Did you want to know the score of a specific game or just general sports info?"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "What score did the team win last night?"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "<input>What was the score of the big game last night?</input>"
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What was the score of the big game last night?"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What was the score of the big game?"
+}
+
+--- schema_example_improved ---
+{
+  "category": "memory",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What was the score of the specific sports game played last night?"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "What is the current sports news?"
+}
+
+--- role_contextual_improved ---
+{
+  "category": "chat",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "big game last night"
+}
+
+
+---
+Input: Remind me that my anniversary is June 5th
+---
+Selected History Context: MemoryContext
+---
+--- original ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Remind you that your anniversary is June 5th"
+}
+
+--- few_shot_improved ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Remind me that my anniversary is June 5th"
+}
+
+--- chain_of_thought_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Remind me that my anniversary is June 5th"
+}
+
+--- xml_tagged_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "<input>Remind me that my anniversary is June 5th</input>"
+}
+
+--- markdown_structured_improved ---
+{
+  "category": "agent",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Remind me that my anniversary is June 5th"
+}
+
+--- cot_explicit_reasoning ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": true,
+  "transformed_input": "Remind me that my anniversary is June 5th"
+}
+
+--- schema_example_improved ---
+{
+  "category": "memory",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Your anniversary is on June 5th"
+}
+
+--- error_corrective_improved ---
+{
+  "category": "chat",
+  "use_personal_context": true,
+  "internet": false,
+  "transformed_input": "Remind me that my anniversary is June 5th"
+}
+
+--- role_contextual_improved ---
+{
+  "category": "agent",
+  "use_personal_context": false,
+  "internet": false,
+  "transformed_input": "Remind me of my upcoming anniversary"
+}
+
