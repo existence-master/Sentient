@@ -1,66 +1,76 @@
-import React from "react"
-import { IconAlertTriangle, IconX } from "@tabler/icons-react" // Added icons
+import React from "react" // Importing React library
 
+/**
+ * Disclaimer Component - Displays a disclaimer modal for data usage consent.
+ *
+ * This component is a modal that presents a disclaimer to the user regarding the use of their data
+ * when connecting or disconnecting social media accounts (like LinkedIn, Reddit, Twitter).
+ * It dynamically adjusts its message based on the action (connect or disconnect) and the app name.
+ * For connection actions, it also includes an input field for the user to enter their profile URL.
+ *
+ * @param {object} props - Component props.
+ * @param {string} props.appName - The name of the application (e.g., LinkedIn) for context in the disclaimer.
+ * @param {string} props.profileUrl - The URL of the social media profile, used for input field value.
+ * @param {function} props.setProfileUrl - Function to update the profile URL state.
+ * @param {function} props.onAccept - Handler function called when the user accepts the disclaimer.
+ * @param {function} props.onDecline - Handler function called when the user declines the disclaimer.
+ * @param {string} props.action - Action type, either "connect" or "disconnect", to customize the disclaimer message.
+ * @returns {React.ReactNode} - The Disclaimer component UI.
+ */
 const Disclaimer = ({
-	appName,
-	profileUrl,
-	setProfileUrl,
-	onAccept,
-	onDecline,
-	action,
-	showInput = false // Default showInput to false if not provided
+	appName, // Name of the application for disclaimer context - appName: string
+	profileUrl, // URL of the social media profile, for input value - profileUrl: string
+	setProfileUrl, // Function to update profile URL state - setProfileUrl: (url: string) => void
+	onAccept, // Handler function for accept action - onAccept: () => void
+	onDecline, // Handler function for decline action - onDecline: () => void
+	action // Action type ("connect" or "disconnect") to customize message - action: "connect" | "disconnect"
 }) => {
 	return (
-		// MODIFIED: Overlay styling
-		<div className="fixed inset-0 flex items-center justify-center bg-black/70 backdrop-blur-sm z-50 p-4">
-			{/* MODIFIED: Dialog styling */}
-			<div className="bg-neutral-800 rounded-lg p-6 shadow-xl w-full max-w-md text-center border border-neutral-700">
-				<div className="flex justify-center mb-4">
-					<IconAlertTriangle className="w-10 h-10 text-yellow-500" />
-				</div>
-				<h2 className="text-white text-xl font-semibold mb-3">
-					{action === "connect"
-						? `Connect ${appName}`
-						: `Disconnect ${appName}`}
+		<div className="absolute inset-0 flex items-center justify-center bg-[#22211D]/75">
+			{/* Overlay container: absolute positioning to cover entire viewport, flex layout to center content, background color with opacity */}
+			<div className="bg-white p-6 rounded-lg shadow-lg max-w-md text-center">
+				{/* Disclaimer modal container: white background, padding, rounded corners, shadow, max width, text-center alignment */}
+				<h2 className="text-black text-xl font-bold mb-4">
+					Data Usage Disclaimer
 				</h2>
-				<p className="text-gray-300 text-sm mb-5">
-					{action === "connect"
-						? `By connecting your ${appName} account, you agree to let Sentient access your public profile information solely to enhance your personalized experience. Your data remains stored locally on your device.`
-						: `Disconnecting your ${appName} account will remove the associated data from Sentient's local storage and knowledge graph.`}
+				{/* Disclaimer title: black text color, text size xl, bold font, margin bottom */}
+				<p className="text-black mb-4">
+					{/* Disclaimer message paragraph: black text color, margin bottom */}
+					{
+						action === "connect"
+							? `By connecting your ${appName} account, you agree to let us use your public profile information to enhance your experience. We value your privacy and your data stays local.`
+							: // Message for "connect" action: explains data usage for enhancing experience, emphasizes privacy and local data storage
+								`By disconnecting your ${appName} account, you understand that your app data will be removed from our services.`
+						// Message for "disconnect" action: informs user about data removal upon disconnection
+					}
 				</p>
-				{/* MODIFIED: Input styling and conditional rendering */}
-				{action === "connect" &&
-					showInput && ( // Ensure showInput prop controls rendering
-						<input
-							type="text"
-							placeholder={`Enter ${appName} Profile URL`}
-							value={profileUrl}
-							onChange={(e) => setProfileUrl(e.target.value)}
-							className="border border-neutral-600 p-2.5 rounded-md mb-6 w-full text-sm bg-neutral-700 text-white focus:outline-none focus:border-lightblue" // Adjusted style
-						/>
-					)}
-				{/* MODIFIED: Button styling */}
-				<div className="flex justify-center gap-4">
-					<button
-						className="py-2 px-6 rounded-md bg-neutral-600 hover:bg-neutral-500 text-white text-sm font-medium transition-colors"
-						onClick={onDecline}
-					>
-						Cancel
-					</button>
-					<button
-						className={cn(
-							"py-2 px-6 rounded-md text-white text-sm font-medium transition-colors",
-							action === "connect"
-								? "bg-green-600 hover:bg-green-500"
-								: "bg-red-600 hover:bg-red-500"
-						)}
-						onClick={onAccept}
-					>
-						{action === "connect"
-							? "Accept & Connect"
-							: "Confirm Disconnect"}
-					</button>
-				</div>
+				{/* Conditional rendering of profile URL input field, only for "connect" action */}
+				{action === "connect" && (
+					<input
+						type="text"
+						placeholder={`Enter ${appName} Profile URL`}
+						value={profileUrl} // Input value from profileUrl prop
+						onChange={(e) => setProfileUrl(e.target.value)} // Update profileUrl state on input change
+						className="border p-2 rounded-sm mb-4 w-full text-black"
+						// Input field styling: border, padding, rounded corners, margin bottom, full width, black text color
+					/>
+				)}
+				{/* Accept button */}
+				<button
+					className="bg-green-500 text-white font-bold py-2 px-4 rounded-full mr-2 cursor-pointer"
+					// Accept button styling: green background, white text color, bold font, padding, rounded full corners, margin right
+					onClick={onAccept} // Calls the onAccept handler passed as prop
+				>
+					Accept
+				</button>
+				{/* Decline button */}
+				<button
+					className="bg-red-500 text-white font-bold py-2 px-4 rounded-full cursor-pointer"
+					// Decline button styling: red background, white text color, bold font, padding, rounded full corners
+					onClick={onDecline} // Calls the onDecline handler passed as prop
+				>
+					Decline
+				</button>
 			</div>
 		</div>
 	)
