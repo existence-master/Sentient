@@ -4,139 +4,77 @@ from linkedin_api import Linkedin  # Importing Linkedin API client
 import praw  # Importing praw, the Python Reddit API Wrapper
 from ntscraper import Nitter  # Importing Nitter scraper for Twitter
 from dotenv import load_dotenv
+from linkedin_api.cookie_repository import LinkedinSessionExpired
 
 from .prompts import *  # Importing prompt templates and related utilities from prompts.py
 
 load_dotenv("server/.env")  # Load environment variables from .env file
-
 def scrape_linkedin_profile(url: str) -> dict:
-    """
-    Scrapes and formats LinkedIn profile data from a given profile URL.
-
-    Utilizes the Linkedin API client to fetch profile information, then processes and formats
-    the data, removing unnecessary keys and restructuring certain sections like 'projects', 'honors',
-    'certifications', 'education', and 'experience' for better readability and use.
-
-    Args:
-        url (str): The LinkedIn profile URL to scrape.
-
-    Returns:
-        dict: A formatted dictionary containing relevant LinkedIn profile information.
-              Sections like 'projects', 'honors', 'certifications', 'education', and 'experience'
-              are restructured into more accessible formats.
-
-    Raises:
-        Exception: If there is an error during LinkedIn data scraping or API interaction.
-    """
+    """Scrapes and formats LinkedIn profile data from a given profile URL."""
     try:
-        api = Linkedin(
-            os.getenv("LINKEDIN_USERNAME"), os.getenv("LINKEDIN_PASSWORD")
-        )  # Initialize LinkedIn API client
-        
-        profile_id = url.split("/")[-2]  # Extract profile ID from URL
-        profile = api.get_profile(profile_id)  # Fetch profile data using API
-        
-        # Keys to delete from the profile data, considered unnecessary for the application
+        username = os.getenv("LINKEDIN_USERNAME")
+        password = os.getenv("LINKEDIN_PASSWORD")
+        if not username or not password:
+            raise Exception("LinkedIn credentials are missing in environment variables.")
+
+        try:
+            api = Linkedin(username, password)
+        except LinkedinSessionExpired:
+            raise Exception("LinkedIn session expired. Delete cached cookies or re-authenticate.")
+
+        profile_id = url.split("/")[-2]
+        profile = api.get_profile(profile_id)
+
         del_keys = [
-            "geoCountryUrn",
-            "geoLocationBackfilled",
-            "elt",
-            "industryUrn",
-            "entityUrn",
-            "geo",
-            "urn_id",
-            "public_id",
-            "member_urn",
-            "profile_urn",
-            "profile_id",
-            "img_800_800",
-            "img_400_400",
-            "img_200_200",
-            "img_100_100",
-            "displayPictureUrl",
-            "geoLocation",
-            "location",
-            "student",
+            "geoCountryUrn", "geoLocationBackfilled", "elt", "industryUrn",
+            "entityUrn", "geo", "urn_id", "public_id", "member_urn", "profile_urn",
+            "profile_id", "img_800_800", "img_400_400", "img_200_200", "img_100_100",
+            "displayPictureUrl", "geoLocation", "location", "student"
         ]
 
-        formatted_profile = {}  # Initialize dictionary to store formatted profile data
+        formatted_profile = {
+            k: v for k, v in profile.items() if k not in del_keys
+        }
 
-        for item in profile.items():  # Iterate through profile items
-            if item[0] not in del_keys:
-                formatted_profile[item[0]] = item[
-                    1
-                ]  # Keep item if key is not in del_keys
+        formatted_profile["projects"] = {
+            item["title"]: item["description"]
+            for item in formatted_profile.get("projects", [])
+        }
 
-        # Restructure 'projects' section
-        projects = {}
-        for item in formatted_profile["projects"]:
-            projects[item["title"]] = item[
-                "description"
-            ]  # Map project title to description
-        formatted_profile["projects"] = projects
+        formatted_profile["honors"] = {
+            item["title"]: item["title"]
+            for item in formatted_profile.get("honors", [])
+        }
 
-        # Restructure 'honors' section
-        honors = {}
-        for item in formatted_profile["honors"]:
-            honors[item["title"]] = item[
-                "title"
-            ]  # Map honor title to itself (for simple listing)
-        formatted_profile["honors"] = honors
+        formatted_profile["certifications"] = {
+            item["name"]: item["name"]
+            for item in formatted_profile.get("certifications", [])
+        }
 
-        # Restructure 'certifications' section
-        certifications = {}
-        for item in formatted_profile["certifications"]:
-            certifications[item["name"]] = item[
-                "name"
-            ]  # Map certification name to itself (for simple listing)
-        formatted_profile["certifications"] = certifications
-
-        # Restructure 'education' section
-        education = {}
-        for item in formatted_profile["education"]:
-            education[item["schoolName"]] = {
-                "degreeName": item.get(
-                    "degreeName", ""
-                ),  # Get degree name, default to empty string if not present
-                "fieldOfStudy": item.get(
-                    "fieldOfStudy", ""
-                ),  # Get field of study, default to empty string if not present
-                "grade": item.get(
-                    "grade", ""
-                ),  # Get grade, default to empty string if not present
+        formatted_profile["education"] = {
+            item["schoolName"]: {
+                "degreeName": item.get("degreeName", ""),
+                "fieldOfStudy": item.get("fieldOfStudy", ""),
+                "grade": item.get("grade", ""),
             }
-        formatted_profile["education"] = education
+            for item in formatted_profile.get("education", [])
+        }
 
-        # Restructure 'experience' section
-        experience = {}
-        for item in formatted_profile["experience"]:
-            title = item.get(
-                "title", ""
-            )  # Get job title, default to empty string if not present
-            if title:  # Process only if title is present
-                experience[title] = {
-                    "companyName": item.get(
-                        "companyName", ""
-                    ),  # Get company name, default to empty string if not present
-                    "startDate": item["timePeriod"]["startDate"]
-                    if "timePeriod" in item and "startDate" in item["timePeriod"]
-                    else {},  # Get start date, handle missing keys
-                    "endDate": item["timePeriod"]["endDate"]
-                    if "timePeriod" in item and "endDate" in item["timePeriod"]
-                    else {},  # Get end date, handle missing keys
-                    "description": item.get(
-                        "description", ""
-                    ),  # Get description, default to empty string if not present
+        formatted_profile["experience"] = {}
+        for item in formatted_profile.get("experience", []):
+            title = item.get("title", "")
+            if title:
+                formatted_profile["experience"][title] = {
+                    "companyName": item.get("companyName", ""),
+                    "startDate": item.get("timePeriod", {}).get("startDate", {}),
+                    "endDate": item.get("timePeriod", {}).get("endDate", {}),
+                    "description": item.get("description", ""),
                 }
-        formatted_profile["experience"] = experience
 
-        return formatted_profile  # Return the formatted LinkedIn profile data
+        return formatted_profile
+
     except Exception as e:
-        print(f"Error scraping LinkedIn data: {str(e)}")
-        raise Exception(
-            f"Error scraping linkedin data: {e}"
-        )  # Re-raise exception with more context
-
+        raise Exception(f"Error scraping linkedin data: {e}")
 
 def reddit_scraper(url: str, limit: int = 50) -> dict:
     """
@@ -197,41 +135,19 @@ def reddit_scraper(url: str, limit: int = 50) -> dict:
 
 
 def scrape_twitter_data(username_or_url: str, num_tweets: int = 20) -> list[str]:
-    """
-    Scrapes tweets from a Twitter user profile and returns the text content of the latest tweets.
+    scraper = Nitter()
 
-    Uses Nitter scraper to fetch tweets, as the official Twitter API (or tweepy) is not used here.
-    It extracts the text from the specified number of latest tweets from a given username or profile URL.
-
-    Args:
-        username_or_url (str): Twitter username or profile URL to scrape tweets from.
-        num_tweets (int, optional): Number of tweets to scrape. Defaults to 20.
-
-    Returns:
-        list[str]: A list of strings, where each string is the text content of a scraped tweet.
-
-    Raises:
-        Exception: If there is an error during Twitter data scraping using Nitter.
-    """
-    scraper = Nitter()  # Initialize Nitter scraper
+    if not scraper.working_instances:
+        raise Exception("No available Nitter instances to scrape from.")
 
     if "http" in username_or_url:
-        username = username_or_url.split("/")[
-            -1
-        ]  # Extract username from URL if URL is provided
+        username = username_or_url.rstrip("/").split("/")[-1]
     else:
-        username = username_or_url  # Use provided username directly
+        username = username_or_url
 
     try:
-        tweets_data = scraper.get_tweets(
-            username, mode="user", number=num_tweets
-        )  # Scrape tweets using Nitter
-        tweet_texts = [
-            tweet["text"] for tweet in tweets_data["tweets"]
-        ]  # Extract text from each tweet in the scraped data
-        return tweet_texts  # Return list of tweet texts
+        tweets_data = scraper.get_tweets(username, mode="user", number=num_tweets)
+        tweet_texts = [tweet["text"] for tweet in tweets_data["tweets"]]
+        return tweet_texts
     except Exception as e:
-        print(f"Error creating chat runnable: {e}")
-        raise Exception(
-            f"Error scraping twitter data: {e}"
-        )  # Re-raise exception with more context
+        raise Exception(f"Error scraping twitter data: {e}")
