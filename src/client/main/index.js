@@ -2317,7 +2317,10 @@ ipcMain.handle("get-data-sources", async () => {
 	}
 })
 
-ipcMain.handle("set-data-source-enabled", async (event, source, enabled) => {
+ipcMain.handle("set-data-source-enabled", async (event, { source, enabled }) => {
+	console.log(
+		`IPC: set-data-source-enabled called for source: ${source}, enabled: ${enabled}`
+	)
 	try {
 		const response = await fetch(
 			"http://localhost:5000/set_data_source_enabled",

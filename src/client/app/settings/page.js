@@ -96,12 +96,15 @@ const Settings = () => {
 	}, []) // Empty dependency array
 
 	// MODIFIED: Wrapped handleToggle in useCallback
-	const handleToggle = useCallback(async (sourceName, enabled) => {
+	const handleToggle = async (sourceName, enabled) => {
 		console.log(`Toggling ${sourceName} to ${enabled}`)
+		console.log(typeof (enabled)) // Check type
+		console.log(typeof (sourceName)) // Check type
 		// Optimistic UI update
 		setDataSources((prev) =>
 			prev.map((ds) => (ds.name === sourceName ? { ...ds, enabled } : ds))
 		)
+		console.log(`Toggling ${sourceName} to ${enabled}`)
 		try {
 			const response = await window.electron.invoke(
 				"set-data-source-enabled",
@@ -136,7 +139,7 @@ const Settings = () => {
 				)
 			)
 		}
-	}, []) // Empty dependency array
+	}
 
 	const fetchUserDetails = useCallback(async () => {
 		/* ...no functional change, ensure useCallback if needed... */

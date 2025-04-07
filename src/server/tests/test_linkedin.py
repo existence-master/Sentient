@@ -8,8 +8,6 @@ def extract_text_from_pdf(pdf_path):
     text = textract.process(pdf_path, encoding='utf-8')
     return text.decode('utf-8')
 
-
-
 def extract_json_from_response(response_text):
     """
     Extract and sanitize JSON object from model response.
@@ -33,8 +31,6 @@ def extract_json_from_response(response_text):
         print(f"JSON decode error: {e}")
         print("Extracted string preview:\n", json_str[:500])
         return None
-
-
 
 def generate_json_from_text(pdf_path):
     text = extract_text_from_pdf(pdf_path)

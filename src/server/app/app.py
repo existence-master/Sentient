@@ -2831,7 +2831,7 @@ async def graphrag(request: GraphRAGRequest):
 async def create_graph():
     """Creates a knowledge graph from documents in the input directory."""
     print(f"[ENDPOINT /initiate-long-term-memories] {datetime.now()}: Endpoint called.")
-    input_dir = "model/input"
+    input_dir = "server/input"
     extracted_texts = []
     loop = asyncio.get_event_loop()
 
@@ -2927,7 +2927,7 @@ async def delete_subgraph(request: DeleteSubgraphRequest):
     """Deletes a subgraph from the knowledge graph based on a source name."""
     source_key = request.source # e.g., "linkedin", "reddit"
     print(f"[ENDPOINT /delete-subgraph] {datetime.now()}: Endpoint called for source key: {source_key}")
-    input_dir = "model/input"
+    input_dir = "server/input"
     loop = asyncio.get_event_loop()
 
     try:
@@ -3009,7 +3009,7 @@ async def delete_subgraph(request: DeleteSubgraphRequest):
 async def create_document():
     """Creates and summarizes personality documents based on user profile data."""
     print(f"[ENDPOINT /create-document] {datetime.now()}: Endpoint called.")
-    input_dir = "model/input"
+    input_dir = "server/input"
     created_files = []
     unified_personality_description = ""
     loop = asyncio.get_event_loop()
@@ -3060,7 +3060,7 @@ async def create_document():
         trait_descriptions = []
         tasks = []
         print(f"[ENDPOINT /create-document] {datetime.now()}: Processing {len(personality_type)} personality traits...")
-        for trait in personality_type:
+        for trait in personality_type[0]:
             trait_lower = trait.lower() # Use lowercase consistently
             if trait_lower in PERSONALITY_DESCRIPTIONS:
                 description = f"{trait}: {PERSONALITY_DESCRIPTIONS[trait_lower]}"

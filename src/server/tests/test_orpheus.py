@@ -137,7 +137,7 @@ import asyncio
 from llama_cpp import Llama
 
 # Set the path to your GGUF model file (update this to the correct path)
-MODEL_PATH = "../models/orpheus-3b-0.1-ft-q4_k_m.gguf"  # Replace with your GGUF file path
+MODEL_PATH = "./models/orpheus-3b-0.1-ft-q4_k_m.gguf"  # Replace with your GGUF file path
 
 # Number of layers to offload to GPU (adjust based on your GPU memory, e.g., 30 for 8GB VRAM)
 N_GPU_LAYERS = 20
