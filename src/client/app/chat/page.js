@@ -4,7 +4,6 @@ import React, {
 	useEffect,
 	useRef,
 	useCallback
-	// No longer need forwardRef here
 } from "react"
 import ChatBubble from "@components/ChatBubble"
 import ToolResultBubble from "@components/ToolResultBubble"
@@ -16,17 +15,11 @@ import {
 	IconLoader,
 	IconPhone,
 	IconPhoneOff
-	// REMOVED: Mute/unmute icons are no longer needed here
-	// IconMicrophone,
-	// IconMicrophoneOff,
 } from "@tabler/icons-react"
 import toast from "react-hot-toast"
-
-// Import the DEFAULT export (forwardRef-wrapped component)
 import BackgroundCircleProvider from "@components/voice-test/background-circle-provider"
 
 const Chat = () => {
-	// --- State Variables ---
 	const [messages, setMessages] = useState([])
 	const [input, setInput] = useState("")
 	const [userDetails, setUserDetails] = useState("")
@@ -37,21 +30,16 @@ const Chat = () => {
 	const [chatMode, setChatMode] = useState("voice")
 	const [isLoading, setIsLoading] = useState(() => chatMode === "text")
 	const [connectionStatus, setConnectionStatus] = useState("disconnected")
-	// REMOVED: isMuted state
-	// REMOVED: callDuration state
 	const [audioInputDevices, setAudioInputDevices] = useState([])
 	const [selectedAudioInputDevice, setSelectedAudioInputDevice] = useState("")
 
-	// --- Refs ---
 	const textareaRef = useRef(null)
 	const chatEndRef = useRef(null)
 	const eventListenersAdded = useRef(false)
 	const backgroundCircleProviderRef = useRef(null)
 	const ringtoneAudioRef = useRef(null)
 	const connectedAudioRef = useRef(null)
-	// REMOVED: timerIntervalRef
 
-	// --- Handlers ---
 	const handleInputChange = (e) => {
 		const value = e.target.value
 		setInput(value)
@@ -69,40 +57,28 @@ const Chat = () => {
 		}
 	}
 
-	// REMOVED: formatDuration helper
-
-	// --- Connection Status and Timer Handling ---
 	const handleStatusChange = useCallback((status) => {
 		console.log("Connection status changed:", status)
 		setConnectionStatus(status)
 
-		// Stop ringing sound
 		if (status !== "connecting" && ringtoneAudioRef.current) {
 			ringtoneAudioRef.current.pause()
 			ringtoneAudioRef.current.currentTime = 0
 		}
 
-		// Play connected sound
 		if (status === "connected") {
-			// REMOVED: Reset duration
 			if (connectedAudioRef.current) {
-				connectedAudioRef.current.volume = 0.4 // Keep volume adjustment
+				connectedAudioRef.current.volume = 0.4
 				connectedAudioRef.current
 					.play()
 					.catch((e) =>
 						console.error("Error playing connected sound:", e)
 					)
 			}
-			// REMOVED: Timer starting logic
-		} else {
-			// REMOVED: Timer clearing logic
-			// REMOVED: Reset duration logic
 		}
 	}, [])
 
-	// --- Voice Control Handlers ---
 	const handleStartVoice = async () => {
-		// MODIFIED: No longer needs to pass deviceId to connect
 		if (
 			connectionStatus !== "disconnected" ||
 			!backgroundCircleProviderRef.current
@@ -118,7 +94,6 @@ const Chat = () => {
 				.catch((e) => console.error("Error playing ringtone:", e))
 		}
 		try {
-			// Call connect without arguments
 			await backgroundCircleProviderRef.current?.connect()
 		} catch (error) {
 			console.error("ChatPage: Error starting voice connection:", error)
@@ -139,22 +114,16 @@ const Chat = () => {
 		backgroundCircleProviderRef.current?.disconnect()
 	}
 
-	// REMOVED: handleToggleMute handler
-
-	// MODIFIED: Device change handler - only updates state
 	const handleDeviceChange = (event) => {
 		const deviceId = event.target.value
 		console.log("ChatPage: Selected audio input device changed:", deviceId)
 		setSelectedAudioInputDevice(deviceId)
-		// Inform user that a reconnect is needed for the change to take effect
 		toast.success(
 			"Microphone selection changed. Please restart the call to use the new device.",
 			{ duration: 4000 }
 		)
-		// REMOVED: Automatic reconnect logic
 	}
 
-	// --- Data Fetching and IPC ---
 	const fetchChatHistory = async () => {
 		try {
 			const response = await window.electron?.invoke("fetch-chat-history")
@@ -264,7 +233,7 @@ const Chat = () => {
 			setThinking(false)
 		} finally {
 			setThinking(false)
-			fetchChatHistory() // Fetch history after sending
+			fetchChatHistory()
 		}
 	}
 
@@ -306,14 +275,11 @@ const Chat = () => {
 		}
 	}
 
-	// --- Effects ---
-	// Initial setup effect
 	useEffect(() => {
 		console.log("ChatPage: Initial Mount Effect - chatMode:", chatMode)
 		fetchUserDetails()
 		fetchCurrentModel()
 
-		// ADDED: Fetch audio input devices on mount directly using navigator
 		const getDevices = async () => {
 			try {
 				if (
@@ -336,14 +302,12 @@ const Chat = () => {
 					)
 					setAudioInputDevices(
 						audioInputDevices.map((d) => ({
-							// Store only needed info
 							deviceId: d.deviceId,
 							label:
 								d.label ||
 								`Microphone ${audioInputDevices.indexOf(d) + 1}`
 						}))
 					)
-					// Set default selected device only if not already set
 					if (!selectedAudioInputDevice) {
 						const defaultDevice =
 							audioInputDevices.find(
@@ -367,9 +331,8 @@ const Chat = () => {
 				toast.error("Could not get microphone list.")
 			}
 		}
-		getDevices() // Call the function
+		getDevices()
 
-		// Fetch history only if starting in text mode
 		if (chatMode === "text") {
 			console.log(
 				"ChatPage: Initial Mount - Fetching history (text mode)."
@@ -379,15 +342,13 @@ const Chat = () => {
 			console.log(
 				"ChatPage: Initial Mount - Setting isLoading false (voice mode)."
 			)
-			setIsLoading(false) // Ensure loader is off if starting in voice mode
+			setIsLoading(false)
 		}
 		setupIpcListeners()
 
-		// Cleanup
 		return () => {
 			console.log("ChatPage: Unmount Cleanup")
 			eventListenersAdded.current = false
-			// REMOVED: Timer cleanup
 			if (
 				backgroundCircleProviderRef.current &&
 				connectionStatus !== "disconnected"
@@ -404,10 +365,8 @@ const Chat = () => {
 				connectedAudioRef.current.currentTime = 0
 			}
 		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [])
 
-	// Effect for scrolling and fetching history on mode switch
 	useEffect(() => {
 		console.log(
 			"ChatPage: Mode/Messages Effect - chatMode:",
@@ -419,7 +378,6 @@ const Chat = () => {
 			if (chatEndRef.current) {
 				chatEndRef.current.scrollIntoView({ behavior: "smooth" })
 			}
-			// Fetch logic
 			if (!isLoading) {
 				console.log(
 					"ChatPage: Switched to text mode, fetching history."
@@ -427,17 +385,14 @@ const Chat = () => {
 				fetchChatHistory()
 			}
 		}
-	}, [chatMode]) // Correct dependencies
+	}, [chatMode])
 
-	// Effect for textarea resize
 	useEffect(() => {
 		if (chatMode === "text" && textareaRef.current) {
 			handleInputChange({ target: textareaRef.current })
 		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [chatMode, input])
 
-	// --- Component Return (JSX) ---
 	return (
 		<div className="h-screen bg-matteblack relative overflow-hidden dark">
 			<Sidebar
@@ -451,9 +406,7 @@ const Chat = () => {
 				onToggleMode={handleToggleMode}
 			/>
 
-			{/* Main Content Area */}
 			<div className="absolute inset-0 flex flex-col justify-center items-center h-full w-full bg-matteblack z-10 pt-20">
-				{/* Top Right Buttons */}
 				<div className="absolute top-5 right-5 z-20 flex gap-3">
 					<button
 						onClick={reinitiateServer}
@@ -468,24 +421,19 @@ const Chat = () => {
 					</button>
 				</div>
 
-				{/* Conditional Content Container */}
 				<div className="w-full h-full flex flex-col items-center justify-center p-5 text-white">
-					{isLoading ? ( // Simple loading check
+					{isLoading ? (
 						<div className="flex justify-center items-center h-full w-full">
 							<IconLoader className="w-10 h-10 text-white animate-spin" />
 						</div>
 					) : chatMode === "text" ? (
-						// --- Text Chat UI ---
 						<div className="w-full max-w-4xl h-full flex flex-col">
-							{/* Message Display */}
 							<div className="grow overflow-y-auto p-4 rounded-xl no-scrollbar mb-4 flex flex-col gap-4">
 								{messages.length === 0 && !thinking ? (
 									<div className="font-Poppins h-full flex flex-col justify-center items-center text-gray-400">
-										{" "}
 										<p className="text-3xl text-white mb-4">
-											{" "}
-											Send a message to start{" "}
-										</p>{" "}
+											Send a message to start
+										</p>
 									</div>
 								) : (
 									messages.map((msg) => (
@@ -493,7 +441,6 @@ const Chat = () => {
 											key={msg.id || Math.random()}
 											className={`flex ${msg.isUser ? "justify-end" : "justify-start"} w-full`}
 										>
-											{" "}
 											{msg.type === "tool_result" ? (
 												<ToolResultBubble
 													task={msg.task}
@@ -514,24 +461,21 @@ const Chat = () => {
 														msg.internetUsed
 													}
 												/>
-											)}{" "}
+											)}
 										</div>
 									))
 								)}
 								{thinking && (
 									<div className="flex justify-start w-full mt-2">
-										{" "}
 										<div className="flex items-center gap-2 p-3 bg-gray-700 rounded-lg">
-											{" "}
-											<div className="bg-gray-400 rounded-full h-2 w-2 animate-pulse delay-75"></div>{" "}
-											<div className="bg-gray-400 rounded-full h-2 w-2 animate-pulse delay-150"></div>{" "}
-											<div className="bg-gray-400 rounded-full h-2 w-2 animate-pulse delay-300"></div>{" "}
-										</div>{" "}
+											<div className="bg-gray-400 rounded-full h-2 w-2 animate-pulse delay-75"></div>
+											<div className="bg-gray-400 rounded-full h-2 w-2 animate-pulse delay-150"></div>
+											<div className="bg-gray-400 rounded-full h-2 w-2 animate-pulse delay-300"></div>
+										</div>
 									</div>
 								)}
 								<div ref={chatEndRef} />
 							</div>
-							{/* Input Area */}
 							<div className="w-full flex flex-col items-center">
 								<p className="text-gray-400 font-Poppins text-xs mb-2">
 									Check out our{" "}
@@ -574,40 +518,29 @@ const Chat = () => {
 											className="p-2 hover-button scale-100 hover:scale-110 cursor-pointer rounded-full text-white disabled:opacity-50 disabled:cursor-not-allowed"
 											title="Send Message"
 										>
-											{" "}
-											<IconSend className="w-4 h-4 text-white" />{" "}
+											<IconSend className="w-4 h-4 text-white" />
 										</button>
 										<button
 											onClick={clearChatHistory}
 											className="p-2 rounded-full hover-button scale-100 cursor-pointer hover:scale-110 text-white"
 											title="Clear Chat History"
 										>
-											{" "}
-											<IconRefresh className="w-4 h-4 text-white" />{" "}
+											<IconRefresh className="w-4 h-4 text-white" />
 										</button>
 									</div>
 								</div>
 							</div>
 						</div>
 					) : (
-						// --- Voice Chat UI ---
 						<div className="flex flex-col items-center justify-center h-full w-full relative">
-							{/* Background Blobs */}
 							<BackgroundCircleProvider
 								ref={backgroundCircleProviderRef}
 								onStatusChange={handleStatusChange}
 								connectionStatusProp={connectionStatus}
-								// REMOVED: Props related to mute/device as client doesn't handle them now
-								// initialMuteState={isMuted}
-								// selectedDeviceId={selectedAudioInputDevice}
 							/>
 
-							{/* MODIFIED: Central Call Controls (Simpler) */}
 							<div className="absolute inset-0 flex flex-col items-center justify-center z-20 pointer-events-none">
 								<div className="flex flex-col items-center pointer-events-auto">
-									{" "}
-									{/* Removed background box for cleaner look */}
-									{/* Disconnected State: Show Start Button */}
 									{connectionStatus === "disconnected" && (
 										<button
 											onClick={handleStartVoice}
@@ -617,7 +550,6 @@ const Chat = () => {
 											<IconPhone size={32} />
 										</button>
 									)}
-									{/* Connecting State: Show Loader */}
 									{connectionStatus === "connecting" && (
 										<div className="p-4 text-yellow-400">
 											<IconLoader
@@ -626,7 +558,6 @@ const Chat = () => {
 											/>
 										</div>
 									)}
-									{/* Connected State: Show Hang Up Button */}
 									{connectionStatus === "connected" && (
 										<button
 											onClick={handleStopVoice}
@@ -636,7 +567,6 @@ const Chat = () => {
 											<IconPhoneOff size={32} />
 										</button>
 									)}
-									{/* REMOVED: Timer, Mute Button */}
 								</div>
 							</div>
 						</div>
@@ -644,18 +574,16 @@ const Chat = () => {
 				</div>
 			</div>
 
-			{/* --- ADDED: Mic Selection Dropdown (Bottom Right) --- */}
-			{/* Always visible when not loading */}
 			{!isLoading && (
 				<div className="absolute bottom-6 right-6 z-30">
 					<select
 						value={selectedAudioInputDevice}
 						onChange={handleDeviceChange}
 						className="bg-neutral-700/80 backdrop-blur-sm border border-neutral-600 text-white text-xs rounded px-3 py-2 focus:outline-none focus:border-lightblue appearance-none max-w-[200px] truncate shadow-lg"
-						title="Select Microphone (Restart call to apply)" // Updated tooltip
+						title="Select Microphone (Restart call to apply)"
 					>
 						{audioInputDevices.length === 0 ? (
-							<option value="">Loading mics...</option> // Changed default message
+							<option value="">Loading mics...</option>
 						) : (
 							audioInputDevices.map((device) => (
 								<option
@@ -670,7 +598,6 @@ const Chat = () => {
 				</div>
 			)}
 
-			{/* Audio elements (volume adjusted) */}
 			<audio
 				ref={ringtoneAudioRef}
 				src="/audio/ringing.mp3"
