@@ -68,23 +68,35 @@
 
 ## :thought_balloon: Philosophy
 
-We at [Existence](https://existence.technology) believe that AI won't simply die as a fad or remain limited to an assistant. Instead, it will evolve to be a true companion of humans and our aim with Sentient is to contribute to that future. Building a true companion requires excellent automation which in turn requires deep personalization. And if we want the AI to be completely context aware of the user, privacy is non-negotiable. Hence, our goal is to build a completely private, personal & interactive AI companion. And we want to build it in the open, not behind closed doors
+We at [Existence](https://existence.technology) believe that AI won't simply die as a fad or remain limited to an assistant. Instead, it will evolve to be a true companion of humans, and our aim with Sentient is to contribute to that future. Building a true companion requires excellent automation which in turn requires deep personalization. And if we want the AI to be completely context-aware of the user, privacy is non-negotiable. Hence, we aim to build a proactive & interactive AI companion. And we want to build it in the open, not behind closed doors, with transparency as a core pillar.
 
 <!-- Screenshots -->
 
 ### :camera: Screenshots
 
 <div align="center"> 
-  <img src="https://media.licdn.com/dms/image/v2/D4D22AQEHqTuOm0z9yw/feedshare-shrink_1280/B4DZTWSZA4HkAk-/0/1738761934906?e=1743033600&v=beta&t=Kteh7pToXInoAQ6WUCLmf9ABc8Yrod0meAcekNsmROc" alt="screenshot" />
-  <p align="center">Agents in Sentient</p>
+  <img src="https://private-user-images.githubusercontent.com/59280736/431842199-b76c7a9a-1689-42de-93ed-5d04d6c7ad10.png?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NDQzMTkyMTYsIm5iZiI6MTc0NDMxODkxNiwicGF0aCI6Ii81OTI4MDczNi80MzE4NDIxOTktYjc2YzdhOWEtMTY4OS00MmRlLTkzZWQtNWQwNGQ2YzdhZDEwLnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNTA0MTAlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjUwNDEwVDIxMDE1NlomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTY2ZThhMDIyZmJkZWYxYzE5MzMyNTYzZDM5NjY0MmM3ZDc2NmJjMmYwNGU5MjUzMmJhYTE1NDU3NDhhZGIwODgmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0In0.U2Bn6mIdJF2SvXpJ9fyKe2c36-feA2wKtvQNcYjaEYY" alt="screenshot" />
+  <p align="center">Context is streamed in from your apps - Sentient uses this context to 👇</p>
 </div>
 <div align="center"> 
-  <img src="https://media.licdn.com/dms/image/v2/D4D22AQGzRW37TxbgDg/feedshare-shrink_2048_1536/B4DZS2U5tUG4Ao-/0/1738225720816?e=1743033600&v=beta&t=pZh3NCZCYDL3_IslFZAqxcK5nlQDLoZBYVWYUH-Gw2c" alt="screenshot" />
-  <p align="center">Memories in Sentient</p>
+  <img src="https://private-user-images.githubusercontent.com/59280736/431841076-c7337318-38e2-4515-848d-df6ce9ec8685.png?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NDQzMTkyMTYsIm5iZiI6MTc0NDMxODkxNiwicGF0aCI6Ii81OTI4MDczNi80MzE4NDEwNzYtYzczMzczMTgtMzhlMi00NTE1LTg0OGQtZGY2Y2U5ZWM4Njg1LnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNTA0MTAlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjUwNDEwVDIxMDE1NlomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPWFkYmIzYWJkMDExMmU0NzllMmZmNjU0NmUyNzIyYzJlZjUwMzM1ZDY0NjY0NjlhYTM4ODNiOGNmNDRkYzhhZTQmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0In0.s87SsI2uPocqdoRQK-b_1R89ApFKnvOoVzislh77bAw" alt="screenshot" />
+  <p align="center">Learn Long-Term Memories about you</p>
 </div>
 <div align="center"> 
-  <img src="https://github.com/user-attachments/assets/2e130ecf-b3ba-4074-8429-7be3fc241dae" alt="screenshot" />
-  <p align="center">Local inference in Sentient</p>
+  <img src="https://private-user-images.githubusercontent.com/59280736/431841142-33edc431-6be9-45b3-9b9c-5262f459ede6.png?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NDQzMTkyMTYsIm5iZiI6MTc0NDMxODkxNiwicGF0aCI6Ii81OTI4MDczNi80MzE4NDExNDItMzNlZGM0MzEtNmJlOS00NWIzLTliOWMtNTI2MmY0NTllZGU2LnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNTA0MTAlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjUwNDEwVDIxMDE1NlomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTFlOTVhMWEyODVhMWZmN2ZmMzNjMGMyZWMxZjQwYzFkNGM4OGZhZTQ4YjVkYTc5MmRhY2ZmZGQxZTBmOTY4NjUmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0In0.GUEsRDZzletVFm4uKBQhRehk4l2FhzEJuX5jFnglbZ4" alt="screenshot" />
+  <p align="center">Learn Short-Term Memories about you</p>
+</div>
+<div align="center"> 
+  <img src="https://private-user-images.githubusercontent.com/59280736/431841274-ea980432-1357-451b-93d2-d952a65f4607.png?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NDQzMTkyMTYsIm5iZiI6MTc0NDMxODkxNiwicGF0aCI6Ii81OTI4MDczNi80MzE4NDEyNzQtZWE5ODA0MzItMTM1Ny00NTFiLTkzZDItZDk1MmE2NWY0NjA3LnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNTA0MTAlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjUwNDEwVDIxMDE1NlomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTZjMTM5OWRlMGI1ODI0Zjg4YmJiYjk2MDBmMWNjNDdhMDRjODM2YjBhNjJjY2JiMzMxMGNlM2UzYjU5OGFmYzcmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0In0.F76G4nymktipQtkQZQ_9sfmMFKiQ1AH-0hMoPWt0DQE" alt="screenshot" />
+  <p align="center">Perform Actions for you, asynchronously and by combining all the different tools it needs to complete a task.</p>
+</div>
+<div align="center"> 
+  <img src="https://private-user-images.githubusercontent.com/59280736/431842176-c1ec90b6-edcc-4f9c-bc94-aa2e40b6422f.png?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NDQzMTkyMTYsIm5iZiI6MTc0NDMxODkxNiwicGF0aCI6Ii81OTI4MDczNi80MzE4NDIxNzYtYzFlYzkwYjYtZWRjYy00ZjljLWJjOTQtYWEyZTQwYjY0MjJmLnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNTA0MTAlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjUwNDEwVDIxMDE1NlomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPWRkZGMyY2Y1NTkyMDk1YjY4NWEwZjY1NDUxNWQ5NDc2NWU1OTAwZmM3ZjVjYWNmZDQzYWE1ZGNkMjJiYjQ3ZDImWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0In0.4djs4rCVqHY4L5_gshezAiMNgIcLui_eiFbZc8rsKrY" alt="screenshot" />
+  <p align="center">You can also voice-call Sentient anytime for a low-latency, human-like interactive experience.</p>
+</div>
+<div align="center"> 
+  <img src="https://private-user-images.githubusercontent.com/59280736/431842396-03af93ff-6acd-44c7-a973-dca20ac205bd.png?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NDQzMTkyMTYsIm5iZiI6MTc0NDMxODkxNiwicGF0aCI6Ii81OTI4MDczNi80MzE4NDIzOTYtMDNhZjkzZmYtNmFjZC00NGM3LWE5NzMtZGNhMjBhYzIwNWJkLnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNTA0MTAlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjUwNDEwVDIxMDE1NlomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPWZmNGNkZjI5OTQ1YmFjNmYzMmIzNThiOWEyZmIyZTBiMjVlMjczNTc2NmY3MjU1NjkzOTMwNjUwYzgyZDliMzImWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0In0.XCieUKi8dB-r8H75QHWKwX7UBtC6m1NXbSFxbUV_lkI" alt="screenshot" />
+  <p align="center">Your profile can also be enriched with data from other social media sites.</p>
 </div>
 
 <!-- TechStack -->
@@ -112,31 +124,35 @@ We at [Existence](https://existence.technology) believe that AI won't simply die
 
 ### :dart: Features
 
-- Local-first, with support for Ollama
-- Multi-Model Support (Switch between multiple Ollama/Cloud models)
-- MBTI Personality Test (Used to collect initial information about the user and their personality to personalize responses)
-- LinkedIn, Reddit and X Integration for Personal Context
-- Self-Managed Graph Memory - Sentient can learn about the user from their interactions with it. Memories are saved in a knowledge-graph.
-- Agentic integrations for GSuite - Gmail, GCalendar, GDrive, GDocs, GSheets, GSlides support. Sentient can perform actions with all these tools.
-- Web Search capabilities - Sentient can search the web for additional context to answer queries (if required).
-- Multi-chat functionality (Context is maintained across chats)
-- Auto-updates for the app (App automatically updates to newer versions)
+- Proactive - Autonomously pulls context from your connected apps/context streams. It then uses this context to learn about you and perform actions for you.
+- Self-hostable, with support for Ollama (for the text model), llamacpp for the voice models and HF-transformers for some other models.
+- Full cloud-hosted version coming soon! [Join this group to be a part of the waitlist.](https://chat.whatsapp.com/IOHxuf2W8cKEuyZrMo8DOJ)
+- LinkedIn, Reddit and X Integration for enriching personal profiles with even more data.
+- Self-Managed Memory - Sentient can learn about the user from their interactions with it. Long-term memories are saved in a knowledge graph, while short-term memories are saved in a relational database.
+- Agentic integrations for GSuite - Gmail, GCalendar, GDrive, GDocs, GSheets, GSlides support. Sentient can read context from and perform actions with all these tools. (WIP, some tools are still being expanded)
+- Voice Mode - Switch to voice at any time for a smoother, low-latency, human-like interaction with Sentient.
+- Web Search capabilities - Sentient can search the web to give users daily briefs, completely autonomously and also for providing additional context to answer queries (if required).
+- Uni-chat: Everything happens in one chat - no need to switch between different chats for different topics. (WIP, currently uses the long and short-term memories to maintain context. We will soon introduce even more memory features.)
+- Auto-updates for the Electron client ensure that you are always on the latest version.
 
 <!-- Roadmap -->
 
 ## :compass: Roadmap
 
-- [x] Solving stability issues with model inference - improving structured outputs, better error handling, and more
-- [ ] Dual Memory - Sentient will have a short-term memory and a long-term memory. The short-term memory will be stored in a relational DB and used to maintain reminders and other short-term information. Longer-term facts about the user will persist in the knowledge graph.
-- [ ] Intent - Sentient will be able to perform actions autonomously based on triggers from the short-term memory.
-- [ ] Tool-specific UI - for example, a tool that retrieves stock prices will also show a graph of the past trend of that particular ticker.
-- [ ] Better Internet Search - Internet search will include images, citations, direct links to sources and more.
-- [ ] More tools! - More tools will be added in the order of user requests. Current requests - Notion, LinkedIn, GitHub and WhatsApp.
-- [ ] Advanced Voice Mode - Users will be able to talk to Sentient!
-- [ ] Browser Use - Sentient will be able to control the browser and interact with websites to perform tasks
-- [ ] Mobile Companion App - Mobile app will be added to pull context about the user and what is going on in their life. Notifications and other data will be synced between the desktop and mobile apps.
-- [ ] Various options to host and use Sentient: Users will be able to use Sentient as only a desktop app (maximum privacy, no mobile app), self-hosted server (the desktop app acts a self-hosted server backend for the mobile app) or full cloud-hosted (Mobile app can be used independent of desktop app - server will be hosted and managed by the Sentient Team)
+- [x] (WIP) Solving stability issues with model inference - improving structured outputs, better error handling, and more
+- [x] Dual Memory - Sentient has a short-term memory and a long-term memory. The short-term memory will be stored in a relational DB and used to maintain reminders and other short-term information. Longer-term facts about the user (such as relationships, preferences, etc) will persist in the knowledge graph.
+- [x] (WIP) Intent - Sentient will be able to perform actions autonomously based on triggers from the context pulled from a user's apps and triggers launched by the short-term memories. 
+- [x] Memory and Task Queues - Send memory and agent operations to an async queue for being handled separate from the current conversation - improves response time.
+- [x] Advanced Voice Mode - Users can talk to Sentient using only their voice.
+- [x] (WIP) Better Internet Search - Internet search will include images, citations, direct links to sources and more. 
+- [ ] Integrate reasoning models for planning steps when performing actions.
+- [ ] Implement multi-user, cloud features with scalability in mind. Migrate to the cloud and go for a full cloud launch.
+- [ ] Mobile Companion App - Mobile app will be added to allow users to access Sentient from even more devices. Even more context can be added for Sentient from the phone's push notifications, mic, etc.
+- [ ] More tools! - More tools will be added in the order of user requests. Current requests - Microsoft 365, Notion, LinkedIn, GitHub and WhatsApp.
+- [ ] Audio Context - adds the microphones on your devices as an additional context stream.
 - [ ] Full integration at the OS level - integrate context from what you are doing right now by sharing your screen with Sentient
+- [ ] Tool-specific UI - for example, a tool that retrieves stock prices will also show a graph of the past trend of that particular ticker.
+- [ ] Browser/Computer Use - Sentient will be able to control a cloud VM to perform general actions for users like downloading, reading and reviewing files and more.
 - [ ] Customizable Agentic Actions - users can create their own integrations using an easy-to-use interface. Users should also be able to trade custom Actions on a Marketplace.
 
 <!-- Getting Started -->
@@ -147,14 +163,15 @@ We at [Existence](https://existence.technology) believe that AI won't simply die
 
 ### :gear: Installation (Users)
 
-If you're not interested in contributing to the project and simply want to use Sentient, download the latest release [from our website.](https://existence-sentient.vercel.app/download).
-All dependencies are packaged into our installer - you do not need to download anything else. You can find installation instructions [in our docs.](https://beneficial-billboard-012.notion.site/Downloading-and-Installing-Sentient-1916d7df083c80328672c50dd0599523)
+If you're not interested in contributing to the project or self-hosting and simply want to use Sentient, join the [Early Adopters Group](https://chat.whatsapp.com/IOHxuf2W8cKEuyZrMo8DOJ). You can also join our paid waitlist for $3 - to do this, contact [@itsskofficial](https://github.com/itsskofficial). Users on the paid waitlist will be the first to get access to the full cloud version of Sentient via a closed beta.
+
+If you are interested in contributing to the app or simply running the current latest version from source, you can proceed with the following steps 👇
 
 <!-- Prerequisites -->
 
 ### :bangbang: Prerequisites (Contributors)
 
-#### The following instructions are for Linux based machines, but they remain fundamentally same for Windows & Mac
+#### The following instructions are for Linux-based machines, but they remain fundamentally the same for Windows & Mac. Only things like venv configs and activations change on Windows, the rest of the process is pretty much the same.
 
 Clone the project
 
@@ -177,19 +194,23 @@ Install the following to start contributing to Sentient:
   After that, install all the required packages.
 
   ```bash
-   cd ./src/interface && npm install
+   cd ./src/client && npm install
   ```
 
 - python: Python will be needed to run the backend.
   Install Python [from here.](https://www.python.org/downloads/) We recommend Python 3.11.
 
-  After that, you will need to create a virtual environment and install all required packages. This venv will need to be activated whenever you want to run any scripts on the Python backend.
+  After that, you will need to create a virtual environment and install all required packages. This venv will need to be activated whenever you want to run the Python server (backend).
 
   ```bash
-   cd src/model && python3 -m venv venv
+   cd src/server && python3 -m venv venv
    cd venv/bin && source activate
    cd ../../ && pip install -r requirements.txt
   ```
+
+  `⚠️ If you get a numpy dependency error while installing the requirements, first install the requirements with the latest numpy version (2.x). After the installation of requirements completes, install a numpy 1.x version (backend has been tested and works successfully on numpy 1.26.4) and you will be ready to go. This is probably not the best practise, but this works for now.`
+
+  `⚠️ If you intend to use Advanced Voice Mode, you MUST download and install llama-cpp-python with CUDA support (if you have an NVIDIA GPU) using the commented out pip command in the requirements.txt file. Otherwise, simply download and install the llama-cpp-python package with pip for simple CPU-only support. This line is commented out in the requirements file to allow users to download and install the appropriate version based on their preference (CPU only/GPU accelerated).`
 
 - Ollama: Download and install the latest version of Ollama [from here.](https://ollama.com/)
 
@@ -198,6 +219,8 @@ Install the following to start contributing to Sentient:
   ```bash
    ollama pull llama3.2:3b
   ```
+
+  `⚠️ By default, the backend is configured with Llama 3.2 3B. We found this SLM to be really versatile and works really well for our usage, as compared to other SLMs. However a lot of new SLMs like Cogito are being dropped everyday so we will probably be changing the model soon. If you wish to use a different model, simply find all the places where llama3.2:3b has been set in the Python backend scripts and change it to the tag of the model you have pulled from Ollama.`
 
 - Neo4j Community: Download Neo4j Community Edition [from here.](https://neo4j.com/deployment-center/)
 
@@ -225,7 +248,22 @@ Install the following to start contributing to Sentient:
 
   While Neo4j is running, you can visit `http://localhost:7474/` to run Cypher Queries and interact with your knowledge graph.
 
-  ⚠️ On your first run of Neo4j Community, you will need to set a username and password. **Remember this password** as you will need to add it to the `.env` file on the Python backend.
+  `⚠️ On your first run of Neo4j Community, you will need to set a username and password. **Remember this password** as you will need to add it to the .env file on the Python backend.`
+
+- Download the Voice Model (Orpheus TTS 3B)
+
+  For using Advanced Voice Mode, you need to manually download [this model](https://huggingface.co/isaiahbjork/orpheus-3b-0.1-ft-Q4_K_M-GGUF) from Huggingface. Whisper is automatically downloaded by Sentient via fasterwhisper.
+
+  The model linked above is a Q4 quantization of the Orpheus 3B model. If you have even more VRAM at your disposal, you can go for the [Q8 quant](https://huggingface.co/Mungert/orpheus-3b-0.1-ft-GGUF).
+
+  Download the GGUF files - these models are run using llama-cpp-python.
+
+  Place the model files here:
+  `src/server/voice/models`
+
+  and ensure that the correct model name is set in the Python scripts on the backend. By default, the app is configured to use the 8-bit quant using the same name that it has when you download it from HuggingFace.
+
+  `⚠️ If you do not have enough VRAM and voice mode is not that important to you, you can comment out/remove the voice mode loading functionality in the main app.py located at src/server/app/app.py`
 
 <!-- Environment Variables -->
 
@@ -272,21 +310,9 @@ For the Python Backend, you will need to create a `.env` file and place it in th
   AUTH0_DOMAIN=abcdxyz.us.auth0.com
   AUTH0_MANAGEMENT_CLIENT_ID=YOUR_MANAGEMENT_CLIENT_ID
   AUTH0_MANAGEMENT_CLIENT_SECRET=YOUR_MANAGEMENT_CLIENT_SECRET
-  OPENAI_API_KEY=sk-proj-YOUR-API-KEY-HERE
-  GEMINI_API_KEY=YOUR_API_KEY_HERE
-  CLAUDE_API_KEY=sk-ant-api03-YOUR_API_KEY_HERE
-  OPENAI_API_URL=https://api.openai.com/v1/chat/completions
-  GEMINI_API_URL=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent
-  CLAUDE_API_URL=https://api.anthropic.com/v1/messages
-  APP_SERVER_PORT=5000
-  AGENTS_SERVER_PORT=5001
-  MEMORY_SERVER_PORT=5002
-  CHAT_SERVER_PORT=5003
-  SCRAPER_SERVER_PORT=5004
-  UTILS_SERVER_PORT=5005
-  COMMON_SERVER_PORT=5006
-  AUTH_SERVER_PORT=5007
 ```
+
+`⚠️ If you face some issues with Auth0 setup, please contact us via our Whatsapp Group or reach out to one of the lead contributors [@Kabeer2004](https://github.com/Kabeer2004), [@itsskofficial](https://github.com/itsskofficial) or [@abhijeetsuryawanshi12](https://github.com/abhijeetsuryawanshi12)`
 
 <!-- Run Locally -->
 
@@ -304,20 +330,14 @@ Start Neo4j Community Edition first.
 cd neo4j/bin && ./neo4j console
 ```
 
-**Start the Python servers**
-
-Example: Agents Server
+**Start the Python backend server.**
 
 ```bash
-  cd src/model/venv/bin/ && source activate
-  cd ../../agents && sudo ./startserv.sh
+  cd src/server/venv/bin/ && source activate
+  cd ../../ && python -m server.app.app
 ```
 
-⚠️ Be sure to modify the `startserv.sh` script with the absolute paths to your scripts and your venv.
-
-⚠️ You will need to run all the servers manually to run the app in development mode.
-
-Start the Electron App
+Once the Python server has fully started up, start the Electron client.
 
 ```bash
   cd src/interface && npm run dev
@@ -329,11 +349,11 @@ Start the Electron App
 
 ## :eyes: Usage
 
-Sentient is a personal companion that remembers information about you and uses this personal context to respond to queries and perform actions for you.
+Sentient is a proactive companion that pulls context from the different apps you use and uses that context to remember new information about you, perform tasks for you like sending emails, creating docs and more. The goal of this personal companion is to take over the mundane tasks in your life to let you focus on what matters.
 
 ### Use-Cases:
 
-Sentient can already do a lot.
+Sentient can also do a lot based on simple user commands.
 
 - `"Hey Sentient, help me find a restaurant in Pune based on my food preferences.`
 - `What are the upcoming events in my Google Calendar?`
@@ -365,29 +385,25 @@ Please read the [code of conduct](https://github.com/existence-master/Sentient/b
 
 ## :grey_question: FAQ
 
-- Do you need internet to run the app?
+- When will the cloud version launch?
 
-  - No. Since the app is fully local, you do not need internet to use the core features. You only need Internet to launch the app since Auth0 needs to authenticate you with your token. Of course, you will also need internet to perform most actions like adding events to your calendar, sending emails, etc.
-
-- Why is authentication needed?
-
-  - We only ask for authentication so that we as developers can know who our users are. This can help us stay in touch with early users for development purposes.
+  - We are working as fast as we can to bring it to life! Join our [WhatsApp Community](https://chat.whatsapp.com/IOHxuf2W8cKEuyZrMo8DOJ) to get daily updates and more!
 
 - What data do you collect about me?
 
-  - For auth, we have a standard email-password flow provided by Auth0 (also supports Google OAuth). So, the only data we collect is the email provided by users and their login history. This helps us understand how users are using the app, retention rates, daily signups and more. Read more about data collection in our [privacy policy.](https://existence-sentient.vercel.app/privacy)
+  - For auth, we have a standard email-password flow provided by Auth0 (also supports Google OAuth). So, the only data we collect is the email provided by users and their login history. This helps us understand how users are using the app, retention rates, daily signups and more. Read more about data collection in our [privacy policy.](https://existence-sentient.vercel.app/privacy).
 
-- What kind of hardware do I need to run the app?
+- What kind of hardware do I need to run the app locally/self-host it?
 
-  - To run Sentient - any decent CPU (Intel Core i5 or equivalent and above), 8GB of RAM and a GPU with 4-6GB of VRAM should be enough. A GPU is required for smooth local model inference. The app only runs on Windows for now. If you run the app from source/build your own versions with a different model, these system requirements will change.
+  - To run Sentient - any decent CPU (Intel Core i5 or equivalent and above), 8GB of RAM and a GPU with 4-6GB of VRAM should be enough for text only. For voice, additional VRAM will be required based on the quant you choose for Orpheus 3B. A GPU is necessary for fast local model inference. You can self-host/run locally on Windows, Linux or Mac.
 
 - Why open source?
 
-  - Since the app is going to be processing a lot of your personal information, maintaining transparency of the underlying code and processes is very important. The code needs to be available for everyone to freely view how their data is being managed in the app. We also want developers to be able to contribute to Sentient - they should be able to add missing integrations or features that they feel should be a part of Sentient. They should also be able to freely make their own forks of Sentient for different use-cases, provided they abide by the GNU AGPL license and open-source their work.
+  - Since the app is going to be processing a lot of your personal information, maintaining transparency of the underlying code and processes is very important. The code needs to be available for everyone to freely view how their data is being managed in the app. We also want developers to be able to contribute to Sentient - they should be able to add missing integrations or features that they feel should be a part of Sentient. They should also be able to freely make their own forks of Sentient for different use-cases, provided they abide by the GNU AGPL license and open-source their work. 
 
 - Why AGPL?
 
-  - We intentionally decided to go with a more restrictive license, specifically AGPL, rather than a permissive license (like MIT or Apache) since we do not want any closed-source, cloud-based competitors cropping up with our code at its core. Going with AGPL is our way of staying committed to our core principles of transparency and privacy while ensuring that others who use our code also follow the same principles.
+  - We intentionally decided to go with a more restrictive license, specifically AGPL, rather than a permissive license (like MIT or Apache) since we do not want any other closed-source, cloud-based competitors cropping up with our code at its core. Going with AGPL is our way of staying committed to our core principles of transparency and privacy while ensuring that others who use our code also follow the same principles.
 
 <!-- License -->
 
