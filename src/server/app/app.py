@@ -732,15 +732,16 @@ async def startup_event():
         stt_model = FasterWhisperSTT(model_size="base", device="cpu", compute_type="int8")
         print("[LIFECYCLE] STT loaded.")
     except Exception as e:
-        print(f"[ERROR] STT load fail: {e}")
+        print(f"[ERROR] STT model failed to load. Voice features will be unavailable. Details: {e}")
+        stt_model = None
     
     print("[LIFECYCLE] Loading TTS...")
     try:
         tts_model = OrpheusTTS(verbose=False, default_voice_id=SELECTED_TTS_VOICE)
         print("[LIFECYCLE] TTS loaded.")
     except Exception as e:
-        print(f"[ERROR] TTS load fail: {e}")
-        exit(1)
+        print(f"[ERROR] TTS model failed to load. Voice features will be unavailable. Details: {e}")
+        tts_model = None
     
     await task_queue.load_tasks()
     await memory_backend.memory_queue.load_operations()
@@ -1788,16 +1789,16 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]) -> AsyncGener
      # similar to WebSocket authentication, but FastRTC's mechanism might differ.
      user_id_for_voice = "PLACEHOLDER_VOICE_USER_ID" # Needs a real, authenticated user ID
      print(f"\n--- [VOICE] Audio chunk received (User: {user_id_for_voice}) ---")
-     
+
      if not stt_model:
-         print("[VOICE_ERROR] STT model not loaded. Cannot process audio.")
-         yield (0, np.array([])) # Send empty audio data or handle error appropriately
+         print("[VOICE_ERROR] STT model not available. Cannot process audio.")
+         yield (0, np.array([])) 
          return
      
      user_transcribed_text = stt_model.stt(audio)
      if not user_transcribed_text or not user_transcribed_text.strip():
          print("[VOICE] Empty transcription from STT.")
-         return # No audio to respond to
+         return 
          
      print(f"[VOICE] User (STT - {user_id_for_voice}): {user_transcribed_text}")
      
@@ -1807,7 +1808,7 @@ async def handle_audio_conversation(audio: tuple[int, np.ndarray]) -> AsyncGener
      bot_response_text = f"Voice processing is a work in progress for user {user_id_for_voice}. You said: '{user_transcribed_text}'"
      
      if not tts_model:
-         print("[VOICE_ERROR] TTS model not loaded. Cannot generate audio response.")
+         print("[VOICE_ERROR] TTS model not available. Cannot generate audio response.")
          yield (0, np.array([]))
          return
          
