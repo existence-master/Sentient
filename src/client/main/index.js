@@ -1851,6 +1851,9 @@ ipcMain.handle("send-message", async (_event, { input }) => {
 		})
 		return { message: `Error: ${error.message}`, status: 500 }
 	}
+
+}
+)
 // IPC: Build Personality (Multi-step Backend Process)
 ipcMain.handle("build-personality", async () => {
 	const userId = getUserIdFromProfile()

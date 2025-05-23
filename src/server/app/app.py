@@ -1694,7 +1694,7 @@ async def get_data_sources_endpoint(user_id: str = Depends(PermissionChecker(req
     print(f"[ENDPOINT /get_data_sources] User {user_id}.")
     loop = asyncio.get_event_loop()
     try:
-        profile = await loop.run_in_executor(None, load_user_profile, user_id)
+        profile = await load_user_profile(user_id)
         settings = profile.get("userData", {})
         statuses = [{"name": src, "enabled": settings.get(f"{src}Enabled", True)} for src in DATA_SOURCES] # Default to True if not set
         return JSONResponse(content={"data_sources": statuses})
@@ -1710,7 +1710,7 @@ async def set_data_source_enabled_endpoint(request: SetDataSourceEnabledRequest,
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid data source: {request.source}")
     loop = asyncio.get_event_loop()
     try:
-        profile = await loop.run_in_executor(None, load_user_profile, user_id)
+        profile = await load_user_profile(user_id)
         if "userData" not in profile:
             profile["userData"] = {}
         profile["userData"][f"{request.source}Enabled"] = request.enabled
