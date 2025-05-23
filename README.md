@@ -96,10 +96,6 @@ We at [Existence](https://existence.technology) believe that AI won't simply die
   <img src="https://i.postimg.cc/TPpSW9yv/image.png" alt="screenshot" />
   <p align="center">You can also voice-call Sentient anytime for a low-latency, human-like interactive experience.</p>
 </div>
-<div align="center"> 
-  <img src="https://i.postimg.cc/tJSWPhZ8/image.png" alt="screenshot" />
-  <p align="center">Your profile can also be enriched with data from other social media sites.</p>
-</div>
 
 <!-- TechStack -->
 
@@ -114,9 +110,6 @@ We at [Existence](https://existence.technology) believe that AI won't simply die
     <li><a href="https://fastapi.tiangolo.com/">FastAPI</a></li>
     <li><a href="https://ollama.com/">Ollama</a></li>
     <li><a href="https://neo4j.com/">Neo4j</a></li>
-    <li><a href="https://praw.readthedocs.io/en/stable/">PRAW Reddit API</a></li>
-    <li><a href="https://pypi.org/project/linkedin-scraper/">LinkedIn Scraper</a></li>
-    <li><a href="https://nitter-scraper.readthedocs.io/en/latest/">Nitter for X</a></li>
     <li><a href="https://developers.google.com/workspace">Google Workspace APIs</a></li>
     <li><a href="https://brave.com/search/api/">Brave Search API</a></li>
   </ul>
@@ -129,7 +122,6 @@ We at [Existence](https://existence.technology) believe that AI won't simply die
 - Proactive - Autonomously pulls context from your connected apps/context streams. It then uses this context to learn about you and perform actions for you.
 - Self-hostable, with support for Ollama (for the text model), llamacpp for the voice models and HF-transformers for some other models.
 - Full cloud-hosted version coming soon! [Join this group to be a part of the waitlist.](https://chat.whatsapp.com/IOHxuf2W8cKEuyZrMo8DOJ)
-- LinkedIn, Reddit and X Integration for enriching personal profiles with even more data.
 - Self-Managed Memory - Sentient can learn about the user from their interactions with it. Long-term memories are saved in a knowledge graph, while short-term memories are saved in a relational database.
 - Agentic integrations for GSuite - Gmail, GCalendar, GDrive, GDocs, GSheets, GSlides support. Sentient can read context from and perform actions with all these tools. (WIP, some tools are still being expanded)
 - Voice Mode - Switch to voice at any time for a smoother, low-latency, human-like interaction with Sentient.

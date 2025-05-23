@@ -1,8 +1,6 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react" // Added useCallback
-import Disclaimer from "@components/Disclaimer"
-import AppCard from "@components/AppCard"
 import Sidebar from "@components/Sidebar"
 import ProIcon from "@components/ProIcon" // Still used within AppCard logic
 import toast from "react-hot-toast"
@@ -13,9 +11,6 @@ import {
 	IconGift,
 	IconRocket,
 	IconFlask, // Replaced IconBeta with IconFlask
-	IconBrandLinkedin,
-	IconBrandReddit,
-	IconBrandX, // Specific brand icons
 	IconMail,
 	IconCalendarEvent,
 	IconWorldSearch, // Data source icons
@@ -34,22 +29,6 @@ const dataSourceIcons = {
 }
 
 const Settings = () => {
-	const [showDisclaimer, setShowDisclaimer] = useState(false)
-	const [linkedInProfileUrl, setLinkedInProfileUrl] = useState("")
-	const [redditProfileUrl, setRedditProfileUrl] = useState("")
-	const [twitterProfileUrl, setTwitterProfileUrl] = useState("")
-	const [isProfileConnected, setIsProfileConnected] = useState({
-		LinkedIn: false,
-		Reddit: false,
-		Twitter: false
-	})
-	const [action, setAction] = useState("")
-	const [selectedApp, setSelectedApp] = useState("")
-	const [loading, setLoading] = useState({
-		LinkedIn: false,
-		Reddit: false,
-		Twitter: false
-	})
 	const [userDetails, setUserDetails] = useState({})
 	const [isSidebarVisible, setSidebarVisible] = useState(false)
 	const [pricing, setPricing] = useState("free")
@@ -169,27 +148,14 @@ const Settings = () => {
 	}
 
 	const fetchData = useCallback(async () => {
-		console.log("Fetching connection statuses...")
+		// Removed fetching for LinkedIn, Reddit, Twitter connection statuses
+		console.log("Fetching user data (excluding social media connection status)...")
 		try {
 			const response = await window.electron?.invoke("get-user-data")
 			if (response.status === 200 && response.data) {
-				const { linkedInProfile, redditProfile, twitterProfile } =
-					response.data
-				// More robust check: presence of data AND potentially a specific key (like 'profileUrl' if available)
-				setIsProfileConnected({
-					LinkedIn:
-						!!linkedInProfile &&
-						Object.keys(linkedInProfile).length > 0,
-					Reddit: !!redditProfile && redditProfile.length > 0, // Check if array has items
-					Twitter: !!twitterProfile && twitterProfile.length > 0 // Check if array has items
-				})
-				console.log("Connection statuses updated:", {
-					LinkedIn:
-						!!linkedInProfile &&
-						Object.keys(linkedInProfile).length > 0,
-					Reddit: !!redditProfile && redditProfile.length > 0,
-					Twitter: !!twitterProfile && twitterProfile.length > 0
-				})
+				// User data might still contain other relevant info, process if needed
+				// For now, just logging that it was fetched
+				console.log("User data fetched successfully (social media connections parts are ignored).");
 			} else {
 				console.error(
 					"Error fetching DB data, status:",
@@ -197,11 +163,9 @@ const Settings = () => {
 					"response:",
 					response
 				)
-				// toast.error("Error fetching connection status."); // Avoid excessive toasts
 			}
 		} catch (error) {
 			console.error("Error fetching user data:", error)
-			// toast.error("Error fetching user data."); // Avoid excessive toasts
 		}
 	}, []) // Empty dependency array
 
@@ -224,112 +188,10 @@ const Settings = () => {
 	]) // Add all useCallback functions
 
 	// --- Action Handlers ---
-	const handleConnectClick = (appName) => {
-		if (
-			pricing === "free" &&
-			(appName === "Reddit" || appName === "Twitter")
-		) {
-			toast.error("This feature requires a Pro plan.")
-			return
-		}
-		setShowDisclaimer(true)
-		setSelectedApp(appName)
-		setAction("connect")
-	}
-
-	const handleDisconnectClick = (appName) => {
-		setShowDisclaimer(true)
-		setSelectedApp(appName)
-		setAction("disconnect")
-	}
-
-	const handleDisclaimerAccept = async () => {
-		setShowDisclaimer(false)
-		setLoading((prev) => ({ ...prev, [selectedApp]: true }))
-		try {
-			let successMessage = ""
-			let response = null
-			if (action === "connect") {
-				const profileKey = `${selectedApp.toLowerCase()}Profile`
-				const urlKey = `${selectedApp.toLowerCase()}ProfileUrl` // Keep this for consistency if backend expects it
-				const profileUrl =
-					selectedApp === "LinkedIn"
-						? linkedInProfileUrl
-						: selectedApp === "Reddit"
-							? redditProfileUrl
-							: twitterProfileUrl
-				// Validate URL input for connect action
-				if (!profileUrl || !profileUrl.trim()) {
-					throw new Error(
-						`${selectedApp} Profile URL cannot be empty.`
-					)
-				}
-				const scrapeMethod = `scrape-${selectedApp.toLowerCase()}`
-
-				response = await window.electron?.invoke(scrapeMethod, {
-					url: profileUrl
-				}) // Pass URL correctly
-
-				if (
-					response &&
-					(response.profile || Array.isArray(response.topics))
-				) {
-					// Check for expected success data
-					const dataToSet =
-						selectedApp === "LinkedIn"
-							? response.profile
-							: response.topics
-					await window.electron?.invoke("set-user-data", {
-						data: { [profileKey]: dataToSet }
-					})
-					successMessage = `${selectedApp} profile connected.`
-					await window.electron?.invoke("build-personality") // Rebuild personality after connect
-					setLinkedInProfileUrl("")
-					setRedditProfileUrl("")
-					setTwitterProfileUrl("") // Clear URLs after success
-				} else {
-					console.error(
-						`Error scraping ${selectedApp} profile:`,
-						response
-					)
-					throw new Error(
-						response?.error ||
-							`Error scraping ${selectedApp} profile.`
-					)
-				}
-			} else if (action === "disconnect") {
-				const profileKey = `${selectedApp.toLowerCase()}Profile`
-				await window.electron?.invoke("set-user-data", {
-					data: { [profileKey]: {} }
-				}) // Set to empty object
-				await window.electron?.invoke("delete-subgraph", {
-					source: selectedApp.toLowerCase()
-				}) // Pass source name correctly
-				successMessage = `${selectedApp} profile disconnected.`
-				await window.electron?.invoke("build-personality") // Rebuild personality after disconnect
-			}
-			toast.success(successMessage)
-			setIsProfileConnected((prev) => ({
-				...prev,
-				[selectedApp]: action === "connect"
-			}))
-		} catch (error) {
-			console.error(`Error processing ${selectedApp} profile:`, error)
-			toast.error(
-				`Error processing ${selectedApp} profile: ${error.message || ""}`
-			)
-		} finally {
-			setLoading((prev) => ({ ...prev, [selectedApp]: false }))
-			setAction("")
-			setSelectedApp("") // Reset action state
-		}
-	}
-
-	const handleDisclaimerDecline = () => {
-		setShowDisclaimer(false)
-		setAction("")
-		setSelectedApp("")
-	}
+	// handleConnectClick and handleDisconnectClick are removed as their UI elements are gone.
+	// handleDisclaimerAccept and handleDisclaimerDecline might become redundant if no other feature uses them.
+	// For now, let's assume the disclaimer flow might be used by other (future) settings,
+	// Disclaimer-related functions (handleDisclaimerAccept, handleDisclaimerDecline) are removed.
 
 	return (
 		// MODIFIED: Overall page structure using flex
@@ -395,126 +257,6 @@ const Settings = () => {
 				{/* --- Main Settings Content --- */}
 				{/* MODIFIED: Centered content with max-width */}
 				<div className="w-full max-w-5xl mx-auto space-y-10 flex-grow">
-					{/* Connections Section */}
-					<section>
-						<h2 className="text-xl font-semibold mb-5 text-gray-300 border-b border-neutral-700 pb-2">
-							App Connections
-						</h2>
-						{/* MODIFIED: Adjusted grid gap and responsiveness */}
-						<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-							{/* MODIFIED: AppCard calls with simplified props */}
-							<AppCard
-								logo="/images/linkedin-logo.png"
-								name="LinkedIn"
-								description={
-									isProfileConnected.LinkedIn
-										? "Professional profile connected."
-										: "Connect LinkedIn to use your profile info."
-								}
-								onClick={
-									isProfileConnected.LinkedIn
-										? () =>
-												handleDisconnectClick(
-													"LinkedIn"
-												)
-										: () => handleConnectClick("LinkedIn")
-								}
-								action={
-									isProfileConnected.LinkedIn
-										? "disconnect"
-										: "connect"
-								}
-								isConnected={isProfileConnected.LinkedIn} // Pass connection status
-								loading={loading.LinkedIn}
-								disabled={
-									Object.values(loading).some(
-										(status) => status
-									) && !loading.LinkedIn
-								} // Disable others while one is loading
-								requiresUrl={!isProfileConnected.LinkedIn} // Show URL input only if not connected
-								profileUrl={linkedInProfileUrl}
-								setProfileUrl={setLinkedInProfileUrl}
-								icon={IconBrandLinkedin} // Pass specific icon
-							/>
-							<AppCard
-								logo="/images/reddit-logo.png"
-								name="Reddit"
-								description={
-									isProfileConnected.Reddit
-										? "Reddit interests connected."
-										: "Connect Reddit to analyze topics."
-								}
-								onClick={
-									isProfileConnected.Reddit
-										? () => handleDisconnectClick("Reddit")
-										: () => handleConnectClick("Reddit")
-								}
-								action={
-									isProfileConnected.Reddit
-										? "disconnect"
-										: pricing === "free"
-											? "pro"
-											: "connect"
-								} // Pass 'pro' string for ProIcon
-								isConnected={isProfileConnected.Reddit}
-								loading={loading.Reddit}
-								disabled={
-									(pricing === "free" &&
-										!isProfileConnected.Reddit) ||
-									(Object.values(loading).some(
-										(status) => status
-									) &&
-										!loading.Reddit)
-								}
-								requiresUrl={
-									!isProfileConnected.Reddit &&
-									pricing !== "free"
-								}
-								profileUrl={redditProfileUrl}
-								setProfileUrl={setRedditProfileUrl}
-								icon={IconBrandReddit}
-							/>
-							<AppCard
-								logo="/images/twitter-logo.png"
-								name="Twitter / X" // Updated name
-								description={
-									isProfileConnected.Twitter
-										? "X (Twitter) interests connected."
-										: "Connect X (Twitter) to analyze topics."
-								}
-								onClick={
-									isProfileConnected.Twitter
-										? () => handleDisconnectClick("Twitter")
-										: () => handleConnectClick("Twitter")
-								}
-								action={
-									isProfileConnected.Twitter
-										? "disconnect"
-										: pricing === "free"
-											? "pro"
-											: "connect"
-								} // Pass 'pro' string for ProIcon
-								isConnected={isProfileConnected.Twitter}
-								loading={loading.Twitter}
-								disabled={
-									(pricing === "free" &&
-										!isProfileConnected.Twitter) ||
-									(Object.values(loading).some(
-										(status) => status
-									) &&
-										!loading.Twitter)
-								}
-								requiresUrl={
-									!isProfileConnected.Twitter &&
-									pricing !== "free"
-								}
-								profileUrl={twitterProfileUrl}
-								setProfileUrl={setTwitterProfileUrl}
-								icon={IconBrandX} // Updated icon
-							/>
-						</div>
-					</section>
-
 					{/* Data Sources Section */}
 					<section>
 						<h2 className="text-xl font-semibold mb-5 text-gray-300 border-b border-neutral-700 pb-2">
@@ -629,33 +371,6 @@ const Settings = () => {
 							confirmButtonBorderColor={
 								betaUser ? "border-red-600" : "border-green-600"
 							}
-						/>
-					)}
-					{showDisclaimer && (
-						<Disclaimer
-							appName={selectedApp}
-							profileUrl={
-								action === "connect"
-									? selectedApp === "LinkedIn"
-										? linkedInProfileUrl
-										: selectedApp === "Reddit"
-											? redditProfileUrl
-											: twitterProfileUrl
-									: ""
-							}
-							setProfileUrl={
-								action === "connect"
-									? selectedApp === "LinkedIn"
-										? setLinkedInProfileUrl
-										: selectedApp === "Reddit"
-											? setRedditProfileUrl
-											: setTwitterProfileUrl
-									: null
-							}
-							onAccept={handleDisclaimerAccept}
-							onDecline={handleDisclaimerDecline}
-							action={action}
-							showInput={action === "connect"}
 						/>
 					)}
 				</div>{" "}

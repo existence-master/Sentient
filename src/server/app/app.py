@@ -77,12 +77,6 @@ from server.memory.backend import MemoryBackend
 # Utils: General utility functions
 from server.utils.helpers import *
 
-# Scraper: Web scraping functionalities
-from server.scraper.runnables import *
-from server.scraper.functions import *
-from server.scraper.prompts import *
-from server.scraper.formats import *
-
 # Auth: Authentication related helpers (e.g., AES encryption, management tokens)
 from server.auth.helpers import * # Contains AES, get_management_token
 
@@ -371,8 +365,6 @@ chat_history = get_chat_history()
 chat_runnable = get_chat_runnable(chat_history)
 agent_runnable = get_agent_runnable(chat_history)
 unified_classification_runnable = get_unified_classification_runnable(chat_history)
-reddit_runnable = get_reddit_runnable()
-twitter_runnable = get_twitter_runnable()
 internet_query_reframe_runnable = get_internet_query_reframe_runnable()
 internet_summary_runnable = get_internet_summary_runnable()
 print(f"[INIT] {datetime.datetime.now()}: Runnables initialization complete.")
@@ -503,6 +495,46 @@ async def save_db(user_id: str, data: Dict[str, Any]): # Chat DB
                 json.dump(data, f, indent=4)
         except Exception as e:
             print(f"[ERROR] Saving chat DB {user_id}: {e}")
+
+async def update_neo4j_with_personal_info(user_id: str, personal_info: dict, graph_driver_instance: GraphDatabase.driver):
+    if not graph_driver_instance:
+        print(f"[NEO4J_PERSONAL_INFO_UPDATE_ERROR] Neo4j driver not available for user {user_id}.")
+        return
+
+    name = personal_info.get("name")
+    location = personal_info.get("location")
+    dob = personal_info.get("dateOfBirth") # Key from frontend
+
+    if not name: # Name is a key piece of info for a User node
+        print(f"[NEO4J_PERSONAL_INFO_UPDATE_WARN] User name not provided for {user_id}. Skipping Neo4j update for personal info.")
+        return
+
+    try:
+        # Neo4j driver operations are typically synchronous, run in a separate thread
+        def _update_graph_db(tx, user_id, name, location, dob):
+            # MERGE User node based on userId. Set properties.
+            # Create a UserProfile node if it doesn't exist and link it.
+            # Basic info (name, location, DOB) can be on User or UserProfile.
+            # Here, adding to User node and ensuring UserProfile exists and is linked.
+            # Also, adding/updating a generic 'username' property on User node for consistency with other graph functions
+            tx.run("""
+                MERGE (u:User {userId: $userId})
+                ON CREATE SET u.name = $name, u.location = $location, u.dateOfBirth = $dob, u.username = $name, u.createdAt = timestamp()
+                ON MATCH SET u.name = $name, u.location = $location, u.dateOfBirth = $dob, u.username = $name, u.updatedAt = timestamp()
+                MERGE (up:UserProfile {userId: $userId}) // Ensure UserProfile node exists, can add more props later
+                ON CREATE SET up.createdAt = timestamp()
+                ON MATCH SET up.updatedAt = timestamp()
+                MERGE (u)-[:HAS_PROFILE]->(up)
+            """, userId=user_id, name=name, location=location, dob=dob)
+
+        with graph_driver_instance.session(database="neo4j") as session:
+            await asyncio.to_thread(session.execute_write, _update_graph_db, user_id, name, location, dob)
+        print(f"[NEO4J_PERSONAL_INFO_UPDATE] Successfully updated personal info for user {user_id} in Neo4j.")
+
+    except Exception as e:
+        print(f"[NEO4J_PERSONAL_INFO_UPDATE_ERROR] Failed to update personal info for user {user_id} in Neo4j: {e}")
+        traceback.print_exc()
+
 async def get_chat_history_messages(user_id: str) -> List[Dict[str, Any]]:
     # print(f"[CHAT_HISTORY] get_chat_history_messages for user {user_id}.")
     async with db_lock:
@@ -779,12 +811,6 @@ class GraphRequest(BaseModel):
     information: str
 class GraphRAGRequest(BaseModel):
     query: str
-class RedditURL(BaseModel):
-    url: str
-class TwitterURL(BaseModel):
-    url: str
-class LinkedInURL(BaseModel):
-    url: str
 class SetDataSourceEnabledRequest(BaseModel):
     source: str
     enabled: bool
@@ -1145,54 +1171,6 @@ async def get_user_and_invert_beta_user_status(
     except Exception as e:
         print(f"[ERROR] /invert-beta-status for {user_id_to_modify}: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to invert beta status.")
-
-
-# --- Scraper Endpoints ---
-@app.post("/scrape-linkedin", status_code=status.HTTP_200_OK, summary="Scrape LinkedIn Profile", tags=["Scraping"])
-async def scrape_linkedin(profile: LinkedInURL, user_id: str = Depends(PermissionChecker(required_permissions=["scrape:linkedin"]))):
-    print(f"[ENDPOINT /scrape-linkedin] User {user_id}, URL: {profile.url}")
-    try:
-        # Assuming scrape_linkedin_profile is defined
-        data = await asyncio.to_thread(scrape_linkedin_profile, profile.url)
-        return JSONResponse(content={"profile": data})
-    except Exception as e:
-        print(f"[ERROR] /scrape-linkedin {user_id}: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="LinkedIn scraping failed.")
-
-@app.post("/scrape-reddit", status_code=status.HTTP_200_OK, summary="Scrape Reddit Data", tags=["Scraping"])
-async def scrape_reddit(reddit_url: RedditURL, user_id: str = Depends(PermissionChecker(required_permissions=["scrape:reddit"]))):
-    print(f"[ENDPOINT /scrape-reddit] User {user_id}, URL: {reddit_url.url}")
-    try:
-        # Assuming reddit_scraper is defined
-        data = await asyncio.to_thread(reddit_scraper, reddit_url.url)
-        if not data:
-            return JSONResponse(content={"topics": []})
-        response = await asyncio.to_thread(reddit_runnable.invoke, {"subreddits": data})
-        topics = response if isinstance(response, list) else (response.get('topics', []) if isinstance(response, dict) else [])
-        return JSONResponse(content={"topics": topics})
-    except Exception as e:
-        print(f"[ERROR] /scrape-reddit {user_id}: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Reddit scraping failed.")
-
-@app.post("/scrape-twitter", status_code=status.HTTP_200_OK, summary="Scrape Twitter Data", tags=["Scraping"])
-async def scrape_twitter(twitter_url: TwitterURL, user_id: str = Depends(PermissionChecker(required_permissions=["scrape:twitter"]))):
-    print(f"[ENDPOINT /scrape-twitter] User {user_id}, URL: {twitter_url.url}")
-    try:
-        # Assuming scrape_twitter_data is defined
-        data = await asyncio.to_thread(scrape_twitter_data, twitter_url.url, 20)
-        if not data:
-            return JSONResponse(content={"topics": []})
-        response = await asyncio.to_thread(twitter_runnable.invoke, {"tweets": data})
-        topics = response if isinstance(response, list) else (response.get('topics', []) if isinstance(response, dict) else [])
-        return JSONResponse(content={"topics": topics})
-    except Exception as e:
-        print(f"[ERROR] /scrape-twitter {user_id}: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Twitter scraping failed.")
-
 # --- Google Authentication Endpoint ---
 @app.post("/authenticate-google", status_code=status.HTTP_200_OK, summary="Authenticate Google Services", tags=["Integrations"])
 async def authenticate_google(user_id: str = Depends(PermissionChecker(required_permissions=["manage:google_auth"]))):
@@ -1286,7 +1264,7 @@ async def delete_subgraph(request: DeleteSubgraphRequest, user_id: str = Depends
         username = user_profile.get("userData", {}).get("personalInfo", {}).get("name", user_id).lower()
         
         # This mapping and fallback needs to be robust and match how sources are named in the graph
-        SOURCE_FILENAME_MAPPINGS = { key: f"{username}_{key.replace(' ', '_')}.txt" for key in ["linkedin profile", "reddit profile", "twitter profile", "extroversion", "introversion", "sensing", "intuition", "thinking", "feeling", "judging", "perceiving"] }
+        SOURCE_FILENAME_MAPPINGS = { key: f"{username}_{key.replace(' ', '_')}.txt" for key in ["extroversion", "introversion", "sensing", "intuition", "thinking", "feeling", "judging", "perceiving"] }
         source_identifier_in_graph = SOURCE_FILENAME_MAPPINGS.get(source_key, f"{username}_{source_key.replace(' ', '_')}.txt")
 
         if not graph_driver:
@@ -1342,15 +1320,6 @@ async def create_document(user_id: str = Depends(PermissionChecker(required_perm
                     filename = f"{username}_{trait_lower}.txt"
                     bg_tasks.append(loop.run_in_executor(None, summarize_and_write_sync, username, desc_content, filename, input_dir))
         
-        # ... Add tasks for LinkedIn, Reddit, Twitter as in original logic ...
-        # Placeholder for brevity, assuming they follow similar pattern:
-        # social_profiles = db_user_data.get("socialProfiles", {})
-        # if social_profiles.get("linkedin"):
-        #    content = f"LinkedIn Profile: {social_profiles['linkedin']}" # Or scraped data
-        #    filename = f"{username}_linkedin_profile.txt"
-        #    bg_tasks.append(loop.run_in_executor(None, summarize_and_write_sync, username, content, filename, input_dir))
-        # (Repeat for Reddit, Twitter)
-
         results = await asyncio.gather(*bg_tasks, return_exceptions=True)
         created = [fname for res_tuple in results if isinstance(res_tuple, tuple) and res_tuple[0] and isinstance(res_tuple[1], str) and not isinstance(res_tuple[1], Exception) for fname in [res_tuple[1]]] # Adjusted based on typical return of (success, filename_or_error)
         failed = [str(item) for item in results if isinstance(item, Exception) or (isinstance(item, tuple) and not item[0])]
@@ -1569,9 +1538,20 @@ async def set_db_data(request: UpdateUserDataRequest, user_id: str = Depends(Per
         if "userData" not in profile:
             profile["userData"] = {}
         profile["userData"].update(request.data)
-        success = await write_user_profile(user_id, profile) # AWAIT
+        success = await write_user_profile(user_id, profile)
+        
         if not success:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to write user profile.")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to write user profile to JSON.")
+
+        # After successful JSON write, update Neo4j with personalInfo if present
+        if "personalInfo" in profile["userData"] and graph_driver:
+            personal_info_data = profile["userData"]["personalInfo"]
+            if isinstance(personal_info_data, dict): # Ensure it's a dictionary
+                print(f"[NEO4J_INITIATE_PERSONAL_INFO_UPDATE] Initiating Neo4j update for personal info for user {user_id}.")
+                await update_neo4j_with_personal_info(user_id, personal_info_data, graph_driver)
+            else:
+                print(f"[WARN] personalInfo for user {user_id} is not a dictionary. Skipping Neo4j update.")
+        
         return JSONResponse(content={"message": "User data stored successfully.", "status": 200})
     except Exception as e:
         print(f"[ERROR] /set-user-data {user_id}: {e}")
