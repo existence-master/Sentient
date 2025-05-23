@@ -1564,13 +1564,12 @@ async def clear_all_memories(user_id: str = Depends(PermissionChecker(required_p
 @app.post("/set-user-data", status_code=status.HTTP_200_OK, summary="Set User Profile Data", tags=["User Profile"])
 async def set_db_data(request: UpdateUserDataRequest, user_id: str = Depends(PermissionChecker(required_permissions=["write:profile"]))):
     print(f"[ENDPOINT /set-user-data] User {user_id}, Data: {str(request.data)[:100]}...")
-    loop = asyncio.get_event_loop()
     try:
-        profile = await loop.run_in_executor(None, load_user_profile, user_id)
+        profile = await load_user_profile(user_id) # AWAIT
         if "userData" not in profile:
             profile["userData"] = {}
-        profile["userData"].update(request.data) # This overwrites existing keys at the top level of userData
-        success = await loop.run_in_executor(None, write_user_profile, user_id, profile)
+        profile["userData"].update(request.data)
+        success = await write_user_profile(user_id, profile) # AWAIT
         if not success:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to write user profile.")
         return JSONResponse(content={"message": "User data stored successfully.", "status": 200})
@@ -1582,9 +1581,8 @@ async def set_db_data(request: UpdateUserDataRequest, user_id: str = Depends(Per
 @app.post("/add-db-data", status_code=status.HTTP_200_OK, summary="Add/Merge User Profile Data", tags=["User Profile"])
 async def add_db_data(request: AddUserDataRequest, user_id: str = Depends(PermissionChecker(required_permissions=["write:profile"]))):
     print(f"[ENDPOINT /add-db-data] User {user_id}, Data: {str(request.data)[:100]}...")
-    loop = asyncio.get_event_loop()
     try:
-        profile = await loop.run_in_executor(None, load_user_profile, user_id)
+        profile = await load_user_profile(user_id) # AWAIT
         existing_udata = profile.get("userData", {})
         
         # Deep merge logic (simple version from original)
@@ -1597,7 +1595,7 @@ async def add_db_data(request: AddUserDataRequest, user_id: str = Depends(Permis
                 existing_udata[key] = new_val
         
         profile["userData"] = existing_udata
-        success = await loop.run_in_executor(None, write_user_profile, user_id, profile)
+        success = await write_user_profile(user_id, profile) # AWAIT
         if not success:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to write merged user profile.")
         return JSONResponse(content={"message": "User data merged successfully.", "status": 200})
@@ -1609,9 +1607,11 @@ async def add_db_data(request: AddUserDataRequest, user_id: str = Depends(Permis
 @app.post("/get-user-data", status_code=status.HTTP_200_OK, summary="Get User Profile Data", tags=["User Profile"])
 async def get_db_data(user_id: str = Depends(PermissionChecker(required_permissions=["read:profile"]))):
     print(f"[ENDPOINT /get-user-data] User {user_id}.")
-    loop = asyncio.get_event_loop()
+    # loop = asyncio.get_event_loop() # Not needed if you directly await
     try:
-        profile = await loop.run_in_executor(None, load_user_profile, user_id)
+        # CORRECT:
+        profile = await load_user_profile(user_id) # <--- Add await here
+
         return JSONResponse(content={"data": profile.get("userData", {}), "status": 200})
     except Exception as e:
         print(f"[ERROR] /get-user-data {user_id}: {e}")
