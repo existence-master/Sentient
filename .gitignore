@@ -248,3 +248,4 @@ ruff_cache
 memory.db
 token.json
 .wav
+config/models_config.py
