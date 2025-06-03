@@ -1,3 +1,5 @@
+workspace/
+
 ### Flask ###
 instance/*
 !instance/.gitignore
