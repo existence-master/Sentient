@@ -1,4 +1,6 @@
 workspace/
+credentials/
+client_secrets.json
 
 ### Flask ###
 instance/*

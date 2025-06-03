@@ -1,7 +1,6 @@
 # server/planner/plan.py
 from typing import Optional, Dict, Any, Union, List
 from qwen_agent.agents import Assistant
-import re
 
 # Define LLM configuration for Ollama
 llm_cfg = {
@@ -28,14 +27,7 @@ llm_cfg = {
 
 bot = Assistant(llm=llm_cfg)
 
-action_items = [
-    "The user needs to prepare a presentation for the Quarterly Report meeting.",
-]
-
-available_tools = ["gmail", "gcalendar", "gdrive", "gdocs", "gslides", "gsheet", "get_short_term_memories", "get_long_term_memories", "notion", "web_search"]
-context_sources = ["short_term_memories (short-term information about the user)", "long_term_memories (long-term information about the user)", "gdrive (user's Google Drive)", "notion (user's Notion workspace)"]
-
-def generate_plan_text(action_items: List[str], tools: List[str] = available_tools) -> Dict[str, Any]:
+def generate_plan_text(action_items: List[str], available_tools: List[str], context_sources: List[str]) -> Dict[str, Any]:
     """
     A simple planner that takes in a list of action items and returns a plan.
     """
@@ -53,16 +45,16 @@ def generate_plan_text(action_items: List[str], tools: List[str] = available_too
     return responses
 
 
-plan = generate_plan_text(action_items, available_tools)
+# plan = generate_plan_text(action_items, available_tools)
 
-thinking_trace = re.search(r"<think>(.*?)</think>", plan[0]["content"], re.DOTALL).group(1).strip()
-final_plan = re.sub(r"<think>.*?</think>", "", plan[0]["content"], flags=re.DOTALL).strip()
+# thinking_trace = re.search(r"<think>(.*?)</think>", plan[0]["content"], re.DOTALL).group(1).strip()
+# final_plan = re.sub(r"<think>.*?</think>", "", plan[0]["content"], flags=re.DOTALL).strip()
 
 
-# print ("Plan generated based on action items:\n")
+# # print ("Plan generated based on action items:\n")
 
-print ("\nPlan:\n" + final_plan)
+# print ("\nPlan:\n" + final_plan)
 
-print ("\n\n")
+# print ("\n\n")
 
-print ("Thinking trace of the model:\n" + thinking_trace)
+# print ("Thinking trace of the model:\n" + thinking_trace)
