@@ -1,220 +1,136 @@
+import json
 from qwen_agent.agents import Assistant
-import asyncio
-import json # For pretty printing the response
+from typing import List, Dict
 
-# Your LLM config (e.g., Qwen3)
+# --- LLM and Agent Configuration ---
 llm_cfg = {
-    'model': 'qwen3:4b',
-    'model_server': 'http://localhost:11434/v1/', # Ollama endpoint
-    'api_key': 'EMPTY', # Ollama doesn't require an API key by default
-    # 'generate_cfg': {
-    #     'stop': ['<|endoftext|>', '<|im_end|>'] # Add appropriate stop tokens for your model
-    # }
+    'model': 'qwen3:4b',  # Using a slightly larger model like 7b is recommended for better reasoning
+    'model_server': 'http://localhost:11434/v1/',
+    'api_key': 'EMPTY',
 }
 
-# Define the remote MCP server endpoint URL for the memory server
-memory_mcp_server_url = "http://localhost:8001/sse"  # Port 8001 as in memory_server.py
+tools = [{"mcpServers": {"memory_tools": {"url": "http://localhost:8001/sse"}}}]
 
-# Define tools connecting to the remote MCP server
-tools = [{
-    "mcpServers": {
-        "memory_tools": {  # A descriptive name for this server connection
-            "url": memory_mcp_server_url,
-        }
-    }
-}]
+# --- REWRITTEN & ENHANCED SYSTEM PROMPT ---
+SYSTEM_PROMPT = """
+You are a highly advanced personal AI companion. Your most critical function is to build a deep, personal understanding of your user, '{user_id}', through memory.
+
+**Your Core Workflow - A Strict Mandate:**
+1.  **LISTEN:** Analyze the user's message.
+2.  **REMEMBER (MANDATORY):** Before crafting any response, you MUST use the `search_memories` tool. Ask yourself: "What do I already know about this person or topic?"
+3.  **SYNTHESIZE (CRITICAL):**
+    -   The `search_memories` tool will return clean facts and reminders. Review the `fact` and `content` fields.
+    -   **DO NOT DESCRIBE THE TOOL's JSON OUTPUT.** Never mention "similarity scores," "long_term_facts," or "short_term_reminders" to the user. This is internal context for you only.
+    -   Integrate the retrieved memories seamlessly and naturally into your response to show you remember the user.
+4.  **RESPOND:** Talk to the user like a friend who remembers things.
+5.  **UPDATE MEMORY:** After responding, decide if new, permanent information was shared.
+    -   If yes, use the `save_long_term_fact` tool.
+    -   Define relationships clearly. For the user, always use the keyword 'user' (e.g., `relations=[{{"from": "user", "to": "Jordan", "type": "FRIEND_OF"}}]`).
+    -   For temporary items, use `add_short_term_memory`.
+
+**Example Thought Process:**
+User says: "My sister, Chloe, just got a dog."
+Your internal thought process:
+1.  `search_memories` for "Chloe" or "sister". Let's say it returns nothing.
+2.  I will respond to the user and then update my memory.
+3.  My response: "That's wonderful news! What kind of dog did Chloe get? I'll remember that she's your sister."
+4.  After responding, call `save_long_term_fact` with `fact_text="Chloe has a dog"`, `category="Social"`, `relations=[{{"from": "Chloe", "to": "user", "type": "SISTER_OF"}}]`.
+
+Your primary directive is to make the user feel remembered and understood. Your internal tool use should be invisible to them.
+"""
 
 agent = Assistant(
     llm=llm_cfg,
     function_list=tools,
     name="MemoryEnhancedAgent",
-    description="Agent using Qwen model with a remote MCP server for memory management."
+    description="Agent using a robust knowledge graph and vector search memory system."
 )
 
-# --- Example Usage ---
-def run_agent_tasks():
-    # Unique user ID for this session/user
-    USER_ID = "user_001"
+def run_single_task(task_name: str, messages: List[Dict]):
+    """Helper function to run a single agent task and print the output."""
+    print(f"\n{'-'*20} {task_name} {'-'*20}")
+    final_response = None
+    # The loop consumes the generator to get the final response
+    for response in agent.run(messages=messages):
+        final_response = response
 
-    # test_messages_1 = [
-    #     {'role': 'system', 'content': f'You are a helpful assistant. Your current user_id is "{USER_ID}". ALWAYS use this user_id for memory operations and explicitly pass it to any memory tool calls.'},
-    #     {'role': 'user', 'content': f'My name is Bob. Please remember this.'}
-    # ]
-    # print(f"\n--- Task 1: Remembering name (User ID: {USER_ID}) ---")
-    # # Use agent.run() for asynchronous iteration
-    # for responses_1 in agent.run(messages=test_messages_1):
-    #     pass
-    # if responses_1:
-    #     print("Final Agent Output 1 (last yielded value):")
-    #     print(json.dumps(responses_1, indent=2))
-    # else:
-    #     print("No responses received for Task 1.")
-
-
-    # test_messages_2 = [
-    #     {'role': 'system', 'content': f'You are a helpful assistant. Your current user_id is "{USER_ID}". ALWAYS use this user_id for memory operations and explicitly pass it to any memory tool calls.'},
-    #     {'role': 'user', 'content': f'I have a dentist appointment next Tuesday at 3 PM. Please remind me. Set a TTL of 7 days for this reminder.'}
-    # ]
-    # print(f"\n--- Task 2: Adding a short-term reminder (User ID: {USER_ID}) ---")
-    # # Use agent.run()
-    # for responses_2 in agent.run(messages=test_messages_2):
-    #     pass
-    # if responses_2:
-    #     print("Final Agent Output 2 (last yielded value):")
-    #     print(json.dumps(responses_2, indent=2))
-    # else:
-    #     print("No responses received for Task 2.")
-        
-    # test_messages_3 = [
-    #     {'role': 'system', 'content': f'You are a helpful assistant. Your current user_id is "{USER_ID}". ALWAYS use this user_id for memory operations and explicitly pass it to any memory tool calls.'},
-    #     {'role': 'user', 'content': f'What is my name and do I have any upcoming appointments?'}
-    # ]
-    # print(f"\n--- Task 3: Retrieving memories (User ID: {USER_ID}) ---")
-    # # Use agent.run()
-    # for responses_3 in agent.run(messages=test_messages_3):
-    #     pass
-    # if responses_3:
-    #     print("Final Agent Output 3 (last yielded value):")
-    #     print(json.dumps(responses_3, indent=2))
-    # else:
-    #     print("No responses received for Task 3.")
-
-
-    # test_messages_4 = [
-    #     {'role': 'system', 'content': f'You are a helpful assistant. Your current user_id is "{USER_ID}". ALWAYS use this user_id for memory operations and explicitly pass it to any memory tool calls.'},
-    #     {'role': 'user', 'content': f'My favorite color is blue. Can you remember that for me?'}
-    # ]
-    # print(f"\n--- Task 4: Adding another long-term memory (User ID: {USER_ID}) ---")
-    # # Use agent.run()
-    # for responses_4 in agent.run(messages=test_messages_4):
-    #     pass
-    # if responses_4:
-    #     print("Final Agent Output 4 (last yielded value):")
-    #     print(json.dumps(responses_4, indent=2))
-    # else:
-    #     print("No responses received for Task 4.")
-
-
-    # test_messages_5 = [
-    #     {'role': 'system', 'content': f'You are a helpful assistant. Your current user_id is "{USER_ID}". ALWAYS use this user_id for memory operations and explicitly pass it to any memory tool calls.'},
-    #     {'role': 'user', 'content': f'Search all my memories for "blue" or "dentist".'}
-    # ]
-    # print(f"\n--- Task 5: Searching all memories (User ID: {USER_ID}) ---")
-    # # Use agent.run()
-    # for responses_5 in agent.run(messages=test_messages_5):
-    #     pass
-    # if responses_5:
-    #     print("Final Agent Output 5 (last yielded value):")
-    #     print(json.dumps(responses_5, indent=2))
-    # else:
-    #     print("No responses received for Task 5.")
-
-    # test_messages_6 = [
-    #     {'role': 'system', 'content': f'You are a helpful assistant. Your current user_id is "{USER_ID}". ALWAYS use this user_id for memory operations and explicitly pass it to any memory tool calls.'},
-    #     {'role': 'user', 'content': f'I have a temporary access code: "XYZ123". It is valid for only 10 seconds. Please store it.'} # Shorter TTL for testing
-    # ]
-    # print(f"\n--- Task 6: Adding a very short-lived STM (User ID: {USER_ID}) ---")
-    # for responses_6 in agent.run(messages=test_messages_6):
-    #     pass
-    # if responses_6:
-    #     print("Final Agent Output 6 (last yielded value):")
-    #     print(json.dumps(responses_6, indent=2))
-    # else:
-    #     print("No responses received for Task 6.")
-        
-    # test_messages_7 = [
-    #     {'role': 'system', 'content': f'You are a helpful assistant. Your current user_id is "{USER_ID}". ALWAYS use this user_id for memory operations and explicitly pass it to any memory tool calls.'},
-    #     {'role': 'user', 'content': f'Do you remember my temporary access code "XYZ123"?'}
-    # ]
-    # print(f"\n--- Task 7: Checking for expired STM (User ID: {USER_ID}) ---")
-    # for responses_7 in agent.run(messages=test_messages_7):
-    #     pass
-    # if responses_7:
-    #     print("Final Agent Output 7 (last yielded value, should indicate code is not found or similar):")
-    #     print(json.dumps(responses_7, indent=2))
-    # else:
-    #     print("No responses received for Task 7.")
-    
-    # test_messages_8 = [
-    #     {'role': 'system', 'content': f'You are a helpful assistant. Your current user_id is "{USER_ID}". ALWAYS use this user_id for memory operations and explicitly pass it to any memory tool calls. You can now manage a knowledge graph.'},
-    #     {'role': 'user', 'content': f'Please create an entity for "Alice Wonderland". She is a "person" and her observations are ["curious individual", "likes tea parties"]. Use user ID "{USER_ID}".'}
-    # ]
-    # print(f"\n--- Task 8: Creating KG Entity (User ID: {USER_ID}) ---")
-    # for responses_8 in agent.run(messages=test_messages_8):
-    #     pass # Get the last response
-    # if responses_8:
-    #     print("Final Agent Output 8:")
-    #     print(json.dumps(responses_8, indent=2))
-    # else:
-    #     print("No responses received for Task 8.")
-
-    # # --- Task 9: Create another KG entity and a relation ---
-    # test_messages_9 = [
-    #     {'role': 'system', 'content': f'You are a helpful assistant. Your current user_id is "{USER_ID}". ALWAYS use this user_id for memory operations and explicitly pass it to any memory tool calls. You can now manage a knowledge graph.'},
-    #     {'role': 'user', 'content': f'Create an entity named "Mad Hatter" of type "character" with observations ["hosts tea parties", "wears a large hat"]. Then, create a relation: "Alice Wonderland" "knows" "Mad Hatter". Use user ID "{USER_ID}".'}
-    # ]
-    # print(f"\n--- Task 9: Creating KG Entity & Relation (User ID: {USER_ID}) ---")
-    # for responses_9 in agent.run(messages=test_messages_9):
-    #     pass
-    # if responses_9:
-    #     print("Final Agent Output 9:")
-    #     print(json.dumps(responses_9, indent=2))
-    # else:
-    #     print("No responses received for Task 9.")
-
-    # # --- Task 10: Search the KG ---
-    # test_messages_10 = [
-    #     {'role': 'system', 'content': f'You are a helpful assistant. Your current user_id is "{USER_ID}". ALWAYS use this user_id for memory operations and explicitly pass it to any memory tool calls. You can now manage a knowledge graph.'},
-    #     {'role': 'user', 'content': f'Search my knowledge graph for "Alice" or "tea party". Use user ID "{USER_ID}".'}
-    # ]
-    # print(f"\n--- Task 10: Searching KG (User ID: {USER_ID}) ---")
-    # for responses_10 in agent.run(messages=test_messages_10):
-    #     pass
-    # if responses_10:
-    #     print("Final Agent Output 10:")
-    #     print(json.dumps(responses_10, indent=2)) # This will call search_all_memories if LLM chooses it, or kg_search_nodes
-    # else:
-    #     print("No responses received for Task 10.")
-
-    # # --- Task 11: Read the entire graph for the user ---
-    # test_messages_11 = [
-    #     {'role': 'system', 'content': f'You are a helpful assistant. Your current user_id is "{USER_ID}". ALWAYS use this user_id for memory operations and explicitly pass it to any memory tool calls. You can now manage a knowledge graph.'},
-    #     {'role': 'user', 'content': f'Show me my entire knowledge graph for user ID "{USER_ID}".'}
-    # ]
-    # print(f"\n--- Task 11: Reading KG (User ID: {USER_ID}) ---")
-    # for responses_11 in agent.run(messages=test_messages_11):
-    #     pass
-    # if responses_11:
-    #     print("Final Agent Output 11:")
-    #     print(json.dumps(responses_11, indent=2))
-    # else:
-    #     print("No responses received for Task 11.")
-    
-    # --- Task 12: Testing Custom Task ---
-    test_messages_12 = [
-        {'role': 'system', 'content': f'You are a helpful assistant. Your current user_id is "{USER_ID}". ALWAYS use this user_id for memory operations and explicitly pass it to any memory tool calls. You can now manage a knowledge graph.'},
-        {'role': 'user', 'content': f'Tell me about myself.'}
-    ]
-    print(f"\n--- Task 12: Telling User about Themself based on KG Profile (User ID: {USER_ID}) ---")
-    for responses_12 in agent.run(messages=test_messages_12):
-        pass
-    if responses_12:
-        print("Final Agent Output 12:")
-        print(json.dumps(responses_12, indent=2))
+    if final_response:
+        print("Final Agent Output:")
+        # We only print the 'content' of the last message for cleaner output
+        if isinstance(final_response, list) and final_response:
+             print(json.dumps(final_response[-1]['content'], indent=2))
+        else:
+             print(json.dumps(final_response, indent=2))
     else:
-        print("No responses received for Task 12.")
+        print("No response received for this task.")
 
+def run_agent_narrative():
+    """Runs a series of tasks to demonstrate the improved memory system's capabilities."""
+    USER_ID = "user_alex_007"
+    
+    # Task 1: First interaction, learning the user's name and profession.
+    run_single_task(
+        "Task 1: First Meaningful Interaction",
+        messages=[
+            {'role': 'system', 'content': SYSTEM_PROMPT.format(user_id=USER_ID)},
+            {'role': 'user', 'content': "Hi there, you can call me Alex. I'm a graphic designer working at a company called DreamCanvas."}
+        ]
+    )
+
+    # Task 2: Adding a preference
+    run_single_task(
+        "Task 2: Learning a Preference",
+        messages=[
+            {'role': 'system', 'content': SYSTEM_PROMPT.format(user_id=USER_ID)},
+            {'role': 'user', 'content': "I'm a huge fan of spicy food, especially Thai."}
+        ]
+    )
+
+    # Task 3: Testing retrieval. The agent should synthesize its knowledge.
+    run_single_task(
+        "Task 3: Synthesis & Retrieval",
+        messages=[
+            {'role': 'system', 'content': SYSTEM_PROMPT.format(user_id=USER_ID)},
+            {'role': 'user', 'content': "I'm thinking of getting lunch and then getting back to my design work. Any ideas?"}
+        ]
+    )
+    
+    # Task 4: Adding a complex social fact with multiple relations.
+    run_single_task(
+        "Task 4: Complex Social Fact",
+        messages=[
+            {'role': 'system', 'content': SYSTEM_PROMPT.format(user_id=USER_ID)},
+            {'role': 'user', 'content': "My best friend, Jordan, who is a chef, is getting married next month!"}
+        ]
+    )
+
+    # Task 5: A vague question requiring synthesis.
+    run_single_task(
+        "Task 5: Vague Question Requiring Memory",
+        messages=[
+            {'role': 'system', 'content': SYSTEM_PROMPT.format(user_id=USER_ID)},
+            {'role': 'user', 'content': "What's new with my friends and me?"}
+        ]
+    )
+
+    # Task 6: Adding a short-term, categorized reminder.
+    run_single_task(
+        "Task 6: Adding a Short-Term Reminder",
+        messages=[
+            {'role': 'system', 'content': SYSTEM_PROMPT.format(user_id=USER_ID)},
+            {'role': 'user', 'content': "Can you remind me in an hour to check on the final design mockups for the new project? It's for work."}
+        ]
+    )
+    
+    # Task 7: Getting the full user profile, which should now be well-structured.
+    run_single_task(
+        "Task 7: Full Profile Summary",
+        messages=[
+            {'role': 'system', 'content': SYSTEM_PROMPT.format(user_id=USER_ID)},
+            {'role': 'user', 'content': "Give me a summary of everything you know about me."}
+        ]
+    )
 
 if __name__ == "__main__":
-    # Ensure Ollama model name is correct, e.g., qwen2:1.5b, qwen2:7b etc.
-    # Check `ollama list` for available models.
     print(f"Using LLM model: {llm_cfg['model']}")
-
-    if hasattr(asyncio, 'run'):
-        asyncio.run(run_agent_tasks())
-    else:
-        loop = asyncio.get_event_loop()
-        try:
-            loop.run_until_complete(run_agent_tasks())
-        finally:
-            loop.close()
+    run_agent_narrative()
