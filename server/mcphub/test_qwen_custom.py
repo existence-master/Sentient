@@ -17,8 +17,10 @@ tools = [{
     "mcpServers": {
         "custom": {
             "url": mcp_server_url,
-            # No command or args needed here since server is already running
-        }
+            "headers": {
+                "X-User-ID": "sarthak"  # Replace with actual user ID or make it dynamic
+            },
+    }
     }
 }]
 
@@ -31,7 +33,7 @@ agent = Assistant(
 
 messages = [
         {'role': 'system', 'content': 'You are a helpful assistant.'},
-        {'role': 'user', 'content': 'Calculate my BMI using the custom server tool. My weight is 70 kg and height is 1.75 m.'}
+        {'role': 'user', 'content': 'Calculate my BMI using the custom server tool. My weight is 70 kg and height is 1.75 m. User Id is sarthak.'},
     ]
 for responses in agent.run(messages=messages):
     pass
