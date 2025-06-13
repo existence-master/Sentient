@@ -1,6 +1,7 @@
 workspace/
 credentials/
 client_secrets.json
+faiss_indexes/
 
 ### Flask ###
 instance/*
