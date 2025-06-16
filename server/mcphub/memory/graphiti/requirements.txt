@@ -1,0 +1,8 @@
+# requirements.txt
+graphiti-core[google-genai]
+python-dotenv
+ipywidgets
+langgraph
+langchain-google-genai
+python-dotenv
+sentence-transformers
