@@ -9,18 +9,23 @@ from typing import Annotated, List
 # --- LangChain & LangGraph Imports ---
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
-from langchain_google_genai import ChatGoogleGenerativeAI
+# Use the LangChain community package for Ollama
+from langchain_ollama import ChatOllama
 from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
 
 # --- Graphiti Imports ---
+# Import the new Ollama clients and their configs
 from graphiti_core import Graphiti
+from graphiti_core.llm_client import LLMConfig, OllamaClient
+from graphiti_core.embedder import OllamaEmbedder, OllamaEmbedderConfig
 from graphiti_core.nodes import EpisodeType
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data
-from graphiti_core.llm_client.gemini_client import GeminiClient, LLMConfig
-from graphiti_core.embedder.gemini import GeminiEmbedder, GeminiEmbedderConfig
 from graphiti_core.cross_encoder.bge_reranker_client import BGERerankerClient
+# Import a search recipe to find nodes
+from graphiti_core.search.search_config_recipes import NODE_HYBRID_SEARCH_RRF
+
 
 # --- Global Variables & Setup ---
 load_dotenv()
@@ -78,6 +83,7 @@ async def agent_node(state: AgentState):
     """The primary node of the agent that decides what to do."""
     # Fetch current context from the graph to inform the LLM
     last_user_message = state["messages"][-1].content
+    # Use await here as search_knowledge_graph is an async tool
     context_facts = await search_knowledge_graph.ainvoke({"query": last_user_message})
 
     system_prompt = f"""You are a helpful personal assistant for a user named {USER_NAME}.
@@ -112,13 +118,21 @@ async def setup_database():
     global graphiti, alex_node_uuid
     print("--- Setting up Graphiti and Neo4j Database ---")
 
-    google_api_key = os.environ.get("GOOGLE_API_KEY")
+    # --- UPDATED: Graphiti is now configured to use Ollama for LLM and Embeddings ---
     graphiti = Graphiti(
         uri=os.getenv('NEO4J_URI'),
         user=os.getenv('NEO4J_USER'),
         password=os.getenv('NEO4J_PASSWORD'),
-        llm_client=GeminiClient(config=LLMConfig(api_key=google_api_key, model="gemini-2.0-flash")),
-        embedder=GeminiEmbedder(config=GeminiEmbedderConfig(api_key=google_api_key, embedding_model="embedding-001")),
+        # Use OllamaClient for internal graph operations (node/edge extraction, etc.)
+        llm_client=OllamaClient(config=LLMConfig(
+            model="qwen2.5-coder:3b", 
+            base_url="http://localhost:11434"
+        )),
+        # Use OllamaEmbedder for creating embeddings for nodes and facts
+        embedder=OllamaEmbedder(config=OllamaEmbedderConfig(
+            embedding_model="nomic-embed-text", 
+            base_url="http://localhost:11434"
+        )),
         cross_encoder=BGERerankerClient()
     )
 
@@ -140,10 +154,16 @@ async def setup_database():
             episode_body=fact,
             source=EpisodeType.text,
             reference_time=datetime.now(),
+            source_description="Initial Setup",
         )
 
-    # Get Alex's node UUID to use for personalized search
-    alex_nodes = await graphiti.get_nodes_by_query(USER_NAME)
+    # --- FIXED: Use graphiti.search_ to find the user node ---
+    # The method `get_nodes_by_query` does not exist. We use the powerful `search_`
+    # method with a node-specific config to find the "Alex" node.
+    print(f"Searching for user node: '{USER_NAME}'")
+    search_results = await graphiti.search_(USER_NAME, config=NODE_HYBRID_SEARCH_RRF)
+    alex_nodes = search_results.nodes
+    
     if not alex_nodes:
         raise Exception("Could not create and find the user node for Alex.")
     alex_node_uuid = alex_nodes[0].uuid
@@ -154,14 +174,17 @@ async def setup_database():
 # --- Main Execution ---
 
 if __name__ == "__main__":
-    # Initialize the LLM and bind the tools
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro-latest", temperature=0)
+    # --- UPDATED: The main agent LLM is now ChatOllama ---
+    # This model is used by the agent to decide which tool to call.
+    llm = ChatOllama(model="llama3:8b", temperature=0)
+    
     tools = [search_knowledge_graph, add_or_update_fact]
     llm_with_tools = llm.bind_tools(tools)
     
     # Build the LangGraph
     graph_builder = StateGraph(AgentState)
     graph_builder.add_node("agent", agent_node)
+    # The ToolNode will correctly handle the async tools
     graph_builder.add_node("tools", ToolNode(tools))
     
     graph_builder.add_edge(START, "agent")
@@ -179,6 +202,7 @@ if __name__ == "__main__":
         await setup_database()
         print("\nHi! I'm your personal AI assistant. I can remember things you tell me.")
         print("Try asking 'Where do I live?' or telling me 'My new hobby is painting.'")
+        print("I'm running on local models using Ollama!")
         print("Type 'quit' to exit.")
 
         while True:
@@ -191,13 +215,17 @@ if __name__ == "__main__":
                 async for event in graph.astream({"messages": [("user", user_input)]}):
                     for key, value in event.items():
                         if key == "agent":
+                            # Check if the agent's message contains tool calls
                             if value['messages'][-1].tool_calls:
                                 print(f"--- Agent decided to use a tool ---")
                             else:
+                                # If no tool calls, it's the final response
                                 print(f"\nAssistant: {value['messages'][-1].content}")
                         elif key == "tools":
                             # The tool output is automatically added back to the state
-                            print(f"--- Tool output: {value['messages'][-1].content} ---")
+                            # We can print it for debugging/transparency
+                            for tool_msg in value['messages']:
+                                print(f"--- Tool output: {tool_msg.content} ---")
 
             except Exception as e:
                 print(f"\nAn error occurred: {e}")

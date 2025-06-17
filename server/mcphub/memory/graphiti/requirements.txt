@@ -6,3 +6,4 @@ langgraph
 langchain-google-genai
 python-dotenv
 sentence-transformers
+langchain-ollama
