@@ -6,283 +6,243 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from bson import ObjectId
 from fastmcp import FastMCP
-from pymongo import MongoClient
+from pymongo import MongoClient, ReturnDocument
 from pymongo.errors import ConnectionFailure
-from neo4j import GraphDatabase, exceptions as Neo4jExceptions
+from neo4j import GraphDatabase
 from sentence_transformers import SentenceTransformer
 
-# --- General Configuration & Setup ---
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Set the Neo4j notifications logger to a higher level to hide informational messages
+# --- Configuration & Setup ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("DualMemoryMCP")
 logging.getLogger("neo4j.notifications").setLevel(logging.WARNING)
 
-# --- Constants ---
 class Cfg:
     MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
-    MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "sentient_memory_test")
+    MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "sentient_dual_memory_v2")
     NEO4J_URI = os.getenv("NEO4J_URI", "neo4j://localhost:7687")
     NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
     NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
     EMBEDDING_MODEL = 'all-MiniLM-L6-v2'
-    CATEGORIES = ["Personal", "Professional", "Social", "Financial", "Health", "Preferences", "Events", "General"]
+    EMBEDDING_DIM = 384
 
-# --- Embedding Model Singleton ---
-try:
-    embedding_model = SentenceTransformer(Cfg.EMBEDDING_MODEL)
-    logger.info(f"Successfully loaded SentenceTransformer model: {Cfg.EMBEDDING_MODEL}")
-except Exception as e:
-    logger.error(f"Failed to load sentence-transformer model. Error: {e}")
-    exit(1)
+# --- Singleton for Embedding Model ---
+embedding_model = SentenceTransformer(Cfg.EMBEDDING_MODEL)
+logger.info(f"Loaded SentenceTransformer model: {Cfg.EMBEDDING_MODEL}")
 
 def get_embedding(text: str) -> List[float]:
     return embedding_model.encode(text, convert_to_tensor=False).tolist()
 
-# --- Neo4j Knowledge Graph Memory Manager ---
-class Neo4jKnowledgeGraph:
+# --- Neo4j Manager with Full CRUD ---
+class Neo4jManager:
     def __init__(self, uri, user, password):
         self._driver = GraphDatabase.driver(uri, auth=(user, password))
         self._driver.verify_connectivity()
-        logger.info(f"Successfully connected to Neo4j: {uri}")
         self._setup_database()
+        logger.info("Neo4j Manager initialized and connected.")
 
     def _setup_database(self):
         with self._driver.session() as session:
             session.run("CREATE CONSTRAINT user_id_unique IF NOT EXISTS FOR (u:User) REQUIRE u.user_id IS UNIQUE")
-            session.run("CREATE CONSTRAINT category_name_unique IF NOT EXISTS FOR (c:Category) REQUIRE c.name IS UNIQUE")
-            session.run("CREATE VECTOR INDEX `observation-embeddings` IF NOT EXISTS FOR (o:Observation) ON (o.embedding) OPTIONS { indexConfig: { `vector.dimensions`: 384, `vector.similarity_function`: 'cosine' } }")
-            session.run("UNWIND $categories as category_name MERGE (c:Category {name: category_name})", categories=Cfg.CATEGORIES)
-            logger.info("Ensured Neo4j constraints, indexes, and categories.")
+            session.run(f"CREATE VECTOR INDEX `fact_embeddings` IF NOT EXISTS FOR (f:Fact) ON (f.embedding) OPTIONS {{ indexConfig: {{ `vector.dimensions`: {Cfg.EMBEDDING_DIM}, `vector.similarity_function`: 'cosine' }} }}")
 
-    def close(self):
-        if self._driver: self._driver.close()
+    def close(self): self._driver.close()
 
-    def _sanitize_relation_type(self, relation_type: str) -> str:
-        return relation_type.upper().replace(' ', '_').replace('-', '_')
+    def add_fact(self, user_id: str, fact_text: str, category: str, entities: List[str], relations: List[Dict]) -> Dict:
+        with self._driver.session() as session:
+            return session.execute_write(self._add_fact_tx, user_id, fact_text, category, entities, relations)
 
-    def upsert_memory_fact(self, user_id: str, fact_text: str, category: str, relations: List[Dict]) -> Dict[str, Any]:
+    @staticmethod
+    def _add_fact_tx(tx, user_id, fact_text, category, entities, relations):
         fact_embedding = get_embedding(fact_text)
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        with self._driver.session() as session:
-            session.run("""
-                MERGE (u:User:Entity {user_id: $user_id})
-                ON CREATE SET u.created_at = datetime($now_iso), u.name = 'User Profile'
-                
-                CREATE (o:Observation {
-                    text: $fact_text, embedding: $fact_embedding,
-                    created_at: datetime($now_iso), last_accessed_at: datetime($now_iso)
-                })
-                
-                MERGE (u)-[:HAS_OBSERVATION]->(o)
-                WITH u, o
-                MATCH (c:Category {name: $category})
-                MERGE (o)-[:IN_CATEGORY]->(c)
-            """, user_id=user_id, now_iso=now_iso, fact_text=fact_text, fact_embedding=fact_embedding, category=category)
+        # Create the Fact node and link it to the user
+        result = tx.run("""
+            MERGE (u:User {user_id: $user_id})
+            CREATE (f:Fact {
+                text: $fact_text, embedding: $fact_embedding,
+                category: $category, created_at: datetime($now_iso)
+            })
+            MERGE (u)-[:HAS_FACT]->(f)
+            RETURN id(f) as fact_id
+        """, user_id=user_id, fact_text=fact_text, fact_embedding=fact_embedding, category=category)
+        fact_id = result.single()["fact_id"]
 
-            relations_created_summary = []
-            for rel in relations:
-                rel_type = self._sanitize_relation_type(rel['type'])
-                # Use execute_write (the modern replacement for write_transaction)
-                tx_result = session.execute_write(
-                    self._create_relation_tx, user_id, rel['from'], rel['to'], rel_type
-                )
-                if tx_result:
-                    relations_created_summary.append(tx_result)
+        # Link the Fact to its mentioned entities
+        if entities:
+            tx.run("""
+                MATCH (f:Fact) WHERE id(f) = $fact_id
+                UNWIND $entities as entity_name
+                MERGE (e:Entity {user_id: $user_id, name: entity_name})
+                MERGE (f)-[:MENTIONS]->(e)
+            """, fact_id=fact_id, entities=entities, user_id=user_id)
 
-        return {"status": "success", "fact_added": fact_text, "relations_processed": relations_created_summary}
-
-    @staticmethod
-    def _create_relation_tx(tx, user_id, from_entity_name, to_entity_name, rel_type):
-        from_node_alias = 'a'
-        from_match_clause = f"MATCH ({from_node_alias}:User {{user_id: $user_id}})" if from_entity_name.lower() == 'user' \
-                            else f"MERGE ({from_node_alias}:Entity {{user_id: $user_id, name: $from_name}})"
+        # Create relationships between entities
+        for rel in relations:
+            rel_type = ''.join(c for c in rel['type'].upper().replace(' ', '_') if c.isalnum() or c == '_')
+            tx.run(f"""
+                MERGE (a:Entity {{user_id: $user_id, name: $from_entity}})
+                MERGE (b:Entity {{user_id: $user_id, name: $to_entity}})
+                MERGE (a)-[:`{rel_type}`]->(b)
+            """, user_id=user_id, from_entity=rel['from'], to_entity=rel['to'])
         
-        to_node_alias = 'b'
-        to_match_clause = f"MATCH ({to_node_alias}:User {{user_id: $user_id}})" if to_entity_name.lower() == 'user' \
-                          else f"MERGE ({to_node_alias}:Entity {{user_id: $user_id, name: $to_name}})"
+        return {"status": "success", "fact_added": fact_text, "fact_id": fact_id}
 
-        # --- FIX #2 ---
-        # Added WITH clause to pass the context from the first MATCH/MERGE to the second.
-        query = f"""
-        {from_match_clause}
-        WITH {from_node_alias}
-        {to_match_clause}
-        MERGE ({from_node_alias})-[r:`{rel_type}`]->({to_node_alias})
-        RETURN $from_name as from_name, $to_name as to_name, $rel_type_orig as type
-        """
-        result = tx.run(query, user_id=user_id, from_name=from_entity_name, to_name=to_entity_name, rel_type_orig=rel_type)
-        return result.single()
-
-    def semantic_search(self, user_id: str, query_text: str, categories: Optional[List[str]] = None, limit: int = 5) -> List[Dict]:
-        query_embedding = get_embedding(query_text)
-        
-        category_match_clause = ""
-        if categories:
-            category_match_clause = "MATCH (o)-[:IN_CATEGORY]->(c:Category) WHERE c.name IN $categories"
-
-        # --- FIX #1 ---
-        # Added WITH clause between SET and MATCH.
-        query = f"""
-            CALL db.index.vector.queryNodes('observation-embeddings', $limit, $query_embedding) YIELD node AS o, score
-            MATCH (e:Entity {{user_id: $user_id}})-[:HAS_OBSERVATION]->(o)
-            SET o.last_accessed_at = datetime()
-            WITH o, e, score // Explicitly pass o, e, and score forward
-            {category_match_clause}
-            RETURN
-                o.text as fact,
-                c.name as category,
-                score as similarity
-            LIMIT $limit
-        """
-        
+    def retrieve_facts(self, user_id: str, query_text: str, limit: int = 5) -> List[Dict]:
         with self._driver.session() as session:
-            results = session.run(query, limit=limit, query_embedding=query_embedding, user_id=user_id, categories=categories)
-            return [
-                {
-                    "fact": r["fact"],
-                    "category": r["category"],
-                    "similarity": round(r["similarity"], 2)
-                }
-                for r in results
-            ]
-            
-    def get_full_user_profile(self, user_id: str) -> Dict[str, List[str]]:
-        query = """
-            MATCH (u:User:Entity {user_id: $user_id})-[:HAS_OBSERVATION]->(o:Observation)-[:IN_CATEGORY]->(c:Category)
-            RETURN c.name as category, collect(o.text) as facts
-        """
-        with self._driver.session() as session:
-            results = session.run(query, user_id=user_id)
-            return {r["category"]: r["facts"] for r in results}
+            results = session.run("""
+                CALL db.index.vector.queryNodes('fact_embeddings', $limit, $query_embedding) YIELD node AS f, score
+                MATCH (:User {user_id: $user_id})-[:HAS_FACT]->(f)
+                RETURN f.text as fact, f.category as category, id(f) as fact_id, score as similarity
+                ORDER BY score DESC
+            """, limit=limit, query_embedding=get_embedding(query_text), user_id=user_id)
+            return [dict(res) for res in results]
 
-# --- MongoDB Short-Term Memory Manager (with custom cosine) ---
-class MongoShortTermMemory:
-    def __init__(self, client):
-        self.db = client[Cfg.MONGO_DB_NAME]
+    def update_fact(self, fact_id: int, new_text: str, new_category: Optional[str] = None) -> Optional[Dict]:
+        with self._driver.session() as session:
+            result = session.run("""
+                MATCH (f:Fact) WHERE id(f) = $fact_id
+                SET f.text = $new_text, f.embedding = $new_embedding
+                """ + ("SET f.category = $new_category" if new_category else "") + """
+                RETURN f.text as fact, f.category as category, id(f) as fact_id
+            """, fact_id=fact_id, new_text=new_text, new_embedding=get_embedding(new_text), new_category=new_category)
+            return result.single(as_dictionary=True)
+
+    def delete_fact(self, fact_id: int) -> bool:
+        with self._driver.session() as session:
+            result = session.run("MATCH (f:Fact) WHERE id(f) = $fact_id DETACH DELETE f", fact_id=fact_id)
+            return result.consume().counters.nodes_deleted > 0
+
+# --- MongoDB Manager with Full CRUD ---
+class MongoManager:
+    def __init__(self, uri, db_name):
+        self.client = MongoClient(uri)
+        self.db = self.client[db_name]
         self.collection = self.db["short_term_memories"]
         self._setup_database()
+        logger.info("MongoDB Manager initialized.")
 
     def _setup_database(self):
         if "expire_at_ttl" not in self.collection.index_information():
             self.collection.create_index("expire_at", name="expire_at_ttl", expireAfterSeconds=0)
-        if "user_category_idx" not in self.collection.index_information():
-            self.collection.create_index([("user_id", 1), ("category", 1)], name="user_category_idx")
+        # Assuming Atlas for vector search. If not, fallback search is used.
+        try:
+            self.collection.create_index([("embedding", "vector")], name="vector_index_fallback", background=True) # Basic index
+        except Exception:
+            pass # Index creation may fail on non-vector-supporting versions
 
-    def _cosine_similarity(self, vec1, vec2):
-        vec1_np, vec2_np = np.array(vec1), np.array(vec2)
-        dot_product = np.dot(vec1_np, vec2_np)
-        norm_vec1 = np.linalg.norm(vec1_np)
-        norm_vec2 = np.linalg.norm(vec2_np)
-        if norm_vec1 == 0 or norm_vec2 == 0: return 0.0
-        return float(dot_product / (norm_vec1 * norm_vec2))
+    def close(self): self.client.close()
 
-    def add_memory(self, user_id, content, ttl_seconds, category):
-        embedding = get_embedding(content)
-        now = datetime.now(timezone.utc)
-        doc = {
-            "user_id": user_id, "content": content, "content_embedding": embedding,
-            "category": category, "expire_at": now + timedelta(seconds=ttl_seconds),
-            "created_at": now, "last_accessed_at": now
-        }
-        self.collection.insert_one(doc)
-        return self._serialize_mongo_doc(doc)
-
-    def search_memories(self, user_id, query_text, categories=None, limit=5):
-        query_embedding = get_embedding(query_text)
-        mongo_filter = {"user_id": user_id}
-        if categories: mongo_filter["category"] = {"$in": categories}
-        
-        candidate_docs = list(self.collection.find(mongo_filter))
-        if not candidate_docs: return []
-
-        scored_docs = [
-            {'similarity': self._cosine_similarity(query_embedding, doc['content_embedding']), 'doc': doc}
-            for doc in candidate_docs if 'content_embedding' in doc and doc['content_embedding']
-        ]
-        
-        sorted_results = sorted(scored_docs, key=lambda x: x['similarity'], reverse=True)
-        top_results = sorted_results[:limit]
-        
-        final_docs_to_return = []
-        if top_results:
-            doc_ids_to_update = [item['doc']['_id'] for item in top_results]
-            self.collection.update_many(
-                {"_id": {"$in": doc_ids_to_update}},
-                {"$set": {"last_accessed_at": datetime.now(timezone.utc)}}
-            )
-            for item in top_results:
-                final_docs_to_return.append({
-                    "content": item['doc']['content'],
-                    "category": item['doc']['category'],
-                    "similarity": round(item['similarity'], 2)
-                })
-        return final_docs_to_return
-
-    def _serialize_mongo_doc(self, doc):
-        if not doc: return None
-        if "_id" in doc: doc["_id"] = str(doc["_id"])
-        if "content_embedding" in doc: del doc["content_embedding"]
-        for key, value in doc.items():
-            if isinstance(value, datetime): doc[key] = value.isoformat()
+    @staticmethod
+    def _serialize(doc):
+        if doc:
+            doc["_id"] = str(doc["_id"])
+            if "created_at" in doc: doc["created_at"] = doc["created_at"].isoformat()
+            if "expire_at" in doc: doc["expire_at"] = doc["expire_at"].isoformat()
         return doc
 
-# --- Initialize Managers and MCP Server ---
-kg_manager = Neo4jKnowledgeGraph(Cfg.NEO4J_URI, Cfg.NEO4J_USER, Cfg.NEO4J_PASSWORD)
-mongo_client = MongoClient(Cfg.MONGO_URI)
-stm_manager = MongoShortTermMemory(mongo_client)
+    def add_memory(self, user_id: str, content: str, ttl_seconds: int, category: str) -> Dict:
+        doc = {
+            "user_id": user_id, "content": content, "embedding": get_embedding(content),
+            "category": category, "expire_at": datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
+            "created_at": datetime.now(timezone.utc)
+        }
+        self.collection.insert_one(doc)
+        return self._serialize(doc)
 
-mcp = FastMCP(
-    name="SentientMemoryCompanionServer",
-    instructions="This server provides a robust, dual-system memory for an AI companion..."
-)
+    def retrieve_memories(self, user_id: str, query_text: str, limit: int = 5) -> List[Dict]:
+        pipeline = [
+            {"$vectorSearch": {
+                "index": "vector_search_index", "path": "embedding", "queryVector": get_embedding(query_text),
+                "numCandidates": limit * 15, "limit": limit, "filter": {"user_id": {"$eq": user_id}}
+            }},
+            {"$project": {"_id": 1, "content": 1, "category": 1, "similarity": {"$meta": "vectorSearchScore"}}}
+        ]
+        try:
+            return [self._serialize(doc) for doc in self.collection.aggregate(pipeline)]
+        except Exception:
+            logger.warning("Atlas $vectorSearch failed. Using manual cosine similarity fallback.")
+            docs = list(self.collection.find({"user_id": user_id}))
+            if not docs: return []
+            query_vec = np.array(get_embedding(query_text))
+            for doc in docs:
+                doc['similarity'] = np.dot(query_vec, doc['embedding'])
+            return [self._serialize(d) for d in sorted(docs, key=lambda x: x['similarity'], reverse=True)[:limit]]
 
-# --- MCP Tools ---
+    def get_memory_by_id(self, memory_id: str) -> Optional[Dict]:
+        return self._serialize(self.collection.find_one({"_id": ObjectId(memory_id)}))
+
+    def update_memory(self, memory_id: str, new_content: Optional[str] = None, new_ttl_seconds: Optional[int] = None) -> Optional[Dict]:
+        update_fields = {}
+        if new_content:
+            update_fields["content"] = new_content
+            update_fields["embedding"] = get_embedding(new_content)
+        if new_ttl_seconds:
+            update_fields["expire_at"] = datetime.now(timezone.utc) + timedelta(seconds=new_ttl_seconds)
+
+        if not update_fields: return self.get_memory_by_id(memory_id)
+
+        return self._serialize(self.collection.find_one_and_update(
+            {"_id": ObjectId(memory_id)}, {"$set": update_fields}, return_document=ReturnDocument.AFTER
+        ))
+
+    def delete_memory(self, memory_id: str) -> bool:
+        result = self.collection.delete_one({"_id": ObjectId(memory_id)})
+        return result.deleted_count > 0
+
+# --- Initialize Managers & MCP Server ---
+kg_manager = Neo4jManager(Cfg.NEO4J_URI, Cfg.NEO4J_USER, Cfg.NEO4J_PASSWORD)
+mongo_manager = MongoManager(Cfg.MONGO_URI, Cfg.MONGO_DB_NAME)
+mcp = FastMCP(name="SentientDualMemoryServer", instructions="A server providing full CRUD and search for long-term (Graph) and short-term (Vector DB) memories.")
+
+# --- Long-Term Memory (LTM) Tools ---
 @mcp.tool()
-def save_long_term_fact(user_id: str, fact_text: str, category: str, relations: Optional[List[Dict]] = None) -> Dict:
-    """
-    Saves a permanent fact to the user's knowledge graph. Use for preferences, relationships, or key personal/professional details.
-    To connect entities, use the 'relations' field. Use 'user' to refer to the primary user.
-    Example relations: [{"from": "user", "to": "Innovatech", "type": "WORKS_AT"}, {"from": "Jordan", "to": "user", "type": "FRIEND_OF"}].
-    
-    :param user_id: The user's unique identifier.
-    :param fact_text: The string of information to remember. E.g., "I work at Innovatech as a software engineer."
-    :param category: The category of this fact. Must be one of: Personal, Professional, Social, Financial, Health, Preferences, Events, General.
-    :param relations: (Optional) A list of relationships to create between entities.
-    """
-    if category not in Cfg.CATEGORIES: raise ValueError(f"Invalid category '{category}'. Must be one of {Cfg.CATEGORIES}")
-    return kg_manager.upsert_memory_fact(user_id, fact_text, category, relations or [])
+def add_long_term_fact(user_id: str, fact_text: str, category: str, entities: List[str], relations: List[Dict]) -> Dict:
+    """Saves a permanent, structured fact to the knowledge graph. Requires pre-extracted entities and relations."""
+    return kg_manager.add_fact(user_id, fact_text, category, entities, relations)
 
 @mcp.tool()
-def add_short_term_memory(user_id: str, content: str, ttl_seconds: int, category: str) -> Dict:
-    """Saves a temporary, expiring piece of information like a reminder or to-do item."""
-    if category not in Cfg.CATEGORIES: raise ValueError(f"Invalid category '{category}'. Must be one of {Cfg.CATEGORIES}")
-    return stm_manager.add_memory(user_id, content, ttl_seconds, category)
+def update_long_term_fact(fact_id: int, new_text: str, new_category: Optional[str] = None) -> Dict:
+    """Updates the text and/or category of an existing fact in the knowledge graph using its unique ID."""
+    updated = kg_manager.update_fact(fact_id, new_text, new_category)
+    return {"status": "success", "updated_fact": updated} if updated else {"status": "failure", "error": "Fact not found."}
 
 @mcp.tool()
-def search_memories(user_id: str, query_text: str, categories: Optional[List[str]] = None) -> Dict[str, List[Dict]]:
-    """
-    Performs a semantic search across all memories to find relevant information. Use this before answering any user query.
-    
-    :param user_id: The user's unique identifier.
-    :param query_text: The question or topic to search for, e.g., "What do I do for work?".
-    :param categories: (Optional) A list of categories to restrict the search to.
-    """
-    ltm_results = kg_manager.semantic_search(user_id, query_text, categories)
-    stm_results = stm_manager.search_memories(user_id, query_text, categories)
+def delete_long_term_fact(fact_id: int) -> Dict:
+    """Permanently deletes a fact from the knowledge graph using its unique ID."""
+    was_deleted = kg_manager.delete_fact(fact_id)
+    return {"status": "success" if was_deleted else "failure"}
+
+# --- Short-Term Memory (STM) Tools ---
+@mcp.tool()
+def add_short_term_memory(user_id: str, content: str, ttl_seconds: int, category: str = "General") -> Dict:
+    """Saves a temporary, expiring memory. Useful for reminders or recent conversation context."""
+    return mongo_manager.add_memory(user_id, content, ttl_seconds, category)
+
+@mcp.tool()
+def update_short_term_memory(memory_id: str, new_content: Optional[str] = None, new_ttl_seconds: Optional[int] = None) -> Dict:
+    """Updates the content or extends the expiry time of a short-term memory using its unique ID."""
+    updated = mongo_manager.update_memory(memory_id, new_content, new_ttl_seconds)
+    return {"status": "success", "updated_memory": updated} if updated else {"status": "failure", "error": "Memory not found."}
+
+@mcp.tool()
+def delete_short_term_memory(memory_id: str) -> Dict:
+    """Manually deletes a short-term memory before it expires using its unique ID."""
+    was_deleted = mongo_manager.delete_memory(memory_id)
+    return {"status": "success" if was_deleted else "failure"}
+
+# --- Unified Search Tool ---
+@mcp.tool()
+def search_all_memories(user_id: str, query_text: str, limit: int = 5) -> Dict[str, List[Dict]]:
+    """Performs a semantic search across both LTM (facts) and STM (reminders) to retrieve relevant context."""
+    ltm_results = kg_manager.retrieve_facts(user_id, query_text, limit)
+    stm_results = mongo_manager.retrieve_memories(user_id, query_text, limit)
     return {"long_term_facts": ltm_results, "short_term_reminders": stm_results}
 
-@mcp.tool()
-def get_user_profile_summary(user_id: str) -> Dict[str, List[str]]:
-    """Retrieves a structured summary of everything known about the user from the long-term knowledge graph."""
-    return kg_manager.get_full_user_profile(user_id)
-
 if __name__ == "__main__":
-    logger.info("Starting Sentient Memory Companion MCP Server...")
+    logger.info("Starting Sentient Dual-Memory MCP Server with Full CRUD...")
     try:
         mcp.run(transport="sse", host="0.0.0.0", port=8001)
     finally:
-        if kg_manager: kg_manager.close()
-        if mongo_client: mongo_client.close()
-        logger.info("MCP Server shut down and DB connections closed.")
+        kg_manager.close()
+        mongo_manager.close()

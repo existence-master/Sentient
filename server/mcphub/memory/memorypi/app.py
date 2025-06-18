@@ -7,7 +7,7 @@ from memoripy.implemented_models import ChatCompletionsModel, OllamaEmbeddingMod
 # Make sure Ollama is installed and running on your machine.
 
 # Model for chat completions. Make sure you have pulled it: `ollama pull llama3.1`
-OLLAMA_CHAT_MODEL_NAME = "llama3.1"
+OLLAMA_CHAT_MODEL_NAME = "llama3.2:3b"
 # Ollama's OpenAI-compatible API endpoint
 OLLAMA_API_ENDPOINT = "http://localhost:11434/v1"
 
