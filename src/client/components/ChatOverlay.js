@@ -49,6 +49,7 @@ const ChatOverlay = ({ onClose }) => {
 	const [isNewsEnabled, setNewsEnabled] = useState(false)
 	const [isMapsEnabled, setMapsEnabled] = useState(false)
 	const [isShoppingEnabled, setShoppingEnabled] = useState(false)
+	const [stepEvents, setStepEvents] = useState([]) // NEW: for backend step streaming
 	const textareaRef = useRef(null)
 	const chatEndRef = useRef(null)
 	const abortControllerRef = useRef(null) // To abort fetch requests
@@ -86,6 +87,7 @@ const ChatOverlay = ({ onClose }) => {
 		// Add new message and create history for API call
 		const updatedMessages = [...messages, newUserMessage]
 		setMessages(updatedMessages)
+		setStepEvents([]) // NEW: clear step log for new session
 
 		setInput("")
 		if (textareaRef.current) textareaRef.current.style.height = "auto"
@@ -152,6 +154,10 @@ const ChatOverlay = ({ onClose }) => {
 							toast.error(`An error occurred: ${parsed.message}`)
 							continue
 						}
+						if (parsed.type === "step") {
+							setStepEvents((prev) => [...prev, parsed])
+							continue
+						}
 						if (parsed.type === "assistantStream") {
 							const token = parsed.token || parsed.message || ""
 							assistantMessageId = parsed.messageId
@@ -163,10 +169,10 @@ const ChatOverlay = ({ onClose }) => {
 									return prev.map((msg, index) =>
 										index === existingMsgIndex
 											? {
-													...msg,
-													content: msg.content + token
-												}
-											: msg
+												...msg,
+												content: msg.content + token
+											}
+										: msg
 									)
 								} else {
 									return [
@@ -242,6 +248,22 @@ const ChatOverlay = ({ onClose }) => {
 						<IconX />
 					</button>
 				</header>
+
+				{/* NEW: Step progress log */}
+				{stepEvents.length > 0 && (
+					<div className="p-4 border-b border-[var(--color-primary-surface-elevated)] bg-[var(--color-primary-surface)]/50">
+						<h4 className="text-sm font-semibold text-[var(--color-accent-blue)] mb-2">Backend Process Steps</h4>
+						<ul className="space-y-1 text-xs">
+							{stepEvents.map((step, idx) => (
+								<li key={idx} className="flex items-center gap-2">
+									<span className={`w-2 h-2 rounded-full ${step.status === 'done' ? 'bg-green-400' : step.status === 'in_progress' ? 'bg-yellow-400 animate-pulse' : 'bg-red-400'}`}></span>
+									<span className="font-medium text-[var(--color-text-primary)]">{step.step}</span>
+									<span className="text-[var(--color-text-secondary)]">[{new Date(step.timestamp).toLocaleTimeString()}]</span>
+								</li>
+							))}
+						</ul>
+					</div>
+				)}
 
 				<div
 					ref={scrollContainerRef}

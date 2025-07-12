@@ -27,7 +27,16 @@ async def generate_chat_llm_stream(
     ) -> AsyncGenerator[Dict[str, Any], None]:
     assistant_message_id = str(uuid.uuid4())
 
+    def step_event(step, status):
+        return {
+            "type": "step",
+            "step": step,
+            "status": status,
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+        }
+
     try:
+        yield step_event("Initializing chat stream", "in_progress")
         # --- Construct detailed system prompt from user context ---
         username = user_context.get("name", "User")
         timezone_str = user_context.get("timezone", "UTC")
@@ -50,6 +59,7 @@ async def generate_chat_llm_stream(
         current_user_time = datetime.datetime.now(user_timezone).strftime('%Y-%m-%d %H:%M:%S %Z')
 
         user_profile = await db_manager.get_user_profile(user_id)
+        yield step_event("Fetched user profile", "done")
         supermemory_user_id = user_profile.get("userData", {}).get("supermemory_user_id") if user_profile else None
         
         active_mcp_servers = {}
@@ -60,12 +70,11 @@ async def generate_chat_llm_stream(
                 "transport": "sse",
                 "url": full_supermemory_mcp_url
             }
+        yield step_event("Configured MCP servers", "done")
         
         active_mcp_servers["chat_tools"] = {"url": INTEGRATIONS_CONFIG["chat_tools"]["mcp_server_config"]["url"], "headers": {"X-User-ID": user_id}}
-        
         # ADDED: Journal Server
         active_mcp_servers["journal_server"] = {"url": INTEGRATIONS_CONFIG["journal"]["mcp_server_config"]["url"], "headers": {"X-User-ID": user_id}}
-
 
         tool_flags = {
             "internet_search": enable_internet,
@@ -81,8 +90,9 @@ async def generate_chat_llm_stream(
                 if config and "mcp_server_config" in config:
                     mcp_config = config["mcp_server_config"]
                     active_mcp_servers[mcp_config["name"]] = {"url": mcp_config["url"], "headers": {"X-User-ID": user_id}}
-
+        yield step_event("Prepared tool flags and servers", "done")
         tools = [{"mcpServers": active_mcp_servers}]
+        yield step_event("System prompt and tools ready", "done")
 
     except Exception as e:
         logger.error(f"Failed during initial setup for chat stream for user {user_id}: {e}", exc_info=True)
@@ -94,6 +104,7 @@ async def generate_chat_llm_stream(
 
     stream_interrupted = False
     try:
+        yield step_event("Starting LLM worker thread", "in_progress")
         def worker():
             try:
                 system_prompt = ( # noqa
@@ -103,7 +114,7 @@ async def generate_chat_llm_stream(
                     f"2.  **Continuously Learn:** If you learn a new, permanent fact about the user (their preferences, relationships, personal details, goals, etc.), you MUST use the `supermemory-addToSupermemory` tool to remember it for the future. For example, if the user says 'my wife's name is Jane', you must call the tool to save this fact.\n"
                     f"3.  **Delegate Complex Tasks:** For requests that require multiple steps, research, or actions over time (e.g., 'plan my trip', 'summarize this topic'), use the `create_task_from_description` tool. Do not try to perform complex tasks yourself.\n"
                     f"4.  **Use Your Journal:** For daily notes, simple reminders, or retrieving information from a specific day, use the journal tools (`search_journal`, `summarize_day`, `add_journal_entry`).\n"
-                    f"5.  **Final Answer Format:** When you have a complete, final answer for the user that is not a tool call, you MUST wrap it in `<answer>` tags. For example: `<answer>The weather in London is 15°C and cloudy.</answer>`. Any self-correction or thought process should be inside `<think>` tags, which can precede the final answer.\n\n"
+                    f"5.  **Final Answer Format:** When you have a complete, final answer for the user that is not a tool call, you MUST wrap it in <answer> tags. For example: <answer>The weather in London is 15°C and cloudy.</answer>. Any self-correction or thought process should be inside <think> tags, which can precede the final answer.\n\n"
                     f"**User Context (for your reference):**\n"
                     f"-   **User's Name:** {username}\n"
                     f"-   **User's Location:** {location}\n"
@@ -124,6 +135,7 @@ async def generate_chat_llm_stream(
 
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
+        yield step_event("LLM worker thread started", "done")
 
         last_yielded_content_str, final_history_state = "", None
         while True:
@@ -143,6 +155,7 @@ async def generate_chat_llm_stream(
     except asyncio.CancelledError:
         stream_interrupted = True; raise
     finally:
+        yield step_event("Chat stream complete", "done")
         yield {"type": "assistantStream", "token": "", "done": True, "messageId": assistant_message_id}
         await asyncio.to_thread(thread.join)
 
