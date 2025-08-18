@@ -74,10 +74,10 @@ async def get_integration_sources(user_id: str = Depends(auth_helper.get_current
                 source_info["client_id"] = NOTION_CLIENT_ID
             elif name == 'trello':
                 source_info["client_id"] = TRELLO_CLIENT_ID
-                        elif name == 'discord':
-                 source_info["client_id"] = DISCORD_CLIENT_ID
+            elif name == 'discord':
+                source_info["client_id"] = DISCORD_CLIENT_ID
             elif name == 'outlook':
-                 source_info["client_id"] = OUTLOOK_CLIENT_ID
+                source_info["client_id"] = OUTLOOK_CLIENT_ID
 
         all_sources.append(source_info)
 
