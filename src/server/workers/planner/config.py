@@ -220,6 +220,16 @@ INTEGRATIONS_CONFIG = {
             "name": "whatsapp_server",
             "url": os.getenv("WHATSAPP_MCP_SERVER_URL", "http://localhost:9024/sse")
         }
+    },
+    "outlook": {
+        "display_name": "Outlook",
+        "description": "Connect to read, send, and manage emails in Outlook. The agent can list emails, read message content, send new emails, reply to messages, and manage folders.",
+        "auth_type": "oauth",
+        "icon": "IconMail",
+        "mcp_server_config": {
+            "name": "outlook_server",
+            "url": os.getenv("OUTLOOK_MCP_SERVER_URL", "http://localhost:9027/sse")
+        }
     }
 }
 

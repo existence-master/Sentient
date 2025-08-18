@@ -1,0 +1,6 @@
+fastmcp
+httpx
+python-dotenv
+cryptography
+motor
+requests
