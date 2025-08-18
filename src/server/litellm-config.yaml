@@ -1,21 +1,34 @@
 model_list:
+  # Primary: Tier 1 project
   - model_name: gemini-2.5-flash
     litellm_params:
       model: gemini/gemini-2.5-flash
-      api_key: os.environ/GEMINI_API_KEY
+      api_key: os.environ/GEMINI_API_KEY   # Tier 1 key
+
+  # Fallback: Free Tier project (aliased so LiteLLM doesn’t confuse it)
   - model_name: gemini-2.5-flash-fallback
     litellm_params:
-      model: gemini/gemini-2.5-flash
-      api_key: os.environ/GEMINI_API_KEY_FALLBACK_1
+      model: gemini/gemini-2.5-flash@fallback
+      api_key: os.environ/GEMINI_API_KEY_FALLBACK_1   # Free Tier key
+
+  # Last resort: flash-lite on Tier 1
   - model_name: gemini-2.5-flash-lite
     litellm_params:
       model: gemini/gemini-2.5-flash-lite
-      api_key: os.environ/GEMINI_API_KEY
-  - model_name: gemini-2.5-flash-lite
+      api_key: os.environ/GEMINI_API_KEY   # Tier 1 key
+
+  # Optional: flash-lite on Free Tier (extra cushion)
+  - model_name: gemini-2.5-flash-lite-fallback
     litellm_params:
-      model: gemini/gemini-2.5-flash-lite
+      model: gemini/gemini-2.5-flash-lite@fallback
       api_key: os.environ/GEMINI_API_KEY_FALLBACK_1
 
 litellm_settings:
   drop_params: true
-  fallbacks: [{"gemini-2.5-flash": ["gemini-2.5-flash-lite","gemini-2.5-flash-fallback"]}]
+  pre_call_checks: true         # check quota before routing
+  num_retries: 3                # retry call up to 3 times per model before moving on
+  request_timeout: 10           # raise error if request takes >10s
+  allowed_fails: 3              # cooldown model if >3 fails/min
+  cooldown_time: 30             # cooldown duration in seconds
+  fallbacks:
+    - {"gemini-2.5-flash": ["gemini-2.5-flash-fallback", "gemini-2.5-flash-lite", "gemini-2.5-flash-lite-fallback"]}

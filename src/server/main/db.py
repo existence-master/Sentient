@@ -16,10 +16,16 @@ from main.auth.utils import aes_encrypt, aes_decrypt
 
 DB_ENCRYPTION_ENABLED = ENVIRONMENT == 'stag'
 
+def _datetime_serializer(obj):
+    """JSON serializer for objects not serializable by default json code, like datetime."""
+    if isinstance(obj, datetime.datetime):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
 def _encrypt_field(data: Any) -> Any:
     if not DB_ENCRYPTION_ENABLED or data is None:
         return data
-    data_str = json.dumps(data)
+    data_str = json.dumps(data, default=_datetime_serializer)
     return aes_encrypt(data_str)
 
 def _decrypt_field(data: Any) -> Any:
