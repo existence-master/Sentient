@@ -6,7 +6,7 @@ import datetime
 import asyncio
 import motor.motor_asyncio
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import re
 from json_extractor import JsonExtractor
@@ -19,13 +19,16 @@ from workers.utils.api_client import notify_user, push_progress_update, push_tas
 from workers.utils.text_utils import clean_llm_output
 from celery import chord, group
 from main.llm import run_agent as run_main_agent, LLMProviderDownError
+from workers.utils.crypto import aes_decrypt
 
 # Load environment variables for the worker from its own config
 from workers.executor.config import (MONGO_URI, MONGO_DB_NAME,
-                                     INTEGRATIONS_CONFIG, OPENAI_API_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL_NAME)
+                                     INTEGRATIONS_CONFIG, OPENAI_API_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL_NAME, ENVIRONMENT)
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
+
+DB_ENCRYPTION_ENABLED = ENVIRONMENT == 'stag'
 
 # --- LLM Config for Executor ---
 llm_cfg = {
@@ -33,6 +36,29 @@ llm_cfg = {
     'model_server': OPENAI_API_BASE_URL,
     'api_key': OPENAI_API_KEY,
 }
+
+
+# --- Decryption Helpers (mirrored from main/db.py) ---
+def _decrypt_field(data: Any) -> Any:
+    if not DB_ENCRYPTION_ENABLED or data is None or not isinstance(data, str):
+        return data
+    try:
+        decrypted_str = aes_decrypt(data)
+        return json.loads(decrypted_str)
+    except Exception:
+        # If decryption or JSON loading fails, return the original data
+        # This can happen if the data was not encrypted in the first place
+        return data
+
+def _decrypt_doc(doc: Optional[Dict], fields: List[str]):
+    """
+    Decrypts specified fields in a document in-place.
+    """
+    if not DB_ENCRYPTION_ENABLED or not doc:
+        return
+    for field in fields:
+        if field in doc and doc[field] is not None:
+            doc[field] = _decrypt_field(doc[field])
 
 
 # --- Database Connection within Celery Task ---
@@ -194,6 +220,10 @@ def parse_agent_string_to_updates(content: str) -> List[Dict[str, Any]]:
 async def async_execute_task_plan(task_id: str, user_id: str, run_id: str):
     db = get_db_client()
     task = await db.tasks.find_one({"task_id": task_id, "user_id": user_id})
+
+    # Decrypt sensitive fields before processing
+    SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details"]
+    _decrypt_doc(task, SENSITIVE_TASK_FIELDS)
 
     if not task:
         logger.error(f"Executor: Task {task_id} not found for user {user_id}.")
