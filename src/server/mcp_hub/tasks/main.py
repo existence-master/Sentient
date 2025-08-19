@@ -8,14 +8,16 @@ from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
 from json_extractor import JsonExtractor
 from celery import chord, group
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import auth, prompts
 from main.dependencies import mongo_manager # This is the main server's mongo manager
-from main.llm import run_agent
+from main.llm import run_agent, LLMProviderDownError
 from main.config import INTEGRATIONS_CONFIG
-from main.tasks.utils import clean_llm_output
-from workers.tasks import refine_and_plan_ai_task
+from main.tasks.prompts import TASK_CREATION_PROMPT
+from workers.tasks import generate_plan_from_context
+from workers.utils.text_utils import clean_llm_output
 from workers.executor.tasks import run_single_item_worker, aggregate_results_callback
 
 from fastmcp.utilities.logging import configure_logging, get_logger
@@ -54,26 +56,60 @@ async def create_task_from_prompt(ctx: Context, prompt: str) -> Dict[str, Any]:
     try:
         user_id = auth.get_user_id_from_context(ctx)
 
-        # Create a placeholder task with the raw prompt
+        # 1. Get user context for the LLM prompt
+        user_profile = await mongo_manager.get_user_profile(user_id)
+        personal_info = user_profile.get("userData", {}).get("personalInfo", {}) if user_profile else {}
+        user_name = personal_info.get("name", "User")
+        user_timezone_str = personal_info.get("timezone", "UTC")
+        try:
+            user_timezone = ZoneInfo(user_timezone_str)
+        except ZoneInfoNotFoundError:
+            user_timezone = ZoneInfo("UTC")
+        current_time_str = datetime.now(user_timezone).strftime('%Y-%m-%d %H:%M:%S %Z')
+
+        # 2. Call LLM to parse prompt into structured data
+        system_prompt = TASK_CREATION_PROMPT.format(
+            user_name=user_name,
+            user_timezone=user_timezone_str,
+            current_time=current_time_str
+        )
+        messages = [{'role': 'user', 'content': prompt}]
+
+        response_str = ""
+        for chunk in run_agent(system_message=system_prompt, function_list=[], messages=messages):
+            if isinstance(chunk, list) and chunk and chunk[-1].get("role") == "assistant":
+                response_str = chunk[-1].get("content", "")
+
+        if not response_str:
+            raise Exception("LLM failed to generate task details.")
+
+        parsed_data = JsonExtractor.extract_valid_json(clean_llm_output(response_str))
+        if not parsed_data or not isinstance(parsed_data, dict):
+            raise Exception(f"LLM returned invalid JSON for task details: {response_str}")
+
+        # 3. Construct task data and save to DB
         task_data = {
-            "name": prompt,
-            "description": prompt, # The refiner will use this to generate a better name and description
-            "priority": 1,  # Default priority
-            "schedule": None,
-            "assignee": "ai"
+            "name": parsed_data.get("name", prompt),
+            "description": parsed_data.get("description", prompt),
+            "priority": parsed_data.get("priority", 1),
+            "schedule": parsed_data.get("schedule"),
+            "task_type": "single", # Chat flow only creates single tasks as per plan
+            "original_context": {"source": "chat_prompt", "prompt": prompt}
         }
 
         task_id = await mongo_manager.add_task(user_id, task_data)
 
         if not task_id:
-            raise Exception("Failed to save the task to the database.")
+            raise Exception("Failed to save the parsed task to the database.")
         
-        # Asynchronously trigger the refinement and planning process
-        refine_and_plan_ai_task.delay(task_id, user_id)
+        # 4. Dispatch the PLANNER worker, not the refiner.
+        generate_plan_from_context.delay(task_id, user_id)
 
-        # Truncate prompt for a cleaner success message
-        short_prompt = prompt[:50] + '...' if len(prompt) > 50 else prompt
-        return {"status": "success", "result": f"Task '{short_prompt}' has been created and is being planned."}
+        short_name = task_data["name"][:50] + '...' if len(task_data["name"]) > 50 else task_data["name"]
+        return {"status": "success", "result": f"Task '{short_name}' has been created and is being planned."}
+    except LLMProviderDownError as e:
+        logger.error(f"LLM provider down during task creation from prompt for user {user_id}: {e}", exc_info=True)
+        return {"status": "failure", "error": "Sorry, our AI provider is currently down. Please try again later."}
     except Exception as e:
         logger.error(f"Error in create_task_from_prompt: {e}", exc_info=True)
         return {"status": "failure", "error": str(e)}

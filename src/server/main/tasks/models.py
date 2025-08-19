@@ -6,10 +6,9 @@ class TaskStep(BaseModel):
     description: str
 
 class AddTaskRequest(BaseModel):
-    prompt: Optional[str] = None
-    goal: Optional[str] = None
-    items: Optional[List[Any]] = None
-    is_swarm: bool = False
+    prompt: str  # The main goal or description
+    task_type: str  # "single" or "swarm"
+    schedule: Optional[Dict[str, Any]] = None # For one-time, recurring, triggered
 
 class UpdateTaskRequest(BaseModel):
     taskId: str
