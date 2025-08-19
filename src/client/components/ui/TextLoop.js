@@ -38,7 +38,7 @@ export function TextLoop({
 
 	return (
 		<div
-			className={cn("relative inline-block whitespace-nowrap", className)}
+			className={cn("relative block", className)}
 		>
 			<AnimatePresence mode={mode} initial={false}>
 				<motion.div

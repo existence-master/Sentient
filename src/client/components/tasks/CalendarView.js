@@ -32,7 +32,7 @@ const CalendarDayCell = ({
 	day,
 	items, // Now receives a mix of tasks and events
 	onSelectTask,
-	onDayClick,
+	onAddTaskForDay,
 	onShowMoreClick,
 	isCurrentMonth,
 	isSelected
@@ -45,7 +45,7 @@ const CalendarDayCell = ({
 		<motion.div
 			onMouseEnter={() => setIsHovered(true)}
 			onMouseLeave={() => setIsHovered(false)}
-			onClick={() => onDayClick(day)}
+			onClick={() => onShowMoreClick(day)}
 			variants={cellVariants}
 			className={cn(
 				"border-r border-b border-neutral-800 p-2 flex flex-col gap-1 overflow-hidden relative min-h-[120px] rounded-lg",
@@ -77,7 +77,7 @@ const CalendarDayCell = ({
 							exit={{ opacity: 0, scale: 0.8 }}
 							onClick={(e) => {
 								e.stopPropagation()
-								onDayClick(day)
+								onAddTaskForDay(day)
 							}}
 							className="p-1 rounded-full hover:bg-brand-gray hover:text-brand-white"
 						>
@@ -112,7 +112,7 @@ const CalendarDayCell = ({
 const CalendarView = ({
 	tasks,
 	onSelectTask,
-	onDayClick,
+	onAddTaskForDay,
 	onShowMoreClick,
 	onMonthChange
 }) => {
@@ -135,11 +135,6 @@ const CalendarView = ({
 		const newMonth = subMonths(currentMonth, 1)
 		setCurrentMonth(newMonth)
 		onMonthChange(newMonth)
-	}
-
-	const handleDayClickInternal = (day) => {
-		setSelectedDate(day)
-		onDayClick(day)
 	}
 
 	const containerVariants = {
@@ -196,7 +191,7 @@ const CalendarView = ({
 							items={tasksForDay}
 							isCurrentMonth={isSameMonth(day, currentMonth)}
 							onSelectTask={onSelectTask}
-							onDayClick={handleDayClickInternal}
+							onAddTaskForDay={onAddTaskForDay}
 							onShowMoreClick={onShowMoreClick}
 							isSelected={isSameDay(day, selectedDate)}
 						/>

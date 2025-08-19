@@ -407,18 +407,18 @@ const TaskDetailsContent = ({
 			)}
 
 			{/* --- META INFO & ASSIGNEE --- */}
-			<div className="grid grid-cols-2 gap-6">
+			<div className="w-full">
 				<div>
 					<label className="text-sm font-medium text-neutral-400 block mb-2">
 						Meta
 					</label>
-					<div className="flex min-w-fit w-full items-center gap-4 text-sm bg-neutral-800/50 p-3 rounded-lg">
+					<div className="flex w-full items-center gap-4 text-sm bg-neutral-800/50 p-3 rounded-lg">
 						<span className="text-sm text-neutral-400">
 							Status:
 						</span>
 						<span
 							className={cn(
-								"font-semibold py-0.5 px-2 rounded-full text-xs flex items-center gap-1",
+								"font-semibold w-full py-0.5 px-2 rounded-full text-xs flex items-center gap-1",
 								statusInfo.color,
 								statusInfo.border.replace("border-", "bg-") +
 									"/20"

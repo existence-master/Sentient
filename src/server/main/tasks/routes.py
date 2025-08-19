@@ -10,7 +10,7 @@ from main.dependencies import auth_helper
 from main.dependencies import mongo_manager, websocket_manager
 from main.auth.utils import PermissionChecker
 from workers.tasks import generate_plan_from_context, execute_task_plan, calculate_next_run, process_task_change_request, refine_task_details, refine_and_plan_ai_task, cud_memory_task, orchestrate_swarm_task
-from main.plans import PLAN_LIMITS
+
 from .models import AddTaskRequest, UpdateTaskRequest, TaskIdRequest, TaskActionRequest, TaskChatRequest, ProgressUpdateRequest
 from main.llm import run_agent
 from main.tasks.models import AddTaskRequest, UpdateTaskRequest, TaskIdRequest, TaskActionRequest, TaskChatRequest, ProgressUpdateRequest
@@ -94,27 +94,19 @@ async def add_task(
     user_id_and_plan: Tuple[str, str] = Depends(auth_helper.get_current_user_id_and_plan)
 ):
     user_id, plan = user_id_and_plan
-    usage = await mongo_manager.get_or_create_daily_usage(user_id)
+    # Note: Plan limit checks are removed as per the simplified plan. They can be added back later.
 
-    if request.is_swarm:
-        # --- Check Swarm Task Limits ---
-        limit = PLAN_LIMITS[plan].get("swarm_tasks_daily", 0)
-        current_count = usage.get("swarm_tasks", 0)
-        if current_count >= limit:
-            raise HTTPException(status_code=429, detail=f"You have reached your daily limit of {limit} Swarm tasks.")
-
+    if request.task_type == "swarm":
         if not request.prompt:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A prompt describing the goal and items is required for swarm tasks.")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A prompt describing the goal is required for swarm tasks.")
 
         task_data = {
-            "name": request.prompt,
+            "name": request.prompt, # Use prompt as the initial name
             "description": f"Swarm task to achieve the goal: {request.prompt}",
-            "priority": 1,
-            "assignee": "ai",
             "task_type": "swarm",
             "swarm_details": {
-                "goal": request.prompt, # The full prompt is the goal
-                "items": [], # Items will be extracted by the orchestrator
+                "goal": request.prompt,
+                "items": [],
                 "total_agents": 0,
                 "completed_agents": 0,
                 "progress_updates": [],
@@ -125,54 +117,29 @@ async def add_task(
         if not task_id:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create swarm task.")
 
-        await mongo_manager.increment_daily_usage(user_id, "swarm_tasks")
         orchestrate_swarm_task.delay(task_id, user_id)
-        return {"message": "Swarm task initiated! I'll start planning it out.", "task_id": task_id}
-    else:
-        # --- Check Single Task Limits ---
-        # This requires parsing the schedule first to determine the type
-        is_recurring = "every" in request.prompt.lower() or "recurring" in request.prompt.lower()
-        is_triggered = "when" in request.prompt.lower() or "if" in request.prompt.lower() or "on every" in request.prompt.lower()
+        return {"message": "Swarm task initiated! Planning will begin shortly.", "task_id": task_id}
 
-        if is_recurring:
-            limit = PLAN_LIMITS[plan].get("recurring_tasks_active", 0)
-            active_count = await mongo_manager.task_collection.count_documents({"user_id": user_id, "status": "active", "schedule.type": "recurring"})
-            if active_count >= limit:
-                raise HTTPException(status_code=429, detail=f"You have reached your limit of {limit} active recurring workflows.")
-        elif is_triggered:
-            limit = PLAN_LIMITS[plan].get("triggered_tasks_active", 0)
-            active_count = await mongo_manager.task_collection.count_documents({"user_id": user_id, "status": "active", "schedule.type": "triggered"})
-            if active_count >= limit:
-                raise HTTPException(status_code=429, detail=f"You have reached your limit of {limit} active triggered workflows.")
-        else: # One-time task
-            limit = PLAN_LIMITS[plan].get("one_time_tasks_daily", 0)
-            current_count = usage.get("one_time_tasks", 0)
-            if current_count >= limit:
-                raise HTTPException(status_code=429, detail=f"You have reached your daily limit of {limit} one-time tasks.")
-
-            # We will increment the count after the task is successfully created
-            # To avoid race conditions, this should ideally be part of a transaction with the task creation
-            # For now, we'll increment after successful DB insertion.
-
+    elif request.task_type == "single":
         if not request.prompt:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Prompt is required for single tasks.")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A prompt is required for single tasks.")
+
         task_data = {
-            "name": request.prompt,
+            "name": request.prompt, # Use prompt as initial name
             "description": request.prompt,
-            "priority": 1,
-            "schedule": None,
-            "assignee": "ai",
+            "schedule": request.schedule, # Pass the entire schedule object
             "task_type": "single"
         }
         task_id = await mongo_manager.add_task(user_id, task_data)
         if not task_id:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create task.")
 
-        # Increment usage for one-time tasks
-        if not is_recurring and not is_triggered:
-            await mongo_manager.increment_daily_usage(user_id, "one_time_tasks")
+        # The existing worker is perfect for this, as it refines details from a prompt and schedule.
         refine_and_plan_ai_task.delay(task_id, user_id)
-        return {"message": "Task accepted! I'll start planning it out.", "task_id": task_id}
+        return {"message": "Task created! Planning will begin shortly.", "task_id": task_id}
+
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid task_type: {request.task_type}")
 
 @router.post("/fetch-tasks")
 async def fetch_tasks(

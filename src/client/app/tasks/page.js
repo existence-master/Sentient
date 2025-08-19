@@ -9,7 +9,13 @@ import React, {
 } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { format, isSameDay, parseISO } from "date-fns"
-import { IconLoader, IconX, IconSparkles, IconCheck } from "@tabler/icons-react"
+import {
+	IconLoader,
+	IconX,
+	IconSparkles,
+	IconCheck,
+	IconPlus
+} from "@tabler/icons-react" // Added IconPlus
 import { AnimatePresence, motion } from "framer-motion"
 import toast from "react-hot-toast"
 import { Tooltip } from "react-tooltip"
@@ -19,8 +25,7 @@ import TaskDetailsPanel from "@components/tasks/TaskDetailsPanel"
 import TaskViewSwitcher from "@components/tasks/TaskViewSwitcher"
 import ListView from "@components/tasks/ListView"
 import CalendarView from "@components/tasks/CalendarView"
-import WelcomePanel from "@components/tasks/WelcomePanel"
-import CreateTaskInput from "@components/tasks/CreateTaskInput"
+import TaskComposer from "@components/tasks/TaskComposer" // New component
 import InteractiveNetworkBackground from "@components/ui/InteractiveNetworkBackground"
 import DayDetailView from "@components/tasks/DayDetailView"
 import { usePlan } from "@hooks/usePlan"
@@ -136,16 +141,19 @@ function TasksPageContent() {
 	const [allTools, setAllTools] = useState([])
 	const [isLoading, setIsLoading] = useState(true)
 
-	// View control state
 	const [view, setView] = useState("list") // 'list' or 'calendar'
-	// MODIFIED: Change initial state to 'initial' to handle client-side screen size check
+	const [isMobile, setIsMobile] = useState(false)
+
+	// --- NEW STATE MANAGEMENT FOR SMART PANEL & MODAL ---
 	const [rightPanelContent, setRightPanelContent] = useState({
-		type: "initial",
+		type: "composer",
 		data: null
-	}) // { type: 'initial' | 'hidden' | 'welcome' | 'task' | 'day', data: any }
+	})
+	const [isModalOpen, setIsModalOpen] = useState(false)
+	// --- END NEW STATE ---
+
 	const [currentCalendarDate, setCurrentCalendarDate] = useState(new Date())
 	const [searchQuery, setSearchQuery] = useState("")
-	const [createTaskPrompt, setCreateTaskPrompt] = useState("")
 	const [isUpgradeModalOpen, setUpgradeModalOpen] = useState(false)
 	const { isPro } = usePlan()
 
@@ -222,37 +230,62 @@ function TasksPageContent() {
 		}
 	}, [allTasks])
 
+	// --- NEW: Handle responsive layout and initial panel state ---
 	useEffect(() => {
-		// On initial client-side load, determine the default panel state.
-		// On mobile, the panel is hidden. On desktop, it shows the welcome panel.
-		if (rightPanelContent.type === "initial") {
-			if (window.innerWidth < 768) {
-				setRightPanelContent({ type: "hidden", data: null })
-			} else {
-				setRightPanelContent({ type: "welcome", data: null })
-			}
-		}
-	}, [rightPanelContent.type])
+		const checkMobile = () => window.innerWidth < 768
+		setIsMobile(checkMobile())
 
-	// Sync selectedTask with the main tasks list
-	useEffect(() => {
-		if (rightPanelContent.type === "task" && rightPanelContent.data) {
-			const updatedSelectedTask = allTasks.find(
-				(t) => t.task_id === rightPanelContent.data.task_id
-			)
-			if (updatedSelectedTask) {
-				// Preserve instance-specific data like scheduled_date if it exists
-				setRightPanelContent({
-					type: "task",
-					data: { ...rightPanelContent.data, ...updatedSelectedTask }
-				})
-			} else {
-				// If task disappears, hide panel on mobile, show welcome on desktop
-				const nextState = window.innerWidth < 768 ? "hidden" : "welcome"
-				setRightPanelContent({ type: nextState, data: null })
+		if (checkMobile()) {
+			setRightPanelContent({ type: "hidden", data: null })
+		} else {
+			const taskId = searchParams.get("taskId")
+			if (!taskId) {
+				setRightPanelContent({ type: "composer", data: null })
 			}
 		}
-	}, [allTasks, rightPanelContent.type, rightPanelContent.data?.task_id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+		const handleResize = () => {
+			const mobile = checkMobile()
+			if (mobile !== isMobile) {
+				setIsMobile(mobile)
+				// If switching to mobile, hide the panel
+				if (mobile) {
+					setRightPanelContent({ type: "hidden", data: null })
+				} else {
+					// If switching to desktop and no task is selected, show composer
+					if (
+						rightPanelContent.type === "hidden" ||
+						rightPanelContent.type === "composer"
+					) {
+						setRightPanelContent({ type: "composer", data: null })
+					}
+				}
+			}
+		}
+
+		window.addEventListener("resize", handleResize)
+		return () => window.removeEventListener("resize", handleResize)
+	}, []) // Run only once on mount
+
+	// --- NEW: Sync panel with URL ---
+	useEffect(() => {
+		const taskId = searchParams.get("taskId")
+		if (taskId) {
+			const task = allTasks.find((t) => t.task_id === taskId)
+			if (task) {
+				setRightPanelContent({ type: "details", data: task })
+				if (isMobile) setIsModalOpen(true)
+			}
+		} else {
+			// If URL is cleared, show composer on desktop, hide on mobile
+			if (!isMobile) {
+				setRightPanelContent({ type: "composer", data: null })
+			} else {
+				// Don't automatically open the composer modal on mobile when URL clears
+				setIsModalOpen(false)
+			}
+		}
+	}, [searchParams, allTasks, isMobile])
 
 	const fetchTasks = useCallback(async () => {
 		setIsLoading(true)
@@ -330,14 +363,66 @@ function TasksPageContent() {
 				}),
 			"Answers submitted successfully. The task will now resume."
 		)
-		// After submitting, close the panel to show the updated task list
-		handleCloseRightPanel()
+		handleClosePanel()
 	}
 
-	const handleAddTask = (newTask) => {
-		// Optimistically add the new task to the state
-		setAllTasks((prevTasks) => [...prevTasks, newTask])
+	// --- REVISED: handleAddTask is now handleCreateTask and takes a payload ---
+	const handleCreateTask = async (payload) => {
+		const toastId = toast.loading("Creating task...")
+		try {
+			const response = await fetch("/api/tasks/add", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(payload)
+			})
+			if (!response.ok) {
+				const errorData = await response.json().catch(() => ({}))
+				const error = new Error(errorData.error || "Failed to add task")
+				error.status = response.status
+				throw error
+			}
+			const data = await response.json()
+
+			const tempTask = {
+				task_id: data.task_id,
+				name: payload.prompt,
+				description: payload.prompt,
+				status: "planning",
+				assignee: "ai",
+				priority: 1,
+				plan: [],
+				runs: [],
+				schedule: payload.schedule || null,
+				enabled: true,
+				original_context: { source: "manual_composer" },
+				created_at: new Date().toISOString(),
+				updated_at: new Date().toISOString(),
+				chat_history: [],
+				task_type: payload.task_type,
+				swarm_details:
+					payload.task_type === "swarm"
+						? { goal: payload.prompt }
+						: null
+			}
+
+			setAllTasks((prev) => [...prev, tempTask])
+			toast.success(data.message || "Task created!", { id: toastId })
+			if (isMobile)
+				setIsModalOpen(false) // Close modal on success
+			else setRightPanelContent({ type: "composer", data: null }) // Reset composer
+		} catch (error) {
+			if (error.status === 429) {
+				toast.error(
+					error.message || "You've reached your daily task limit.",
+					{ id: toastId }
+				)
+				if (!isPro) setUpgradeModalOpen(true)
+			} else {
+				toast.error(`Error: ${error.message}`, { id: toastId })
+			}
+		}
 	}
+	// --- END REVISED ---
 
 	const handleUpdateTask = async (updatedTask) => {
 		await handleAction(
@@ -354,9 +439,16 @@ function TasksPageContent() {
 		)
 	}
 
+	// --- REVISED: handleSelectItem now updates URL and panel state ---
 	const handleSelectItem = (item) => {
-		setRightPanelContent({ type: "task", data: item })
+		const taskId = item.task_id
+		router.push(`/tasks?taskId=${taskId}`, { scroll: false })
+		setRightPanelContent({ type: "details", data: item })
+		if (isMobile) {
+			setIsModalOpen(true)
+		}
 	}
+	// --- END REVISED ---
 
 	const handleShowMoreClick = (date) => {
 		const tasksForDay = filteredCalendarTasks.filter(
@@ -366,14 +458,19 @@ function TasksPageContent() {
 			type: "day",
 			data: { date, tasks: tasksForDay }
 		})
+		if (isMobile) setIsModalOpen(true)
 	}
 
-	const handleCloseRightPanel = () => {
-		// On mobile, closing the panel should hide it completely.
-		// On desktop, it should revert to the welcome/examples panel.
-		const nextState = window.innerWidth < 768 ? "hidden" : "welcome"
-		setRightPanelContent({ type: nextState, data: null })
+	// --- REVISED: handleCloseRightPanel now handles both mobile and desktop ---
+	const handleClosePanel = () => {
+		router.push("/tasks", { scroll: false }) // Clear URL param
+		if (isMobile) {
+			setIsModalOpen(false)
+		} else {
+			setRightPanelContent({ type: "composer", data: null })
+		}
 	}
+	// --- END REVISED ---
 
 	const handleCreateTaskFromEvent = async (event) => {
 		const prompt = `Help me prepare for this event from my calendar:
@@ -392,16 +489,19 @@ Description: ${event.description || "No description."}`
 				}),
 			"Task created from calendar event!"
 		)
-		handleCloseRightPanel() // Close the panel after creating the task
+		handleClosePanel() // Close the panel after creating the task
 	}
 
-	const handleExampleClick = (prompt) => {
-		setCreateTaskPrompt(prompt)
-	}
-
-	const handleDayClick = (date) => {
-		const formattedDate = format(date, "MMMM do")
-		setCreateTaskPrompt(`Create a task for ${formattedDate}: `)
+	const handleAddTaskForDay = (date) => {
+		// Set the panel to show the composer with the default date
+		setRightPanelContent({
+			type: "composer",
+			data: { defaultDate: date }
+		})
+		// If on mobile, open the modal
+		if (isMobile) {
+			setIsModalOpen(true)
+		}
 	}
 
 	const filteredOneTimeTasks = useMemo(() => {
@@ -449,9 +549,115 @@ Description: ${event.description || "No description."}`
 		)
 	}, [oneTimeTasks, recurringInstances, searchQuery])
 
-	const isPanelVisible =
-		rightPanelContent.type !== "hidden" &&
-		rightPanelContent.type !== "initial"
+	// --- NEW: Render logic for panel/modal ---
+	const renderPanelContent = () => {
+		switch (rightPanelContent.type) {
+			case "composer":
+				return (
+					<TaskComposer
+						onTaskCreated={handleCreateTask}
+						isPro={isPro}
+						composerData={rightPanelContent.data}
+						onUpgradeClick={() => setUpgradeModalOpen(true)}
+						onClose={isMobile ? () => setIsModalOpen(false) : null}
+					/>
+				)
+			case "details":
+				return (
+					<TaskDetailsPanel
+						task={rightPanelContent.data}
+						allTools={allTools}
+						integrations={integrations}
+						onClose={handleClosePanel}
+						onSave={handleUpdateTask}
+						onAnswerClarifications={handleAnswerClarifications}
+						onDelete={(taskId) =>
+							handleAction(
+								() =>
+									fetch(`/api/tasks/delete`, {
+										method: "POST",
+										body: JSON.stringify({ taskId }),
+										headers: {
+											"Content-Type": "application/json"
+										}
+									}),
+								"Task deleted."
+							)
+						}
+						onApprove={(taskId) =>
+							handleAction(
+								() =>
+									fetch(`/api/tasks/approve`, {
+										method: "POST",
+										body: JSON.stringify({ taskId }),
+										headers: {
+											"Content-Type": "application/json"
+										}
+									}),
+								"Task approved."
+							)
+						}
+						onRerun={(taskId) =>
+							handleAction(
+								() =>
+									fetch("/api/tasks/rerun", {
+										method: "POST",
+										headers: {
+											"Content-Type": "application/json"
+										},
+										body: JSON.stringify({ taskId })
+									}),
+								"Task re-run initiated."
+							)
+						}
+						onArchiveTask={(taskId) =>
+							handleAction(
+								() =>
+									fetch(`/api/tasks/update`, {
+										method: "POST",
+										body: JSON.stringify({
+											taskId,
+											status: "archived"
+										}),
+										headers: {
+											"Content-Type": "application/json"
+										}
+									}),
+								"Task archived."
+							)
+						}
+						onSendChatMessage={(taskId, message) =>
+							handleAction(
+								() =>
+									fetch(`/api/tasks/chat`, {
+										method: "POST",
+										body: JSON.stringify({
+											taskId,
+											message
+										}),
+										headers: {
+											"Content-Type": "application/json"
+										}
+									}),
+								"Message sent."
+							)
+						}
+					/>
+				)
+			case "day":
+				return (
+					<DayDetailView
+						date={rightPanelContent.data.date}
+						tasks={rightPanelContent.data.tasks}
+						onSelectTask={handleSelectItem}
+						onClose={handleClosePanel}
+					/>
+				)
+			default:
+				return null
+		}
+	}
+	// --- END NEW ---
 
 	return (
 		<div className="flex-1 flex h-screen text-white overflow-hidden">
@@ -476,18 +682,19 @@ Description: ${event.description || "No description."}`
 						<div className="absolute top-6 left-1/2 -translate-x-1/2">
 							<TaskViewSwitcher view={view} setView={setView} />
 						</div>
-						{/* Button to show examples on mobile */}
-						<div className="md:hidden">
+						{/* --- NEW: Desktop "+" button --- */}
+						<div className="hidden md:block">
 							<button
-								onClick={() =>
+								onClick={() => {
+									router.push("/tasks", { scroll: false })
 									setRightPanelContent({
-										type: "welcome",
+										type: "composer",
 										data: null
 									})
-								}
+								}}
 								className="p-2 rounded-full bg-neutral-800/50 hover:bg-neutral-700/80 text-white"
 							>
-								<IconSparkles size={20} />
+								<IconPlus size={20} />
 							</button>
 						</div>
 					</header>
@@ -519,9 +726,11 @@ Description: ${event.description || "No description."}`
 										/>
 									) : (
 										<CalendarView
-											tasks={filteredCalendarTasks} // prettier-ignore
+											tasks={filteredCalendarTasks}
 											onSelectTask={handleSelectItem}
-											onDayClick={handleDayClick}
+											onAddTaskForDay={
+												handleAddTaskForDay
+											}
 											onShowMoreClick={
 												handleShowMoreClick
 											}
@@ -535,202 +744,65 @@ Description: ${event.description || "No description."}`
 						)}
 					</div>
 
-					<CreateTaskInput
-						onTaskAdded={handleAddTask}
-						prompt={createTaskPrompt}
-						setPrompt={setCreateTaskPrompt}
-						isPro={isPro}
-						onUpgradeClick={() => setUpgradeModalOpen(true)}
-					/>
+					{/* --- REMOVED CreateTaskInput --- */}
 				</main>
 
-				{/* Right Details Panel */}
-				<AnimatePresence>
-					{isPanelVisible && (
-						<motion.aside
-							key="details-panel"
-							initial={{ x: "100%" }}
-							animate={{ x: "0%" }}
-							exit={{ x: "100%" }}
+				{/* --- NEW: Right Panel for Desktop --- */}
+				<aside className="hidden md:flex w-[500px] lg:w-[550px] bg-brand-black/50 backdrop-blur-sm border-l border-brand-gray flex-shrink-0 flex-col">
+					<AnimatePresence mode="wait">
+						<motion.div
+							key={rightPanelContent.type}
+							initial={{ opacity: 0, x: 50 }}
+							animate={{ opacity: 1, x: 0 }}
+							exit={{ opacity: 0, x: -50 }}
+							transition={{ duration: 0.3 }}
+							className="h-full"
+						>
+							{renderPanelContent()}
+						</motion.div>
+					</AnimatePresence>
+				</aside>
+				{/* --- END NEW --- */}
+			</div>
+
+			{/* --- NEW: Floating Action Button for Mobile --- */}
+			<button
+				onClick={() => {
+					setRightPanelContent({ type: "composer", data: null })
+					setIsModalOpen(true)
+				}}
+				className="md:hidden fixed bottom-6 right-6 z-40 p-4 bg-brand-orange text-black rounded-full shadow-lg hover:bg-brand-orange/90 transition-transform hover:scale-105"
+			>
+				<IconPlus size={24} strokeWidth={2.5} />
+			</button>
+			{/* --- END NEW --- */}
+
+			{/* --- NEW: Modal for Mobile --- */}
+			<AnimatePresence>
+				{isMobile && isModalOpen && (
+					<motion.div
+						initial={{ opacity: 0 }}
+						animate={{ opacity: 1 }}
+						exit={{ opacity: 0 }}
+						className="fixed inset-0 bg-black/70 backdrop-blur-md z-50 md:hidden"
+					>
+						<motion.div
+							initial={{ y: "100%" }}
+							animate={{ y: "0%" }}
+							exit={{ y: "100%" }}
 							transition={{
 								type: "spring",
 								stiffness: 300,
 								damping: 30
 							}}
-							className="fixed inset-0 z-50 bg-brand-black md:relative md:inset-auto md:z-auto md:w-[450px] lg:w-[500px] md:bg-brand-black/50 md:backdrop-blur-sm md:border-l md:border-brand-gray flex-shrink-0 flex flex-col"
+							className="absolute inset-0"
 						>
-							<AnimatePresence mode="wait">
-								{rightPanelContent.type === "task" &&
-								rightPanelContent.data ? (
-									<motion.div
-										key={
-											rightPanelContent.data
-												.instance_id ||
-											rightPanelContent.data.task_id
-										}
-										initial={{ opacity: 0 }}
-										animate={{ opacity: 1 }}
-										exit={{ opacity: 0 }}
-										className="h-full"
-									>
-										<TaskDetailsPanel
-											task={rightPanelContent.data}
-											allTools={allTools}
-											integrations={integrations}
-											onClose={handleCloseRightPanel}
-											onSave={handleUpdateTask}
-											onAnswerClarifications={
-												handleAnswerClarifications
-											}
-											onDelete={(taskId) =>
-												handleAction(
-													() =>
-														fetch(
-															`/api/tasks/delete`,
-															{
-																// prettier-ignore
-																method: "POST",
-																body: JSON.stringify(
-																	{
-																		taskId
-																	}
-																),
-																headers: {
-																	"Content-Type":
-																		"application/json"
-																}
-															}
-														),
-													"Task deleted."
-												)
-											}
-											onApprove={(taskId) =>
-												handleAction(
-													() =>
-														fetch(
-															`/api/tasks/approve`,
-															{
-																method: "POST",
-																body: JSON.stringify(
-																	{
-																		taskId
-																	}
-																),
-																headers: {
-																	"Content-Type":
-																		"application/json"
-																}
-															}
-														),
-													"Task approved."
-												)
-											}
-											onRerun={(taskId) =>
-												handleAction(
-													() =>
-														fetch(
-															"/api/tasks/rerun",
-															{
-																method: "POST",
-																headers: {
-																	"Content-Type":
-																		"application/json"
-																},
-																body: JSON.stringify(
-																	{ taskId }
-																)
-															}
-														),
-													"Task re-run initiated."
-												)
-											}
-											onArchiveTask={(taskId) =>
-												handleAction(
-													() =>
-														fetch(
-															`/api/tasks/update`,
-															{
-																method: "POST",
-																body: JSON.stringify(
-																	{
-																		taskId,
-																		status: "archived"
-																	}
-																),
-																headers: {
-																	"Content-Type":
-																		"application/json"
-																}
-															}
-														),
-													"Task archived."
-												)
-											}
-											onSendChatMessage={(
-												taskId,
-												message
-											) =>
-												handleAction(
-													() =>
-														fetch(
-															`/api/tasks/chat`,
-															{
-																method: "POST",
-																body: JSON.stringify(
-																	{
-																		taskId,
-																		message
-																	}
-																),
-																headers: {
-																	"Content-Type":
-																		"application/json"
-																}
-															}
-														),
-													"Message sent."
-												)
-											}
-										/>
-									</motion.div>
-								) : rightPanelContent.type === "day" &&
-								  rightPanelContent.data ? (
-									<motion.div
-										key={format(
-											rightPanelContent.data.date,
-											"yyyy-MM-dd"
-										)}
-										initial={{ opacity: 0 }}
-										animate={{ opacity: 1 }}
-										exit={{ opacity: 0 }}
-										className="h-full"
-									>
-										<DayDetailView
-											date={rightPanelContent.data.date}
-											tasks={rightPanelContent.data.tasks}
-											onSelectTask={handleSelectItem}
-											onClose={handleCloseRightPanel}
-										/>
-									</motion.div>
-								) : rightPanelContent.type === "welcome" ? (
-									<motion.div
-										key="welcome"
-										initial={{ opacity: 0 }}
-										animate={{ opacity: 1 }}
-										exit={{ opacity: 0 }}
-										className="h-full"
-									>
-										<WelcomePanel
-											onExampleClick={handleExampleClick}
-											onClose={handleCloseRightPanel}
-										/>
-									</motion.div>
-								) : null}
-							</AnimatePresence>
-						</motion.aside>
-					)}
-				</AnimatePresence>
-			</div>
+							{renderPanelContent()}
+						</motion.div>
+					</motion.div>
+				)}
+			</AnimatePresence>
+			{/* --- END NEW --- */}
 		</div>
 	)
 }
