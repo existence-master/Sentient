@@ -27,6 +27,7 @@ from main.config import (
 from workers.tasks import execute_triggered_task
 from workers.proactive.utils import event_pre_filter
 from main.plans import PRO_ONLY_INTEGRATIONS
+from .utils import waha_request_from_main
 
 logger = logging.getLogger(__name__)
 
@@ -469,3 +470,57 @@ async def composio_webhook(request: Request):
         logger.error(f"Error processing Composio webhook: {e}", exc_info=True)
         # Return a 200 to Composio to prevent retries on our internal errors.
         return JSONResponse(content={"status": "error", "detail": str(e)}, status_code=200)
+
+# --- NEW WHATSAPP FULL CONTROL ROUTES ---
+
+@router.post("/whatsapp/connect/initiate", summary="Start a WAHA session and get a QR code")
+async def initiate_whatsapp_connection(user_id: str = Depends(auth_helper.get_current_user_id)):
+    try:
+        # Step 1: Start the session for the user
+        await waha_request_from_main("POST", "/api/sessions/{session}/start", session=user_id)
+
+        await asyncio.sleep(1)  # Give it a moment to initialize
+        status_res = await waha_request_from_main("GET", "/api/sessions/{session}", session=user_id)
+        session_status = status_res.get("status")
+        if session_status not in ["STARTING", "SCAN_QR_CODE", "WORKING"]:
+            raise HTTPException(status_code=500, detail=f"Failed to start WhatsApp session. Status: {session_status}")
+
+        # Step 2: Get the QR code
+        await asyncio.sleep(5) 
+        qr_result = await waha_request_from_main("GET", "/api/{session}/auth/qr", session=user_id, params={"format": "image"})
+        
+        # The result from waha_request_from_main is the direct JSON response from WAHA
+        return JSONResponse(content=qr_result)
+
+    except Exception as e:
+        logger.error(f"Error initiating WhatsApp connection for {user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/whatsapp/status", summary="Check the status of a WAHA session")
+async def get_whatsapp_connection_status(user_id: str = Depends(auth_helper.get_current_user_id)):
+    try:
+        status_result = await waha_request_from_main("GET", "/api/sessions/{session}", session=user_id)
+        session_status = status_result.get("status", "UNKNOWN")
+
+        if session_status == "WORKING":
+            await mongo_manager.update_user_profile(user_id, {"userData.integrations.whatsapp.connected": True})
+        
+        return JSONResponse(content={"status": session_status})
+    except Exception as e:
+        logger.error(f"Error checking WhatsApp status for {user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/whatsapp/disconnect", summary="Stop and disconnect a WAHA session")
+async def disconnect_whatsapp_connection(user_id: str = Depends(auth_helper.get_current_user_id)):
+    try:
+        await waha_request_from_main("POST", "/api/sessions/{session}/stop", session=user_id)
+        await mongo_manager.update_user_profile(user_id, {"userData.integrations.whatsapp.connected": False})
+        return JSONResponse(content={"message": "WhatsApp session disconnected successfully."})
+    except Exception as e:
+        # Even if stopping fails (e.g., session was already stopped), mark as disconnected.
+        await mongo_manager.update_user_profile(user_id, {"userData.integrations.whatsapp.connected": False})
+        logger.error(f"Error disconnecting WhatsApp for {user_id}: {e}", exc_info=True)
+        if isinstance(e, HTTPException):
+            # It's okay if stopping fails, the main goal is to mark as disconnected.
+            return JSONResponse(content={"message": "WhatsApp session disconnected."})
+        raise HTTPException(status_code=500, detail=str(e))
