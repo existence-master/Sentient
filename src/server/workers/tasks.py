@@ -44,29 +44,6 @@ def get_date_from_text(text: str) -> str:
         return match.group(1)
     return datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
 
-# --- Tool Selection Logic (adapted from chat utils) ---
-def _get_tool_lists(user_integrations: Dict) -> Tuple[Dict, Dict]:
-    """
-    Separates tools into connected/available and disconnected lists.
-    Includes built-in tools in the connected list.
-    """
-    connected_tools = {}
-    disconnected_tools = {}
-    for tool_name, config in INTEGRATIONS_CONFIG.items():
-        is_connectable = config.get("auth_type") in ["oauth", "manual"]
-        is_builtin = config.get("auth_type") == "builtin"
-
-        if is_builtin:
-            connected_tools[tool_name] = config.get("description", "")
-            continue
-
-        if is_connectable:
-            if user_integrations.get(tool_name, {}).get("connected", False):
-                connected_tools[tool_name] = config.get("description", "")
-            else:
-                disconnected_tools[tool_name] = config.get("description", "")
-    return connected_tools, disconnected_tools
-
 # Helper to run async code in Celery's sync context
 def run_async(coro):
     # Always create a new loop for each task to ensure isolation and prevent conflicts.
@@ -320,6 +297,9 @@ async def async_refine_and_plan_ai_task(task_id: str, user_id: str):
             logger.warning(f"Skipping refine/plan for task {task_id}: not found or not assigned to AI.")
             return
 
+        # --- FIX: Store the original schedule provided by the user ---
+        original_schedule = task.get("schedule")
+
         user_id = task["user_id"]
         user_profile = await db_manager.user_profiles_collection.find_one({"user_id": user_id})
         personal_info = user_profile.get("userData", {}).get("personalInfo", {}) if user_profile else {}
@@ -363,10 +343,15 @@ async def async_refine_and_plan_ai_task(task_id: str, user_id: str):
             if "user_id" in parsed_data:
                 del parsed_data["user_id"]
 
-            # FIX: For immediate tasks, explicitly set run_at to now_utc to avoid timezone issues with created_at.
-            schedule = parsed_data.get('schedule')
-            if schedule and schedule.get('type') == 'once' and schedule.get('run_at') is None:
-                schedule['run_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            # --- FIX: If an original schedule existed, restore it. ---
+            # This ensures the user's explicit schedule from the UI is not overwritten by the LLM's interpretation.
+            if original_schedule:
+                parsed_data["schedule"] = original_schedule
+            else:
+                # This branch handles cases where no schedule was provided initially (e.g., future chat-based creation)
+                schedule = parsed_data.get('schedule')
+                if schedule and schedule.get('type') == 'once' and schedule.get('run_at') is None:
+                    schedule['run_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
             # Inject user's timezone into the schedule object if it exists
             if 'schedule' in parsed_data and parsed_data.get('schedule'):

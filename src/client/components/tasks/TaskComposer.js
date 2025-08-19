@@ -7,11 +7,14 @@ import {
 	IconBolt,
 	IconUsersGroup,
 	IconX,
-	IconSparkles
+	IconSparkles,
+	IconMail,
+	IconCalendarEvent
 } from "@tabler/icons-react"
 import { motion, AnimatePresence } from "framer-motion"
 import { cn } from "@utils/cn"
 import toast from "react-hot-toast"
+import { format } from "date-fns"
 import { TextLoop } from "@components/ui/TextLoop"
 
 const tabs = [
@@ -41,7 +44,7 @@ const tabs = [
 		id: "swarm",
 		label: "Swarm",
 		description:
-			"For complex projects that require multiple steps or agents.",
+			"For complex projects that require a larger team of AI workers.",
 		icon: <IconUsersGroup size={18} />,
 		isProFeature: true // Not available on free plan
 	}
@@ -50,7 +53,6 @@ const tabs = [
 const oncePlaceholders = [
 	"Draft a follow-up email to the client about the new proposal.",
 	"Find the top 3 restaurants near me for a team lunch tomorrow.",
-	"Summarize the attached PDF document.",
 	"Schedule a meeting with John for next Tuesday."
 ]
 
@@ -61,17 +63,10 @@ const recurringPlaceholders = [
 	"Every weekday at 5 PM, give me a summary of my day."
 ]
 
-const triggeredPlaceholders = [
-	"When I receive an email with 'invoice' in the subject, save the attachment to my 'Invoices' folder.",
-	"If a new event is added to my calendar, check for scheduling conflicts.",
-	"When a new message is posted in #announcements on Slack, notify me on WhatsApp."
-]
-
 const swarmPlaceholders = [
-	"Research the latest trends in AI and create a presentation.",
-	"Analyze our Q3 sales data and generate a summary report.",
-	"Plan a team offsite event in San Francisco for next quarter.",
-	"Organize my messy 'Downloads' folder into categorized subfolders."
+	"Read Leads List Sheet from Google Drive and mail each one.",
+	"Research 20 different topics and prepare a report on each one.",
+	"Research all the different case-laws mentioned in this list."
 ]
 
 // Plan limits mirrored from src/server/main/plans.py
@@ -82,6 +77,23 @@ const PLAN_LIMITS = {
 	}
 }
 
+const triggers = [
+	{
+		id: "gmail",
+		label: "New Email in Gmail",
+		icon: <IconMail size={20} />,
+		source: "gmail",
+		event: "new_email"
+	},
+	{
+		id: "gcalendar",
+		label: "New Google Calendar Event",
+		icon: <IconCalendarEvent size={20} />,
+		source: "gcalendar",
+		event: "new_event"
+	}
+]
+
 const TaskComposer = ({
 	onTaskCreated,
 	isPro,
@@ -89,7 +101,8 @@ const TaskComposer = ({
 	recurringTaskCount,
 	triggeredTaskCount,
 	onUpgradeClick,
-	onClose
+	onClose,
+	composerData
 }) => {
 	const [activeTab, setActiveTab] = useState("once")
 	const [goalInput, setGoalInput] = useState("")
@@ -100,8 +113,28 @@ const TaskComposer = ({
 	const [recurringFrequency, setRecurringFrequency] = useState("daily")
 	const [recurringDays, setRecurringDays] = useState([])
 	const [recurringTime, setRecurringTime] = useState("09:00")
-	const [triggerSource, setTriggerSource] = useState("gmail")
-	const [triggerEvent, setTriggerEvent] = useState("new_email")
+	const [selectedTrigger, setSelectedTrigger] = useState(null)
+
+	useEffect(() => {
+		const defaultDate = composerData?.defaultDate
+		if (defaultDate) {
+			// Set the composer to the correct state for a scheduled task
+			setActiveTab("once")
+			setRunOnceType("later")
+
+			// Format the date and set a default time (e.g., 09:00)
+			const formattedDateTime = `${format(
+				defaultDate,
+				"yyyy-MM-dd"
+			)}T09:00`
+			setRunOnceDateTime(formattedDateTime)
+		}
+	}, [composerData])
+
+	useEffect(() => {
+		setGoalInput("")
+		setSelectedTrigger(null)
+	}, [activeTab])
 
 	const handleDayToggle = (day) => {
 		setRecurringDays((prev) =>
@@ -131,11 +164,6 @@ const TaskComposer = ({
 	const handleCreateTask = async () => {
 		let payload = {}
 
-		if (!goalInput.trim()) {
-			toast.error("Please provide a goal for the task.")
-			return
-		}
-
 		if (activeTab === "swarm") {
 			if (!isPro) {
 				onUpgradeClick()
@@ -143,6 +171,11 @@ const TaskComposer = ({
 			}
 			payload = { prompt: goalInput.trim(), task_type: "swarm" }
 		} else {
+			if (!goalInput.trim()) {
+				toast.error("Please provide a goal for the task.")
+				return
+			}
+
 			payload = {
 				prompt: goalInput.trim(),
 				task_type: "single",
@@ -200,15 +233,26 @@ const TaskComposer = ({
 					onUpgradeClick()
 					return
 				}
+				if (!selectedTrigger) {
+					toast.error("Please select a trigger for the workflow.")
+					return
+				}
+				if (!goalInput.trim()) {
+					toast.error(
+						"Please describe what the task should do when triggered."
+					)
+					return
+				}
 				payload.schedule.type = "triggered"
-				payload.schedule.source = triggerSource
-				payload.schedule.event = triggerEvent
+				payload.schedule.source = selectedTrigger.source
+				payload.schedule.event = selectedTrigger.event
 				payload.schedule.filter = {}
 			}
 		}
 
 		onTaskCreated(payload)
 		setGoalInput("") // Clear input after creation
+		setSelectedTrigger(null)
 	}
 
 	const currentTabInfo = tabs.find((t) => t.id === activeTab)
@@ -232,13 +276,13 @@ const TaskComposer = ({
 
 			<main className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
 				{/* Improved Tab Navigation */}
-				<div className="relative flex items-center gap-1.5 bg-neutral-800/50 p-1 rounded-xl">
+				<div className="relative grid grid-cols-2 sm:flex items-center gap-1.5 bg-neutral-800/50 p-1 rounded-xl">
 					{tabs.map((tab) => (
 						<button
 							key={tab.id}
 							onClick={() => setActiveTab(tab.id)}
 							className={cn(
-								"relative flex-1 flex items-center justify-center p-2 rounded-lg text-sm font-medium transition-colors",
+								"relative sm:flex-1 flex items-center justify-center p-2 rounded-lg text-sm font-medium transition-colors",
 								activeTab === tab.id
 									? "text-brand-black font-semibold"
 									: "text-neutral-400 hover:text-white"
@@ -299,39 +343,42 @@ const TaskComposer = ({
 						transition={{ duration: 0.2 }}
 						className="space-y-4 p-4 bg-neutral-800/50 rounded-lg border border-neutral-700/50"
 					>
-						{/* Panel content remains largely the same, but with improved styling */}
-						<div className="relative w-full bg-neutral-900 border border-neutral-700 rounded-md focus-within:ring-2 focus-within:ring-brand-orange">
-							<textarea
-								value={goalInput}
-								onChange={(e) => setGoalInput(e.target.value)}
-								placeholder=" "
-								className={cn(
-									"w-full p-2 bg-transparent border-none focus:ring-0 relative z-10 resize-none custom-scrollbar",
-									activeTab === "swarm" ? "h-32" : "h-24"
-								)}
-							/>
-							{!goalInput && (
-								<div
+						{activeTab !== "triggered" && (
+							<div className="relative w-full bg-neutral-900 border border-neutral-700 rounded-md focus-within:ring-2 focus-within:ring-brand-orange">
+								<textarea
+									value={goalInput}
+									onChange={(e) =>
+										setGoalInput(e.target.value)
+									}
+									placeholder=" "
 									className={cn(
-										"absolute top-0 left-0 right-0 text-neutral-500 pointer-events-none z-0 p-2 overflow-hidden",
+										"w-full p-2 bg-transparent border-none focus:ring-0 relative z-10 resize-none custom-scrollbar",
 										activeTab === "swarm" ? "h-32" : "h-24"
 									)}
-								>
-									<TextLoop>
-										{(activeTab === "once"
-											? oncePlaceholders
-											: activeTab === "recurring"
-												? recurringPlaceholders
-												: activeTab === "triggered"
-													? triggeredPlaceholders
+								/>
+								{!goalInput && (
+									<div
+										className={cn(
+											"absolute top-0 left-0 right-0 text-neutral-500 pointer-events-none z-0 p-2 overflow-hidden",
+											activeTab === "swarm"
+												? "h-32"
+												: "h-24"
+										)}
+									>
+										<TextLoop>
+											{(activeTab === "once"
+												? oncePlaceholders
+												: activeTab === "recurring"
+													? recurringPlaceholders
 													: swarmPlaceholders
-										).map((p) => (
-											<span key={p}>{p}</span>
-										))}
-									</TextLoop>
-								</div>
-							)}
-						</div>
+											).map((p) => (
+												<span key={p}>{p}</span>
+											))}
+										</TextLoop>
+									</div>
+								)}
+							</div>
+						)}
 						{activeTab === "once" && (
 							<div className="space-y-4">
 								<div className="flex items-center gap-4">
@@ -455,66 +502,72 @@ const TaskComposer = ({
 						)}
 						{activeTab === "triggered" && (
 							<div className="space-y-4">
-								<div className="p-3 bg-neutral-900 rounded-lg border border-neutral-700 space-y-4">
+								{/* WHEN Section */}
+								<div className="p-3 bg-neutral-900 rounded-lg border border-neutral-700 space-y-3">
 									<h4 className="font-medium text-neutral-400">
 										WHEN...
 									</h4>
-									<div className="grid grid-cols-2 gap-4">
-										<div>
-											<label className="text-sm text-neutral-400">
-												Source
-											</label>
-											<select
-												value={triggerSource}
-												onChange={(e) =>
-													setTriggerSource(
-														e.target.value
-													)
+									<div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+										{triggers.map((trigger) => (
+											<button
+												key={trigger.id}
+												onClick={() =>
+													setSelectedTrigger(trigger)
 												}
-												className="w-full p-2 bg-neutral-800 border border-neutral-700 rounded-md mt-1"
+												className={cn(
+													"flex items-center gap-3 text-left p-3 rounded-md border-2 transition-all",
+													selectedTrigger?.id ===
+														trigger.id
+														? "bg-brand-orange/10 border-brand-orange text-white"
+														: "bg-neutral-800 border-transparent hover:border-neutral-600 text-neutral-300"
+												)}
 											>
-												<option value="gmail">
-													Gmail
-												</option>
-												<option value="gcalendar">
-													Google Calendar
-												</option>
-												<option value="slack">
-													Slack
-												</option>
-											</select>
-										</div>
-										<div>
-											<label className="text-sm text-neutral-400">
-												Event
-											</label>
-											<select
-												value={triggerEvent}
-												onChange={(e) =>
-													setTriggerEvent(
-														e.target.value
-													)
-												}
-												className="w-full p-2 bg-neutral-800 border border-neutral-700 rounded-md mt-1"
-											>
-												<option value="new_email">
-													New Email
-												</option>
-												<option value="new_event">
-													New Calendar Event
-												</option>
-												<option value="new_message">
-													New Message
-												</option>
-											</select>
-										</div>
+												<span
+													className={cn(
+														"flex-shrink-0",
+														selectedTrigger?.id ===
+															trigger.id
+															? "text-brand-orange"
+															: "text-neutral-400"
+													)}
+												>
+													{trigger.icon}
+												</span>
+												<span className="font-semibold text-sm">
+													{trigger.label}
+												</span>
+											</button>
+										))}
 									</div>
 								</div>
-								<div className="p-3 bg-neutral-900 rounded-lg border border-neutral-700 space-y-4">
-									<h4 className="font-medium text-neutral-400">
-										THEN...
-									</h4>
-								</div>
+
+								{/* THEN Section - appears after selecting a trigger */}
+								<AnimatePresence>
+									{selectedTrigger && (
+										<motion.div
+											initial={{ opacity: 0, y: -10 }}
+											animate={{ opacity: 1, y: 0 }}
+											exit={{ opacity: 0, y: -10 }}
+											className="p-3 bg-neutral-900 rounded-lg border border-neutral-700 space-y-3"
+										>
+											<h4 className="font-medium text-neutral-400">
+												THEN...
+											</h4>
+											<div className="relative w-full bg-neutral-800 border border-neutral-700 rounded-md focus-within:ring-2 focus-within:ring-brand-orange">
+												<textarea
+													value={goalInput}
+													onChange={(e) =>
+														setGoalInput(
+															e.target.value
+														)
+													}
+													placeholder="Describe the action to perform..."
+													className="w-full p-2 bg-transparent border-none focus:ring-0 relative z-10 resize-none custom-scrollbar h-24"
+												/>
+											</div>
+										</motion.div>
+									)}
+								</AnimatePresence>
 							</div>
 						)}
 					</motion.div>

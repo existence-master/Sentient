@@ -492,6 +492,18 @@ Description: ${event.description || "No description."}`
 		handleClosePanel() // Close the panel after creating the task
 	}
 
+	const handleAddTaskForDay = (date) => {
+		// Set the panel to show the composer with the default date
+		setRightPanelContent({
+			type: "composer",
+			data: { defaultDate: date }
+		})
+		// If on mobile, open the modal
+		if (isMobile) {
+			setIsModalOpen(true)
+		}
+	}
+
 	const filteredOneTimeTasks = useMemo(() => {
 		if (!searchQuery.trim()) {
 			return oneTimeTasks
@@ -545,6 +557,7 @@ Description: ${event.description || "No description."}`
 					<TaskComposer
 						onTaskCreated={handleCreateTask}
 						isPro={isPro}
+						composerData={rightPanelContent.data}
 						onUpgradeClick={() => setUpgradeModalOpen(true)}
 						onClose={isMobile ? () => setIsModalOpen(false) : null}
 					/>
@@ -715,7 +728,9 @@ Description: ${event.description || "No description."}`
 										<CalendarView
 											tasks={filteredCalendarTasks}
 											onSelectTask={handleSelectItem}
-											onDayClick={() => {}}
+											onAddTaskForDay={
+												handleAddTaskForDay
+											}
 											onShowMoreClick={
 												handleShowMoreClick
 											}
@@ -733,7 +748,7 @@ Description: ${event.description || "No description."}`
 				</main>
 
 				{/* --- NEW: Right Panel for Desktop --- */}
-				<aside className="hidden md:flex w-[450px] lg:w-[500px] bg-brand-black/50 backdrop-blur-sm border-l border-brand-gray flex-shrink-0 flex-col">
+				<aside className="hidden md:flex w-[500px] lg:w-[550px] bg-brand-black/50 backdrop-blur-sm border-l border-brand-gray flex-shrink-0 flex-col">
 					<AnimatePresence mode="wait">
 						<motion.div
 							key={rightPanelContent.type}
