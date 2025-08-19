@@ -23,6 +23,7 @@ from main.config import (
     TRELLO_CLIENT_ID, COMPOSIO_API_KEY,
     GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, SLACK_CLIENT_ID,
     SLACK_CLIENT_SECRET, NOTION_CLIENT_ID, NOTION_CLIENT_SECRET,
+    OUTLOOK_CLIENT_ID, OUTLOOK_CLIENT_SECRET,
 )
 from workers.tasks import execute_triggered_task
 from workers.proactive.utils import event_pre_filter
@@ -75,6 +76,8 @@ async def get_integration_sources(user_id: str = Depends(auth_helper.get_current
                 source_info["client_id"] = TRELLO_CLIENT_ID
             elif name == 'discord':
                 source_info["client_id"] = DISCORD_CLIENT_ID
+            elif name == 'outlook':
+                source_info["client_id"] = OUTLOOK_CLIENT_ID
 
         all_sources.append(source_info)
 
@@ -200,6 +203,15 @@ async def connect_oauth_integration(
             "code": request.code,
             "redirect_uri": request.redirect_uri
         }
+    elif service_name == 'outlook':
+        token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+        token_payload = {
+            "client_id": OUTLOOK_CLIENT_ID,
+            "client_secret": OUTLOOK_CLIENT_SECRET,
+            "grant_type": "authorization_code",
+            "code": request.code,
+            "redirect_uri": request.redirect_uri
+        }
     else:
         raise HTTPException(status_code=400, detail=f"OAuth flow not implemented for {service_name}")
 
@@ -241,6 +253,10 @@ async def connect_oauth_integration(
             if "access_token" not in token_data:
                 raise HTTPException(status_code=400, detail=f"Discord OAuth error: {token_data.get('error_description', 'No access token.')}")
             creds_to_save = token_data # This includes access_token, refresh_token, and the 'bot' object with bot token
+        elif service_name == 'outlook':
+            if "access_token" not in token_data:
+                raise HTTPException(status_code=400, detail=f"Outlook OAuth error: {token_data.get('error_description', 'No access token.')}")
+            creds_to_save = token_data # This includes access_token, refresh_token, and expires_in
 
         encrypted_creds = aes_encrypt(json.dumps(creds_to_save))
 

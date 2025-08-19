@@ -11,7 +11,7 @@ export const PUT = withAuth(async function PUT(
 	{ params, authHeader }
 ) {
 	const { memoryId } = params
-	const backendUrl = new URL(`${appServerUrl}/api/memories/${memoryId}`)
+	const backendUrl = new URL(`${appServerUrl}/memories/${memoryId}`)
 
 	try {
 		const body = await request.json()
@@ -27,7 +27,7 @@ export const PUT = withAuth(async function PUT(
 		}
 		return NextResponse.json(data)
 	} catch (error) {
-		console.error(`API Error in /api/memories/${memoryId} (PUT):`, error)
+		console.error(`API Error in /memories/${memoryId} (PUT):`, error)
 		return NextResponse.json({ error: error.message }, { status: 500 })
 	}
 })
@@ -37,7 +37,7 @@ export const DELETE = withAuth(async function DELETE(
 	{ params, authHeader }
 ) {
 	const { memoryId } = params
-	const backendUrl = new URL(`${appServerUrl}/api/memories/${memoryId}`)
+	const backendUrl = new URL(`${appServerUrl}/memories/${memoryId}`)
 
 	try {
 		const response = await fetch(backendUrl.toString(), {
@@ -51,7 +51,7 @@ export const DELETE = withAuth(async function DELETE(
 		}
 		return NextResponse.json(data)
 	} catch (error) {
-		console.error(`API Error in /api/memories/${memoryId} (DELETE):`, error)
+		console.error(`API Error in /memories/${memoryId} (DELETE):`, error)
 		return NextResponse.json({ error: error.message }, { status: 500 })
 	}
 })

@@ -7,7 +7,7 @@ const appServerUrl =
 		: process.env.NEXT_PUBLIC_APP_SERVER_URL
 
 export const GET = withAuth(async function GET(request, { authHeader }) {
-	const backendUrl = new URL(`${appServerUrl}/api/memories`)
+	const backendUrl = new URL(`${appServerUrl}/memories`)
 
 	try {
 		const response = await fetch(backendUrl.toString(), {
@@ -22,13 +22,13 @@ export const GET = withAuth(async function GET(request, { authHeader }) {
 		}
 		return NextResponse.json(data)
 	} catch (error) {
-		console.error("API Error in /api/memories:", error)
+		console.error("API Error in /memories:", error)
 		return NextResponse.json({ error: error.message }, { status: 500 })
 	}
 })
 
 export const POST = withAuth(async function POST(request, { authHeader }) {
-	const backendUrl = new URL(`${appServerUrl}/api/memories`)
+	const backendUrl = new URL(`${appServerUrl}/memories`)
 	try {
 		const body = await request.json()
 		const response = await fetch(backendUrl.toString(), {
@@ -46,7 +46,7 @@ export const POST = withAuth(async function POST(request, { authHeader }) {
 		}
 		return NextResponse.json(data, { status: response.status })
 	} catch (error) {
-		console.error("API Error in /api/memories (POST):", error)
+		console.error("API Error in /memories (POST):", error)
 		return NextResponse.json({ error: error.message }, { status: 500 })
 	}
 })

@@ -42,7 +42,16 @@
 >
 > Our goal is to give everyone personal super-intelligence.
 >
-> [Read our manifesto.](https://docs.google.com/document/d/1vbCGAbh9f8vXfPup_Z7cW__gnOLdRhEtHKyoIxJD8is/edit?tab=t.0#heading=h.2kit9yqvlc77)
+> It acts as your central command center, bridging the gap between your goals and the actions required to achieve them. It is designed to be a truly proactive partner that understands you, manages your digital life, and gets things done—without you having to type long, complex prompts.
+>
+> It can:
+> - **💬 Chat with you** about any topic via text or voice.
+> - **🧠 Learn your preferences, habits, and goals** to better serve you over time.
+> - **⚙️ Execute complex, multi-step tasks** and recurring workflows.
+> - **🗓️ Proactively manage your day**, reading your emails and calendar to suggest schedules and remind you of important events.
+> - **🔗 Integrate seamlessly** with the apps you use every day.
+>
+> For more information [read our manifesto.](https://docs.google.com/document/d/1vbCGAbh9f8vXfPup_Z7cW__gnOLdRhEtHKyoIxJD8is/edit?tab=t.0#heading=h.2kit9yqvlc77)
 
 ---
 
@@ -83,8 +92,7 @@
 To access Sentient, head over to [our website.](https://sentient.existence.technology/)
 
 ### 🔒 Self-Hostable
-
-The entire platform can be self-hosted and configured to run fully locally. [Check the relevant docs for more info.](https://sentient-2.gitbook.io/docs/getting-started/running-sentient-from-source-self-host)
+The entire platform is open-source and can be self-hosted and configured to run fully locally, ensuring your data stays private. [Check the relevant docs for more info.](https://sentient-2.gitbook.io/docs/getting-started/running-sentient-from-source-self-host)
 
 ---
 
@@ -126,7 +134,7 @@ Distributed under the GNU AGPL License. See [LICENSE.txt](https://github.com/exi
        <a href="https://github.com/itsskofficial">
          <img src="https://avatars.githubusercontent.com/u/65887545?v=4?s=100" width="100px;" alt=""/>
          <br />
-         <sub><b>itsskofficial</b></sub>
+         <sub><b>itsskofficial (Sarthak)</b></sub>
        </a>
      </td>  
      <td align="center">

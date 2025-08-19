@@ -84,6 +84,8 @@ DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 TODOIST_CLIENT_ID = os.getenv("TODOIST_CLIENT_ID")
 TODOIST_CLIENT_SECRET = os.getenv("TODOIST_CLIENT_SECRET")
+OUTLOOK_CLIENT_ID = os.getenv("OUTLOOK_CLIENT_ID")
+OUTLOOK_CLIENT_SECRET = os.getenv("OUTLOOK_CLIENT_SECRET")
 
 # --- WhatsApp ---
 WAHA_URL = os.getenv("WAHA_URL")
@@ -346,6 +348,17 @@ INTEGRATIONS_CONFIG = {
         "mcp_server_config": {
             "name": "trello_server",
             "url": os.getenv("TRELLO_MCP_SERVER_URL", "http://localhost:9025/sse")
+        }
+    },
+    "outlook": {
+        "display_name": "Outlook",
+        "description": "Connect to read, send, and manage emails in Outlook. The agent can list emails, read message content, send new emails, reply to messages, and manage folders.",
+        "auth_type": "oauth",
+        "icon": "IconMail",
+        "category": "Communication",
+        "mcp_server_config": {
+            "name": "outlook_server",
+            "url": os.getenv("OUTLOOK_MCP_SERVER_URL", "http://localhost:9027/sse")
         }
     }
 }

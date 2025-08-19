@@ -8,7 +8,7 @@ const appServerUrl =
 
 export const GET = withAuth(async function GET(request, { authHeader }) {
 	// This new backend endpoint is assumed to exist and return { nodes: [], edges: [] }.
-	const backendUrl = new URL(`${appServerUrl}/api/memories/graph`)
+	const backendUrl = new URL(`${appServerUrl}/memories/graph`)
 
 	try {
 		const response = await fetch(backendUrl.toString(), {
@@ -22,7 +22,7 @@ export const GET = withAuth(async function GET(request, { authHeader }) {
 		}
 		return NextResponse.json(data)
 	} catch (error) {
-		console.error("API Error in /api/memories/graph:", error)
+		console.error("API Error in /memories/graph:", error)
 		return NextResponse.json({ error: error.message }, { status: 500 })
 	}
 })
