@@ -784,7 +784,7 @@ Description: ${event.description || "No description."}`
 						initial={{ opacity: 0 }}
 						animate={{ opacity: 1 }}
 						exit={{ opacity: 0 }}
-						className="fixed inset-0 bg-black/70 backdrop-blur-md z-50 md:hidden"
+						className="fixed inset-0 bg-black/70 backdrop-blur-md z-[70] md:hidden"
 					>
 						<motion.div
 							initial={{ y: "100%" }}

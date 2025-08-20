@@ -87,7 +87,7 @@ const ScheduleEditor = ({ schedule, setSchedule }) => {
 						value={getLocalDateTimeString(schedule.run_at)}
 						step="1" // Ensures seconds are included in the value
 						onChange={handleRunAtChange}
-						className="w-full p-2 bg-neutral-700 border border-neutral-600 rounded-md focus:border-brand-orange focus:ring-brand-orange/50"
+						className="w-full p-2 bg-neutral-700 border border-neutral-600 rounded-md focus:border-brand-orange focus:ring-brand-orange/50 [color-scheme:dark]"
 					/>
 					<p className="text-xs text-gray-500 mt-1">
 						If left blank, the task will be planned immediately.
@@ -195,7 +195,7 @@ const ScheduleEditor = ({ schedule, setSchedule }) => {
 									time: e.target.value
 								})
 							}
-							className="w-full p-2 bg-neutral-700 border border-neutral-600 rounded-md focus:border-brand-orange focus:ring-brand-orange/50"
+							className="w-full p-2 bg-neutral-700 border border-neutral-600 rounded-md focus:border-brand-orange focus:ring-brand-orange/50 [color-scheme:dark]"
 						/>
 					</div>
 					{schedule.frequency === "weekly" && (

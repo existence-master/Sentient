@@ -43,6 +43,28 @@ function urlBase64ToUint8Array(base64String) {
 	return outputArray
 }
 
+const refreshSessionAndReload = async () => {
+	try {
+		const res = await fetch("/api/auth/refresh-session");
+		if (!res.ok) {
+			throw new Error("Failed to refresh session");
+		}
+		// Once the session cookie is updated on the server, reload the page.
+		// The browser will send the new cookie, and the server will render with the updated user role.
+		window.location.reload();
+	} catch (error) {
+		console.error("Session refresh failed:", error);
+		// Optionally, handle the error, e.g., show a message to the user.
+		// For simplicity, we can still fall back to the old method if refresh fails.
+		const logoutUrl = new URL("/auth/logout", window.location.origin);
+		logoutUrl.searchParams.set(
+			"returnTo",
+			`${process.env.NEXT_PUBLIC_APP_BASE_URL}`
+		);
+		window.location.assign(logoutUrl.toString());
+	}
+};
+
 export default function LayoutWrapper({ children }) {
 	// ... (keep all your existing state declarations)
 	const [isNotificationsOpen, setNotificationsOpen] = useState(false)
@@ -56,7 +78,6 @@ export default function LayoutWrapper({ children }) {
 	const wsRef = useRef(null)
 	const pathname = usePathname()
 	const router = useRouter()
-	const searchParams = useSearchParams() // Hook to read URL query parameters
 	const posthog = usePostHog()
 
 	const { user, error: authError, isLoading: isAuthLoading } = useUser()
@@ -76,58 +97,18 @@ export default function LayoutWrapper({ children }) {
 	}, [user, posthog])
 
 	useEffect(() => {
-		const paymentStatus = searchParams.get("payment_status")
-		const needsRefresh = searchParams.get("refresh_session")
+		const urlParams = new URLSearchParams(window.location.search)
 
-		if (paymentStatus === "success" && posthog) {
-			posthog.capture("plan_upgraded", {
-				plan_name: "pro"
-				// MRR and billing_cycle are not available on the client
-			})
-		}
-		// Check for either trigger
-		if (paymentStatus === "success" || needsRefresh === "true") {
-			// CRITICAL FIX: Clean the URL synchronously *before* doing anything else.
-			// This prevents the refresh loop.
-			window.history.replaceState(null, "", pathname)
+		// Handle post-upgrade: force a session refresh
+		if (urlParams.get("refresh_session") === "true") {
 			const toastId = toast.loading("Updating your session...", {
 				duration: 4000
 			})
-
-			// const refreshSession = async () => {
-			// 	const toastId = toast.loading("Updating your session...", {
-			// 		duration: 4000
-			// 	})
-			// 	try {
-			// 		// Call the API to get a new session cookie
-			// 		const res = await fetch("/api/auth/refresh-session")
-			// 		if (!res.ok) {
-			// 			const errorData = await res.json()
-			// 			throw new Error(
-			// 				errorData.error || "Session refresh failed."
-			// 			)
-			// 		}
-
-			// 		// Now that the cookie is updated and the URL is clean, reload the page.
-			// 		// This will re-run server components and hooks with the new session data.
-			// 		window.location.reload()
-			// 	} catch (error) {
-			// 		toast.error(
-			// 			`Failed to refresh session: ${error.message}. Please log in again to see your new plan.`,
-			// 			{ id: toastId }
-			// 		)
-			// 	}
-			// }
-			// refreshSession()
-
-			const logoutUrl = new URL("/auth/logout", window.location.origin)
-			logoutUrl.searchParams.set(
-				"returnTo",
-				process.env.NEXT_PUBLIC_APP_BASE_URL
-			)
-			window.location.assign(logoutUrl.toString())
+			// Remove the query params from the URL to avoid re-triggering on reload
+			window.history.replaceState(null, "", pathname)
+			refreshSessionAndReload()
 		}
-	}, [searchParams, router, pathname]) // Dependencies are correct
+	}, [])
 
 	// ... (keep the rest of your useEffects and functions exactly as they were)
 	useEffect(() => {
