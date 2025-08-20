@@ -3,6 +3,7 @@ import logging
 from typing import Optional, Dict, Any
 from fastapi import HTTPException
 from main.config import INTEGRATIONS_CONFIG, WAHA_URL, WAHA_API_KEY
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ async def waha_request_from_main(
     final_endpoint = endpoint.replace("{session}", session)
     url = f"{WAHA_URL.rstrip('/')}{final_endpoint}"
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=300.0) as client:
         try:
             logger.info(f"Making WAHA request: {method} {url} | Session: {session} | Params: {params} | JSON: {json_data}")
             res = await client.request(method, url, params=params, json=json_data, headers=headers)
@@ -71,7 +72,17 @@ async def waha_request_from_main(
             if res.status_code == 204:
                 return {"status": "success", "message": "Operation successful with no content."}
 
-            return res.json()
+            # --- MODIFICATION START ---
+            # Conditionally handle binary image data vs. JSON data
+            content_type = res.headers.get("content-type", "")
+            if "image" in content_type:
+                # It's an image, so we base64 encode the raw bytes
+                encoded_image = base64.b64encode(res.content).decode("utf-8")
+                return {"mimetype": content_type, "data": encoded_image}
+            else:
+                # It's JSON, so parse it as usual
+                return res.json()
+            # --- MODIFICATION END ---
         except httpx.HTTPStatusError as e:
             error_text = e.response.text
             logger.error(f"WAHA API Error: {e.response.status_code} on {method} {url} - {error_text}")

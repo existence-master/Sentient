@@ -477,17 +477,29 @@ async def composio_webhook(request: Request):
 async def initiate_whatsapp_connection(user_id: str = Depends(auth_helper.get_current_user_id)):
     try:
         # Step 1: Start the session for the user
-        await waha_request_from_main("POST", "/api/sessions/{session}/start", session=user_id)
+        # --- MODIFICATION START (v2) ---
+        # The user_id from Auth0 (e.g., 'google-oauth2|123...') contains invalid characters ('|')
+        # for a WAHA session name. We must sanitize it first.
+        sanitized_session_name = user_id.replace("|", "_")
+
+        # Now, create the session using the sanitized name.
+        create_payload = {
+            "name": sanitized_session_name,
+            "start": True
+        }
+        # The `session` parameter here is now only for logging/consistency, the actual session name is in the payload.
+        await waha_request_from_main("POST", "/api/sessions", session=sanitized_session_name, json_data=create_payload)
+        # --- MODIFICATION END ---
 
         await asyncio.sleep(1)  # Give it a moment to initialize
-        status_res = await waha_request_from_main("GET", "/api/sessions/{session}", session=user_id)
+        status_res = await waha_request_from_main("GET", "/api/sessions/{session}", session=sanitized_session_name) # This now checks the status of the newly created session
         session_status = status_res.get("status")
         if session_status not in ["STARTING", "SCAN_QR_CODE", "WORKING"]:
             raise HTTPException(status_code=500, detail=f"Failed to start WhatsApp session. Status: {session_status}")
 
         # Step 2: Get the QR code
         await asyncio.sleep(5) 
-        qr_result = await waha_request_from_main("GET", "/api/{session}/auth/qr", session=user_id, params={"format": "image"})
+        qr_result = await waha_request_from_main("GET", "/api/{session}/auth/qr", session=sanitized_session_name, params={"format": "image"})
         
         # The result from waha_request_from_main is the direct JSON response from WAHA
         return JSONResponse(content=qr_result)
