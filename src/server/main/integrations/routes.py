@@ -375,16 +375,21 @@ async def finalize_composio_connection(
                 "gcalendar": "GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_SYNC_TRIGGER",
                 "gmail": "GMAIL_NEW_GMAIL_MESSAGE"
             }
-            trigger_config = {"calendarId": "primary"} if service_name == "gcalendar" else {}
+            trigger_config = {}
+            if service_name == "gcalendar":
+                # Google Calendar trigger requires specifying which calendar to watch.
+                trigger_config = {"calendarId": "primary"}
+            elif service_name == "gmail":
+                trigger_config = {"labelIds": "INBOX"}
             try:
                 logger.info(f"Setting up Composio trigger for {service_name} for user {user_id}")
                 trigger = await asyncio.to_thread(
                     composio.triggers.create,
                     slug=slug_map[service_name],
-                    user_id=user_id,
+                    connected_account_id=connected_account_id,
                     trigger_config=trigger_config
                 )
-                trigger_id = trigger.id
+                trigger_id = trigger.trigger_id
                 logger.info(f"Successfully created Composio trigger {trigger_id} for {service_name} for user {user_id}")
             except Exception as e:
                 logger.error(f"Failed to create Composio trigger for {service_name} for user {user_id}: {e}", exc_info=True)
