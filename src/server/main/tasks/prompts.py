@@ -27,6 +27,7 @@ Instructions:
         - `source`: The service that triggers the workflow (e.g., "gmail", "gcalendar").
         - `event`: The specific event (e.g., "new_email", "new_event").
         - `filter`: A dictionary of conditions to match (e.g., `{{"from": "boss@example.com"}}`).
+      The task will execute *after* the trigger occurs, using the event data (like the email content) as context. 
     - CRUCIAL DISTINCTION: Differentiate between the *task's execution time* (`run_at`) and the *event's time* mentioned in the prompt. A task to arrange a future event (e.g., 'book a flight for next month', 'schedule a meeting for Friday') should be executed *now* to make the arrangement. Therefore, its `run_at` should be null, since setting run_at to null makes the task run immediately. The future date belongs in the task `description`.
     - Ambiguity: Phrases like "weekly hourly" are ambiguous. Interpret "weekly" as the frequency and ignore "hourly".
     - Use the current time and user's timezone to resolve relative dates like "tomorrow", "next Friday at 2pm", etc. correctly.
