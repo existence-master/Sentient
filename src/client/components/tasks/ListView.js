@@ -1,7 +1,11 @@
 "use client"
 import React, { useMemo } from "react" // prettier-ignore
 import { AnimatePresence, motion } from "framer-motion"
-import { IconSearch, IconAlignBoxLeftMiddleFilled } from "@tabler/icons-react"
+import {
+	IconSearch,
+	IconAlignBoxLeftMiddleFilled,
+	IconPlus
+} from "@tabler/icons-react"
 import { groupTasksByDate } from "@utils/taskUtils"
 import TaskCardList from "./TaskCardList"
 import CollapsibleSection from "./CollapsibleSection"
@@ -39,14 +43,13 @@ const ListView = ({
 					<h3 className="text-3xl font-semibold text-neutral-300 mb-2">
 						Your Task List is Empty
 					</h3>
-					<p className="mb-4 text-lg">
-						Use the input box below to add a task or start with an
-						example workflow from the right. You can add as many as
-						you want, they'll all be executed in parallel.
-					</p>
 					<p className="text-lg">
-						Sentient will create a plan and may ask for your
-						approval or for more details if needed.
+						Open the Task Composer and create a new task.
+					</p>
+					<p className="mb-4 text-lg">
+						You can create one-time tasks, recurring workflows, or
+						complex automations. Sentient will then generate a plan
+						for your approval.
 					</p>
 					<IconAlignBoxLeftMiddleFilled
 						className="mx-auto mt-4 text-brand-white"

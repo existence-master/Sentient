@@ -6,6 +6,16 @@ const appServerUrl =
 		? process.env.INTERNAL_APP_SERVER_URL
 		: process.env.NEXT_PUBLIC_APP_SERVER_URL
 
+// Increase the body size limit for this specific route to handle large chat histories.
+// The default is 4MB, which can be exceeded if the context window includes large messages.
+export const config = {
+	api: {
+		bodyParser: {
+			sizeLimit: "10mb" // Set to match the Nginx limit
+		}
+	}
+}
+
 export const POST = withAuth(async function POST(request, { authHeader }) {
 	try {
 		const { messages } = await request.json()
