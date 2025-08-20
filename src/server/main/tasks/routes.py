@@ -358,23 +358,28 @@ async def task_chat(
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
 
-    # Append user message to top-level chat history
+    # Decryption is handled by get_task, so we can safely modify the list
     new_message = {
         "role": "user",
         "content": request.message,
         "timestamp": datetime.now(timezone.utc)
     }
     
-    # Put the task back into planning state for re-evaluation.
-    # The planner will see the chat history and the original context.
-    # It will NOT create a new run. It will overwrite the top-level plan.
-    await mongo_manager.task_collection.update_one(
-        {"task_id": task_id},
-        {
-            "$set": {"status": "planning"},
-            "$push": {"chat_history": new_message}
-        }
-    )
+    chat_history = task.get("chat_history", [])
+    if not isinstance(chat_history, list):
+        # This can happen if the field was somehow corrupted or is an old format
+        logger.warning(f"Task {task_id} chat_history is not a list. Resetting it.")
+        chat_history = []
+    chat_history.append(new_message)
+
+    # Prepare the payload for a full field update
+    update_payload = {
+        "status": "planning", # Revert to planning for re-evaluation
+        "chat_history": chat_history
+    }
+
+    # The update_task method will handle re-encrypting the entire chat_history field
+    await mongo_manager.update_task(task_id, update_payload)
 
     # Re-trigger the planner for the same task
     generate_plan_from_context.delay(task_id, user_id)
