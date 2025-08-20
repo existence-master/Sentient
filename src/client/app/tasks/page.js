@@ -660,7 +660,7 @@ Description: ${event.description || "No description."}`
 	// --- END NEW ---
 
 	return (
-		<div className="flex-1 flex h-screen text-white overflow-hidden">
+		<div className="flex-1 flex h-full text-white overflow-hidden">
 			<Tooltip
 				id="tasks-tooltip"
 				place="right"
@@ -784,7 +784,7 @@ Description: ${event.description || "No description."}`
 						initial={{ opacity: 0 }}
 						animate={{ opacity: 1 }}
 						exit={{ opacity: 0 }}
-						className="fixed inset-0 bg-black/70 backdrop-blur-md z-[70] md:hidden"
+						className="fixed inset-0 bg-black/70 z-[70] md:hidden"
 					>
 						<motion.div
 							initial={{ y: "100%" }}
@@ -811,7 +811,7 @@ export default function TasksPage() {
 	return (
 		<Suspense
 			fallback={
-				<div className="flex-1 flex h-screen bg-black text-white overflow-hidden justify-center items-center">
+				<div className="flex-1 flex h-full bg-black text-white overflow-hidden justify-center items-center">
 					<IconLoader className="w-10 h-10 animate-spin text-[var(--color-accent-blue)]" />
 				</div>
 			}
@@ -820,3 +820,4 @@ export default function TasksPage() {
 		</Suspense>
 	)
 }
+

@@ -375,16 +375,21 @@ async def finalize_composio_connection(
                 "gcalendar": "GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_SYNC_TRIGGER",
                 "gmail": "GMAIL_NEW_GMAIL_MESSAGE"
             }
-            trigger_config = {"calendarId": "primary"} if service_name == "gcalendar" else {}
+            trigger_config = {}
+            if service_name == "gcalendar":
+                # Google Calendar trigger requires specifying which calendar to watch.
+                trigger_config = {"calendarId": "primary"}
+            elif service_name == "gmail":
+                trigger_config = {"labelIds": "INBOX"}
             try:
                 logger.info(f"Setting up Composio trigger for {service_name} for user {user_id}")
                 trigger = await asyncio.to_thread(
                     composio.triggers.create,
                     slug=slug_map[service_name],
-                    user_id=user_id,
+                    connected_account_id=connected_account_id,
                     trigger_config=trigger_config
                 )
-                trigger_id = trigger.id
+                trigger_id = trigger.trigger_id
                 logger.info(f"Successfully created Composio trigger {trigger_id} for {service_name} for user {user_id}")
             except Exception as e:
                 logger.error(f"Failed to create Composio trigger for {service_name} for user {user_id}: {e}", exc_info=True)
@@ -415,27 +420,33 @@ async def composio_webhook(request: Request):
     """
     try:
         payload = await request.json()
-        user_id = payload.get("userId")
-        trigger_slug = payload.get("triggerSlug")
-        event_data = payload.get("payload")
+        # Correctly parse the payload based on the provided sample structure
+        event_data = payload.get("data")
+        if not event_data:
+            raise HTTPException(status_code=400, detail="Webhook payload missing 'data' object.")
 
-        if not all([user_id, trigger_slug, event_data]):
-            raise HTTPException(status_code=400, detail="Missing required fields in webhook payload.")
+        user_id = event_data.get("user_id")
+        trigger_type = payload.get("type")
 
+        if not all([user_id, trigger_type, event_data]):
+            raise HTTPException(status_code=400, detail="Missing required fields (user_id, type) in webhook payload.")
+
+        # Map from Composio's trigger type to our internal service_name and event_type
+        # Using lowercase to match the sample payload
         service_name_map = {
-            "GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_SYNC_TRIGGER": "gcalendar",
-            "GMAIL_NEW_GMAIL_MESSAGE": "gmail"
+            "googlecalendar_google_calendar_event_sync_trigger": "gcalendar",
+            "gmail_new_gmail_message": "gmail"
         }
         event_type_map = {
-            "GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_SYNC_TRIGGER": "new_event",
-            "GMAIL_NEW_GMAIL_MESSAGE": "new_email"
+            "googlecalendar_google_calendar_event_sync_trigger": "new_event",
+            "gmail_new_gmail_message": "new_email"
         }
 
-        service_name = service_name_map.get(trigger_slug)
-        event_type = event_type_map.get(trigger_slug)
+        service_name = service_name_map.get(trigger_type)
+        event_type = event_type_map.get(trigger_type)
 
         if not service_name:
-            logger.warning(f"Received webhook for unhandled trigger slug: {trigger_slug}")
+            logger.warning(f"Received webhook for unhandled trigger type: {trigger_type}")
             return JSONResponse(content={"status": "ignored", "reason": "unhandled trigger"})
 
         logger.info(f"Received Composio trigger for user '{user_id}' - Service: '{service_name}', Event: '{event_type}'")
@@ -456,7 +467,7 @@ async def composio_webhook(request: Request):
             logger.info(f"Event for user '{user_id}' was discarded by the pre-filter.")
             return JSONResponse(content={"status": "ignored", "reason": "pre-filter discard"})
 
-        # 3. Dispatch to Celery worker
+        # 3. Dispatch to a Celery task that handles finding and running all matching triggered workflows.
         execute_triggered_task.delay(
             user_id=user_id,
             source=service_name,
