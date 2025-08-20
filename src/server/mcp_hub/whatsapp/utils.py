@@ -36,8 +36,9 @@ async def waha_request(
 
     headers = {"X-Api-Key": WAHA_API_KEY, "Content-Type": "application/json"}
     
-    # Replace session placeholder in endpoint
-    final_endpoint = endpoint.replace("{session}", session)
+    # Sanitize the session name and replace the placeholder in the endpoint
+    sanitized_session = session.replace("|", "_")
+    final_endpoint = endpoint.replace("{session}", sanitized_session)
     url = f"{WAHA_URL.rstrip('/')}{final_endpoint}"
 
     async with httpx.AsyncClient(timeout=60.0) as client:

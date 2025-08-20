@@ -482,42 +482,53 @@ async def initiate_whatsapp_connection(user_id: str = Depends(auth_helper.get_cu
         # for a WAHA session name. We must sanitize it first.
         sanitized_session_name = user_id.replace("|", "_")
 
-        # Now, create the session using the sanitized name.
         create_payload = {
             "name": sanitized_session_name,
             "start": True
         }
-        # The `session` parameter here is now only for logging/consistency, the actual session name is in the payload.
-        await waha_request_from_main("POST", "/api/sessions", session=sanitized_session_name, json_data=create_payload)
-        # --- MODIFICATION END ---
+        try:
+            await waha_request_from_main("POST", "/api/sessions", session=sanitized_session_name, json_data=create_payload)
+        except HTTPException as e:
+            if e.status_code == 422 and "already exists" in e.detail:
+                logger.info(f"WAHA session '{sanitized_session_name}' already exists. Proceeding to get QR code.")
+                # Session exists, we can ignore this error and continue.
+            else:
+                raise # Re-raise other HTTP exceptions
 
         await asyncio.sleep(1)  # Give it a moment to initialize
-        status_res = await waha_request_from_main("GET", "/api/sessions/{session}", session=sanitized_session_name) # This now checks the status of the newly created session
+        status_res = await waha_request_from_main("GET", "/api/sessions/{session}", session=sanitized_session_name)
         session_status = status_res.get("status")
         if session_status not in ["STARTING", "SCAN_QR_CODE", "WORKING"]:
             raise HTTPException(status_code=500, detail=f"Failed to start WhatsApp session. Status: {session_status}")
 
         # Step 2: Get the QR code
         await asyncio.sleep(5) 
-        qr_result = await waha_request_from_main("GET", "/api/{session}/auth/qr", session=sanitized_session_name, params={"format": "image"})
-        
-        # The result from waha_request_from_main is the direct JSON response from WAHA
+        qr_result = await waha_request_from_main("GET", "/api/{session}/auth/qr", session=sanitized_session_name, params={"format": "image"}) # noqa
         return JSONResponse(content=qr_result)
 
     except Exception as e:
         logger.error(f"Error initiating WhatsApp connection for {user_id}: {e}", exc_info=True)
+        if isinstance(e, HTTPException):
+            raise e
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/whatsapp/status", summary="Check the status of a WAHA session")
+@router.get("/whatsapp/connect/status", summary="Check the status of a WAHA session")
 async def get_whatsapp_connection_status(user_id: str = Depends(auth_helper.get_current_user_id)):
     try:
-        status_result = await waha_request_from_main("GET", "/api/sessions/{session}", session=user_id)
+        sanitized_session_name = user_id.replace("|", "_")
+        status_result = await waha_request_from_main("GET", "/api/sessions/{session}", session=sanitized_session_name)
         session_status = status_result.get("status", "UNKNOWN")
 
         if session_status == "WORKING":
             await mongo_manager.update_user_profile(user_id, {"userData.integrations.whatsapp.connected": True})
         
         return JSONResponse(content={"status": session_status})
+    except HTTPException as e:
+        # If the session is not found (404), it's not an error, just means it's not connected.
+        if e.status_code == 404:
+            return JSONResponse(content={"error": "Session not found. Please try connecting again."}, status_code=404)
+        logger.error(f"Error checking WhatsApp status for {user_id}: {e.detail}", exc_info=True)
+        raise e
     except Exception as e:
         logger.error(f"Error checking WhatsApp status for {user_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -525,7 +536,8 @@ async def get_whatsapp_connection_status(user_id: str = Depends(auth_helper.get_
 @router.post("/whatsapp/disconnect", summary="Stop and disconnect a WAHA session")
 async def disconnect_whatsapp_connection(user_id: str = Depends(auth_helper.get_current_user_id)):
     try:
-        await waha_request_from_main("POST", "/api/sessions/{session}/stop", session=user_id)
+        sanitized_session_name = user_id.replace("|", "_")
+        await waha_request_from_main("POST", "/api/sessions/{session}/stop", session=sanitized_session_name)
         await mongo_manager.update_user_profile(user_id, {"userData.integrations.whatsapp.connected": False})
         return JSONResponse(content={"message": "WhatsApp session disconnected successfully."})
     except Exception as e:

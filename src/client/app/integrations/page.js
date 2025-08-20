@@ -763,6 +763,10 @@ const IntegrationsPage = () => {
 	const router = useRouter()
 	const { isPro } = usePlan()
 
+	const handleWhatsAppModalClose = useCallback(() => {
+		setIsWhatsAppQRModalOpen(false)
+	}, [])
+
 	const googleServices = [
 		"gmail",
 		"gcalendar",
@@ -1542,7 +1546,7 @@ const IntegrationsPage = () => {
 			<AnimatePresence>
 				{isWhatsAppQRModalOpen && (
 					<WhatsAppQRCodeModal
-						onClose={() => setIsWhatsAppQRModalOpen(false)}
+						onClose={handleWhatsAppModalClose}
 						onSuccess={fetchIntegrations}
 					/>
 				)}
