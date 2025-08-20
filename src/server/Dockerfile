@@ -56,12 +56,19 @@ RUN mkdir -p /etc/supervisor/conf.d /var/log/supervisor
 
 # Copy configuration files and server code
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY nginx.conf /etc/nginx/sites-available/sentient
 COPY . .
 
 # Fix line endings for .env and start.sh (if present)
 RUN if [ -f /app/.env ]; then dos2unix /app/.env; fi \
     && dos2unix /app/start.sh \
     && chmod +x /app/start.sh
+
+# Remove default Nginx site configuration and enable our custom one
+RUN rm -f /etc/nginx/sites-enabled/default
+
+# Enable custom Nginx site
+RUN ln -s /etc/nginx/sites-available/sentient /etc/nginx/sites-enabled/sentient
 
 # Expose port
 EXPOSE 5000
