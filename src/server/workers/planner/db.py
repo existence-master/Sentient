@@ -9,38 +9,7 @@ import json
 import uuid
 
 from workers.planner.config import MONGO_URI, MONGO_DB_NAME, INTEGRATIONS_CONFIG, ENVIRONMENT
-from workers.utils.crypto import aes_encrypt, aes_decrypt
-
-DB_ENCRYPTION_ENABLED = ENVIRONMENT == 'stag'
-
-def _encrypt_field(data: Any) -> Any:
-    if not DB_ENCRYPTION_ENABLED or data is None:
-        return data
-    data_str = json.dumps(data)
-    return aes_encrypt(data_str)
-
-def _decrypt_field(data: Any) -> Any:
-    if not DB_ENCRYPTION_ENABLED or data is None or not isinstance(data, str):
-        return data
-    try:
-        decrypted_str = aes_decrypt(data)
-        return json.loads(decrypted_str)
-    except Exception:
-        return data
-
-def _encrypt_doc(doc: Dict, fields: List[str]):
-    if not DB_ENCRYPTION_ENABLED or not doc:
-        return
-    for field in fields:
-        if field in doc and doc[field] is not None:
-            doc[field] = _encrypt_field(doc[field])
-
-def _decrypt_doc(doc: Optional[Dict], fields: List[str]):
-    if not DB_ENCRYPTION_ENABLED or not doc:
-        return
-    for field in fields:
-        if field in doc and doc[field] is not None:
-            doc[field] = _decrypt_field(doc[field])
+from workers.utils.crypto import encrypt_doc, decrypt_doc
 
 
 logger = logging.getLogger(__name__)
@@ -111,7 +80,7 @@ class PlannerMongoManager:  # noqa: E501
         }
 
         SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details"]
-        _encrypt_doc(task_doc, SENSITIVE_TASK_FIELDS)
+        encrypt_doc(task_doc, SENSITIVE_TASK_FIELDS)
 
         await self.tasks_collection.insert_one(task_doc)
         logger.info(f"Created initial task {task_id} for user {user_id}")
@@ -119,15 +88,9 @@ class PlannerMongoManager:  # noqa: E501
 
     async def update_task_field(self, task_id: str, fields: dict):
         """Updates specific fields of a task document."""
-        if DB_ENCRYPTION_ENABLED:
-            SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details"]
-            encrypted_fields = {}
-            for field, value in fields.items():
-                if field in SENSITIVE_TASK_FIELDS:
-                    encrypted_fields[field] = _encrypt_field(value)
-                else:
-                    encrypted_fields[field] = value
-            fields = encrypted_fields
+        SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details"]
+        # The encrypt_doc function modifies the dictionary in place
+        encrypt_doc(fields, SENSITIVE_TASK_FIELDS)
 
         await self.tasks_collection.update_one(
             {"task_id": task_id},
@@ -137,11 +100,8 @@ class PlannerMongoManager:  # noqa: E501
 
     async def update_task_with_plan(self, task_id: str, plan_data: dict, is_change_request: bool = False):
         """Updates a task with a generated plan and sets it to pending approval."""
-        if DB_ENCRYPTION_ENABLED:
-            SENSITIVE_PLAN_FIELDS = ["name", "description", "plan"]
-            encrypted_plan_data = plan_data.copy()
-            _encrypt_doc(encrypted_plan_data, SENSITIVE_PLAN_FIELDS)
-            plan_data = encrypted_plan_data
+        SENSITIVE_PLAN_FIELDS = ["name", "description", "plan"]
+        encrypt_doc(plan_data, SENSITIVE_PLAN_FIELDS)
 
         plan_steps = plan_data.get("plan", [])
 
@@ -167,7 +127,7 @@ class PlannerMongoManager:  # noqa: E501
         """Fetches a single task by its ID."""
         doc = await self.tasks_collection.find_one({"task_id": task_id})
         SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details"]
-        _decrypt_doc(doc, SENSITIVE_TASK_FIELDS)
+        decrypt_doc(doc, SENSITIVE_TASK_FIELDS)
         return doc
 
     async def update_task_status(self, task_id: str, status: str, details: Optional[Dict] = None):
@@ -178,7 +138,7 @@ class PlannerMongoManager:  # noqa: E501
                 update_doc["error"] = details["error"]
 
         SENSITIVE_TASK_FIELDS = ["error"]
-        _encrypt_doc(update_doc, SENSITIVE_TASK_FIELDS)
+        encrypt_doc(update_doc, SENSITIVE_TASK_FIELDS)
 
         await self.tasks_collection.update_one({"task_id": task_id}, {"$set": update_doc})
         logger.info(f"Updated status of task {task_id} to {status}")
@@ -204,7 +164,7 @@ class PlannerMongoManager:  # noqa: E501
         }
 
         SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "original_context"]
-        _encrypt_doc(task_doc, SENSITIVE_TASK_FIELDS)
+        encrypt_doc(task_doc, SENSITIVE_TASK_FIELDS)
 
         await self.tasks_collection.insert_one(task_doc)
         logger.info(f"Saved new plan with task_id: {task_id} for user: {user_id}")

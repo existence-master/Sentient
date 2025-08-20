@@ -19,7 +19,7 @@ from workers.utils.api_client import notify_user, push_progress_update, push_tas
 from workers.utils.text_utils import clean_llm_output
 from celery import chord, group
 from main.llm import run_agent as run_main_agent, LLMProviderDownError
-from workers.utils.crypto import aes_decrypt
+from workers.utils.crypto import aes_decrypt, encrypt_doc, decrypt_doc
 
 # Load environment variables for the worker from its own config
 from workers.executor.config import (MONGO_URI, MONGO_DB_NAME,
@@ -30,84 +30,75 @@ logger = logging.getLogger(__name__)
 
 DB_ENCRYPTION_ENABLED = ENVIRONMENT == 'stag'
 
-# --- LLM Config for Executor ---
-llm_cfg = {
-    'model': OPENAI_MODEL_NAME,
-    'model_server': OPENAI_API_BASE_URL,
-    'api_key': OPENAI_API_KEY,
-}
-
-
-# --- Decryption Helpers (mirrored from main/db.py) ---
-def _decrypt_field(data: Any) -> Any:
-    if not DB_ENCRYPTION_ENABLED or data is None or not isinstance(data, str):
-        return data
-    try:
-        decrypted_str = aes_decrypt(data)
-        return json.loads(decrypted_str)
-    except Exception:
-        # If decryption or JSON loading fails, return the original data
-        # This can happen if the data was not encrypted in the first place
-        return data
-
-def _decrypt_doc(doc: Optional[Dict], fields: List[str]):
-    """
-    Decrypts specified fields in a document in-place.
-    """
-    if not DB_ENCRYPTION_ENABLED or not doc:
-        return
-    for field in fields:
-        if field in doc and doc[field] is not None:
-            doc[field] = _decrypt_field(doc[field])
-
-
 # --- Database Connection within Celery Task ---
 def get_db_client():
     return motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)[MONGO_DB_NAME]
 
 # Helper to run async functions from sync Celery tasks
 def run_async(coro):
+    # Always create a new loop for each task to ensure isolation and prevent conflicts.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
+        return loop.run_until_complete(coro)
+    finally:
+        # Ensure the connection pool for this specific loop is closed.
+        from mcp_hub.memory.db import close_db_pool_for_loop
+        loop.run_until_complete(close_db_pool_for_loop(loop))
+        loop.close()
+        asyncio.set_event_loop(None)
 
 async def update_task_run_status(db, task_id: str, run_id: str, status: str, user_id: str, details: Dict = None, block_id: Optional[str] = None):
-    # Update the status of the specific run and the top-level task status
-    update_doc = {
-        "status": status, # Top-level status
+    """
+    Fetches a task, updates a specific run's status and details in memory,
+    and then saves the entire modified runs array back to the database.
+    This approach is compatible with field-level encryption.
+    """
+    task = await db.tasks.find_one({"task_id": task_id, "user_id": user_id})
+    if not task:
+        logger.error(f"Cannot update run status: Task {task_id} not found for user {user_id}.")
+        return
+
+    SENSITIVE_TASK_FIELDS = ["runs", "name"]
+    decrypt_doc(task, SENSITIVE_TASK_FIELDS)
+
+    runs = task.get("runs", [])
+    if not isinstance(runs, list):
+        logger.error(f"Task {task_id} 'runs' field is not a list after decryption. Cannot update status.")
+        return
+
+    run_found = False
+    for run in runs:
+        if run.get("run_id") == run_id:
+            run["status"] = status
+            if details:
+                if "result" in details:
+                    run["result"] = details["result"]
+                if "error" in details:
+                    run["error"] = details["error"]
+            run_found = True
+            break
+
+    if not run_found:
+        logger.warning(f"Run {run_id} not found in task {task_id} to update status.")
+        return
+
+    update_payload = {
+        "status": status,
         "updated_at": datetime.datetime.now(datetime.timezone.utc),
-        # Always update the status of the specific run to use the array filter
-        "runs.$[run].status": status
+        "runs": runs
     }
-    task_description = ""
-    
-    if details:
-        if "result" in details:
-            update_doc["runs.$[run].result"] = details["result"]
-        if "error" in details:
-            update_doc["runs.$[run].error"] = details["error"]
-    
-    # Also update the block's status field even if there are no details
-    if block_id:
-        tasks_update = {"task_status": status}
-        await db.tasks_blocks_collection.update_one(
-            {"block_id": block_id, "user_id": user_id},
-            {"$set": tasks_update}
-        )
 
-    task_doc = await db.tasks.find_one({"task_id": task_id}, {"name": 1})
-    if task_doc:
-        task_description = task_doc.get("name", "Unnamed Task")
+    # Encrypt the modified runs array before updating
+    encrypt_doc(update_payload, ["runs"])
 
-    logger.info(f"Updating task {task_id} status to '{status}' with details: {details}")
+    logger.info(f"Updating task {task_id} run {run_id} status to '{status}' with details: {details}")
     await db.tasks.update_one(
         {"task_id": task_id, "user_id": user_id},
-        {"$set": update_doc},
-        array_filters=[{"run.run_id": run_id}]
+        {"$set": update_payload}
     )
+
+    task_description = task.get("name", "Unnamed Task")
 
     if status in ["completed", "error"]:
         notification_message = f"Task '{task_description}' has finished with status: {status}."
@@ -116,18 +107,46 @@ async def update_task_run_status(db, task_id: str, run_id: str, status: str, use
 
 async def add_progress_update(db, task_id: str, run_id: str, user_id: str, message: Any, block_id: Optional[str] = None):
     logger.info(f"Adding progress update to task {task_id}: '{message}'")
-    # The 'message' is now the structured JSON object for the update
     progress_update = {"message": message, "timestamp": datetime.datetime.now(datetime.timezone.utc)}
     
-    # 1. Push to frontend via WebSocket in real-time by calling the main server
+    # 1. Push to frontend via WebSocket in real-time
     await push_progress_update(user_id, task_id, run_id, message)
 
-    # 2. Save to DB for persistence, targeting the correct run in the array
+    # 2. Fetch, decrypt, modify, encrypt, and save to DB for persistence
+    task = await db.tasks.find_one({"task_id": task_id, "user_id": user_id})
+    if not task:
+        logger.error(f"Cannot add progress update: Task {task_id} not found for user {user_id}.")
+        return
+
+    SENSITIVE_TASK_FIELDS = ["runs"]
+    decrypt_doc(task, SENSITIVE_TASK_FIELDS)
+
+    runs = task.get("runs", [])
+    if not isinstance(runs, list):
+        logger.error(f"Task {task_id} 'runs' field is not a list after decryption. Cannot add progress update.")
+        return
+
+    run_found = False
+    for run in runs:
+        if run.get("run_id") == run_id:
+            if "progress_updates" not in run or not isinstance(run["progress_updates"], list):
+                run["progress_updates"] = []
+            run["progress_updates"].append(progress_update)
+            run_found = True
+            break
+
+    if not run_found:
+        logger.warning(f"Run {run_id} not found in task {task_id} to add progress update.")
+        return
+
+    update_payload = {"runs": runs}
+    encrypt_doc(update_payload, SENSITIVE_TASK_FIELDS)
+
     await db.tasks.update_one(
         {"task_id": task_id, "user_id": user_id},
-        {"$push": {"runs.$[run].progress_updates": progress_update}},
-        array_filters=[{"run.run_id": run_id}]
+        {"$set": update_payload}
     )
+
     if block_id:
         await db.tasks_blocks_collection.update_one(
             {"block_id": block_id, "user_id": user_id},
@@ -137,13 +156,7 @@ async def add_progress_update(db, task_id: str, run_id: str, user_id: str, messa
 @celery_app.task(name="execute_task_plan")
 def execute_task_plan(task_id: str, user_id: str, run_id: str):
     logger.info(f"Celery worker received task 'execute_task_plan' for task_id: {task_id}, run_id: {run_id}")
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    return loop.run_until_complete(async_execute_task_plan(task_id, user_id, run_id))
+    return run_async(async_execute_task_plan(task_id, user_id, run_id))
 
 def parse_agent_string_to_updates(content: str) -> List[Dict[str, Any]]:
     """
@@ -223,7 +236,7 @@ async def async_execute_task_plan(task_id: str, user_id: str, run_id: str):
 
     # Decrypt sensitive fields before processing
     SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details"]
-    _decrypt_doc(task, SENSITIVE_TASK_FIELDS)
+    decrypt_doc(task, SENSITIVE_TASK_FIELDS)
 
     if not task:
         logger.error(f"Executor: Task {task_id} not found for user {user_id}.")
@@ -483,20 +496,46 @@ async def async_aggregate_results(results, parent_task_id: str, user_id: str, pa
             "message": f"All {len(results)} agents have completed. Generating final report."
         }
 
+        task = await db.tasks.find_one({"task_id": parent_task_id, "user_id": user_id})
+        if not task:
+            logger.error(f"Cannot aggregate results: Task {parent_task_id} not found.")
+            return
+
+        SENSITIVE_TASK_FIELDS = ["runs", "name"]
+        decrypt_doc(task, SENSITIVE_TASK_FIELDS)
+
+        runs = task.get("runs", [])
+        if not isinstance(runs, list):
+            logger.error(f"Task {parent_task_id} 'runs' field is not a list. Cannot aggregate.")
+            return
+
+        run_found = False
+        for run in runs:
+            if run.get("run_id") == parent_run_id:
+                run["status"] = final_status
+                if "progress_updates" not in run or not isinstance(run["progress_updates"], list):
+                    run["progress_updates"] = []
+                run["progress_updates"].append(progress_update)
+                run_found = True
+                break
+
+        if not run_found:
+            logger.warning(f"Run {parent_run_id} not found in task {parent_task_id} to aggregate results.")
+            return
+
+        update_payload = {
+            "status": final_status,
+            "runs": runs
+        }
+        encrypt_doc(update_payload, ["runs"])
+
         await db.tasks.update_one(
             {"task_id": parent_task_id},
-            {
-                "$set": {
-                    "status": final_status, "runs.$[run].status": final_status
-                },
-                "$push": {"runs.$[run].progress_updates": progress_update}
-            },
-            array_filters=[{"run.run_id": parent_run_id}]
+            {"$set": update_payload}
         )
         
         generate_task_result.delay(parent_task_id, parent_run_id, user_id, aggregated_results=results)
-        task = await db.tasks.find_one({"task_id": parent_task_id}, {"name": 1})
-        task_name = task.get("name", "Swarm Task") if task else "Swarm Task"
+        task_name = task.get("name", "Swarm Task")
 
         await notify_user(user_id, f"Swarm task '{task_name}' has completed.", parent_task_id, notification_type="taskCompleted")
 
@@ -520,6 +559,10 @@ async def async_generate_task_result(task_id: str, run_id: str, user_id: str, ag
     db = get_db_client()
     try:
         task = await db.tasks.find_one({"task_id": task_id, "user_id": user_id})
+        # Decrypt sensitive fields before processing
+        SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details"]
+        decrypt_doc(task, SENSITIVE_TASK_FIELDS)
+
         if not task:
             logger.error(f"ResultGenerator: Task {task_id} not found.")
             return
@@ -556,17 +599,63 @@ async def async_generate_task_result(task_id: str, run_id: str, user_id: str, ag
             logger.warning(f"ResultGenerator for task {task_id} failed to parse JSON, using raw output as summary.")
 
         # 3. Update the task run with the structured result
-        await db.tasks.update_one({"task_id": task_id, "user_id": user_id}, {"$set": {"runs.$[run].result": structured_result}}, array_filters=[{"run.run_id": run_id}])
+        runs = task.get("runs", [])
+        if not isinstance(runs, list):
+            logger.error(f"Task {task_id} 'runs' field is not a list. Cannot save result.")
+            return
+
+        run_found = False
+        for run in runs:
+            if run.get("run_id") == run_id:
+                run["result"] = structured_result
+                run_found = True
+                break
+
+        if not run_found:
+            logger.warning(f"Run {run_id} not found in task {task_id} to save result.")
+            return
+
+        update_payload = {"runs": runs}
+        encrypt_doc(update_payload, ["runs"])
+
+        await db.tasks.update_one(
+            {"task_id": task_id, "user_id": user_id},
+            {"$set": update_payload}
+        )
         logger.info(f"Successfully generated and saved structured result for task {task_id}, run {run_id}.")
         await push_task_list_update(user_id, task_id, run_id)
     except LLMProviderDownError as e:
         logger.error(f"LLM provider down during result generation for task {task_id}: {e}", exc_info=True)
         error_result = {"summary": "Sorry, our AI provider is currently down, so a final report could not be generated."}
-        await db.tasks.update_one({"task_id": task_id, "user_id": user_id}, {"$set": {"runs.$[run].result": error_result}}, array_filters=[{"run.run_id": run_id}])
+        # Fetch, modify, save pattern for error case
+        task = await db.tasks.find_one({"task_id": task_id, "user_id": user_id})
+        if task:
+            decrypt_doc(task, ["runs"])
+            runs = task.get("runs", [])
+            if isinstance(runs, list):
+                for run in runs:
+                    if run.get("run_id") == run_id:
+                        run["result"] = error_result
+                        break
+                update_payload = {"runs": runs}
+                encrypt_doc(update_payload, ["runs"])
+                await db.tasks.update_one({"task_id": task_id, "user_id": user_id}, {"$set": update_payload})
     except Exception as e:
         logger.error(f"Error in async_generate_task_result for task {task_id}: {e}", exc_info=True)
         error_result = {"summary": f"Failed to generate final report: {str(e)}"}
-        await db.tasks.update_one({"task_id": task_id, "user_id": user_id}, {"$set": {"runs.$[run].result": error_result}}, array_filters=[{"run.run_id": run_id}])
+        # Fetch, modify, save pattern for error case
+        task = await db.tasks.find_one({"task_id": task_id, "user_id": user_id})
+        if task:
+            decrypt_doc(task, ["runs"])
+            runs = task.get("runs", [])
+            if isinstance(runs, list):
+                for run in runs:
+                    if run.get("run_id") == run_id:
+                        run["result"] = error_result
+                        break
+                update_payload = {"runs": runs}
+                encrypt_doc(update_payload, ["runs"])
+                await db.tasks.update_one({"task_id": task_id, "user_id": user_id}, {"$set": update_payload})
 
 @celery_app.task(name="run_single_item_worker", bind=True)
 def run_single_item_worker(self, parent_task_id: str, user_id: str, item: Any, worker_prompt: str, worker_tools: List[str]):
@@ -576,13 +665,7 @@ def run_single_item_worker(self, parent_task_id: str, user_id: str, item: Any, w
     """
     worker_id = self.request.id
     logger.info(f"Running single item worker {worker_id} for parent task {parent_task_id} on item: {str(item)[:100]}")
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    return loop.run_until_complete(async_run_single_item_worker(parent_task_id, user_id, item, worker_prompt, worker_tools, worker_id))
+    return run_async(async_run_single_item_worker(parent_task_id, user_id, item, worker_prompt, worker_tools, worker_id))
 
 async def async_run_single_item_worker(parent_task_id: str, user_id: str, item: Any, worker_prompt: str, worker_tools: List[str], worker_id: str):
     """
