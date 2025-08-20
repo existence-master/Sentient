@@ -15,13 +15,13 @@ export const GET = withAuth(async function GET(request, { authHeader }) {
 			cache: "no-store" // Prevent Next.js from caching this server-side fetch
 		})
 
-		const data = await response.json()
 		if (!response.ok) {
+			const data = await response.json()
 			throw new Error(
 				data.message || "Failed to fetch user data from backend"
 			)
 		}
-
+		const data = await response.json()
 		return NextResponse.json(data)
 	} catch (error) {
 		console.error("API Error in /user/data:", error)
