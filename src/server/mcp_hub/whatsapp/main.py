@@ -252,8 +252,7 @@ async def get_chat_id_by_name(ctx: Context, contact_name: str) -> Dict[str, Any]
     sanitized_session = user_id.replace("|", "_")
 
     try:
-        contacts_response = await utils.waha_request("GET", "/api/contacts/all", session=sanitized_session, params={"session": sanitized_session})
-        contacts = contacts_response.get("result", [])
+        contacts = await utils.waha_request("GET", "/api/contacts/all", session=sanitized_session, params={"session": sanitized_session})
 
         for contact in contacts:
             # Check both 'name' (saved name) and 'pushName' (their WhatsApp display name)
