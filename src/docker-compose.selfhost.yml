@@ -102,7 +102,7 @@ services:
 
     # WAHA (WhatsApp HTTP API) Service
     waha:
-        image: devlikeapro/waha:noweb
+        image: itsskofficial/waha-multisession
         container_name: sentient-waha-selfhost
         restart: unless-stopped
         volumes:

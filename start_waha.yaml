@@ -1,7 +1,7 @@
 services:
   waha:
-    image: devlikeapro/waha:noweb # This image is for browserless engines like NOWEB and GOWS
-    container_name: waha-notifier
+    image: itsskofficial/waha-multisession # This image is for browserless engines like NOWEB and GOWS
+    container_name: waha-multisession
     restart: unless-stopped
     ports:
       # Binds to 127.0.0.1 (localhost) for security. 
