@@ -21,7 +21,9 @@ export const GET = withAuth(async function GET(request, { authHeader }) {
 				data.detail || "Failed to fetch proactivity settings"
 			)
 		}
-		return NextResponse.json(data)
+		return NextResponse.json(data, {
+			headers: { "Cache-Control": "no-store, max-age=0" }
+		})
 	} catch (error) {
 		console.error("API Error in /settings/proactivity (GET):", error)
 		return NextResponse.json({ error: error.message }, { status: 500 })

@@ -782,7 +782,8 @@ const IntegrationsPage = () => {
 		setLoading(true)
 		try {
 			const response = await fetch("/api/settings/integrations", {
-				cache: "no-store"
+				cache: "no-store",
+				method: "POST"
 			})
 			const data = await response.json()
 			if (!response.ok)

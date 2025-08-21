@@ -9,6 +9,8 @@ export async function GET() {
 			given_name: "User",
 			name: "Self-Hosted User",
 			picture: "/images/half-logo-dark.svg" // A default picture
+		}, {
+			headers: { 'Cache-Control': 'no-store, max-age=0' }
 		})
 	}
 
@@ -31,5 +33,7 @@ export async function GET() {
 			`https://i.pravatar.cc/150?u=${session.user.sub}`
 	}
 
-	return NextResponse.json(userProfile)
+	return NextResponse.json(userProfile, {
+		headers: { 'Cache-Control': 'no-store, max-age=0' }
+	})
 }

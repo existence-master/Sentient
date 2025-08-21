@@ -7,6 +7,8 @@ export async function GET(request) {
 		return NextResponse.json({
 			status: "ok",
 			message: "Self-host mode, no refresh needed."
+		}, {
+			headers: { 'Cache-Control': 'no-store, max-age=0' }
 		})
 	}
 
@@ -26,11 +28,13 @@ export async function GET(request) {
 			refresh: true
 		})
 
+		const newHeaders = new Headers(res.headers)
+		newHeaders.set('Cache-Control', 'no-store, max-age=0')
 		// The new session cookie is now on the `res` object.
 		// Return a success response with the new headers.
 		return NextResponse.json(
 			{ status: "ok" },
-			{ status: 200, headers: res.headers }
+			{ status: 200, headers: newHeaders }
 		)
 	} catch (error) {
 		console.error("Error refreshing session in main app:", error.message)

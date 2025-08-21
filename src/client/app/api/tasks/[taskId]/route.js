@@ -29,7 +29,9 @@ export const GET = withAuth(async function GET(
 		const data = await response.json()
 		if (!response.ok)
 			throw new Error(data.detail || "Failed to fetch task details")
-		return NextResponse.json(data)
+		return NextResponse.json(data, {
+			headers: { "Cache-Control": "no-store, max-age=0" }
+		})
 	} catch (error) {
 		return NextResponse.json({ error: error.message }, { status: 500 })
 	}
