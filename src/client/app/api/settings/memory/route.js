@@ -21,7 +21,9 @@ export const GET = withAuth(async function GET(request, { authHeader }) {
 				data.detail || data.error || "Failed to fetch Memory settings"
 			)
 		}
-		return NextResponse.json(data)
+		return NextResponse.json(data, {
+			headers: { "Cache-Control": "no-store, max-age=0" }
+		})
 	} catch (error) {
 		console.error("API Error in /settings/mcp (GET):", error)
 		return NextResponse.json({ error: error.message }, { status: 500 })

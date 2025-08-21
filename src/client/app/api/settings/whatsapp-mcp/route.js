@@ -48,7 +48,9 @@ export const GET = withAuth(async function GET(request, { authHeader }) {
 				data.detail || "Failed to fetch WhatsApp MCP settings"
 			)
 		}
-		return NextResponse.json(data)
+		return NextResponse.json(data, {
+			headers: { "Cache-Control": "no-store, max-age=0" }
+		})
 	} catch (error) {
 		console.error("API Error in /api/settings/whatsapp-mcp (GET):", error)
 		return NextResponse.json({ error: error.message }, { status: 500 })

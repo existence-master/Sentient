@@ -290,7 +290,7 @@ function TasksPageContent() {
 	const fetchTasks = useCallback(async () => {
 		setIsLoading(true)
 		try {
-			const tasksRes = await fetch("/api/tasks")
+			const tasksRes = await fetch("/api/tasks", { method: "POST" })
 			if (!tasksRes.ok) throw new Error("Failed to fetch tasks")
 			const tasksData = await tasksRes.json()
 			const rawTasks = Array.isArray(tasksData.tasks)
@@ -298,7 +298,7 @@ function TasksPageContent() {
 				: []
 			setAllTasks(rawTasks)
 
-			const integrationsRes = await fetch("/api/settings/integrations")
+			const integrationsRes = await fetch("/api/settings/integrations", { method: "POST" })
 			if (!integrationsRes.ok)
 				throw new Error("Failed to fetch integrations")
 			const integrationsData = await integrationsRes.json()

@@ -188,7 +188,7 @@ const UpgradeToProModal = ({ isOpen, onClose }) => {
 
 const MANUAL_INTEGRATION_CONFIGS = {} // Manual integrations removed for Slack and Notion
 
-const WhatsAppQRCodeModal = ({ onClose, onSuccess }) => {
+const WhatsAppQRCodeModal = ({ onClose }) => {
 	const [qrCode, setQrCode] = useState(null)
 	const [status, setStatus] = useState("initiating") // initiating, scanning, working, error
 	const [error, setError] = useState("")
@@ -214,7 +214,6 @@ const WhatsAppQRCodeModal = ({ onClose, onSuccess }) => {
 				setStatus("working")
 				stopPolling()
 				toast.success("WhatsApp connected successfully!")
-				onSuccess()
 				setTimeout(onClose, 1500)
 			} else if (data.status === "FAILED") {
 				setError("Connection failed. Please close this and try again.")
@@ -228,7 +227,7 @@ const WhatsAppQRCodeModal = ({ onClose, onSuccess }) => {
 			setStatus("error")
 			stopPolling()
 		}
-	}, [onSuccess, onClose, stopPolling])
+	}, [onClose, stopPolling])
 
 	const initiateConnection = useCallback(async () => {
 		setStatus("initiating")
@@ -765,6 +764,7 @@ const IntegrationsPage = () => {
 
 	const handleWhatsAppModalClose = useCallback(() => {
 		setIsWhatsAppQRModalOpen(false)
+		fetchIntegrations() // Always refetch on close to ensure UI is up-to-date
 	}, [])
 
 	const googleServices = [
@@ -782,6 +782,7 @@ const IntegrationsPage = () => {
 		setLoading(true)
 		try {
 			const response = await fetch("/api/settings/integrations", {
+				method: "POST",
 				cache: "no-store"
 			})
 			const data = await response.json()
@@ -1545,10 +1546,7 @@ const IntegrationsPage = () => {
 			</div>
 			<AnimatePresence>
 				{isWhatsAppQRModalOpen && (
-					<WhatsAppQRCodeModal
-						onClose={handleWhatsAppModalClose}
-						onSuccess={fetchIntegrations}
-					/>
+					<WhatsAppQRCodeModal onClose={handleWhatsAppModalClose} />
 				)}
 			</AnimatePresence>
 			<AnimatePresence>

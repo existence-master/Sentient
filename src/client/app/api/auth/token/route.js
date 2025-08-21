@@ -15,7 +15,12 @@ export async function GET() {
 				{ status: 500 }
 			)
 		}
-		return NextResponse.json({ accessToken: token })
+		return NextResponse.json(
+			{ accessToken: token },
+			{
+				headers: { "Cache-Control": "no-store, max-age=0" }
+			}
+		)
 	}
 	try {
 		const tokenResult = await auth0.getAccessToken()
@@ -27,7 +32,12 @@ export async function GET() {
 				{ status: 401 }
 			)
 		}
-		return NextResponse.json({ accessToken: token })
+		return NextResponse.json(
+			{ accessToken: token },
+			{
+				headers: { "Cache-Control": "no-store, max-age=0" }
+			}
+		)
 	} catch (error) {
 		console.error("Error in /api/auth/token:", error)
 		return NextResponse.json(
