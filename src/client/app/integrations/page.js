@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect, useCallback, useMemo } from "react"
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import SparkleEffect from "@components/ui/SparkleEffect"
 import { BorderTrail } from "@components/ui/border-trail"
 import toast from "react-hot-toast"
@@ -86,7 +86,7 @@ const integrationColorIcons = {
 
 const IconPlaceholder = IconSettingsCog
 
-const PRO_ONLY_INTEGRATIONS = ["notion", "github", "slack", "discord", "trello"]
+const PRO_ONLY_INTEGRATIONS = ["notion", "github", "slack", "discord", "trello", "whatsapp"]
 
 const proPlanFeatures = [
 	{ name: "Text Chat", limit: "100 messages per day" },
@@ -174,9 +174,9 @@ const UpgradeToProModal = ({ isOpen, onClose }) => {
 							</button>
 							<button
 								onClick={onClose}
-								className="w-full py-2 px-5 rounded-lg hover:bg-neutral-800 text-sm font-medium text-neutral-400"
+								className="w-full py-2 px-5 rounded-lg hover:bg-neutral-800 transition-colors"
 							>
-								Not now
+								Cancel
 							</button>
 						</footer>
 					</motion.div>
@@ -186,76 +186,184 @@ const UpgradeToProModal = ({ isOpen, onClose }) => {
 	)
 }
 
-const MANUAL_INTEGRATION_CONFIGS = {} // Manual integrations removed for Slack and Notion
-
-const WhatsAppConnectModal = ({ integration, onClose, onSuccess }) => {
-	const [number, setNumber] = useState("")
-	const [isSubmitting, setIsSubmitting] = useState(false)
-	const posthog = usePostHog()
-
-	if (!integration) return null
-
-	const handleSubmit = async () => {
-		if (!number.trim()) {
-			toast.error("Please provide a valid WhatsApp number.")
-			return
-		}
-
-		setIsSubmitting(true)
-		try {
-			const response = await fetch("/api/settings/whatsapp-mcp", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ whatsapp_mcp_number: number })
-			})
-			const data = await response.json()
-			if (!response.ok) {
-				throw new Error(
-					data.detail || "Failed to connect WhatsApp Agent"
-				)
-			}
-			posthog?.capture("integration_connected", {
-				integration_name: "whatsapp",
-				auth_type: "manual"
-			})
-			toast.success("WhatsApp Agent connected successfully!")
-			onSuccess()
-			onClose()
-		} catch (error) {
-			toast.error(error.message)
-		} finally {
-			setIsSubmitting(false)
-		}
-	}
-
-	const modalContent = (
-		<div className="text-left space-y-4 my-4">
-			<p className="text-sm text-gray-400">
-				Enter your WhatsApp number including the country code (e.g.,
-				+14155552671). This number will be used by the agent to send
-				messages on your behalf as a tool.
-			</p>
-			<input
-				type="tel"
-				value={number}
-				onChange={(e) => setNumber(e.target.value)}
-				placeholder="+14155552671"
-				className="w-full bg-[var(--color-primary-surface-elevated)] border border-neutral-600 rounded-md px-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-blue)]"
-				autoComplete="off"
-			/>
-		</div>
-	)
+const WhatsAppDisclaimerModal = ({ isOpen, onAgree, onClose }) => {
+	// This modal doesn't need to know if it's open, the parent handles it.
+	// But we keep the prop for clarity and potential internal logic.
+	if (!isOpen) return null
 
 	return (
 		<ModalDialog
-			title={`Connect to ${integration.display_name}`}
-			description="Connect a number for the agent to use as a tool."
-			onConfirm={handleSubmit}
+			title={
+				<div className="flex items-center gap-2">
+					<IconBrandWhatsapp />
+					<span>WhatsApp Disclaimer</span>
+				</div>
+			}
+			description="Please review the following before connecting your WhatsApp account."
 			onCancel={onClose}
-			confirmButtonText={isSubmitting ? "Connecting..." : "Connect"}
-			isConfirmDisabled={isSubmitting}
-			extraContent={modalContent}
+			onConfirm={onAgree}
+			confirmButtonText="Agree and Connect"
+			extraContent={
+				<div className="text-sm text-neutral-300 space-y-3 pt-2">
+					<p>
+						By proceeding, you acknowledge that you have read and
+						agree to the{" "}
+						<a
+							href="https://www.whatsapp.com/legal/terms-of-service"
+							target="_blank"
+							rel="noopener noreferrer"
+							className="text-blue-400 hover:underline"
+						>
+							WhatsApp Terms of Service by Meta
+						</a>
+						.
+					</p>
+					<p>
+						Connecting this integration allows Sentient to act on
+						your behalf to: read your messages, send messages, and
+						manage your chats and contacts.
+					</p>
+				</div>
+			}
 		/>
+	)
+}
+
+const MANUAL_INTEGRATION_CONFIGS = {} // Manual integrations removed for Slack and Notion
+
+const WhatsAppQRCodeModal = ({ onClose }) => {
+	const [qrCode, setQrCode] = useState(null)
+	const [status, setStatus] = useState("initiating") // initiating, scanning, working,const WhatsAppQRCodeModal = ({ onClose }) => {
+	const [error, setError] = useState("")
+	const intervalRef = useRef(null)
+
+	const stopPolling = useCallback(() => {
+		if (intervalRef.current) {
+			clearInterval(intervalRef.current)
+			intervalRef.current = null
+		}
+	}, [])
+
+	const pollStatus = useCallback(async () => {
+		try {
+			const res = await fetch(
+				"/api/settings/integrations/whatsapp/status"
+			)
+			const data = await res.json()
+			if (!res.ok) {
+				throw new Error(data.error || "Failed to get status")
+			}
+			if (data.status === "WORKING") {
+				setStatus("working")
+				toast.success("WhatsApp connected successfully!")
+				stopPolling()
+				setTimeout(onClose, 1500)
+			} else if (data.status === "FAILED") {
+				setError("Connection failed. Please close this and try again.")
+				setStatus("error")
+				stopPolling()
+			} else {
+				setStatus("scanning")
+			}
+		} catch (err) {
+			setError(err.message)
+			setStatus("error")
+			stopPolling()
+		}
+	}, [onClose, stopPolling])
+
+	const initiateConnection = useCallback(async () => {
+		setStatus("initiating")
+		setError("")
+		try {
+			const res = await fetch(
+				"/api/settings/integrations/whatsapp/connect/initiate",
+				{ method: "POST" }
+			)
+			const data = await res.json()
+			if (!res.ok) {
+				throw new Error(data.error || "Failed to get QR code")
+			}
+			setQrCode(data.data)
+			setStatus("scanning")
+
+			// Start polling for status if not already started
+			if (!intervalRef.current) {
+				intervalRef.current = setInterval(pollStatus, 3000)
+			}
+		} catch (err) {
+			setError(err.message)
+			setStatus("error")
+		}
+	}, [pollStatus])
+
+	useEffect(() => {
+		initiateConnection()
+		return () => {
+			stopPolling()
+		}
+	}, [initiateConnection, stopPolling])
+
+	return (
+		<motion.div
+			initial={{ opacity: 0 }}
+			animate={{ opacity: 1 }}
+			exit={{ opacity: 0 }}
+			className="fixed inset-0 bg-black/70 backdrop-blur-md z-[110] flex items-center justify-center p-4"
+			onClick={onClose}
+		>
+			<motion.div
+				initial={{ scale: 0.95, y: 20 }}
+				animate={{ scale: 1, y: 0 }}
+				exit={{ scale: 0.95, y: -20 }}
+				transition={{ duration: 0.2, ease: "easeInOut" }}
+				onClick={(e) => e.stopPropagation()}
+				className="relative bg-neutral-900/90 backdrop-blur-xl p-6 rounded-2xl shadow-2xl w-full max-w-sm border border-neutral-700 flex flex-col items-center"
+			>
+				<header className="text-center mb-4">
+					<h2 className="text-lg font-semibold text-white">
+						Connect WhatsApp
+					</h2>
+					<p className="text-sm text-neutral-400 mt-1">
+						Scan this QR code with your WhatsApp mobile app.
+					</p>
+				</header>
+				<main className="w-64 h-64 bg-neutral-800 rounded-lg flex items-center justify-center">
+					{status === "initiating" && (
+						<IconLoader className="animate-spin text-brand-orange" />
+					)}
+					{status === "scanning" && qrCode && (
+						<img
+							src={`data:image/png;base64,${qrCode}`}
+							alt="WhatsApp QR Code"
+						/>
+					)}
+					{status === "working" && (
+						<div className="flex flex-col items-center gap-2 text-green-400">
+							<IconCheck size={48} />
+							<p className="font-semibold">Connected!</p>
+						</div>
+					)}
+					{status === "error" && (
+						<div className="text-center text-red-400 p-4">
+							<IconAlertTriangle
+								size={32}
+								className="mx-auto mb-2"
+							/>
+							<p className="text-sm">{error}</p>
+						</div>
+					)}
+				</main>
+				<footer className="mt-6 text-center">
+					<button
+						onClick={onClose}
+						className="py-2 px-5 rounded-lg bg-neutral-700 hover:bg-neutral-600 text-sm font-medium"
+					>
+						Cancel
+					</button>
+				</footer>
+			</motion.div>
+		</motion.div>
 	)
 }
 
@@ -689,7 +797,8 @@ const IntegrationsPage = () => {
 	const [activeCategory, setActiveCategory] = useState("Most Popular")
 	const [selectedIntegration, setSelectedIntegration] = useState(null)
 	const [activeManualIntegration, setActiveManualIntegration] = useState(null)
-	const [whatsAppToConnect, setWhatsAppToConnect] = useState(null)
+	const [isWhatsAppDisclaimerOpen, setIsWhatsAppDisclaimerOpen] = useState(false)
+	const [isWhatsAppQRModalOpen, setIsWhatsAppQRModalOpen] = useState(false)
 	const [sparkleTrigger, setSparkleTrigger] = useState(0)
 	const [privacyModalService, setPrivacyModalService] = useState(null)
 	const [isInfoPanelOpen, setIsInfoPanelOpen] = useState(false)
@@ -699,6 +808,11 @@ const IntegrationsPage = () => {
 	const posthog = usePostHog()
 	const router = useRouter()
 	const { isPro } = usePlan()
+
+	const handleWhatsAppModalClose = useCallback(() => {
+		setIsWhatsAppQRModalOpen(false)
+		fetchIntegrations() // Always refetch on close to ensure UI is up-to-date
+	}, [])
 
 	const googleServices = [
 		"gmail",
@@ -715,6 +829,7 @@ const IntegrationsPage = () => {
 		setLoading(true)
 		try {
 			const response = await fetch("/api/settings/integrations", {
+				method: "POST",
 				cache: "no-store"
 			})
 			const data = await response.json()
@@ -779,11 +894,6 @@ const IntegrationsPage = () => {
 				})
 				return // Stop if refresh fails
 			}
-		}
-
-		if (integration.name === "whatsapp") {
-			setWhatsAppToConnect(integration)
-			return
 		}
 
 		if (integration.auth_type === "composio") {
@@ -909,14 +1019,22 @@ const IntegrationsPage = () => {
 		setProcessingIntegration(integrationName)
 
 		try {
-			const response = await fetch(
-				"/api/settings/integrations/disconnect",
-				{
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ service_name: integrationName })
-				}
-			)
+			const apiEndpoint =
+				integrationName === "whatsapp"
+					? "/api/settings/integrations/whatsapp/disconnect"
+					: "/api/settings/integrations/disconnect"
+
+			const bodyPayload =
+				integrationName === "whatsapp"
+					? {}
+					: { service_name: integrationName }
+
+			const response = await fetch(apiEndpoint, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(bodyPayload)
+			})
+
 			if (!response.ok)
 				throw new Error(`Failed to disconnect ${displayName}`)
 			posthog?.capture("integration_disconnected", {
@@ -1293,6 +1411,12 @@ const IntegrationsPage = () => {
 										onClick={async (e) => {
 											e.stopPropagation()
 											if (
+												integration.name ===
+												"whatsapp"
+											) {
+												// Show disclaimer first
+												setIsWhatsAppDisclaimerOpen(true)
+											} else if (
 												integration.auth_type ===
 												"composio"
 											) {
@@ -1331,6 +1455,24 @@ const IntegrationsPage = () => {
 				id="page-help-tooltip"
 				place="right-start"
 				style={{ zIndex: 9999 }}
+			/>
+			<AnimatePresence>
+				{isWhatsAppDisclaimerOpen && (
+					<div className="isolate z-[120]">
+						<WhatsAppDisclaimerModal
+							isOpen={isWhatsAppDisclaimerOpen}
+							onClose={() => setIsWhatsAppDisclaimerOpen(false)}
+							onAgree={() => {
+								setIsWhatsAppDisclaimerOpen(false)
+								setIsWhatsAppQRModalOpen(true)
+							}}
+						/>
+					</div>
+				)}
+			</AnimatePresence>
+			<UpgradeToProModal
+				isOpen={isUpgradeModalOpen}
+				onClose={() => setUpgradeModalOpen(false)}
 			/>
 			<UpgradeToProModal
 				isOpen={isUpgradeModalOpen}
@@ -1470,12 +1612,8 @@ const IntegrationsPage = () => {
 				</main>
 			</div>
 			<AnimatePresence>
-				{whatsAppToConnect && (
-					<WhatsAppConnectModal
-						integration={whatsAppToConnect}
-						onClose={() => setWhatsAppToConnect(null)}
-						onSuccess={fetchIntegrations}
-					/>
+				{isWhatsAppQRModalOpen && (
+					<WhatsAppQRCodeModal onClose={handleWhatsAppModalClose} />
 				)}
 			</AnimatePresence>
 			<AnimatePresence>

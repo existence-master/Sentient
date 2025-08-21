@@ -53,7 +53,8 @@ export const GET = withAuth(async function GET(
 			status: 200,
 			headers: {
 				"Content-Type": "application/octet-stream",
-				"Content-Disposition": `attachment; filename="${filename}"`
+				"Content-Disposition": `attachment; filename="${filename}"`,
+				"Cache-Control": "no-store, max-age=0"
 			}
 		})
 	} catch (error) {

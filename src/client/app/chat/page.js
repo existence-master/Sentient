@@ -58,6 +58,7 @@ import SiriSpheres from "@components/voice-visualization/SiriSpheres"
 import { WebRTCClient } from "@lib/webrtc-client"
 import useClickOutside from "@hooks/useClickOutside"
 import { usePlan } from "@hooks/usePlan"
+import { POST } from "@app/api/memories/route"
 
 const toolIcons = {
 	gmail: IconGoogleMail,
@@ -363,7 +364,7 @@ export default function ChatPage() {
 
 	const fetchIntegrations = useCallback(async () => {
 		try {
-			const res = await fetch("/api/settings/integrations")
+			const res = await fetch("/api/settings/integrations", { method: "POST" })
 			if (!res.ok) throw new Error("Failed to fetch integrations")
 			const data = await res.json()
 			setIntegrations(data.integrations || [])

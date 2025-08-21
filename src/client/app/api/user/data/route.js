@@ -21,8 +21,10 @@ export const GET = withAuth(async function GET(request, { authHeader }) {
 				data.message || "Failed to fetch user data from backend"
 			)
 		}
-		const data = await response.json()
-		return NextResponse.json(data)
+
+		return NextResponse.json(data, {
+			headers: { "Cache-Control": "no-store, max-age=0" }
+		})
 	} catch (error) {
 		console.error("API Error in /user/data:", error)
 		return NextResponse.json(

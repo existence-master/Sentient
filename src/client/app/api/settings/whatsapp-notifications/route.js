@@ -57,7 +57,9 @@ export const GET = withAuth(async function GET(request, { authHeader }) {
 				data.detail || "Failed to fetch WhatsApp notification settings"
 			)
 		}
-		return NextResponse.json(data)
+		return NextResponse.json(data, {
+			headers: { "Cache-Control": "no-store, max-age=0" }
+		})
 	} catch (error) {
 		console.error(
 			"API Error in /api/settings/whatsapp-notifications (GET):",

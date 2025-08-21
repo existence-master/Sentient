@@ -8,21 +8,23 @@ const appServerUrl =
 
 export const POST = withAuth(async function POST(request, { authHeader }) {
 	try {
-		const response = await fetch(`${appServerUrl}/integrations/sources`, {
-			method: "GET",
-			headers: { "Content-Type": "application/json", ...authHeader },
-			cache: "no-store" // Prevent Next.js from caching this server-side fetch
-		})
+		const response = await fetch(
+			`${appServerUrl}/integrations/whatsapp/connect/initiate`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json", ...authHeader }
+			}
+		)
 
 		const data = await response.json()
 		if (!response.ok) {
-			throw new Error(data.detail || "Failed to fetch integrations")
+			throw new Error(
+				data.detail || "Failed to initiate WhatsApp connection"
+			)
 		}
-		return NextResponse.json(data, {
-			headers: { "Cache-Control": "no-store, max-age=0" }
-		})
+		return NextResponse.json(data)
 	} catch (error) {
-		console.error("API Error in /settings/integrations:", error)
+		console.error("API Error in /whatsapp/connect/initiate:", error)
 		return NextResponse.json({ error: error.message }, { status: 500 })
 	}
 })

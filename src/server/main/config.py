@@ -306,7 +306,7 @@ INTEGRATIONS_CONFIG = {
     },
     "whatsapp": {
         "display_name": "WhatsApp",
-        "description": "Connect a WhatsApp number to allow your agent to send messages on your behalf as a tool. This is different from your notification number.",
+        "description": "Fully control your WhatsApp account to send messages, manage chats, groups, contacts, and more, right from Sentient.",
         "auth_type": "manual",
         "icon": "IconBrandWhatsapp",
         "category": "Communication",

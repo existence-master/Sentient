@@ -18,7 +18,9 @@ export const GET = withAuth(async function GET(request, { authHeader }) {
 		if (!response.ok) {
 			throw new Error(data.detail || "Failed to fetch notifications")
 		}
-		return NextResponse.json(data)
+		return NextResponse.json(data, {
+			headers: { "Cache-Control": "no-store, max-age=0" }
+		})
 	} catch (error) {
 		console.error("API Error in /notifications:", error)
 		return NextResponse.json({ error: error.message }, { status: 500 })

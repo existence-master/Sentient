@@ -28,7 +28,7 @@ services:
 
     # 2. WAHA (WhatsApp HTTP API) Service
     waha:
-        image: devlikeapro/waha:noweb
+        image: itsskofficial/waha-multisession
         container_name: waha-notifier
         restart: unless-stopped
         volumes:
