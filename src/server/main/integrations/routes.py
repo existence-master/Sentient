@@ -533,18 +533,18 @@ async def get_whatsapp_connection_status(user_id: str = Depends(auth_helper.get_
         logger.error(f"Error checking WhatsApp status for {user_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/whatsapp/disconnect", summary="Stop and disconnect a WAHA session")
+@router.post("/whatsapp/disconnect", summary="Delete a WAHA session")
 async def disconnect_whatsapp_connection(user_id: str = Depends(auth_helper.get_current_user_id)):
     try:
         sanitized_session_name = user_id.replace("|", "_")
-        await waha_request_from_main("POST", "/api/sessions/{session}/stop", session=sanitized_session_name)
+        await waha_request_from_main("DELETE", "/api/sessions/{session}", session=sanitized_session_name)
         await mongo_manager.update_user_profile(user_id, {"userData.integrations.whatsapp.connected": False})
         return JSONResponse(content={"message": "WhatsApp session disconnected successfully."})
     except Exception as e:
-        # Even if stopping fails (e.g., session was already stopped), mark as disconnected.
+        # Even if deleting fails (e.g., session was already deleted), mark as disconnected.
         await mongo_manager.update_user_profile(user_id, {"userData.integrations.whatsapp.connected": False})
         logger.error(f"Error disconnecting WhatsApp for {user_id}: {e}", exc_info=True)
         if isinstance(e, HTTPException):
-            # It's okay if stopping fails, the main goal is to mark as disconnected.
+            # It's okay if deleting fails, the main goal is to mark as disconnected.
             return JSONResponse(content={"message": "WhatsApp session disconnected."})
         raise HTTPException(status_code=500, detail=str(e))
