@@ -63,10 +63,13 @@ async def send_text_message(ctx: Context, chat_id: str, text: str, reply_to_mess
     Optionally, provide a `reply_to_message_id` to reply to a specific message.
     """
     user_id = auth.get_user_id_from_context(ctx)
-    payload = {"chatId": chat_id, "text": text}
+    sanitized_session = user_id.replace("|", "_")
+    payload = {"chatId": chat_id, "text": text, "session": sanitized_session}
     if reply_to_message_id:
         payload["reply_to"] = reply_to_message_id
-    return await utils.waha_request("POST", "/api/sendText", session=user_id, json_data=payload)
+    # The session parameter here is for logging and path replacement (if any) in the util function.
+    # The actual session for GOWS engine is passed in the JSON payload.
+    return await utils.waha_request("POST", "/api/sendText", session=sanitized_session, json_data=payload)
 
 @mcp.tool()
 async def send_media(ctx: Context, chat_id: str, media_type: str, url: str, caption: Optional[str] = None) -> Dict[str, Any]:
@@ -76,6 +79,7 @@ async def send_media(ctx: Context, chat_id: str, media_type: str, url: str, capt
     The `chat_id` must be in the format 'phonenumber@c.us' or 'groupid@g.us'.
     """
     user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
     media_type_lower = media_type.lower()
     endpoint_map = {
         'image': '/api/sendImage',
@@ -85,8 +89,8 @@ async def send_media(ctx: Context, chat_id: str, media_type: str, url: str, capt
     if media_type_lower not in endpoint_map:
         raise ToolError("Invalid media_type. Must be 'image', 'video', or 'file'.")
     
-    payload = {"chatId": chat_id, "file": {"url": url}, "caption": caption}
-    return await utils.waha_request("POST", endpoint_map[media_type_lower], session=user_id, json_data=payload)
+    payload = {"chatId": chat_id, "file": {"url": url}, "caption": caption, "session": sanitized_session}
+    return await utils.waha_request("POST", endpoint_map[media_type_lower], session=sanitized_session, json_data=payload)
 
 @mcp.tool()
 async def get_chats(ctx: Context, limit: int = 100) -> Dict[str, Any]:
@@ -95,7 +99,8 @@ async def get_chats(ctx: Context, limit: int = 100) -> Dict[str, Any]:
     Returns a list of chat objects, each containing an 'id' and 'name'.
     """
     user_id = auth.get_user_id_from_context(ctx)
-    return await utils.waha_request("GET", "/api/{session}/chats", session=user_id, params={"limit": limit})
+    sanitized_session = user_id.replace("|", "_")
+    return await utils.waha_request("GET", "/api/{session}/chats", session=sanitized_session, params={"limit": limit})
 
 @mcp.tool()
 async def get_chat_history(ctx: Context, chat_id: str, limit: int = 50) -> Dict[str, Any]:
@@ -104,8 +109,9 @@ async def get_chat_history(ctx: Context, chat_id: str, limit: int = 50) -> Dict[
     The `chat_id` must be in the format 'phonenumber@c.us' or 'groupid@g.us'.
     """
     user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
     endpoint = f"/api/{{session}}/chats/{chat_id}/messages"
-    return await utils.waha_request("GET", endpoint, session=user_id, params={"limit": limit})
+    return await utils.waha_request("GET", endpoint, session=sanitized_session, params={"limit": limit})
 
 @mcp.tool()
 async def manage_chat(ctx: Context, chat_id: str, action: str) -> Dict[str, Any]:
@@ -114,6 +120,7 @@ async def manage_chat(ctx: Context, chat_id: str, action: str) -> Dict[str, Any]
     The `chat_id` must be in the format 'phonenumber@c.us' or 'groupid@g.us'.
     """
     user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
     action_lower = action.lower()
     action_map = {
         'archive': ("POST", f"/api/{{session}}/chats/{chat_id}/archive"),
@@ -125,7 +132,28 @@ async def manage_chat(ctx: Context, chat_id: str, action: str) -> Dict[str, Any]
         raise ToolError("Invalid action. Must be 'archive', 'unarchive', 'delete', or 'mark_unread'.")
     
     method, endpoint = action_map[action_lower]
-    return await utils.waha_request(method, endpoint, session=user_id)
+    return await utils.waha_request(method, endpoint, session=sanitized_session)
+
+@mcp.tool()
+async def get_unread_messages(ctx: Context, limit: int = 20) -> Dict[str, Any]:
+    """
+    Retrieves the most recent unread messages from all chats.
+    Returns a list of message objects, including their content, sender, and chat_id.
+    """
+    user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
+    return await utils.waha_request("GET", "/api/{session}/messages", session=sanitized_session, params={"unread": True, "limit": limit})
+
+@mcp.tool()
+async def set_typing_presence(ctx: Context, chat_id: str, duration_seconds: int = 10) -> Dict[str, Any]:
+    """
+    Shows a 'typing...' indicator in a chat for a specified duration to simulate a more natural interaction before sending a message.
+    The `chat_id` must be in the format 'phonenumber@c.us' or 'groupid@g.us'.
+    """
+    user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
+    endpoint = f"/api/{{session}}/chats/{chat_id}/presence"
+    return await utils.waha_request("POST", endpoint, session=sanitized_session, json_data={"presence": "composing", "duration": duration_seconds})
 
 @mcp.tool()
 async def manage_message(ctx: Context, message_id: str, action: str, content: Optional[str] = None) -> Dict[str, Any]:
@@ -136,6 +164,7 @@ async def manage_message(ctx: Context, message_id: str, action: str, content: Op
     The `message_id` must be the full message ID string (e.g., 'true_12345@c.us_ABC...').
     """
     user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
     action_lower = action.lower()
     
     chat_id_match = re.search(r'_(.+?@.+?\.us)_', message_id)
@@ -145,20 +174,20 @@ async def manage_message(ctx: Context, message_id: str, action: str, content: Op
 
     if action_lower == 'react':
         if not content: raise ToolError("Content (emoji) is required for 'react' action.")
-        return await utils.waha_request("PUT", "/api/reaction", session=user_id, json_data={"messageId": message_id, "reaction": content})
+        return await utils.waha_request("PUT", "/api/reaction", session=sanitized_session, json_data={"messageId": message_id, "reaction": content})
     elif action_lower == 'edit':
         if not content: raise ToolError("Content (new text) is required for 'edit' action.")
         endpoint = f"/api/{{session}}/chats/{chat_id}/messages/{message_id}"
-        return await utils.waha_request("PUT", endpoint, session=user_id, json_data={"text": content})
+        return await utils.waha_request("PUT", endpoint, session=sanitized_session, json_data={"text": content})
     elif action_lower == 'delete':
         endpoint = f"/api/{{session}}/chats/{chat_id}/messages/{message_id}"
-        return await utils.waha_request("DELETE", endpoint, session=user_id)
+        return await utils.waha_request("DELETE", endpoint, session=sanitized_session)
     elif action_lower == 'pin':
         endpoint = f"/api/{{session}}/chats/{chat_id}/messages/{message_id}/pin"
-        return await utils.waha_request("POST", endpoint, session=user_id, json_data={"duration": 86400}) # Default 24h pin
+        return await utils.waha_request("POST", endpoint, session=sanitized_session, json_data={"duration": 86400}) # Default 24h pin
     elif action_lower == 'unpin':
         endpoint = f"/api/{{session}}/chats/{chat_id}/messages/{message_id}/unpin"
-        return await utils.waha_request("POST", endpoint, session=user_id)
+        return await utils.waha_request("POST", endpoint, session=sanitized_session)
     else:
         raise ToolError("Invalid action. Must be 'react', 'edit', 'delete', 'pin', or 'unpin'.")
 
@@ -167,12 +196,26 @@ async def manage_message(ctx: Context, message_id: str, action: str, content: Op
 # ==============================================================================
 
 @mcp.tool()
+async def send_location(ctx: Context, chat_id: str, latitude: float, longitude: float, name: Optional[str] = None, address: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Sends a location pin to a specified contact or group.
+    Requires the `chat_id`, `latitude`, and `longitude`.
+    Optionally include a `name` for the location (e.g., 'Eiffel Tower') and an `address`.
+    """
+    user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
+    payload = {"chatId": chat_id, "latitude": latitude, "longitude": longitude, "name": name, "address": address, "session": sanitized_session}
+    return await utils.waha_request("POST", "/api/sendLocation", session=sanitized_session, json_data=payload)
+
+@mcp.tool()
 async def get_contacts(ctx: Context) -> Dict[str, Any]:
     """
     Retrieves a list of all contacts from the user's WhatsApp account.
     """
     user_id = auth.get_user_id_from_context(ctx)
-    return await utils.waha_request("GET", "/api/{session}/contacts/all", session=user_id)
+    sanitized_session = user_id.replace("|", "_")
+    # Corrected: Endpoint is /api/contacts/all and session is a query parameter.
+    return await utils.waha_request("GET", "/api/contacts/all", session=sanitized_session, params={"session": sanitized_session})
 
 @mcp.tool()
 async def get_contact_info(ctx: Context, contact_id: str) -> Dict[str, Any]:
@@ -181,8 +224,10 @@ async def get_contact_info(ctx: Context, contact_id: str) -> Dict[str, Any]:
     `contact_id` can be a phone number or a chatId (e.g., '14155552671' or '14155552671@c.us').
     """
     user_id = auth.get_user_id_from_context(ctx)
-    info = await utils.waha_request("GET", "/api/contacts", session=user_id, params={"contactId": contact_id})
-    pic = await utils.waha_request("GET", "/api/contacts/profile-picture", session=user_id, params={"contactId": contact_id})
+    sanitized_session = user_id.replace("|", "_")
+    # Corrected: Added session as a query parameter to both calls.
+    info = await utils.waha_request("GET", "/api/contacts", session=sanitized_session, params={"contactId": contact_id, "session": sanitized_session})
+    pic = await utils.waha_request("GET", "/api/contacts/profile-picture", session=sanitized_session, params={"contactId": contact_id, "session": sanitized_session})
     info['profilePictureURL'] = pic.get('profilePictureURL')
     return info
 
@@ -193,7 +238,32 @@ async def check_whatsapp_number(ctx: Context, phone_number: str) -> Dict[str, An
     `phone_number` should include the country code but no '+' or spaces.
     """
     user_id = auth.get_user_id_from_context(ctx)
-    return await utils.waha_request("GET", "/api/contacts/check-exists", session=user_id, params={"phone": phone_number})
+    sanitized_session = user_id.replace("|", "_")
+    # Corrected: Added session as a query parameter.
+    return await utils.waha_request("GET", "/api/contacts/check-exists", session=sanitized_session, params={"phone": phone_number, "session": sanitized_session})
+
+@mcp.tool()
+async def get_chat_id_by_name(ctx: Context, contact_name: str) -> Dict[str, Any]:
+    """
+    Searches for a contact by their name and returns their chat ID.
+    The search is case-insensitive. If multiple contacts match, the first one found is returned.
+    """
+    user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
+
+    try:
+        contacts_response = await utils.waha_request("GET", "/api/contacts/all", session=sanitized_session, params={"session": sanitized_session})
+        contacts = contacts_response.get("result", [])
+
+        for contact in contacts:
+            # Check both 'name' (saved name) and 'pushName' (their WhatsApp display name)
+            if (contact.get('name') and contact_name.lower() in contact['name'].lower()) or \
+               (contact.get('pushName') and contact_name.lower() in contact['pushName'].lower()):
+                return {"status": "success", "result": {"chat_id": contact.get("id")}}
+
+        return {"status": "failure", "error": f"Contact with name '{contact_name}' not found."}
+    except Exception as e:
+        return {"status": "failure", "error": str(e)}
 
 @mcp.tool()
 async def manage_contact(ctx: Context, contact_id: str, action: str) -> Dict[str, Any]:
@@ -202,11 +272,12 @@ async def manage_contact(ctx: Context, contact_id: str, action: str) -> Dict[str
     `contact_id` can be a phone number or a chatId.
     """
     user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
     action_lower = action.lower()
     if action_lower not in ['block', 'unblock']:
         raise ToolError("Invalid action. Must be 'block' or 'unblock'.")
     endpoint = f"/api/contacts/{action_lower}"
-    return await utils.waha_request("POST", endpoint, session=user_id, json_data={"contactId": contact_id})
+    return await utils.waha_request("POST", endpoint, session=sanitized_session, json_data={"contactId": contact_id, "session": sanitized_session})
 
 # ==============================================================================
 # C. Group Management Tools
@@ -219,8 +290,9 @@ async def create_group(ctx: Context, name: str, participant_ids: List[str]) -> D
     `participant_ids` must be a list of contact chatIds (e.g., ['14155552671@c.us', '12125551234@c.us']).
     """
     user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
     participants_payload = [{"id": pid} for pid in participant_ids]
-    return await utils.waha_request("POST", "/api/{session}/groups", session=user_id, json_data={"name": name, "participants": participants_payload})
+    return await utils.waha_request("POST", "/api/{session}/groups", session=sanitized_session, json_data={"name": name, "participants": participants_payload})
 
 @mcp.tool()
 async def get_group_info(ctx: Context, group_id: str) -> Dict[str, Any]:
@@ -229,8 +301,9 @@ async def get_group_info(ctx: Context, group_id: str) -> Dict[str, Any]:
     `group_id` must be in the format 'groupid@g.us'.
     """
     user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
     endpoint = f"/api/{{session}}/groups/{group_id}"
-    return await utils.waha_request("GET", endpoint, session=user_id)
+    return await utils.waha_request("GET", endpoint, session=sanitized_session)
 
 @mcp.tool()
 async def manage_group_participants(ctx: Context, group_id: str, action: str, participant_ids: List[str]) -> Dict[str, Any]:
@@ -239,6 +312,7 @@ async def manage_group_participants(ctx: Context, group_id: str, action: str, pa
     `participant_ids` is a list of contact chatIds. `group_id` must be in the format 'groupid@g.us'.
     """
     user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
     action_lower = action.lower()
     action_map = {
         'add': f"/api/{{session}}/groups/{group_id}/participants/add",
@@ -250,7 +324,7 @@ async def manage_group_participants(ctx: Context, group_id: str, action: str, pa
         raise ToolError("Invalid action. Must be 'add', 'remove', 'promote_to_admin', or 'demote_from_admin'.")
     
     participants_payload = [{"id": pid} for pid in participant_ids]
-    return await utils.waha_request("POST", action_map[action_lower], session=user_id, json_data={"participants": participants_payload})
+    return await utils.waha_request("POST", action_map[action_lower], session=sanitized_session, json_data={"participants": participants_payload})
 
 @mcp.tool()
 async def update_group_info(ctx: Context, group_id: str, subject: Optional[str] = None, description: Optional[str] = None) -> Dict[str, Any]:
@@ -259,14 +333,15 @@ async def update_group_info(ctx: Context, group_id: str, subject: Optional[str] 
     `group_id` must be in the format 'groupid@g.us'.
     """
     user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
     results = []
     if subject:
         endpoint = f"/api/{{session}}/groups/{group_id}/subject"
-        result = await utils.waha_request("PUT", endpoint, session=user_id, json_data={"subject": subject})
+        result = await utils.waha_request("PUT", endpoint, session=sanitized_session, json_data={"subject": subject})
         results.append({"subject_update": result})
     if description is not None:
         endpoint = f"/api/{{session}}/groups/{group_id}/description"
-        result = await utils.waha_request("PUT", endpoint, session=user_id, json_data={"description": description})
+        result = await utils.waha_request("PUT", endpoint, session=sanitized_session, json_data={"description": description})
         results.append({"description_update": result})
     if not results:
         raise ToolError("Either 'subject' or 'description' must be provided.")
@@ -282,15 +357,16 @@ async def update_profile(ctx: Context, name: Optional[str] = None, status: Optio
     Updates the user's own WhatsApp profile name, status (about text), or profile picture from a URL.
     """
     user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
     results = []
     if name:
-        result = await utils.waha_request("PUT", "/api/{session}/profile/name", session=user_id, json_data={"name": name})
+        result = await utils.waha_request("PUT", "/api/{session}/profile/name", session=sanitized_session, json_data={"name": name})
         results.append({"name_update": result})
     if status:
-        result = await utils.waha_request("PUT", "/api/{session}/profile/status", session=user_id, json_data={"status": status})
+        result = await utils.waha_request("PUT", "/api/{session}/profile/status", session=sanitized_session, json_data={"status": status})
         results.append({"status_update": result})
     if picture_url:
-        result = await utils.waha_request("PUT", "/api/{session}/profile/picture", session=user_id, json_data={"file": {"url": picture_url}})
+        result = await utils.waha_request("PUT", "/api/{session}/profile/picture", session=sanitized_session, json_data={"file": {"url": picture_url}})
         results.append({"picture_update": result})
     if not results:
         raise ToolError("At least one of 'name', 'status', or 'picture_url' must be provided.")
@@ -303,12 +379,13 @@ async def post_status(ctx: Context, content: str, type: str = 'text') -> Dict[st
     For 'text', `content` is the text. For 'image' or 'video', `content` is a public URL to the media.
     """
     user_id = auth.get_user_id_from_context(ctx)
+    sanitized_session = user_id.replace("|", "_")
     type_lower = type.lower()
     if type_lower == 'text':
-        return await utils.waha_request("POST", "/api/{session}/status/text", session=user_id, json_data={"text": content})
+        return await utils.waha_request("POST", "/api/{session}/status/text", session=sanitized_session, json_data={"text": content})
     elif type_lower in ['image', 'video']:
         endpoint = f"/api/{{session}}/status/{type_lower}"
-        return await utils.waha_request("POST", endpoint, session=user_id, json_data={"file": {"url": content}})
+        return await utils.waha_request("POST", endpoint, session=sanitized_session, json_data={"file": {"url": content}})
     else:
         raise ToolError("Invalid type. Must be 'text', 'image', or 'video'.")
 

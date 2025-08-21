@@ -35,15 +35,20 @@ async def waha_request(
         raise ToolError("WhatsApp service (WAHA) is not configured on the server.")
 
     headers = {"X-Api-Key": WAHA_API_KEY, "Content-Type": "application/json"}
-    
-    # Sanitize the session name and replace the placeholder in the endpoint
+
+    # Sanitize the session name for use in paths and query parameters
     sanitized_session = session.replace("|", "_")
+
     final_endpoint = endpoint.replace("{session}", sanitized_session)
     url = f"{WAHA_URL.rstrip('/')}{final_endpoint}"
 
+    # Also sanitize the 'session' query parameter if it exists
+    if params and "session" in params:
+        params["session"] = sanitized_session
+
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
-            logger.info(f"Making WAHA request: {method} {url} | Session: {session} | Params: {params} | JSON: {json_data}")
+            logger.info(f"Making WAHA request: {method} {url} | Session: {sanitized_session} | Params: {params} | JSON: {json_data}")
             res = await client.request(method, url, params=params, json=json_data, headers=headers)
             res.raise_for_status()
             

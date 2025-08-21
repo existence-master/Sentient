@@ -39,6 +39,10 @@ def run_agent_interaction():
     print("What message would you like to send?")
     print("Type 'quit' or 'exit' to end the session.")
     print("\nExample commands:")
+    print("  - what are my unread messages?")
+    print("  - check my unread messages and summarize them for me")
+    print("  - send the location of the Eiffel Tower (lat 48.8584, lon 2.2945) to John Doe")
+    print("  - send a message to John Doe saying 'Hi there!'")
     print("  - send a WhatsApp message saying 'Hello from Sentient!'")
     print("-" * 25)
 
