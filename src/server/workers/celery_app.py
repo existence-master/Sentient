@@ -40,7 +40,8 @@ celery_app = Celery(
     backend=CELERY_RESULT_BACKEND,
     include=[
         'workers.executor.tasks',
-        'workers.tasks'
+        'workers.tasks',
+        'workers.long_form_tasks'
     ]
 )
 

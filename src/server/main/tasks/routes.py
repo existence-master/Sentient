@@ -9,15 +9,16 @@ from typing import Tuple
 from main.dependencies import auth_helper
 from main.dependencies import mongo_manager, websocket_manager
 from main.auth.utils import PermissionChecker
-from workers.tasks import generate_plan_from_context, execute_task_plan, calculate_next_run, process_task_change_request, refine_task_details, refine_and_plan_ai_task, cud_memory_task, orchestrate_swarm_task
+from workers.tasks import generate_plan_from_context, execute_task_plan, calculate_next_run, process_task_change_request, refine_task_details, refine_and_plan_ai_task, cud_memory_task, orchestrate_swarm_task, start_long_form_task
 
-from .models import AddTaskRequest, UpdateTaskRequest, TaskIdRequest, TaskActionRequest, TaskChatRequest, ProgressUpdateRequest
+from .models import AddTaskRequest, UpdateTaskRequest, TaskIdRequest, TaskActionRequest, TaskChatRequest, ProgressUpdateRequest, AnswerClarificationRequest, ClarificationAnswerRequest, LongFormTaskActionRequest
 from main.llm import run_agent
 from main.tasks.models import AddTaskRequest, UpdateTaskRequest, TaskIdRequest, TaskActionRequest, TaskChatRequest, ProgressUpdateRequest
-from workers.tasks import generate_plan_from_context, execute_task_plan, calculate_next_run, refine_and_plan_ai_task, orchestrate_swarm_task
+from workers.tasks import generate_plan_from_context, execute_task_plan, calculate_next_run, refine_and_plan_ai_task
 from main.llm import run_agent, LLMProviderDownError
 from json_extractor import JsonExtractor
 from .prompts import TASK_CREATION_PROMPT
+from workers.long_form_tasks import start_long_form_task, execute_orchestrator_cycle
 
 class GeneratePlanRequest(BaseModel):
     prompt: str
@@ -120,6 +121,31 @@ async def add_task(
         orchestrate_swarm_task.delay(task_id, user_id)
         return {"message": "Swarm task initiated! Planning will begin shortly.", "task_id": task_id}
 
+    elif request.task_type == "long_form":
+        if not request.prompt:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A prompt describing the goal is required for long-form tasks.")
+
+        task_data = {
+            "name": request.prompt,
+            "description": f"Long-form task to achieve the goal: {request.prompt}",
+            "task_type": "long_form",
+            "orchestrator_state": {
+                "main_goal": request.prompt,
+                "current_state": "CREATED",
+                "current_step": 0,
+                "context_store": {},
+                "waiting_config": None,
+            },
+            "dynamic_plan": [],
+            "clarification_requests": [],
+            "execution_log": []
+        }
+        task_id = await mongo_manager.add_task(user_id, task_data)
+        if not task_id:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create long-form task.")
+        start_long_form_task.delay(task_id, user_id)
+        return {"message": "Long-form task initiated! Planning will begin shortly.", "task_id": task_id}
+
     elif request.task_type == "single":
         if not request.prompt:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A prompt is required for single tasks.")
@@ -202,7 +228,7 @@ async def delete_task(
 
 @router.post("/task-action", status_code=status.HTTP_200_OK)
 async def task_action(
-    request: TaskActionRequest, 
+    request: TaskActionRequest,
     user_id: str = Depends(PermissionChecker(required_permissions=["write:tasks"]))
 ):
     if request.action == "decline":
@@ -302,7 +328,7 @@ async def approve_task(
                 naive_run_at_time = datetime.fromisoformat(run_at_time_str)
                 utc_run_at_time = naive_run_at_time.replace(tzinfo=user_tz).astimezone(timezone.utc)
                 run_at_time = utc_run_at_time
-        
+
         # If run_at is in the future, schedule it. Otherwise, run it now.
         if run_at_time and run_at_time > datetime.now(timezone.utc):
             # It's a future-scheduled task, so it becomes 'pending'.
@@ -336,12 +362,12 @@ async def approve_task(
 
             execute_task_plan.delay(task_id, user_id, new_run['run_id'])
             return JSONResponse(content={"message": "Task approved and execution has been initiated."})
-    
+
     if update_data:
         success = await mongo_manager.update_task(task_id, update_data)
         if not success:
             logger.warning(f"Approve task for {task_id} resulted in 0 modified documents.")
-            
+
     return JSONResponse(content={"message": "Task approved and scheduled."})
 
 @router.post("/task-chat", status_code=status.HTTP_200_OK)
@@ -364,7 +390,7 @@ async def task_chat(
         "content": request.message,
         "timestamp": datetime.now(timezone.utc)
     }
-    
+
     chat_history = task.get("chat_history", [])
     if not isinstance(chat_history, list):
         # This can happen if the field was somehow corrupted or is an old format
@@ -429,3 +455,91 @@ async def internal_task_update_push(request: ProgressUpdateRequest): # Reusing m
     except Exception as e:
         logger.error(f"Failed to push task list update via websocket for user {request.user_id}: {e}", exc_info=True)
         return {"status": "error", "detail": str(e)}
+@router.post("/answer-clarifications", status_code=status.HTTP_200_OK)
+async def answer_clarifications(
+    request: AnswerClarificationRequest,
+    user_id: str = Depends(PermissionChecker(required_permissions=["write:tasks"]))
+):
+    task = await mongo_manager.get_task(request.task_id, user_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
+
+    if task['status'] != 'clarification_pending':
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task is not awaiting clarification.")
+
+    success = await mongo_manager.add_answers_to_task(request.task_id, [ans.dict() for ans in request.answers], user_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to save answers.")
+
+    # Re-trigger the executor for the same run
+    last_run = task.get("runs", [])[-1] if task.get("runs") else None
+    if not last_run:
+        raise HTTPException(status_code=500, detail="Cannot resume task: no previous run found.")
+
+    await mongo_manager.update_task(request.task_id, {"status": "clarification_answered"})
+
+    execute_task_plan.delay(request.task_id, user_id, last_run['run_id'])
+
+    return JSONResponse(content={"message": "Answers submitted successfully. The task will now resume."})
+
+@router.post("/{task_id}/clarifications", status_code=status.HTTP_200_OK)
+async def answer_clarification(
+    task_id: str,
+    request: ClarificationAnswerRequest,
+    user_id: str = Depends(PermissionChecker(required_permissions=["write:tasks"]))
+):
+    """Allows a user to answer a pending clarification request for a long-form task."""
+    task = await mongo_manager.get_task(task_id, user_id)
+    if not task or task.get("task_type") != "long_form":
+        raise HTTPException(status_code=404, detail="Long-form task not found.")
+
+    if task.get("orchestrator_state", {}).get("current_state") != "SUSPENDED":
+        raise HTTPException(status_code=400, detail="Task is not currently awaiting clarification.")
+
+    clarification_requests = task.get("clarification_requests", [])
+    request_found = False
+    for req in clarification_requests:
+        if req.get("request_id") == request.request_id and req.get("status") == "pending":
+            req["response"] = request.answer
+            req["responded_at"] = datetime.now(timezone.utc)
+            req["status"] = "answered"
+            request_found = True
+            break
+
+    if not request_found:
+        raise HTTPException(status_code=404, detail="Pending clarification request not found.")
+
+    # Update task state and resume
+    update_payload = {
+        "clarification_requests": clarification_requests,
+        "orchestrator_state.current_state": "ACTIVE"
+    }
+    await mongo_manager.update_task(task_id, update_payload)
+
+    # Trigger the orchestrator to re-evaluate with the new information
+    execute_orchestrator_cycle.delay(task_id)
+
+    return JSONResponse(content={"message": "Answer received. Resuming task."})
+
+
+@router.post("/{task_id}/action", status_code=status.HTTP_200_OK)
+async def long_form_task_action(
+    task_id: str,
+    request: LongFormTaskActionRequest,
+    user_id: str = Depends(PermissionChecker(required_permissions=["write:tasks"]))
+):
+    """Allows a user to manually pause or resume a long-form task."""
+    task = await mongo_manager.get_task(task_id, user_id)
+    if not task or task.get("task_type") != "long_form":
+        raise HTTPException(status_code=404, detail="Long-form task not found.")
+
+    action = request.action.lower()
+    if action == "pause":
+        await mongo_manager.update_task(task_id, {"orchestrator_state.current_state": "PAUSED"})
+        return JSONResponse(content={"message": "Task paused."})
+    elif action == "resume":
+        await mongo_manager.update_task(task_id, {"orchestrator_state.current_state": "ACTIVE"})
+        execute_orchestrator_cycle.delay(task_id)
+        return JSONResponse(content={"message": "Task resumed."})
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action. Must be 'pause' or 'resume'.")

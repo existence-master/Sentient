@@ -5,6 +5,7 @@ import {
 	IconPlayerPlay,
 	IconRepeat,
 	IconBolt,
+	IconClock,
 	IconUsersGroup,
 	IconX,
 	IconSparkles,
@@ -46,8 +47,22 @@ const tabs = [
 		description:
 			"For complex projects that require a larger team of AI workers.",
 		icon: <IconUsersGroup size={18} />,
-		isProFeature: true // Not available on free plan
+		isProFeature: true
+	},
+	{
+		id: "long_form",
+		label: "Long-Form",
+		description:
+			"For complex, multi-step tasks that run over an extended period.",
+		icon: <IconClock size={18} />,
+		isProFeature: false // Free feature for now (considered for Pro in future)
 	}
+]
+
+const longFormPlaceholders = [
+	"Organize my upcoming business trip to New York next week.",
+	"Help me plan and execute a marketing campaign for our new product launch.",
+	"Onboard the new hire, John Doe, by setting up his accounts and sending him the required documents."
 ]
 
 const oncePlaceholders = [
@@ -170,6 +185,11 @@ const TaskComposer = ({
 				return
 			}
 			payload = { prompt: goalInput.trim(), task_type: "swarm" }
+		} else if (activeTab === "long_form") {
+			payload = {
+				prompt: goalInput.trim(),
+				task_type: "long_form"
+			}
 		} else {
 			if (!goalInput.trim()) {
 				toast.error("Please provide a goal for the task.")
@@ -276,13 +296,13 @@ const TaskComposer = ({
 
 			<main className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
 				{/* Improved Tab Navigation */}
-				<div className="relative grid grid-cols-2 sm:flex items-center gap-1.5 bg-neutral-800/50 p-1 rounded-xl">
+				<div className="relative grid grid-cols-2 sm:grid-cols-3 gap-1.5 bg-neutral-800/50 p-1 rounded-xl">
 					{tabs.map((tab) => (
 						<button
 							key={tab.id}
 							onClick={() => setActiveTab(tab.id)}
 							className={cn(
-								"relative sm:flex-1 flex items-center justify-center p-2 rounded-lg text-sm font-medium transition-colors",
+								"relative flex items-center justify-center p-2 rounded-lg text-sm font-medium transition-colors",
 								activeTab === tab.id
 									? "text-brand-black font-semibold"
 									: "text-neutral-400 hover:text-white"
@@ -353,24 +373,30 @@ const TaskComposer = ({
 									placeholder=" "
 									className={cn(
 										"w-full p-2 bg-transparent border-none focus:ring-0 relative z-10 resize-none custom-scrollbar",
-										activeTab === "swarm" ? "h-32" : "h-24"
+										activeTab === "swarm" ||
+											activeTab === "long_form"
+											? "h-32"
+											: "h-24"
 									)}
 								/>
 								{!goalInput && (
 									<div
 										className={cn(
 											"absolute top-0 left-0 right-0 text-neutral-500 pointer-events-none z-0 p-2 overflow-hidden",
-											activeTab === "swarm"
+											activeTab === "swarm" ||
+												activeTab === "long_form"
 												? "h-32"
 												: "h-24"
 										)}
 									>
 										<TextLoop>
-											{(activeTab === "once"
-												? oncePlaceholders
-												: activeTab === "recurring"
-													? recurringPlaceholders
-													: swarmPlaceholders
+											{(activeTab === "long_form"
+												? longFormPlaceholders
+												: activeTab === "once"
+													? oncePlaceholders
+													: activeTab === "recurring"
+														? recurringPlaceholders
+														: swarmPlaceholders
 											).map((p) => (
 												<span key={p}>{p}</span>
 											))}

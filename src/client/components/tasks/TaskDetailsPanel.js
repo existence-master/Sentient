@@ -8,9 +8,9 @@ import {
 	IconRepeat,
 	IconDeviceFloppy,
 	IconSquareX,
-	IconPlayerPlay,
 	IconArchive,
 	IconCircleCheck,
+	IconClock,
 	IconClipboardList,
 	IconUsersGroup
 } from "@tabler/icons-react"
@@ -184,6 +184,11 @@ const TaskDetailsPanel = ({
 									{task.task_type === "swarm" && (
 										<span className="p-1.5 bg-blue-500/20 text-blue-300 rounded-md">
 											<IconUsersGroup size={20} />
+										</span>
+									)}
+									{task.task_type === "long_form" && (
+										<span className="p-1.5 bg-purple-500/20 text-purple-300 rounded-md">
+											<IconClock size={20} />
 										</span>
 									)}
 									{getDisplayName(task)}

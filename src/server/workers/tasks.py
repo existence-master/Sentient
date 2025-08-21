@@ -102,9 +102,50 @@ def cud_memory_task(user_id: str, information: str, source: Optional[str] = None
     This runs the core memory management logic asynchronously.
     """
     logger.info(f"Celery worker received cud_memory_task for user_id: {user_id}")
-    # This single call to run_async wraps the entire asynchronous logic,
+    # this single call to run_async wraps the entire asynchronous logic,
     # ensuring the event loop and DB connections are managed correctly for the task's lifecycle.
     run_async(async_cud_memory_task(user_id, information, source))
+
+@celery_app.task(name="start_long_form_task")
+def start_long_form_task(task_id: str, user_id: str):
+    """
+    Celery task entry point for initializing a new long-form task.
+    This will eventually become the orchestrator's first step.
+    """
+    logger.info(f"Celery worker received 'start_long_form_task' for task_id: {task_id}")
+    run_async(async_start_long_form_task(task_id, user_id))
+
+async def async_start_long_form_task(task_id: str, user_id: str):
+    """
+    The async logic for initializing a long-form task.
+    For Phase 1, it just logs and updates the state.
+    """
+    db_manager = MongoManager()
+    try:
+        logger.info(f"Starting long-form task {task_id} for user {user_id}. This is the initial step of the orchestrator.")
+
+        initial_log_entry = {
+            "timestamp": datetime.datetime.now(datetime.timezone.utc),
+            "action": "Task Initiated",
+            "details": {"message": "Orchestrator has started and is in the initial planning phase."},
+            "agent_reasoning": "The task has been created. The first step is to analyze the main goal and create an initial high-level plan."
+        }
+
+        update_payload = {
+            "long_form_details.current_state": "ACTIVE",
+            "long_form_details.execution_log": [initial_log_entry]
+        }
+        await db_manager.update_task(task_id, update_payload)
+        await push_task_list_update(user_id, task_id, "long_form_started")
+        logger.info(f"Long-form task {task_id} moved to ACTIVE state.")
+    except Exception as e:
+        logger.error(f"Error starting long-form task {task_id}: {e}", exc_info=True)
+        await db_manager.update_task(task_id, {
+            "long_form_details.current_state": "FAILED",
+            "error": f"Failed to start orchestrator: {str(e)}"
+        })
+    finally:
+        await db_manager.close()
 
 @celery_app.task(name="orchestrate_swarm_task")
 def orchestrate_swarm_task(task_id: str, user_id: str):
@@ -359,7 +400,7 @@ async def async_refine_and_plan_ai_task(task_id: str, user_id: str):
             # Ensure description is not empty, fall back to original prompt if needed
             if not parsed_data.get("name"):
                 parsed_data["name"] = task["description"] or task["name"]
-            await db_manager.update_task_field(task_id, parsed_data)
+            await db_manager.update_task_field(task_id, user_id, parsed_data)
             logger.info(f"Successfully refined and updated AI task {task_id} with new details.")
         else:
             logger.warning(f"Could not parse details for AI task {task_id}, proceeding with raw description.")
@@ -370,10 +411,10 @@ async def async_refine_and_plan_ai_task(task_id: str, user_id: str):
 
     except LLMProviderDownError as e:
         logger.error(f"LLM provider down during task refinement for {task_id}: {e}", exc_info=True)
-        await db_manager.update_task_field(task_id, {"status": "error", "error": "Sorry, our AI provider is currently down. Please try again later."})
+        await db_manager.update_task_field(task_id, user_id, {"status": "error", "error": "Sorry, our AI provider is currently down. Please try again later."})
     except Exception as e:
         logger.error(f"Error refining and planning AI task {task_id}: {e}", exc_info=True)
-        await db_manager.update_task_field(task_id, {"status": "error", "error": "Failed during initial refinement."})
+        await db_manager.update_task_field(task_id, user_id, {"status": "error", "error": "Failed during initial refinement."})
     finally:
         await db_manager.close()
 
@@ -402,7 +443,7 @@ async def async_process_change_request(task_id: str, user_id: str, user_message:
         })
 
         # 3. Update task status and chat history in DB
-        await db_manager.update_task_field(task_id, {
+        await db_manager.update_task_field(task_id, user_id, {
             "chat_history": chat_history,
             "status": "planning" # Revert to planning to re-evaluate
         })
@@ -480,7 +521,9 @@ async def async_generate_plan(task_id: str, user_id: str):
         is_change_request = bool(task.get("chat_history"))
 
         # Prevent re-planning if it's not in a plannable state
-        plannable_statuses = ["planning", "clarification_answered"]
+        plannable_statuses = ["planning"]
+        if task.get("status") in ["clarification_pending", "clarification_answered"]:
+            plannable_statuses.append(task.get("status"))
         if task.get("status") not in plannable_statuses:
              logger.warning(f"Task {task_id} is not in a plannable state (current: {task.get('status')}). Aborting plan generation.")
              return
@@ -490,7 +533,7 @@ async def async_generate_plan(task_id: str, user_id: str):
         if not task.get("user_id"):
             logger.warning(f"Task {task_id} document is missing user_id. Proceeding with passed user_id '{user_id}'.")
             # Attempt to heal the document
-            await db_manager.update_task_field(task_id, {"user_id": user_id})
+            await db_manager.update_task_field(task_id, user_id, {"user_id": user_id})
 
         original_context = task.get("original_context", {})
 
@@ -626,7 +669,7 @@ async def async_refine_task_details(task_id: str):
             # Inject user's timezone into the schedule object if it exists
             if 'schedule' in parsed_data and parsed_data.get('schedule'):
                 parsed_data['schedule']['timezone'] = user_timezone_str
-            await db_manager.update_task_field(task_id, parsed_data)
+            await db_manager.update_task_field(task_id, user_id, parsed_data)
             logger.info(f"Successfully refined and updated user task {task_id} with new details.")
 
     except Exception as e:

@@ -1,6 +1,7 @@
 "use client"
 
 import React, {
+	IconClock,
 	useState,
 	useEffect,
 	useCallback,
@@ -15,7 +16,7 @@ import {
 	IconSparkles,
 	IconCheck,
 	IconPlus
-} from "@tabler/icons-react" // Added IconPlus
+} from "@tabler/icons-react"
 import { AnimatePresence, motion } from "framer-motion"
 import toast from "react-hot-toast"
 import { Tooltip } from "react-tooltip"
@@ -163,6 +164,7 @@ function TasksPageContent() {
 		recurringTasks,
 		triggeredTasks,
 		swarmTasks,
+		longFormTasks,
 		recurringInstances
 	} = useMemo(() => {
 		const oneTime = []
@@ -170,10 +172,13 @@ function TasksPageContent() {
 		const triggered = []
 		const swarm = []
 		const instances = []
+		const longForm = []
 
 		allTasks.forEach((task) => {
 			if (task.task_type === "swarm") {
 				swarm.push(task)
+			} else if (task.task_type === "long_form") {
+				longForm.push(task)
 			} else if (task.schedule?.type === "recurring") {
 				recurring.push(task)
 				// Process past runs from `runs` array
@@ -226,6 +231,7 @@ function TasksPageContent() {
 			recurringTasks: recurring,
 			triggeredTasks: triggered,
 			swarmTasks: swarm,
+			longFormTasks: longForm,
 			recurringInstances: instances
 		}
 	}, [allTasks])
@@ -298,7 +304,9 @@ function TasksPageContent() {
 				: []
 			setAllTasks(rawTasks)
 
-			const integrationsRes = await fetch("/api/settings/integrations", { method: "POST" })
+			const integrationsRes = await fetch("/api/settings/integrations", {
+				method: "POST"
+			})
 			if (!integrationsRes.ok)
 				throw new Error("Failed to fetch integrations")
 			const integrationsData = await integrationsRes.json()
@@ -383,33 +391,11 @@ function TasksPageContent() {
 			}
 			const data = await response.json()
 
-			const tempTask = {
-				task_id: data.task_id,
-				name: payload.prompt,
-				description: payload.prompt,
-				status: "planning",
-				assignee: "ai",
-				priority: 1,
-				plan: [],
-				runs: [],
-				schedule: payload.schedule || null,
-				enabled: true,
-				original_context: { source: "manual_composer" },
-				created_at: new Date().toISOString(),
-				updated_at: new Date().toISOString(),
-				chat_history: [],
-				task_type: payload.task_type,
-				swarm_details:
-					payload.task_type === "swarm"
-						? { goal: payload.prompt }
-						: null
-			}
-
-			setAllTasks((prev) => [...prev, tempTask])
 			toast.success(data.message || "Task created!", { id: toastId })
 			if (isMobile)
 				setIsModalOpen(false) // Close modal on success
 			else setRightPanelContent({ type: "composer", data: null }) // Reset composer
+			await fetchTasks() // Refresh tasks list
 		} catch (error) {
 			if (error.status === 429) {
 				toast.error(
@@ -521,6 +507,7 @@ Description: ${event.description || "No description."}`
 	const filteredActiveWorkflows = useMemo(() => {
 		const allWorkflows = [
 			...swarmTasks,
+			...longFormTasks,
 			...recurringTasks,
 			...triggeredTasks
 		]
@@ -535,7 +522,7 @@ Description: ${event.description || "No description."}`
 						.toLowerCase()
 						.includes(searchQuery.toLowerCase()))
 		)
-	}, [swarmTasks, recurringTasks, triggeredTasks, searchQuery])
+	}, [swarmTasks, longFormTasks, recurringTasks, triggeredTasks, searchQuery])
 
 	const filteredCalendarTasks = useMemo(() => {
 		const allCalendarTasks = [...oneTimeTasks, ...recurringInstances]
@@ -820,4 +807,3 @@ export default function TasksPage() {
 		</Suspense>
 	)
 }
-

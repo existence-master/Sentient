@@ -392,6 +392,14 @@ const TaskDetailsContent = ({
 
 	return (
 		<div className="space-y-6">
+			{displayTask.clarifying_questions &&
+				displayTask.clarifying_questions.length > 0 && (
+					<QnaSection
+						questions={displayTask.clarifying_questions}
+						task={displayTask}
+						onAnswerClarifications={onAnswerClarifications}
+					/>
+				)}
 			{/* --- SWARM DETAILS (if applicable) --- */}
 			{displayTask.task_type === "swarm" && (
 				<div>

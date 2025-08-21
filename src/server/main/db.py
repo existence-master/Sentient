@@ -22,11 +22,11 @@ def _decrypt_docs(docs: List[Dict], fields: List[str]):
     for doc in docs:
         decrypt_doc(doc, fields)
 
-USER_PROFILES_COLLECTION = "user_profiles" 
-NOTIFICATIONS_COLLECTION = "notifications" 
-POLLING_STATE_COLLECTION = "polling_state_store" 
+USER_PROFILES_COLLECTION = "user_profiles"
+NOTIFICATIONS_COLLECTION = "notifications"
+POLLING_STATE_COLLECTION = "polling_state_store"
 DAILY_USAGE_COLLECTION = "daily_usage"
-PROCESSED_ITEMS_COLLECTION = "processed_items_log" 
+PROCESSED_ITEMS_COLLECTION = "processed_items_log"
 TASK_COLLECTION = "tasks"
 MESSAGES_COLLECTION = "messages"
 
@@ -36,7 +36,7 @@ class MongoManager:
     def __init__(self):
         self.client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
         self.db = self.client[MONGO_DB_NAME]
-        
+
         self.user_profiles_collection = self.db[USER_PROFILES_COLLECTION]
         self.notifications_collection = self.db[NOTIFICATIONS_COLLECTION]
         self.polling_state_collection = self.db[POLLING_STATE_COLLECTION]
@@ -44,17 +44,17 @@ class MongoManager:
         self.processed_items_collection = self.db[PROCESSED_ITEMS_COLLECTION]
         self.task_collection = self.db[TASK_COLLECTION]
         self.messages_collection = self.db[MESSAGES_COLLECTION]
-        
+
         print(f"[{datetime.datetime.now()}] [MainServer_MongoManager] Initialized. Database: {MONGO_DB_NAME}")
 
     async def initialize_db(self):
         print(f"[{datetime.datetime.now()}] [MainServer_DB_INIT] Ensuring indexes for MongoManager collections...")
-        
+
         collections_with_indexes = {
             self.user_profiles_collection: [
                 IndexModel([("user_id", ASCENDING)], unique=True, name="user_id_unique_idx"),
                 IndexModel([("userData.last_active_timestamp", DESCENDING)], name="user_last_active_idx"),
-                IndexModel([("userData.google_services.gmail.encrypted_refresh_token", ASCENDING)], 
+                IndexModel([("userData.google_services.gmail.encrypted_refresh_token", ASCENDING)],
                            name="google_gmail_token_idx", sparse=True),
                 IndexModel([("userData.onboardingComplete", ASCENDING)], name="user_onboarding_status_idx", sparse=True)
             ],
@@ -74,14 +74,14 @@ class MongoManager:
                 IndexModel([("user_id", ASCENDING), ("date", DESCENDING)], unique=True, name="usage_user_date_unique_idx"),
                 IndexModel([("date", DESCENDING)], name="usage_date_idx", expireAfterSeconds=2 * 24 * 60 * 60) # Expire docs after 2 days
             ],
-            self.processed_items_collection: [ 
+            self.processed_items_collection: [
                 IndexModel([("user_id", ASCENDING), ("service_name", ASCENDING), ("item_id", ASCENDING)], unique=True, name="processed_item_unique_idx_main"),
                 IndexModel([("processing_timestamp", DESCENDING)], name="processed_timestamp_idx_main", expireAfterSeconds=2592000) # 30 days
             ],
             self.task_collection: [
                 IndexModel([("user_id", ASCENDING), ("created_at", DESCENDING)], name="task_user_created_idx"),
                 IndexModel([("user_id", ASCENDING), ("status", ASCENDING), ("priority", ASCENDING)], name="task_user_status_priority_idx"),
-                IndexModel([("status", ASCENDING), ("agent_id", ASCENDING)], name="task_status_agent_idx", sparse=True), 
+                IndexModel([("status", ASCENDING), ("agent_id", ASCENDING)], name="task_status_agent_idx", sparse=True),
                 IndexModel([("task_id", ASCENDING)], unique=True, name="task_id_unique_idx"),
                 IndexModel([("name", "text"), ("description", "text")], name="task_text_search_idx"),
             ],
@@ -114,7 +114,7 @@ class MongoManager:
 
     async def update_user_profile(self, user_id: str, profile_data: Dict) -> bool:
         if not user_id or not profile_data: return False
-        if "_id" in profile_data: del profile_data["_id"] 
+        if "_id" in profile_data: del profile_data["_id"]
 
         if DB_ENCRYPTION_ENABLED:
             SENSITIVE_USER_DATA_FIELDS = ["onboardingAnswers", "personalInfo", "pwa_subscription", "privacyFilters"]
@@ -123,42 +123,42 @@ class MongoManager:
                 if key.startswith("userData.") and key.split('.')[1] in SENSITIVE_USER_DATA_FIELDS:
                     data_to_update[key] = encrypt_field(value)
             profile_data = data_to_update
-        
+
         update_operations = {"$set": {}, "$setOnInsert": {}}
         now_utc = datetime.datetime.now(datetime.timezone.utc)
 
         for key, value in profile_data.items():
             update_operations["$set"][key] = value
-        
+
         update_operations["$set"]["last_updated"] = now_utc
         update_operations["$setOnInsert"]["user_id"] = user_id
         update_operations["$setOnInsert"]["createdAt"] = now_utc
-        
+
         if "userData" not in profile_data and not any(k.startswith("userData.") for k in profile_data):
              update_operations["$setOnInsert"]["userData"] = {}
 
         for key_to_set in profile_data.keys():
             if key_to_set.startswith("userData.google_services."):
                 parts = key_to_set.split('.')
-                if len(parts) >= 3: 
-                    service_name_for_insert = parts[2] 
-                    
+                if len(parts) >= 3:
+                    service_name_for_insert = parts[2]
+
                     user_data_on_insert = update_operations["$setOnInsert"].setdefault("userData", {})
                     google_services_on_insert = user_data_on_insert.setdefault("google_services", {})
                     google_services_on_insert.setdefault(service_name_for_insert, {})
-                break 
+                break
 
-        if not update_operations["$set"]: del update_operations["$set"] 
+        if not update_operations["$set"]: del update_operations["$set"]
         if not update_operations["$setOnInsert"]: del update_operations["$setOnInsert"]
-        
-        if not update_operations.get("$set") and not update_operations.get("$setOnInsert"): 
-            return True 
+
+        if not update_operations.get("$set") and not update_operations.get("$setOnInsert"):
+            return True
 
         result = await self.user_profiles_collection.update_one(
             {"user_id": user_id}, update_operations, upsert=True
         )
         return result.matched_count > 0 or result.upserted_id is not None
-        
+
     async def update_user_last_active(self, user_id: str) -> bool:
         if not user_id: return False
         now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -168,9 +168,9 @@ class MongoManager:
         }
         result = await self.user_profiles_collection.update_one(
             {"user_id": user_id},
-            {"$set": update_payload, 
+            {"$set": update_payload,
              "$setOnInsert": {"user_id": user_id, "createdAt": now_utc, "userData": {"last_active_timestamp": now_utc}}},
-            upsert=True 
+            upsert=True
         )
         return result.matched_count > 0 or result.upserted_id is not None
 
@@ -251,6 +251,30 @@ class MongoManager:
         )
         return result.modified_count > 0
 
+    async def add_answers_to_task(self, task_id: str, answers: List[Dict], user_id: str) -> bool:
+        """Finds a task and updates its clarifying questions with user answers."""
+        task = await self.get_task(task_id, user_id)
+        if not task:
+            return False
+
+        current_questions = task.get("clarifying_questions", [])
+        if not current_questions:
+            # Fallback for legacy tasks where questions might be in the last run
+            if task.get("runs"):
+                current_questions = task["runs"][-1].get("clarifying_questions", [])
+            if not current_questions:
+                logger.warning(f"add_answers_to_task called for task {task_id}, but no questions found.")
+                return False # Nothing to update
+
+        answer_map = {ans.get("question_id"): ans.get("answer_text") for ans in answers}
+
+        for question in current_questions:
+            q_id = question.get("question_id")
+            if q_id in answer_map:
+                question["answer"] = answer_map[q_id]
+        # Always write back to the top-level field for consistency
+        return await self.update_task(task_id, {"clarifying_questions": current_questions})
+
     async def delete_all_notifications(self, user_id: str):
         """Deletes all notifications for a user by emptying the notifications array."""
         if not user_id:
@@ -294,10 +318,10 @@ class MongoManager:
 
     async def update_polling_state(self, user_id: str, service_name: str, poll_type: str, state_data: Dict[str, Any]) -> bool:
         if not user_id or not service_name or not poll_type or state_data is None: return False
-        for key, value in state_data.items(): 
+        for key, value in state_data.items():
             if isinstance(value, datetime.datetime):
                 state_data[key] = value.replace(tzinfo=datetime.timezone.utc) if value.tzinfo is None else value.astimezone(datetime.timezone.utc)
-        
+
         # Prevent conflict errors by not trying to $set fields that are part of the unique index
         # or are immutable.
         if '_id' in state_data: del state_data['_id']
@@ -353,36 +377,46 @@ class MongoManager:
             "chat_history": [],
             "next_execution_at": None,
             "last_execution_at": None,
-            # NEW FIELDS
+            # Task type specific fields
             "task_type": task_data.get("task_type", "single"),
-            "swarm_details": task_data.get("swarm_details") # Will be None for single tasks
         }
-        SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details"]
+    
+        # Add type-specific fields based on the new schema
+        task_type = task_doc["task_type"]
+        if task_type == "swarm":
+            task_doc["swarm_details"] = task_data.get("swarm_details")
+        elif task_type == "long_form":
+            task_doc["orchestrator_state"] = task_data.get("orchestrator_state")
+            task_doc["dynamic_plan"] = task_data.get("dynamic_plan")
+            task_doc["clarification_requests"] = task_data.get("clarification_requests")
+            task_doc["execution_log"] = task_data.get("execution_log")
+
+        SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details", "orchestrator_state", "dynamic_plan", "clarification_requests", "execution_log"]
         encrypt_doc(task_doc, SENSITIVE_TASK_FIELDS)
 
-        await self.task_collection.insert_one(task_doc)
+        await self.task_collection.insert_one(task_doc) # noqa: E501
         logger.info(f"Created new task {task_id} (type: {task_doc['task_type']}) for user {user_id} with status 'planning'.")
         return task_id
 
     async def get_task(self, task_id: str, user_id: str) -> Optional[Dict]:
         """Fetches a single task by its ID, ensuring it belongs to the user."""
         doc = await self.task_collection.find_one({"task_id": task_id, "user_id": user_id})
-        SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details"]
+        SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details", "orchestrator_state", "dynamic_plan", "clarification_requests", "execution_log"]
         decrypt_doc(doc, SENSITIVE_TASK_FIELDS)
         return doc
 
     async def get_all_tasks_for_user(self, user_id: str) -> List[Dict]:
         """Fetches all tasks for a given user."""
-        cursor = self.task_collection.find({"user_id": user_id}).sort("created_at", -1)
+        cursor = self.task_collection.find({"user_id": user_id}).sort("created_at", -1) # noqa: E501
         docs = await cursor.to_list(length=None)
-        SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details"]
+        SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details", "orchestrator_state", "dynamic_plan", "clarification_requests", "execution_log"]
         _decrypt_docs(docs, SENSITIVE_TASK_FIELDS)
         return docs
 
     async def update_task(self, task_id: str, updates: Dict) -> bool:
         """Updates an existing task document."""
         updates["updated_at"] = datetime.datetime.now(datetime.timezone.utc)
-        SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details"]
+        SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details", "orchestrator_state", "dynamic_plan", "clarification_requests", "execution_log"]
         encrypt_doc(updates, SENSITIVE_TASK_FIELDS)
         result = await self.task_collection.update_one(
             {"task_id": task_id},

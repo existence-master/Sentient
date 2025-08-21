@@ -10,7 +10,7 @@ import ReactMarkdown from "react-markdown"
 import toast from "react-hot-toast"
 import { IconLoader } from "@tabler/icons-react"
 
-// This component is copied from TaskDetailsContent.js to handle clarification questions
+// This component is used to handle clarification questions
 // within recurring task runs. It's modified to use the run's status.
 const QnaSection = ({ questions, task, onAnswerClarifications, runStatus }) => {
 	const [answers, setAnswers] = useState({})

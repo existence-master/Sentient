@@ -59,7 +59,7 @@ async def update_task_run_status(db, task_id: str, run_id: str, status: str, use
         logger.error(f"Cannot update run status: Task {task_id} not found for user {user_id}.")
         return
 
-    SENSITIVE_TASK_FIELDS = ["runs", "name"]
+    SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details", "orchestrator_state", "dynamic_plan", "clarification_requests", "execution_log"]
     decrypt_doc(task, SENSITIVE_TASK_FIELDS)
 
     runs = task.get("runs", [])
@@ -118,7 +118,7 @@ async def add_progress_update(db, task_id: str, run_id: str, user_id: str, messa
         logger.error(f"Cannot add progress update: Task {task_id} not found for user {user_id}.")
         return
 
-    SENSITIVE_TASK_FIELDS = ["runs"]
+    SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details", "orchestrator_state", "dynamic_plan", "clarification_requests", "execution_log"]
     decrypt_doc(task, SENSITIVE_TASK_FIELDS)
 
     runs = task.get("runs", [])
@@ -140,7 +140,7 @@ async def add_progress_update(db, task_id: str, run_id: str, user_id: str, messa
         return
 
     update_payload = {"runs": runs}
-    encrypt_doc(update_payload, SENSITIVE_TASK_FIELDS)
+    encrypt_doc(update_payload, ["runs"])
 
     await db.tasks.update_one(
         {"task_id": task_id, "user_id": user_id},
@@ -234,8 +234,8 @@ async def async_execute_task_plan(task_id: str, user_id: str, run_id: str):
     db = get_db_client()
     task = await db.tasks.find_one({"task_id": task_id, "user_id": user_id})
 
-    # Decrypt sensitive fields before processing
-    SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details"]
+    # Decrypt sensitive fields before processing # noqa: E501
+    SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details", "orchestrator_state", "dynamic_plan", "clarification_requests", "execution_log"]
     decrypt_doc(task, SENSITIVE_TASK_FIELDS)
 
     if not task:
@@ -319,14 +319,15 @@ async def async_execute_task_plan(task_id: str, user_id: str, run_id: str):
         f"**The Plan to Execute:**\n" + "\n".join([f"- Step {i+1}: Use the '{step['tool']}' tool to '{step['description']}'" for i, step in enumerate(task.get("plan", []))]) + "\n\n" # noqa
         "**EXECUTION STRATEGY:**\n" # noqa
         "1.  **Think Step-by-Step:** Before each action, you MUST explain your reasoning and what you are about to do. Your thought process MUST be wrapped in `<think>` tags.\n" # noqa
-        "2.  **Execution Flow:** You MUST start by executing the first step of the plan. Do not summarize the plan or provide a final answer until you have executed all steps. Follow the plan sequentially. SEARCH FOR ANY RELEVANT CONTEXT THAT YOU NEED TO COMPLETE THE EXECUTION. \n" # noqa
+        "2.  **Execution Flow:** You MUST start by executing the first step of the plan. Do not summarize the plan or provide a final answer until you have executed all steps. Follow the plan sequentially. SEARCH FOR ANY RELEVANT CONTEXT THAT YOU NEED TO COMPLETE THE EXECUTION. If you are resuming a task after the user answered a clarifying question, the answered questions will be in the `clarifying_questions` field of the task context. Use this new information to proceed.\n" # noqa
         "3.  **Map Plan to Tools:** The plan provides a high-level tool name (e.g., 'gmail', 'gdrive'). You must map this to the specific functions available to you (e.g., `gmail_server-sendEmail`, `gdrive_server-gdrive_search`).\n" # noqa
         "4.  **Be Resourceful & Fill Gaps:** The plan is a guideline. If a step is missing information (e.g., an email address for a manager, a document name), your first action for that step MUST be to use the `memory-search_memory` tool to find the missing information. Do not proceed with incomplete information.\n" # noqa
         "5.  **Remember New Information:** If you discover a new, permanent fact about the user during your execution (e.g., you find their manager's email is 'boss@example.com'), you MUST use `memory-cud_memory` to save it.\n" # noqa
         "6.  **Handle Failures:** If a tool fails, analyze the error, think about an alternative approach, and try again. Do not give up easily. Your thought process and the error will be logged automatically.\n" # noqa
         "7.  **Provide a Final, Detailed Answer:** ONLY after all steps are successfully completed, you MUST provide a final, comprehensive answer to the user. This is not a tool call. Your final response MUST be wrapped in `<answer>` tags. For example: `<answer>I have successfully scheduled the meeting and sent an invitation to John Doe.</answer>`.\n" # noqa
         "8.  **Contact Information:** To find contact details like phone numbers or emails, use the `gpeople` tool before attempting to send an email or make a call.\n" # noqa
-        "\nNow, begin your work. Think step-by-step and start executing the plan, beginning with Step 1."
+        "9. **Ask for Help**: If you have exhausted all tool options (including memory and search) and still lack critical information to proceed, you MUST stop and ask for clarification. Your entire final output in this case must be a single JSON object with the key `clarifying_questions`. The value should be a list of question objects, where each object has a `text` key. Example: `{\"clarifying_questions\": [{\"text\": \"What is the email address of the client?\"}]}`\n"
+        "\nNow, begin your work. Think step-by-step and start executing the plan."
     )
     
     try:
@@ -386,6 +387,39 @@ async def async_execute_task_plan(task_id: str, user_id: str, run_id: str):
         final_assistant_message = next((msg for msg in reversed(final_history) if msg.get("role") == "assistant"), None)
         
         has_final_answer = False
+        final_content = final_assistant_message.get("content", "") if final_assistant_message else ""
+
+        # Try to parse for clarification questions
+        clarification_data = JsonExtractor.extract_valid_json(clean_llm_output(final_content))
+        if isinstance(clarification_data, dict) and "clarifying_questions" in clarification_data and isinstance(clarification_data["clarifying_questions"], list):
+            questions = clarification_data["clarifying_questions"]
+            # Add unique IDs to questions if they don't have one
+            for q in questions:
+                if "question_id" not in q:
+                    q["question_id"] = str(uuid.uuid4())
+
+            logger.info(f"Task {task_id} requires user clarification. Suspending task.")
+            await add_progress_update(db, task_id, run_id, user_id, {"type": "info", "content": "Task suspended. Waiting for user input."})
+
+            # Update task with questions and set status to 'clarification_pending'
+            await db.tasks.update_one(
+                {"task_id": task_id},
+                {"$set": {
+                    "status": "clarification_pending",
+                    "clarifying_questions": questions,
+                    "updated_at": datetime.datetime.now(datetime.timezone.utc)
+                }}
+            )
+
+            # Notify user
+            question_text = " ".join([q['text'] for q in questions])
+            await notify_user(
+                user_id,
+                f"Task '{task.get('name', '...')}' needs your input: {question_text}",
+                task_id,
+                notification_type="taskNeedsClarification"
+            )
+            return {"status": "success", "message": "Task suspended for clarification."}
         if final_assistant_message and final_assistant_message.get("content"):
             parsed_updates = parse_agent_string_to_updates(final_assistant_message["content"])
             if any(upd.get("type") == "final_answer" for upd in parsed_updates):
@@ -501,7 +535,7 @@ async def async_aggregate_results(results, parent_task_id: str, user_id: str, pa
             logger.error(f"Cannot aggregate results: Task {parent_task_id} not found.")
             return
 
-        SENSITIVE_TASK_FIELDS = ["runs", "name"]
+        SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details", "orchestrator_state", "dynamic_plan", "clarification_requests", "execution_log"]
         decrypt_doc(task, SENSITIVE_TASK_FIELDS)
 
         runs = task.get("runs", [])
@@ -559,8 +593,7 @@ async def async_generate_task_result(task_id: str, run_id: str, user_id: str, ag
     db = get_db_client()
     try:
         task = await db.tasks.find_one({"task_id": task_id, "user_id": user_id})
-        # Decrypt sensitive fields before processing
-        SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details"]
+        SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details", "orchestrator_state", "dynamic_plan", "clarification_requests", "execution_log"]
         decrypt_doc(task, SENSITIVE_TASK_FIELDS)
 
         if not task:

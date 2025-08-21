@@ -1,7 +1,7 @@
 "use client"
 import React from "react"
 import { motion } from "framer-motion"
-import { IconUsersGroup } from "@tabler/icons-react"
+import { IconUsersGroup, IconClock } from "@tabler/icons-react"
 import { cn } from "@utils/cn"
 import { taskStatusColors, priorityMap } from "./constants"
 import { format, isToday } from "date-fns"
@@ -69,6 +69,14 @@ const TaskCardList = ({ task, onSelectTask }) => {
 								size={16}
 								className="text-blue-400"
 							/>
+						</span>
+					)}
+					{task.task_type === "long_form" && (
+						<span
+							data-tooltip-id="tasks-tooltip"
+							data-tooltip-content="Long-Form Task"
+						>
+							<IconClock size={16} className="text-purple-400" />
 						</span>
 					)}
 					{getDisplayName(task)}

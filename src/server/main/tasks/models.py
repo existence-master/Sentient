@@ -5,11 +5,27 @@ class TaskStep(BaseModel):
     tool: str
     description: str
 
+class Answer(BaseModel):
+    question_id: str
+    answer_text: str
+
 class AddTaskRequest(BaseModel):
     prompt: str  # The main goal or description
-    task_type: str  # "single" or "swarm"
+    task_type: str  # "single", "swarm", or "long_form"
     schedule: Optional[Dict[str, Any]] = None # For one-time, recurring, triggered
 
+class ClarificationAnswerRequest(BaseModel):
+    request_id: str
+    answer: str
+
+class LongFormTaskActionRequest(BaseModel):
+    action: str # "pause" or "resume"
+class ClarificationAnswerRequest(BaseModel):
+    request_id: str
+    answer: str
+
+class LongFormTaskActionRequest(BaseModel):
+    action: str # "pause" or "resume"
 class UpdateTaskRequest(BaseModel):
     taskId: str
     name: Optional[str] = None
@@ -30,6 +46,10 @@ class TaskActionRequest(BaseModel):
 class TaskChatRequest(BaseModel):
     taskId: str
     message: str
+
+class AnswerClarificationRequest(BaseModel):
+    task_id: str
+    answers: List[Answer]
 
 class ProgressUpdateRequest(BaseModel):
     user_id: str

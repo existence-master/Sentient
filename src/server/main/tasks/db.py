@@ -53,6 +53,9 @@ class TaskDatabase:
             "error": None,
             "next_execution_at": None,
             "last_execution_at": None,
+            "task_type": task_data.get("task_type", "single"),
+            "swarm_details": task_data.get("swarm_details"), # Will be None for single tasks
+            "long_form_details": task_data.get("long_form_details")
         }
         
         await self.task_collection.insert_one(task_doc)

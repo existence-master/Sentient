@@ -70,6 +70,9 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 # --- File Management ---
 FILE_MANAGEMENT_TEMP_DIR = os.getenv("FILE_MANAGEMENT_TEMP_DIR", "/tmp/sentient_files")
 
+# --- MCP URLs (for internal workers) ---
+ORCHESTRATOR_MCP_SERVER_URL = os.getenv("ORCHESTRATOR_MCP_SERVER_URL")
+
 # --- 3rd Party API Keys ---
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
@@ -346,6 +349,16 @@ INTEGRATIONS_CONFIG = {
         "mcp_server_config": {
             "name": "trello_server",
             "url": os.getenv("TRELLO_MCP_SERVER_URL", "http://localhost:9025/sse")
+        }
+    },
+    "orchestrator": {
+        "display_name": "Orchestrator",
+        "description": "Internal tools for managing the lifecycle of long-form tasks.",
+        "auth_type": "builtin",
+        "icon": "IconSitemap", # Placeholder icon name
+        "mcp_server_config": {
+            "name": "orchestrator_server",
+            "url": os.getenv("ORCHESTRATOR_MCP_SERVER_URL", "http://localhost:9027/sse")
         }
     }
 }
