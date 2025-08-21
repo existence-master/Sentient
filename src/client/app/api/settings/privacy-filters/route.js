@@ -49,9 +49,12 @@ export const GET = withAuth(async function GET(request, { authHeader }) {
 			labels: serviceFilters.labels || []
 		}
 
-		return NextResponse.json({ filters: finalFilters }, {
-			headers: { "Cache-Control": "no-store, max-age=0" }
-		})
+		return NextResponse.json(
+			{ filters: finalFilters },
+			{
+				headers: { "Cache-Control": "no-store, max-age=0" }
+			}
+		)
 	} catch (error) {
 		console.error(
 			`API Error in /settings/privacy-filters?service=${serviceName} (GET):`,

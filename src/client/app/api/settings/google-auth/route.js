@@ -20,9 +20,12 @@ export const GET = withAuth(async function GET(request, { authHeader }) {
 		const data = await response.json()
 		const googleAuthMode = data?.data?.googleAuth?.mode || "default"
 
-		return NextResponse.json({ mode: googleAuthMode }, {
-			headers: { "Cache-Control": "no-store, max-age=0" }
-		})
+		return NextResponse.json(
+			{ mode: googleAuthMode },
+			{
+				headers: { "Cache-Control": "no-store, max-age=0" }
+			}
+		)
 	} catch (error) {
 		console.error("API Error in /settings/google-auth (GET):", error)
 		return NextResponse.json(

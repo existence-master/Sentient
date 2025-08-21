@@ -364,7 +364,7 @@ export default function ChatPage() {
 
 	const fetchIntegrations = useCallback(async () => {
 		try {
-			const res = await fetch("/api/settings/integrations", {method: POST})
+			const res = await fetch("/api/settings/integrations", { method: "POST" })
 			if (!res.ok) throw new Error("Failed to fetch integrations")
 			const data = await res.json()
 			setIntegrations(data.integrations || [])
