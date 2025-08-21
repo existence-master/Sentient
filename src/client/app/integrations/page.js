@@ -86,7 +86,7 @@ const integrationColorIcons = {
 
 const IconPlaceholder = IconSettingsCog
 
-const PRO_ONLY_INTEGRATIONS = ["notion", "github", "slack", "discord", "trello"]
+const PRO_ONLY_INTEGRATIONS = ["notion", "github", "slack", "discord", "trello", "whatsapp"]
 
 const proPlanFeatures = [
 	{ name: "Text Chat", limit: "100 messages per day" },
@@ -174,9 +174,9 @@ const UpgradeToProModal = ({ isOpen, onClose }) => {
 							</button>
 							<button
 								onClick={onClose}
-								className="w-full py-2 px-5 rounded-lg hover:bg-neutral-800 text-sm font-medium text-neutral-400"
+								className="w-full py-2 px-5 rounded-lg hover:bg-neutral-800 transition-colors"
 							>
-								Not now
+								Cancel
 							</button>
 						</footer>
 					</motion.div>
@@ -186,11 +186,54 @@ const UpgradeToProModal = ({ isOpen, onClose }) => {
 	)
 }
 
+const WhatsAppDisclaimerModal = ({ isOpen, onAgree, onClose }) => {
+	// This modal doesn't need to know if it's open, the parent handles it.
+	// But we keep the prop for clarity and potential internal logic.
+	if (!isOpen) return null
+
+	return (
+		<ModalDialog
+			title={
+				<div className="flex items-center gap-2">
+					<IconBrandWhatsapp />
+					<span>WhatsApp Disclaimer</span>
+				</div>
+			}
+			description="Please review the following before connecting your WhatsApp account."
+			onCancel={onClose}
+			onConfirm={onAgree}
+			confirmButtonText="Agree and Connect"
+			extraContent={
+				<div className="text-sm text-neutral-300 space-y-3 pt-2">
+					<p>
+						By proceeding, you acknowledge that you have read and
+						agree to the{" "}
+						<a
+							href="https://www.whatsapp.com/legal/terms-of-service"
+							target="_blank"
+							rel="noopener noreferrer"
+							className="text-blue-400 hover:underline"
+						>
+							WhatsApp Terms of Service by Meta
+						</a>
+						.
+					</p>
+					<p>
+						Connecting this integration allows Sentient to act on
+						your behalf to: read your messages, send messages, and
+						manage your chats and contacts.
+					</p>
+				</div>
+			}
+		/>
+	)
+}
+
 const MANUAL_INTEGRATION_CONFIGS = {} // Manual integrations removed for Slack and Notion
 
 const WhatsAppQRCodeModal = ({ onClose }) => {
 	const [qrCode, setQrCode] = useState(null)
-	const [status, setStatus] = useState("initiating") // initiating, scanning, working, error
+	const [status, setStatus] = useState("initiating") // initiating, scanning, working,const WhatsAppQRCodeModal = ({ onClose }) => {
 	const [error, setError] = useState("")
 	const intervalRef = useRef(null)
 
@@ -212,15 +255,15 @@ const WhatsAppQRCodeModal = ({ onClose }) => {
 			}
 			if (data.status === "WORKING") {
 				setStatus("working")
-				stopPolling()
 				toast.success("WhatsApp connected successfully!")
+				stopPolling()
 				setTimeout(onClose, 1500)
 			} else if (data.status === "FAILED") {
 				setError("Connection failed. Please close this and try again.")
 				setStatus("error")
 				stopPolling()
 			} else {
-				setStatus("scanning") // Still waiting for scan
+				setStatus("scanning")
 			}
 		} catch (err) {
 			setError(err.message)
@@ -241,11 +284,13 @@ const WhatsAppQRCodeModal = ({ onClose }) => {
 			if (!res.ok) {
 				throw new Error(data.error || "Failed to get QR code")
 			}
-			// WAHA returns base64 image data in the 'data' field
 			setQrCode(data.data)
 			setStatus("scanning")
-			// Start polling for status
-			intervalRef.current = setInterval(pollStatus, 3000)
+
+			// Start polling for status if not already started
+			if (!intervalRef.current) {
+				intervalRef.current = setInterval(pollStatus, 3000)
+			}
 		} catch (err) {
 			setError(err.message)
 			setStatus("error")
@@ -254,9 +299,10 @@ const WhatsAppQRCodeModal = ({ onClose }) => {
 
 	useEffect(() => {
 		initiateConnection()
-		// Cleanup on unmount
-		return () => stopPolling()
-	}, [initiateConnection])
+		return () => {
+			stopPolling()
+		}
+	}, [initiateConnection, stopPolling])
 
 	return (
 		<motion.div
@@ -751,6 +797,7 @@ const IntegrationsPage = () => {
 	const [activeCategory, setActiveCategory] = useState("Most Popular")
 	const [selectedIntegration, setSelectedIntegration] = useState(null)
 	const [activeManualIntegration, setActiveManualIntegration] = useState(null)
+	const [isWhatsAppDisclaimerOpen, setIsWhatsAppDisclaimerOpen] = useState(false)
 	const [isWhatsAppQRModalOpen, setIsWhatsAppQRModalOpen] = useState(false)
 	const [sparkleTrigger, setSparkleTrigger] = useState(0)
 	const [privacyModalService, setPrivacyModalService] = useState(null)
@@ -1364,9 +1411,11 @@ const IntegrationsPage = () => {
 										onClick={async (e) => {
 											e.stopPropagation()
 											if (
-												integration.name === "whatsapp"
+												integration.name ===
+												"whatsapp"
 											) {
-												setIsWhatsAppQRModalOpen(true)
+												// Show disclaimer first
+												setIsWhatsAppDisclaimerOpen(true)
 											} else if (
 												integration.auth_type ===
 												"composio"
@@ -1406,6 +1455,24 @@ const IntegrationsPage = () => {
 				id="page-help-tooltip"
 				place="right-start"
 				style={{ zIndex: 9999 }}
+			/>
+			<AnimatePresence>
+				{isWhatsAppDisclaimerOpen && (
+					<div className="isolate z-[120]">
+						<WhatsAppDisclaimerModal
+							isOpen={isWhatsAppDisclaimerOpen}
+							onClose={() => setIsWhatsAppDisclaimerOpen(false)}
+							onAgree={() => {
+								setIsWhatsAppDisclaimerOpen(false)
+								setIsWhatsAppQRModalOpen(true)
+							}}
+						/>
+					</div>
+				)}
+			</AnimatePresence>
+			<UpgradeToProModal
+				isOpen={isUpgradeModalOpen}
+				onClose={() => setUpgradeModalOpen(false)}
 			/>
 			<UpgradeToProModal
 				isOpen={isUpgradeModalOpen}

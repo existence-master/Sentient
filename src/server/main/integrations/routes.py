@@ -25,7 +25,7 @@ from main.config import (
     SLACK_CLIENT_SECRET, NOTION_CLIENT_ID, NOTION_CLIENT_SECRET,
 )
 from workers.tasks import execute_triggered_task
-from workers.proactive.utils import event_pre_filter
+from workers.proactive.utils import event_pre_filter # noqa: E402
 from main.plans import PRO_ONLY_INTEGRATIONS
 from .utils import waha_request_from_main
 
@@ -474,8 +474,22 @@ async def composio_webhook(request: Request):
 # --- NEW WHATSAPP FULL CONTROL ROUTES ---
 
 @router.post("/whatsapp/connect/initiate", summary="Start a WAHA session and get a QR code")
-async def initiate_whatsapp_connection(user_id: str = Depends(auth_helper.get_current_user_id)):
+async def initiate_whatsapp_connection(
+    user_id_and_plan: Tuple[str, str] = Depends(auth_helper.get_current_user_id_and_plan)
+):
+    user_id, plan = user_id_and_plan
+    service_name = "whatsapp"
+    service_config = INTEGRATIONS_CONFIG.get(service_name)
+
+    # --- Check Plan Limit ---
+    if service_name in PRO_ONLY_INTEGRATIONS and plan == "free":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"The {service_config.get('display_name', service_name)} integration is a Pro feature. Please upgrade your plan."
+        )
+
     try:
+
         # Step 1: Start the session for the user
         # --- MODIFICATION START (v2) ---
         # The user_id from Auth0 (e.g., 'google-oauth2|123...') contains invalid characters ('|')

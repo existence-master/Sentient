@@ -33,7 +33,7 @@ mcp = FastMCP(
 async def send_message_to_self(ctx: Context, message: str) -> Dict[str, Any]:
     """
     Sends a WhatsApp message FROM the Sentient system TO the user's configured notification number.
-    This tool is for system alerts and notifications, not for sending messages to other people from the user's account.
+    This tool is to be used only when the user says 'Send message to me', not for sending messages to other people from the user's account.
     """
     logger.info(f"Executing tool: send_message_to_self")
     try:

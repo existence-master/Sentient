@@ -44,5 +44,5 @@ PRO_ONLY_FEATURES = [
 ]
 
 PRO_ONLY_INTEGRATIONS = [
-    "notion", "github", "slack", "discord", "trello"
+    "notion", "github", "slack", "discord", "trello", "whatsapp"
 ]
