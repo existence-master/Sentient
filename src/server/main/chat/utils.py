@@ -121,52 +121,58 @@ async def _get_stage1_response(messages: List[Dict[str, Any]], connected_tools_m
     # Fallback to avoid crashing the chat
     return {"topic_changed": False, "connected_tools": [], "disconnected_tools": []}
 
-def parse_assistant_response(raw_content: str) -> Dict[str, Any]:
+import re
+from typing import List, Dict, Any
+
+def parse_assistant_response(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Parses the raw LLM output string to separate the final answer, thoughts, and tool interactions.
+    Parses conversation history and stores reasoning, tool calls, and tool results
+    in chronological order as `turn_steps`, along with the final user-facing content.
     """
-    if not isinstance(raw_content, str):
-        return {"final_content": "", "thoughts": [], "tool_calls": [], "tool_results": []}
-
-    thoughts = []
-    tool_calls = []
-    tool_results = []
-
-    # Extract thoughts
-    think_matches = re.findall(r'<think>([\s\S]*?)</think>', raw_content, re.DOTALL)
-    thoughts.extend([match.strip() for match in think_matches])
-
-    # Extract tool calls (supporting both tool_code and tool_call)
-    tool_call_matches = re.findall(r'<tool_(?:code|call) name="([^"]+)">([\s\S]*?)</tool_code>', raw_content, re.DOTALL)
-    for match in tool_call_matches:
-        tool_calls.append({
-            "tool_name": match[0],
-            "parameters": match[1].strip()
-        })
-
-    # Extract tool results
-    tool_result_matches = re.findall(r'<tool_result tool_name="([^"]+)">([\s\S]*?)</tool_result>', raw_content, re.DOTALL)
-    for match in tool_result_matches:
-        tool_results.append({
-            "tool_name": match[0],
-            "result": match[1].strip()
-        })
-
-    # Determine final content
+    turn_steps = []
     final_content = ""
-    answer_match = re.search(r'<answer>([\s\S]*?)</answer>', raw_content, re.DOTALL)
-    if answer_match:
-        # If <answer> tag exists, it is the definitive final content
-        final_content = answer_match.group(1).strip()
-    else:
-        # Otherwise, strip all known tags to get the final content
-        final_content = re.sub(r'<(?:think|tool_code|tool_call|tool_result)[\s\S]*?>[\s\S]*?</(?:think|tool_code|tool_call|tool_result)>', '', raw_content, flags=re.DOTALL).strip()
+
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+
+        # ✅ Thoughts from <think> tags
+        if role == "assistant" and "<think>" in content:
+            think_matches = re.findall(r"<think>([\s\S]*?)</think>", content, re.DOTALL)
+            for match in think_matches:
+                turn_steps.append({
+                    "type": "thought",
+                    "content": match.strip()
+                })
+
+        # ✅ Tool calls
+        if role == "assistant" and "function_call" in msg:
+            tool_call = msg["function_call"]
+            turn_steps.append({
+                "type": "tool_call",
+                "tool_name": tool_call.get("name"),
+                "arguments": tool_call.get("arguments")
+            })
+
+        # ✅ Tool results
+        if role == "function":
+            turn_steps.append({
+                "type": "tool_result",
+                "tool_name": msg.get("name"),
+                "result": msg.get("content", "").strip()
+            })
+
+    # ✅ Extract final user-facing message (last assistant message without function_call)
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant" and "function_call" not in msg:
+            text = msg.get("content", "").strip()
+            if text:
+                final_content = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.DOTALL).strip()
+                break
 
     return {
         "final_content": final_content,
-        "thoughts": thoughts,
-        "tool_calls": tool_calls,
-        "tool_results": tool_results
+        "turn_steps": turn_steps
     }
 
 
@@ -379,7 +385,8 @@ async def generate_chat_llm_stream(
             
             assistant_turn_start_index = next((i + 1 for i in range(len(current_history) - 1, -1, -1) if current_history[i].get('role') == 'user'), 0)
             assistant_messages = current_history[assistant_turn_start_index:]
-            current_turn_str = "".join(msg_to_str(m) for m in assistant_messages)
+            current_turn_str = "".join(str(m) for m in assistant_messages)
+
             if len(current_turn_str) > len(last_yielded_content_str):
                 new_chunk = current_turn_str[len(last_yielded_content_str):]
                 event_payload = {"type": "assistantStream", "token": new_chunk, "done": False, "messageId": assistant_message_id}
@@ -388,6 +395,8 @@ async def generate_chat_llm_stream(
                     first_chunk = False
                 yield event_payload
                 last_yielded_content_str = current_turn_str
+
+        print("Last yielded content string:", last_yielded_content_str)
 
     except asyncio.CancelledError:
         stream_interrupted = True
@@ -400,25 +409,6 @@ async def generate_chat_llm_stream(
         yield {"type": "error", "message": "An unexpected error occurred in the chat agent."}
     finally:
         yield {"type": "assistantStream", "token": "", "done": True, "messageId": assistant_message_id}
-
-def msg_to_str(msg: Dict[str, Any]) -> str:
-    if msg.get('role') == 'assistant' and msg.get('function_call'):
-        args_str = msg['function_call'].get('arguments', '')
-        try:
-            parsed_args = JsonExtractor.extract_valid_json(args_str)
-            args_pretty = json.dumps(parsed_args, indent=2) if parsed_args else args_str
-        except: args_pretty = args_str
-        return f"<tool_code name=\"{msg['function_call'].get('name')}\">\n{args_pretty}\n</tool_code>\n"
-    elif msg.get('role') == 'function':
-        content = msg.get('content', '')
-        try:
-            parsed_content = JsonExtractor.extract_valid_json(content)
-            content_pretty = json.dumps(parsed_content, indent=2) if parsed_content else content
-        except: content_pretty = content
-        return f"<tool_result tool_name=\"{msg.get('name')}\">\n{content_pretty}\n</tool_result>\n"
-    elif msg.get('role') == 'assistant' and msg.get('content'):
-        return msg.get('content', '')
-    return ''
 
 async def process_voice_command(
     user_id: str,
