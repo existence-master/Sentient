@@ -41,7 +41,12 @@ async def send_message_to_self(ctx: Context, message: str) -> Dict[str, Any]:
         chat_id = await auth.get_user_notification_chat_id(user_id)
         
         # WAHA notifications are sent via a generic "default" session for the system
-        result = await utils.waha_request("POST", "/api/sendText", session="default", json_data={"chatId": chat_id, "text": message})
+        result = await utils.waha_request(
+            "POST",
+            "/api/sendText",
+            session="default",
+            json_data={"chatId": chat_id, "text": message, "session": "default"}
+        )
         
         if result and result.get("id"):
             return {"status": "success", "result": f"Notification sent successfully. Message ID: {result['id']}"}
@@ -210,7 +215,7 @@ async def manage_message(ctx: Context, message_id: str, action: str, content: Op
 
         if action_lower == 'react':
             if not content: raise ToolError("Content (emoji) is required for 'react' action.")
-            result = await utils.waha_request("PUT", "/api/reaction", session=sanitized_session, json_data={"messageId": message_id, "reaction": content})
+            result = await utils.waha_request("PUT", "/api/reaction", session=sanitized_session, json_data={"messageId": message_id, "reaction": content, "session": sanitized_session})
         elif action_lower == 'edit':
             if not content: raise ToolError("Content (new text) is required for 'edit' action.")
             endpoint = f"/api/{{session}}/chats/{chat_id}/messages/{message_id}"
