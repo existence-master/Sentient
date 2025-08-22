@@ -13,6 +13,7 @@ services:
     environment:
       # --- Recommended Engine for Notifications ---
       - WHATSAPP_DEFAULT_ENGINE=GOWS
+      - WHATSAPP_RESTART_ALL_SESSIONS=true
       
       # --- Security (IMPORTANT for deployment) ---
       # Generate a secure key for production. 'admin' is for local testing only.
