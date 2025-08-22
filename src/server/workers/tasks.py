@@ -599,12 +599,39 @@ async def async_generate_plan(task_id: str, user_id: str):
         if not plan_data or "plan" not in plan_data:
             raise Exception(f"Planner agent returned invalid JSON: {final_response_str}")
 
-        await db_manager.update_task_with_plan(task_id, plan_data, is_change_request)
-        capture_event(user_id, "proactive_task_generated", {
-            "task_id": task_id,
-            "source": task.get("original_context", {}).get("source", "unknown"),
-            "plan_steps": len(plan_data.get("plan", []))
-        })
+        await db_manager.update_task_with_plan(task_id, plan_data, is_change_request) # noqa: E501
+
+        # --- NEW: Auto-approval logic for sub-tasks ---
+        auto_approve = task.get("original_context", {}).get("auto_approve", False)
+        if auto_approve:
+            logger.info(f"Task {task_id} is a sub-task with auto-approval enabled. Approving now.")
+            # This logic is copied and adapted from /approve-task endpoint
+            now = datetime.datetime.now(datetime.timezone.utc)
+            new_run = {
+                "run_id": str(uuid.uuid4()),
+                "status": "processing",
+                "plan": plan_data.get("plan", []),
+                "created_at": now,
+                "execution_start_time": now
+            }
+
+            updated_task = await db_manager.get_task(task_id, user_id)
+            current_runs = updated_task.get("runs", [])
+            if not isinstance(current_runs, list):
+                current_runs = []
+            current_runs.append(new_run)
+
+            update_payload = {
+                "runs": current_runs,
+                "status": "processing",
+                "last_execution_at": now,
+                "next_execution_at": None,
+            }
+            await db_manager.update_task_field(task_id, user_id, update_payload)
+            execute_task_plan.delay(task_id, user_id, new_run['run_id'])
+            await notify_user(user_id, f"Auto-approved and started sub-task: '{plan_data.get('name', '...')[:50]}...'", task_id, notification_type="taskStarted")
+            return # End execution here for auto-approved tasks
+
 
         # Notify user that a plan is ready for their approval
         await notify_user(

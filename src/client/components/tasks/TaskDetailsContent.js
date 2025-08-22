@@ -14,7 +14,8 @@ import {
 	IconSend,
 	IconInfoCircle,
 	IconLink,
-	IconWorldSearch
+	IconWorldSearch,
+	IconChevronRight
 } from "@tabler/icons-react"
 import ScheduleEditor from "@components/tasks/ScheduleEditor"
 import ExecutionUpdate from "./ExecutionUpdate"
@@ -114,6 +115,138 @@ const QnaSection = ({ questions, task, onAnswerClarifications }) => {
 						</button>
 					</div>
 				)}
+			</div>
+		</div>
+	)
+}
+
+const LongFormPlanSection = ({ plan, onSelectTask }) => {
+	if (!plan || plan.length === 0) {
+		return (
+			<div>
+				<h4 className="font-semibold text-neutral-300 mb-2">Plan</h4>
+				<p className="text-sm text-neutral-500">
+					The orchestrator is currently generating the initial plan.
+				</p>
+			</div>
+		)
+	}
+
+	return (
+		<div>
+			<h4 className="font-semibold text-neutral-300 mb-2">
+				Dynamic Plan
+			</h4>
+			<div className="space-y-3">
+				{plan.map((step, index) => (
+					<div
+						key={step.step_id || index}
+						className="p-3 bg-neutral-800/50 rounded-lg border border-neutral-700/50"
+					>
+						<p className="text-sm font-medium text-neutral-200">
+							{step.description}
+						</p>
+						<div className="text-xs text-neutral-400 mt-2 flex items-center justify-between">
+							<span>
+								Status:{" "}
+								<span className="font-semibold capitalize">
+									{step.status}
+								</span>
+							</span>
+							{step.sub_task_id && (
+								<button
+									onClick={() =>
+										onSelectTask({
+											task_id: step.sub_task_id
+										})
+									}
+									className="text-blue-400 hover:underline flex items-center gap-1"
+								>
+									View Sub-task <IconChevronRight size={14} />
+								</button>
+							)}
+						</div>
+						{step.result && (
+							<div className="mt-2 pt-2 border-t border-neutral-700">
+								<p className="text-xs font-semibold text-neutral-300 mb-1">
+									Result:
+								</p>
+								<pre className="text-xs bg-neutral-900 p-2 rounded-md whitespace-pre-wrap max-h-40 overflow-auto custom-scrollbar">
+									{JSON.stringify(step.result, null, 2)}
+								</pre>
+							</div>
+						)}
+					</div>
+				))}
+			</div>
+		</div>
+	)
+}
+
+const LongFormQnaSection = ({ requests, task, onAnswer }) => {
+	const [answers, setAnswers] = useState({})
+	const [isSubmitting, setIsSubmitting] = useState(null) // store request_id being submitted
+
+	const pendingRequests = requests.filter((r) => r.status === "pending")
+	if (pendingRequests.length === 0) return null
+
+	const handleAnswerChange = (requestId, text) => {
+		setAnswers((prev) => ({ ...prev, [requestId]: text }))
+	}
+
+	const handleSubmit = async (requestId) => {
+		const answerText = answers[requestId]
+		if (!answerText || !answerText.trim()) {
+			toast.error("Please provide an answer.")
+			return
+		}
+		setIsSubmitting(requestId)
+		await onAnswer(task.task_id, requestId, answerText)
+		setIsSubmitting(null)
+	}
+
+	return (
+		<div>
+			<h4 className="font-semibold text-neutral-300 mb-2">
+				Action Required
+			</h4>
+			<div className="space-y-4 p-4 rounded-lg border bg-yellow-500/10 border-yellow-500/20">
+				{pendingRequests.map((req) => (
+					<div key={req.request_id}>
+						<label className="block text-sm font-medium text-neutral-300 mb-2 whitespace-pre-wrap">
+							{req.question}
+						</label>
+						<textarea
+							value={answers[req.request_id] || ""}
+							onChange={(e) =>
+								handleAnswerChange(
+									req.request_id,
+									e.target.value
+								)
+							}
+							rows={3}
+							className="w-full p-2 bg-neutral-800 border border-neutral-700 rounded-md text-sm text-white transition-colors focus:border-yellow-400 focus:ring-0"
+							placeholder="Your answer..."
+						/>
+						<div className="flex justify-end mt-2">
+							<button
+								onClick={() => handleSubmit(req.request_id)}
+								disabled={isSubmitting === req.request_id}
+								className="px-4 py-2 text-sm font-semibold bg-yellow-400 text-black rounded-md hover:bg-yellow-300 disabled:opacity-50 flex items-center gap-2"
+							>
+								{isSubmitting === req.request_id && (
+									<IconLoader
+										size={16}
+										className="animate-spin"
+									/>
+								)}
+								{isSubmitting === req.request_id
+									? "Submitting..."
+									: "Submit Answer"}
+							</button>
+						</div>
+					</div>
+				))}
 			</div>
 		</div>
 	)
@@ -359,7 +492,9 @@ const TaskDetailsContent = ({
 	allTools,
 	integrations,
 	onSendChatMessage,
-	onAnswerClarifications
+	onAnswerClarifications,
+	onAnswerLongFormClarification,
+	onSelectTask
 }) => {
 	if (!task) {
 		return null
@@ -368,6 +503,11 @@ const TaskDetailsContent = ({
 	const displayTask = isEditing ? editableTask : task
 	const statusInfo =
 		taskStatusColors[displayTask.status] || taskStatusColors.default
+    const orchestratorStatus =
+        displayTask.task_type === "long_form"
+            ? displayTask.orchestrator_state?.current_state
+            : null
+
 	const priorityInfo =
 		priorityMap[displayTask.priority] || priorityMap.default
 	let runs = displayTask.runs || []
@@ -392,6 +532,24 @@ const TaskDetailsContent = ({
 
 	return (
 		<div className="space-y-6">
+			{displayTask.task_type === "long_form" && (
+				<LongFormPlanSection
+					plan={displayTask.dynamic_plan}
+					onSelectTask={onSelectTask}
+				/>
+			)}
+			{displayTask.task_type === "long_form" &&
+				displayTask.orchestrator_state?.current_state === "SUSPENDED" &&
+				displayTask.clarification_requests?.some(
+					(r) => r.status === "pending"
+				) && (
+					<LongFormQnaSection
+						requests={displayTask.clarification_requests}
+						task={displayTask}
+						onAnswer={onAnswerLongFormClarification} // new prop
+					/>
+				)}
+
 			{displayTask.clarifying_questions &&
 				displayTask.clarifying_questions.length > 0 && (
 					<QnaSection
@@ -434,6 +592,11 @@ const TaskDetailsContent = ({
 						>
 							<statusInfo.icon size={12} />
 							{statusInfo.label}
+                            {orchestratorStatus && (
+                                <span className="text-neutral-500 font-normal italic">
+                                    ({orchestratorStatus})
+                                </span>
+                            )}
 						</span>
 						<div className="w-px h-4 bg-neutral-700"></div>
 						<span className="text-sm text-neutral-400">

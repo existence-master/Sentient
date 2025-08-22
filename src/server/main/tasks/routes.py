@@ -129,6 +129,7 @@ async def add_task(
             "name": request.prompt,
             "description": f"Long-form task to achieve the goal: {request.prompt}",
             "task_type": "long_form",
+            "auto_approve_subtasks": request.auto_approve_subtasks,
             "orchestrator_state": {
                 "main_goal": request.prompt,
                 "current_state": "CREATED",

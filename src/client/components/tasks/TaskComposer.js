@@ -121,6 +121,7 @@ const TaskComposer = ({
 }) => {
 	const [activeTab, setActiveTab] = useState("once")
 	const [goalInput, setGoalInput] = useState("")
+	const [autoApproveSubtasks, setAutoApproveSubtasks] = useState(true)
 
 	// State for each tab
 	const [runOnceType, setRunOnceType] = useState("now")
@@ -188,7 +189,8 @@ const TaskComposer = ({
 		} else if (activeTab === "long_form") {
 			payload = {
 				prompt: goalInput.trim(),
-				task_type: "long_form"
+				task_type: "long_form",
+				auto_approve_subtasks: autoApproveSubtasks
 			}
 		} else {
 			if (!goalInput.trim()) {
@@ -403,6 +405,23 @@ const TaskComposer = ({
 										</TextLoop>
 									</div>
 								)}
+							</div>
+						)}
+						{activeTab === "long_form" && (
+							<div className="mt-2">
+								<label className="flex items-center gap-3 cursor-pointer text-sm text-neutral-300 p-3 bg-neutral-900 rounded-lg border border-neutral-700 hover:border-neutral-600">
+									<input
+										type="checkbox"
+										checked={autoApproveSubtasks}
+										onChange={(e) =>
+											setAutoApproveSubtasks(
+												e.target.checked
+											)
+										}
+										className="accent-brand-orange w-4 h-4"
+									/>
+									<span>Auto-approve and run sub-tasks</span>
+								</label>
 							</div>
 						)}
 						{activeTab === "once" && (

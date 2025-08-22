@@ -8,8 +8,33 @@ import { format, isToday } from "date-fns"
 import { BorderTrail } from "@components/ui/border-trail"
 import { getDisplayName } from "@utils/taskUtils"
 
-const StatusBadge = ({ status }) => {
-	const statusInfo = taskStatusColors[status] || taskStatusColors.default
+const StatusBadge = ({ status, taskType, orchestratorState }) => {
+	let displayStatus = status
+	if (taskType === "long_form" && orchestratorState) {
+		// Map orchestrator state to a display status that taskStatusColors can understand
+		const state = orchestratorState.toLowerCase()
+		switch (state) {
+			case "created":
+			case "planning":
+				displayStatus = "planning"
+				break
+			case "active":
+            case "waiting": // A waiting task is still actively processing/monitoring
+				displayStatus = "processing"
+				break
+			case "suspended":
+                // Suspended means it's waiting for user input.
+                displayStatus = "clarification_pending"
+				break
+			case "failed":
+				displayStatus = "error"
+				break
+			default:
+				displayStatus = state // handles "completed"
+		}
+	}
+	const statusInfo =
+		taskStatusColors[displayStatus] || taskStatusColors.default
 
 	return (
 		<div
@@ -81,7 +106,11 @@ const TaskCardList = ({ task, onSelectTask }) => {
 					)}
 					{getDisplayName(task)}
 				</p>
-				<StatusBadge status={task.status} />
+				<StatusBadge
+					status={task.status}
+					taskType={task.task_type}
+					orchestratorState={task.orchestrator_state?.current_state}
+				/>
 			</div>
 			<div className="flex items-center justify-between mt-3 pt-3 border-t border-neutral-800 text-xs text-neutral-400 font-mono">
 				{dateText && <span>{dateText}</span>}

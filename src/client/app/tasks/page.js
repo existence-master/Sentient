@@ -374,6 +374,22 @@ function TasksPageContent() {
 		handleClosePanel()
 	}
 
+	const handleAnswerLongFormClarification = async (
+		taskId,
+		requestId,
+		answer
+	) => {
+		await handleAction(
+			() =>
+				fetch(`/api/tasks/${taskId}/answer-clarification`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ requestId, answer })
+				}),
+			"Answer submitted. The task will now resume."
+		)
+	}
+
 	// --- REVISED: handleAddTask is now handleCreateTask and takes a payload ---
 	const handleCreateTask = async (payload) => {
 		const toastId = toast.loading("Creating task...")
@@ -507,7 +523,6 @@ Description: ${event.description || "No description."}`
 	const filteredActiveWorkflows = useMemo(() => {
 		const allWorkflows = [
 			...swarmTasks,
-			...longFormTasks,
 			...recurringTasks,
 			...triggeredTasks
 		]
@@ -522,8 +537,21 @@ Description: ${event.description || "No description."}`
 						.toLowerCase()
 						.includes(searchQuery.toLowerCase()))
 		)
-	}, [swarmTasks, longFormTasks, recurringTasks, triggeredTasks, searchQuery])
+    }, [swarmTasks, recurringTasks, triggeredTasks, searchQuery])
 
+	const filteredLongFormTasks = useMemo(() => {
+		if (!searchQuery.trim()) {
+			return longFormTasks
+		}
+		return longFormTasks.filter(
+			(task) =>
+				task.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+				(task.description &&
+					task.description
+						.toLowerCase()
+						.includes(searchQuery.toLowerCase()))
+		)
+	}, [longFormTasks, searchQuery])
 	const filteredCalendarTasks = useMemo(() => {
 		const allCalendarTasks = [...oneTimeTasks, ...recurringInstances]
 		if (!searchQuery.trim()) {
@@ -558,6 +586,10 @@ Description: ${event.description || "No description."}`
 						onClose={handleClosePanel}
 						onSave={handleUpdateTask}
 						onAnswerClarifications={handleAnswerClarifications}
+						onAnswerLongFormClarification={
+							handleAnswerLongFormClarification
+						}
+						onSelectTask={handleSelectItem}
 						onDelete={(taskId) =>
 							handleAction(
 								() =>
@@ -706,6 +738,9 @@ Description: ${event.description || "No description."}`
 											oneTimeTasks={filteredOneTimeTasks}
 											activeWorkflows={
 												filteredActiveWorkflows
+											}
+											longFormTasks={
+												filteredLongFormTasks
 											}
 											onSelectTask={handleSelectItem}
 											searchQuery={searchQuery}

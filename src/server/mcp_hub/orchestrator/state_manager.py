@@ -19,6 +19,20 @@ async def update_orchestrator_state(task_id: str, user_id: str, state_updates: D
     db = PlannerMongoManager()
     try:
         payload = {f"orchestrator_state.{key}": value for key, value in state_updates.items()}
+
+        # Also update main status if orchestrator state is changing
+        if 'current_state' in state_updates:
+            orchestrator_state = state_updates['current_state']
+            status_map = {
+                "COMPLETED": "completed",
+                "FAILED": "error",
+                "SUSPENDED": "clarification_pending",
+                "PLANNING": "processing",
+                "ACTIVE": "processing",
+                "WAITING": "processing"
+            }
+            if orchestrator_state in status_map:
+                payload['status'] = status_map[orchestrator_state]
         await db.update_task_field(task_id, user_id, payload)
     finally:
         await db.close()

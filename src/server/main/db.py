@@ -390,6 +390,7 @@ class MongoManager:
             task_doc["dynamic_plan"] = task_data.get("dynamic_plan")
             task_doc["clarification_requests"] = task_data.get("clarification_requests")
             task_doc["execution_log"] = task_data.get("execution_log")
+            task_doc["auto_approve_subtasks"] = task_data.get("auto_approve_subtasks", False)
 
         SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "runs", "original_context", "chat_history", "error", "clarifying_questions", "result", "swarm_details", "orchestrator_state", "dynamic_plan", "clarification_requests", "execution_log"]
         encrypt_doc(task_doc, SENSITIVE_TASK_FIELDS)

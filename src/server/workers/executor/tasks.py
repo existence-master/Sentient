@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import re
 from json_extractor import JsonExtractor
+import uuid
 
 from main.analytics import capture_event
 from qwen_agent.agents import Assistant
@@ -656,6 +657,40 @@ async def async_generate_task_result(task_id: str, run_id: str, user_id: str, ag
             {"$set": update_payload}
         )
         logger.info(f"Successfully generated and saved structured result for task {task_id}, run {run_id}.")
+
+        # --- NEW LOGIC for subtask completion ---
+        original_context = task.get("original_context", {})
+        if original_context.get("source") == "long_form_subtask":
+            parent_task_id = original_context.get("parent_task_id")
+            parent_step_id = original_context.get("parent_step_id")
+
+            if parent_task_id and parent_step_id:
+                logger.info(f"Subtask {task_id} for step {parent_step_id} completed. Updating parent task {parent_task_id}.")
+
+                # --- NEW: Enrich result with execution details ---
+                full_subtask_doc = await db.tasks.find_one({"task_id": task_id, "user_id": user_id})
+                if full_subtask_doc:
+                    decrypt_doc(full_subtask_doc, SENSITIVE_TASK_FIELDS)
+                    structured_result["sub_task_execution_details"] = {
+                        "runs": full_subtask_doc.get("runs", []),
+                        "chat_history": full_subtask_doc.get("chat_history", [])
+                    }
+
+                from workers.long_form_tasks import execute_orchestrator_cycle
+                from mcp_hub.orchestrator.state_manager import mark_step_as_complete, add_execution_log
+
+                await mark_step_as_complete(parent_task_id, user_id, parent_step_id, structured_result)
+                await add_execution_log(
+                    parent_task_id,
+                    user_id,
+                    "subtask_completed",
+                    {"sub_task_id": task_id, "step_id": parent_step_id},
+                    f"Sub-task completed with summary: {structured_result.get('summary', 'N/A')}"
+                )
+                execute_orchestrator_cycle.delay(parent_task_id)
+                logger.info(f"Triggered orchestrator cycle for parent task {parent_task_id}.")
+
+
         await push_task_list_update(user_id, task_id, run_id)
     except LLMProviderDownError as e:
         logger.error(f"LLM provider down during result generation for task {task_id}: {e}", exc_info=True)

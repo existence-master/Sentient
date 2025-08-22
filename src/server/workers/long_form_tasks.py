@@ -82,9 +82,17 @@ async def async_execute_orchestrator_cycle(task_id: str):
         user_prompt = ""
         if current_state == "WAITING":
             waiting_config = orchestrator_state.get("waiting_config", {})
-            user_prompt = FOLLOW_UP_DECISION_PROMPT.format(
+
+            started_at = waiting_config.get("started_at", datetime.datetime.now(datetime.timezone.utc))
+            # Ensure the datetime from DB is timezone-aware before subtraction
+            if started_at and started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=datetime.timezone.utc)
+
+            time_elapsed_delta = datetime.datetime.now(datetime.timezone.utc) - started_at
+
+            user_prompt = FOLLOW_UP_DECISION_PROMPT.format( # noqa: E501
                 waiting_for=waiting_config.get("waiting_for"),
-                time_elapsed=str(datetime.datetime.now(datetime.timezone.utc) - waiting_config.get("started_at", datetime.datetime.now(datetime.timezone.utc))),
+                time_elapsed=str(time_elapsed_delta),
                 previous_attempts=waiting_config.get("current_retries", 0),
                 context=json.dumps(context_for_prompt)
             )

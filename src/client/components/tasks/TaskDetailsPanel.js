@@ -33,7 +33,9 @@ const TaskDetailsPanel = ({
 	onArchiveTask,
 	className,
 	onSendChatMessage,
-	onAnswerClarifications
+	onAnswerClarifications,
+	onAnswerLongFormClarification,
+	onSelectTask
 }) => {
 	const [isEditing, setIsEditing] = useState(false)
 	const [editableTask, setEditableTask] = useState(task)
@@ -230,6 +232,10 @@ const TaskDetailsPanel = ({
 								task={task}
 								onSendChatMessage={onSendChatMessage}
 								onAnswerClarifications={onAnswerClarifications}
+								onAnswerLongFormClarification={
+									onAnswerLongFormClarification
+								}
+								onSelectTask={onSelectTask}
 							/>
 						)}
 					</main>

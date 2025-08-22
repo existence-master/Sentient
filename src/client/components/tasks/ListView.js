@@ -13,6 +13,7 @@ import CollapsibleSection from "./CollapsibleSection"
 const ListView = ({
 	oneTimeTasks,
 	activeWorkflows,
+    longFormTasks,
 	onSelectTask,
 	searchQuery,
 	onSearchChange
@@ -78,6 +79,28 @@ const ListView = ({
 
 			<AnimatePresence>
 				<div className="divide-y divide-zinc-700">
+                    {longFormTasks.length > 0 && (
+                        <CollapsibleSection
+                            key="long-form"
+                            title={`Long-Form Tasks (${longFormTasks.length})`}
+                            defaultOpen={true}
+                        >
+                            <motion.div
+                                className="space-y-3 pt-2"
+                                variants={containerVariants}
+                                initial="hidden"
+                                animate="visible"
+                            >
+                                {longFormTasks.map((task) => (
+                                    <TaskCardList
+                                        key={task.task_id}
+                                        task={task}
+                                        onSelectTask={onSelectTask}
+                                    />
+                                ))}
+                            </motion.div>
+                        </CollapsibleSection>
+                    )}
 					{activeWorkflows.length > 0 && (
 						<CollapsibleSection
 							key="workflows"

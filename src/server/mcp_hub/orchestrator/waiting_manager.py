@@ -5,7 +5,7 @@ from . import state_manager
 
 logger = logging.getLogger(__name__)
 
-async def set_waiting_state(task_id: str, waiting_for: str, timeout_minutes: int, max_retries: int):
+async def set_waiting_state(task_id: str, user_id: str, waiting_for: str, timeout_minutes: int, max_retries: int):
     """
     Sets the task state to WAITING and schedules a timeout handler.
     """
@@ -20,7 +20,7 @@ async def set_waiting_state(task_id: str, waiting_for: str, timeout_minutes: int
         "current_retries": 0
     }
 
-    await state_manager.update_orchestrator_state(task_id, {
+    await state_manager.update_orchestrator_state(task_id, user_id, {
         "current_state": "WAITING",
         "waiting_config": waiting_config
     })

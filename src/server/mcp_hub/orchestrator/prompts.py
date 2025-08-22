@@ -32,6 +32,7 @@ INSTRUCTIONS:
 5. Wait appropriately for responses with reasonable timeouts
 6. Ask for clarification only when essential information is missing
 7. Keep the user informed through progress updates
+8. **Maintain Conversation Threads:** When a sub-task sends an email, its result will contain a 'threadId'. If you need to send a follow-up email or reply, you MUST pass this 'threadId' to the next sub-task's context so it can continue to keep the conversation in one thread. Also keep this in mind for other tools that may have information that is required to maintain context in subsequent sub-tasks, like document IDs when documents are created, or calendar event IDs when scheduling events.
 """
 
 STEP_PLANNING_PROMPT = """

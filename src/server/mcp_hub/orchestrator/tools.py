@@ -40,18 +40,35 @@ async def get_context(ctx: Context, task_id: str, key: str = None) -> Dict:
         return {"status": "success", "result": context_store.get(key)}
     return {"status": "success", "result": context_store}
 
-async def create_subtask(ctx: Context, task_id: str, subtask_description: str, subtask_type: str = "single", priority: int = 1, context: Dict = None, reasoning: str = "") -> Dict:
-    """Create a sub-task using existing task infrastructure"""
+async def create_subtask(ctx: Context, task_id: str, step_id: str, subtask_description: str, context: Optional[Dict] = None, reasoning: str = "") -> Dict:
+    """Create a sub-task for a specific step of a long-form task."""
     user_id = auth.get_user_id_from_context(ctx)
     db = state_manager.PlannerMongoManager()
     try:
+        # Get parent task to check for auto-approval flag
+        parent_task = await db.get_task(task_id, user_id)
+        auto_approve = parent_task.get("auto_approve_subtasks", False)
+
         sub_task_data = {
             "name": subtask_description,
             "description": subtask_description,
-            "task_type": "single", # Sub-tasks are always single-shot
-            "original_context": {"source": "long_form_subtask", "parent_task_id": task_id, "context": context}
+            "task_type": "single",  # Sub-tasks are always single-shot
+            "original_context": {
+                "source": "long_form_subtask",
+                "parent_task_id": task_id,
+                "parent_step_id": step_id,
+                "context": context,
+                "auto_approve": auto_approve
+            }
         }
         sub_task_id = await db.add_task(user_id, sub_task_data)
+
+        # Link sub_task_id to the parent task's step
+        await db.tasks_collection.update_one(
+            {"task_id": task_id, "user_id": user_id, "dynamic_plan.step_id": step_id},
+            {"$set": {"dynamic_plan.$.sub_task_id": sub_task_id}}
+        )
+
         refine_and_plan_ai_task.delay(sub_task_id, user_id)
         await state_manager.add_execution_log(task_id, user_id, "subtask_created", {"sub_task_id": sub_task_id, "description": subtask_description}, reasoning)
         return {"status": "success", "result": {"sub_task_id": sub_task_id}}
