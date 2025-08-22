@@ -177,7 +177,7 @@ const questions = [
 	{
 		id: "whatsapp_notifications_number",
 		question:
-			"If you'd like to receive them, please enter your number with the country code. Otherwise, just press Enter to skip.",
+			"If you'd like to enable this, please enter your number with the country code. Otherwise, just press Enter to skip.",
 		type: "text-input",
 		required: false,
 		placeholder: "+14155552671",
@@ -191,7 +191,7 @@ const sentientComments = [
 	"Perfect. Now, to help with local info like weather and places...",
 	"This helps me understand your professional goals and context.",
 	"And when you're not working? Tell me about your hobbies.",
-	"One last thing. I can send you important updates on WhatsApp. We are in the process of getting an official number for Sentient. Until then, notifications will be sent via our co-founder Sarthak's number (+91827507823).",
+	"One last thing. I can send you important notifications, task updates, and reminders on WhatsApp. We're in the process of getting an official number, so for now, messages will come from our co-founder Sarthak (+91827507823), who may also occasionally reach out for feedback.",
 	"Awesome! That's all I need. Let's get you set up."
 ]
 

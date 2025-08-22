@@ -224,16 +224,12 @@ const WhatsAppSettings = () => {
 				WhatsApp Notifications
 			</h2>
 			<p className="text-neutral-400 mb-6">
-				Receive important system notifications on WhatsApp.
+				Receive important notifications, task updates, and reminders on WhatsApp.
 			</p>
 			<div className="bg-neutral-900/50 p-6 rounded-2xl border border-neutral-800">
 				<div className="space-y-4">
 					<p className="text-neutral-400 text-sm">
-						Receive important notifications on WhatsApp. We are in
-						the process of getting an official number for Sentient.
-						Until then, notifications will be sent via our
-						co-founder Sarthak's number (+91827507823). Please enter
-						your number with the country code.
+						Receive important notifications, task updates, and reminders on WhatsApp. We're in the process of getting an official number, so for now, messages will come from our co-founder Sarthak (+91827507823), who may also occasionally reach out for feedback. Please enter your number with the country code.
 					</p>
 					{isNotifLoading ? (
 						<div className="flex justify-center mt-4">

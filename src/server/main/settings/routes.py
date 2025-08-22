@@ -7,6 +7,7 @@ from main.dependencies import mongo_manager
 from main.auth.utils import PermissionChecker, AuthHelper
 from main.notifications.whatsapp_client import check_phone_number_exists
 from main.settings.models import WhatsAppMcpRequest, WhatsAppNotificationNumberRequest, ProfileUpdateRequest
+from main.settings.google_sheets_utils import update_contact_in_sheet
 
 logger = logging.getLogger(__name__)
 router = APIRouter(
@@ -82,8 +83,20 @@ async def get_whatsapp_mcp_number(
 @router.post("/whatsapp-notifications", summary="Set or Update WhatsApp number for notifications")
 async def set_whatsapp_notification_number(
     request: WhatsAppNotificationNumberRequest,
-    user_id: str = Depends(PermissionChecker(required_permissions=["write:config"]))
+    payload: dict = Depends(auth_helper.get_decoded_payload_with_claims)
 ):
+    # 1. First, ensure the user has the required permission from the token payload
+    required_permission = "write:config"
+    if required_permission not in payload.get("permissions", []):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Missing required permission: {required_permission}"
+        )
+
+    # 2. Extract user_id and email directly from the validated token payload
+    user_id = payload.get("sub")
+    user_email = payload.get("email") # This is the reliable email from Auth0    
+    
     whatsapp_number = request.whatsapp_notifications_number.strip() if request.whatsapp_notifications_number else ""
     if not whatsapp_number:
         update_payload = {
@@ -110,15 +123,15 @@ async def set_whatsapp_notification_number(
         }
         await mongo_manager.update_user_profile(user_id, update_payload)
 
-        # --- NEW: Update Google Sheet ---
+        # 3. Update Google Sheet using the reliable email from the token
         try:
-            user_profile = await mongo_manager.get_user_profile(user_id)
-            user_email = user_profile.get("userData", {}).get("personalInfo", {}).get("email")
             if user_email:
                 await update_contact_in_sheet(user_email, whatsapp_number)
+            else:
+                logger.warning(f"Could not update Google Sheet for user {user_id} because no email was found in their token.")
         except Exception as e:
-            logger.error(f"Non-critical error: Failed to update Google Sheet for user {user_id} after setting WA number. Error: {e}")
-        # --- END NEW ---
+            logger.error(f"Non-critical error: Failed to update Google Sheet for user {user_id}. Error: {e}")
+        
         return JSONResponse(content={"message": "WhatsApp notification number updated successfully."})
 
     except ConnectionError as e:

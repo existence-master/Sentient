@@ -55,7 +55,8 @@ class AuthHelper:
                 permissions = AUTH0_SCOPE.split() if AUTH0_SCOPE else []
                 return {
                     "sub": "self-hosted-user",
-                    "permissions": permissions
+                    "permissions": permissions,
+                    "email": "selfhost@example.com" # Add a dummy email
                 }
             else:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid self-host token")
@@ -135,6 +136,11 @@ class AuthHelper:
         if ENVIRONMENT == "selfhost": plan = "selfhost"
         elif "Pro" in payload.get(f"{AUTH0_NAMESPACE}/roles", []): plan = "pro"
         payload["plan"] = plan
+
+        # Add the namespaced email to the top-level 'email' key for convenience
+        if AUTH0_NAMESPACE:
+            payload["email"] = payload.get(f"{AUTH0_NAMESPACE}/email")
+
         return payload
 
     async def ws_authenticate_with_data(self, websocket: WebSocket) -> Optional[Dict]:
