@@ -135,6 +135,15 @@ def parse_assistant_response(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
                     "content": match.strip()
                 })
 
+        # ✅ Thoughts from <think> tags
+        if role == "assistant" and content and "<think>" in content:
+            think_matches = re.findall(r"<think>([\s\S]*?)</think>", content, re.DOTALL)
+            for match in think_matches:
+                turn_steps.append({
+                    "type": "thought",
+                    "content": match.strip()
+                })
+
         # ✅ Tool calls
         if role == "assistant" and "function_call" in msg:
             tool_call = msg["function_call"]

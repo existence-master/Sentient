@@ -144,6 +144,7 @@ const TaskChatSection = ({ task, onSendChatMessage }) => {
 					<ChatBubble
 						key={index}
 						role={msg.role}
+						turn_steps={msg.turn_steps || []}
 						content={msg.content}
 						message={msg}
 					/>
