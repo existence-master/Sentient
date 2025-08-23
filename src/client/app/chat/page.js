@@ -364,7 +364,9 @@ export default function ChatPage() {
 
 	const fetchIntegrations = useCallback(async () => {
 		try {
-			const res = await fetch("/api/settings/integrations", { method: "POST" })
+			const res = await fetch("/api/settings/integrations", {
+				method: "POST"
+			})
 			if (!res.ok) throw new Error("Failed to fetch integrations")
 			const data = await res.json()
 			setIntegrations(data.integrations || [])
@@ -614,24 +616,12 @@ export default function ChatPage() {
 		if (textareaRef.current) textareaRef.current.style.height = "auto"
 
 		try {
-			const messagesToSend = updatedMessages.slice(-20).map((msg) => {
-				let content = msg.content
-				if (msg.replyToId) {
-					const originalMsg = updatedMessages.find(
-						(m) => m.id === msg.replyToId
-					)
-					if (originalMsg) {
-						content = `<reply_to id="${originalMsg.id}">${originalMsg.content}</reply_to>\n${msg.content}`
-					}
-				}
-				return { id: msg.id, role: msg.role, content: content }
-			})
-
 			const response = await fetch("/api/chat/message", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
-					messages: messagesToSend
+					// The server only needs the new user message to save it, then it fetches its own history.
+					messages: [newUserMessage]
 				}),
 				signal: abortControllerRef.current.signal
 			})
@@ -658,7 +648,8 @@ export default function ChatPage() {
 					role: "assistant",
 					content: "",
 					timestamp: new Date().toISOString(),
-					tools: []
+					tools: [],
+					turn_steps: [] // --- ADDED --- Initialize turn_steps for the new message
 				}
 			])
 
@@ -708,6 +699,19 @@ export default function ChatPage() {
 						setDisplayedMessages((prev) =>
 							prev.map((msg) => {
 								if (msg.id === assistantMessageId) {
+									// --- CHANGED --- Handle the final 'done' event with parsed data
+									if (parsed.done) {
+										return {
+											...msg,
+											content:
+												parsed.final_content ||
+												msg.content, // Replace content with clean version
+											turn_steps:
+												parsed.turn_steps ||
+												msg.turn_steps // Populate turn_steps
+										}
+									}
+									// For intermediate chunks, just append the token
 									return {
 										...msg,
 										content:
@@ -1801,9 +1805,7 @@ export default function ChatPage() {
 										role={msg.role}
 										content={msg.content}
 										tools={msg.tools || []}
-										thoughts={msg.thoughts || []}
-										tool_calls={msg.tool_calls || []}
-										tool_results={msg.tool_results || []}
+										turn_steps={msg.turn_steps || []} // --- CHANGED --- Pass turn_steps instead of old props
 										onReply={handleReply}
 										message={msg}
 										allMessages={displayedMessages}

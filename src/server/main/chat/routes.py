@@ -8,7 +8,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from main.chat.models import ChatMessageInput, DeleteMessageRequest # noqa: E501
-from main.chat.utils import generate_chat_llm_stream, parse_assistant_response
+from main.chat.utils import generate_chat_llm_stream # No longer need parse_assistant_response here
 from main.auth.utils import PermissionChecker, AuthHelper
 from main.dependencies import mongo_manager, auth_helper
 from main.plans import PLAN_LIMITS
@@ -18,6 +18,7 @@ router = APIRouter(
     tags=["Chat"]
 )
 logger = logging.getLogger(__name__)
+
 @router.post("/message", summary="Process Chat Message (Overlay Chat)")
 async def chat_endpoint(
     request_body: ChatMessageInput, 
@@ -25,11 +26,9 @@ async def chat_endpoint(
 ):
     user_id, plan = user_id_and_plan
 
-    # 1. Check if there are any user messages
     if not any(msg.get("role") == "user" for msg in request_body.messages):
         raise HTTPException(status_code=400, detail="No user message found in the request.")
 
-    # --- Check Usage Limit ---
     usage = await mongo_manager.get_or_create_daily_usage(user_id)
     limit = PLAN_LIMITS[plan].get("text_messages_daily", 0)
     current_count = usage.get("text_messages", 0)
@@ -40,7 +39,6 @@ async def chat_endpoint(
             detail=f"You have reached your daily message limit of {limit}. Please upgrade or try again tomorrow."
         )
 
-    # 2. Save all new user messages since the last assistant message
     for msg in reversed(request_body.messages):
         if msg.get("role") == "assistant":
             break
@@ -53,11 +51,8 @@ async def chat_endpoint(
             )
             await mongo_manager.increment_daily_usage(user_id, "text_messages")
 
-    # 3. Fetch clean history from DB
-    db_history = await mongo_manager.get_message_history(user_id, limit=30)
-    clean_history_for_llm = list(reversed(db_history))
+    clean_history_for_llm = list(reversed(await mongo_manager.get_message_history(user_id, limit=20)))
 
-    # 4. Fetch comprehensive user context
     user_profile = await mongo_manager.get_user_profile(user_id)
     user_data = user_profile.get("userData", {}) if user_profile else {}
     personal_info = user_data.get("personalInfo", {})
@@ -68,8 +63,10 @@ async def chat_endpoint(
     }
 
     async def event_stream_generator():
-        assistant_response_buffer = ""
+        # --- CHANGED --- We no longer need a buffer for parsing.
         assistant_message_id = None
+        final_content_to_save = None
+        turn_steps_to_save = None
 
         try:
             async for event in generate_chat_llm_stream(
@@ -80,10 +77,16 @@ async def chat_endpoint(
             ):
                 if not event:
                     continue
+                
+                # --- CHANGED --- Logic to capture the final parsed data from the last event.
                 if event.get("type") == "assistantStream":
-                    assistant_response_buffer += event.get("token", "")
                     if not assistant_message_id and event.get("messageId"):
                         assistant_message_id = event["messageId"]
+                    
+                    # When the stream is done, capture the parsed data sent from the generator.
+                    if event.get("done"):
+                        final_content_to_save = event.get("final_content")
+                        turn_steps_to_save = event.get("turn_steps")
 
                 yield json.dumps(event) + "\n"
         except asyncio.CancelledError:
@@ -96,16 +99,15 @@ async def chat_endpoint(
             }
             yield json.dumps(error_response) + "\n"
         finally:
-            if assistant_response_buffer.strip() and assistant_message_id:
-                parsed_response = parse_assistant_response(assistant_response_buffer.strip())
+            # --- CHANGED --- The saving logic is now simpler and more robust.
+            if final_content_to_save is not None and turn_steps_to_save is not None and assistant_message_id:
+                # Note: Ensure your `add_message` function and DB schema can handle a `turn_steps` field.
                 await mongo_manager.add_message(
                     user_id=user_id,
                     role="assistant",
-                    content=parsed_response["final_content"],
+                    content=final_content_to_save,
                     message_id=assistant_message_id,
-                    thoughts=parsed_response["thoughts"],
-                    tool_calls=parsed_response["tool_calls"],
-                    tool_results=parsed_response["tool_results"]
+                    turn_steps=turn_steps_to_save  # Pass the structured turn steps directly
                 )
                 logger.info(f"Saved parsed assistant response for user {user_id} with ID {assistant_message_id}")
 
@@ -118,6 +120,7 @@ async def chat_endpoint(
             "Transfer-Encoding": "chunked",
         }
     )
+
 @router.get("/history", summary="Get message history for a user")
 async def get_chat_history(
     request: Request,
@@ -127,10 +130,8 @@ async def get_chat_history(
     before_timestamp = request.query_params.get("before_timestamp")
 
     messages = await mongo_manager.get_message_history(user_id, limit, before_timestamp)
-
-    # The frontend expects messages in chronological order, but we fetch them in reverse chronological.
-    # So we must reverse them before sending.
     return JSONResponse(content={"messages": messages[::-1]})
+
 @router.post("/delete", summary="Delete a message or clear chat history")
 async def delete_message(
     request: DeleteMessageRequest,

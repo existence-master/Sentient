@@ -482,7 +482,7 @@ class MongoManager:
         return new_task_id
 
     # --- Message Methods ---
-    async def add_message(self, user_id: str, role: str, content: str, message_id: Optional[str] = None, thoughts: Optional[List[str]] = None, tool_calls: Optional[List[Dict]] = None, tool_results: Optional[List[Dict]] = None) -> Dict:
+    async def add_message(self, user_id: str, role: str, content: str, message_id: Optional[str] = None, turn_steps: Optional[List[Dict]] = None) -> Dict:
         """
         Adds a single message to the messages collection.
         If a message_id is provided, it's used. Otherwise, a new one is generated.
@@ -508,15 +508,11 @@ class MongoManager:
             "summary_id": None,
         }
 
-        # Add new structured fields if they are provided and not empty
-        if thoughts:
-            message_doc["thoughts"] = thoughts
-        if tool_calls:
-            message_doc["tool_calls"] = tool_calls
-        if tool_results:
-            message_doc["tool_results"] = tool_results
+        # --- CHANGED --- Add the new structured turn_steps field if provided.
+        if turn_steps:
+            message_doc["turn_steps"] = turn_steps
 
-        SENSITIVE_MESSAGE_FIELDS = ["content", "thoughts", "tool_calls", "tool_results"]
+        SENSITIVE_MESSAGE_FIELDS = ["content", "turn_steps"]
         encrypt_doc(message_doc, SENSITIVE_MESSAGE_FIELDS)
 
         await self.messages_collection.insert_one(message_doc)
@@ -538,7 +534,7 @@ class MongoManager:
         cursor = self.messages_collection.find(query).sort("timestamp", DESCENDING).limit(limit)
         messages = await cursor.to_list(length=limit)
 
-        SENSITIVE_MESSAGE_FIELDS = ["content", "thoughts", "tool_calls", "tool_results"]
+        SENSITIVE_MESSAGE_FIELDS = ["content", "turn_steps"]
         _decrypt_docs(messages, SENSITIVE_MESSAGE_FIELDS)
 
         # Serialize datetime and ObjectId objects for JSON response
