@@ -7,7 +7,6 @@ from fastmcp.exceptions import ToolError
 
 from . import state_manager, waiting_manager, auth
 from workers.utils.api_client import notify_user
-from main.search.utils import perform_unified_search
 from workers.tasks import refine_and_plan_ai_task
 from mcp_hub.orchestrator.prompts import COMPLETION_EVALUATION_PROMPT
 from main.llm import run_agent as run_main_agent
@@ -100,7 +99,10 @@ async def ask_user_clarification(ctx: Context, task_id: str, question: str, urge
             {"task_id": task_id, "user_id": user_id},
             {
                 "$push": {"clarification_requests": clarification_request},
-                "$set": {"orchestrator_state.current_state": "SUSPENDED"}
+                "$set": {
+                    "orchestrator_state.current_state": "SUSPENDED",
+                    "status": "clarification_pending"
+                }
             }
         )
         await state_manager.add_execution_log(task_id, user_id, "clarification_requested", {"question": question}, reasoning)
@@ -150,18 +152,3 @@ async def evaluate_completion(ctx: Context, task_id: str, reasoning: str) -> Dic
     else:
         await state_manager.add_execution_log(task_id, user_id, "completion_evaluation", {"is_complete": False}, reasoning)
         return {"status": "success", "result": {"is_complete": False}}
-
-async def get_related_integrations_data(ctx: Context, task_id: str, integration_types: List[str], search_query: str = None) -> Dict:
-    """Fetch relevant data from user's connected integrations"""
-    user_id = auth.get_user_id_from_context(ctx)
-    logger.info(f"Fetching integration data for task {task_id} from: {integration_types}")
-    final_report = "No context found."
-    async for chunk in perform_unified_search(search_query or "general context for task", user_id):
-        event = json.loads(chunk)
-        if event.get("type") == "done":
-            final_report = event.get("final_report", "No context found.")
-            break
-    
-    await state_manager.add_execution_log(task_id, user_id, "integration_data_fetched", {"query": search_query, "sources": integration_types}, "Searched for external context.")
-
-    return {"status": "success", "result": final_report}

@@ -30,7 +30,6 @@ mcp.tool(tools.wait_for_response)
 mcp.tool(tools.ask_user_clarification)
 mcp.tool(tools.mark_step_complete)
 mcp.tool(tools.evaluate_completion)
-mcp.tool(tools.get_related_integrations_data)
 
 # --- Server Execution ---
 if __name__ == "__main__":

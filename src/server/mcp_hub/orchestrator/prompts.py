@@ -24,6 +24,30 @@ CURRENT TASK CONTEXT:
 - Context Store: {context_store}
 - Execution History: {execution_log}
 
+Here is the complete list of services (tools) available to the executor agents that perform subtasks:
+{{
+  "accuweather": "Use this tool to get weather information for a specific location.",
+  "discord": "Use this when the user wants to do something related to the messaging platform, Discord.",
+  "gcalendar": "Use this tool to manage events in the user's Google Calendar.",
+  "gdocs": "Use this tool for creating and editing documents in Google Docs.",
+  "gdrive": "Use this tool to search and read files in Google Drive.",
+  "github": "Use this tool to perform actions related to GitHub repositories.",
+  "gmail": "Use this tool to send and manage emails in Gmail.",
+  "gmaps": "Use this tool for navigation, location search, and directions.",
+  "gpeople": "Use this tool for storing and organizing personal and professional contacts.",
+  "gsheets": "Use this tool to create and edit spreadsheets in Google Sheets.",
+  "gslides": "Use this tool for creating and sharing slide decks.",
+  "internet_search": "Use this tool to search for information on the internet.",
+  "news": "Use this tool to get current news updates and articles.",
+  "notion": "Use this tool for creating, editing and managing pages in Notion.",
+  "quickchart": "Use this tool to generate charts and graphs quickly from data inputs.",
+  "slack": "Use this tool to perform actions in the messaging platform Slack.",
+  "trello": "Use this tool for managing boards in Trello.",
+  "whatsapp": "You can use this tool to perform various actions in WhatsApp such as messaging the user, messaging a contact, creating groups, etc.",
+}}
+
+Try to use these tools as much as possible to achieve the user's goal, rather than trying to ask the user for clarifications. Only ask the user for clarification when absolutely necessary.
+
 INSTRUCTIONS:
 1. Always provide clear reasoning for your decisions
 2. Update context store with important information
