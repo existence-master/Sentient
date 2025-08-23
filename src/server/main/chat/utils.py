@@ -492,26 +492,27 @@ async def process_voice_command(
                     if step.get("type") == "thought":
                         thought_buffer.append(step.get("content", "").strip())
                     else:
-                        if thought_buffer:
+                        if thought_buffer: # Flush buffer if a non-thought step is found
                             combined_thoughts = "<think>\n" + "\n\n".join(thought_buffer) + "\n</think>"
                             stage_2_expanded_messages.append({"role": "assistant", "content": combined_thoughts})
                             thought_buffer = []
 
                         if step.get("type") == "tool_call":
                             stage_2_expanded_messages.append({
-                                "role": "assistant",
-                                "content": None,
+                                "role": "assistant", "content": None,
                                 "function_call": { "name": step.get("tool_name"), "arguments": step.get("arguments") }
                             })
                         elif step.get("type") == "tool_result":
                             result_content = step.get("result", "")
                             if not isinstance(result_content, str):
+                                # Ensure result content is always a string for the LLM
                                 result_content = json.dumps(result_content)
                             stage_2_expanded_messages.append({
                                 "role": "function", "name": step.get("tool_name"), "content": result_content
                             })
 
                 if msg.get("content"):
+                    # Combine any trailing thoughts with the final content
                     final_content_with_thoughts = "\n".join([f"<think>{thought}</think>" for thought in thought_buffer]) + "\n" + msg.get("content")
                     stage_2_expanded_messages.append({
                         "role": "assistant", "content": final_content_with_thoughts.strip()

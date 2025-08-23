@@ -27,7 +27,6 @@ import {
 	IconBrandNotion,
 	IconBrandGithub,
 	IconBrandGoogleDrive,
-	IconBrandLinkedin,
 	IconArrowRight
 } from "@tabler/icons-react"
 import { AnimatePresence, motion } from "framer-motion"
@@ -53,7 +52,6 @@ const toolIcons = {
 	internet_search: IconWorldSearch,
 	memory: IconBrain,
 	gmaps: IconMapPin,
-	linkedin: IconBrandLinkedin,
 	gshopping: IconShoppingCart,
 	quickchart: IconChartPie,
 	google_search: IconWorldSearch,
@@ -250,47 +248,97 @@ const ChatBubble = ({
 											switch (step.type) {
 												case "thought":
 													return (
-														<div key={index} className="flex items-start gap-2">
-															<IconBrain size={16} className="text-yellow-400/80 flex-shrink-0 mt-0.5" />
+														<div
+															key={index}
+															className="flex items-start gap-2"
+														>
+															<IconBrain
+																size={16}
+																className="text-yellow-400/80 flex-shrink-0 mt-0.5"
+															/>
 															<ReactMarkdown className="prose prose-sm prose-invert text-neutral-300 whitespace-pre-wrap">
 																{step.content}
 															</ReactMarkdown>
 														</div>
-													);
+													)
 												case "tool_call":
-													let formattedArgs = step.arguments;
+													let formattedArgs =
+														step.arguments
 													try {
-														const parsed = JSON.parse(step.arguments);
-														formattedArgs = JSON.stringify(parsed, null, 2);
-													} catch (e) { /* not json, leave as is */ }
+														const parsed =
+															JSON.parse(
+																step.arguments
+															)
+														formattedArgs =
+															JSON.stringify(
+																parsed,
+																null,
+																2
+															)
+													} catch (e) {
+														/* not json, leave as is */
+													}
 													return (
-														<div key={index} className="space-y-1">
+														<div
+															key={index}
+															className="space-y-1"
+														>
 															<p className="text-xs font-semibold text-green-400 flex items-center gap-1.5">
-																<IconTool size={14} /> Tool Call: {step.tool_name}
+																<IconTool
+																	size={14}
+																/>{" "}
+																Tool Call:{" "}
+																{step.tool_name}
 															</p>
 															<pre className="text-xs text-neutral-300 whitespace-pre-wrap font-mono bg-black/30 p-2 rounded-md">
-																<code>{formattedArgs}</code>
+																<code>
+																	{
+																		formattedArgs
+																	}
+																</code>
 															</pre>
 														</div>
-													);
+													)
 												case "tool_result":
-													let formattedResult = step.result;
+													let formattedResult =
+														step.result
 													try {
-														const parsed = JSON.parse(step.result);
-														formattedResult = JSON.stringify(parsed, null, 2);
-													} catch (e) { /* not json, leave as is */ }
+														const parsed =
+															JSON.parse(
+																step.result
+															)
+														formattedResult =
+															JSON.stringify(
+																parsed,
+																null,
+																2
+															)
+													} catch (e) {
+														/* not json, leave as is */
+													}
 													return (
-														<div key={index} className="space-y-1">
+														<div
+															key={index}
+															className="space-y-1"
+														>
 															<p className="text-xs font-semibold text-purple-400 flex items-center gap-1.5">
-																<IconArrowRight size={14} /> Tool Result: {step.tool_name}
+																<IconArrowRight
+																	size={14}
+																/>{" "}
+																Tool Result:{" "}
+																{step.tool_name}
 															</p>
 															<pre className="text-xs text-neutral-400 whitespace-pre-wrap font-mono bg-black/30 p-2 rounded-md">
-																<code>{formattedResult}</code>
+																<code>
+																	{
+																		formattedResult
+																	}
+																</code>
 															</pre>
 														</div>
-													);
+													)
 												default:
-													return null;
+													return null
 											}
 										})}
 									</div>
@@ -321,7 +369,11 @@ const ChatBubble = ({
 			</>
 		)
 	}, [
-		processedContent.content, expandedStates, isUser, turn_steps, isStreaming
+		processedContent.content,
+		expandedStates,
+		isUser,
+		turn_steps,
+		isStreaming
 	])
 
 	// Function to copy message content to clipboard

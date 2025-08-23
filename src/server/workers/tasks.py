@@ -584,20 +584,60 @@ async def async_generate_plan(task_id: str, user_id: str):
             )
             messages.append({"role": "system", "content": context_message})
 
-            for msg in task["chat_history"]:
-                # This part is tricky. The planner doesn't need the full turn_steps of previous turns.
-                # It just needs the user/assistant content.
-                role = msg.get("role")
-                if role not in ["user", "assistant"]:
-                    continue
-                messages.append({
-                    "role": role,
-                    "content": msg.get("content")
-                })
+            for msg in task.get("chat_history", []):
+                if msg.get("role") == "user":
+                    messages.append({
+                        "role": "user",
+                        "content": msg.get("content", "")
+                    })
+                elif msg.get("role") == "assistant":
+                    turn_steps = msg.get("turn_steps", [])
+                    thought_buffer = []
+
+                    for step in turn_steps:
+                        if step.get("type") == "thought":
+                            thought_buffer.append(step.get("content", "").strip())
+                        else:
+                            if thought_buffer:
+                                combined_thoughts = "<think>\n" + "\n\n".join(thought_buffer) + "\n</think>"
+                                messages.append({"role": "assistant", "content": combined_thoughts})
+                                thought_buffer = []
+
+                            if step.get("type") == "tool_call":
+                                messages.append({
+                                    "role": "assistant",
+                                    "content": None,
+                                    "function_call": {
+                                        "name": step.get("tool_name"),
+                                        "arguments": step.get("arguments")
+                                    }
+                                })
+                            elif step.get("type") == "tool_result":
+                                result_content = step.get("result", "")
+                                if not isinstance(result_content, str):
+                                    result_content = json.dumps(result_content)
+                                messages.append({
+                                    "role": "function",
+                                    "name": step.get("tool_name"),
+                                    "content": result_content
+                                })
+
+                    if msg.get("content"):
+                        final_content_with_thoughts = "\n".join([f"<think>{thought}</think>" for thought in thought_buffer]) + "\n" + msg.get("content")
+                        messages.append({
+                            "role": "assistant",
+                            "content": final_content_with_thoughts.strip()
+                        })
+                    elif thought_buffer:
+                        combined_thoughts = "<think>\n" + "\n\n".join(thought_buffer) + "\n</think>"
+                        messages.append({"role": "assistant", "content": combined_thoughts})
         else:
             action_items = task.get("action_items", []) or [task.get("description", "")]
             user_prompt_content = "Please create a plan for the following action items:\n- " + "\n- ".join(action_items)
             messages = [{'role': 'user', 'content': user_prompt_content}]
+
+        logger.info(f"Planner for task {task_id} is being run with the following history:")
+        logger.info(json.dumps(messages, indent=2, default=str))
 
         final_response_str = ""
         final_history = None
@@ -611,6 +651,21 @@ async def async_generate_plan(task_id: str, user_id: str):
 
         if not final_history:
             raise Exception("Planner agent returned no history.")
+
+        # The planner prompt wraps the JSON in <answer> tags.
+        answer_match = re.search(r'<answer>([\s\S]*?)</answer>', final_response_str, re.DOTALL)
+        if answer_match:
+            json_str_to_parse = answer_match.group(1)
+        else:
+            # Fallback to cleaning the whole string if <answer> tags are missing
+            json_str_to_parse = clean_llm_output(final_response_str)
+
+        plan_data = JsonExtractor.extract_valid_json(json_str_to_parse)
+
+        if not plan_data or not isinstance(plan_data, dict):
+            logger.error(f"Failed to parse valid JSON plan from LLM for task {task_id}. Raw response: {final_response_str}")
+            # Save the raw response in the error field for debugging
+            raise Exception(f"Planner agent returned invalid JSON plan. Response body: {final_response_str}")
 
         await db_manager.update_task_with_plan(task_id, plan_data, is_change_request) # noqa: E501
 
