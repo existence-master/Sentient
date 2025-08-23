@@ -241,30 +241,6 @@ class MongoManager:
         )
         return result.modified_count > 0
 
-    async def add_answers_to_task(self, task_id: str, answers: List[Dict], user_id: str) -> bool:
-        """Finds a task and updates its clarifying questions with user answers."""
-        task = await self.get_task(task_id, user_id)
-        if not task:
-            return False
-
-        current_questions = task.get("clarifying_questions", [])
-        if not current_questions:
-            # Fallback for legacy tasks where questions might be in the last run
-            if task.get("runs"):
-                current_questions = task["runs"][-1].get("clarifying_questions", [])
-            if not current_questions:
-                logger.warning(f"add_answers_to_task called for task {task_id}, but no questions found.")
-                return False # Nothing to update
-
-        answer_map = {ans.get("question_id"): ans.get("answer_text") for ans in answers}
-
-        for question in current_questions:
-            q_id = question.get("question_id")
-            if q_id in answer_map:
-                question["answer"] = answer_map[q_id]
-        # Always write back to the top-level field for consistency
-        return await self.update_task(task_id, {"clarifying_questions": current_questions})
-
     async def delete_all_notifications(self, user_id: str):
         """Deletes all notifications for a user by emptying the notifications array."""
         if not user_id:

@@ -64,7 +64,7 @@ async def async_execute_orchestrator_cycle(task_id: str):
         user_id = task.get("user_id")
         current_state = task.get("orchestrator_state", {}).get("current_state")
 
-        if current_state in ["COMPLETED", "FAILED", "SUSPENDED", "PAUSED"]:
+        if current_state in ["COMPLETED", "FAILED", "SUSPENDED", "PAUSED", "WAITING"]:
             logger.info(f"Orchestrator cycle for task {task_id} skipped. State is '{current_state}'.")
             return
 
@@ -74,8 +74,10 @@ async def async_execute_orchestrator_cycle(task_id: str):
             "task_id": task_id,
             "main_goal": orchestrator_state.get("main_goal"),
             "current_state": current_state,
+            "dynamic_plan": json.dumps(task.get("dynamic_plan", []), default=str),
             "context_store": orchestrator_state.get("context_store", {}),
-            "execution_log": task.get("execution_log", [])[-5:] # Last 5 logs
+            "execution_log": task.get("execution_log", [])[-5:], # Last 5 logs
+            "clarification_history": json.dumps(task.get("clarification_requests", []), default=str)
         }
 
         # 2. Determine the right prompt based on the current state
@@ -94,7 +96,7 @@ async def async_execute_orchestrator_cycle(task_id: str):
                 waiting_for=waiting_config.get("waiting_for"),
                 time_elapsed=str(time_elapsed_delta),
                 previous_attempts=waiting_config.get("current_retries", 0),
-                context=json.dumps(context_for_prompt)
+                context=json.dumps({k: v for k, v in context_for_prompt.items() if k != 'task_id'}, default=str)
             )
         else: # PLANNING or ACTIVE
             user_prompt = STEP_PLANNING_PROMPT.format(**context_for_prompt)
@@ -109,13 +111,12 @@ async def async_execute_orchestrator_cycle(task_id: str):
         mcp_servers_to_use = {
             mcp_config["name"]: {
                 "url": mcp_config["url"],
-                "headers": {"X-User-ID": user_id}
+                "headers": {"X-User-ID": user_id, "X-Task-ID": task_id}
             }
         }
         function_list = [{"mcpServers": mcp_servers_to_use}]
 
         system_prompt = ORCHESTRATOR_SYSTEM_PROMPT.format(
-            tools="All tools from Orchestrator MCP are available.",
             **context_for_prompt
         )
         messages = [{'role': 'user', 'content': user_prompt}]
@@ -147,7 +148,17 @@ async def async_execute_orchestrator_cycle(task_id: str):
             logger.error(f"Orchestrator agent for task {task_id} made a tool call but no result was found. History: {final_agent_response}")
             raise Exception("Orchestrator agent tool call did not yield a result.")
 
-        tool_result = json.loads(tool_result_message.get("content", "{}"))
+        tool_content = tool_result_message.get("content", "{}")
+        tool_result = None
+        if not tool_content or not tool_content.strip():
+            logger.warning(f"Orchestrator tool '{tool_name}' for task {task_id} returned empty content. Assuming failure.")
+            tool_result = {"status": "failure", "error": "Tool returned an empty response."}
+        else:
+            try:
+                tool_result = json.loads(tool_content)
+            except json.JSONDecodeError:
+                logger.error(f"Failed to decode JSON from tool '{tool_name}' for task {task_id}. Content: {tool_content}")
+                raise Exception(f"Orchestrator tool '{tool_name}' returned invalid JSON: {tool_content}")
 
         if tool_result.get("status") != "success":
             raise Exception(f"Orchestrator tool '{tool_name}' failed: {tool_result.get('error')}")
@@ -158,7 +169,8 @@ async def async_execute_orchestrator_cycle(task_id: str):
         updated_task = await db_manager.get_task(task_id)
         current_state = updated_task.get("orchestrator_state", {}).get("current_state")
         if current_state == "ACTIVE":
-            execute_orchestrator_cycle.apply_async(args=[task_id], countdown=300) # Check again in 5 mins
+            # Re-queue the next cycle with a short delay if the task is still actively processing steps.
+            execute_orchestrator_cycle.apply_async(args=[task_id], countdown=5)
 
     except Exception as e:
         logger.error(f"Error in orchestrator cycle for task {task_id}: {e}", exc_info=True)

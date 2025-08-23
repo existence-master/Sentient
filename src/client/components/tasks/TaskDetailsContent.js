@@ -25,6 +25,54 @@ import CollapsibleSection from "./CollapsibleSection"
 import FileCard from "@components/FileCard"
 import ReactMarkdown from "react-markdown"
 
+// --- NEW COMPONENT ---
+const ExecutionLogDisplay = ({ log }) => {
+	if (!log || log.length === 0) return null
+	return (
+		<CollapsibleSection title="Orchestrator Log" defaultOpen={true}>
+			<div className="space-y-3">
+				{log
+					.slice()
+					.reverse()
+					.map((entry, index) => (
+						<div
+							key={index}
+							className="p-3 bg-neutral-800/50 rounded-lg border border-neutral-700/50"
+						>
+							<div className="flex justify-between items-center text-xs text-neutral-500 mb-1">
+								<span className="font-semibold capitalize text-neutral-400">
+									{entry.action?.replace(/_/g, " ")}
+								</span>
+								<span>
+									{new Date(
+										entry.timestamp
+									).toLocaleString()}
+								</span>
+							</div>
+							{entry.agent_reasoning && (
+								<p className="text-sm text-neutral-300 italic mt-2">
+									"{entry.agent_reasoning}"
+								</p>
+							)}
+							{entry.details &&
+								Object.keys(entry.details).length > 0 && (
+									<div className="mt-2 pt-2 border-t border-neutral-700">
+										<pre className="text-xs bg-neutral-900 p-2 rounded-md whitespace-pre-wrap max-h-40 overflow-auto custom-scrollbar">
+											{JSON.stringify(
+												entry.details,
+												null,
+												2
+											)}
+										</pre>
+									</div>
+								)}
+						</div>
+					))}
+			</div>
+		</CollapsibleSection>
+	)
+}
+
 // Helper component to display task results
 const TaskResultDisplay = ({ result }) => {
 	if (!result) return null
@@ -440,6 +488,24 @@ const TaskDetailsContent = ({
 
 	return (
 		<div className="space-y-6">
+			{displayTask.error && (
+				<div>
+					<h4 className="font-semibold text-red-400 mb-2">
+						Task Error
+					</h4>
+					<p className="text-sm bg-red-500/10 border border-red-500/20 text-red-300 p-3 rounded-lg whitespace-pre-wrap">
+						{displayTask.error}
+					</p>
+				</div>
+			)}
+
+			{displayTask.task_type === "long_form" &&
+				displayTask.execution_log && (
+					<ExecutionLogDisplay
+						log={displayTask.execution_log}
+					/>
+				)}
+
 			{displayTask.task_type === "long_form" && (
 				<LongFormPlanSection
 					plan={displayTask.dynamic_plan}

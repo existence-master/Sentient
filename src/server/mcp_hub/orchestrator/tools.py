@@ -16,36 +16,42 @@ logger = logging.getLogger(__name__)
 
 # Note: @mcp.tool() decorator is applied in main.py
 
-async def update_plan(ctx: Context, task_id: str, new_steps: List[Dict], reasoning: str, main_goal_update: str = None) -> Dict:
+async def update_plan(ctx: Context, new_steps: List[Dict], reasoning: str, main_goal_update: str = None) -> Dict:
     """Update the dynamic plan with new steps or modified goal"""
     user_id = auth.get_user_id_from_context(ctx)
+    task_id = auth.get_task_id_from_context(ctx)
     await state_manager.update_dynamic_plan(task_id, user_id, new_steps, main_goal_update)
     await state_manager.add_execution_log(task_id, user_id, "plan_updated", {"new_step_count": len(new_steps)}, reasoning)
     return {"status": "success", "message": "Plan updated successfully."}
 
-async def update_context(ctx: Context, task_id: str, key: str, value: Any, reasoning: str) -> Dict:
+async def update_context(ctx: Context, key: str, value: Any, reasoning: str) -> Dict:
     """Store information in the task's context store"""
     user_id = auth.get_user_id_from_context(ctx)
+    task_id = auth.get_task_id_from_context(ctx)
     await state_manager.update_context_store(task_id, user_id, key, value)
     await state_manager.add_execution_log(task_id, user_id, "context_updated", {"key": key}, reasoning)
     return {"status": "success", "message": f"Context updated for key '{key}'."}
 
-async def get_context(ctx: Context, task_id: str, key: str = None) -> Dict:
+async def get_context(ctx: Context, key: str = None) -> Dict:
     """Retrieve information from task's context store"""
     user_id = auth.get_user_id_from_context(ctx)
+    task_id = auth.get_task_id_from_context(ctx)
     task = await state_manager.get_task_state(task_id, user_id)
     context_store = task.get("orchestrator_state", {}).get("context_store", {})
     if key:
         return {"status": "success", "result": context_store.get(key)}
     return {"status": "success", "result": context_store}
 
-async def create_subtask(ctx: Context, task_id: str, step_id: str, subtask_description: str, context: Optional[Dict] = None, reasoning: str = "") -> Dict:
+async def create_subtask(ctx: Context, step_id: str, subtask_description: str, context: Optional[Dict] = None, reasoning: str = "") -> Dict:
     """Create a sub-task for a specific step of a long-form task."""
     user_id = auth.get_user_id_from_context(ctx)
+    task_id = auth.get_task_id_from_context(ctx)
     db = state_manager.PlannerMongoManager()
     try:
         # Get parent task to check for auto-approval flag
         parent_task = await db.get_task(task_id, user_id)
+        if not parent_task:
+            raise ToolError(f"Parent task with ID {task_id} not found for user.")
         auto_approve = parent_task.get("auto_approve_subtasks", False)
 
         sub_task_data = {
@@ -74,16 +80,18 @@ async def create_subtask(ctx: Context, task_id: str, step_id: str, subtask_descr
     finally:
         await db.close()
 
-async def wait_for_response(ctx: Context, task_id: str, waiting_for: str, timeout_minutes: int, max_retries: int = 3, reasoning: str = "") -> Dict:
+async def wait_for_response(ctx: Context, waiting_for: str, timeout_minutes: int, max_retries: int = 3, reasoning: str = "") -> Dict:
     """Put the task in waiting state with timeout"""
     user_id = auth.get_user_id_from_context(ctx)
+    task_id = auth.get_task_id_from_context(ctx)
     await waiting_manager.set_waiting_state(task_id, user_id, waiting_for, timeout_minutes, max_retries)
     await state_manager.add_execution_log(task_id, user_id, "waiting_started", {"waiting_for": waiting_for, "timeout_minutes": timeout_minutes}, reasoning)
     return {"status": "success", "message": f"Task is now waiting for '{waiting_for}'."}
 
-async def ask_user_clarification(ctx: Context, task_id: str, question: str, urgency: str = "normal", reasoning: str = "") -> Dict:
+async def ask_user_clarification(ctx: Context, question: str, urgency: str = "normal", reasoning: str = "") -> Dict:
     """Suspend task and ask user for clarification"""
     user_id = auth.get_user_id_from_context(ctx)
+    task_id = auth.get_task_id_from_context(ctx)
     db = state_manager.PlannerMongoManager()
     try:
         request_id = str(uuid.uuid4())
@@ -119,22 +127,29 @@ async def ask_user_clarification(ctx: Context, task_id: str, question: str, urge
     finally:
         await db.close()
 
-async def mark_step_complete(ctx: Context, task_id: str, step_id: str, result: Dict, reasoning: str) -> Dict:
+async def mark_step_complete(ctx: Context, step_id: str, result: Dict, reasoning: str) -> Dict:
     """Mark a step as completed and store results"""
     user_id = auth.get_user_id_from_context(ctx)
+    task_id = auth.get_task_id_from_context(ctx)
     await state_manager.mark_step_as_complete(task_id, user_id, step_id, result)
     await state_manager.add_execution_log(task_id, user_id, "step_completed", {"step_id": step_id}, reasoning)
     return {"status": "success", "message": f"Step {step_id} marked as complete."}
 
-async def evaluate_completion(ctx: Context, task_id: str, reasoning: str) -> Dict:
+async def evaluate_completion(ctx: Context, reasoning: str) -> Dict:
     """Evaluate if the main goal has been achieved"""
     user_id = auth.get_user_id_from_context(ctx)
+    task_id = auth.get_task_id_from_context(ctx)
     task = await state_manager.get_task_state(task_id, user_id)
     
+    dynamic_plan = task.get("dynamic_plan", [])
+    recent_results_data = {}
+    if dynamic_plan:
+        recent_results_data = dynamic_plan[-1].get("result", {})
+
     prompt = COMPLETION_EVALUATION_PROMPT.format(
         main_goal=task.get("orchestrator_state", {}).get("main_goal"),
         context_store=json.dumps(task.get("orchestrator_state", {}).get("context_store", {})),
-        recent_results=json.dumps(task.get("dynamic_plan", [])[-1].get("result", {})) # Result of last step
+        recent_results=json.dumps(recent_results_data)
     )
     messages = [{'role': 'user', 'content': prompt}]
     final_content_str = ""

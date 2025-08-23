@@ -26,5 +26,5 @@ async def set_waiting_state(task_id: str, user_id: str, waiting_for: str, timeou
     })
 
     # Schedule the Celery task to handle the timeout
-    # celery_app.send_task('handle_waiting_timeout', args=[task_id, waiting_for], eta=timeout_at)
+    celery_app.send_task('handle_waiting_timeout', args=[task_id, waiting_for], eta=timeout_at)
     logger.info(f"Task {task_id} set to WAITING state. Timeout handler scheduled for {timeout_at}.")

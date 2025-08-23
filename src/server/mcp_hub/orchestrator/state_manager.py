@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 async def get_task_state(task_id: str, user_id: str) -> Dict:
     db = PlannerMongoManager()
     try:
-        task = await db.get_task(task_id)
+        task = await db.get_task(task_id, user_id)
         if not task or task.get("user_id") != user_id:
             raise ValueError("Task not found or access denied.")
         return task

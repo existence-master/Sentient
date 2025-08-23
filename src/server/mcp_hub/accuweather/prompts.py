@@ -8,7 +8,7 @@ INSTRUCTIONS:
 - For current conditions, call `getCurrentWeather` with the location.
 - For a forecast, call `getForecast` with the location and the number of days (defaulting to 1 if not specified).
 - After receiving the tool's output, present the weather data to the user in a clear, human-readable format.
-- Your response for a tool call MUST be a single, valid JSON object.
+- 
 """
 
 weather_agent_user_prompt = """

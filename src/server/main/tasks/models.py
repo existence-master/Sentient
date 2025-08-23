@@ -18,13 +18,6 @@ class AddTaskRequest(BaseModel):
 class ClarificationAnswerRequest(BaseModel):
     request_id: str
     answer: str
-
-class LongFormTaskActionRequest(BaseModel):
-    action: str # "pause" or "resume"
-class ClarificationAnswerRequest(BaseModel):
-    request_id: str
-    answer: str
-
 class LongFormTaskActionRequest(BaseModel):
     action: str # "pause" or "resume"
 class UpdateTaskRequest(BaseModel):

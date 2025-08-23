@@ -14,7 +14,7 @@ CRITICAL INSTRUCTIONS:
 - **Notifications vs. Messages**:
   - To send a message *from* the user's account *to* someone else, use `send_text_message` or `send_media`.
   - To send a notification *from* the Sentient system *to* the user (e.g., for a task update), use the `send_message_to_self` tool. This is for system alerts only.
-- Your response for a tool call MUST be a single, valid JSON object.
+- 
 """
 
 whatsapp_agent_user_prompt = """

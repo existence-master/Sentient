@@ -6,7 +6,7 @@ INSTRUCTIONS:
   - For general, breaking, or category-specific news (e.g., 'latest in tech'), use `get_top_headlines`.
   - For articles about a specific person, company, or event, use `search_everything`.
 - **Synthesize, Don't Just List**: After retrieving articles, summarize the key information for the user. Mention the source (e.g., 'Reuters reports that...').
-- Your response for a tool call MUST be a single, valid JSON object.
+- 
 """
 
 news_agent_user_prompt = """

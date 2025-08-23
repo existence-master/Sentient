@@ -35,7 +35,7 @@ INSTRUCTIONS:
 - **Choose a Chart Type**: If the user doesn't specify a type, select the most appropriate one: 'bar' for comparing values, 'line' for trends over time, 'pie' for proportions.
 - **Build the Config**: Construct the `chart_config` object following the Chart.js format shown in the example. Pay close attention to the structure.
 - **Generate the Chart**: Call `generate_chart` to get a URL, or `download_chart` to save the image file.
-- Your response for a tool call MUST be a single, valid JSON object.
+- 
 """
 
 quickchart_agent_user_prompt = """
