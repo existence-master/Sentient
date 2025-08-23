@@ -14,6 +14,7 @@ from workers.tasks import generate_plan_from_context, execute_task_plan, calcula
 from .models import AddTaskRequest, UpdateTaskRequest, TaskIdRequest, TaskActionRequest, TaskChatRequest, ProgressUpdateRequest
 from main.llm import run_agent
 from main.tasks.models import AddTaskRequest, UpdateTaskRequest, TaskIdRequest, TaskActionRequest, TaskChatRequest, ProgressUpdateRequest
+from main.plans import PLAN_LIMITS
 from workers.tasks import generate_plan_from_context, execute_task_plan, calculate_next_run, refine_and_plan_ai_task, orchestrate_swarm_task
 from main.llm import run_agent, LLMProviderDownError
 from json_extractor import JsonExtractor
@@ -94,9 +95,19 @@ async def add_task(
     user_id_and_plan: Tuple[str, str] = Depends(auth_helper.get_current_user_id_and_plan)
 ):
     user_id, plan = user_id_and_plan
-    # Note: Plan limit checks are removed as per the simplified plan. They can be added back later.
 
     if request.task_type == "swarm":
+        # --- Check Usage Limit for Swarm Tasks ---
+        usage = await mongo_manager.get_or_create_daily_usage(user_id)
+        limit = PLAN_LIMITS[plan].get("swarm_tasks_daily", 0)
+        current_count = usage.get("swarm_tasks", 0)
+
+        if current_count >= limit:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"You have reached your daily limit of {limit} swarm tasks. Please upgrade or try again tomorrow."
+            )
+
         if not request.prompt:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A prompt describing the goal is required for swarm tasks.")
 
@@ -117,10 +128,22 @@ async def add_task(
         if not task_id:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create swarm task.")
 
+        await mongo_manager.increment_daily_usage(user_id, "swarm_tasks")
         orchestrate_swarm_task.delay(task_id, user_id)
         return {"message": "Swarm task initiated! Planning will begin shortly.", "task_id": task_id}
 
     elif request.task_type == "single":
+        # --- Check Usage Limit for One-Time Tasks ---
+        usage = await mongo_manager.get_or_create_daily_usage(user_id)
+        limit = PLAN_LIMITS[plan].get("one_time_tasks_daily", 0)
+        current_count = usage.get("one_time_tasks", 0)
+
+        if current_count >= limit:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"You have reached your daily limit of {limit} one-time tasks. Please upgrade or try again tomorrow."
+            )
+
         if not request.prompt:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A prompt is required for single tasks.")
 
@@ -133,6 +156,9 @@ async def add_task(
         task_id = await mongo_manager.add_task(user_id, task_data)
         if not task_id:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create task.")
+
+        # Increment usage after successful creation
+        await mongo_manager.increment_daily_usage(user_id, "one_time_tasks")
 
         # The existing worker is perfect for this, as it refines details from a prompt and schedule.
         refine_and_plan_ai_task.delay(task_id, user_id)

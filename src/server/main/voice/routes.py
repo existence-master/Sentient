@@ -3,7 +3,10 @@ import json
 import logging
 from pydantic import BaseModel
 import uuid
+import wave
+import os
 import time
+from datetime import datetime # Added import
 from typing import AsyncGenerator, Dict, Any, Tuple
 import re
 import numpy as np
@@ -37,6 +40,7 @@ async def initiate_voice_session(
     and provides the necessary ICE server configuration.
     """
     user_id, plan = user_id_and_plan
+    logger.info(f"Initiating voice session for user: {user_id} on plan: {plan}")
 
     # --- Check Usage Limit ---
     usage = await mongo_manager.get_or_create_daily_usage(user_id)
@@ -44,6 +48,7 @@ async def initiate_voice_session(
     used_seconds = usage.get("voice_chat_seconds", 0)
 
     if used_seconds >= limit_seconds:
+        logger.warning(f"User {user_id} has exceeded their daily voice chat limit.")
         raise HTTPException(
             status_code=429,
             detail=f"You have used all of your daily voice chat time ({int(limit_seconds/60)} minutes). Please upgrade or try again tomorrow."
@@ -60,6 +65,7 @@ async def initiate_voice_session(
     rtc_token = str(uuid.uuid4())
     expires_at = now + TOKEN_EXPIRATION_SECONDS
     rtc_token_cache[rtc_token] = {"user_id": user_id, "expires_at": expires_at}
+    logger.info(f"Generated RTC token {rtc_token} for user {user_id}, expires at {datetime.fromtimestamp(expires_at).isoformat()}")
     
     if ENVIRONMENT in ["dev-local", "selfhost"]:
         logger.info(f"Initiated voice session for user {user_id} in dev-local mode with token {rtc_token}")
@@ -84,10 +90,10 @@ class MyVoiceChatHandler(ReplyOnPause):
         super().__init__(
             fn=self.process_audio_chunk,
             model_options=SileroVadOptions(
-                threshold=0.9,  # Higher threshold for more aggressive VAD
+                threshold=0.6,  # Higher threshold for more aggressive VAD
                 min_speech_duration_ms=250,
                 min_silence_duration_ms=3000,   # wait 3s of silence
-                speech_pad_ms=800,              # give extra buffer before and after speech
+                speech_pad_ms=400,              # give extra buffer before and after speech
                 max_speech_duration_s=15,
             ),
             algo_options=AlgoOptions(
@@ -95,12 +101,17 @@ class MyVoiceChatHandler(ReplyOnPause):
                 started_talking_threshold=0.2,
                 speech_threshold=0.05,          # consider only more solid chunks as pause
             ),
-            can_interrupt=False, # Set to False to prevent user interruption while bot is speaking
+            can_interrupt=False, # Set to False to prevent user interruption while bot is speaking,
+            output_sample_rate=16000
         )
+        self.handler_id = str(uuid.uuid4())[:8]
+        logger.info(f"[Handler:{self.handler_id}] MyVoiceChatHandler instance created.")
 
     def copy(self):
         """Creates a new instance of the handler for each new connection."""
-        return MyVoiceChatHandler()
+        logger.info(f"[Handler:{self.handler_id}] Copying handler for new connection.")
+        new_handler = MyVoiceChatHandler()
+        return new_handler
 
     async def process_audio_chunk(self, audio: tuple[int, np.ndarray]):
         """
@@ -111,18 +122,19 @@ class MyVoiceChatHandler(ReplyOnPause):
 
         context = get_current_context()
         webrtc_id = context.webrtc_id
+        logger.info(f"[Handler:{self.handler_id}] Processing audio chunk for webrtc_id: {webrtc_id}")
 
         # Authenticate the stream using the webrtc_id as the RTC token
         rtc_token = webrtc_id
         token_info = rtc_token_cache.get(rtc_token, None)
 
         if not token_info or time.time() > token_info["expires_at"]:
-            logger.error(f"Invalid or expired RTC token received: {rtc_token}. Terminating stream.")
+            logger.error(f"[Handler:{self.handler_id}] Invalid or expired RTC token received: {rtc_token}. Terminating stream.")
             await self.send_message(json.dumps({"type": "error", "message": "Authentication failed. Please refresh."}))
             return
 
         user_id = token_info["user_id"]
-        logger.info(f"WebRTC stream authenticated for user {user_id} via token {rtc_token}")
+        logger.info(f"[Handler:{self.handler_id}] WebRTC stream authenticated for user {user_id} via token {rtc_token}")
 
         try:
             # 1. Speech-to-Text (STT)
@@ -131,27 +143,52 @@ class MyVoiceChatHandler(ReplyOnPause):
             
             await self.send_message(json.dumps({"type": "status", "message": "transcribing"}))
             sample_rate, audio_array = audio
-            
+
+            print(f"Sample Rate: {sample_rate}, Audio Array Shape: {audio_array.shape}")
+
+            # --- DEBUG: Save audio to file before STT ---
+            try:
+                debug_dir = "audio_debug_logs"
+                # Create the directory relative to the current file's location
+                server_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+                full_debug_path = os.path.join(server_root, debug_dir)
+                os.makedirs(full_debug_path, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                filename = os.path.join(full_debug_path, f"stt_input_{timestamp}.wav")
+
+                with wave.open(filename, 'wb') as wf:
+                    wf.setnchannels(1)  # Mono
+                    wf.setsampwidth(audio_array.dtype.itemsize) # Should be 2 for int16
+                    wf.setframerate(sample_rate)
+                    wf.writeframes(audio_array.tobytes())
+                logger.info(f"[Handler:{self.handler_id}] DEBUG: Saved pre-STT audio to {filename}")
+            except Exception as e:
+                logger.error(f"[Handler:{self.handler_id}] DEBUG: Failed to save debug audio: {e}")
+            # --- END DEBUG ---
+
             if audio_array.dtype != np.int16:
                 audio_array = (audio_array * 32767).astype(np.int16)
 
+            logger.info(f"[Handler:{self.handler_id}] Transcribing audio for user {user_id}...")
             transcription, detected_language = await stt_model_instance.transcribe(audio_array.tobytes(), sample_rate=sample_rate)
             
             if not transcription or not transcription.strip():
-                logger.info("STT returned empty string, skipping.")
+                logger.info(f"[Handler:{self.handler_id}] STT returned empty string, skipping.")
                 await self.send_message(json.dumps({"type": "status", "message": "listening"}))
                 return
 
-            logger.info(f"STT result for user {user_id}: '{transcription}' (Language: {detected_language})")
+            logger.info(f"[Handler:{self.handler_id}] STT result for user {user_id}: '{transcription}' (Language: {detected_language})")
             await self.send_message(json.dumps({"type": "stt_result", "text": transcription, "language": detected_language}))
 
             # 2. FULL AGENTIC LLM PROCESSING
             # Define the callback function that process_voice_command will use to send status updates
             async def send_status_update(status_update: Dict[str, Any]):
                 """Sends a status update message to the client."""
+                logger.info(f"[Handler:{self.handler_id}] Sending status update to client: {status_update}")
                 await self.send_message(json.dumps(status_update))
 
             # Call the updated, fully-featured voice command processor
+            logger.info(f"[Handler:{self.handler_id}] Invoking process_voice_command for user {user_id}.")
             full_response_buffer, assistant_message_id = await process_voice_command(
                 user_id=user_id,
                 transcribed_text=transcription,
@@ -159,6 +196,7 @@ class MyVoiceChatHandler(ReplyOnPause):
                 send_status_update=send_status_update,
                 db_manager=mongo_manager
             )
+            logger.info(f"[Handler:{self.handler_id}] LLM response for user {user_id}: '{full_response_buffer}'")
             
             await self.send_message(json.dumps({"type": "llm_result", "text": full_response_buffer, "messageId": assistant_message_id}))
 
@@ -166,7 +204,7 @@ class MyVoiceChatHandler(ReplyOnPause):
             if not tts_model_instance:
                 raise Exception("TTS model is not initialized.")
             if not full_response_buffer:
-                logger.warning(f"LLM returned an empty response for user {user_id}.")
+                logger.warning(f"[Handler:{self.handler_id}] LLM returned an empty response for user {user_id}.")
                 await self.send_message(json.dumps({"type": "status", "message": "listening"}))
                 return
 
@@ -175,11 +213,12 @@ class MyVoiceChatHandler(ReplyOnPause):
             sentences = re.split(r'(?<=[.?!])\s+', full_response_buffer)
             sentences = [s.strip() for s in sentences if s.strip()]
             
-            for sentence in sentences:
+            for i, sentence in enumerate(sentences):
                 if not sentence: continue
-                logger.info(f"Generating TTS for sentence: '{sentence}'")
+                logger.info(f"[Handler:{self.handler_id}] Generating TTS for sentence {i+1}/{len(sentences)}: '{sentence}'")
                 audio_stream = tts_model_instance.stream_tts(sentence, language=detected_language)
                 
+                chunk_count = 0
                 async for audio_chunk in audio_stream:
                     if isinstance(audio_chunk, tuple) and isinstance(audio_chunk[1], np.ndarray):
                         # This is from Orpheus or SmallestAI TTS: (sample_rate, np.ndarray)
@@ -194,16 +233,19 @@ class MyVoiceChatHandler(ReplyOnPause):
                         audio_array = np.frombuffer(audio_chunk, dtype=np.int16)
                         audio_float32 = audio_to_float32(audio_array)
                         yield (sample_rate, audio_float32)
+                    chunk_count += 1
+                logger.info(f"[Handler:{self.handler_id}] Streamed {chunk_count} TTS chunks for sentence.")
 
         except Exception as e:
-            logger.error(f"Error in voice_chat for user {user_id}: {e}", exc_info=True)
+            logger.error(f"[Handler:{self.handler_id}] Error in voice_chat for user {user_id}: {e}", exc_info=True)
             await self.send_message(json.dumps({"type": "error", "message": str(e)}))
         finally:
             # Use a try-except block for the final message to prevent crashing on disconnect
             try:
+                logger.info(f"[Handler:{self.handler_id}] Sending final 'listening' status for user {user_id}.")
                 await self.send_message(json.dumps({"type": "status", "message": "listening"}))
             except Exception as final_e:
-                logger.warning(f"Could not send final 'listening' status for user {user_id}, connection likely closed: {final_e}")
+                logger.warning(f"[Handler:{self.handler_id}] Could not send final 'listening' status for user {user_id}, connection likely closed: {final_e}")
                 
 stream = None
 
@@ -237,7 +279,9 @@ else:
 async def end_voice_session(rtc_token: str):
     if rtc_token in rtc_token_cache:
         del rtc_token_cache[rtc_token]
+        logger.info(f"RTC token {rtc_token} terminated and removed from cache.")
         return {"status": "terminated"}
+    logger.warning(f"Attempted to end non-existent or already terminated RTC token: {rtc_token}")
     return {"status": "not_found"}
 
 @router.post("/update-usage", summary="Update daily voice chat usage")
@@ -245,8 +289,10 @@ async def update_voice_usage(
     request: VoiceUsageRequest,
     user_id: str = Depends(auth_helper.get_current_user_id)
 ):
+    logger.info(f"Updating voice usage for user {user_id} by {request.duration_seconds} seconds.")
     if request.duration_seconds < 0:
         raise HTTPException(status_code=400, detail="Invalid duration.")
     
     await mongo_manager.increment_daily_usage(user_id, "voice_chat_seconds", request.duration_seconds)
+    logger.info(f"Usage updated successfully for user {user_id}.")
     return {"message": "Usage updated successfully."}

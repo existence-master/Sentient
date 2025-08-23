@@ -138,6 +138,7 @@ class OrpheusTTS(BaseTTS):
         if language and not language.startswith("en"):
             logger.warning(f"OrpheusTTS received a non-English language code '{language}'. It will attempt to synthesize the text as English.")
         
+        logger.info(f"Starting Orpheus TTS stream for text: '{text[:50]}...'")
         opts = cast(OrpheusTTSOptions, options or {})
         loop = asyncio.get_running_loop()
         queue = asyncio.Queue()
@@ -161,8 +162,11 @@ class OrpheusTTS(BaseTTS):
 
         thread = threading.Thread(target=thread_worker, daemon=True)
         thread.start()
+        chunk_count = 0
         while True:
             chunk = await queue.get()
             if chunk is None: break
+            chunk_count += 1
             yield chunk
-        await asyncio.to_thread(thread.join)
+        await asyncio.to_thread(thread.join)        
+        logger.info(f"Finished streaming {chunk_count} audio chunks from Orpheus TTS.")

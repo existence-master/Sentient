@@ -270,3 +270,4 @@ waha.sqlite3-shm
 waha.sqlite3-wal
 sentient_files/
 linkedin_cookies.json
+audio_debug_logs/

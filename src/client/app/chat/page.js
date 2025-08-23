@@ -824,6 +824,9 @@ export default function ChatPage() {
 	// --- Voice Mode Handlers ---
 	const handleStatusChange = useCallback(
 		(status) => {
+			console.log(
+				`[ChatPage] Voice connection status changed to: ${status}`
+			)
 			setConnectionStatus(status)
 			if (status !== "connecting" && ringtoneAudioRef.current) {
 				ringtoneAudioRef.current.pause()
@@ -834,12 +837,23 @@ export default function ChatPage() {
 					connectedAudioRef.current.volume = 0.4
 					connectedAudioRef.current
 						.play()
-						.catch((e) => console.error("Error playing sound:", e))
+						.catch((e) =>
+							console.error(
+								"[ChatPage] Error playing connected sound:",
+								e
+							)
+						)
 				}
 				// Add a delay to allow ICE connection to stabilize
+				console.log(
+					"[ChatPage] Connection established. Muting mic for 4s to stabilize."
+				)
 				setVoiceStatusText("Please wait a moment...")
 				setMicrophoneEnabled(false) // Mute mic during stabilization
 				setTimeout(() => {
+					console.log(
+						"[ChatPage] Stabilization complete. Unmuting mic."
+					)
 					setVoiceStatusText("Listening...")
 					setMicrophoneEnabled(true) // Unmute after delay
 				}, 4000)
@@ -854,6 +868,7 @@ export default function ChatPage() {
 
 	const handleVoiceEvent = useCallback(
 		(event) => {
+			console.log("[ChatPage] Received voice event:", event)
 			if (event.type === "stt_result" && event.text) {
 				setDisplayedMessages((prev) => [
 					...prev,
@@ -876,6 +891,7 @@ export default function ChatPage() {
 					}
 				])
 			} else if (event.type === "status") {
+				console.log(`[ChatPage] Voice status update: ${event.message}`)
 				if (event.message === "thinking") {
 					setVoiceStatusText("Thinking...")
 					setMicrophoneEnabled(false)
@@ -890,14 +906,24 @@ export default function ChatPage() {
 					const textToMeasure = lastSpokenTextRef.current
 					// Estimate duration: ~18 chars/sec -> ~55ms/char. Add a smaller buffer.
 					const estimatedDuration = textToMeasure.length * 55 + 250 // ms
+					console.log(
+						`[ChatPage] Server is listening. Waiting estimated ${estimatedDuration}ms for audio buffer to clear before unmuting.`
+					)
 
 					setTimeout(() => {
 						if (
 							webrtcClientRef.current?.peerConnection
 								?.connectionState === "connected"
 						) {
+							console.log(
+								"[ChatPage] Estimated audio buffer clear time elapsed. Unmuting."
+							)
 							setVoiceStatusText("Listening...")
 							setMicrophoneEnabled(true)
+						} else {
+							console.log(
+								"[ChatPage] Estimated audio buffer clear time elapsed, but connection is no longer active. Not unmuting."
+							)
 						}
 					}, estimatedDuration)
 
@@ -936,19 +962,23 @@ export default function ChatPage() {
 
 	const handleStartVoice = async () => {
 		if (connectionStatus !== "disconnected") return
+		console.log("[ChatPage] handleStartVoice triggered.")
 
 		setConnectionStatus("connecting")
 		setVoiceStatusText("Connecting...")
 		try {
 			// Step 1: Get the main auth token
+			console.log("[ChatPage] Fetching auth token...")
 			const tokenResponse = await fetch("/api/auth/token")
 			if (!tokenResponse.ok) throw new Error("Could not get auth token.")
 			const { accessToken } = await tokenResponse.json()
+			console.log("[ChatPage] Auth token fetched.")
 
 			// Step 2: Use the auth token to get a temporary RTC token
 			const serverUrl =
 				process.env.NEXT_PUBLIC_APP_SERVER_URL ||
 				"http://localhost:5000"
+			console.log("[ChatPage] Fetching RTC token...")
 			const rtcTokenResponse = await fetch(
 				`${serverUrl}/voice/initiate`,
 				{
@@ -969,11 +999,18 @@ export default function ChatPage() {
 				throw error
 			}
 			const { rtc_token, ice_servers } = await rtcTokenResponse.json()
+			console.log(
+				`[ChatPage] RTC token fetched. ICE servers count: ${ice_servers?.iceServers?.length || 0}`
+			)
 
 			// Step 3: Create and connect WebRTCClient directly
 			if (webrtcClientRef.current) {
+				console.log(
+					"[ChatPage] Disconnecting existing WebRTC client before creating new one."
+				)
 				webrtcClientRef.current.disconnect()
 			}
+			console.log("[ChatPage] Creating new WebRTCClient.")
 			const client = new WebRTCClient({
 				onConnected: () => handleStatusChange("connected"),
 				onDisconnected: () => handleStatusChange("disconnected"),
@@ -983,7 +1020,10 @@ export default function ChatPage() {
 						remoteAudioRef.current
 							.play()
 							.catch((e) =>
-								console.error("Error playing remote audio:", e)
+								console.error(
+									"[ChatPage] Error playing remote audio:",
+									e
+								)
 							)
 					}
 				},
@@ -999,14 +1039,18 @@ export default function ChatPage() {
 				ringtoneAudioRef.current.loop = true
 				ringtoneAudioRef.current
 					.play()
-					.catch((e) => console.error("Error playing ringtone:", e))
+					.catch((e) =>
+						console.error("[ChatPage] Error playing ringtone:", e)
+					)
 			}
+			console.log("[ChatPage] Calling WebRTCClient.connect()...")
 			await webrtcClientRef.current.connect(
 				selectedAudioInputDevice,
 				accessToken,
 				rtc_token
 			)
 		} catch (error) {
+			console.error("[ChatPage] Error during handleStartVoice:", error)
 			if (error.status === 429) {
 				toast.error(
 					error.message ||
@@ -1025,8 +1069,12 @@ export default function ChatPage() {
 	}
 
 	const initializeVoiceMode = async () => {
+		console.log("[ChatPage] Initializing voice mode...")
 		// Check if devices are already loaded to avoid re-prompting
 		if (audioInputDevices.length > 0) {
+			console.log(
+				"[ChatPage] Audio devices already available, skipping permission prompt."
+			)
 			return true
 		}
 
@@ -1039,6 +1087,7 @@ export default function ChatPage() {
 				return false
 			}
 			// This is the permission prompt
+			console.log("[ChatPage] Requesting microphone permissions...")
 			await navigator.mediaDevices.getUserMedia({
 				audio: {
 					noiseSuppression: false,
@@ -1046,11 +1095,15 @@ export default function ChatPage() {
 				},
 				video: false
 			})
+			console.log("[ChatPage] Microphone permission granted.")
 			const devices = await navigator.mediaDevices.enumerateDevices()
 			const audioInputDevices = devices.filter(
 				(d) => d.kind === "audioinput"
 			)
 			if (audioInputDevices.length > 0) {
+				console.log(
+					`[ChatPage] Found ${audioInputDevices.length} audio input devices.`
+				)
 				setAudioInputDevices(
 					audioInputDevices.map((d, i) => ({
 						deviceId: d.deviceId,
@@ -1064,9 +1117,14 @@ export default function ChatPage() {
 				return true
 			} else {
 				toast.error("No audio input devices found.")
+				console.warn("[ChatPage] No audio input devices found.")
 				return false
 			}
 		} catch (error) {
+			console.error(
+				"[ChatPage] Error during voice initialization:",
+				error
+			)
 			toast.error("Microphone permission is required for voice mode.")
 			return false
 		}
@@ -1081,6 +1139,11 @@ export default function ChatPage() {
 				audioTracks[0].enabled = !isCurrentlyEnabled
 				const newMutedState = !audioTracks[0].enabled
 				setIsMuted(newMutedState)
+				console.log(
+					`[ChatPage] Toggled mute. Mic is now ${
+						newMutedState ? "muted" : "unmuted"
+					}.`
+				)
 				setVoiceStatusText(newMutedState ? "Muted" : "Listening...")
 			}
 		}
@@ -1090,6 +1153,7 @@ export default function ChatPage() {
 		if (connectionStatus === "disconnected" || !webrtcClientRef.current) {
 			return
 		}
+		console.log("[ChatPage] handleStopVoice triggered.")
 
 		webrtcClientRef.current?.disconnect()
 
@@ -1098,15 +1162,19 @@ export default function ChatPage() {
 			const duration_seconds = Math.round(
 				(Date.now() - voiceModeStartTimeRef.current) / 1000
 			)
+			console.log(
+				`[ChatPage] Voice mode ended. Duration: ${duration_seconds} seconds.`
+			)
 			posthog?.capture("voice_mode_used", { duration_seconds })
 
 			// Send usage update to the server
+			console.log("[ChatPage] Sending voice usage update to server.")
 			fetch("/api/voice/update-usage", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ duration_seconds })
 			}).catch((err) =>
-				console.error("Failed to update voice usage:", err)
+				console.error("[ChatPage] Failed to update voice usage:", err)
 			)
 
 			voiceModeStartTimeRef.current = null // Reset after tracking
@@ -1136,17 +1204,26 @@ export default function ChatPage() {
 		}
 
 		if (isVoiceMode) {
+			console.log("[ChatPage] Toggling voice mode OFF.")
 			handleStopVoice()
 			setIsVoiceMode(false)
 		} else {
+			console.log("[ChatPage] Toggling voice mode ON.")
 			// Switching TO voice mode, first get permissions
 			const permissionsGranted = await initializeVoiceMode()
 			if (permissionsGranted) {
+				console.log(
+					"[ChatPage] Permissions granted, activating voice mode."
+				)
 				// --- ADD POSTHOG EVENT TRACKING ---
 				posthog?.capture("voice_mode_activated")
 				voiceModeStartTimeRef.current = Date.now() // Set start time
 				// --- END POSTHOG EVENT TRACKING ---
 				setIsVoiceMode(true)
+			} else {
+				console.warn(
+					"[ChatPage] Permissions not granted, voice mode not activated."
+				)
 			}
 		}
 	}

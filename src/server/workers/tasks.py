@@ -14,7 +14,7 @@ from celery import group, chord
 from main.analytics import capture_event
 from json_extractor import JsonExtractor
 from workers.utils.api_client import notify_user, push_task_list_update
-from main.chat.utils import parse_assistant_response
+from workers.utils.text_utils import parse_assistant_response
 from main.plans import PLAN_LIMITS
 from main.config import INTEGRATIONS_CONFIG
 from main.tasks.prompts import TASK_CREATION_PROMPT

@@ -16,6 +16,7 @@ export class WebRTCClient {
 		this.iceCandidateQueue = []
 		// --- MODIFICATION: Add a timer for handling temporary disconnections ---
 		this.disconnectTimer = null
+		console.log("[WebRTCClient] Initialized with options:", options)
 	}
 
 	async connect(deviceId, authToken, rtcToken) {
@@ -28,11 +29,18 @@ export class WebRTCClient {
 
 		// --- MODIFICATION: Reset the queue on new connection ---
 		this.iceCandidateQueue = []
+		console.log(
+			`[WebRTCClient] Connecting with deviceId: ${deviceId}, rtcToken: ${rtcToken}`
+		)
 
 		try {
 			this.peerConnection = new RTCPeerConnection({
 				iceServers: this.iceServers
 			})
+			console.log(
+				"[WebRTCClient] PeerConnection created with ICE servers:",
+				this.iceServers
+			)
 
 			// --- MODIFICATION: Queue ICE candidates instead of sending immediately ---
 			this.peerConnection.onicecandidate = (event) => {
@@ -43,15 +51,22 @@ export class WebRTCClient {
 
 			this.peerConnection.oniceconnectionstatechange = (event) => {
 				const state = this.peerConnection.iceConnectionState
+				console.log(
+					`[WebRTCClient] oniceconnectionstatechange: ${state}`
+				)
 			}
 
 			this.peerConnection.onconnectionstatechange = (event) => {
 				const state = this.peerConnection.connectionState
+				console.log(`[WebRTCClient] onconnectionstatechange: ${state}`)
 
 				// --- START MODIFICATION: Handle temporary disconnections ---
 				// If connection is established or re-established, clear any pending disconnect timer.
 				if (state === "connected") {
 					if (this.disconnectTimer) {
+						console.log(
+							"[WebRTCClient] Connection re-established, clearing disconnect timer."
+						)
 						clearTimeout(this.disconnectTimer)
 						this.disconnectTimer = null
 					}
@@ -92,14 +107,22 @@ export class WebRTCClient {
 				noiseSuppression: false,
 				echoCancellation: false
 			}
+			console.log(
+				"[WebRTCClient] Requesting user media with constraints:",
+				audioConstraints
+			)
 			this.mediaStream = await navigator.mediaDevices.getUserMedia({
 				audio: audioConstraints
 			})
+			console.log("[WebRTCClient] Got user media stream.")
 
 			this.setupAudioAnalysis()
 
 			this.mediaStream.getTracks().forEach((track) => {
 				if (this.peerConnection) {
+					console.log(
+						"[WebRTCClient] Adding audio track to PeerConnection."
+					)
 					this.peerConnection.addTrack(track, this.mediaStream)
 				}
 			})
@@ -109,9 +132,14 @@ export class WebRTCClient {
 			})
 
 			this.dataChannel = this.peerConnection.createDataChannel("events")
+			console.log("[WebRTCClient] Data channel created.")
 			this.dataChannel.addEventListener("message", (event) => {
 				try {
 					const message = JSON.parse(event.data)
+					console.log(
+						"[WebRTCClient] Received data channel message:",
+						message
+					)
 					this.options.onEvent?.(message)
 				} catch (error) {
 					console.error("Error parsing data channel message:", error)
@@ -119,8 +147,11 @@ export class WebRTCClient {
 			})
 
 			const offer = await this.peerConnection.createOffer()
+			console.log("[WebRTCClient] Creating offer...")
 			await this.peerConnection.setLocalDescription(offer)
+			console.log("[WebRTCClient] Local description (offer) set.")
 
+			console.log("[WebRTCClient] Sending offer to server...")
 			const response = await fetch(
 				`${this.serverUrl}/voice/webrtc/offer`,
 				{
@@ -146,9 +177,14 @@ export class WebRTCClient {
 			}
 
 			const serverResponse = await response.json()
+			console.log("[WebRTCClient] Received answer from server.")
 			await this.peerConnection.setRemoteDescription(serverResponse)
+			console.log("[WebRTCClient] Remote description (answer) set.")
 
 			// --- MODIFICATION: Send all queued ICE candidates now ---
+			console.log(
+				`[WebRTCClient] Sending ${this.iceCandidateQueue.length} queued ICE candidates...`
+			)
 			for (const candidate of this.iceCandidateQueue) {
 				fetch(`${this.serverUrl}/voice/webrtc/offer`, {
 					method: "POST",
@@ -167,7 +203,7 @@ export class WebRTCClient {
 				)
 			}
 			this.iceCandidateQueue = [] // Clear the queue
-
+			console.log("[WebRTCClient] ICE candidate queue cleared.")
 		} catch (error) {
 			console.error("Error connecting WebRTC:", error)
 			this.disconnect()
@@ -178,6 +214,7 @@ export class WebRTCClient {
 	setupAudioAnalysis() {
 		if (!this.mediaStream || !this.options.onAudioLevel) return
 		try {
+			console.log("[WebRTCClient] Setting up audio analysis.")
 			this.audioContext = new (window.AudioContext ||
 				window.webkitAudioContext)()
 			this.analyser = this.audioContext.createAnalyser()
@@ -199,6 +236,7 @@ export class WebRTCClient {
 			return
 		let lastUpdateTime = 0
 		const throttleInterval = 100 // 100ms, i.e., 10 times per second
+		console.log("[WebRTCClient] Starting audio analysis loop.")
 
 		const analyze = () => {
 			if (!this.analyser || !this.dataArray) return
@@ -223,6 +261,7 @@ export class WebRTCClient {
 
 	stopAnalysis() {
 		if (this.animationFrameId) {
+			console.log("[WebRTCClient] Stopping audio analysis loop.")
 			cancelAnimationFrame(this.animationFrameId)
 			this.animationFrameId = null
 		}
@@ -235,6 +274,7 @@ export class WebRTCClient {
 	}
 
 	disconnect() {
+		console.log("[WebRTCClient] Disconnecting...")
 		if (this.disconnectTimer) {
 			clearTimeout(this.disconnectTimer)
 			this.disconnectTimer = null
@@ -247,5 +287,6 @@ export class WebRTCClient {
 		this.peerConnection = null
 		this.dataChannel = null
 		this.options.onDisconnected?.()
+		console.log("[WebRTCClient] Disconnected and cleaned up.")
 	}
 }

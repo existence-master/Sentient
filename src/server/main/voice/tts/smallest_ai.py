@@ -45,6 +45,7 @@ class SmallestAITTS(BaseTTS):
             similarity=opts.get("similarity", 0.0),
             enhancement=opts.get("enhancement", 1),
         )
+        logger.info(f"Starting SmallestAI TTS stream for text: '{text[:50]}...' with config: {config}")
         
         tts_streamer = WavesStreamingTTS(config)
 
@@ -64,6 +65,7 @@ class SmallestAITTS(BaseTTS):
         producer_thread = threading.Thread(target=producer)
         producer_thread.start()
 
+        chunk_count = 0
         while True:
             chunk = await audio_queue.get()
             if chunk is None:
@@ -71,8 +73,9 @@ class SmallestAITTS(BaseTTS):
             if isinstance(chunk, Exception):
                 raise chunk
             
+            chunk_count += 1
             # Smallest AI returns raw PCM bytes, 16-bit signed little-endian.
             audio_array = np.frombuffer(chunk, dtype=np.int16)
             yield (config.sample_rate, audio_array)
         
-        producer_thread.join()
+        producer_thread.join()        logger.info(f"Finished streaming {chunk_count} audio chunks from SmallestAI TTS.")

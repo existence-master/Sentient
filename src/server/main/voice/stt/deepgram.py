@@ -30,6 +30,7 @@ class DeepgramSTT(BaseSTT):
             raise
 
     async def transcribe(self, audio_bytes: bytes, sample_rate: int) -> Tuple[str, Optional[str]]:
+        logger.info(f"Transcribing {len(audio_bytes)} bytes of audio with Deepgram.")
         if not self.client:
             logger.error("Deepgram client not initialized.")
             return "", None
@@ -42,7 +43,10 @@ class DeepgramSTT(BaseSTT):
                 smart_format=True,
                 detect_language=True,
                 punctuate=True,
-                utterances=True
+                utterances=True,
+                encoding="linear16",      
+                sample_rate=sample_rate, 
+                channels=1
             )
 
             response = await self.client.listen.asyncrest.v("1").transcribe_file(
@@ -54,7 +58,7 @@ class DeepgramSTT(BaseSTT):
                 if channel.alternatives:
                     transcript = channel.alternatives[0].transcript
                     detected_language = channel.detected_language
-                    logger.info(f"Deepgram transcription successful. Language: {detected_language}")
+                    logger.info(f"Deepgram transcription successful. Language: {detected_language}, Transcript: '{transcript[:50]}...'")
                     return transcript.strip(), detected_language
             
             logger.warning("Deepgram STT response was empty or malformed.")
