@@ -14,13 +14,14 @@ import httpx
 from qwen_agent.tools.base import BaseTool, register_tool
 from openai import OpenAI, APIError
 
-from main.chat.prompts import STAGE_1_SYSTEM_PROMPT, STAGE_2_SYSTEM_PROMPT # noqa: E501
+from main.chat.prompts import STAGE_1_SYSTEM_PROMPT, STAGE_2_SYSTEM_PROMPT, VOICE_STAGE_1_SYSTEM_PROMPT, VOICE_STAGE_2_SYSTEM_PROMPT # noqa: E501
 from main.db import MongoManager
 from main.llm import run_agent, LLMProviderDownError
 from main.config import (INTEGRATIONS_CONFIG, ENVIRONMENT, OPENAI_API_KEY, OPENAI_API_BASE_URL, OPENAI_MODEL_NAME)
 from json_extractor import JsonExtractor
 from workers.utils.text_utils import clean_llm_output
 import re
+from workers.tasks import refine_and_plan_ai_task
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ class JsonValidatorTool(BaseTool):
 
 async def _get_stage1_response(messages: List[Dict[str, Any]], connected_tools_map: Dict[str, str], disconnected_tools_map: Dict[str, str], user_id: str) -> Dict[str, Any]:
     """
-    Uses the Stage 1 LLM to detect topic changes and select relevant tools.
+    Uses the Stage 1 LLM to detect topic changes and select relevant tools for text chat.
     Returns a dictionary containing a 'topic_changed' boolean and a 'tools' list.
     """
     if not OPENAI_API_KEY:
@@ -113,6 +114,53 @@ async def _get_stage1_response(messages: List[Dict[str, Any]], connected_tools_m
 
     logger.error(f"Stage 1 LLM call failed for user {user_id}.")
     return {"topic_changed": False, "connected_tools": [], "disconnected_tools": []}
+
+async def _get_voice_stage1_response(messages: List[Dict[str, Any]], user_id: str) -> Dict[str, Any]:
+    """
+    Uses a specialized Stage 1 LLM for voice to classify intent and select tools.
+    """
+    if not OPENAI_API_KEY:
+        raise ValueError("No OpenAI API key configured for Voice Stage 1.")
+
+    formatted_messages = [
+        {"role": "system", "content": VOICE_STAGE_1_SYSTEM_PROMPT}
+    ]
+    for msg in messages:
+        if 'role' in msg and 'content' in msg:
+            formatted_messages.append({
+                "role": msg["role"],
+                "content": msg["content"]
+            })
+
+    client = OpenAI(base_url=OPENAI_API_BASE_URL, api_key=OPENAI_API_KEY)
+
+    try:
+        logger.info(f"Voice Stage 1: Attempting LLM call for user {user_id}")
+
+        def sync_api_call():
+            return client.chat.completions.create(
+                model=OPENAI_MODEL_NAME,
+                messages=formatted_messages,
+                response_format={"type": "json_object"},
+            )
+
+        completion = await asyncio.to_thread(sync_api_call)
+
+        if not completion.choices:
+            raise Exception("LLM response was successful but contained no choices.")
+
+        final_content_str = completion.choices[0].message.content
+        stage1_result = JsonExtractor.extract_valid_json(final_content_str)
+
+        if isinstance(stage1_result, dict) and "intent_type" in stage1_result:
+            logger.info(f"Voice Stage 1 result for user {user_id}: {stage1_result}")
+            return stage1_result
+        else:
+            logger.error(f"Voice Stage 1 LLM call for user {user_id} returned invalid JSON: {final_content_str}")
+            return {"intent_type": "simple_request", "summary_for_task": "", "tools": []}
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during Voice Stage 1 call for user {user_id}: {e}", exc_info=True)
+        return {"intent_type": "simple_request", "summary_for_task": "", "tools": []}
 
 def parse_assistant_response(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -418,44 +466,73 @@ async def process_voice_command(
     db_manager: MongoManager
 ) -> Tuple[str, str]:
     """
-    Processes a transcribed voice command with full agentic capabilities,
-    providing status updates and returning a final text response for TTS.
+    Processes a transcribed voice command. It first classifies the intent as simple or complex.
+    Complex tasks are offloaded to the background task system. Simple requests are handled
+    synchronously by a specialized voice agent for a fast response.
     """
     assistant_message_id = str(uuid.uuid4())
     logger.info(f"Processing voice command for user {user_id}: '{transcribed_text}'")
 
     try:
+        # 1. Save user message and create a placeholder for the assistant's response.
         await db_manager.add_message(user_id=user_id, role="user", content=transcribed_text)
         await db_manager.add_message(user_id=user_id, role="assistant", content="[Thinking...]", message_id=assistant_message_id)
-        history_from_db = await db_manager.get_message_history(user_id, limit=30)
-        messages = list(reversed(history_from_db))
-        qwen_formatted_history = [msg for msg in messages if msg.get("message_id") != assistant_message_id]
+
+        # 2. Get conversation history for the Stage 1 intent classification.
+        history_from_db = await db_manager.get_message_history(user_id, limit=10)
+        messages_for_stage1 = list(reversed(history_from_db))
+
+        # 3. Run Voice Stage 1 to classify intent.
+        await send_status_update({"type": "status", "message": "thinking"})
+        stage1_result = await _get_voice_stage1_response(messages_for_stage1, user_id)
+        intent_type = stage1_result.get("intent_type", "simple_request")
+
+        # 4. Handle Complex Tasks: Offload to Celery and provide immediate feedback.
+        if intent_type == "complex_task":
+            logger.info(f"Voice command for user {user_id} classified as COMPLEX. Offloading to task system.")
+            task_summary = stage1_result.get("summary_for_task", transcribed_text)
+            
+            task_data = {
+                "name": task_summary,
+                "description": f"Task created from voice command: {transcribed_text}",
+                "task_type": "single",
+                "original_context": {"source": "voice_command", "prompt": transcribed_text}
+            }
+            new_task_id = await db_manager.add_task(user_id, task_data)
+
+            if not new_task_id:
+                raise Exception("Failed to save the offloaded task to the database.")
+
+            refine_and_plan_ai_task.delay(new_task_id, user_id)
+            
+            final_text_for_tts = "I've added a task for that. I'll let you know when it's complete."
+            
+            await db_manager.messages_collection.update_one(
+                {"message_id": assistant_message_id},
+                {"$set": {"content": final_text_for_tts}}
+            )
+            return final_text_for_tts, assistant_message_id
+
+        # 5. Handle Simple Requests: Execute synchronously with a specialized voice agent.
+        logger.info(f"Voice command for user {user_id} classified as SIMPLE. Processing synchronously.")
+        
         user_profile = await db_manager.get_user_profile(user_id)
         user_data = user_profile.get("userData", {}) if user_profile else {}
         personal_info = user_data.get("personalInfo", {})
         username = personal_info.get("name", "User")
         timezone_str = personal_info.get("timezone", "UTC")
         location_raw = personal_info.get("location")
-        if isinstance(location_raw, dict) and 'latitude' in location_raw:
-            location = f"latitude: {location_raw.get('latitude')}, longitude: {location_raw.get('longitude')}"
-        elif isinstance(location_raw, str):
-            location = location_raw
-        else:
-            location = "Not specified"
+        location = str(location_raw) if location_raw else "Not specified"
         try:
             user_timezone = ZoneInfo(timezone_str)
         except ZoneInfoNotFoundError:
             user_timezone = ZoneInfo("UTC")
         current_user_time = datetime.datetime.now(user_timezone).strftime('%Y-%m-%d %H:%M:%S %Z')
-        await send_status_update({"type": "status", "message": "choosing_tools"})
-        user_integrations = user_data.get("integrations", {})
-        connected_tools, disconnected_tools = _get_tool_lists(user_integrations)
-        stage1_result = await _get_stage1_response(qwen_formatted_history, connected_tools, disconnected_tools, user_id)
-        topic_changed = stage1_result.get("topic_changed", False)
-        relevant_tool_names = stage1_result.get("connected_tools", [])
-        disconnected_requested_tools = stage1_result.get("disconnected_tools", [])
-        mandatory_tools = {"memory", "history", "tasks"}
+
+        relevant_tool_names = stage1_result.get("tools", [])
+        mandatory_tools = {"memory", "history"} # Tasks tool is excluded for simple requests
         final_tool_names = set(relevant_tool_names) | mandatory_tools
+        
         filtered_mcp_servers = {}
         for tool_name in final_tool_names:
             config = INTEGRATIONS_CONFIG.get(tool_name, {})
@@ -464,81 +541,17 @@ async def process_voice_command(
                 if mcp_config and mcp_config.get("url") and mcp_config.get("name"):
                     server_name = mcp_config["name"]
                     filtered_mcp_servers[server_name] = {"url": mcp_config["url"], "headers": {"X-User-ID": user_id}, "transport": "sse"}
+        
         tools = [{"mcpServers": filtered_mcp_servers}]
-        logger.info(f"Voice Command Tools (Stage 2): {list(filtered_mcp_servers.keys())}")
-        stage_2_expanded_messages = []
-        messages_for_stage2 = []
-        if topic_changed:
-            logger.info(f"Topic change detected for user {user_id}. Truncating history for Stage 2.")
-            last_user_message = next((msg for msg in reversed(qwen_formatted_history) if msg.get("role") == "user"), None)
-            if last_user_message:
-                messages_for_stage2 = [last_user_message]
-        else:
-            logger.info(f"No topic change detected for user {user_id}. Using full history for Stage 2.")
-            messages_for_stage2 = qwen_formatted_history
+        logger.info(f"Voice Stage 2 Tools: {list(filtered_mcp_servers.keys())}")
 
-        for msg in messages_for_stage2:
-            if msg.get("role") == "user":
-                stage_2_expanded_messages.append({
-                    "role": "user",
-                    "content": msg.get("content", "")
-                })
-            elif msg.get("role") == "assistant":
-                # --- CHANGED --- Unroll the assistant's turn from turn_steps into the multi-message format.
-                turn_steps = msg.get("turn_steps", [])
-                thought_buffer = []
-
-                for step in turn_steps:
-                    if step.get("type") == "thought":
-                        thought_buffer.append(step.get("content", "").strip())
-                    else:
-                        if thought_buffer:
-                            combined_thoughts = "<think>\n" + "\n\n".join(thought_buffer) + "\n</think>"
-                            stage_2_expanded_messages.append({"role": "assistant", "content": combined_thoughts})
-                            thought_buffer = []
-
-                        if step.get("type") == "tool_call":
-                            stage_2_expanded_messages.append({
-                                "role": "assistant",
-                                "content": None,
-                                "function_call": { "name": step.get("tool_name"), "arguments": step.get("arguments") }
-                            })
-                        elif step.get("type") == "tool_result":
-                            result_content = step.get("result", "")
-                            if not isinstance(result_content, str):
-                                result_content = json.dumps(result_content)
-                            stage_2_expanded_messages.append({
-                                "role": "function", "name": step.get("tool_name"), "content": result_content
-                            })
-
-                if msg.get("content"):
-                    final_content_with_thoughts = "\n".join([f"<think>{thought}</think>" for thought in thought_buffer]) + "\n" + msg.get("content")
-                    stage_2_expanded_messages.append({
-                        "role": "assistant", "content": final_content_with_thoughts.strip()
-                    })
-                elif thought_buffer:
-                    combined_thoughts = "<think>\n" + "\n\n".join(thought_buffer) + "\n</think>"
-                    stage_2_expanded_messages.append({"role": "assistant", "content": combined_thoughts})
-
-        if not any(msg.get("role") == "user" for msg in stage_2_expanded_messages):
-            logger.error(f"Message history for Stage 2 is empty for user {user_id}. This should not happen.")
-
-        if disconnected_requested_tools:
-            disconnected_display_names = [INTEGRATIONS_CONFIG.get(t, {}).get('display_name', t) for t in disconnected_requested_tools]
-            system_note = (f"System Note: The user's request mentioned functionality requiring the following tools which are currently disconnected: {', '.join(disconnected_display_names)}. You MUST inform the user that you cannot complete that part of the request and suggest they connect the tool(s) in the Integrations page. Then, proceed with the rest of the request using the available tools.")
-            if stage_2_expanded_messages and stage_2_expanded_messages[-1]['role'] == 'user':
-                stage_2_expanded_messages[-1]['content'] = f"{system_note}\n\nUser's original message: {stage_2_expanded_messages[-1]['content']}"
-            else:
-                stage_2_expanded_messages.append({'role': 'system', 'content': system_note})
-
-        system_prompt = STAGE_2_SYSTEM_PROMPT.format(username=username, location=location, current_user_time=current_user_time)
-        await send_status_update({"type": "status", "message": "thinking"})
+        system_prompt = VOICE_STAGE_2_SYSTEM_PROMPT.format(username=username, location=location, current_user_time=current_user_time)
 
         loop = asyncio.get_running_loop()
         def agent_worker():
             final_run_response = None
             try:
-                for response in run_agent(system_message=system_prompt, function_list=tools, messages=stage_2_expanded_messages):
+                for response in run_agent(system_message=system_prompt, function_list=tools, messages=messages_for_stage1):
                     final_run_response = response
                     if isinstance(response, list) and response:
                         last_message = response[-1]
@@ -547,7 +560,7 @@ async def process_voice_command(
                             asyncio.run_coroutine_threadsafe(send_status_update({"type": "status", "message": f"using_tool_{tool_name}"}), loop)
                 return final_run_response
             except Exception as e:
-                logger.error(f"Error inside agent_worker thread for voice command: {e}", exc_info=True)
+                logger.error(f"Error in voice agent_worker thread: {e}", exc_info=True)
                 return None
 
         final_run_response = await asyncio.to_thread(agent_worker)
@@ -575,6 +588,7 @@ async def process_voice_command(
         )
 
         return final_text_for_tts, assistant_message_id
+
     except Exception as e:
         logger.error(f"Error processing voice command for {user_id}: {e}", exc_info=True)
         error_msg = "I encountered an error while processing your request."
