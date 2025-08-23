@@ -1,6 +1,6 @@
 import os
-import datetime
 import json
+import logging
 import traceback
 from typing import Optional, Dict, Any, List, Tuple
 
@@ -23,24 +23,26 @@ from main.config import (
     AUTH0_MANAGEMENT_CLIENT_ID, AUTH0_MANAGEMENT_CLIENT_SECRET
 )
 
+logger = logging.getLogger(__name__)
+
 # --- JWKS Fetching ---
 jwks = None
 if AUTH0_DOMAIN:
     jwks_url = f"https://{AUTH0_DOMAIN}/.well-known/jwks.json"
     try:
-        print(f"[{datetime.datetime.now()}] [AuthUtils] Fetching JWKS from {jwks_url}...")
+        logger.info(f"Fetching JWKS from {jwks_url}...")
         jwks_response = requests.get(jwks_url, timeout=10)
         jwks_response.raise_for_status()
         jwks = jwks_response.json()
-        print(f"[{datetime.datetime.now()}] [AuthUtils] JWKS fetched successfully.")
+        logger.info("JWKS fetched successfully.")
     except requests.exceptions.RequestException as e:
-        print(f"[{datetime.datetime.now()}] [AuthUtils_FATAL_ERROR] Could not fetch JWKS: {e}")
+        logger.critical(f"Could not fetch JWKS: {e}", exc_info=True)
         jwks = None
     except Exception as e:
-        print(f"[{datetime.datetime.now()}] [AuthUtils_FATAL_ERROR] Error processing JWKS: {e}")
+        logger.critical(f"Error processing JWKS: {e}", exc_info=True)
         jwks = None
 else:
-    print(f"[{datetime.datetime.now()}] [AuthUtils_FATAL_ERROR] AUTH0_DOMAIN not set. Cannot fetch JWKS.")
+    logger.critical("AUTH0_DOMAIN not set. Cannot fetch JWKS.")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
@@ -48,7 +50,7 @@ class AuthHelper:
     async def _validate_token_and_get_payload(self, token: str) -> dict:
         if ENVIRONMENT == "selfhost":
             if not SELF_HOST_AUTH_SECRET:
-                print(f"[{datetime.datetime.now()}] [AuthHelper_FATAL_ERROR] selfhost mode is active but SELF_HOST_AUTH_SECRET is not set.")
+                logger.critical("selfhost mode is active but SELF_HOST_AUTH_SECRET is not set.")
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Self-host auth secret not configured.")
             if token == SELF_HOST_AUTH_SECRET:
                 # Return a mock payload with a static user_id and all permissions
@@ -61,7 +63,7 @@ class AuthHelper:
             else:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid self-host token")
         if not jwks:
-            print(f"[{datetime.datetime.now()}] [AuthHelper_VALIDATION_ERROR] JWKS not available.")
+            logger.error("JWKS not available for token validation.")
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Auth service config error (JWKS).")
 
         credentials_exception = HTTPException(
@@ -89,16 +91,15 @@ class AuthHelper:
             )
             return payload
         except JWTError as e:
-            print(f"[{datetime.datetime.now()}] [AuthHelper_VALIDATION_ERROR] JWT Error: {e}")
+            logger.warning(f"JWT validation error: {e}")
             raise credentials_exception
         except JOSEError as e:
-            print(f"[{datetime.datetime.now()}] [AuthHelper_VALIDATION_ERROR] JOSE Error: {e}")
+            logger.warning(f"JOSE validation error: {e}")
             raise credentials_exception
         except HTTPException:
             raise
         except Exception as e:
-            print(f"[{datetime.datetime.now()}] [AuthHelper_VALIDATION_ERROR] Unexpected token validation error: {e}")
-            traceback.print_exc()
+            logger.error(f"Unexpected token validation error: {e}", exc_info=True)
             raise credentials_exception
 
     async def get_current_user_id_plan_and_permissions(self, token: str = Depends(oauth2_scheme)) -> Tuple[str, str, List[str]]:
@@ -171,14 +172,14 @@ class AuthHelper:
             await websocket.send_json({"type": "auth_success", "user_id": user_id})
             return auth_data
         except WebSocketDisconnect:
-            print(f"[{datetime.datetime.now()}] [WS_AUTH] WebSocket disconnected during auth.")
+            logger.info("WebSocket disconnected during authentication.")
             return None
         except HTTPException as e:
             await websocket.send_json({"type": "auth_failure", "message": f"Token validation failed: {e.detail}"})
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return None
         except Exception as e:
-            traceback.print_exc()
+            logger.error(f"Unexpected error during WebSocket authentication: {e}", exc_info=True)
             try:
                 await websocket.send_json({"type": "auth_failure", "message": "Internal server error during auth."})
                 await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
@@ -234,7 +235,7 @@ def aes_decrypt(encrypted_data: str) -> str:
 # --- Auth0 Management API Token ---
 def get_management_token() -> str:
     if not all([AUTH0_DOMAIN, AUTH0_MANAGEMENT_CLIENT_ID, AUTH0_MANAGEMENT_CLIENT_SECRET]):
-        print(f"[{datetime.datetime.now()}] [AuthUtils_MGMT_TOKEN_ERROR] Auth0 Management API credentials not fully configured.")
+        logger.error("Auth0 Management API credentials not fully configured.")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Auth0 Management API config error.")
     
     url = f"https://{AUTH0_DOMAIN}/oauth/token"
@@ -254,8 +255,8 @@ def get_management_token() -> str:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Invalid token response from Auth0 Mgmt API.")
         return access_token
     except requests.exceptions.RequestException as e:
-        print(f"[{datetime.datetime.now()}] [AuthUtils_MGMT_TOKEN_ERROR] Failed to get management token: {e}")
+        logger.error(f"Failed to get Auth0 management token: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Failed to get management token: {e}")
     except Exception as e:
-        print(f"[{datetime.datetime.now()}] [AuthUtils_MGMT_TOKEN_ERROR] Error processing management token response: {e}")
+        logger.error(f"Error processing Auth0 management token response: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error processing management token response.")

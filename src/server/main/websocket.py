@@ -1,4 +1,3 @@
-import datetime
 import logging 
 from typing import Dict, Any, List
 from fastapi import WebSocket, status, WebSocketDisconnect
@@ -10,7 +9,7 @@ class MainWebSocketManager:
     def __init__(self):
         self.voice_connections: Dict[str, WebSocket] = {}
         self.notification_connections: Dict[str, WebSocket] = {}
-        logger.info(f"[{datetime.datetime.now()}] [MainServer_WebSocketManager] Initialized.")
+        logger.info("MainWebSocketManager initialized.")
 
     async def connect_voice(self, websocket: WebSocket, user_id: str):
         if user_id in self.voice_connections:
@@ -18,12 +17,12 @@ class MainWebSocketManager:
             if old_ws and old_ws.client_state == WebSocketState.CONNECTED:
                 try: 
                     await old_ws.close(code=status.WS_1000_NORMAL_CLOSURE, reason="New voice connection by same user.")
-                    logger.info(f"[{datetime.datetime.now()}] [WS_VOICE_MGR] Closed old voice WebSocket for user: {user_id}")
+                    logger.info(f"Closed old voice WebSocket for user: {user_id}")
                 except Exception as e: 
-                    logger.error(f"[{datetime.datetime.now()}] [WS_VOICE_MGR_ERROR] Closing old voice WS for {user_id}: {e}")
+                    logger.error(f"Error closing old voice WS for {user_id}: {e}")
         
         self.voice_connections[user_id] = websocket
-        logger.info(f"[{datetime.datetime.now()}] [WS_VOICE_MGR] Voice WebSocket connected for user: {user_id}. Total voice connections: {len(self.voice_connections)}")
+        logger.info(f"Voice WebSocket connected for user: {user_id}. Total voice connections: {len(self.voice_connections)}")
 
     async def disconnect_voice(self, websocket: WebSocket):
         uid_to_remove = None
@@ -34,7 +33,7 @@ class MainWebSocketManager:
         
         if uid_to_remove and uid_to_remove in self.voice_connections:
             del self.voice_connections[uid_to_remove]
-            logger.info(f"[{datetime.datetime.now()}] [WS_VOICE_MGR] Voice WebSocket disconnected for user: {uid_to_remove}. Total voice connections: {len(self.voice_connections)}")
+            logger.info(f"Voice WebSocket disconnected for user: {uid_to_remove}. Total voice connections: {len(self.voice_connections)}")
 
     async def connect_notifications(self, websocket: WebSocket, user_id: str):
         if user_id in self.notification_connections:
@@ -42,12 +41,12 @@ class MainWebSocketManager:
             if old_ws and old_ws.client_state == WebSocketState.CONNECTED:
                 try: 
                     await old_ws.close(code=status.WS_1000_NORMAL_CLOSURE, reason="New notification connection by same user.")
-                    logger.info(f"[{datetime.datetime.now()}] [WS_NOTIF_MGR] Closed old notification WebSocket for user: {user_id}")
+                    logger.info(f"Closed old notification WebSocket for user: {user_id}")
                 except Exception as e: 
-                    logger.error(f"[{datetime.datetime.now()}] [WS_NOTIF_MGR_ERROR] Closing old notif WS for {user_id}: {e}")
+                    logger.error(f"Error closing old notif WS for {user_id}: {e}")
 
         self.notification_connections[user_id] = websocket
-        logger.info(f"[{datetime.datetime.now()}] [WS_NOTIF_MGR] Notification WebSocket connected for user: {user_id}. Total notification connections: {len(self.notification_connections)}")
+        logger.info(f"Notification WebSocket connected for user: {user_id}. Total notification connections: {len(self.notification_connections)}")
 
     async def disconnect_notifications(self, websocket: WebSocket):
         uid_to_remove = None
@@ -58,7 +57,7 @@ class MainWebSocketManager:
         
         if uid_to_remove and uid_to_remove in self.notification_connections:
             del self.notification_connections[uid_to_remove]
-            logger.info(f"[{datetime.datetime.now()}] [WS_NOTIF_MGR] Notification WebSocket disconnected for user: {uid_to_remove}. Total notification connections: {len(self.notification_connections)}")
+            logger.info(f"Notification WebSocket disconnected for user: {uid_to_remove}. Total notification connections: {len(self.notification_connections)}")
 
     async def send_personal_json_message(self, message_data: Dict[str, Any], user_id: str, connection_type: str = "notifications"):
         connections_dict = self.notification_connections if connection_type == "notifications" else self.voice_connections

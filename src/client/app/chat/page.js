@@ -979,9 +979,6 @@ export default function ChatPage() {
 				onDisconnected: () => handleStatusChange("disconnected"),
 				onAudioStream: (stream) => {
 					if (remoteAudioRef.current) {
-						console.log(
-							"Received remote audio stream, attaching to audio element."
-						)
 						remoteAudioRef.current.srcObject = stream
 						remoteAudioRef.current
 							.play()

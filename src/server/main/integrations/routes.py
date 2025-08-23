@@ -164,12 +164,6 @@ async def connect_oauth_integration(
         }
         request_headers = {"Accept": "application/json"}
 
-        # 🔍 DEBUG: Log the exact payload being sent to GitHub
-        print(f"[DEBUG] GitHub OAuth request to {token_url}")
-        print(f"[DEBUG] Headers: {request_headers}")
-        print(f"[DEBUG] Payload: {token_payload}")
-        print(f"[DEBUG] redirect_uri from frontend: {request.redirect_uri}")
-
     elif service_name == 'slack':
         token_url = "https://slack.com/api/oauth.v2.access"
         token_payload = {

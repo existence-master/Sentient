@@ -288,14 +288,12 @@ export default function LayoutWrapper({ children }) {
 			// The 'load' event ensures that SW registration doesn't delay page rendering.
 			window.addEventListener("load", function () {
 				navigator.serviceWorker.register("/sw.js").then(
-					function (registration) {
-						console.log(
-							"ServiceWorker registration successful with scope: ",
-							registration.scope
-						)
-					},
+					function (registration) {},
 					function (err) {
-						console.log("ServiceWorker registration failed: ", err)
+						console.error(
+							"ServiceWorker registration failed: ",
+							err
+						)
 					}
 				)
 			})
@@ -356,7 +354,6 @@ export default function LayoutWrapper({ children }) {
 
 	const subscribeToPushNotifications = useCallback(async () => {
 		if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-			console.log("Push notifications not supported by this browser.")
 			return
 		}
 		if (!process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY) {
@@ -377,7 +374,6 @@ export default function LayoutWrapper({ children }) {
 					return
 				}
 
-				console.log("Permission granted. Subscribing...")
 				const applicationServerKey = urlBase64ToUint8Array(
 					process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY
 				)
@@ -387,12 +383,9 @@ export default function LayoutWrapper({ children }) {
 					applicationServerKey
 				})
 
-				console.log("New subscription created:", subscription)
 				const serializedSub = JSON.parse(JSON.stringify(subscription))
 				await subscribeUser(serializedSub)
 				toast.success("Subscribed to push notifications!")
-			} else {
-				console.log("User is already subscribed.")
 			}
 		} catch (error) {
 			console.error("Error during push notification subscription:", error)
@@ -419,8 +412,6 @@ export default function LayoutWrapper({ children }) {
 			</div>
 		)
 	}
-
-	console.log(user?.[`${process.env.NEXT_PUBLIC_AUTH0_NAMESPACE}/roles`])
 
 	// ... (rest of the component is unchanged)
 	return (

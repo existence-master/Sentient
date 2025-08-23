@@ -38,7 +38,6 @@ class JsonValidatorTool(BaseTool):
     }]
 
     def call(self, params: str, **kwargs) -> str:
-        logger.info(f"JsonValidatorTool called with params: {params}")
         try:
             if isinstance(params, dict):
                  parsed_params = params
@@ -335,13 +334,6 @@ async def generate_chat_llm_stream(
         else:
             stage_2_expanded_messages.append({'role': 'system', 'content': system_note})
             
-
-    # --- ADD THIS BLOCK TO PRINT THE HISTORY ---
-    print("\n" + "="*50)
-    print(f"--- HISTORY SENT TO LLM FOR USER: {user_id} ---")
-    print(json.dumps(stage_2_expanded_messages, indent=2))
-    print("="*50 + "\n")
-    # --- END OF BLOCK ---
 
     system_prompt = STAGE_2_SYSTEM_PROMPT.format(username=username, location=location, current_user_time=current_user_time)
 

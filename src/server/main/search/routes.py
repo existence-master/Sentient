@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
+import logging
 import asyncio
 from bson import ObjectId
 import datetime
@@ -11,6 +12,8 @@ from main.dependencies import mongo_manager
 from main.memories import db as memories_db
 from main.memories.utils import _get_normalized_embedding, _initialize_embedding_model
 from pgvector.asyncpg import register_vector
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(
@@ -97,7 +100,5 @@ async def interactive_search(
         return JSONResponse(content={"results": all_results})
 
     except Exception as e:
-        # Log the full error for debugging
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Error during interactive search for user {user_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An error occurred during search: {str(e)}")

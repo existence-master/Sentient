@@ -8,6 +8,9 @@ import datetime
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Load .env file for 'dev-local' environment.
 ENVIRONMENT = os.getenv('ENVIRONMENT', 'dev-local')
@@ -31,17 +34,17 @@ if AES_SECRET_KEY_HEX:
     if len(AES_SECRET_KEY_HEX) == 64:  # 32 bytes = 64 hex chars
         AES_SECRET_KEY = bytes.fromhex(AES_SECRET_KEY_HEX)
     else:
-        print(f"[Worker_Crypto_WARNING] AES_SECRET_KEY is invalid. Encryption/Decryption will fail.")
+        logger.warning("AES_SECRET_KEY is invalid. Encryption/Decryption will fail.")
 else:
-    print(f"[Worker_Crypto_WARNING] AES_SECRET_KEY is not set. Encryption/Decryption will fail.")
+    logger.warning("AES_SECRET_KEY is not set. Encryption/Decryption will fail.")
 
 if AES_IV_HEX:
     if len(AES_IV_HEX) == 32:  # 16 bytes = 32 hex chars
         AES_IV = bytes.fromhex(AES_IV_HEX)
     else:
-        print(f"[Worker_Crypto_WARNING] AES_IV is invalid. Encryption/Decryption will fail.")
+        logger.warning("AES_IV is invalid. Encryption/Decryption will fail.")
 else:
-    print(f"[Worker_Crypto_WARNING] AES_IV is not set. Encryption/Decryption will fail.")
+    logger.warning("AES_IV is not set. Encryption/Decryption will fail.")
 
 
 def aes_encrypt(data: str) -> str:

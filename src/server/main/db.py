@@ -45,10 +45,10 @@ class MongoManager:
         self.task_collection = self.db[TASK_COLLECTION]
         self.messages_collection = self.db[MESSAGES_COLLECTION]
         
-        print(f"[{datetime.datetime.now()}] [MainServer_MongoManager] Initialized. Database: {MONGO_DB_NAME}")
+        logger.info(f"MongoManager initialized for database: {MONGO_DB_NAME}")
 
     async def initialize_db(self):
-        print(f"[{datetime.datetime.now()}] [MainServer_DB_INIT] Ensuring indexes for MongoManager collections...")
+        logger.info("Ensuring indexes for MongoManager collections...")
         
         collections_with_indexes = {
             self.user_profiles_collection: [
@@ -95,9 +95,9 @@ class MongoManager:
         for collection, indexes in collections_with_indexes.items():
             try:
                 await collection.create_indexes(indexes)
-                print(f"[{datetime.datetime.now()}] [MainServer_DB_INIT] Indexes ensured for: {collection.name}")
+                logger.info(f"Indexes ensured for collection: {collection.name}")
             except Exception as e:
-                print(f"[{datetime.datetime.now()}] [MainServer_DB_ERROR] Index creation for {collection.name}: {e}")
+                logger.error(f"Index creation failed for {collection.name}: {e}", exc_info=True)
 
 
     # --- User Profile Methods ---
@@ -564,4 +564,4 @@ class MongoManager:
     async def close(self):
         if self.client:
             self.client.close()
-            print(f"[{datetime.datetime.now()}] [MainServer_MongoManager] MongoDB connection closed.")
+            logger.info("MongoDB connection closed.")

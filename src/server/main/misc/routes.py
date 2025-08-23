@@ -168,7 +168,7 @@ async def get_user_data_endpoint(payload: dict = Depends(auth_helper.get_decoded
 
     if profile_doc and "userData" in profile_doc:
         return JSONResponse(content={"data": profile_doc["userData"], "status": 200})
-    print(f"[{datetime.datetime.now()}] [GET_USER_DATA] No profile/userData for {user_id}. Creating basic entry.")
+    logger.info(f"No profile/userData for {user_id}. Creating basic entry.")
     await mongo_manager.update_user_profile(user_id, {
         "userData.plan": payload.get("plan", "free"),
         "userData.personalInfo.email": user_email_from_token
@@ -184,18 +184,18 @@ async def notifications_websocket_endpoint(websocket: WebSocket):
         if not authenticated_user_id: return
 
         await main_websocket_manager.connect_notifications(websocket, authenticated_user_id)
-        print(f"[{datetime.datetime.now()}] [NOTIF_WS] User {authenticated_user_id} connected to notifications WebSocket.")
+        logger.info(f"User {authenticated_user_id} connected to notifications WebSocket.")
         while True:
             data = await websocket.receive_text() 
             message_payload = json.loads(data)
             if message_payload.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
-        print(f"[{datetime.datetime.now()}] [NOTIF_WS] Client disconnected (User: {authenticated_user_id or 'unknown'}).")
+        logger.info(f"Client disconnected from notifications WebSocket (User: {authenticated_user_id or 'unknown'}).")
     finally:
         if authenticated_user_id: 
             await main_websocket_manager.disconnect_notifications(websocket)
-            print(f"[{datetime.datetime.now()}] [NOTIF_WS] User {authenticated_user_id} notification WebSocket cleanup complete.")
+            logger.info(f"User {authenticated_user_id} notification WebSocket cleanup complete.")
 
 # === Utility Endpoints (Token introspection, etc.) ===
 @router.post("/utils/get-role", summary="Get User Role from Token Claims")

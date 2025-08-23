@@ -18,8 +18,6 @@ export class WebSocketClient {
 		this.analyser = null
 		this.token = null
 		this.chatId = null
-
-		console.log(`[VoiceClient] Initialized. Server URL: ${this.serverUrl}`)
 	}
 
 	async connect(deviceId, token) {
@@ -71,7 +69,6 @@ export class WebSocketClient {
 
 		try {
 			await this.audioContext.audioWorklet.addModule("/audioProcessor.js")
-			console.log("[VoiceClient] AudioWorklet module loaded.")
 		} catch (e) {
 			console.error("[VoiceClient] Failed to load AudioWorklet:", e)
 			throw new Error("Could not load audio processor.")
@@ -128,7 +125,6 @@ export class WebSocketClient {
 		if (!this.ws) return
 
 		this.ws.onopen = () => {
-			console.log("[VoiceClient] WebSocket connection opened.")
 			if (this.token) {
 				this.ws.send(
 					JSON.stringify({
@@ -173,9 +169,6 @@ export class WebSocketClient {
 		}
 
 		this.ws.onclose = (event) => {
-			console.log(
-				`[VoiceClient] WebSocket closed: Code=${event.code}, Reason: ${event.reason}`
-			)
 			this.options.onDisconnected?.()
 			this.cleanup()
 		}

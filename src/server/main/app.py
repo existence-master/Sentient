@@ -2,13 +2,14 @@ import time
 import datetime
 from datetime import timezone
 START_TIME = time.time()
-print(f"[{datetime.datetime.now()}] [STARTUP] Main Server application script execution started.")
 
 import os
 import platform
 import logging
 logging.basicConfig(level=logging.INFO)
 import socket
+
+logger = logging.getLogger(__name__)
 
 if platform.system() == 'Windows':
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -19,8 +20,8 @@ if platform.system() == 'Windows':
         local_ip = '127.0.0.1'
     finally:
         s.close()
-        
-    logging.info(f"Detected local IP: {local_ip}")
+
+    logger.info(f"Detected local IP: {local_ip}")
 
     os.environ['WEBRTC_IP'] = local_ip
 
@@ -130,17 +131,17 @@ def initialize_tts():
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
-    print(f"[{datetime.datetime.now(timezone.utc).isoformat()}] [LIFESPAN] App startup...")
+    logger.info("App startup...")
     await mongo_manager.initialize_db()
     initialize_stt()
     initialize_tts()
-    print(f"[{datetime.datetime.now(timezone.utc).isoformat()}] [LIFESPAN] App startup complete.")
+    logger.info("App startup complete.")
     yield 
-    print(f"[{datetime.datetime.now(timezone.utc).isoformat()}] [LIFESPAN] App shutdown sequence initiated...")    
+    logger.info("App shutdown sequence initiated...")
     if mongo_manager and mongo_manager.client:
         mongo_manager.client.close()
     await close_memories_pg_pool()
-    print(f"[{datetime.datetime.now(timezone.utc).isoformat()}] [LIFESPAN] App shutdown complete.")
+    logger.info("App shutdown complete.")
 
 app = FastAPI(title="Sentient Main Server", version="2.2.0", docs_url="/docs", redoc_url="/redoc", lifespan=lifespan)
 
@@ -186,7 +187,7 @@ async def health():
     }
 
 END_TIME = time.time()
-print(f"[{datetime.datetime.now()}] [APP_PY_LOADED] Main Server app.py loaded in {END_TIME - START_TIME:.2f} seconds.")
+logger.info(f"Main Server app.py loaded in {END_TIME - START_TIME:.2f} seconds.")
 
 if __name__ == "__main__":
     import uvicorn
