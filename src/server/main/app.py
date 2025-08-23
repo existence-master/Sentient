@@ -37,7 +37,7 @@ from fastapi.encoders import ENCODERS_BY_TYPE
 
 from main.config import (
     APP_SERVER_PORT, STT_PROVIDER, TTS_PROVIDER, ELEVENLABS_API_KEY, DEEPGRAM_API_KEY,
-    FASTER_WHISPER_MODEL_SIZE, FASTER_WHISPER_DEVICE, FASTER_WHISPER_COMPUTE_TYPE, ORPHEUS_MODEL_PATH, ORPHEUS_N_GPU_LAYERS
+    FASTER_WHISPER_MODEL_SIZE, FASTER_WHISPER_DEVICE, FASTER_WHISPER_COMPUTE_TYPE, ORPHEUS_MODEL_PATH, SMALLEST_AI_API_KEY
 )
 from main.dependencies import mongo_manager
 from main.auth.routes import router as auth_router
@@ -68,8 +68,11 @@ else:
 
 if TTS_PROVIDER == "ORPHEUS":
     from main.voice.tts.orpheus import OrpheusTTS
+elif TTS_PROVIDER == "SMALLEST_AI":
+    from main.voice.tts.smallest_ai import SmallestAITTS
 else:
     OrpheusTTS = None
+    SmallestAITTS = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__) 
@@ -115,7 +118,7 @@ def initialize_tts():
         try:
             if OrpheusTTS:
                 tts_model_instance = OrpheusTTS(
-                    model_path=ORPHEUS_MODEL_PATH, n_gpu_layers=ORPHEUS_N_GPU_LAYERS
+                    model_path=ORPHEUS_MODEL_PATH
                 )
             else:
                 logger.error("OrpheusTTS is configured but could not be imported. Check dependencies.")
@@ -126,6 +129,11 @@ def initialize_tts():
             logger.error("ELEVENLABS_API_KEY not set for TTS.")
         else:
             tts_model_instance = ElevenLabsTTSImpl()
+    elif TTS_PROVIDER == "SMALLEST_AI":
+        if not SMALLEST_AI_API_KEY:
+            logger.error("SMALLEST_AI_API_KEY not set for TTS.")
+        else:
+            tts_model_instance = SmallestAITTS()
     else:
         logger.warning(f"Invalid TTS_PROVIDER: '{TTS_PROVIDER}'. No TTS model loaded.")
 

@@ -31,6 +31,7 @@ torch
 fastrtc[vad, stt, tts]
 numpy
 crawl4ai
+smallestai
 
 # --- Background Task Queue ---
 celery

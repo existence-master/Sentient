@@ -3,6 +3,7 @@ from faster_whisper import WhisperModel
 import librosa
 import logging
 import asyncio 
+from typing import Tuple, Optional
 
 from .base import BaseSTT
 logging.basicConfig(level=logging.INFO)
@@ -19,20 +20,22 @@ class FasterWhisperSTT(BaseSTT):
             self.whisper_model = None
             raise 
 
-    def _transcribe_sync(self, audio_float32: np.ndarray) -> str:
+    def _transcribe_sync(self, audio_float32: np.ndarray) -> Tuple[str, Optional[str]]:
         if self.whisper_model is None:
             logger.error("FasterWhisper model not loaded. Cannot transcribe.")
-            return ""
-        segments, _ = self.whisper_model.transcribe(
+            return "", None
+        segments, info = self.whisper_model.transcribe(
             audio_float32,
-            language="en",
+            language=None, # Auto-detect language
             task="transcribe"
         )
-        return " ".join([seg.text for seg in segments]).strip()
+        transcription = " ".join([seg.text for seg in segments]).strip()
+        detected_language = info.language
+        return transcription, detected_language
 
-    async def transcribe(self, audio_bytes: bytes, sample_rate: int) -> str:
+    async def transcribe(self, audio_bytes: bytes, sample_rate: int) -> Tuple[str, Optional[str]]:
         if self.whisper_model is None:
-            return "" 
+            return "", None
 
         try:
             audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
@@ -46,10 +49,10 @@ class FasterWhisperSTT(BaseSTT):
                 audio_float32 = audio_float32.flatten()
             
             loop = asyncio.get_running_loop()
-            transcription = await loop.run_in_executor(None, self._transcribe_sync, audio_float32)
+            transcription, detected_language = await loop.run_in_executor(None, self._transcribe_sync, audio_float32)
             
-            logger.info(f"FasterWhisper Transcription: '{transcription}'")
-            return transcription
+            logger.info(f"FasterWhisper Transcription: '{transcription}', Language: {detected_language}")
+            return transcription, detected_language
         except Exception as e:
             logger.error(f"Error during FasterWhisper STT transcription: {e}", exc_info=True)
-            return ""
+            return "", None

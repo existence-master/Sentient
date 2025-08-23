@@ -135,15 +135,15 @@ class MyVoiceChatHandler(ReplyOnPause):
             if audio_array.dtype != np.int16:
                 audio_array = (audio_array * 32767).astype(np.int16)
 
-            transcription = await stt_model_instance.transcribe(audio_array.tobytes(), sample_rate=sample_rate)
+            transcription, detected_language = await stt_model_instance.transcribe(audio_array.tobytes(), sample_rate=sample_rate)
             
             if not transcription or not transcription.strip():
                 logger.info("STT returned empty string, skipping.")
                 await self.send_message(json.dumps({"type": "status", "message": "listening"}))
                 return
 
-            logger.info(f"STT result for user {user_id}: {transcription}")
-            await self.send_message(json.dumps({"type": "stt_result", "text": transcription}))
+            logger.info(f"STT result for user {user_id}: '{transcription}' (Language: {detected_language})")
+            await self.send_message(json.dumps({"type": "stt_result", "text": transcription, "language": detected_language}))
 
             # 2. FULL AGENTIC LLM PROCESSING
             # Define the callback function that process_voice_command will use to send status updates
@@ -155,6 +155,7 @@ class MyVoiceChatHandler(ReplyOnPause):
             full_response_buffer, assistant_message_id = await process_voice_command(
                 user_id=user_id,
                 transcribed_text=transcription,
+                detected_language=detected_language,
                 send_status_update=send_status_update,
                 db_manager=mongo_manager
             )
@@ -177,11 +178,11 @@ class MyVoiceChatHandler(ReplyOnPause):
             for sentence in sentences:
                 if not sentence: continue
                 logger.info(f"Generating TTS for sentence: '{sentence}'")
-                audio_stream = tts_model_instance.stream_tts(sentence)
+                audio_stream = tts_model_instance.stream_tts(sentence, language=detected_language)
                 
                 async for audio_chunk in audio_stream:
                     if isinstance(audio_chunk, tuple) and isinstance(audio_chunk[1], np.ndarray):
-                        # This is from Orpheus TTS: (sample_rate, np.ndarray)
+                        # This is from Orpheus or SmallestAI TTS: (sample_rate, np.ndarray)
                         sample_rate, audio_array = audio_chunk
                         audio_float32 = audio_to_float32(audio_array)
                         yield (sample_rate, audio_float32)

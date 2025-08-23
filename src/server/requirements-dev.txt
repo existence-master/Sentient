@@ -33,6 +33,7 @@ snac
 torch
 fastrtc[vad, stt, tts]
 numpy
+smallestai
 
 # --- Background Task Queue ---
 celery

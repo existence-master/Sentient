@@ -2,6 +2,7 @@ import logging
 import wave
 import io
 import asyncio
+from typing import Tuple, Optional
 from .base import BaseSTT
 from main.config import ELEVENLABS_API_KEY
 from elevenlabs.client import ElevenLabs
@@ -46,7 +47,7 @@ class ElevenLabsSTT(BaseSTT):
                 return f"ElevenLabs STT Error: {e.response.text}"
             return "Error in STT processing."
 
-    async def transcribe(self, audio_bytes: bytes, sample_rate: int) -> str:
+    async def transcribe(self, audio_bytes: bytes, sample_rate: int) -> Tuple[str, Optional[str]]:
         try:
             # The API works best with a standard audio format like WAV
             wav_data = pcm_to_wav(audio_bytes, sample_rate)
@@ -56,7 +57,8 @@ class ElevenLabsSTT(BaseSTT):
             transcription = await loop.run_in_executor(
                 None, self._transcribe_sync, wav_data
             )
-            return transcription
+            # ElevenLabs STT v1 doesn't explicitly return detected language, assumes English
+            return transcription, "en"
         except Exception as e:
             logger.error(f"Error preparing audio for ElevenLabs STT: {e}", exc_info=True)
-            return "Error preparing audio for STT."
+            return "Error preparing audio for STT.", None

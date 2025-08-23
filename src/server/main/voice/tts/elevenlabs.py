@@ -21,7 +21,9 @@ class ElevenLabsTTS(BaseTTS):
         self.model_id = model_id or "eleven_multilingual_v2" 
         logger.info(f"ElevenLabs TTS initialized with voice_id: {self.voice_id}, model_id: {self.model_id}")
 
-    async def stream_tts(self, text: str, options: TTSOptionsBase = None) -> AsyncGenerator[bytes, None]:
+    async def stream_tts(self, text: str, language: Optional[str] = "en", options: TTSOptionsBase = None) -> AsyncGenerator[bytes, None]:
+        # The multilingual model auto-detects language from text, so the `language` param is not directly used in the API call.
+        # It's kept for interface consistency.
         voice_id_to_use = self.voice_id
         model_id_to_use = self.model_id
         
@@ -41,7 +43,7 @@ class ElevenLabsTTS(BaseTTS):
             use_speaker_boost=custom_settings_dict.get("use_speaker_boost", True)
         )
 
-        logger.debug(f"ElevenLabs streaming TTS for text: '{text[:50]}...' using voice {voice_id_to_use}, model {model_id_to_use}")
+        logger.debug(f"ElevenLabs streaming TTS for text with detected language '{language}': '{text[:50]}...' using voice {voice_id_to_use}, model {model_id_to_use}")
         
         try:
             # CORRECTED: Use the client.text_to_speech.stream() method for newer library versions
