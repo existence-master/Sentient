@@ -68,7 +68,6 @@ export async function subscribeUser(subscription) {
 			{ upsert: true }
 		)
 
-		console.log(`[Actions] Subscription saved for user: ${userId}`)
 		return { success: true }
 	} catch (error) {
 		console.error("[Actions] Error saving subscription:", error)
@@ -95,9 +94,6 @@ export async function unsubscribeUser(endpoint) {
 			{ $pull: { "userData.pwa_subscriptions": { endpoint: endpoint } } }
 		)
 
-		console.log(
-			`[Actions] Subscription with endpoint ${endpoint} removed for user: ${userId}`
-		)
 		return { success: true }
 	} catch (error) {
 		console.error("[Actions] Error removing subscription:", error)
@@ -144,9 +140,6 @@ export async function sendNotificationToCurrentUser(payload) {
 			!Array.isArray(subscriptions) ||
 			subscriptions.length === 0
 		) {
-			console.log(
-				`[Actions] No push subscription found for user ${userId}.`
-			)
 			return { success: false, error: "No subscription found for user." }
 		}
 
@@ -156,9 +149,6 @@ export async function sendNotificationToCurrentUser(payload) {
 				.sendNotification(subscription, JSON.stringify(payload))
 				.then(() => {
 					successCount++
-					console.log(
-						`[Actions] Push notification sent successfully to endpoint for user ${userId}.`
-					)
 				})
 				.catch(async (error) => {
 					console.error(

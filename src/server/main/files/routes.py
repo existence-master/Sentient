@@ -1,5 +1,6 @@
 import os
 import re
+import logging
 from typing import Tuple
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
@@ -8,6 +9,8 @@ from main.plans import PLAN_LIMITS
 from main.plans import PLAN_LIMITS
 from main.config import FILE_MANAGEMENT_TEMP_DIR # Import the base directory constant
 from .utils import get_user_temp_dir
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/files",
@@ -59,7 +62,9 @@ async def upload_file(
 
         # Increment usage after successful save
         await mongo_manager.increment_daily_usage(user_id, "file_uploads")
+        logger.info(f"User {user_id} successfully uploaded file '{sanitized_filename}' to {file_path}")
     except Exception as e:
+        logger.error(f"Failed to save file for user {user_id}: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": f"Failed to save file: {e}"})
     
     # Return only the filename, not the full path with user_id
@@ -91,10 +96,13 @@ async def download_file(
         if not os.path.isfile(full_path):
             raise HTTPException(status_code=404, detail="File not found.")
 
+        logger.info(f"User {user_id} initiated download for file: {sanitized_filename}")
         # Use FileResponse to stream the file back to the client.
         return FileResponse(path=full_path, filename=sanitized_filename, media_type='application/octet-stream')
 
     except HTTPException as he:
+        logger.warning(f"Download failed for user {user_id}, file {filepath}. Status: {he.status_code}, Detail: {he.detail}")
         raise he
     except Exception as e:
+        logger.error(f"Unexpected error during file download for user {user_id}, file {filepath}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

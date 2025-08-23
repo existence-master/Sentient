@@ -1,5 +1,5 @@
 # src/server/main/auth/routes.py
-import datetime
+import logging
 import traceback
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -8,7 +8,9 @@ from main.auth.utils import aes_encrypt, aes_decrypt, PermissionChecker, AuthHel
 from main.auth.models import AuthTokenStoreRequest, EncryptionRequest, DecryptionRequest
 from main.dependencies import mongo_manager
 from main.config import INTEGRATIONS_CONFIG # For validating service_name
-auth_helper = AuthHelper() 
+auth_helper = AuthHelper()
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/auth",
@@ -20,7 +22,7 @@ async def store_session_tokens(
     request: AuthTokenStoreRequest,
     user_id: str = Depends(auth_helper.get_current_user_id) 
 ):
-    print(f"[{datetime.datetime.now()}] [AUTH_STORE_SESSION] Storing Auth0 refresh token for user {user_id}")
+    logger.info(f"Storing Auth0 refresh token for user {user_id}")
     try:
         encrypted_refresh_token = aes_encrypt(request.refresh_token)
         update_payload = {"userData.encrypted_refresh_token": encrypted_refresh_token}
@@ -29,7 +31,7 @@ async def store_session_tokens(
             raise HTTPException(status_code=500, detail="Failed to store Auth0 refresh token.")
         return JSONResponse(content={"message": "Auth0 session tokens stored securely."})
     except Exception as e:
-        print(f"[{datetime.datetime.now()}] [AUTH_STORE_SESSION_ERROR] User {user_id}: {e}")
+        logger.error(f"Error storing Auth0 session for user {user_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error storing Auth0 session: {str(e)}")
 
 @router.post("/utils/encrypt", summary="Encrypt Data (AES)") # Kept /utils prefix for consistency if client expects it
@@ -46,6 +48,5 @@ async def decrypt_data_endpoint(request: DecryptionRequest):
     except ValueError as ve: # Handles decryption errors like bad padding or key issues
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Decryption failed: {str(ve)}")
     except Exception as e: # Catch any other unexpected errors
-        print(f"[{datetime.datetime.now()}] [AES_DECRYPT_ERROR] Unexpected error: {e}")
-        traceback.print_exc()
+        logger.error(f"Unexpected error during AES decryption: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected error occurred during decryption.")

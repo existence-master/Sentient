@@ -19,10 +19,6 @@ export class WebRTCClient {
 	}
 
 	async connect(deviceId, authToken, rtcToken) {
-		console.log("Connecting WebRTC client with deviceId:", deviceId)
-		console.log("Using authToken:", authToken)
-		console.log("Using rtcToken:", rtcToken)
-
 		if (!authToken) {
 			throw new Error("Authentication token is required to connect.")
 		}
@@ -37,39 +33,20 @@ export class WebRTCClient {
 			this.peerConnection = new RTCPeerConnection({
 				iceServers: this.iceServers
 			})
-			console.log("Created RTCPeerConnection with config:", {
-				iceServers: this.iceServers
-			})
-
-			console.log("Created RTCPeerConnection:", this.peerConnection)
 
 			// --- MODIFICATION: Queue ICE candidates instead of sending immediately ---
 			this.peerConnection.onicecandidate = (event) => {
 				if (event.candidate) {
-					console.log(
-						"ICE Candidate Found, queueing:",
-						event.candidate
-					)
 					this.iceCandidateQueue.push(event.candidate)
-				} else {
-					console.log("All ICE candidates have been gathered.")
 				}
 			}
 
 			this.peerConnection.oniceconnectionstatechange = (event) => {
 				const state = this.peerConnection.iceConnectionState
-				console.log(
-					`%cICE Connection State Change: ${state}`,
-					"font-weight: bold; color: blue;"
-				)
 			}
 
 			this.peerConnection.onconnectionstatechange = (event) => {
 				const state = this.peerConnection.connectionState
-				console.log(
-					`%cPeer Connection State Change: ${state}`,
-					"font-weight: bold; color: green;"
-				)
 
 				// --- START MODIFICATION: Handle temporary disconnections ---
 				// If connection is established or re-established, clear any pending disconnect timer.
@@ -77,9 +54,6 @@ export class WebRTCClient {
 					if (this.disconnectTimer) {
 						clearTimeout(this.disconnectTimer)
 						this.disconnectTimer = null
-						console.log(
-							"WebRTC reconnected. Disconnect timer cleared."
-						)
 					}
 					this.options.onConnected?.()
 				}
@@ -113,13 +87,6 @@ export class WebRTCClient {
 				// --- END MODIFICATION ---
 			}
 
-			this.peerConnection.ondatachannel = (event) => {
-				console.log(
-					"Data Channel established by remote peer:",
-					event.channel
-				)
-			}
-
 			const audioConstraints = {
 				...(deviceId && { deviceId: { exact: deviceId } }),
 				noiseSuppression: false,
@@ -130,7 +97,6 @@ export class WebRTCClient {
 			})
 
 			this.setupAudioAnalysis()
-			console.log("Acquired media stream:", this.mediaStream)
 
 			this.mediaStream.getTracks().forEach((track) => {
 				if (this.peerConnection) {
@@ -139,7 +105,6 @@ export class WebRTCClient {
 			})
 
 			this.peerConnection.addEventListener("track", (event) => {
-				console.log("Received track event:", event)
 				this.options.onAudioStream?.(event.streams[0])
 			})
 
@@ -181,13 +146,9 @@ export class WebRTCClient {
 			}
 
 			const serverResponse = await response.json()
-			console.log("Received server answer:", serverResponse)
 			await this.peerConnection.setRemoteDescription(serverResponse)
 
 			// --- MODIFICATION: Send all queued ICE candidates now ---
-			console.log(
-				`Sending ${this.iceCandidateQueue.length} queued ICE candidates...`
-			)
 			for (const candidate of this.iceCandidateQueue) {
 				fetch(`${this.serverUrl}/voice/webrtc/offer`, {
 					method: "POST",
@@ -207,9 +168,6 @@ export class WebRTCClient {
 			}
 			this.iceCandidateQueue = [] // Clear the queue
 
-			console.log(
-				"WebRTC signaling complete. Waiting for connection to establish..."
-			)
 		} catch (error) {
 			console.error("Error connecting WebRTC:", error)
 			this.disconnect()
@@ -277,10 +235,6 @@ export class WebRTCClient {
 	}
 
 	disconnect() {
-		// --- NEW: Add a log here for clarity on manual disconnects ---
-		console.log("Disconnect called. Cleaning up WebRTC resources.")
-		// --- END NEW ---
-
 		if (this.disconnectTimer) {
 			clearTimeout(this.disconnectTimer)
 			this.disconnectTimer = null

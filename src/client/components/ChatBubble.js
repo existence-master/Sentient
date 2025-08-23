@@ -27,7 +27,8 @@ import {
 	IconBrandNotion,
 	IconBrandGithub,
 	IconBrandGoogleDrive,
-	IconBrandLinkedin
+	IconBrandLinkedin,
+	IconArrowRight
 } from "@tabler/icons-react"
 import { AnimatePresence, motion } from "framer-motion"
 import ReactMarkdown from "react-markdown"
@@ -138,9 +139,7 @@ const ChatBubble = ({
 	role,
 	content,
 	tools = [], // This is for the icons at the bottom, keep it
-	thoughts = [],
-	tool_calls = [],
-	tool_results = [],
+	turn_steps = [], // --- CHANGED --- Use turn_steps instead of old props
 	onReply,
 	onDelete,
 	message,
@@ -176,85 +175,10 @@ const ChatBubble = ({
 		}
 	}, [content, allMessages])
 
-	// This is the core fix. We parse the content string to extract structured data
-	// if it's not already provided as props. This handles both streaming and page-load scenarios.
-	const { finalContent, parsedThoughts, parsedToolCalls, parsedToolResults } =
-		React.useMemo(() => {
-			// If structured data is already provided (from DB on page load), use it directly.
-			if (
-				(thoughts && thoughts.length > 0) ||
-				(tool_calls && tool_calls.length > 0) ||
-				(tool_results && tool_results.length > 0)
-			) {
-				return {
-					finalContent: processedContent.content,
-					parsedThoughts: thoughts,
-					parsedToolCalls: tool_calls,
-					parsedToolResults: tool_results
-				}
-			}
+	// --- REMOVED --- The large useMemo hook for parsing is no longer needed.
 
-			// Otherwise, parse the raw content string (streaming scenario).
-			const localThoughts = []
-			const localToolCalls = []
-			const localToolResults = []
-			const contentString = processedContent.content || ""
-
-			// Extract thoughts
-			const thoughtRegex = /<think>([\s\S]*?)<\/think>/g
-			let match
-			while ((match = thoughtRegex.exec(contentString)) !== null) {
-				localThoughts.push(match[1].trim())
-			}
-
-			// Extract tool calls
-			const toolCallRegex =
-				/<tool_code name="([^"]+)">([\s\S]*?)<\/tool_code>/g
-			while ((match = toolCallRegex.exec(contentString)) !== null) {
-				localToolCalls.push({
-					tool_name: match[1],
-					parameters: match[2].trim()
-				})
-			}
-
-			// Extract tool results
-			const toolResultRegex =
-				/<tool_result tool_name="([^"]+)">([\s\S]*?)<\/tool_result>/g
-			while ((match = toolResultRegex.exec(contentString)) !== null) {
-				localToolResults.push({
-					tool_name: match[1],
-					result: match[2].trim()
-				})
-			}
-
-			// Extract final answer by removing all other tags.
-			// The <answer> tag takes precedence.
-			const answerMatch = contentString.match(
-				/<answer>([\s\S]*?)<\/answer>/
-			)
-			let final
-			if (answerMatch) {
-				final = answerMatch[1]
-			} else {
-				final = contentString
-					.replace(/<think>[\s\S]*?<\/think>/g, "")
-					.replace(/<tool_code[^>]*>[\s\S]*?<\/tool_code>/g, "")
-					.replace(/<tool_result[^>]*>[\s\S]*?<\/tool_result>/g, "")
-			}
-
-			return {
-				finalContent: final.trim(),
-				parsedThoughts: localThoughts,
-				parsedToolCalls: localToolCalls,
-				parsedToolResults: localToolResults
-			}
-		}, [processedContent.content, thoughts, tool_calls, tool_results])
-
-	const hasInternalMonologue =
-		parsedThoughts.length > 0 ||
-		parsedToolCalls.length > 0 ||
-		parsedToolResults.length > 0 ||
-		isStreaming
+	// --- CHANGED --- Simplified logic based on the new `turn_steps` prop.
+	const hasInternalMonologue = turn_steps && turn_steps.length > 0
 
 	// Function to toggle expansion of collapsible sections
 	const toggleExpansion = (id) => {
@@ -282,16 +206,16 @@ const ChatBubble = ({
 		if (isUser) {
 			return (
 				<ReactMarkdown
-					className="prose prose-invert"
+					className="prose prose-invert max-w-none" // Added max-w-none to allow full width
 					remarkPlugins={[remarkGfm]}
-					children={finalContent || ""}
+					children={processedContent.content || ""}
 					urlTransform={transformLinkUri}
 					components={markdownComponents}
 				/>
 			)
 		}
 
-		// Assistant message rendering now uses the structured props
+		// --- CHANGED --- Assistant message rendering now uses the structured `turn_steps` prop.
 		return (
 			<>
 				{hasInternalMonologue && (
@@ -321,106 +245,54 @@ const ChatBubble = ({
 									}}
 									className="overflow-hidden"
 								>
-									<div className="mt-2 p-3 bg-neutral-800/50 rounded-md space-y-4">
-										{isStreaming ? (
-											<pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono">
-												<code>
-													{processedContent.content}
-												</code>
-											</pre>
-										) : (
-											<>
-												{parsedThoughts.map(
-													(thought, index) => (
-														<div
-															key={`thought_${index}`}
-														>
-															<ReactMarkdown className="prose prose-sm prose-invert text-gray-300 whitespace-pre-wrap">
-																{thought}
+									<div className="mt-2 p-3 bg-neutral-800/50 rounded-md space-y-3">
+										{turn_steps.map((step, index) => {
+											switch (step.type) {
+												case "thought":
+													return (
+														<div key={index} className="flex items-start gap-2">
+															<IconBrain size={16} className="text-yellow-400/80 flex-shrink-0 mt-0.5" />
+															<ReactMarkdown className="prose prose-sm prose-invert text-neutral-300 whitespace-pre-wrap">
+																{step.content}
 															</ReactMarkdown>
 														</div>
-													)
-												)}
-												{parsedToolCalls.map(
-													(call, index) => {
-														let formattedParams =
-															call.parameters
-														try {
-															const parsed =
-																JSON.parse(
-																	call.parameters
-																)
-															formattedParams =
-																JSON.stringify(
-																	parsed,
-																	null,
-																	2
-																)
-														} catch (e) {
-															// not json, leave as is
-														}
-														return (
-															<div
-																key={`tool_call_${index}`}
-															>
-																<p className="text-xs font-semibold text-green-400 mb-1">
-																	Tool Call:{" "}
-																	{
-																		call.tool_name
-																	}
-																</p>
-																<pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono">
-																	<code>
-																		{
-																			formattedParams
-																		}
-																	</code>
-																</pre>
-															</div>
-														)
-													}
-												)}
-												{parsedToolResults.map(
-													(res, index) => {
-														let formattedResult =
-															res.result
-														try {
-															const parsed =
-																JSON.parse(
-																	res.result
-																)
-															formattedResult =
-																JSON.stringify(
-																	parsed,
-																	null,
-																	2
-																)
-														} catch (e) {
-															// not json, leave as is
-														}
-														return (
-															<div
-																key={`tool_result_${index}`}
-															>
-																<p className="text-xs font-semibold text-purple-400 mb-1">
-																	Tool Result:{" "}
-																	{
-																		res.tool_name
-																	}
-																</p>
-																<pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono">
-																	<code>
-																		{
-																			formattedResult
-																		}
-																	</code>
-																</pre>
-															</div>
-														)
-													}
-												)}
-											</>
-										)}
+													);
+												case "tool_call":
+													let formattedArgs = step.arguments;
+													try {
+														const parsed = JSON.parse(step.arguments);
+														formattedArgs = JSON.stringify(parsed, null, 2);
+													} catch (e) { /* not json, leave as is */ }
+													return (
+														<div key={index} className="space-y-1">
+															<p className="text-xs font-semibold text-green-400 flex items-center gap-1.5">
+																<IconTool size={14} /> Tool Call: {step.tool_name}
+															</p>
+															<pre className="text-xs text-neutral-300 whitespace-pre-wrap font-mono bg-black/30 p-2 rounded-md">
+																<code>{formattedArgs}</code>
+															</pre>
+														</div>
+													);
+												case "tool_result":
+													let formattedResult = step.result;
+													try {
+														const parsed = JSON.parse(step.result);
+														formattedResult = JSON.stringify(parsed, null, 2);
+													} catch (e) { /* not json, leave as is */ }
+													return (
+														<div key={index} className="space-y-1">
+															<p className="text-xs font-semibold text-purple-400 flex items-center gap-1.5">
+																<IconArrowRight size={14} /> Tool Result: {step.tool_name}
+															</p>
+															<pre className="text-xs text-neutral-400 whitespace-pre-wrap font-mono bg-black/30 p-2 rounded-md">
+																<code>{formattedResult}</code>
+															</pre>
+														</div>
+													);
+												default:
+													return null;
+											}
+										})}
 									</div>
 								</motion.div>
 							)}
@@ -428,18 +300,19 @@ const ChatBubble = ({
 					</div>
 				)}
 
-				{/* Render the final, clean content */}
-				{!isStreaming && finalContent && (
+				{/* Render the final, clean content (which is now just the `content` prop) */}
+				{processedContent.content && (
 					<div
 						className={cn(
 							hasInternalMonologue &&
-								"mt-4 pt-4 border-t border-neutral-700/50"
+								"mt-4 pt-4 border-t border-neutral-700/50",
+							isStreaming && "opacity-70" // Dim the text while streaming to indicate it's not final
 						)}
 					>
 						<ReactMarkdown
 							className="prose prose-invert"
 							remarkPlugins={[remarkGfm]}
-							children={finalContent}
+							children={processedContent.content}
 							urlTransform={transformLinkUri}
 							components={markdownComponents}
 						/>
@@ -448,14 +321,7 @@ const ChatBubble = ({
 			</>
 		)
 	}, [
-		processedContent.content,
-		finalContent,
-		expandedStates,
-		isUser,
-		parsedThoughts,
-		parsedToolCalls,
-		parsedToolResults,
-		isStreaming
+		processedContent.content, expandedStates, isUser, turn_steps, isStreaming
 	])
 
 	// Function to copy message content to clipboard

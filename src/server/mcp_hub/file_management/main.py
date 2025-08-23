@@ -68,8 +68,6 @@ async def read_file(ctx: Context, filename: str) -> Dict[str, Any]:
         relative_path = os.path.join(safe_user_id, filename)
         safe_path = _get_safe_filepath(relative_path)
         
-        print(f"Reading file from: {str(safe_path)}")
-
         if not safe_path.exists():
             return {"status": "failure", "error": "File not found."}
         
@@ -82,7 +80,6 @@ async def read_file(ctx: Context, filename: str) -> Dict[str, Any]:
                 # but doubling the slashes is incorrect. Let's try passing it directly.
                 # If issues persist with specific file types, we might need a more nuanced fix,
                 # but this is the correct first step.
-                print(f"Reading file from: {path_for_textract}")
 
                 extracted_bytes = textract.process(path_for_textract)
                 return extracted_bytes.decode('utf-8', errors='ignore')

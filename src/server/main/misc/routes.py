@@ -152,27 +152,25 @@ async def check_user_profile_endpoint(user_id: str = Depends(PermissionChecker(r
 async def get_user_data_endpoint(payload: dict = Depends(auth_helper.get_decoded_payload_with_claims)):
     user_id = payload.get("sub")
     profile_doc = await mongo_manager.get_user_profile(user_id)
+
+    token_plan = payload.get("plan", "free")
     
-    user_email_from_token = payload.get("email")
-    stored_email = profile_doc.get("userData", {}).get("personalInfo", {}).get("email") if profile_doc else None
+    # Check if profile exists and if plan is up-to-date
+    profile_exists = profile_doc is not None
+    stored_plan = profile_doc.get("userData", {}).get("plan") if profile_exists else None
 
-    if user_email_from_token and (not profile_doc or stored_email != user_email_from_token):
-        logger.info(f"Updating stored email for user {user_id}.")
-        await mongo_manager.update_user_profile(user_id, {"userData.personalInfo.email": user_email_from_token})
-        # Add user's plan to their profile for easier access by workers
-        await mongo_manager.update_user_profile(user_id, {"userData.plan": payload.get("plan", "free")})
-
-        # Re-fetch the profile after update if it was missing before
-        if not profile_doc:
-            profile_doc = await mongo_manager.get_user_profile(user_id)
+    # This condition covers both creating a new profile and updating an existing one's plan.
+    if not profile_exists or stored_plan != token_plan:
+        logger.info(f"Updating plan for user {user_id} to '{token_plan}'. Profile exists: {profile_exists}")
+        await mongo_manager.update_user_profile(user_id, {"userData.plan": token_plan})
+        # Re-fetch the profile after update to ensure we return the latest data
+        profile_doc = await mongo_manager.get_user_profile(user_id)
 
     if profile_doc and "userData" in profile_doc:
         return JSONResponse(content={"data": profile_doc["userData"], "status": 200})
-    print(f"[{datetime.datetime.now()}] [GET_USER_DATA] No profile/userData for {user_id}. Creating basic entry.")
-    await mongo_manager.update_user_profile(user_id, {
-        "userData.plan": payload.get("plan", "free"),
-        "userData.personalInfo.email": user_email_from_token
-    })
+    
+    # Fallback in case re-fetch fails or returns an empty doc
+    logger.warning(f"Could not retrieve or create userData for user {user_id}. Returning empty data.")
     return JSONResponse(content={"data": {}, "status": 200})
 
 @router.websocket("/ws/notifications")
@@ -184,18 +182,18 @@ async def notifications_websocket_endpoint(websocket: WebSocket):
         if not authenticated_user_id: return
 
         await main_websocket_manager.connect_notifications(websocket, authenticated_user_id)
-        print(f"[{datetime.datetime.now()}] [NOTIF_WS] User {authenticated_user_id} connected to notifications WebSocket.")
+        logger.info(f"User {authenticated_user_id} connected to notifications WebSocket.")
         while True:
             data = await websocket.receive_text() 
             message_payload = json.loads(data)
             if message_payload.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
-        print(f"[{datetime.datetime.now()}] [NOTIF_WS] Client disconnected (User: {authenticated_user_id or 'unknown'}).")
+        logger.info(f"Client disconnected from notifications WebSocket (User: {authenticated_user_id or 'unknown'}).")
     finally:
         if authenticated_user_id: 
             await main_websocket_manager.disconnect_notifications(websocket)
-            print(f"[{datetime.datetime.now()}] [NOTIF_WS] User {authenticated_user_id} notification WebSocket cleanup complete.")
+            logger.info(f"User {authenticated_user_id} notification WebSocket cleanup complete.")
 
 # === Utility Endpoints (Token introspection, etc.) ===
 @router.post("/utils/get-role", summary="Get User Role from Token Claims")

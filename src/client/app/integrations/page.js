@@ -1,3 +1,4 @@
+// src/client/app/integrations/page.js
 "use client"
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
@@ -59,6 +60,7 @@ import {
 import { Tooltip } from "react-tooltip"
 import ModalDialog from "@components/ModalDialog"
 import { useRouter } from "next/navigation"
+import { INTEGRATION_CAPABILITIES } from "@utils/integration-capabilities"
 
 const integrationColorIcons = {
 	gmail: IconMail,
@@ -86,7 +88,14 @@ const integrationColorIcons = {
 
 const IconPlaceholder = IconSettingsCog
 
-const PRO_ONLY_INTEGRATIONS = ["notion", "github", "slack", "discord", "trello", "whatsapp"]
+const PRO_ONLY_INTEGRATIONS = [
+	"notion",
+	"github",
+	"slack",
+	"discord",
+	"trello",
+	"whatsapp"
+]
 
 const proPlanFeatures = [
 	{ name: "Text Chat", limit: "100 messages per day" },
@@ -797,7 +806,8 @@ const IntegrationsPage = () => {
 	const [activeCategory, setActiveCategory] = useState("Most Popular")
 	const [selectedIntegration, setSelectedIntegration] = useState(null)
 	const [activeManualIntegration, setActiveManualIntegration] = useState(null)
-	const [isWhatsAppDisclaimerOpen, setIsWhatsAppDisclaimerOpen] = useState(false)
+	const [isWhatsAppDisclaimerOpen, setIsWhatsAppDisclaimerOpen] =
+		useState(false)
 	const [isWhatsAppQRModalOpen, setIsWhatsAppQRModalOpen] = useState(false)
 	const [sparkleTrigger, setSparkleTrigger] = useState(0)
 	const [privacyModalService, setPrivacyModalService] = useState(null)
@@ -1349,6 +1359,9 @@ const IntegrationsPage = () => {
 		(integration) => {
 			const Icon =
 				integrationColorIcons[integration.name] || IconPlaceholder
+			const capabilities =
+				INTEGRATION_CAPABILITIES[integration.name] ||
+				"Capabilities for this integration will be detailed here soon."
 			return (
 				<MorphingDialogContent className="pointer-events-auto relative flex h-auto w-full flex-col overflow-hidden border border-neutral-700 bg-neutral-900 sm:w-[600px] rounded-2xl">
 					<BorderTrail className="bg-brand-orange" />
@@ -1369,9 +1382,15 @@ const IntegrationsPage = () => {
 							</div>
 						</div>
 						<MorphingDialogDescription>
-							<p className="text-sm sm:text-base text-neutral-300 mb-6">
-								{integration.description}
-							</p>
+							<div className="bg-neutral-800/50 p-4 rounded-lg border border-neutral-700/50 mb-6">
+								<h4 className="font-semibold text-white mb-2">
+									What I can do with{" "}
+									{integration.display_name}:
+								</h4>
+								<p className="text-sm text-neutral-300 leading-relaxed">
+									{capabilities}
+								</p>
+							</div>
 							{["gmail", "gcalendar"].includes(
 								integration.name
 							) && (
@@ -1411,11 +1430,12 @@ const IntegrationsPage = () => {
 										onClick={async (e) => {
 											e.stopPropagation()
 											if (
-												integration.name ===
-												"whatsapp"
+												integration.name === "whatsapp"
 											) {
 												// Show disclaimer first
-												setIsWhatsAppDisclaimerOpen(true)
+												setIsWhatsAppDisclaimerOpen(
+													true
+												)
 											} else if (
 												integration.auth_type ===
 												"composio"

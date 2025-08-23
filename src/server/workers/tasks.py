@@ -14,6 +14,7 @@ from celery import group, chord
 from main.analytics import capture_event
 from json_extractor import JsonExtractor
 from workers.utils.api_client import notify_user, push_task_list_update
+from main.chat.utils import parse_assistant_response
 from main.plans import PLAN_LIMITS
 from main.config import INTEGRATIONS_CONFIG
 from main.tasks.prompts import TASK_CREATION_PROMPT
@@ -505,6 +506,7 @@ def generate_plan_from_context(task_id: str, user_id: str):
 
 async def async_generate_plan(task_id: str, user_id: str):
     """Async logic for plan generation."""
+    # MODIFICATION: This function now also saves the full agent turn to chat_history
     db_manager = PlannerMongoManager()
     try:
         task = await db_manager.get_task(task_id)
@@ -537,24 +539,12 @@ async def async_generate_plan(task_id: str, user_id: str):
 
         original_context = task.get("original_context", {})
 
-        # For re-planning, add previous results and chat history to the context
-        if task.get("chat_history"):
-            original_context["chat_history"] = task.get("chat_history")
-            original_context["previous_plan"] = task.get("plan")
-            original_context["previous_result"] = task.get("result")
-
         user_profile = await db_manager.user_profiles_collection.find_one(
             {"user_id": user_id},
             {"userData.personalInfo": 1} # Projection to get only necessary data
         )
         if not user_profile:
             logger.error(f"User profile not found for user_id '{user_id}' associated with task {task_id}. Cannot generate plan.")
-            await db_manager.update_task_status(task_id, "error", {"error": f"User profile not found for user_id '{user_id}'."})
-            return
-
-        if not user_profile:
-            logger.error(f"User profile not found for user_id '{user_id}' associated with task {task_id}. Cannot generate plan.")
-            await db_manager.update_task_status(task_id, "error", {"error": f"User profile not found for user_id '{user_id}'."})
             return
 
         personal_info = user_profile.get("userData", {}).get("personalInfo", {})
@@ -570,34 +560,57 @@ async def async_generate_plan(task_id: str, user_id: str):
             user_timezone = ZoneInfo(user_timezone_str)
         except ZoneInfoNotFoundError:
             logger.warning(f"Invalid timezone '{user_timezone_str}' for user {user_id}. Defaulting to UTC.")
+            user_timezone_str = "UTC"
             user_timezone = ZoneInfo("UTC")
 
         current_user_time = datetime.datetime.now(user_timezone).strftime('%Y-%m-%d %H:%M:%S %Z')
 
-        action_items = task.get("action_items", [])
-        if not action_items:
-            # This is likely a manually created task. Use its description as the action item.
-            logger.info(f"Task {task_id}: No 'action_items' field found. Using main description as the action.")
-            action_items = [task.get("description", "")]
-
         available_tools = get_all_mcp_descriptions()
-
         agent_config = get_planner_agent(available_tools, current_user_time, user_name, user_location)
 
-        user_prompt_content = "Please create a plan for the following action items:\n- " + "\n- ".join(action_items)
-        messages = [{'role': 'user', 'content': user_prompt_content}]
+        messages = []
+        if is_change_request:
+            logger.info(f"Task {task_id} has chat history. Constructing messages from history for re-planning.")
+            
+            previous_plan_str = json.dumps(task.get("plan", []), indent=2)
+            # Use default=str to handle non-serializable types like datetime
+            previous_result_str = json.dumps(task.get("result", "No previous result."), indent=2, default=str)
+            
+            context_message = (
+                "You are re-planning a task based on user feedback. Here is the context of the previous run:\n\n"
+                f"**Previous Plan:**\n```json\n{previous_plan_str}\n```\n\n"
+                f"**Previous Result:**\n```json\n{previous_result_str}\n```\n\n"
+                "Now, review the following conversation and generate a new plan based on the user's latest request."
+            )
+            messages.append({"role": "system", "content": context_message})
+
+            for msg in task["chat_history"]:
+                # This part is tricky. The planner doesn't need the full turn_steps of previous turns.
+                # It just needs the user/assistant content.
+                role = msg.get("role")
+                if role not in ["user", "assistant"]:
+                    continue
+                messages.append({
+                    "role": role,
+                    "content": msg.get("content")
+                })
+        else:
+            action_items = task.get("action_items", []) or [task.get("description", "")]
+            user_prompt_content = "Please create a plan for the following action items:\n- " + "\n- ".join(action_items)
+            messages = [{'role': 'user', 'content': user_prompt_content}]
 
         final_response_str = ""
+        final_history = None
         for chunk in run_main_agent(system_message=agent_config["system_message"], function_list=agent_config["function_list"], messages=messages):
+            final_history = chunk # Keep track of the latest state
             if isinstance(chunk, list) and chunk and chunk[-1].get("role") == "assistant":
                 final_response_str = chunk[-1].get("content", "")
 
         if not final_response_str:
             raise Exception("Planner agent returned no response.")
 
-        plan_data = JsonExtractor.extract_valid_json(clean_llm_output(final_response_str))
-        if not plan_data or "plan" not in plan_data:
-            raise Exception(f"Planner agent returned invalid JSON: {final_response_str}")
+        if not final_history:
+            raise Exception("Planner agent returned no history.")
 
         await db_manager.update_task_with_plan(task_id, plan_data, is_change_request) # noqa: E501
 

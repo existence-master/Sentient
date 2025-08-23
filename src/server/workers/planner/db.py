@@ -138,11 +138,8 @@ class PlannerMongoManager:  # noqa: E501
         )
         logger.info(f"Updated fields for task {task_id}: {list(fields.keys())}")
 
-    async def update_task_with_plan(self, task_id: str, plan_data: dict, is_change_request: bool = False):
+    async def update_task_with_plan(self, task_id: str, plan_data: dict, is_change_request: bool = False, chat_history: Optional[List[Dict]] = None):
         """Updates a task with a generated plan and sets it to pending approval."""
-        SENSITIVE_PLAN_FIELDS = ["name", "description", "plan"]
-        encrypt_doc(plan_data, SENSITIVE_PLAN_FIELDS)
-
         plan_steps = plan_data.get("plan", [])
 
         update_doc = {
@@ -151,11 +148,18 @@ class PlannerMongoManager:  # noqa: E501
             "updated_at": datetime.datetime.now(datetime.timezone.utc)
         }
 
+        if chat_history is not None:
+            update_doc["chat_history"] = chat_history
+
         # Only set the main description for the very first run.
         if not is_change_request:
             name = plan_data.get("name", "Proactively generated plan")
             update_doc["name"] = name
             update_doc["description"] = plan_data.get("description", "")
+
+        # Encrypt all sensitive fields at once before updating
+        SENSITIVE_TASK_FIELDS = ["name", "description", "plan", "chat_history"]
+        encrypt_doc(update_doc, SENSITIVE_TASK_FIELDS)
 
         result = await self.tasks_collection.update_one(
             {"task_id": task_id},

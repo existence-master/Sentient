@@ -88,7 +88,6 @@ const Home = () => {
 
 		if (!user) {
 			// User is not authenticated. Redirect to the Auth0 login page.
-			console.log("No user session found, redirecting to login.")
 			router.push("/auth/login")
 			return
 		}

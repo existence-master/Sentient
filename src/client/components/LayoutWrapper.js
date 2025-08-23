@@ -43,28 +43,6 @@ function urlBase64ToUint8Array(base64String) {
 	return outputArray
 }
 
-const refreshSessionAndReload = async () => {
-	try {
-		const res = await fetch("/api/auth/refresh-session");
-		if (!res.ok) {
-			throw new Error("Failed to refresh session");
-		}
-		// Once the session cookie is updated on the server, reload the page.
-		// The browser will send the new cookie, and the server will render with the updated user role.
-		window.location.reload();
-	} catch (error) {
-		console.error("Session refresh failed:", error);
-		// Optionally, handle the error, e.g., show a message to the user.
-		// For simplicity, we can still fall back to the old method if refresh fails.
-		const logoutUrl = new URL("/auth/logout", window.location.origin);
-		logoutUrl.searchParams.set(
-			"returnTo",
-			`${process.env.NEXT_PUBLIC_APP_BASE_URL}`
-		);
-		window.location.assign(logoutUrl.toString());
-	}
-};
-
 export default function LayoutWrapper({ children }) {
 	// ... (keep all your existing state declarations)
 	const [isNotificationsOpen, setNotificationsOpen] = useState(false)
@@ -78,6 +56,7 @@ export default function LayoutWrapper({ children }) {
 	const wsRef = useRef(null)
 	const pathname = usePathname()
 	const router = useRouter()
+	const searchParams = useSearchParams() // Hook to read URL query parameters
 	const posthog = usePostHog()
 
 	const { user, error: authError, isLoading: isAuthLoading } = useUser()
@@ -97,18 +76,58 @@ export default function LayoutWrapper({ children }) {
 	}, [user, posthog])
 
 	useEffect(() => {
-		const urlParams = new URLSearchParams(window.location.search)
+		const paymentStatus = searchParams.get("payment_status")
+		const needsRefresh = searchParams.get("refresh_session")
 
-		// Handle post-upgrade: force a session refresh
-		if (urlParams.get("refresh_session") === "true") {
+		if (paymentStatus === "success" && posthog) {
+			posthog.capture("plan_upgraded", {
+				plan_name: "pro"
+				// MRR and billing_cycle are not available on the client
+			})
+		}
+		// Check for either trigger
+		if (paymentStatus === "success" || needsRefresh === "true") {
+			// CRITICAL FIX: Clean the URL synchronously *before* doing anything else.
+			// This prevents the refresh loop.
+			window.history.replaceState(null, "", pathname)
 			const toastId = toast.loading("Updating your session...", {
 				duration: 4000
 			})
-			// Remove the query params from the URL to avoid re-triggering on reload
-			window.history.replaceState(null, "", pathname)
-			refreshSessionAndReload()
+
+			// const refreshSession = async () => {
+			// 	const toastId = toast.loading("Updating your session...", {
+			// 		duration: 4000
+			// 	})
+			// 	try {
+			// 		// Call the API to get a new session cookie
+			// 		const res = await fetch("/api/auth/refresh-session")
+			// 		if (!res.ok) {
+			// 			const errorData = await res.json()
+			// 			throw new Error(
+			// 				errorData.error || "Session refresh failed."
+			// 			)
+			// 		}
+
+			// 		// Now that the cookie is updated and the URL is clean, reload the page.
+			// 		// This will re-run server components and hooks with the new session data.
+			// 		window.location.reload()
+			// 	} catch (error) {
+			// 		toast.error(
+			// 			`Failed to refresh session: ${error.message}. Please log in again to see your new plan.`,
+			// 			{ id: toastId }
+			// 		)
+			// 	}
+			// }
+			// refreshSession()
+
+			const logoutUrl = new URL("/auth/logout", window.location.origin)
+			logoutUrl.searchParams.set(
+				"returnTo",
+				process.env.NEXT_PUBLIC_APP_BASE_URL
+			)
+			window.location.assign(logoutUrl.toString())
 		}
-	}, [])
+	}, [searchParams, router, pathname]) // Dependencies are correct
 
 	// ... (keep the rest of your useEffects and functions exactly as they were)
 	useEffect(() => {
@@ -269,14 +288,12 @@ export default function LayoutWrapper({ children }) {
 			// The 'load' event ensures that SW registration doesn't delay page rendering.
 			window.addEventListener("load", function () {
 				navigator.serviceWorker.register("/sw.js").then(
-					function (registration) {
-						console.log(
-							"ServiceWorker registration successful with scope: ",
-							registration.scope
-						)
-					},
+					function (registration) {},
 					function (err) {
-						console.log("ServiceWorker registration failed: ", err)
+						console.error(
+							"ServiceWorker registration failed: ",
+							err
+						)
 					}
 				)
 			})
@@ -337,7 +354,6 @@ export default function LayoutWrapper({ children }) {
 
 	const subscribeToPushNotifications = useCallback(async () => {
 		if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-			console.log("Push notifications not supported by this browser.")
 			return
 		}
 		if (!process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY) {
@@ -358,7 +374,6 @@ export default function LayoutWrapper({ children }) {
 					return
 				}
 
-				console.log("Permission granted. Subscribing...")
 				const applicationServerKey = urlBase64ToUint8Array(
 					process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY
 				)
@@ -368,12 +383,9 @@ export default function LayoutWrapper({ children }) {
 					applicationServerKey
 				})
 
-				console.log("New subscription created:", subscription)
 				const serializedSub = JSON.parse(JSON.stringify(subscription))
 				await subscribeUser(serializedSub)
 				toast.success("Subscribed to push notifications!")
-			} else {
-				console.log("User is already subscribed.")
 			}
 		} catch (error) {
 			console.error("Error during push notification subscription:", error)
@@ -400,8 +412,6 @@ export default function LayoutWrapper({ children }) {
 			</div>
 		)
 	}
-
-	console.log(user?.[`${process.env.NEXT_PUBLIC_AUTH0_NAMESPACE}/roles`])
 
 	// ... (rest of the component is unchanged)
 	return (
