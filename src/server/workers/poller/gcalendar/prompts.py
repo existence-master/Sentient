@@ -1,1 +1,0 @@
-# No prompts needed for a poller script.
