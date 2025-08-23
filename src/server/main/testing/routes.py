@@ -11,8 +11,7 @@ from main.dependencies import auth_helper
 from main.notifications.whatsapp_client import (check_phone_number_exists,
                                                  send_whatsapp_message)
 from main.notifications.utils import create_and_push_notification
-from workers.tasks import (cud_memory_task, run_due_tasks,
-                           schedule_trigger_polling)
+from workers.tasks import (cud_memory_task, run_due_tasks)
 
 from .models import WhatsAppTestRequest, TestNotificationRequest
 
@@ -93,25 +92,6 @@ async def trigger_scheduler(
     except Exception as e:
         logger.error(f"Failed to manually trigger scheduler: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to trigger scheduler task.")
-
-@router.post("/trigger-poller", summary="Manually trigger the proactive polling scheduler")
-async def trigger_poller(
-    user_id: str = Depends(auth_helper.get_current_user_id)
-):
-    _check_allowed_environments(
-        ["dev-local", "selfhost"],
-        "This endpoint is only available in development or self-host environments."
-    )
-    try:
-        schedule_trigger_polling.delay()
-        logger.info(f"Manually triggered trigger poller by user {user_id}")
-        return {"message": "Trigger poller triggered successfully. Check Celery worker logs for execution."}
-    except Exception as e:
-        logger.error(f"Failed to manually trigger poller: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to trigger poller task."
-        )
 
 @router.post("/notification", summary="Send a test notification")
 async def send_test_notification(

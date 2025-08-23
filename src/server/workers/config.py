@@ -9,4 +9,3 @@ if ENVIRONMENT == 'dev-local':
     if os.path.exists(dotenv_local_path):
         load_dotenv(dotenv_path=dotenv_local_path)
 MEMORY_MCP_SERVER_URL = os.getenv("MEMORY_MCP_SERVER_URL", "http://localhost:8001/sse")
-SUPPORTED_POLLING_SERVICES = ["gmail", "gcalendar"]

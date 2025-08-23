@@ -15,7 +15,7 @@ from typing import Tuple
 from main.integrations.models import (ManualConnectRequest, OAuthConnectRequest, DisconnectRequest,
                                       ComposioInitiateRequest, ComposioFinalizeRequest)
 from main.dependencies import mongo_manager, auth_helper
-from main.auth.utils import aes_encrypt, PermissionChecker
+from main.auth.utils import aes_encrypt
 from main.config import (
     INTEGRATIONS_CONFIG,
     GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
@@ -25,7 +25,6 @@ from main.config import (
     SLACK_CLIENT_SECRET, NOTION_CLIENT_ID, NOTION_CLIENT_SECRET,
 )
 from workers.tasks import execute_triggered_task
-from workers.proactive.utils import event_pre_filter # noqa: E402
 from main.plans import PRO_ONLY_INTEGRATIONS
 from .utils import waha_request_from_main
 
@@ -248,19 +247,6 @@ async def connect_oauth_integration(
         if not success:
             raise HTTPException(status_code=500, detail="Failed to save integration credentials.")
         
-        if service_name in ['gmail', 'gcalendar']:
-            await mongo_manager.update_polling_state(
-                user_id,
-                service_name,
-                "triggers",
-                {
-                    "is_enabled": True,
-                    "is_currently_polling": False,
-                    "next_scheduled_poll_time": datetime.datetime.now(datetime.timezone.utc), # Poll immediately
-                    "last_successful_poll_timestamp_unix": None,
-                }
-            )
-
         return JSONResponse(content={"message": f"{service_name} connected successfully."})
 
     except httpx.HTTPStatusError as e:
@@ -451,16 +437,6 @@ async def composio_webhook(request: Request):
         if not user_profile:
             logger.error(f"Webhook received for non-existent user '{user_id}'. Ignoring.")
             return JSONResponse(content={"status": "ignored", "reason": "user not found"})
-
-        user_email = user_profile.get("userData", {}).get("personalInfo", {}).get("email")
-
-        # 1. Apply user-defined privacy filters
-        # (This logic would be similar to the one in the old poller service.py)
-
-        # 2. Apply system-wide pre-filter
-        if not event_pre_filter(event_data, service_name, user_email):
-            logger.info(f"Event for user '{user_id}' was discarded by the pre-filter.")
-            return JSONResponse(content={"status": "ignored", "reason": "pre-filter discard"})
 
         # 3. Dispatch to a Celery task that handles finding and running all matching triggered workflows.
         execute_triggered_task.delay(

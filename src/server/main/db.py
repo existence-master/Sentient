@@ -24,7 +24,6 @@ def _decrypt_docs(docs: List[Dict], fields: List[str]):
 
 USER_PROFILES_COLLECTION = "user_profiles"
 NOTIFICATIONS_COLLECTION = "notifications"
-POLLING_STATE_COLLECTION = "polling_state_store"
 DAILY_USAGE_COLLECTION = "daily_usage"
 PROCESSED_ITEMS_COLLECTION = "processed_items_log"
 TASK_COLLECTION = "tasks"
@@ -39,7 +38,6 @@ class MongoManager:
 
         self.user_profiles_collection = self.db[USER_PROFILES_COLLECTION]
         self.notifications_collection = self.db[NOTIFICATIONS_COLLECTION]
-        self.polling_state_collection = self.db[POLLING_STATE_COLLECTION]
         self.daily_usage_collection = self.db[DAILY_USAGE_COLLECTION]
         self.processed_items_collection = self.db[PROCESSED_ITEMS_COLLECTION]
         self.task_collection = self.db[TASK_COLLECTION]
@@ -61,14 +59,6 @@ class MongoManager:
             self.notifications_collection: [
                 IndexModel([("user_id", ASCENDING)], name="notification_user_id_idx"),
                 IndexModel([("user_id", ASCENDING), ("notifications.timestamp", DESCENDING)], name="notification_timestamp_idx", sparse=True)
-            ],
-            self.polling_state_collection: [
-                IndexModel([("user_id", ASCENDING), ("service_name", ASCENDING), ("poll_type", ASCENDING)], unique=True, name="polling_user_service_type_unique_idx"),
-                IndexModel([
-                    ("is_enabled", ASCENDING), ("next_scheduled_poll_time", ASCENDING),
-                    ("is_currently_polling", ASCENDING), ("error_backoff_until_timestamp", ASCENDING)
-                ], name="polling_due_tasks_idx"),
-                IndexModel([("is_currently_polling", ASCENDING), ("last_attempted_poll_timestamp", ASCENDING)], name="polling_stale_locks_idx")
             ],
             self.daily_usage_collection: [
                 IndexModel([("user_id", ASCENDING), ("date", DESCENDING)], unique=True, name="usage_user_date_unique_idx"),
@@ -285,66 +275,6 @@ class MongoManager:
             {"user_id": user_id},
             {"$set": {"notifications": []}}
         )
-
-    async def find_and_action_suggestion_notification(self, user_id: str, notification_id: str) -> Optional[Dict]:
-        """
-        Atomically finds a proactive_suggestion notification, marks it as actioned, and returns it.
-        This prevents race conditions from multiple clicks.
-        """
-        if not user_id or not notification_id:
-            return None
-
-        # Find the document containing the notification
-        user_notif_doc = await self.notifications_collection.find_one(
-            {"user_id": user_id, "notifications.id": notification_id}
-        )
-        if not user_notif_doc:
-            return None
-
-        # Atomically update the specific notification inside the array
-        result = await self.notifications_collection.find_one_and_update(
-            {"user_id": user_id, "notifications.id": notification_id, "notifications.is_actioned": False},
-            {"$set": {"notifications.$.is_actioned": True}},
-        )
-
-        return user_notif_doc if result else None
-
-    # --- Polling State Store Methods ---
-    async def get_polling_state(self, user_id: str, service_name: str) -> Optional[Dict[str, Any]]:
-        if not user_id or not service_name: return None
-        return await self.polling_state_collection.find_one(
-            {"user_id": user_id, "service_name": service_name}
-        )
-
-    async def update_polling_state(self, user_id: str, service_name: str, poll_type: str, state_data: Dict[str, Any]) -> bool:
-        if not user_id or not service_name or not poll_type or state_data is None: return False
-        for key, value in state_data.items():
-            if isinstance(value, datetime.datetime):
-                state_data[key] = value.replace(tzinfo=datetime.timezone.utc) if value.tzinfo is None else value.astimezone(datetime.timezone.utc)
-
-        # Prevent conflict errors by not trying to $set fields that are part of the unique index
-        # or are immutable.
-        if '_id' in state_data: del state_data['_id']
-        if 'user_id' in state_data: del state_data['user_id']
-        if 'service_name' in state_data: del state_data['service_name']
-        if 'poll_type' in state_data: del state_data['poll_type']
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
-        state_data["last_updated_at"] = now_utc
-
-        result = await self.polling_state_collection.update_one(
-            {"user_id": user_id, "service_name": service_name, "poll_type": poll_type},
-            {"$set": state_data, "$setOnInsert": {"created_at": now_utc, "user_id": user_id, "service_name": service_name, "poll_type": poll_type}},
-            upsert=True
-        )
-        return result.matched_count > 0 or result.upserted_id is not None
-
-    async def delete_polling_state_by_service(self, user_id: str, service_name: str) -> int:
-        """Deletes all polling state documents for a user and a specific service."""
-        if not user_id or not service_name:
-            return 0
-        query = {"user_id": user_id, "service_name": service_name}
-        result = await self.polling_state_collection.delete_many(query)
-        return result.deleted_count
 
     # --- Task Methods ---
     async def add_task(self, user_id: str, task_data: dict) -> str:

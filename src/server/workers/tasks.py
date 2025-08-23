@@ -29,12 +29,6 @@ from main.vector_db import get_conversation_summaries_collection
 from mcp_hub.tasks.prompts import ITEM_EXTRACTOR_SYSTEM_PROMPT, RESOURCE_MANAGER_SYSTEM_PROMPT
 from workers.utils.text_utils import clean_llm_output
 
-# Imports for poller logic
-from workers.poller.gmail.service import GmailPollingService
-from workers.poller.gcalendar.service import GCalendarPollingService
-from workers.poller.gmail.db import PollerMongoManager as GmailPollerDB
-from workers.poller.gcalendar.db import PollerMongoManager as GCalPollerDB
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -910,56 +904,6 @@ async def async_execute_triggered_task(user_id: str, source: str, event_type: st
 
     except Exception as e:
         logger.error(f"Error during async_execute_triggered_task for user {user_id}: {e}", exc_info=True)
-    finally:
-        await db_manager.close()
-
-# --- Polling Tasks ---
-@celery_app.task(name="poll_gmail_for_triggers")
-def poll_gmail_for_triggers(user_id: str, polling_state: dict):
-    logger.info(f"Polling Gmail for triggers for user {user_id}")
-    db_manager = GmailPollerDB()
-    service = GmailPollingService(db_manager)
-    run_async(service._run_single_user_poll_cycle(user_id, polling_state, mode='triggers'))
-
-@celery_app.task(name="poll_gcalendar_for_triggers")
-def poll_gcalendar_for_triggers(user_id: str, polling_state: dict):
-    logger.info(f"Polling GCalendar for triggers for user {user_id}")
-    db_manager = GCalPollerDB()
-    service = GCalendarPollingService(db_manager)
-    run_async(service._run_single_user_poll_cycle(user_id, polling_state, mode='triggers'))
-
-# --- Scheduler Tasks ---
-@celery_app.task(name="schedule_trigger_polling")
-def schedule_trigger_polling():
-    """Celery Beat task for the frequent triggered workflow polling."""
-    logger.info("Trigger Polling Scheduler: Checking for due tasks...")
-    run_async(async_schedule_polling('triggers'))
-
-async def async_schedule_polling(mode: str):
-    """Generic scheduler logic for both proactivity and triggers."""
-    db_manager = GmailPollerDB() # Can use either DB manager as they are identical
-    try:
-        supported_polling_services = ["gmail", "gcalendar"]
-        await db_manager.reset_stale_polling_locks("gmail", mode)
-        await db_manager.reset_stale_polling_locks("gcalendar", mode)
-
-        for service_name in supported_polling_services:
-            due_tasks_states = await db_manager.get_due_polling_tasks_for_service(service_name, mode)
-            logger.info(f"Found {len(due_tasks_states)} due '{mode}' tasks for {service_name}.")
-
-            for task_state in due_tasks_states:
-                user_id = task_state["user_id"]
-                locked_task_state = await db_manager.set_polling_status_and_get(user_id, service_name, mode)
-
-                if locked_task_state and '_id' in locked_task_state and isinstance(locked_task_state['_id'], ObjectId):
-                    locked_task_state['_id'] = str(locked_task_state['_id'])
-
-                if locked_task_state:
-                    if service_name == "gmail":
-                        poll_gmail_for_triggers.delay(user_id, locked_task_state)
-                    elif service_name == "gcalendar":
-                        poll_gcalendar_for_triggers.delay(user_id, locked_task_state)
-                    logger.info(f"Dispatched '{mode}' polling task for {user_id} - service: {service_name}")
     finally:
         await db_manager.close()
 

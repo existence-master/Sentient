@@ -1,1 +1,0 @@
-# This file can be empty. It marks the 'search' directory as a Python package.
