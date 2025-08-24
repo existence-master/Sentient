@@ -474,7 +474,6 @@ async def _execute_simple_voice_task(
                     if last_message.get('role') == 'assistant' and last_message.get('function_call'):
                         tool_name = last_message['function_call']['name']
                         asyncio.run_coroutine_threadsafe(send_status_update({"type": "status", "message": f"using_tool_{tool_name}"}), loop)
-            print(final_run_response)
             return final_run_response
         except Exception as e:
             logger.error(f"Error in voice agent_worker thread: {e}", exc_info=True)

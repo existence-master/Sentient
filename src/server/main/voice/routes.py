@@ -65,18 +65,12 @@ async def initiate_voice_session(
     rtc_token = str(uuid.uuid4())
     expires_at = now + TOKEN_EXPIRATION_SECONDS
     rtc_token_cache[rtc_token] = {"user_id": user_id, "expires_at": expires_at}
-    logger.info(f"Generated RTC token {rtc_token} for user {user_id}, expires at {datetime.fromtimestamp(expires_at).isoformat()}")
-    
-    if ENVIRONMENT in ["dev-local", "selfhost"]:
-        logger.info(f"Initiated voice session for user {user_id} in dev-local mode with token {rtc_token}")
-        return {"rtc_token": rtc_token, "ice_servers": []}  # No TURN server in dev-local mode
-    
-    else:
-        logger.info(f"Initiated voice session for user {user_id} with token {rtc_token} using TURN server")
-        # Get TURN credentials to send to the client
-        ice_servers_config = await get_credentials()
+    logger.info(f"Generated RTC token {rtc_token} for user {user_id}, expires at {datetime.fromtimestamp(expires_at).isoformat()}. Mode: {ENVIRONMENT}")
 
-        logger.info(f"Initiated voice session for user {user_id} with token {rtc_token}")
+    if ENVIRONMENT in ["dev-local", "selfhost"]:
+        return {"rtc_token": rtc_token, "ice_servers": []}
+    else:
+        ice_servers_config = await get_credentials()
         return {"rtc_token": rtc_token, "ice_servers": ice_servers_config}
 
 
@@ -144,30 +138,10 @@ class MyVoiceChatHandler(ReplyOnPause):
             await self.send_message(json.dumps({"type": "status", "message": "transcribing"}))
             sample_rate, audio_array = audio
 
-            # --- DEBUG: Save audio to file before STT ---
-            try:
-                debug_dir = "audio_debug_logs"
-                # Create the directory relative to the current file's location
-                server_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-                full_debug_path = os.path.join(server_root, debug_dir)
-                os.makedirs(full_debug_path, exist_ok=True)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                filename = os.path.join(full_debug_path, f"stt_input_{timestamp}.wav")
-
-                with wave.open(filename, 'wb') as wf:
-                    wf.setnchannels(1)  # Mono
-                    wf.setsampwidth(audio_array.dtype.itemsize) # Should be 2 for int16
-                    wf.setframerate(sample_rate)
-                    wf.writeframes(audio_array.tobytes())
-                logger.info(f"[Handler:{self.handler_id}] DEBUG: Saved pre-STT audio to {filename}")
-            except Exception as e:
-                logger.error(f"[Handler:{self.handler_id}] DEBUG: Failed to save debug audio: {e}")
-            # --- END DEBUG ---
-
             if audio_array.dtype != np.int16:
                 audio_array = (audio_array * 32767).astype(np.int16)
 
-            logger.debug(f"[Handler:{self.handler_id}] Transcribing audio for user {user_id}...")
+            logger.info(f"[Handler:{self.handler_id}] Transcribing audio for user {user_id}...")
             transcription, detected_language = await stt_model_instance.transcribe(audio_array.tobytes(), sample_rate=sample_rate)
             
             if not transcription or not transcription.strip():
@@ -180,7 +154,6 @@ class MyVoiceChatHandler(ReplyOnPause):
 
             async def send_status_update(status_update: Dict[str, Any]):
                 """Sends a status update message to the client."""
-                logger.info(f"[Handler:{self.handler_id}] Sending status update to client: {status_update}")
                 await self.send_message(json.dumps(status_update))
 
             # 2. Process command, which may return a background task for Stage 2
@@ -227,13 +200,9 @@ class MyVoiceChatHandler(ReplyOnPause):
             sentences = [s.strip() for s in sentences if s.strip()]
             for i, sentence in enumerate(sentences):
                 if not sentence: continue
-                logger.info(f"[Handler:{self.handler_id}] Generating TTS for sentence {i+1}/{len(sentences)}: '{sentence}'")
                 audio_stream = tts_model_instance.stream_tts(sentence, language=detected_language)
-                chunk_count = 0
                 async for audio_chunk in audio_stream:
                     yield self._format_audio_chunk(audio_chunk)
-                    chunk_count += 1
-                logger.info(f"[Handler:{self.handler_id}] Streamed {chunk_count} TTS chunks for sentence.")
         except Exception as e:
             logger.error(f"[Handler:{self.handler_id}] Error in voice_chat for user {user_id}: {e}", exc_info=True)
             await self.send_message(json.dumps({"type": "error", "message": str(e)}))

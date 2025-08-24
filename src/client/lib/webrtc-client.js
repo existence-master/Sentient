@@ -135,12 +135,7 @@ export class WebRTCClient {
 			console.log("[WebRTCClient] Data channel created.")
 			this.dataChannel.addEventListener("message", (event) => {
 				try {
-					const message = JSON.parse(event.data)
-					console.log(
-						"[WebRTCClient] Received data channel message:",
-						message
-					)
-					this.options.onEvent?.(message)
+					this.options.onEvent?.(JSON.parse(event.data))
 				} catch (error) {
 					console.error("Error parsing data channel message:", error)
 				}

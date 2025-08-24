@@ -868,7 +868,6 @@ export default function ChatPage() {
 
 	const handleVoiceEvent = useCallback(
 		(event) => {
-			console.log("[ChatPage] Received voice event:", event)
 			if (event.type === "stt_result" && event.text) {
 				setDisplayedMessages((prev) => [
 					...prev,
