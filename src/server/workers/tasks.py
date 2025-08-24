@@ -465,7 +465,6 @@ def generate_plan_from_context(task_id: str, user_id: str):
 
 async def async_generate_plan(task_id: str, user_id: str):
     """Async logic for plan generation."""
-    # MODIFICATION: This function now also saves the full agent turn to chat_history
     db_manager = PlannerMongoManager()
     try:
         task = await db_manager.get_task(task_id)

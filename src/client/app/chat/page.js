@@ -963,6 +963,10 @@ export default function ChatPage() {
 	const handleStartVoice = async () => {
 		if (connectionStatus !== "disconnected") return
 		console.log("[ChatPage] handleStartVoice triggered.")
+		// --- ADD POSTHOG EVENT TRACKING ---
+		posthog?.capture("voice_mode_activated")
+		voiceModeStartTimeRef.current = Date.now() // Set start time
+		// --- END POSTHOG EVENT TRACKING ---
 
 		setConnectionStatus("connecting")
 		setVoiceStatusText("Connecting...")
@@ -1207,6 +1211,7 @@ export default function ChatPage() {
 			console.log("[ChatPage] Toggling voice mode OFF.")
 			handleStopVoice()
 			setIsVoiceMode(false)
+			fetchInitialMessages()
 		} else {
 			console.log("[ChatPage] Toggling voice mode ON.")
 			// Switching TO voice mode, first get permissions
@@ -1215,10 +1220,6 @@ export default function ChatPage() {
 				console.log(
 					"[ChatPage] Permissions granted, activating voice mode."
 				)
-				// --- ADD POSTHOG EVENT TRACKING ---
-				posthog?.capture("voice_mode_activated")
-				voiceModeStartTimeRef.current = Date.now() // Set start time
-				// --- END POSTHOG EVENT TRACKING ---
 				setIsVoiceMode(true)
 			} else {
 				console.warn(

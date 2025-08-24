@@ -144,8 +144,6 @@ class MyVoiceChatHandler(ReplyOnPause):
             await self.send_message(json.dumps({"type": "status", "message": "transcribing"}))
             sample_rate, audio_array = audio
 
-            print(f"Sample Rate: {sample_rate}, Audio Array Shape: {audio_array.shape}")
-
             # --- DEBUG: Save audio to file before STT ---
             try:
                 debug_dir = "audio_debug_logs"
@@ -169,7 +167,7 @@ class MyVoiceChatHandler(ReplyOnPause):
             if audio_array.dtype != np.int16:
                 audio_array = (audio_array * 32767).astype(np.int16)
 
-            logger.info(f"[Handler:{self.handler_id}] Transcribing audio for user {user_id}...")
+            logger.debug(f"[Handler:{self.handler_id}] Transcribing audio for user {user_id}...")
             transcription, detected_language = await stt_model_instance.transcribe(audio_array.tobytes(), sample_rate=sample_rate)
             
             if not transcription or not transcription.strip():
@@ -180,62 +178,62 @@ class MyVoiceChatHandler(ReplyOnPause):
             logger.info(f"[Handler:{self.handler_id}] STT result for user {user_id}: '{transcription}' (Language: {detected_language})")
             await self.send_message(json.dumps({"type": "stt_result", "text": transcription, "language": detected_language}))
 
-            # 2. FULL AGENTIC LLM PROCESSING
-            # Define the callback function that process_voice_command will use to send status updates
             async def send_status_update(status_update: Dict[str, Any]):
                 """Sends a status update message to the client."""
                 logger.info(f"[Handler:{self.handler_id}] Sending status update to client: {status_update}")
                 await self.send_message(json.dumps(status_update))
 
-            # Call the updated, fully-featured voice command processor
-            logger.info(f"[Handler:{self.handler_id}] Invoking process_voice_command for user {user_id}.")
-            full_response_buffer, assistant_message_id = await process_voice_command(
+            # 2. Process command, which may return a background task for Stage 2
+            response_data = await process_voice_command(
                 user_id=user_id,
                 transcribed_text=transcription,
                 detected_language=detected_language,
                 send_status_update=send_status_update,
                 db_manager=mongo_manager
             )
-            logger.info(f"[Handler:{self.handler_id}] LLM response for user {user_id}: '{full_response_buffer}'")
-            
-            await self.send_message(json.dumps({"type": "llm_result", "text": full_response_buffer, "messageId": assistant_message_id}))
 
-            # 3. Text-to-Speech (TTS) per sentence
-            if not tts_model_instance:
-                raise Exception("TTS model is not initialized.")
-            if not full_response_buffer:
-                logger.warning(f"[Handler:{self.handler_id}] LLM returned an empty response for user {user_id}.")
+            interim_response = response_data.get("interim_response")
+            final_response_task = response_data.get("final_response_task")
+            final_response = response_data.get("final_response")
+            assistant_message_id = response_data.get("assistant_message_id")
+
+            # 3. Play interim TTS if available (runs in parallel with Stage 2)
+            if interim_response:
+                logger.info(f"[Handler:{self.handler_id}] TTS for interim response: '{interim_response}'")
+                interim_audio_stream = tts_model_instance.stream_tts(interim_response, language=detected_language)
+                async for audio_chunk in interim_audio_stream:
+                    yield self._format_audio_chunk(audio_chunk)
+
+            # 4. Wait for Stage 2 to finish (if it was started) and get final response
+            if final_response_task:
+                final_response_text, final_turn_steps = await final_response_task
+                await mongo_manager.messages_collection.update_one(
+                    {"message_id": assistant_message_id, "user_id": user_id},
+                    {"$set": {"content": final_response_text, "turn_steps": final_turn_steps}}
+                )
+                await self.send_message(json.dumps({"type": "llm_result", "text": final_response_text, "messageId": assistant_message_id}))
+                final_response = final_response_text
+            elif final_response:
+                await self.send_message(json.dumps({"type": "llm_result", "text": final_response, "messageId": assistant_message_id}))
+
+            # 5. Play final TTS (handles all cases: simple, complex, conversational)
+            if not final_response:
+                logger.warning(f"[Handler:{self.handler_id}] LLM returned an empty final response for user {user_id}.")
                 await self.send_message(json.dumps({"type": "status", "message": "listening"}))
                 return
 
             await self.send_message(json.dumps({"type": "status", "message": "speaking"}))
-            
-            sentences = re.split(r'(?<=[.?!])\s+', full_response_buffer)
+            sentences = re.split(r'(?<=[.?!])\s+', final_response)
             sentences = [s.strip() for s in sentences if s.strip()]
-            
             for i, sentence in enumerate(sentences):
                 if not sentence: continue
                 logger.info(f"[Handler:{self.handler_id}] Generating TTS for sentence {i+1}/{len(sentences)}: '{sentence}'")
                 audio_stream = tts_model_instance.stream_tts(sentence, language=detected_language)
-                
                 chunk_count = 0
                 async for audio_chunk in audio_stream:
-                    if isinstance(audio_chunk, tuple) and isinstance(audio_chunk[1], np.ndarray):
-                        # This is from Orpheus or SmallestAI TTS: (sample_rate, np.ndarray)
-                        sample_rate, audio_array = audio_chunk
-                        audio_float32 = audio_to_float32(audio_array)
-                        yield (sample_rate, audio_float32)
-                    elif isinstance(audio_chunk, bytes):
-                        # This is from ElevenLabs TTS (PCM bytes)
-                        # We need to convert it to the format fastrtc expects: (sample_rate, np.ndarray)
-                        # Assuming 16kHz, 16-bit PCM from ElevenLabs
-                        sample_rate = 16000 
-                        audio_array = np.frombuffer(audio_chunk, dtype=np.int16)
-                        audio_float32 = audio_to_float32(audio_array)
-                        yield (sample_rate, audio_float32)
+                    yield self._format_audio_chunk(audio_chunk)
                     chunk_count += 1
                 logger.info(f"[Handler:{self.handler_id}] Streamed {chunk_count} TTS chunks for sentence.")
-
         except Exception as e:
             logger.error(f"[Handler:{self.handler_id}] Error in voice_chat for user {user_id}: {e}", exc_info=True)
             await self.send_message(json.dumps({"type": "error", "message": str(e)}))
@@ -247,6 +245,22 @@ class MyVoiceChatHandler(ReplyOnPause):
             except Exception as final_e:
                 logger.warning(f"[Handler:{self.handler_id}] Could not send final 'listening' status for user {user_id}, connection likely closed: {final_e}")
                 
+    def _format_audio_chunk(self, audio_chunk: Any) -> Tuple[int, np.ndarray]:
+        """Helper to format audio chunks from different TTS providers into the expected tuple."""
+        if isinstance(audio_chunk, tuple) and isinstance(audio_chunk[1], np.ndarray):
+            # This is from Orpheus or SmallestAI TTS: (sample_rate, np.ndarray)
+            sample_rate, audio_array = audio_chunk
+            audio_float32 = audio_to_float32(audio_array)
+            return (sample_rate, audio_float32)
+        elif isinstance(audio_chunk, bytes):
+            # This is from ElevenLabs TTS (PCM bytes)
+            # Assuming 16kHz, 16-bit PCM from ElevenLabs
+            sample_rate = 16000 
+            audio_array = np.frombuffer(audio_chunk, dtype=np.int16)
+            audio_float32 = audio_to_float32(audio_array)
+            return (sample_rate, audio_float32)
+        raise TypeError(f"Unsupported audio chunk type: {type(audio_chunk)}")
+
 stream = None
 
 async def get_credentials():

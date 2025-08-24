@@ -274,6 +274,12 @@ export class WebRTCClient {
 	}
 
 	disconnect() {
+		// --- MODIFICATION: Make disconnect idempotent ---
+		// If peerConnection is already null, we've already cleaned up.
+		if (this.peerConnection === null) {
+			console.log("[WebRTCClient] Already disconnected, skipping redundant disconnect call.");
+			return;
+		}
 		console.log("[WebRTCClient] Disconnecting...")
 		if (this.disconnectTimer) {
 			clearTimeout(this.disconnectTimer)
