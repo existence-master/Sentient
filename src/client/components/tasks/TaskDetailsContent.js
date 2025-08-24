@@ -15,7 +15,8 @@ import {
 	IconInfoCircle,
 	IconLink,
 	IconWorldSearch,
-	IconChevronRight
+	IconChevronRight,
+	IconClock
 } from "@tabler/icons-react"
 import ScheduleEditor from "@components/tasks/ScheduleEditor"
 import ExecutionUpdate from "./ExecutionUpdate"
@@ -24,6 +25,57 @@ import { TextShimmer } from "@components/ui/text-shimmer"
 import CollapsibleSection from "./CollapsibleSection"
 import FileCard from "@components/FileCard"
 import ReactMarkdown from "react-markdown"
+
+// --- NEW COMPONENT ---
+const WaitingStateDisplay = ({ waitingConfig }) => {
+	if (!waitingConfig || !waitingConfig.timeout_at) return null
+
+	const [timeLeft, setTimeLeft] = useState("")
+
+	useEffect(() => {
+		const intervalId = setInterval(() => {
+			const timeoutDate = new Date(waitingConfig.timeout_at)
+			const now = new Date()
+			const diff = timeoutDate.getTime() - now.getTime()
+
+			if (diff <= 0) {
+				setTimeLeft("Timeout reached. Awaiting next cycle.")
+				clearInterval(intervalId)
+				return
+			}
+
+			const hours = Math.floor(diff / (1000 * 60 * 60))
+			const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
+			const seconds = Math.floor((diff % (1000 * 60)) / 1000)
+
+			setTimeLeft(
+				`${String(hours).padStart(2, "0")}h ${String(minutes).padStart(
+					2,
+					"0"
+				)}m ${String(seconds).padStart(2, "0")}s`
+			)
+		}, 1000)
+
+		return () => clearInterval(intervalId)
+	}, [waitingConfig.timeout_at])
+
+	return (
+		<div className="p-4 rounded-lg border bg-yellow-500/10 border-yellow-500/20 text-yellow-300">
+			<h4 className="font-semibold mb-2 flex items-center gap-2">
+				<IconClock size={18} />
+				Task is Waiting
+			</h4>
+			<p className="text-sm text-neutral-300">
+				Waiting for:{" "}
+				<span className="font-semibold">{waitingConfig.waiting_for}</span>
+			</p>
+			<p className="text-sm text-neutral-300 mt-1">
+				Time remaining:{" "}
+				<span className="font-mono font-semibold">{timeLeft}</span>
+			</p>
+		</div>
+	)
+}
 
 // --- NEW COMPONENT ---
 const ExecutionLogDisplay = ({ log }) => {
@@ -497,6 +549,15 @@ const TaskDetailsContent = ({
 						{displayTask.error}
 					</p>
 				</div>
+			)}
+
+			{displayTask.task_type === "long_form" &&
+				displayTask.orchestrator_state?.current_state === "WAITING" && (
+					<WaitingStateDisplay
+						waitingConfig={
+							displayTask.orchestrator_state.waiting_config
+						}
+					/>
 			)}
 
 			{displayTask.task_type === "long_form" &&

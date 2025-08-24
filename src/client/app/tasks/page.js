@@ -173,8 +173,14 @@ function TasksPageContent() {
 		const swarm = []
 		const instances = []
 		const longForm = []
+		const subTasks = []
 
 		allTasks.forEach((task) => {
+			if (task.original_context?.source === "long_form_subtask") {
+				subTasks.push(task)
+				return
+			}
+
 			if (task.task_type === "swarm") {
 				swarm.push(task)
 			} else if (task.task_type === "long_form") {
@@ -226,12 +232,32 @@ function TasksPageContent() {
 			}
 		})
 
+		const subTasksByParentId = subTasks.reduce((acc, task) => {
+			const parentId = task.original_context.parent_task_id
+			if (!parentId) return acc
+			if (!acc[parentId]) {
+				acc[parentId] = []
+			}
+			acc[parentId].push(task)
+			// Sort subtasks by creation date, newest first
+			acc[parentId].sort(
+				(a, b) =>
+					new Date(b.created_at) - new Date(a.created_at)
+			)
+			return acc
+		}, {})
+
+		const longFormWithSubTasks = longForm.map((parentTask) => ({
+			...parentTask,
+			subTasks: subTasksByParentId[parentTask.task_id] || []
+		}))
+
 		return {
 			oneTimeTasks: oneTime,
 			recurringTasks: recurring,
 			triggeredTasks: triggered,
 			swarmTasks: swarm,
-			longFormTasks: longForm,
+			longFormTasks: longFormWithSubTasks,
 			recurringInstances: instances
 		}
 	}, [allTasks])
@@ -422,6 +448,18 @@ function TasksPageContent() {
 	}
 	// --- END REVISED ---
 
+	const handleResumeTask = async (taskId) => {
+		await handleAction(
+			() =>
+				fetch(`/api/tasks/${taskId}/action`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ action: "resume" })
+				}),
+			"Task resumed."
+		)
+	}
+
 	const handleUpdateTask = async (updatedTask) => {
 		await handleAction(
 			() =>
@@ -533,7 +571,7 @@ Description: ${event.description || "No description."}`
 						.toLowerCase()
 						.includes(searchQuery.toLowerCase()))
 		)
-    }, [swarmTasks, recurringTasks, triggeredTasks, searchQuery])
+	}, [swarmTasks, recurringTasks, triggeredTasks, searchQuery])
 
 	const filteredLongFormTasks = useMemo(() => {
 		if (!searchQuery.trim()) {
@@ -585,6 +623,7 @@ Description: ${event.description || "No description."}`
 						onAnswerLongFormClarification={
 							handleAnswerLongFormClarification
 						}
+						onResumeTask={handleResumeTask}
 						onSelectTask={handleSelectItem}
 						onDelete={(taskId) =>
 							handleAction(

@@ -10,6 +10,7 @@ import {
 	IconSquareX,
 	IconArchive,
 	IconCircleCheck,
+	IconPlayerPlay,
 	IconClock,
 	IconClipboardList,
 	IconUsersGroup
@@ -35,7 +36,8 @@ const TaskDetailsPanel = ({
 	onSendChatMessage,
 	onAnswerClarifications,
 	onAnswerLongFormClarification,
-	onSelectTask
+	onSelectTask,
+	onResumeTask
 }) => {
 	const [isEditing, setIsEditing] = useState(false)
 	const [editableTask, setEditableTask] = useState(task)
@@ -327,6 +329,19 @@ const TaskDetailsPanel = ({
 										>
 											Approve & Run
 										</ActionButton>
+									)}
+									{task.task_type === "long_form" &&
+										task.orchestrator_state?.current_state ===
+											"WAITING" && (
+											<ActionButton
+												onClick={() =>
+													onResumeTask(task.task_id)
+												}
+												icon={<IconPlayerPlay size={16} />}
+												className="bg-blue-600 text-white hover:bg-blue-500 w-full sm:w-auto flex-grow justify-center"
+											>
+												Resume Now
+											</ActionButton>
 									)}
 									<ActionButton
 										onClick={() =>

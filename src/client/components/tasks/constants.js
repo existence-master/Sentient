@@ -40,6 +40,13 @@ export const taskStatusColors = {
 		bgColor: "bg-yellow-500/20",
 		border: "border-yellow-400"
 	},
+	waiting: {
+		icon: IconClock,
+		label: "Waiting",
+		textColor: "text-yellow-300",
+		bgColor: "bg-yellow-500/20",
+		border: "border-yellow-400"
+	},
 	processing: {
 		icon: IconPlayerPlay,
 		label: "Processing",

@@ -6,6 +6,7 @@ from workers.utils.api_client import notify_user
 from workers.planner.db import PlannerMongoManager
 import httpx
 import json
+from json_extractor import JsonExtractor
 from main.llm import run_agent as run_main_agent
 from mcp_hub.orchestrator.prompts import (
     ORCHESTRATOR_SYSTEM_PROMPT, STEP_PLANNING_PROMPT,
@@ -60,12 +61,25 @@ async def async_execute_orchestrator_cycle(task_id: str):
         if not task:
             logger.error(f"Orchestrator cycle: Task {task_id} not found.")
             return
-        
-        user_id = task.get("user_id")
-        current_state = task.get("orchestrator_state", {}).get("current_state")
 
-        if current_state in ["COMPLETED", "FAILED", "SUSPENDED", "PAUSED", "WAITING"]:
+        user_id = task.get("user_id")
+        orchestrator_state = task.get("orchestrator_state", {})
+        current_state = orchestrator_state.get("current_state")
+
+        if current_state in ["COMPLETED", "FAILED", "SUSPENDED", "PAUSED"]:
             logger.info(f"Orchestrator cycle for task {task_id} skipped. State is '{current_state}'.")
+            return
+
+        # If the task is waiting, check if the timeout has been reached. If not, do nothing.
+        # The cycle will be re-triggered by the timeout handler or by a sub-task completion.
+        if current_state == "WAITING":
+            waiting_config = orchestrator_state.get("waiting_config", {})
+            timeout_at = waiting_config.get("timeout_at")
+            # Ensure timeout_at is a datetime object before comparing
+            if timeout_at and isinstance(timeout_at, datetime.datetime):
+                if datetime.datetime.now(datetime.timezone.utc) < timeout_at:
+                    logger.info(f"Orchestrator cycle for task {task_id} skipped. Task is WAITING and timeout has not been reached.")
+                    return
             return
 
         # 1. Construct context for the agent
@@ -154,9 +168,8 @@ async def async_execute_orchestrator_cycle(task_id: str):
             logger.warning(f"Orchestrator tool '{tool_name}' for task {task_id} returned empty content. Assuming failure.")
             tool_result = {"status": "failure", "error": "Tool returned an empty response."}
         else:
-            try:
-                tool_result = json.loads(tool_content)
-            except json.JSONDecodeError:
+            tool_result = JsonExtractor.extract_valid_json(tool_content)
+            if not tool_result:
                 logger.error(f"Failed to decode JSON from tool '{tool_name}' for task {task_id}. Content: {tool_content}")
                 raise Exception(f"Orchestrator tool '{tool_name}' returned invalid JSON: {tool_content}")
 
@@ -164,13 +177,6 @@ async def async_execute_orchestrator_cycle(task_id: str):
             raise Exception(f"Orchestrator tool '{tool_name}' failed: {tool_result.get('error')}")
 
         logger.info(f"Orchestrator tool '{tool_name}' for task {task_id} executed successfully.")
-
-        # 5. Reschedule the next cycle if the task is still active
-        updated_task = await db_manager.get_task(task_id)
-        current_state = updated_task.get("orchestrator_state", {}).get("current_state")
-        if current_state == "ACTIVE":
-            # Re-queue the next cycle with a short delay if the task is still actively processing steps.
-            execute_orchestrator_cycle.apply_async(args=[task_id], countdown=5)
 
     except Exception as e:
         logger.error(f"Error in orchestrator cycle for task {task_id}: {e}", exc_info=True)

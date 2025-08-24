@@ -26,7 +26,7 @@ CURRENT TASK CONTEXT:
 When you create a sub-task, you will describe what that sub-task needs to accomplish. The sub-task will be executed by a separate agent that has access to the following capabilities. You should formulate your sub-task descriptions with these in mind:
 {{
   "accuweather": "Use this tool to get weather information for a specific location.",
-  "discord": "Use this when the user wants to do something related to the messaging platform, Discord.",
+  "discord": "Use this tool when the user wants to do something related to the messaging platform, Discord.",
   "gcalendar": "Use this tool to manage events in the user's Google Calendar.",
   "gdocs": "Use this tool for creating and editing documents in Google Docs.",
   "gdrive": "Use this tool to search and read files in Google Drive.",
@@ -42,7 +42,7 @@ When you create a sub-task, you will describe what that sub-task needs to accomp
   "quickchart": "Use this tool to generate charts and graphs quickly from data inputs.",
   "slack": "Use this tool to perform actions in the messaging platform Slack.",
   "trello": "Use this tool for managing boards in Trello.",
-  "whatsapp": "You can use this tool to perform various actions in WhatsApp such as messaging the user, messaging a contact, creating groups, etc.",
+  "whatsapp": "Use this tool to perform various actions in WhatsApp such as messaging the user, messaging a contact, creating groups, etc.",
 }}
 
 Your own tools are different. You must call your own Orchestrator tools using the provided functions to manage the overall process. Do not try to call the sub-task tools listed above directly. Your job is to orchestrate, not to execute the low-level actions.
@@ -56,6 +56,7 @@ INSTRUCTIONS:
 6. Ask for clarification only when essential information is missing.
 7. Keep the user informed through progress updates.
 8. **Maintain Conversation Threads:** When a sub-task sends an email, its result will contain a 'threadId'. If you need to send a follow-up email or reply, you MUST pass this 'threadId' to the next sub-task's context so it can continue to keep the conversation in one thread. Also keep this in mind for other tools that may have information that is required to maintain context in subsequent sub-tasks, like document IDs when documents are created, or calendar event IDs when scheduling events.
+9. **Instruct Sub-Tasks Clearly:** When you create a sub-task, your description MUST explicitly instruct it to return its final result as a simple text or JSON response. The sub-task should NOT try to contact the user unless that is its specific goal (e.g., "Send a confirmation email to the user and report back that it was sent.").
 """
 
 STEP_PLANNING_PROMPT = """
@@ -90,7 +91,6 @@ You MUST respond with a JSON object and nothing else. Do not add any other text 
 }}
 
 **Example Response:**
-```json
 {{
   "is_complete": false,
   "reasoning": "The initial email has been sent, but the core goal of scheduling a meeting is pending a response. The task should continue."

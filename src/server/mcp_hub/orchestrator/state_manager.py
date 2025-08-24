@@ -29,7 +29,7 @@ async def update_orchestrator_state(task_id: str, user_id: str, state_updates: D
                 "SUSPENDED": "clarification_pending",
                 "PLANNING": "processing",
                 "ACTIVE": "processing",
-                "WAITING": "processing"
+                "WAITING": "waiting"
             }
             if orchestrator_state in status_map:
                 payload['status'] = status_map[orchestrator_state]

@@ -10,7 +10,8 @@ from workers.utils.api_client import notify_user
 from workers.tasks import refine_and_plan_ai_task
 from mcp_hub.orchestrator.prompts import COMPLETION_EVALUATION_PROMPT
 from main.llm import run_agent as run_main_agent
-import json
+import json # keep for json.dumps
+from json_extractor import JsonExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,10 @@ async def evaluate_completion(ctx: Context, reasoning: str) -> Dict:
         if isinstance(chunk, list) and chunk and chunk[-1].get("role") == "assistant":
             final_content_str = chunk[-1].get("content", "")
             
-    decision = json.loads(final_content_str)
+    decision = JsonExtractor.extract_valid_json(final_content_str)
+    if not decision or not isinstance(decision, dict):
+        raise ToolError(f"Completion evaluation agent returned invalid or empty JSON. Response: {final_content_str}")
+
     is_complete = decision.get("is_complete", False)
 
     if is_complete:

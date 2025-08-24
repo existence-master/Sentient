@@ -327,7 +327,7 @@ async def async_execute_task_plan(task_id: str, user_id: str, run_id: str):
         "6.  **Handle Failures:** If a tool fails, analyze the error, think about an alternative approach, and try again. Do not give up easily. Your thought process and the error will be logged automatically.\n"
         "7.  **Provide a Final, Detailed Answer:** ONLY after all steps are successfully completed, you MUST provide a final, comprehensive answer to the user. This is not a tool call. Your final response MUST be wrapped in `<answer>` tags. For example: `<answer>I have successfully scheduled the meeting and sent an invitation to John Doe.</answer>`.\n"
         "8.  **Contact Information:** To find contact details like phone numbers or emails, use the `gpeople` tool before attempting to send an email or make a call.\n"
-        "9. **Ask for Help**: If you have exhausted all tool options (including memory and search) and still lack critical information to proceed, you MUST stop and ask for clarification. Your entire final output in this case must be a single JSON object with the key `clarifying_questions`. The value should be a list of question objects, where each object has a `text` key. Example: `{\"clarifying_questions\": [{\"text\": \"What is the email address of the client?\"}]}`\n"
+        "9. **Handle Missing Information**: If you have exhausted all tool options (including memory and search) and still lack critical information to proceed, you MUST fail. Your final answer should clearly state what information is missing. For example: `<answer>Task failed. I could not find the client's email address in memory or through any available tools.</answer>`\n"
         "\nNow, begin your work. Think step-by-step and start executing the plan."
     )
 
@@ -392,23 +392,6 @@ async def async_execute_task_plan(task_id: str, user_id: str, run_id: str):
 
         parsed_response = parse_assistant_response(assistant_messages)
         final_content_for_user = parsed_response.get("final_content")
-
-        # Check for clarification questions first
-        final_assistant_message = next((msg for msg in reversed(assistant_messages) if msg.get("role") == "assistant"), None)
-        final_content = final_assistant_message.get("content", "") if final_assistant_message else ""
-        clarification_data = JsonExtractor.extract_valid_json(clean_llm_output(final_content))
-        if isinstance(clarification_data, dict) and "clarifying_questions" in clarification_data:
-            questions = clarification_data["clarifying_questions"]
-            for q in questions:
-                if "question_id" not in q:
-                    q["question_id"] = str(uuid.uuid4())
-            
-            logger.info(f"Task {task_id} requires user clarification. Suspending task.")
-            await add_progress_update(db, task_id, run_id, user_id, {"type": "info", "content": "Task suspended. Waiting for user input."})
-            await db.tasks.update_one({"task_id": task_id}, {"$set": {"status": "clarification_pending", "clarifying_questions": questions}})
-            question_text = " ".join([q['text'] for q in questions])
-            await notify_user(user_id, f"Task '{task.get('name', '...')}' needs your input: {question_text}", task_id, notification_type="taskNeedsClarification")
-            return {"status": "success", "message": "Task suspended for clarification."}
 
         if not final_content_for_user:
             error_message = "Agent finished execution without providing a final answer as required by its instructions. The task may be incomplete."
