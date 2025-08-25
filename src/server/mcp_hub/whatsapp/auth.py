@@ -44,8 +44,8 @@ async def get_user_notification_chat_id(user_id: str) -> str:
     # This path is for system->user notifications, not the full-control integration
     wa_prefs = user_doc.get("userData", {}).get("notificationPreferences", {}).get("whatsapp", {})
     
-    if not wa_prefs.get("enabled"):
-        raise ToolError("WhatsApp notifications are not enabled for this user. Please enable them in Settings.")
+    # NOTE: We don't check the `enabled` flag here. The tool should work if a number is configured,
+    # regardless of the notification toggle setting.
 
     chat_id = wa_prefs.get("chatId")
     if not chat_id:

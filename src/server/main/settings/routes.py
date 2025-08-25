@@ -6,8 +6,7 @@ from main.dependencies import auth_helper
 from main.dependencies import mongo_manager
 from main.auth.utils import PermissionChecker, AuthHelper
 from main.notifications.whatsapp_client import check_phone_number_exists
-from main.settings.models import WhatsAppMcpRequest, WhatsAppNotificationNumberRequest, ProfileUpdateRequest
-from main.settings.google_sheets_utils import update_contact_in_sheet
+from main.settings.models import WhatsAppMcpRequest, WhatsAppNotificationNumberRequest, ProfileUpdateRequest, WhatsAppNotificationRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(
@@ -99,6 +98,7 @@ async def set_whatsapp_notification_number(
     
     whatsapp_number = request.whatsapp_notifications_number.strip() if request.whatsapp_notifications_number else ""
     if not whatsapp_number:
+        # If the user clears the number, disable notifications and clear the fields.
         update_payload = {
             "userData.notificationPreferences.whatsapp.number": "",
             "userData.notificationPreferences.whatsapp.chatId": "",
@@ -119,18 +119,9 @@ async def set_whatsapp_notification_number(
         update_payload = {
             "userData.notificationPreferences.whatsapp.number": whatsapp_number,
             "userData.notificationPreferences.whatsapp.chatId": chat_id,
-            "userData.notificationPreferences.whatsapp.enabled": True,
+            "userData.notificationPreferences.whatsapp.enabled": True, # Always enable when number is set/updated
         }
         await mongo_manager.update_user_profile(user_id, update_payload)
-
-        # 3. Update Google Sheet using the reliable email from the token
-        try:
-            if user_email:
-                await update_contact_in_sheet(user_email, whatsapp_number)
-            else:
-                logger.warning(f"Could not update Google Sheet for user {user_id} because no email was found in their token.")
-        except Exception as e:
-            logger.error(f"Non-critical error: Failed to update Google Sheet for user {user_id}. Error: {e}")
         
         return JSONResponse(content={"message": "WhatsApp notification number updated successfully."})
 
@@ -156,6 +147,38 @@ async def get_whatsapp_notification_settings(
         "whatsapp_notifications_number": wa_prefs.get("number", ""),
         "notifications_enabled": wa_prefs.get("enabled", False)
     })
+
+@router.post("/whatsapp-notifications/toggle", summary="Toggle WhatsApp notifications on/off")
+async def toggle_whatsapp_notifications(
+    request: WhatsAppNotificationRequest,
+    user_id: str = Depends(PermissionChecker(required_permissions=["write:config"]))
+):
+    """
+    Updates the enabled status of WhatsApp notifications for the user.
+    """
+    try:
+        # Check if a number is configured before allowing enable
+        if request.enabled:
+            user_profile = await mongo_manager.get_user_profile(user_id)
+            wa_prefs = user_profile.get("userData", {}).get("notificationPreferences", {}).get("whatsapp", {})
+            if not wa_prefs.get("number") or not wa_prefs.get("chatId"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot enable notifications without a configured phone number."
+                )
+
+        update_payload = {"userData.notificationPreferences.whatsapp.enabled": request.enabled}
+        success = await mongo_manager.update_user_profile(user_id, update_payload)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to update notification preference.")
+        
+        status_text = "enabled" if request.enabled else "disabled"
+        return JSONResponse(content={"message": f"WhatsApp notifications {status_text}."})
+    except Exception as e:
+        logger.error(f"Error toggling WhatsApp notifications for user {user_id}: {e}", exc_info=True)
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
 
 @router.post("/profile", summary="Update User Profile and Onboarding Data")
 async def update_profile_data(

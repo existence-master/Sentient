@@ -36,19 +36,78 @@ def _get_sheets_service():
         logger.error(f"Failed to create Google Sheets service: {e}", exc_info=True)
         return None
 
-async def update_contact_in_sheet(user_email: str, contact_number: str):
-    """Finds a user by email in the sheet and updates their contact number."""
+async def update_onboarding_data_in_sheet(user_email: str, onboarding_data: dict, plan: str):
+    """Finds a user by email and updates their onboarding information in the sheet."""
     service = _get_sheets_service()
     if not service:
         return
 
     try:
-        # 1. Read the entire email column (C) to find the user's row
+        # 1. Find user row by email in Column C
         range_to_read = f"{SHEET_NAME}!C:C"
         result = service.spreadsheets().values().get(spreadsheetId=GOOGLE_SHEET_ID, range=range_to_read).execute()
         rows = result.get('values', [])
 
-        # 2. Find the row index (0-based) matching the user's email
+        row_index = -1
+        for i, row in enumerate(rows):
+            if row and row[0] == user_email:
+                row_index = i
+                break
+
+        if row_index == -1:
+            logger.warning(f"User with email {user_email} not found in Google Sheet. Cannot update onboarding data.")
+            return
+
+        # 2. Prepare data for batch update
+        row_number = row_index + 1
+
+        # Handle location which can be a string or a dict
+        location = onboarding_data.get('location', '')
+        if isinstance(location, dict):
+            lat = location.get('latitude')
+            lon = location.get('longitude')
+            if lat is not None and lon is not None:
+                location = f"Lat: {lat}, Lon: {lon}"
+            else:
+                location = str(location)
+
+        # Prepare a list of values to update. None will skip the cell.
+        # Columns: B (Contact), D (Location), E (Profession), F (Hobbies), H (Plan)
+        values_to_update = [
+            [
+                onboarding_data.get('whatsapp_notifications_number', ''), # B
+                None, # C - Email (skip)
+                location, # D
+                onboarding_data.get('professional-context', ''), # E
+                onboarding_data.get('personal-context', ''), # F
+                None, # G - Insider (skip)
+                plan.capitalize() # H
+            ]
+        ]
+
+        # 3. Update the sheet row from column B to H
+        range_to_update = f"{SHEET_NAME}!B{row_number}:H{row_number}"
+        service.spreadsheets().values().update(
+            spreadsheetId=GOOGLE_SHEET_ID,
+            range=range_to_update,
+            valueInputOption='USER_ENTERED',
+            body={'values': values_to_update}
+        ).execute()
+        logger.info(f"Successfully updated onboarding data for {user_email} in Google Sheet.")
+
+    except Exception as e:
+        logger.error(f"An error occurred while updating Google Sheet for {user_email}: {e}", exc_info=True)
+async def update_plan_in_sheet(user_email: str, new_plan: str):
+    """Finds a user by email and updates only their plan in the sheet."""
+    service = _get_sheets_service()
+    if not service:
+        return
+
+    try:
+        range_to_read = f"{SHEET_NAME}!C:C"
+        result = service.spreadsheets().values().get(spreadsheetId=GOOGLE_SHEET_ID, range=range_to_read).execute()
+        rows = result.get('values', [])
+
         row_index = -1
         for i, row in enumerate(rows):
             if row and row[0] == user_email:
@@ -56,11 +115,15 @@ async def update_contact_in_sheet(user_email: str, contact_number: str):
                 break
 
         if row_index != -1:
-            # 3. Update the 'Contact' column (B) for that row
-            range_to_update = f"{SHEET_NAME}!B{row_index + 1}" # Sheets are 1-based
-            service.spreadsheets().values().update(spreadsheetId=GOOGLE_SHEET_ID, range=range_to_update, valueInputOption='USER_ENTERED', body={'values': [[contact_number]]}).execute()
-            logger.info(f"Successfully updated contact for {user_email} in Google Sheet.")
+            range_to_update = f"{SHEET_NAME}!H{row_index + 1}"
+            service.spreadsheets().values().update(
+                spreadsheetId=GOOGLE_SHEET_ID,
+                range=range_to_update,
+                valueInputOption='USER_ENTERED',
+                body={'values': [[new_plan.capitalize()]]}
+            ).execute()
+            logger.info(f"Successfully updated plan to '{new_plan}' for {user_email} in Google Sheet.")
         else:
-            logger.warning(f"User with email {user_email} not found in Google Sheet. Could not update contact.")
+            logger.warning(f"User with email {user_email} not found in Google Sheet. Could not update plan.")
     except Exception as e:
-        logger.error(f"An error occurred while updating Google Sheet for {user_email}: {e}", exc_info=True)
+        logger.error(f"An error occurred while updating plan in Google Sheet for {user_email}: {e}", exc_info=True)

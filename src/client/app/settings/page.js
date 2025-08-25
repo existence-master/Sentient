@@ -147,6 +147,7 @@ const WhatsAppSettings = () => {
 	const [notificationNumber, setNotificationNumber] = useState("")
 	const [isNotifLoading, setIsNotifLoading] = useState(true)
 	const [isSaving, setIsSaving] = useState(false)
+	const [notificationsEnabled, setNotificationsEnabled] = useState(false)
 
 	const fetchNotificationSettings = useCallback(async () => {
 		setIsNotifLoading(true)
@@ -158,6 +159,7 @@ const WhatsAppSettings = () => {
 				)
 			const data = await response.json()
 			setNotificationNumber(data.whatsapp_notifications_number || "")
+			setNotificationsEnabled(data.notifications_enabled || false)
 		} catch (error) {
 			toast.error(error.message)
 		} finally {
@@ -193,24 +195,29 @@ const WhatsAppSettings = () => {
 		}
 	}
 
-	const handleRemoveNotifNumber = async () => {
-		setIsSaving(true)
+	const handleToggleNotifications = async (enabled) => {
+		setNotificationsEnabled(enabled)
+		const toastId = toast.loading(
+			enabled ? "Enabling notifications..." : "Disabling notifications..."
+		)
 		try {
 			const response = await fetch(
-				"/api/settings/whatsapp-notifications",
+				"/api/settings/whatsapp-notifications/toggle",
 				{
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ whatsapp_notifications_number: "" })
+					body: JSON.stringify({ enabled })
 				}
 			)
-			if (!response.ok) throw new Error("Failed to remove number.")
-			setNotificationNumber("")
-			toast.success("Notification number removed.")
+			const data = await response.json()
+			if (!response.ok) {
+				setNotificationsEnabled(!enabled)
+				throw new Error(data.detail || "Failed to update preference.")
+			}
+			toast.success(data.message, { id: toastId })
 		} catch (error) {
+			setNotificationsEnabled(!enabled)
 			toast.error(error.message)
-		} finally {
-			setIsSaving(false)
 		}
 	}
 
@@ -237,6 +244,40 @@ const WhatsAppSettings = () => {
 						</div>
 					) : (
 						<div className="space-y-4">
+							<div className="flex items-center justify-between p-3 bg-neutral-800/30 rounded-lg">
+								<label
+									htmlFor="whatsapp-toggle"
+									className="font-medium text-neutral-200"
+								>
+									Enable Notifications
+								</label>
+								<button
+									id="whatsapp-toggle"
+									onClick={() =>
+										handleToggleNotifications(
+											!notificationsEnabled
+										)
+									}
+									disabled={!hasNotifNumber}
+									className={cn(
+										"relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-brand-orange focus:ring-offset-2 focus:ring-offset-neutral-900",
+										"disabled:opacity-50 disabled:cursor-not-allowed",
+										notificationsEnabled
+											? "bg-green-500"
+											: "bg-neutral-600"
+									)}
+								>
+									<span
+										aria-hidden="true"
+										className={cn(
+											"pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+											notificationsEnabled
+												? "translate-x-5"
+												: "translate-x-0"
+										)}
+									/>
+								</button>
+							</div>
 							<div className="flex flex-col sm:flex-row gap-2">
 								<div className="relative flex-grow">
 									<IconBrandWhatsapp
@@ -271,16 +312,6 @@ const WhatsAppSettings = () => {
 										)}{" "}
 										{hasNotifNumber ? "Update" : "Save"}
 									</button>
-									{hasNotifNumber && (
-										<button
-											onClick={handleRemoveNotifNumber}
-											disabled={isSaving}
-											className="flex items-center py-2 px-4 rounded-lg bg-red-600/80 hover:bg-red-600 text-white font-medium transition-colors"
-										>
-											<IconX className="w-4 h-4 mr-2" />{" "}
-											Remove
-										</button>
-									)}
 								</div>
 							</div>
 						</div>

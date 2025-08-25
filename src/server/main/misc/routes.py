@@ -15,6 +15,8 @@ from main.config import AUTH0_AUDIENCE
 from main.dependencies import mongo_manager, auth_helper, websocket_manager as main_websocket_manager
 from pydantic import BaseModel
 from workers.tasks import cud_memory_task
+from main.settings.google_sheets_utils import update_onboarding_data_in_sheet, update_plan_in_sheet
+from main.notifications.whatsapp_client import check_phone_number_exists, send_whatsapp_message
 
 # Google API libraries for validation
 from google.oauth2 import service_account
@@ -37,8 +39,12 @@ router = APIRouter(
 @router.post("/onboarding", status_code=status.HTTP_200_OK, summary="Save Onboarding Data")
 async def save_onboarding_data_endpoint(
     request_body: OnboardingRequest, 
-    user_id: str = Depends(PermissionChecker(required_permissions=["write:profile"]))
+    payload: dict = Depends(auth_helper.get_decoded_payload_with_claims)
 ):
+    user_id = payload.get("sub")
+    user_email = payload.get("email")
+    plan = payload.get("plan", "free")
+    
     logger.info(f"[{datetime.datetime.now()}] [ONBOARDING] User {user_id}, Data keys: {list(request_body.data.keys())}")
     try:
         default_privacy_filters = {
@@ -87,6 +93,31 @@ async def save_onboarding_data_endpoint(
         if personal_info:
             user_data_to_set["personalInfo"] = personal_info
 
+        # --- NEW: Process WhatsApp number from onboarding data ---
+        onboarding_chat_id = None # Variable to hold the chat ID for the feedback message
+        whatsapp_number = onboarding_data.get("whatsapp_notifications_number", "").strip()
+        if whatsapp_number:
+            try:
+                validation_result = await check_phone_number_exists(whatsapp_number)
+                if validation_result and validation_result.get("numberExists"):
+                    chat_id = validation_result.get("chatId")
+                    if chat_id:
+                        onboarding_chat_id = chat_id
+                        user_data_to_set["notificationPreferences"] = {
+                            "whatsapp": {
+                                "number": whatsapp_number,
+                                "chatId": chat_id,
+                                "enabled": True # Enable by default
+                            }
+                        }
+                        logger.info(f"WhatsApp number for user {user_id} validated and set for notifications during onboarding.")
+                    else:
+                        logger.warning(f"Could not get chatId for {whatsapp_number} during onboarding for user {user_id}.")
+                else:
+                    logger.warning(f"WhatsApp number {whatsapp_number} provided by user {user_id} during onboarding is not valid.")
+            except Exception as e:
+                logger.error(f"Error validating WhatsApp number during onboarding for user {user_id}: {e}")
+
         # Create the final update payload for MongoDB
         # We construct the payload carefully to avoid replacing the entire userData object
         update_payload = {}
@@ -97,6 +128,25 @@ async def save_onboarding_data_endpoint(
         success = await mongo_manager.update_user_profile(user_id, update_payload)
         if not success:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to save onboarding data.")
+
+        # --- Update Google Sheet ---
+        try:
+            if user_email:
+                await update_onboarding_data_in_sheet(user_email, onboarding_data, plan)
+            else:
+                logger.warning(f"Could not update Google Sheet for user {user_id} because no email was found in their token.")
+        except Exception as e:
+            logger.error(f"Non-critical error: Failed to update Google Sheet during onboarding for user {user_id}. Error: {e}")
+
+        # --- Send conditional WhatsApp message ---
+        if onboarding_data.get("needs-pa") == "yes" and onboarding_chat_id:
+            try:
+                feedback_message = "Hi there, I am Sarthak from team Sentient. Thanks for signing up, are you okay with giving feedback and helping us improve the platform to better suit your needs?"
+                # Call the WhatsApp sender directly, bypassing in-app notifications
+                await send_whatsapp_message(onboarding_chat_id, feedback_message)
+                logger.info(f"Sent onboarding feedback request to user {user_id} on WhatsApp.")
+            except Exception as e:
+                logger.error(f"Failed to send onboarding feedback WhatsApp message for user {user_id}: {e}")
 
         # --- Dispatch facts to memory ---
         try:
@@ -163,6 +213,15 @@ async def get_user_data_endpoint(payload: dict = Depends(auth_helper.get_decoded
     if not profile_exists or stored_plan != token_plan:
         logger.info(f"Updating plan for user {user_id} to '{token_plan}'. Profile exists: {profile_exists}")
         await mongo_manager.update_user_profile(user_id, {"userData.plan": token_plan})
+
+        # NEW: Update GSheet when plan changes
+        user_email = payload.get("email")
+        if user_email and stored_plan != token_plan: # Only update if the plan actually changed
+            try:
+                await update_plan_in_sheet(user_email, token_plan)
+            except Exception as e:
+                logger.error(f"Failed to update plan in GSheet for {user_email}: {e}")
+
         # Re-fetch the profile after update to ensure we return the latest data
         profile_doc = await mongo_manager.get_user_profile(user_id)
 

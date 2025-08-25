@@ -155,13 +155,13 @@ const questions = [
 		id: "location",
 		question: "Where are you located?",
 		description:
-			"This helps with local info like weather. You can type a city or detect automatically.",
+			"This helps with local info like weather. You can type a city or detect it automatically.",
 		type: "location",
 		required: true
 	},
 	{
 		id: "professional-context",
-		question: "What's your professional world like?",
+		question: "What is your professional background?",
 		type: "textarea",
 		required: true,
 		placeholder: "e.g., I'm a software developer at a startup..."
@@ -175,11 +175,18 @@ const questions = [
 		icon: <IconHeart />
 	},
 	{
+		id: "needs-pa",
+		question:
+			"Do you often juggle multiple priorities, manage a small team, lead projects, and handle countless day-to-day tasks on your own? Many professionals spend too much time scheduling meetings, organizing their calendar, responding to emails, and doing other administrative work that eats into their day. Do you ever wish you had someone to take these repetitive tasks off your plate?\n\nDo you ever feel the need for a personal assistant?",
+		type: "yes-no",
+		required: true
+	},
+	{
 		id: "whatsapp_notifications_number",
 		question:
-			"If you'd like to enable this, please enter your number with the country code. Otherwise, just press Enter to skip.",
+			"Please enter your WhatsApp number with the country code.",
 		type: "text-input",
-		required: false,
+		required: true,
 		placeholder: "+14155552671",
 		icon: <IconBrandWhatsapp />
 	}
@@ -191,7 +198,8 @@ const sentientComments = [
 	"Perfect. Now, to help with local info like weather and places...",
 	"This helps me understand your professional goals and context.",
 	"And when you're not working? Tell me about your hobbies.",
-	"One last thing. I can send you important notifications, task updates, and reminders on WhatsApp. We're in the process of getting an official number, so for now, messages will come from our co-founder Sarthak (+91827507823), who may also occasionally reach out for feedback.",
+	"Got it. One more thing before we get to the last step...",
+	"Finally, I will send you important notifications, task updates, and reminders on WhatsApp. We're in the process of getting an official number, so for now, messages will come from our co-founder Sarthak (+91827507823), who may also occasionally reach out for feedback.",
 	"Awesome! That's all I need. Let's get you set up."
 ]
 
@@ -835,6 +843,39 @@ const OnboardingPage = () => {
 								Location captured!
 							</p>
 						)}
+					</div>
+				)
+			case "yes-no":
+				return (
+					<div className="flex gap-4">
+						<button
+							onClick={() => {
+								handleAnswer(currentQuestion.id, "yes")
+								setTimeout(handleNext, 100)
+							}}
+							className={cn(
+								"px-6 py-2 rounded-lg font-semibold transition-colors",
+								answers[currentQuestion.id] === "yes"
+									? "bg-brand-orange text-brand-black"
+									: "bg-neutral-700 hover:bg-neutral-600"
+							)}
+						>
+							Yes
+						</button>
+						<button
+							onClick={() => {
+								handleAnswer(currentQuestion.id, "no")
+								setTimeout(handleNext, 100)
+							}}
+							className={cn(
+								"px-6 py-2 rounded-lg font-semibold transition-colors",
+								answers[currentQuestion.id] === "no"
+									? "bg-brand-orange text-brand-black"
+									: "bg-neutral-700 hover:bg-neutral-600"
+							)}
+						>
+							No
+						</button>
 					</div>
 				)
 			default:
