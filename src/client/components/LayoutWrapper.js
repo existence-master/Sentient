@@ -158,7 +158,7 @@ export default function LayoutWrapper({ children }) {
 		const checkStatus = async () => {
 			// No need to set isLoading(true) here, it's already true by default.
 			try {
-				const res = await fetch("/api/user/data")
+				const res = await fetch("/api/user/data", {method: "POST"})
 				if (!res.ok) throw new Error("Could not verify user status.")
 				const result = await res.json()
 				const data = result?.data || {}

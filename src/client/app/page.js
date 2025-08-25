@@ -36,7 +36,7 @@ const Home = () => {
 		const checkOnboardingStatus = async () => {
 			setIsCheckingOnboarding(true)
 			try {
-				const response = await fetch("/api/user/data") // Uses the same API endpoint
+				const response = await fetch("/api/user/data", { method: "POST" }) // Uses the same API endpoint
 
 				if (response.status === 401) {
 					// This case is unlikely if useUser() works but is good to handle.

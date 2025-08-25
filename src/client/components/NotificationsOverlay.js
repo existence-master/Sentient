@@ -129,7 +129,7 @@ const NotificationsOverlay = ({ onClose, notifRefreshKey }) => {
 
 	const fetchUserTimezone = useCallback(async () => {
 		try {
-			const response = await fetch("/api/user/data")
+			const response = await fetch("/api/user/data", { method: "POST" })
 			if (!response.ok) throw new Error("Failed to fetch user data")
 			const result = await response.json()
 			const timezone = result?.data?.personalInfo?.timezone

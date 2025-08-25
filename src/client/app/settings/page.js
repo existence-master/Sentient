@@ -1073,7 +1073,7 @@ export default function SettingsPage() {
 	const fetchData = useCallback(async () => {
 		try {
 			const [response, profileResponse] = await Promise.all([
-				fetch("/api/user/data"),
+				fetch("/api/user/data", { method: "POST" }),
 				fetch("/api/user/profile")
 			])
 			if (!response.ok) {

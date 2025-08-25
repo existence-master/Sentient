@@ -7,7 +7,7 @@ const appServerUrl =
 		? process.env.INTERNAL_APP_SERVER_URL
 		: process.env.NEXT_PUBLIC_APP_SERVER_URL
 
-export const GET = withAuth(async function GET(request, { authHeader }) {
+export const POST = withAuth(async function POST(request, { authHeader }) {
 	try {
 		const response = await fetch(`${appServerUrl}/api/get-user-data`, {
 			method: "POST",
