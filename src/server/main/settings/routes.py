@@ -5,8 +5,8 @@ from fastapi.responses import JSONResponse
 from main.dependencies import auth_helper
 from main.dependencies import mongo_manager
 from main.auth.utils import PermissionChecker, AuthHelper
-from main.notifications.whatsapp_client import check_phone_number_exists
-from main.settings.models import WhatsAppMcpRequest, WhatsAppNotificationNumberRequest, ProfileUpdateRequest, WhatsAppNotificationRequest
+from main.notifications.whatsapp_client import check_phone_number_exists, send_whatsapp_message
+from main.settings.models import WhatsAppMcpRequest, WhatsAppNotificationNumberRequest, ProfileUpdateRequest, WhatsAppNotificationRequest, CompleteProfileRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(
@@ -176,6 +176,71 @@ async def toggle_whatsapp_notifications(
         return JSONResponse(content={"message": f"WhatsApp notifications {status_text}."})
     except Exception as e:
         logger.error(f"Error toggling WhatsApp notifications for user {user_id}: {e}", exc_info=True)
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
+
+@router.post("/complete-profile", summary="Complete profile for existing users with missing data")
+async def complete_profile(
+    request: CompleteProfileRequest,
+    payload: dict = Depends(auth_helper.get_decoded_payload_with_claims)
+):
+    user_id = payload.get("sub")
+    user_email = payload.get("email")
+    plan = payload.get("plan", "free")
+
+    try:
+        # 1. Validate WhatsApp number
+        whatsapp_number = request.whatsapp_notifications_number.strip()
+        validation_result = await check_phone_number_exists(whatsapp_number)
+        if not validation_result or not validation_result.get("numberExists"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This phone number does not appear to be on WhatsApp.")
+        chat_id = validation_result.get("chatId")
+        if not chat_id:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not retrieve Chat ID for the number.")
+
+        # 2. Fetch existing onboarding data from MongoDB
+        user_profile = await mongo_manager.get_user_profile(user_id)
+        if not user_profile:
+            raise HTTPException(status_code=404, detail="User profile not found.")
+
+        existing_onboarding_data = user_profile.get("userData", {}).get("onboardingAnswers", {})
+
+        # 3. Consolidate old and new data
+        consolidated_data = {
+            **existing_onboarding_data,
+            "needs-pa": request.needs_pa,
+            "whatsapp_notifications_number": whatsapp_number
+        }
+
+        # 4. Update MongoDB with new answers and notification prefs
+        update_payload = {
+            "userData.onboardingAnswers.needs-pa": request.needs_pa,
+            "userData.onboardingAnswers.whatsapp_notifications_number": whatsapp_number,
+            "userData.notificationPreferences.whatsapp": {
+                "number": whatsapp_number,
+                "chatId": chat_id,
+                "enabled": True
+            }
+        }
+        await mongo_manager.update_user_profile(user_id, update_payload)
+
+        # 5. Update Google Sheet with the full consolidated data
+        if user_email:
+            await update_onboarding_data_in_sheet(user_email, consolidated_data, plan)
+        else:
+            logger.warning(f"Could not update GSheet for {user_id} during profile completion: no email.")
+
+        # 6. Send conditional WhatsApp message
+        if request.needs_pa == "yes":
+            feedback_message = "Hi there, I am Sarthak from team Sentient. Thanks for using our app, are you okay with giving feedback and helping us improve the platform to better suit your needs?"
+            await send_whatsapp_message(chat_id, feedback_message)
+            logger.info(f"Sent feedback request to existing user {user_id} after profile completion.")
+
+        return JSONResponse(content={"message": "Profile completed successfully."})
+
+    except Exception as e:
+        logger.error(f"Error completing profile for user {user_id}: {e}", exc_info=True)
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail="An unexpected error occurred.")

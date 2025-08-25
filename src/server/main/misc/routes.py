@@ -15,7 +15,7 @@ from main.config import AUTH0_AUDIENCE
 from main.dependencies import mongo_manager, auth_helper, websocket_manager as main_websocket_manager
 from pydantic import BaseModel
 from workers.tasks import cud_memory_task
-from main.settings.google_sheets_utils import update_onboarding_data_in_sheet, update_plan_in_sheet
+from main.settings.google_sheets_utils import update_onboarding_data_in_sheet, update_plan_in_sheet, check_if_contact_is_missing
 from main.notifications.whatsapp_client import check_phone_number_exists, send_whatsapp_message
 
 # Google API libraries for validation
@@ -201,12 +201,20 @@ async def check_user_profile_endpoint(user_id: str = Depends(PermissionChecker(r
 @router.post("/get-user-data", summary="Get User Profile's userData field")
 async def get_user_data_endpoint(payload: dict = Depends(auth_helper.get_decoded_payload_with_claims)):
     user_id = payload.get("sub")
+    user_email = payload.get("email")
     profile_doc = await mongo_manager.get_user_profile(user_id)
 
     token_plan = payload.get("plan", "free")
-    
+
     # Check if profile exists and if plan is up-to-date
     profile_exists = profile_doc is not None
+    onboarding_complete = profile_doc.get("userData", {}).get("onboardingComplete", False) if profile_exists else False
+    needs_data_completion = False
+
+    # If onboarding is complete, check if we need to ask for the new questions
+    if onboarding_complete and user_email:
+        needs_data_completion = await check_if_contact_is_missing(user_email)
+
     stored_plan = profile_doc.get("userData", {}).get("plan") if profile_exists else None
 
     # This condition covers both creating a new profile and updating an existing one's plan.
@@ -214,8 +222,6 @@ async def get_user_data_endpoint(payload: dict = Depends(auth_helper.get_decoded
         logger.info(f"Updating plan for user {user_id} to '{token_plan}'. Profile exists: {profile_exists}")
         await mongo_manager.update_user_profile(user_id, {"userData.plan": token_plan})
 
-        # NEW: Update GSheet when plan changes
-        user_email = payload.get("email")
         if user_email and stored_plan != token_plan: # Only update if the plan actually changed
             try:
                 await update_plan_in_sheet(user_email, token_plan)
@@ -226,11 +232,13 @@ async def get_user_data_endpoint(payload: dict = Depends(auth_helper.get_decoded
         profile_doc = await mongo_manager.get_user_profile(user_id)
 
     if profile_doc and "userData" in profile_doc:
-        return JSONResponse(content={"data": profile_doc["userData"], "status": 200})
-    
+        response_data = profile_doc["userData"]
+        response_data["needsDataCompletion"] = needs_data_completion
+        return JSONResponse(content={"data": response_data, "status": 200})
+
     # Fallback in case re-fetch fails or returns an empty doc
     logger.warning(f"Could not retrieve or create userData for user {user_id}. Returning empty data.")
-    return JSONResponse(content={"data": {}, "status": 200})
+    return JSONResponse(content={"data": {"needsDataCompletion": needs_data_completion}, "status": 200})
 
 @router.websocket("/ws/notifications")
 async def notifications_websocket_endpoint(websocket: WebSocket):

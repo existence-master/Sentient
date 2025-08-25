@@ -156,7 +156,9 @@ export default function LayoutWrapper({ children }) {
 				const res = await fetch("/api/user/data")
 				if (!res.ok) throw new Error("Could not verify user status.")
 				const data = await res.json()
-				if (data?.data?.onboardingComplete) {
+				if (data?.data?.needsDataCompletion) {
+					router.push("/complete-profile")
+				} else if (data?.data?.onboardingComplete) {
 					setIsAllowed(true)
 				} else {
 					toast.error("Please complete onboarding first.")

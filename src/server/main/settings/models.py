@@ -17,3 +17,7 @@ class ProfileUpdateRequest(BaseModel):
     onboardingAnswers: Dict[str, Any]
     personalInfo: Dict[str, Any]
     preferences: Dict[str, Any]
+
+class CompleteProfileRequest(BaseModel):
+    needs_pa: str # "yes" or "no"
+    whatsapp_notifications_number: str
