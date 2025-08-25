@@ -7,6 +7,7 @@ from main.dependencies import mongo_manager
 from main.auth.utils import PermissionChecker, AuthHelper
 from main.notifications.whatsapp_client import check_phone_number_exists, send_whatsapp_message
 from main.settings.models import WhatsAppMcpRequest, WhatsAppNotificationNumberRequest, ProfileUpdateRequest, WhatsAppNotificationRequest, CompleteProfileRequest
+from main.settings.google_sheets_utils import update_onboarding_data_in_sheet, update_plan_in_sheet, check_if_contact_is_missing
 
 logger = logging.getLogger(__name__)
 router = APIRouter(

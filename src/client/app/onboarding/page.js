@@ -6,11 +6,12 @@ import toast from "react-hot-toast"
 import { usePostHog } from "posthog-js/react"
 import { useRouter } from "next/navigation"
 import {
-	IconLoader,
-	IconCheck,
 	IconSparkles,
 	IconHeart,
-	IconBrandWhatsapp
+	IconBrandWhatsapp,
+	IconLoader,
+	IconCheck,
+	IconX
 } from "@tabler/icons-react"
 import InteractiveNetworkBackground from "@components/ui/InteractiveNetworkBackground"
 import ProgressBar from "@components/onboarding/ProgressBar"
@@ -183,8 +184,7 @@ const questions = [
 	},
 	{
 		id: "whatsapp_notifications_number",
-		question:
-			"Please enter your WhatsApp number with the country code.",
+		question: "Please enter your WhatsApp number with the country code.",
 		type: "text-input",
 		required: true,
 		placeholder: "+14155552671",
@@ -219,6 +219,9 @@ const OnboardingPage = () => {
 	const router = useRouter()
 	const chatEndRef = useRef(null)
 	const statusChecked = useRef(false)
+	const [whatsappStatus, setWhatsappStatus] = useState("idle") // idle, checking, valid, invalid
+	const [whatsappError, setWhatsappError] = useState("")
+	const debounceTimeoutRef = useRef(null)
 
 	const [locationState, setLocationState] = useState({
 		loading: false,
@@ -251,8 +254,56 @@ const OnboardingPage = () => {
 		[answers]
 	)
 
+	const verifyWhatsappNumber = async (number) => {
+		if (!/^\+[1-9]\d{1,14}$/.test(number.trim())) {
+			setWhatsappStatus("invalid")
+			setWhatsappError(
+				"Please use E.164 format with country code (e.g., +14155552671)."
+			)
+			return
+		}
+		setWhatsappStatus("checking")
+		setWhatsappError("")
+		try {
+			const response = await fetch("/api/testing/whatsapp/verify", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ phone_number: number })
+			})
+			const result = await response.json()
+			if (!response.ok) {
+				throw new Error(result.detail || "Verification request failed.")
+			}
+			if (result.numberExists) {
+				setWhatsappStatus("valid")
+				setWhatsappError("")
+			} else {
+				setWhatsappStatus("invalid")
+				setWhatsappError(
+					"This number does not appear to be on WhatsApp."
+				)
+			}
+		} catch (error) {
+			setWhatsappStatus("invalid")
+			setWhatsappError(error.message)
+		}
+	}
+
 	const handleAnswer = (questionId, answer) => {
 		setAnswers((prev) => ({ ...prev, [questionId]: answer }))
+		if (questionId === "whatsapp_notifications_number") {
+			setWhatsappStatus("idle")
+			if (debounceTimeoutRef.current) {
+				clearTimeout(debounceTimeoutRef.current)
+			}
+			if (answer.trim()) {
+				debounceTimeoutRef.current = setTimeout(() => {
+					verifyWhatsappNumber(answer)
+				}, 800)
+			} else {
+				setWhatsappError("")
+			}
+		}
 	}
 
 	const handleMultiChoice = (questionId, option) => {
@@ -357,8 +408,15 @@ const OnboardingPage = () => {
 		if (answer === undefined || answer === null || answer === "")
 			return false
 		if (Array.isArray(answer) && answer.length === 0) return false
+		// NEW check for whatsapp
+		if (
+			currentQuestion.id === "whatsapp_notifications_number" &&
+			whatsappStatus !== "valid"
+		) {
+			return false
+		}
 		return true
-	}, [answers, currentQuestionIndex, stage, questions.length])
+	}, [answers, currentQuestionIndex, stage, questions.length, whatsappStatus])
 
 	const handleSubmit = async () => {
 		setStage("submitting")
@@ -418,7 +476,7 @@ const OnboardingPage = () => {
 				referral_source: "direct" // Placeholder, can be populated from URL params
 			})
 			posthog?.capture("onboarding_completed")
-			router.push("/chat?show_demo=true")
+			window.location.href = "/chat?show_demo=true"
 		} catch (error) {
 			toast.error(`Error: ${error.message}`)
 			setStage("questions") // Go back to questions on error
@@ -765,17 +823,47 @@ const OnboardingPage = () => {
 		switch (currentQuestion.type) {
 			case "text-input":
 				return (
-					<input
-						type="text"
-						value={answers[currentQuestion.id] || ""}
-						onChange={(e) =>
-							handleAnswer(currentQuestion.id, e.target.value)
-						}
-						placeholder={currentQuestion.placeholder}
-						required={currentQuestion.required}
-						autoFocus
-						className="w-full px-4 py-2 bg-transparent text-brand-white placeholder:text-neutral-500 focus:ring-0 border-none p-0"
-					/>
+					<div className="relative w-full">
+						<input
+							type="text"
+							value={answers[currentQuestion.id] || ""}
+							onChange={(e) =>
+								handleAnswer(currentQuestion.id, e.target.value)
+							}
+							placeholder={currentQuestion.placeholder}
+							required={currentQuestion.required}
+							autoFocus
+							className="w-full px-4 py-2 bg-transparent text-brand-white placeholder:text-neutral-500 focus:ring-0 border-none p-0"
+						/>
+						{currentQuestion.id ===
+							"whatsapp_notifications_number" && (
+							<div className="absolute right-0 top-1/2 -translate-y-1/2">
+								{whatsappStatus === "checking" && (
+									<IconLoader
+										size={18}
+										className="animate-spin text-neutral-400"
+									/>
+								)}
+								{whatsappStatus === "valid" && (
+									<IconCheck
+										size={18}
+										className="text-green-500"
+									/>
+								)}
+								{whatsappStatus === "invalid" && (
+									<IconX size={18} className="text-red-500" />
+								)}
+							</div>
+						)}
+						{currentQuestion.id ===
+							"whatsapp_notifications_number" &&
+							whatsappStatus === "invalid" &&
+							whatsappError && (
+								<p className="text-red-500 text-xs mt-2">
+									{whatsappError}
+								</p>
+							)}
+					</div>
 				)
 			case "select":
 				return (

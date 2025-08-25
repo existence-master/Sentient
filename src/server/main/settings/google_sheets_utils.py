@@ -150,3 +150,5 @@ async def check_if_contact_is_missing(user_email: str) -> bool:
                 return not (contact_values and contact_values[0] and contact_values[0][0])
         return True # User not found in sheet at all, so data is missing.
     except Exception as e:
+        logger.error(f"Error checking for missing contact for {user_email} in GSheet: {e}")
+        return False # Fail safe: don't block the user on GSheet error.

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 
 class WhatsAppNumberRequest(BaseModel):
@@ -19,5 +19,8 @@ class ProfileUpdateRequest(BaseModel):
     preferences: Dict[str, Any]
 
 class CompleteProfileRequest(BaseModel):
-    needs_pa: str # "yes" or "no"
+    needs_pa: str = Field(..., alias="needs-pa")  # "yes" or "no"
     whatsapp_notifications_number: str
+
+    class Config:
+        allow_population_by_field_name = True

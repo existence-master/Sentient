@@ -64,7 +64,9 @@ export default function LayoutWrapper({ children }) {
 	const [isLoading, setIsLoading] = useState(true)
 	const [isAllowed, setIsAllowed] = useState(false)
 
-	const showNav = !["/", "/onboarding"].includes(pathname)
+	const showNav = !["/", "/onboarding", "/complete-profile"].includes(
+		pathname
+	)
 
 	useEffect(() => {
 		if (user && posthog) {
@@ -140,29 +142,47 @@ export default function LayoutWrapper({ children }) {
 		if (isAuthLoading) return
 
 		if (authError) {
-			toast.error("Session error. Redirecting to login.")
+			toast.error("Session error. Redirecting to login.", {
+				id: "auth-error"
+			})
 			router.push("/auth/login")
 			return
 		}
 
 		if (!user) {
+			// This handles the case where the user logs out.
 			router.push("/auth/login")
 			return
 		}
 
 		const checkStatus = async () => {
-			setIsLoading(true)
+			// No need to set isLoading(true) here, it's already true by default.
 			try {
 				const res = await fetch("/api/user/data")
 				if (!res.ok) throw new Error("Could not verify user status.")
-				const data = await res.json()
-				if (data?.data?.needsDataCompletion) {
-					router.push("/complete-profile")
-				} else if (data?.data?.onboardingComplete) {
-					setIsAllowed(true)
-				} else {
-					toast.error("Please complete onboarding first.")
+				const result = await res.json()
+				const data = result?.data || {}
+
+				const onboardingComplete = data.onboardingComplete
+				const needsDataCompletion = data.needsDataCompletion
+
+				if (!onboardingComplete) {
+					toast.error("Please complete onboarding first.", {
+						id: "onboarding-check"
+					})
 					router.push("/onboarding")
+				} else if (needsDataCompletion) {
+					// User is onboarded but is missing the new required fields.
+					// Force them to the completion page from anywhere else.
+					if (pathname !== "/complete-profile") {
+						router.push("/complete-profile")
+					} else {
+						// If they are already on the correct page, allow it to render.
+						setIsAllowed(true)
+					}
+				} else {
+					// User is fully onboarded and profile is complete.
+					setIsAllowed(true)
 				}
 			} catch (error) {
 				toast.error(error.message)
@@ -173,7 +193,7 @@ export default function LayoutWrapper({ children }) {
 		}
 
 		checkStatus()
-	}, [pathname, router, showNav, user, authError, isAuthLoading])
+	}, [pathname, router, showNav, user, authError, isAuthLoading]) // Reruns on navigation
 
 	// ... (keep the rest of your useEffects and functions exactly as they were)
 	useEffect(() => {
