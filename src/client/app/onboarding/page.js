@@ -21,6 +21,25 @@ import { UseCaseCarousel } from "@components/onboarding/UseCaseCarousel"
 
 // --- Helper Components ---
 
+const FormattedPaQuestion = () => (
+	<div className="text-neutral-200 space-y-4 mt-4 pl-4">
+		<p>
+			Are you someone who finds themselves spending too much time on
+			administrative work? For example:
+		</p>
+		<ul className="list-disc list-inside pl-4 space-y-2 text-neutral-300">
+			<li>Juggling multiple priorities</li>
+			<li>Managing a small team or leading projects</li>
+			<li>Scheduling meetings and organizing calendars</li>
+			<li>Responding to routine emails</li>
+		</ul>
+		<p className="font-semibold pt-2">
+			Do you ever feel the need for a personal assistant (human or AI) to
+			handle these repetitive tasks?
+		</p>
+	</div>
+)
+
 const TypingIndicator = () => (
 	<motion.div
 		initial={{ opacity: 0 }}
@@ -242,6 +261,17 @@ const OnboardingPage = () => {
 			if (index < questions.length) {
 				const question = questions[index]
 				if (question) {
+					if (question.id === "needs-pa") {
+						setConversation((prev) => [
+							...prev,
+							{
+								sender: "ai",
+								text: message,
+								type: "formatted-pa-question"
+							}
+						])
+						return
+					}
 					message += `\n\n${question.question}`
 				}
 			}
@@ -265,11 +295,14 @@ const OnboardingPage = () => {
 		setWhatsappStatus("checking")
 		setWhatsappError("")
 		try {
-			const response = await fetch("/api/testing/whatsapp/verify", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ phone_number: number })
-			})
+			const response = await fetch(
+				"/api/settings/whatsapp-notifications/verify",
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ phone_number: number })
+				}
+			)
 			const result = await response.json()
 			if (!response.ok) {
 				throw new Error(result.detail || "Verification request failed.")
@@ -714,15 +747,21 @@ const OnboardingPage = () => {
 							{conversation.map((msg, index) => (
 								<div key={index}>
 									{msg.sender === "ai" ? (
-										<p className="whitespace-pre-wrap">
-											<span className="text-brand-orange">
-												[SENTIENT]:
-											</span>
-											<span className="text-brand-white">
-												{" "}
-												{msg.text}
-											</span>
-										</p>
+										<div>
+											<p className="whitespace-pre-wrap">
+												<span className="text-brand-orange">
+													[SENTIENT]:
+												</span>
+												<span className="text-brand-white">
+													{" "}
+													{msg.text}
+												</span>
+											</p>
+											{msg.type ===
+												"formatted-pa-question" && (
+												<FormattedPaQuestion />
+											)}
+										</div>
 									) : (
 										<p className="whitespace-pre-wrap">
 											<span className="text-green-400">

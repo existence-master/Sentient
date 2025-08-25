@@ -53,7 +53,7 @@ const CompleteProfilePage = () => {
 		setWhatsappStatus("checking")
 		setWhatsappError("")
 		try {
-			const response = await fetch("/api/testing/whatsapp/verify", {
+			const response = await fetch("/api/settings/whatsapp-notifications/verify", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ phone_number: number })
@@ -67,9 +67,7 @@ const CompleteProfilePage = () => {
 				setWhatsappError("")
 			} else {
 				setWhatsappStatus("invalid")
-				setWhatsappError(
-					"This number does not appear to be on WhatsApp."
-				)
+				setWhatsappError("This number does not appear to be on WhatsApp.")
 			}
 		} catch (error) {
 			setWhatsappStatus("invalid")
