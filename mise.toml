@@ -1,0 +1,9 @@
+[tools]
+node = "24.13.1"
+python = "3.14"
+
+[tasks.install]
+run = "npm install --no-package-lock && (cd src/client && npm install)"
+
+[tasks.smoke]
+run = "bash scripts/smoke.sh"
