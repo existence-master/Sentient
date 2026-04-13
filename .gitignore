@@ -1,6 +1,8 @@
 credentials.json
 workspace/
 
+.venv-freeze-tmp/
+
 ### Flask ###
 instance/*
 !instance/.gitignore

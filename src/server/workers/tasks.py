@@ -16,7 +16,6 @@ from json_extractor import JsonExtractor
 from workers.utils.api_client import notify_user, push_task_list_update # noqa: E501
 from workers.planner.prompts import SYSTEM_PROMPT
 from workers.utils.text_utils import parse_assistant_response
-from main.plans import PLAN_LIMITS
 from main.config import INTEGRATIONS_CONFIG
 from main.tasks.prompts import TASK_CREATION_PROMPT
 from mcp_hub.memory.utils import initialize_embedding_model, initialize_agents, cud_memory
@@ -45,29 +44,11 @@ async def async_cud_memory_task(user_id: str, information: str, source: Optional
     db_manager = MongoManager()
     username = user_id  # Default fallback
     try:
-        # --- Enforce Memory Limit ---
         user_profile = await db_manager.get_user_profile(user_id)
-        plan = user_profile.get("userData", {}).get("plan", "free") if user_profile else "free"
-        limit = PLAN_LIMITS[plan].get("memories_total", 0)
-
-        if limit != float('inf'):
-            from mcp_hub.memory import db as memory_db
-            pool = await memory_db.get_db_pool()
-            async with pool.acquire() as conn:
-                current_count = await conn.fetchval("SELECT COUNT(*) FROM facts WHERE user_id = $1", user_id)
-            if current_count >= limit:
-                logger.warning(f"User {user_id} on '{plan}' plan reached memory limit of {limit}. CUD operation aborted.")
-                await notify_user(user_id, f"You've reached your memory limit of {limit} facts. Please upgrade to Pro for unlimited memories.")
-                return
-
-        # --- Fetch user's name before calling cud_memory ---
         if user_profile:
-            # Use the name from personalInfo, which is set during onboarding and can be updated in settings.
             username = user_profile.get("userData", {}).get("personalInfo", {}).get("name", user_id)
-
     except Exception as e:
         logger.error(f"Error during pre-CUD setup for user {user_id}: {e}", exc_info=True)
-        # We can still proceed with the CUD operation, just using the user_id as the name.
     finally:
         await db_manager.close()
 
@@ -113,11 +94,6 @@ async def async_orchestrate_swarm_task(task_id: str, user_id: str):
     
         # Ensure we are using the user_id from the task document for security
         user_id = task.get("user_id")
-
-        # --- Get user plan to check limits ---
-        user_profile = await db_manager.get_user_profile(user_id)
-        plan = user_profile.get("userData", {}).get("plan", "free") if user_profile else "free"
-        sub_agent_limit = PLAN_LIMITS[plan].get("swarm_sub_agents_max", 10)
 
         swarm_details = task.get("swarm_details", {})
         goal = swarm_details.get("goal")
@@ -213,10 +189,6 @@ async def async_orchestrate_swarm_task(task_id: str, user_id: str):
 
             for i in item_indices:
                 if i >= len(items): continue
-                if total_agents >= sub_agent_limit:
-                    logger.warning(f"Swarm plan exceeds the sub-agent limit for your plan ({sub_agent_limit}). Truncating tasks.")
-                    break
-                
                 total_agents += 1
                 item = items[i]
                 sub_task_id = str(uuid.uuid4())
@@ -250,9 +222,6 @@ async def async_orchestrate_swarm_task(task_id: str, user_id: str):
                     worker_tools=required_tools
                 )
                 all_worker_tasks.append(worker_signature)
-            
-            if total_agents >= sub_agent_limit:
-                break
         
         if not all_worker_tasks:
             raise Exception("The execution plan resulted in no valid tasks to run.")

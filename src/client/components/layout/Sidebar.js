@@ -11,7 +11,6 @@ import {
 	IconSearch,
 	IconLayoutSidebarLeftCollapse,
 	IconLayoutSidebarLeftExpand,
-	IconBolt,
 	IconDots,
 	IconAdjustments,
 	IconLogout,
@@ -43,105 +42,8 @@ import {
 	ModalTitle,
 	ModalCloseButton
 } from "@components/ui/ModalDialog"
-import { useTourStore, useUserStore, useUIStore } from "@stores/app-stores"
+import { useTourStore } from "@stores/app-stores"
 
-const proPlanFeatures = [
-	{ name: "Text Chat", limit: "100 messages per day" },
-	{ name: "Voice Chat", limit: "10 minutes per day" },
-	{ name: "One-Time Tasks", limit: "20 async tasks per day" },
-	{ name: "Recurring Tasks", limit: "10 active recurring workflows" },
-	{ name: "Triggered Tasks", limit: "10 triggered workflows" },
-	{
-		name: "Parallel Agents",
-		limit: "5 complex tasks per day with 50 sub agents"
-	},
-	{ name: "File Uploads", limit: "20 files per day" },
-	{ name: "Memories", limit: "Unlimited memories" },
-	{
-		name: "Other Integrations",
-		limit: "Notion, GitHub, Slack, Discord, Trello"
-	}
-]
-
-const UpgradeToProModal = ({ isOpen, onClose }) => {
-	if (!isOpen) return null
-
-	const handleUpgrade = () => {
-		const dashboardUrl = process.env.NEXT_PUBLIC_LANDING_PAGE_URL
-		if (dashboardUrl) window.location.href = `${dashboardUrl}/dashboard`
-		onClose()
-	}
-
-	return (
-		<AnimatePresence>
-			{isOpen && (
-				<motion.div
-					initial={{ opacity: 0 }}
-					animate={{ opacity: 1 }}
-					exit={{ opacity: 0 }}
-					className="fixed inset-0 bg-black/70 backdrop-blur-md z-[100] flex items-center justify-center p-4"
-					onClick={onClose}
-				>
-					<motion.div
-						initial={{ scale: 0.95, y: 20 }}
-						animate={{ scale: 1, y: 0 }}
-						exit={{ scale: 0.95, y: -20 }}
-						transition={{ duration: 0.2, ease: "easeOut" }}
-						onClick={(e) => e.stopPropagation()}
-						className="relative bg-neutral-900/90 backdrop-blur-xl p-6 rounded-2xl shadow-2xl w-full max-w-lg border border-neutral-700 flex flex-col"
-					>
-						<header className="text-center mb-4">
-							<h2 className="text-2xl font-bold text-white flex items-center justify-center gap-2">
-								<IconBolt className="text-yellow-400" />
-								Unlock Pro Features
-							</h2>
-							<p className="text-neutral-400 mt-2">
-								Unlock powerful features to conquer your day.
-							</p>
-						</header>
-						<main className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 my-4">
-							{proPlanFeatures.map((feature) => (
-								<div
-									key={feature.name}
-									className="flex items-start gap-3"
-								>
-									<IconCheck
-										size={20}
-										className="text-green-400 flex-shrink-0 mt-0.5"
-									/>
-									<div>
-										<p className="text-white text-sm font-medium">
-											{feature.name}
-										</p>
-										<p className="text-neutral-400 text-xs">
-											{feature.limit}
-										</p>
-									</div>
-								</div>
-							))}
-						</main>
-						<footer className="mt-4 flex flex-col gap-2">
-							<Button
-								onClick={handleUpgrade}
-								className="w-full bg-brand-orange hover:bg-brand-orange/90 text-brand-black font-semibold"
-								size="lg"
-							>
-								Upgrade Now - $9/month
-							</Button>
-							<Button
-								onClick={onClose}
-								variant="ghost"
-								className="w-full text-neutral-400"
-							>
-								Not now
-							</Button>
-						</footer>
-					</motion.div>
-				</motion.div>
-			)}
-		</AnimatePresence>
-	)
-}
 
 const comingSoonFeatures = [
 	{
@@ -246,11 +148,8 @@ const ComingSoonModal = ({ isOpen, onClose }) => {
 const UserProfileSection = ({ isCollapsed, user }) => {
 	const [isUserMenuOpen, setUserMenuOpen] = useState(false)
 	const userMenuRef = useRef(null)
-	const { isPro } = useUserStore()
 	const posthog = usePostHog()
 	useClickOutside(userMenuRef, () => setUserMenuOpen(false))
-
-	const planName = isPro ? "Pro" : "Basic"
 
 	const dashboardUrl = process.env.NEXT_PUBLIC_LANDING_PAGE_URL
 		? `${process.env.NEXT_PUBLIC_LANDING_PAGE_URL}/dashboard`
@@ -291,17 +190,6 @@ const UserProfileSection = ({ isCollapsed, user }) => {
 							<p className="font-semibold text-sm text-white truncate">
 								{user?.given_name || user?.name || "User"}
 							</p>
-							<span
-								className={cn(
-									"text-xs flex items-center gap-1",
-									isPro
-										? "text-brand-orange"
-										: "text-neutral-400"
-								)}
-							>
-								{isPro && <IconBolt size={12} />}
-								{planName}
-							</span>
 						</motion.div>
 					)}
 				</AnimatePresence>
@@ -474,9 +362,6 @@ const SidebarContent = ({
 	const [isHelpMenuOpen, setHelpMenuOpen] = useState(false)
 	const [isVideoModalOpen, setVideoModalOpen] = useState(false)
 	const [isComingSoonModalOpen, setComingSoonModalOpen] = useState(false)
-	const { isUpgradeModalOpen, openUpgradeModal, closeUpgradeModal } =
-		useUIStore()
-	const { isPro } = useUserStore()
 	const { startTour } = useTourStore()
 	const router = useRouter()
 
@@ -526,10 +411,6 @@ const SidebarContent = ({
 	return (
 		<div className="flex flex-col h-full w-full overflow-y-auto custom-scrollbar">
 			<Tooltip id="sidebar-tooltip" />
-			<UpgradeToProModal
-				isOpen={isUpgradeModalOpen}
-				onClose={closeUpgradeModal}
-			/>
 			<ComingSoonModal
 				isOpen={isComingSoonModalOpen}
 				onClose={() => setComingSoonModalOpen(false)}
@@ -629,39 +510,6 @@ const SidebarContent = ({
 					</span>
 				)}
 			</button>
-
-			{!isPro && (
-				<button
-					onClick={openUpgradeModal}
-					className={cn(
-						"w-full bg-neutral-800/40 border border-neutral-700/80 rounded-lg p-2.5 text-left mb-2 hover:bg-neutral-800/80 transition-colors",
-						isCollapsed && "flex justify-center"
-					)}
-				>
-					<div className="flex items-center gap-3">
-						<div className="bg-neutral-700/80 p-1 rounded-full text-brand-orange">
-							<IconBolt size={18} />
-						</div>
-						<AnimatePresence>
-							{!isCollapsed && (
-								<motion.div
-									initial={{ opacity: 0, width: 0 }}
-									animate={{ opacity: 1, width: "auto" }}
-									exit={{ opacity: 0, width: 0 }}
-									className="overflow-hidden whitespace-nowrap"
-								>
-									<p className="font-semibold text-sm text-white">
-										Unlock Pro
-									</p>
-									<p className="text-xs text-neutral-400">
-										Unlock all features
-									</p>
-								</motion.div>
-							)}
-						</AnimatePresence>
-					</div>
-				</button>
-			)}
 
 			<nav className="flex flex-col gap-1 flex-grow overflow-y-auto min-h-[200px] custom-scrollbar">
 				{navLinks.map((link) => {

@@ -2,29 +2,68 @@ import { Auth0Client } from "@auth0/nextjs-auth0/server"
 
 const isSelfHost = process.env.NEXT_PUBLIC_ENVIRONMENT === "selfhost"
 
-// Initialize the Auth0 client
-export const auth0 = isSelfHost
-	? null
-	: new Auth0Client({
-			// Options are loaded from environment variables by default
-			// Ensure necessary environment variables are properly set
+/**
+ * v4 reads AUTH0_DOMAIN (tenant host, no protocol) — not AUTH0_ISSUER_BASE_URL.
+ * Support issuer URL in env for teams that only set that.
+ */
+function normalizeAuth0Domain() {
+	let d = process.env.AUTH0_DOMAIN?.trim()
+	if (d) {
+		return d.replace(/^https?:\/\//, "").split("/")[0]
+	}
+	const issuer = process.env.AUTH0_ISSUER_BASE_URL?.trim()
+	if (!issuer) return undefined
+	try {
+		return new URL(issuer).hostname
+	} catch {
+		return undefined
+	}
+}
 
-			// domain: process.env.AUTH0_DOMAIN,
-			// clientId: process.env.AUTH0_CLIENT_ID,
-			// clientSecret: process.env.AUTH0_CLIENT_SECRET,
-			// appBaseUrl: process.env.APP_BASE_URL,
-			// secret: process.env.AUTH0_SECRET,
-			authorizationParameters: {
-				// In v4, the AUTH0_SCOPE and AUTH0_AUDIENCE environment variables are no longer automatically picked up by the SDK.
-				// Instead, we need to provide the values explicitly.
-				scope: process.env.AUTH0_SCOPE,
-				audience: process.env.AUTH0_AUDIENCE
-			},
-			// Preserve custom claims like roles from the ID token
-			async beforeSessionSaved(session, idToken) {
-				return session
-		},
-		})
+/**
+ * SDK calls `new URL(base)`; values like "localhost:3000" without protocol throw Invalid URL.
+ */
+function resolveAppBaseUrl() {
+	let raw =
+		process.env.APP_BASE_URL?.trim() ||
+		process.env.NEXT_PUBLIC_APP_BASE_URL?.trim() ||
+		"http://localhost:3000"
+	if (!/^https?:\/\//i.test(raw)) {
+		raw = `http://${raw}`
+	}
+	try {
+		return new URL(raw).origin
+	} catch {
+		console.warn(
+			"[auth0] Invalid APP_BASE_URL / NEXT_PUBLIC_APP_BASE_URL; using http://localhost:3000"
+		)
+		return "http://localhost:3000"
+	}
+}
+
+const resolvedAuth0Domain = normalizeAuth0Domain()
+
+// SDK crashes if domain is undefined (issuer getter uses this.domain.startsWith)
+export const auth0 =
+	isSelfHost || !resolvedAuth0Domain
+		? null
+		: new Auth0Client({
+				domain: resolvedAuth0Domain,
+				clientId: process.env.AUTH0_CLIENT_ID?.trim(),
+				clientSecret: process.env.AUTH0_CLIENT_SECRET?.trim(),
+				appBaseUrl: resolveAppBaseUrl(),
+				secret: process.env.AUTH0_SECRET?.trim(),
+				authorizationParameters: {
+					scope: process.env.AUTH0_SCOPE,
+					audience: process.env.AUTH0_AUDIENCE
+				},
+				async beforeSessionSaved(session, idToken) {
+					return session
+				}
+			})
+
+/** False when using Auth0 mode but AUTH0_DOMAIN / issuer URL is missing */
+export const isAuth0ClientReady = Boolean(auth0)
 
 export async function getBackendAuthHeader() {
 	if (isSelfHost) {
@@ -34,6 +73,13 @@ export async function getBackendAuthHeader() {
 			return null
 		}
 		return { Authorization: `Bearer ${staticToken}` }
+	}
+
+	if (!auth0) {
+		console.error(
+			"[auth0] Client not initialized. Set AUTH0_DOMAIN (or AUTH0_ISSUER_BASE_URL) and Auth0 app credentials in .env.local, or use NEXT_PUBLIC_ENVIRONMENT=selfhost."
+		)
+		return null
 	}
 
 	try {

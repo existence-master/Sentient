@@ -4,4 +4,4 @@ motor
 cryptography
 google-api-python-client
 google-auth-oauthlib
-composio
+composio==0.11.5

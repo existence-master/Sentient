@@ -6,18 +6,17 @@ from datetime import datetime, timedelta, timezone
 from sklearn.metrics.pairwise import cosine_similarity
 from typing import Dict, List, Any, Optional
 
-import google.generativeai as genai
 from pgvector.asyncpg import register_vector
 from json_extractor import JsonExtractor
 
+from main.gemini_embed import ensure_embedding_ready, get_normalized_embedding
 from . import db, llm
 from .prompts import fact_analysis_user_prompt_template
-from main.config import EMBEDDING_MODEL_NAME, GEMINI_API_KEY
+from main.config import EMBEDDING_MODEL_NAME
 
 logger = logging.getLogger(__name__)
 
 # --- Module-level state ---
-embed_model_name: str = None
 agents: Dict[str, Any] = {}
 
 # A threshold to determine if two memories are connected in the graph.
@@ -25,13 +24,8 @@ SIMILARITY_THRESHOLD = 0.85
 
 def _initialize_embedding_model():
     """Initializes the Gemini embedding model."""
-    global embed_model_name
-    if embed_model_name is None:
-        if not GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY environment variable not set.")
-        logger.info(f"Initializing embedding model: {EMBEDDING_MODEL_NAME}")
-        genai.configure(api_key=GEMINI_API_KEY)
-        embed_model_name = EMBEDDING_MODEL_NAME
+    logger.info(f"Initializing embedding model: {EMBEDDING_MODEL_NAME}")
+    ensure_embedding_ready()
 
 def _initialize_agents():
     """Initializes all necessary LLM agents for memory operations."""
@@ -41,20 +35,6 @@ def _initialize_agents():
         agents = {
             "fact_analysis": llm.get_fact_analysis_agent(),
         }
-
-def _get_normalized_embedding(text: str, task_type: str) -> np.ndarray:
-    """Generates and normalizes an embedding for the given text."""
-    if embed_model_name is None:
-        _initialize_embedding_model()
-    result = genai.embed_content(
-        model=embed_model_name,
-        content=text,
-        task_type=task_type,
-        output_dimensionality=768
-    )
-    embedding_np = np.array(result['embedding'], dtype=np.float32)
-    norm = np.linalg.norm(embedding_np)
-    return embedding_np / norm if norm != 0 else embedding_np
 
 def clean_llm_output(data: Any) -> Any:
     """Cleans JSON string from LLM output."""
@@ -88,7 +68,7 @@ def parse_duration(duration_str: Optional[str]) -> Optional[datetime]:
 async def _insert_fact_with_analysis(conn, user_id: str, content: str, source: Optional[str], analysis: dict) -> str:
     """Internal function to insert a fact and its related metadata into the database."""
     expires_at = parse_duration(analysis.get("duration")) if analysis.get("memory_type") == "short-term" else None
-    embedding = _get_normalized_embedding(content, task_type="RETRIEVAL_DOCUMENT")
+    embedding = get_normalized_embedding(content, task_type="RETRIEVAL_DOCUMENT")
 
     await register_vector(conn)
     async with conn.transaction():
@@ -137,7 +117,7 @@ async def update_memory(user_id: str, memory_id: int, new_content: str) -> str:
         if not analysis:
             raise ValueError("Failed to analyze updated memory content.")
 
-        new_embedding = _get_normalized_embedding(new_content, task_type="RETRIEVAL_DOCUMENT")
+        new_embedding = get_normalized_embedding(new_content, task_type="RETRIEVAL_DOCUMENT")
         # Also re-evaluate the expiration based on the new content analysis
         expires_at = parse_duration(analysis.get("duration")) if analysis.get("memory_type") == "short-term" else None
 

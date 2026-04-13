@@ -10,7 +10,6 @@ import logging
 from composio import Composio, types
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from fastapi.responses import JSONResponse
-from typing import Tuple
 
 from main.integrations.models import (ManualConnectRequest, OAuthConnectRequest, DisconnectRequest,
                                       ComposioInitiateRequest, ComposioFinalizeRequest)
@@ -25,7 +24,6 @@ from main.config import (
     SLACK_CLIENT_SECRET, NOTION_CLIENT_ID, NOTION_CLIENT_SECRET,
 )
 from workers.tasks import execute_triggered_task
-from main.plans import PRO_ONLY_INTEGRATIONS
 from .utils import waha_request_from_main
 
 logger = logging.getLogger(__name__)
@@ -84,21 +82,13 @@ async def get_integration_sources(user_id: str = Depends(auth_helper.get_current
 @router.post("/connect/manual", summary="Connect an integration using manual credentials")
 async def connect_manual_integration(
     request: ManualConnectRequest,
-    user_id_and_plan: Tuple[str, str] = Depends(auth_helper.get_current_user_id_and_plan)
+    user_id: str = Depends(auth_helper.get_current_user_id),
 ):
-    user_id, plan = user_id_and_plan
     service_name = request.service_name
     service_config = INTEGRATIONS_CONFIG.get(service_name)
 
     if not service_config:
         raise HTTPException(status_code=400, detail="Invalid service name.")
-
-    # --- Check Plan Limit ---
-    if service_name in PRO_ONLY_INTEGRATIONS and plan == "free":
-        raise HTTPException(
-            status_code=403,
-            detail=f"The {service_config.get('display_name', service_name)} integration is a Pro feature. Please upgrade your plan."
-        )
 
     # Allow Trello to use this endpoint despite being 'oauth' type, as its flow provides a token directly.
     if service_config["auth_type"] != "manual" and service_name != "trello":
@@ -123,19 +113,11 @@ async def connect_manual_integration(
 @router.post("/connect/oauth", summary="Finalize OAuth2 connection by exchanging code for token")
 async def connect_oauth_integration(
     request: OAuthConnectRequest,
-    user_id_and_plan: Tuple[str, str] = Depends(auth_helper.get_current_user_id_and_plan)
+    user_id: str = Depends(auth_helper.get_current_user_id),
 ):
-    user_id, plan = user_id_and_plan
     service_name = request.service_name
     if service_name not in INTEGRATIONS_CONFIG or INTEGRATIONS_CONFIG[service_name]["auth_type"] != "oauth":
         raise HTTPException(status_code=400, detail="Invalid service name or auth type is not OAuth.")
-
-    # --- Check Plan Limit ---
-    if service_name in PRO_ONLY_INTEGRATIONS and plan == "free":
-        raise HTTPException(
-            status_code=403,
-            detail=f"The {INTEGRATIONS_CONFIG[service_name].get('display_name', service_name)} integration is a Pro feature. Please upgrade your plan."
-        )
 
     token_url = ""
     token_payload = {}
@@ -308,7 +290,7 @@ async def initiate_composio_connection(
             config={
                 "authScheme": "OAUTH2"
             },
-            allow_multiple=True
+            allow_multiple=True,
         )
 
         return JSONResponse(content={"redirect_url": connection_request.redirect_url})
@@ -460,18 +442,10 @@ async def composio_webhook(request: Request):
 
 @router.post("/whatsapp/connect/initiate", summary="Start a WAHA session and get a QR code")
 async def initiate_whatsapp_connection(
-    user_id_and_plan: Tuple[str, str] = Depends(auth_helper.get_current_user_id_and_plan)
+    user_id: str = Depends(auth_helper.get_current_user_id),
 ):
-    user_id, plan = user_id_and_plan
     service_name = "whatsapp"
     service_config = INTEGRATIONS_CONFIG.get(service_name)
-
-    # --- Check Plan Limit ---
-    if service_name in PRO_ONLY_INTEGRATIONS and plan == "free":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"The {service_config.get('display_name', service_name)} integration is a Pro feature. Please upgrade your plan."
-        )
 
     try:
 

@@ -189,10 +189,6 @@ class AuthHelper:
         auth_data = await self.ws_authenticate_with_data(websocket)
         return auth_data.get("user_id") if auth_data else None
 
-    async def get_current_user_id_and_plan(self, token: str = Depends(oauth2_scheme)) -> Tuple[str, str]:
-        user_id, plan, _ = await self.get_current_user_id_plan_and_permissions(token=token)
-        return user_id, plan
-
 class PermissionChecker:
     def __init__(self, required_permissions: List[str]):
         self.required_permissions = set(required_permissions)

@@ -15,8 +15,6 @@ describe("useUserStore", () => {
 	it("should have a correct initial state", () => {
 		const state = useUserStore.getState()
 		expect(state.user).toBeNull()
-		expect(state.plan).toBe("free")
-		expect(state.isPro).toBe(false)
 		expect(state.onboardingComplete).toBe(false)
 		expect(state.isLoading).toBe(true) // This is the initial state
 		expect(state.error).toBeNull()
@@ -54,8 +52,6 @@ describe("useUserStore", () => {
 
 		expect(state.isLoading).toBe(false)
 		expect(state.error).toBeNull()
-		expect(state.isPro).toBe(true)
-		expect(state.plan).toBe("pro")
 		expect(state.onboardingComplete).toBe(true)
 		expect(state.user).toEqual({ ...mockUserData.data, ...mockProfileData })
 	})

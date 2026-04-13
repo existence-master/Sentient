@@ -1,6 +1,6 @@
 "use server"
 
-import { auth0 } from "@lib/auth0"
+import { auth0, isAuth0ClientReady } from "@lib/auth0"
 import { MongoClient } from "mongodb"
 import webpush from "web-push"
 
@@ -52,6 +52,9 @@ if (
 // --- Server Actions ---
 
 export async function subscribeUser(subscription) {
+	if (!isAuth0ClientReady) {
+		throw new Error("Auth0 is not configured (missing AUTH0_DOMAIN).")
+	}
 	const session = await auth0.getSession()
 	if (!session?.user) {
 		throw new Error("Not authenticated")
@@ -79,6 +82,9 @@ export async function subscribeUser(subscription) {
 }
 
 export async function unsubscribeUser(endpoint) {
+	if (!isAuth0ClientReady) {
+		throw new Error("Auth0 is not configured (missing AUTH0_DOMAIN).")
+	}
 	const session = await auth0.getSession()
 	if (!session?.user) {
 		throw new Error("Not authenticated")
@@ -105,6 +111,9 @@ export async function unsubscribeUser(endpoint) {
 }
 
 export async function sendNotificationToCurrentUser(payload) {
+	if (!isAuth0ClientReady) {
+		throw new Error("Auth0 is not configured (missing AUTH0_DOMAIN).")
+	}
 	const session = await auth0.getSession()
 	if (!session?.user) {
 		throw new Error("Not authenticated")

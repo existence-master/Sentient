@@ -1,3 +1,6 @@
+# Credentials below are applied on FIRST container create only (new volume).
+# If you change POSTGRES_* here, existing data keeps old passwords — use `docker compose ... down -v` to reset (data loss).
+# Host port 5433 must match POSTGRES_PORT in src/server/.env (Memory MCP loads that file).
 version: '3.8'
 
 services:

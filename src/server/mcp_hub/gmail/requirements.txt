@@ -7,4 +7,4 @@ google-auth-oauthlib
 httpx
 google-genai
 python-dotenv
-composio
+composio==0.11.5

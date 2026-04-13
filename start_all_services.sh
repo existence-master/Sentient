@@ -17,8 +17,8 @@
 #   - Run this script from the project's root directory.
 #   - You might need to install 'gnome-terminal' or change the TERMINAL_CMD
 #     variable below to your preferred terminal emulator (e.g., konsole, xterm, terminator).
-#   - Ensure services like MongoDB, Redis, and Docker are installed and enabled.
-#   - This script may require 'sudo' for starting system services.
+#   - Ensure Docker is installed; MongoDB runs in Docker (start_mongodb.yaml).
+#   - This script may require 'sudo' for starting some system services (e.g. Redis).
 #
 # ==============================================================================
 
@@ -105,11 +105,6 @@ echo "✅ Redis password loaded from .env file."
 # --- 1. Start Databases & Core Infrastructure ---
 echo -e "\n--- 1. Starting Databases & Core Infrastructure ---"
 
-# Start MongoDB Service
-echo "🚀 Starting MongoDB Service (may require sudo)..."
-sudo systemctl start mongod || echo "⚠️  MongoDB service was already running or failed to start. Check with: sudo systemctl status mongod"
-sleep 1
-
 # Start Redis Server
 echo "🚀 Starting Redis Server (may require sudo)..."
 if ! pgrep -x "redis-server" > /dev/null; then
@@ -121,8 +116,9 @@ fi
 sleep 1
 
 # Start Docker Containers
-echo "🚀 Starting Docker services (Waha, PGVector, Chroma, LiteLLM)..."
+echo "🚀 Starting Docker services (MongoDB, PGVector, Chroma, LiteLLM)..."
 DOCKER_SERVICES=(
+    "MongoDB:start_mongodb.yaml"
     # "WAHA:start_waha.yaml"
     "PGVector:start_pgvector.yaml"
     "ChromaDB:start_chroma.yaml"

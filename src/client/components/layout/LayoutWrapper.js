@@ -533,9 +533,6 @@ export default function LayoutWrapper({ children }) {
 
 		if (paymentStatus === "success" || needsRefresh === "true") {
 			window.history.replaceState(null, "", pathname)
-			if (paymentStatus === "success" && posthog) {
-				posthog.capture("plan_upgraded", { plan_name: "pro" })
-			}
 			toast.loading("Session updated. Redirecting...", { duration: 5000 })
 			const logoutUrl = new URL("/auth/logout", window.location.origin)
 			logoutUrl.searchParams.set(

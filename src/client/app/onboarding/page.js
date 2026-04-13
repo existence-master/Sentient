@@ -1,7 +1,6 @@
 "use client"
 import React, { useState, useEffect, useCallback, useRef } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { TextLoop } from "@/components/ui/TextLoop"
 import { cn } from "@utils/cn"
 import toast from "react-hot-toast"
 import { usePostHog } from "posthog-js/react"
@@ -9,10 +8,8 @@ import { useRouter } from "next/navigation"
 import {
 	IconSparkles,
 	IconHeart,
-	IconBrandWhatsapp,
 	IconLoader,
 	IconCheck,
-	IconX,
 	IconBrain
 } from "@tabler/icons-react"
 import InteractiveNetworkBackground from "@components/ui/InteractiveNetworkBackground"
@@ -26,44 +23,6 @@ import { Button } from "@components/ui/button"
 import { Input } from "@components/ui/input"
 import { Select } from "@components/ui/select"
 import { Textarea } from "@components/ui/textarea"
-
-const countryData = [
-	{ name: "United States", code: "US", dial_code: "+1", flag: "🇺🇸" },
-	{ name: "India", code: "IN", dial_code: "+91", flag: "🇮🇳" },
-	{ name: "United Kingdom", code: "GB", dial_code: "+44", flag: "🇬🇧" },
-	{ name: "Canada", code: "CA", dial_code: "+1", flag: "🇨🇦" },
-	{ name: "Australia", code: "AU", dial_code: "+61", flag: "🇦🇺" },
-	{ name: "Germany", code: "DE", dial_code: "+49", flag: "🇩🇪" },
-	{ name: "France", code: "FR", dial_code: "+33", flag: "🇫🇷" },
-	{ name: "Brazil", code: "BR", dial_code: "+55", flag: "🇧🇷" },
-	{ name: "China", code: "CN", dial_code: "+86", flag: "🇨🇳" },
-	{ name: "Japan", code: "JP", dial_code: "+81", flag: "🇯🇵" },
-	{ name: "Singapore", code: "SG", dial_code: "+65", flag: "🇸🇬" },
-	{ name: "United Arab Emirates", code: "AE", dial_code: "+971", flag: "🇦🇪" },
-	{ name: "Other", code: "OTHER", dial_code: "", flag: "🌍" }
-]
-
-// --- Helper Components ---
-
-const FormattedPaQuestion = () => (
-	<div className="text-neutral-200 space-y-6 md:space-y-8 text-center">
-		<div className="text-xl md:text-2xl text-neutral-300 font-medium leading-relaxed">
-			<span>Are you someone who often finds themselves </span>
-			<TextLoop
-				className="inline-block text-brand-orange font-semibold min-w-[280px] md:min-w-[340px]"
-				interval={2.5}
-			>
-				<span>juggling multiple priorities?</span>
-				<span>spending too much time on admin tasks?</span>
-				<span>managing a small team?</span>
-				<span>wishing you had help with scheduling?</span>
-			</TextLoop>
-		</div>
-		<h2 className="font-semibold text-xl md:text-2xl text-white leading-relaxed">
-			Do you need a personal assistant (human or AI)?
-		</h2>
-	</div>
-)
 
 // Standard typography styles for questions
 const questionStyles = {
@@ -195,34 +154,7 @@ const questions = [
 		type: "textarea",
 		required: false,
 		placeholder: "e.g., My anniversary is on June 5th. I love Italian food."
-	},
-	{
-		id: "needs-pa",
-		question: "", // The question is rendered by FormattedPaQuestion component
-		type: "yes-no",
-		required: true
-	},
-	{
-		id: "whatsapp_notifications_number",
-		question: "What's your WhatsApp number?",
-		type: "text-input",
-		required: true,
-		placeholder: "+14155552671",
-		icon: <IconBrandWhatsapp />
 	}
-]
-
-const sentientComments = [
-	"To get started, I just need to ask a few questions to personalize your experience.",
-	"Great to meet you, {user-name}! To make sure I'm always on your time...",
-	"Perfect. Now, to help with local info like weather and places...",
-	"This helps me understand your professional goals and context.",
-	"Understood. Knowing your work hours helps me be a better assistant.",
-	"Thanks. Remembering key people helps me understand your world better.",
-	"Great! I'll keep those personal details in mind.",
-	"This helps me understand what kind of user you are and how I can best assist you.",
-	"Finally, I will send you important notifications, task updates, and reminders on WhatsApp. We're in the process of getting an official number, so for now, messages will come from our co-founder Sarthak (+91827507823), who may also occasionally reach out for feedback.",
-	"Awesome! That's all I need. Let's get you set up."
 ]
 
 // --- Main Component ---
@@ -238,16 +170,9 @@ const OnboardingPage = () => {
 	const { fetchUserData } = useUserStore()
 	const router = useRouter()
 	const statusChecked = useRef(false)
-	const [whatsappStatus, setWhatsappStatus] = useState("idle") // idle, checking, valid, invalid
-	const [whatsappError, setWhatsappError] = useState("")
-	const debounceTimeoutRef = useRef(null)
-	const [customDialCode, setCustomDialCode] = useState("")
-	const [showCustomDialCode, setShowCustomDialCode] = useState(false)
 	const [modelReacting, setModelReacting] = useState(false)
 	const [audioLevel, setAudioLevel] = useState(0.1)
 	const [timezoneDetected, setTimezoneDetected] = useState(null) // null: checking, true: detected, false: not detected
-	const [whatsappCountry, setWhatsappCountry] = useState(countryData[1]) // Default to India
-	const [whatsappLocalNumber, setWhatsappLocalNumber] = useState("")
 
 	const [locationState, setLocationState] = useState({
 		loading: false,
@@ -255,69 +180,8 @@ const OnboardingPage = () => {
 		error: null
 	})
 
-	// Handle country selection
-	const handleCountryChange = (countryCode) => {
-		const selectedCountry = countryData.find((c) => c.code === countryCode)
-		setWhatsappCountry(selectedCountry)
-		setShowCustomDialCode(countryCode === "OTHER")
-		if (countryCode !== "OTHER") setCustomDialCode("")
-	}
-
-	const verifyWhatsappMutation = useMutation({
-		mutationFn: (number) => {
-			if (!/^\+[1-9]\d{6,14}$/.test(number.trim())) {
-				throw new Error(
-					"Please use E.164 format with country code (e.g., +14155552671)."
-				)
-			}
-			return fetch("/api/settings/whatsapp-notifications/verify", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ phone_number: number })
-			}).then(async (res) => {
-				const result = await res.json()
-				if (!res.ok) {
-					throw new Error(
-						result.detail || "Verification request failed."
-					)
-				}
-				return result
-			})
-		},
-		onSuccess: (result) => {
-			if (result.numberExists) {
-				setWhatsappStatus("valid")
-				setWhatsappError("")
-			} else {
-				setWhatsappStatus("invalid")
-				setWhatsappError(
-					"This number does not appear to be on WhatsApp."
-				)
-			}
-		},
-		onError: (error) => {
-			setWhatsappStatus("invalid")
-			setWhatsappError(error.message)
-		}
-	})
-
 	const handleAnswer = (questionId, answer) => {
 		setAnswers((prev) => ({ ...prev, [questionId]: answer }))
-		if (questionId === "whatsapp_notifications_number") {
-			setWhatsappStatus("idle")
-			if (debounceTimeoutRef.current) {
-				clearTimeout(debounceTimeoutRef.current)
-			}
-			if (answer.trim()) {
-				debounceTimeoutRef.current = setTimeout(() => {
-					setWhatsappStatus("checking")
-					verifyWhatsappMutation.mutate(answer)
-				}, 800)
-			} else {
-				setWhatsappStatus("idle")
-				setWhatsappError("")
-			}
-		}
 	}
 
 	const handleMultiChoice = (questionId, option) => {
@@ -429,15 +293,8 @@ const OnboardingPage = () => {
 		// For arrays, check if empty
 		if (Array.isArray(answer) && answer.length === 0) return false
 
-		// Check for whatsapp validation
-		if (
-			currentQuestion.id === "whatsapp_notifications_number" &&
-			whatsappStatus !== "valid"
-		) {
-			return false
-		}
 		return true
-	}, [answers, currentQuestionIndex, stage, whatsappStatus])
+	}, [answers, currentQuestionIndex, stage])
 
 	const submitOnboardingMutation = useMutation({
 		mutationFn: (onboardingData) =>
@@ -489,30 +346,10 @@ const OnboardingPage = () => {
 	}, [
 		currentQuestionIndex,
 		isCurrentQuestionAnswered,
-		handleSubmit,
-		maxQuestionIndexReached
+		submitOnboardingMutation,
+		answers
 	])
 	// --- Effects ---
-
-	useEffect(() => {
-		if (whatsappCountry && whatsappLocalNumber.trim()) {
-			const dialCode =
-				whatsappCountry.code === "OTHER"
-					? customDialCode.startsWith("+")
-						? customDialCode
-						: `+${customDialCode}`
-					: whatsappCountry.dial_code
-
-			const fullNumber = `${
-				dialCode
-			}${whatsappLocalNumber.replace(/\D/g, "")}`
-			handleAnswer("whatsapp_notifications_number", fullNumber)
-		} else {
-			// Clear the answer if the local number is empty
-			handleAnswer("whatsapp_notifications_number", "")
-		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [whatsappCountry, whatsappLocalNumber, customDialCode])
 
 	useEffect(() => {
 		if (statusChecked.current) return
@@ -656,32 +493,19 @@ const OnboardingPage = () => {
 										className={questionStyles.container}
 									>
 										<div className="w-full">
-											{currentQuestion.id ===
-											"needs-pa" ? (
-												<FormattedPaQuestion />
-											) : (
-												<>
-													<h2
-														className={
-															questionStyles.title
-														}
-													>
-														{
-															currentQuestion.question
-														}
-													</h2>
-													{currentQuestion.description && (
-														<p
-															className={
-																questionStyles.description
-															}
-														>
-															{
-																currentQuestion.description
-															}
-														</p>
-													)}
-												</>
+											<h2
+												className={questionStyles.title}
+											>
+												{currentQuestion.question}
+											</h2>
+											{currentQuestion.description && (
+												<p
+													className={
+														questionStyles.description
+													}
+												>
+													{currentQuestion.description}
+												</p>
 											)}
 										</div>
 									</motion.div>
@@ -694,23 +518,19 @@ const OnboardingPage = () => {
 								</div>
 
 								{/* Navigation */}
-								{currentQuestion.type !== "yes-no" && (
-									<div className="mt-4 md:mt-6">
-										<Button
-											onClick={handleNext}
-											disabled={
-												!isCurrentQuestionAnswered()
-											}
-											size="lg"
-											className="rounded-xl bg-brand-orange text-brand-black text-base md:text-lg font-semibold transition-all duration-300 hover:bg-brand-orange/90 hover:scale-105 shadow-lg shadow-brand-orange/25"
-										>
-											{currentQuestionIndex ===
-											questions.length - 1
-												? "Finish"
-												: "Next"}
-										</Button>
-									</div>
-								)}
+								<div className="mt-4 md:mt-6">
+									<Button
+										onClick={handleNext}
+										disabled={!isCurrentQuestionAnswered()}
+										size="lg"
+										className="rounded-xl bg-brand-orange text-brand-black text-base md:text-lg font-semibold transition-all duration-300 hover:bg-brand-orange/90 hover:scale-105 shadow-lg shadow-brand-orange/25"
+									>
+										{currentQuestionIndex ===
+										questions.length - 1
+											? "Finish"
+											: "Next"}
+									</Button>
+								</div>
 							</motion.div>
 						</div>
 					</motion.div>
@@ -764,98 +584,6 @@ const OnboardingPage = () => {
 	const renderInput = (currentQuestion) => {
 		switch (currentQuestion.type) {
 			case "text-input":
-				if (currentQuestion.id === "whatsapp_notifications_number") {
-					return (
-						<div className="relative w-full max-w-lg mx-auto space-y-4">
-							<div className="flex items-center gap-0 w-full bg-neutral-900/60 backdrop-blur-sm border border-neutral-700/50 rounded-xl focus-within:ring-2 focus-within:ring-brand-orange/50 focus-within:border-brand-orange/50 transition-all duration-300 shadow-lg shadow-black/20">
-								<div className="relative border-r border-neutral-700/50">
-									<Select
-										value={whatsappCountry.code}
-										onChange={(e) => {
-											handleCountryChange(e.target.value)
-										}}
-										className="bg-transparent pl-4 pr-10 py-4 md:py-5 text-base appearance-none focus:outline-none cursor-pointer min-w-[120px] border-none h-auto"
-									>
-										{countryData.map((country) => (
-											<option
-												key={country.code}
-												value={country.code}
-												className="bg-brand-gray text-brand-white"
-											>
-												{country.flag}{" "}
-												{country.dial_code || "Other"}
-											</option>
-										))}
-									</Select>
-									<div className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-neutral-400">
-										<svg
-											className="h-4 w-4 fill-current"
-											viewBox="0 0 20 20"
-										>
-											<path d="M5.516 7.548c.436-.446 1.043-.481 1.576 0L10 10.405l2.908-2.857c.533-.481 1.141-.446 1.574 0 .436.445.408 1.197 0 1.642l-3.417 3.356c-.27.267-.672.423-1.065.423s-.795-.156-1.065-.423L5.516 9.19c-.408-.445-.436-1.197 0-1.642z" />
-										</svg>
-									</div>
-								</div>
-								{showCustomDialCode && (
-									<Input
-										type="text"
-										value={customDialCode}
-										onChange={(e) =>
-											setCustomDialCode(e.target.value)
-										}
-										placeholder="+XXX"
-										className="bg-transparent px-4 py-4 md:py-5 text-base focus:outline-none border-r border-neutral-700/50 w-20 h-auto rounded-none border-none"
-									/>
-								)}
-								<Input
-									type="tel"
-									value={whatsappLocalNumber}
-									onChange={(e) =>
-										setWhatsappLocalNumber(e.target.value)
-									}
-									placeholder="Your number"
-									required={currentQuestion.required}
-									autoFocus
-									className="flex-1 bg-transparent px-4 py-4 md:py-5 text-base md:text-lg placeholder:text-neutral-500 focus:outline-none border-none h-auto"
-								/>
-							</div>
-
-							{/* Status Icons */}
-							<div className="absolute right-4 top-1/2 -translate-y-1/2">
-								{whatsappStatus === "checking" && (
-									<IconLoader
-										size={20}
-										className="animate-spin text-brand-orange"
-									/>
-								)}
-								{whatsappStatus === "valid" && (
-									<IconCheck
-										size={20}
-										className="text-green-400"
-									/>
-								)}
-								{whatsappStatus === "invalid" && (
-									<IconX size={20} className="text-red-400" />
-								)}
-							</div>
-
-							{/* Error Message */}
-							{whatsappStatus === "invalid" && whatsappError && (
-								<p className="text-red-400 text-sm mt-2 text-center bg-red-400/10 border border-red-400/20 rounded-lg px-4 py-2">
-									{whatsappError}
-								</p>
-							)}
-
-							{/* Instructions for Other option */}
-							{showCustomDialCode && (
-								<p className="text-neutral-400 text-sm text-center">
-									Enter your country code (e.g., +33 for
-									France)
-								</p>
-							)}
-						</div>
-					)
-				}
 				return (
 					<div className="relative w-full max-w-lg mx-auto">
 						<Input
@@ -1012,41 +740,6 @@ const OnboardingPage = () => {
 							{locationState.loading
 								? "Detecting..."
 								: "Detect Current Location"}
-						</Button>
-					</div>
-				)
-			case "yes-no":
-				return (
-					<div className="flex gap-4 md:gap-6 justify-center w-full max-w-lg mx-auto">
-						<Button
-							onClick={() => {
-								handleAnswer(currentQuestion.id, "yes")
-								setTimeout(handleNext, 150)
-							}}
-							size="lg"
-							className={cn(
-								"flex-1 rounded-xl font-semibold transition-all duration-300 text-base md:text-lg backdrop-blur-sm shadow-lg",
-								answers[currentQuestion.id] === "yes"
-									? "bg-brand-orange text-brand-black shadow-brand-orange/30 scale-105"
-									: "bg-neutral-800/60 border border-neutral-700/50 hover:bg-neutral-700/60 hover:border-neutral-600/50 text-white"
-							)}
-						>
-							Yes
-						</Button>
-						<Button
-							onClick={() => {
-								handleAnswer(currentQuestion.id, "no")
-								setTimeout(handleNext, 150)
-							}}
-							size="lg"
-							className={cn(
-								"flex-1 rounded-xl font-semibold transition-all duration-300 text-base md:text-lg backdrop-blur-sm shadow-lg",
-								answers[currentQuestion.id] === "no"
-									? "bg-brand-orange text-brand-black shadow-brand-orange/30 scale-105"
-									: "bg-neutral-800/60 border border-neutral-700/50 hover:bg-neutral-700/60 hover:border-neutral-600/50 text-white"
-							)}
-						>
-							No
 						</Button>
 					</div>
 				)

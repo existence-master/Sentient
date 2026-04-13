@@ -1,0 +1,14 @@
+# MongoDB for local development. The API and workers run on the host and connect via
+# mongodb://localhost:27017/ (see src/server/.env). Bind to loopback only.
+services:
+  mongodb:
+    image: mongo:7
+    container_name: sentient-mongodb
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+
+volumes:
+  mongodb_data:

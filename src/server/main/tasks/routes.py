@@ -5,7 +5,6 @@ from fastapi.responses import JSONResponse
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import uuid
-from typing import Tuple
 from main.dependencies import auth_helper
 from main.dependencies import mongo_manager, websocket_manager
 from main.auth.utils import PermissionChecker
@@ -14,7 +13,6 @@ from workers.tasks import generate_plan_from_context, execute_task_plan, calcula
 from .models import AddTaskRequest, UpdateTaskRequest, TaskIdRequest, TaskActionRequest, TaskChatRequest, ProgressUpdateRequest, AnswerClarificationRequest, ClarificationAnswerRequest, LongFormTaskActionRequest
 from main.llm import run_agent
 from main.tasks.models import AddTaskRequest, UpdateTaskRequest, TaskIdRequest, TaskActionRequest, TaskChatRequest, ProgressUpdateRequest
-from main.plans import PLAN_LIMITS
 from main.llm import run_agent, LLMProviderDownError
 from json_extractor import JsonExtractor
 from .prompts import TASK_CREATION_PROMPT
@@ -102,10 +100,8 @@ async def get_task_details(
 @router.post("/add-task", status_code=status.HTTP_201_CREATED)
 async def add_task(
     request: AddTaskRequest,
-    user_id_and_plan: Tuple[str, str] = Depends(auth_helper.get_current_user_id_and_plan)
+    user_id: str = Depends(auth_helper.get_current_user_id),
 ):
-    user_id, plan = user_id_and_plan
-
     if not request.prompt:
         raise HTTPException(status_code=400, detail="A prompt describing the goal is required.")
 
@@ -150,21 +146,12 @@ async def add_task(
     schedule_type = schedule.get("type") if schedule else "once"
     run_at = schedule.get("run_at") if schedule else None
 
-    # 2. Triage based on the parsed data and enforce limits
+    # 2. Triage based on the parsed data
     if schedule_type in ["recurring", "triggered"]:
         # This is a recurring or triggered workflow
-        workflow_limit = PLAN_LIMITS[plan].get("workflows_active", 0)
-        active_workflows = await mongo_manager.count_active_workflows(user_id)
-
         # Inject timezone into the schedule before saving
         if schedule:
             schedule['timezone'] = user_timezone_str
-
-        if active_workflows >= workflow_limit:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"You have reached your active workflow limit of {workflow_limit}. Please upgrade or disable an existing workflow."
-            )
 
         task_data = {
             "name": parsed_data.get("name", request.prompt),
@@ -184,15 +171,6 @@ async def add_task(
 
     elif task_type_from_llm == "swarm":
         # This is a swarm task. It should be executed immediately.
-        if PLAN_LIMITS[plan].get("swarm_tasks_daily", 0) == 0:
-            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Swarm tasks are a Pro feature. Please upgrade your plan.")
-
-        usage = await mongo_manager.get_or_create_daily_usage(user_id)
-        swarm_limit = PLAN_LIMITS[plan].get("swarm_tasks_daily", 0)
-        current_swarm_count = usage.get("swarm_tasks", 0)
-        if current_swarm_count >= swarm_limit:
-            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=f"You have reached your daily limit of {swarm_limit} swarm tasks.")
-
         goal = parsed_data.get('description', request.prompt)
         task_data = {
             "name": parsed_data.get("name", request.prompt),
@@ -208,21 +186,10 @@ async def add_task(
         if not task_id:
             raise HTTPException(status_code=500, detail="Failed to create swarm task.")
 
-        await mongo_manager.increment_daily_usage(user_id, "swarm_tasks")
         orchestrate_swarm_task.delay(task_id, user_id)
         await push_update(user_id)
         return {"message": "Swarm task created. The agents will begin work shortly.", "task_id": task_id}
     else:  # This covers one-shot (single) and long-form tasks
-        # Check monthly task limit
-        usage = await mongo_manager.get_or_create_monthly_usage(user_id)
-        task_limit = PLAN_LIMITS[plan].get("tasks_monthly", 0)
-        current_task_count = usage.get("tasks", 0)
-        if current_task_count >= task_limit:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"You have reached your monthly task limit of {task_limit}. Please upgrade or try again next month."
-            )
-
         if schedule:
             schedule['timezone'] = user_timezone_str
 
@@ -253,8 +220,6 @@ async def add_task(
         task_id = await mongo_manager.add_task(user_id, task_data)
         if not task_id:
             raise HTTPException(status_code=500, detail="Failed to create task.")
-
-        await mongo_manager.increment_monthly_usage(user_id, "tasks")
 
         if task_type == "long_form":
             start_long_form_task.delay(task_id, user_id)

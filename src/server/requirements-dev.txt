@@ -1,72 +1,10 @@
-# --- Core Framework & Web Server ---
-fastapi
-uvicorn[standard]
+# Extends the frozen production lockfile with optional dev / local-ML packages.
+# Install: pip install -r requirements-dev.txt
+#
+# llama-cpp-python: not pinned here for Windows (no official wheel; needs MSVC + CMake to build).
+#   On Linux/macOS dev machines, add e.g. llama-cpp-python==0.2.90 or install from your distro.
 
-# --- Data Validation & Config ---
-python-dotenv
+-r requirements.txt
 
-# --- Authentication & Security ---
-python-jose[cryptography]
-cryptography
-
-# --- Asynchronous & HTTP Clients ---
-httpx
-requests
-requests-oauthlib
-
-# --- Database & Caching ---
-motor
-redis
-asyncpg
-pgvector
-
-# --- AI & Machine Learning ---
-qwen-agent
-google-genai
-composio
-openai
-scikit-learn
-pywebpush
-elevenlabs 
-deepgram-sdk
-librosa
-llama-cpp-python
-faster-whisper
-snac
-torch
-fastrtc[vad, stt, tts]
-crawl4ai
-numpy
-smallestai
-
-# --- Background Task Queue ---
-celery
-python-dateutil # For rrule in scheduler
-
-# --- Google API Clients ---
-google-api-python-client
-google-auth-oauthlib
-google-auth-httplib2
-
-# --- Other 3rd Party API Clients ---
-PyGithub
-notion-client
-
-# --- Analytics ---
-posthog
-
-# --- MCP Framework ---
-fastmcp
-
-# --- Charting (for gslides MCP) ---
-matplotlib
-
-jsonextractor
-
-# --- Vector DB and Embeddings ---
-chromadb-client
-sentence-transformers
-google-generativeai
-rich
-
-textract==1.5.0
+faster-whisper==1.2.1
+snac==1.2.1

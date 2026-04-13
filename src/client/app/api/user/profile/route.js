@@ -1,6 +1,6 @@
 // src/client/app/api/user/profile/route.js
 import { NextResponse } from "next/server"
-import { auth0 } from "@lib/auth0"
+import { auth0, isAuth0ClientReady } from "@lib/auth0"
 
 export async function GET() {
 	if (process.env.NEXT_PUBLIC_ENVIRONMENT === "selfhost") {
@@ -14,6 +14,13 @@ export async function GET() {
 			{
 				headers: { "Cache-Control": "no-store, max-age=0" }
 			}
+		)
+	}
+
+	if (!isAuth0ClientReady) {
+		return NextResponse.json(
+			{ message: "Auth0 is not configured" },
+			{ status: 503 }
 		)
 	}
 

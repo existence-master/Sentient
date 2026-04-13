@@ -8,13 +8,10 @@ export const useUIStore = create(
 		(set) => ({
 			isSearchOpen: false,
 			isMobileNavOpen: false,
-			isUpgradeModalOpen: false,
 			openSearch: () => set({ isSearchOpen: true }),
 			closeSearch: () => set({ isSearchOpen: false }),
 			openMobileNav: () => set({ isMobileNavOpen: true }),
-			closeMobileNav: () => set({ isMobileNavOpen: false }),
-			openUpgradeModal: () => set({ isUpgradeModalOpen: true }),
-			closeUpgradeModal: () => set({ isUpgradeModalOpen: false })
+			closeMobileNav: () => set({ isMobileNavOpen: false })
 		}),
 		{ name: "UIStore" }
 	)
@@ -23,8 +20,6 @@ export const useUIStore = create(
 // --- User Store ---
 const userStoreInitialState = {
 	user: null,
-	plan: "free",
-	isPro: false,
 	onboardingComplete: false,
 	isLoading: true,
 	error: null
@@ -52,8 +47,6 @@ export const useUserStore = create(
 
 					set({
 						user: userData,
-						plan: userData.plan || userData.pricing || "free",
-						isPro: userData.plan === "pro" || userData.pricing === "pro",
 						onboardingComplete: userData.onboardingComplete,
 						isLoading: false
 					})

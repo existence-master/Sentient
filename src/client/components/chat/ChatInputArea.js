@@ -31,7 +31,6 @@ const ChatInputArea = ({
 	toolIcons,
 	setIsWelcomeModalOpen,
 	toggleVoiceMode,
-	isPro,
 	thinking,
 	handleStopStreaming,
 	replyingTo,
@@ -315,11 +314,7 @@ const ChatInputArea = ({
 							size="icon"
 							className="rounded-full p-2.5 h-auto bg-neutral-700 hover:bg-neutral-600"
 							data-tooltip-id="home-tooltip"
-							data-tooltip-content={
-								isPro
-									? "Switch to Voice Mode"
-									: "Voice Mode (Pro Feature)"
-							}
+							data-tooltip-content="Switch to Voice Mode"
 						>
 							<IconHeadphonesFilled size={18} />
 						</Button>

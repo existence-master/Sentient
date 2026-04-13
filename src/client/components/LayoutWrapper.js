@@ -26,11 +26,6 @@ import { motion } from "framer-motion"
 const isMobile = () => typeof window !== "undefined" && window.innerWidth < 768
 
 // --- Context Creation ---
-export const PlanContext = createContext({
-	plan: "free",
-	isPro: false,
-	isLoading: true
-})
 export const TourContext = createContext(null)
 export const useTour = () => useContext(TourContext)
 import { subscribeUser } from "@app/actions"
@@ -1343,24 +1338,7 @@ export default function LayoutWrapper({ children }) {
 
 	// ... (rest of the component is unchanged)
 	return (
-		<PlanContext.Provider
-			value={{
-				plan: (
-					auth0User?.[
-						`${process.env.NEXT_PUBLIC_AUTH0_NAMESPACE}/roles`
-					] || []
-				).includes("Pro")
-					? "pro"
-					: "free",
-				isPro: (
-					auth0User?.[
-						`${process.env.NEXT_PUBLIC_AUTH0_NAMESPACE}/roles`
-					] || []
-				).includes("Pro"),
-				isLoading: isAuthLoading
-			}}
-		>
-			<TourContext.Provider value={tourValue}>
+		<TourContext.Provider value={tourValue}>
 				{showNav && (
 					<>
 						<Sidebar
@@ -1408,6 +1386,5 @@ export default function LayoutWrapper({ children }) {
 					setMobileNavOpen={setMobileNavOpen}
 				/>
 			</TourContext.Provider>
-		</PlanContext.Provider>
 	)
 }

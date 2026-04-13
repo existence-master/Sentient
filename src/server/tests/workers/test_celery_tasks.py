@@ -67,7 +67,7 @@ async def test_cud_memory_add_action(mocker):
     mocker.patch('mcp_hub.memory.db.register_vector', new_callable=AsyncMock)
 
     # Mock embedding and LLM calls
-    mocker.patch('mcp_hub.memory.utils._get_normalized_embedding', return_value=[0.1] * 768)
+    mocker.patch('main.gemini_embed.get_normalized_embedding', return_value=[0.1] * 768)
     
     cud_decision_response = {
         "action": "ADD",

@@ -3,6 +3,6 @@ python-dotenv
 asyncpg
 pgvector
 qwen-agent
-google-generativeai
+google-genai==1.72.0
 numpy
 scikit-learn

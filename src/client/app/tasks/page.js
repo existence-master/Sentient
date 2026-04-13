@@ -6,9 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation"
 import {
 	IconLoader,
 	IconSparkles,
-	IconCheck,
-	IconPlus,
-	IconBolt // Added IconBolt
+	IconPlus
 } from "@tabler/icons-react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { AnimatePresence, motion } from "framer-motion"
@@ -23,111 +21,7 @@ import InteractiveNetworkBackground from "@components/ui/InteractiveNetworkBackg
 import { Drawer } from "@components/ui/drawer"
 import { Button } from "@components/ui/button"
 import apiClient from "@lib/apiClient"
-import {
-	useUIStore,
-	useUserStore,
-	useTaskStore,
-	useTourStore
-} from "@stores/app-stores"
-
-const proPlanFeatures = [
-	{ name: "Text Chat", limit: "100 messages per day" },
-	{ name: "Voice Chat", limit: "10 minutes per day" },
-	{ name: "Async Tasks", limit: "100 tasks per month" },
-	{ name: "Active Workflows", limit: "25 recurring & triggered" },
-	{
-		name: "Parallel Agents",
-		limit: "5 complex tasks per day with 50 sub agents"
-	},
-	{ name: "File Uploads", limit: "20 files per day" },
-	{ name: "Memories", limit: "Unlimited memories" },
-	{
-		name: "Other Integrations",
-		limit: "Notion, GitHub, Slack, Discord, Trello"
-	}
-]
-
-const UpgradeToProModal = ({ isOpen, onClose }) => {
-	if (!isOpen) return null
-
-	const handleUpgrade = () => {
-		const dashboardUrl = process.env.NEXT_PUBLIC_LANDING_PAGE_URL
-		if (dashboardUrl) {
-			window.location.href = `${dashboardUrl}/dashboard`
-		}
-		onClose()
-	}
-
-	return (
-		<AnimatePresence>
-			{isOpen && (
-				<motion.div
-					initial={{ opacity: 0 }}
-					animate={{ opacity: 1 }}
-					exit={{ opacity: 0 }}
-					className="fixed inset-0 bg-black/70 backdrop-blur-md z-[100] flex items-center justify-center p-4"
-					onClick={onClose}
-				>
-					<motion.div
-						initial={{ scale: 0.95, y: 20 }}
-						animate={{ scale: 1, y: 0 }}
-						exit={{ scale: 0.95, y: -20 }}
-						transition={{ duration: 0.2, ease: "easeInOut" }}
-						onClick={(e) => e.stopPropagation()}
-						className="relative bg-neutral-900/90 backdrop-blur-xl p-6 rounded-2xl shadow-2xl w-full max-w-lg border border-neutral-700 flex flex-col"
-					>
-						<header className="text-center mb-4">
-							<h2 className="text-2xl font-bold text-white flex items-center justify-center gap-2">
-								<IconBolt className="text-yellow-400" />
-								Unlock Pro Features
-							</h2>
-							<p className="text-neutral-400 mt-2">
-								Unlock Parallel Agents and other powerful
-								features.
-							</p>
-						</header>
-						<main className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 my-4">
-							{proPlanFeatures.map((feature) => (
-								<div
-									key={feature.name}
-									className="flex items-start gap-2.5"
-								>
-									<IconCheck
-										size={18}
-										className="text-green-400 flex-shrink-0 mt-0.5"
-									/>
-									<div>
-										<p className="text-white text-sm font-medium">
-											{feature.name}
-										</p>
-										<p className="text-neutral-400 text-xs">
-											{feature.limit}
-										</p>
-									</div>
-								</div>
-							))}
-						</main>
-						<footer className="mt-4 flex flex-col gap-2">
-							<Button
-								onClick={handleUpgrade}
-								className="w-full bg-brand-orange hover:bg-brand-orange/90 text-brand-black font-semibold"
-							>
-								Upgrade Now - $9/month
-							</Button>
-							<Button
-								onClick={onClose}
-								variant="ghost"
-								className="w-full text-neutral-400"
-							>
-								Not now
-							</Button>
-						</footer>
-					</motion.div>
-				</motion.div>
-			)}
-		</AnimatePresence>
-	)
-}
+import { useTaskStore, useTourStore } from "@stores/app-stores"
 
 function usePrevious(value) {
 	const ref = useRef()
@@ -151,9 +45,6 @@ function TasksPageContent() {
 		openComposer,
 		closeComposer
 	} = useTaskStore()
-	const { isUpgradeModalOpen, openUpgradeModal, closeUpgradeModal } =
-		useUIStore()
-	const { isPro } = useUserStore()
 	const { isActive: isTourActive, step, subStep, phase, nextStep } = useTourStore()
 	const [isMobile, setIsMobile] = useState(false)
 	const [isModalOpen, setIsModalOpen] = useState(false)
@@ -465,14 +356,7 @@ function TasksPageContent() {
 			queryClient.invalidateQueries({ queryKey: ["tasksPageData"] })
 		},
 		onError: (error) => {
-			if (error.status === 429) {
-				toast.error(
-					error.message || "You've reached your daily task limit."
-				)
-				if (!isPro) openUpgradeModal()
-			} else {
-				toast.error(`Error: ${error.message}`)
-			}
+			toast.error(`Error: ${error.message}`)
 		}
 	})
 
@@ -688,10 +572,6 @@ function TasksPageContent() {
 				place="right"
 				style={{ zIndex: 9999 }}
 			/>
-			<UpgradeToProModal
-				isOpen={isUpgradeModalOpen}
-				onClose={closeUpgradeModal}
-			/>
 			<div className="flex-1 flex overflow-hidden relative">
 				<div className="absolute inset-0 z-[-1] network-grid-background">
 					<InteractiveNetworkBackground />
@@ -755,8 +635,6 @@ function TasksPageContent() {
 									handleCreateTask(payload)
 									closeComposer()
 								}}
-								isPro={isPro}
-								onUpgradeClick={openUpgradeModal}
 								onClose={() => {
 									if (isTourActive && step === 4) {
 										// If user closes manually, also advance the tour.

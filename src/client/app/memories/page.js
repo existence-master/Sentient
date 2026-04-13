@@ -12,7 +12,6 @@ import {
 	IconLayoutGrid,
 	IconShare3,
 	IconInfoCircle,
-	IconBolt,
 	IconHeart,
 	IconPlus,
 	IconPencil,
@@ -42,105 +41,7 @@ import { Card, CardContent, CardFooter } from "@components/ui/card"
 import { Drawer } from "@components/ui/drawer"
 import { Textarea } from "@components/ui/textarea"
 import apiClient, { ApiError } from "@lib/apiClient"
-import { useUIStore, useUserStore, useMemoryStore } from "@stores/app-stores"
-
-const proPlanFeatures = [
-	{ name: "Text Chat", limit: "100 messages per day" },
-	{ name: "Voice Chat", limit: "10 minutes per day" },
-	{ name: "Async Tasks", limit: "100 tasks per month" },
-	{ name: "Active Workflows", limit: "25 recurring & triggered" },
-	{
-		name: "Parallel Agents",
-		limit: "5 complex tasks per day with 50 sub agents"
-	},
-	{ name: "File Uploads", limit: "20 files per day" },
-	{ name: "Memories", limit: "Unlimited memories" },
-	{
-		name: "Other Integrations",
-		limit: "Notion, GitHub, Slack, Discord, Trello"
-	}
-]
-
-const UpgradeToProModal = ({ isOpen, onClose }) => {
-	if (!isOpen) return null
-
-	const handleUpgrade = () => {
-		const dashboardUrl = process.env.NEXT_PUBLIC_LANDING_PAGE_URL
-		if (dashboardUrl) {
-			window.location.href = `${dashboardUrl}/dashboard`
-		}
-		onClose()
-	}
-
-	return (
-		<AnimatePresence>
-			{isOpen && (
-				<motion.div
-					initial={{ opacity: 0 }}
-					animate={{ opacity: 1 }}
-					exit={{ opacity: 0 }}
-					className="fixed inset-0 bg-black/70 backdrop-blur-md z-[100] flex items-center justify-center p-4"
-					onClick={onClose}
-				>
-					<motion.div
-						initial={{ scale: 0.95, y: 20 }}
-						animate={{ scale: 1, y: 0 }}
-						exit={{ scale: 0.95, y: -20 }}
-						transition={{ duration: 0.2, ease: "easeInOut" }}
-						onClick={(e) => e.stopPropagation()}
-						className="relative bg-neutral-900/90 backdrop-blur-xl p-6 rounded-2xl shadow-2xl w-full max-w-lg border border-neutral-700 flex flex-col"
-					>
-						<header className="text-center mb-4">
-							<h2 className="text-2xl font-bold text-white flex items-center justify-center gap-2">
-								<IconBolt className="text-yellow-400" />
-								Unlock Pro Features
-							</h2>
-							<p className="text-neutral-400 mt-2">
-								Unlock unlimited memories and other powerful
-								features.
-							</p>
-						</header>
-						<main className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 my-4">
-							{proPlanFeatures.map((feature) => (
-								<div
-									key={feature.name}
-									className="flex items-start gap-2.5"
-								>
-									<IconCheck
-										size={18}
-										className="text-green-400 flex-shrink-0 mt-0.5"
-									/>
-									<div>
-										<p className="text-white text-sm font-medium">
-											{feature.name}
-										</p>
-										<p className="text-neutral-400 text-xs">
-											{feature.limit}
-										</p>
-									</div>
-								</div>
-							))}
-						</main>
-						<footer className="mt-4 flex flex-col gap-2">
-							<button
-								onClick={handleUpgrade}
-								className="w-full py-2.5 px-5 rounded-lg bg-brand-orange hover:bg-brand-orange/90 text-brand-black font-semibold transition-colors"
-							>
-								Upgrade Now - $9/month
-							</button>
-							<button
-								onClick={onClose}
-								className="w-full py-2 px-5 rounded-lg hover:bg-neutral-800 text-sm font-medium text-neutral-400"
-							>
-								Not now
-							</button>
-						</footer>
-					</motion.div>
-				</motion.div>
-			)}
-		</AnimatePresence>
-	)
-}
+import { useMemoryStore } from "@stores/app-stores"
 
 const InfoPanel = ({ onClose, title, children }) => (
 	<motion.div
@@ -654,9 +555,6 @@ export default function MemoriesPage() {
 		openCreateModal,
 		closeCreateModal
 	} = useMemoryStore()
-	const { isUpgradeModalOpen, openUpgradeModal, closeUpgradeModal } =
-		useUIStore()
-	const { isPro } = useUserStore()
 	const router = useRouter()
 	const searchParams = useSearchParams()
 
@@ -753,18 +651,7 @@ export default function MemoriesPage() {
 			queryClient.invalidateQueries({ queryKey: ["memories"] })
 		},
 		onError: (error) => {
-			if (error.status === 429) {
-				toast.error(
-					error.message ||
-						"You've reached your memory limit for the free plan."
-				)
-				if (!isPro) {
-					openUpgradeModal()
-					closeCreateModal()
-				}
-			} else {
-				toast.error(error.message)
-			}
+			toast.error(error.message)
 		}
 	})
 
@@ -823,10 +710,6 @@ export default function MemoriesPage() {
 
 	return (
 		<div className="flex-1 flex h-screen text-white overflow-hidden">
-			<UpgradeToProModal
-				isOpen={isUpgradeModalOpen}
-				onClose={closeUpgradeModal}
-			/>
 			<AnimatePresence>
 				{isInfoPanelOpen && (
 					<InfoPanel

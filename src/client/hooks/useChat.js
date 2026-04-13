@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation"
 import toast from "react-hot-toast"
 import { usePostHog } from "posthog-js/react"
 import { WebRTCClient } from "@lib/webrtc-client"
+import { useTourStore } from "@stores/app-stores"
 
 function usePrevious(value) {
 	const ref = useRef()
@@ -42,15 +43,12 @@ export const useChat = () => {
 
 	const searchParams = useSearchParams()
 	const router = useRouter()
-	const { isPro } = usePlan()
-	const {
-		startTour,
-		tourState,
-		setHighlightPaused,
-		nextSubStep,
-		nextStep,
-		chatActionsRef
-	} = useTour()
+	const tourState = useTourStore()
+	const startTour = useTourStore((s) => s.startTour)
+	const nextStep = useTourStore((s) => s.nextStep)
+	const nextSubStep = useTourStore((s) => s.nextSubStep)
+	const setHighlightPaused = useTourStore((s) => s.setHighlightPaused)
+	const chatActionsRef = useTourStore((s) => s.chatActionsRef)
 	const prevTourState = usePrevious(tourState)
 
 	// --- File Upload State ---
@@ -58,8 +56,6 @@ export const useChat = () => {
 	const [isUploading, setIsUploading] = useState(false)
 	const [uploadedFilename, setUploadedFilename] = useState(null)
 
-	// --- Pro Feature Modal ---
-	const [isUpgradeModalOpen, setUpgradeModalOpen] = useState(false)
 	// --- Voice Mode State ---
 	const [isMuted, setIsMuted] = useState(false)
 	const [isVoiceMode, setIsVoiceMode] = useState(false)
@@ -420,14 +416,6 @@ export const useChat = () => {
 		} catch (error) {
 			if (error.name === "AbortError") {
 				toast.info("Message generation stopped.")
-			} else if (error.status === 429) {
-				toast.error(
-					error.message ||
-						"You've reached a usage limit for today on the free plan."
-				)
-				if (!isPro) {
-					setUpgradeModalOpen(true)
-				}
 			} else {
 				toast.error(`Error: ${error.message}`)
 			}
@@ -653,18 +641,7 @@ export const useChat = () => {
 				id: toastId
 			})
 		} catch (error) {
-			if (error.status === 429) {
-				toast.error(
-					error.message ||
-						"You've reached your daily file upload limit for the free plan.",
-					{ id: toastId }
-				)
-				if (!isPro) {
-					setUpgradeModalOpen(true)
-				}
-			} else {
-				toast.error(`Error: ${error.message}`, { id: toastId })
-			}
+			toast.error(`Error: ${error.message}`, { id: toastId })
 			setSelectedFile(null)
 		} finally {
 			setIsUploading(false)
@@ -964,19 +941,9 @@ export const useChat = () => {
 			)
 		} catch (error) {
 			console.error("[ChatPage] Error during handleStartVoice:", error)
-			if (error.status === 429) {
-				toast.error(
-					error.message ||
-						"You've used all your voice minutes for today on the free plan."
-				)
-				if (!isPro) {
-					setUpgradeModalOpen(true)
-				}
-			} else {
-				toast.error(
-					`Failed to connect: ${error.message || "Unknown error"}`
-				)
-			}
+			toast.error(
+				`Failed to connect: ${error.message || "Unknown error"}`
+			)
 			handleStatusChange("disconnected")
 		}
 	}
@@ -1111,11 +1078,6 @@ export const useChat = () => {
 	}
 
 	const toggleVoiceMode = async () => {
-		if (!isPro) {
-			setUpgradeModalOpen(true)
-			return
-		}
-
 		if (isVoiceMode) {
 			console.log("[ChatPage] Toggling voice mode OFF.")
 			handleStopVoice()
@@ -1184,7 +1146,6 @@ export const useChat = () => {
 		setIntegrations,
 		searchParams,
 		router,
-		isPro,
 		tourState,
 		prevTourState,
 		selectedFile,
@@ -1193,8 +1154,6 @@ export const useChat = () => {
 		setIsUploading,
 		uploadedFilename,
 		setUploadedFilename,
-		isUpgradeModalOpen,
-		setUpgradeModalOpen,
 		isMuted,
 		setIsMuted,
 		isVoiceMode,

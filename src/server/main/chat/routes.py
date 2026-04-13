@@ -3,7 +3,6 @@ import uuid
 import json
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import asyncio
-from typing import Tuple
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -11,7 +10,6 @@ from main.chat.models import ChatMessageInput, DeleteMessageRequest # noqa: E501
 from main.chat.utils import generate_chat_llm_stream # No longer need parse_assistant_response here
 from main.auth.utils import PermissionChecker, AuthHelper
 from main.dependencies import mongo_manager, auth_helper
-from main.plans import PLAN_LIMITS
 
 router = APIRouter(
     prefix="/chat",
@@ -21,23 +19,11 @@ logger = logging.getLogger(__name__)
 
 @router.post("/message", summary="Process Chat Message (Overlay Chat)")
 async def chat_endpoint(
-    request_body: ChatMessageInput, 
-    user_id_and_plan: Tuple[str, str] = Depends(auth_helper.get_current_user_id_and_plan)
+    request_body: ChatMessageInput,
+    user_id: str = Depends(auth_helper.get_current_user_id),
 ):
-    user_id, plan = user_id_and_plan
-
     if not any(msg.get("role") == "user" for msg in request_body.messages):
         raise HTTPException(status_code=400, detail="No user message found in the request.")
-
-    usage = await mongo_manager.get_or_create_daily_usage(user_id)
-    limit = PLAN_LIMITS[plan].get("text_messages_daily", 0)
-    current_count = usage.get("text_messages", 0)
-
-    if current_count >= limit:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"You have reached your daily message limit of {limit}. Please upgrade or try again tomorrow."
-        )
 
     for msg in reversed(request_body.messages):
         if msg.get("role") == "assistant":
@@ -49,7 +35,6 @@ async def chat_endpoint(
                 content=msg.get("content", ""),
                 message_id=msg.get("id")
             )
-            await mongo_manager.increment_daily_usage(user_id, "text_messages")
 
     clean_history_for_llm = list(reversed(await mongo_manager.get_message_history(user_id, limit=20)))
 

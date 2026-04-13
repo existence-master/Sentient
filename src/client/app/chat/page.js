@@ -11,7 +11,6 @@ import {
 import { useSearchParams, useRouter } from "next/navigation"
 import {
 	IconLoader,
-	IconBolt,
 	IconCheck,
 	IconClockHour4,
 	IconMessageChatbot,
@@ -24,7 +23,6 @@ import { motion, AnimatePresence } from "framer-motion"
 import InteractiveNetworkBackground from "@components/ui/InteractiveNetworkBackground"
 import React from "react"
 import { Button } from "@components/ui/button"
-import { ModalDialog } from "@components/ui/ModalDialog"
 import ChatHeader from "@components/chat/ChatHeader"
 import ChatInputArea from "@components/chat/ChatInputArea"
 import ChatMessageList from "@components/chat/ChatMessageList"
@@ -36,98 +34,8 @@ import {
 	useMutation,
 	useQueryClient
 } from "@tanstack/react-query"
-import {
-	useUIStore,
-	useUserStore,
-	useTourStore,
-	useChatStore
-} from "@stores/app-stores"
+import { useTourStore, useChatStore } from "@stores/app-stores"
 import { toast } from "react-hot-toast"
-
-const proPlanFeatures = [
-	{ name: "Text Chat", limit: "100 messages per day" },
-	{ name: "Voice Chat", limit: "10 minutes per day" },
-	{ name: "Async Tasks", limit: "100 tasks per month" },
-	{ name: "Active Workflows", limit: "25 recurring & triggered" },
-	{
-		name: "Parallel Agents",
-		limit: "5 complex tasks per day with 50 sub agents"
-	},
-	{ name: "File Uploads", limit: "20 files per day" },
-	{ name: "Memories", limit: "Unlimited memories" },
-	{
-		name: "Other Integrations",
-		limit: "Notion, GitHub, Slack, Discord, Trello"
-	}
-]
-
-const UpgradeToProModal = ({ isOpen, onClose }) => {
-	if (!isOpen) return null
-
-	const handleUpgrade = () => {
-		const dashboardUrl = process.env.NEXT_PUBLIC_LANDING_PAGE_URL
-		if (dashboardUrl) {
-			window.location.href = `${dashboardUrl}/dashboard`
-		}
-		onClose()
-	}
-
-	return (
-		<ModalDialog
-			isOpen={isOpen}
-			onClose={onClose}
-			className="max-w-lg bg-neutral-900/90 backdrop-blur-xl p-0 rounded-2xl"
-		>
-			<div className="p-6">
-				<header className="text-center mb-4">
-					<h2 className="text-2xl font-bold text-white flex items-center justify-center gap-2">
-						<IconBolt className="text-yellow-400" />
-						Unlock Pro Features
-					</h2>
-					<p className="text-neutral-400 mt-2">
-						Unlock Voice Mode and other powerful features.
-					</p>
-				</header>
-				<main className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 my-4">
-					{proPlanFeatures.map((feature) => (
-						<div
-							key={feature.name}
-							className="flex items-start gap-2.5"
-						>
-							<IconCheck
-								size={18}
-								className="text-green-400 flex-shrink-0 mt-0.5"
-							/>
-							<div>
-								<p className="text-white text-sm font-medium">
-									{feature.name}
-								</p>
-								<p className="text-neutral-400 text-xs">
-									{feature.limit}
-								</p>
-							</div>
-						</div>
-					))}
-				</main>
-				<footer className="mt-4 flex flex-col gap-2">
-					<Button
-						onClick={handleUpgrade}
-						className="w-full bg-brand-orange hover:bg-brand-orange/90 text-brand-black font-semibold"
-					>
-						Upgrade Now - $9/month
-					</Button>
-					<Button
-						onClick={onClose}
-						variant="ghost"
-						className="w-full text-neutral-400"
-					>
-						Not now
-					</Button>
-				</footer>
-			</div>
-		</ModalDialog>
-	)
-}
 
 export default function ChatPage() {
 	const [input, setInput] = useState("")
@@ -154,9 +62,6 @@ export default function ChatPage() {
 	const [confirmClear, setConfirmClear] = useState(false)
 
 	// Zustand stores
-	const { isPro } = useUserStore()
-	const { openUpgradeModal, isUpgradeModalOpen, closeUpgradeModal } =
-		useUIStore()
 	const {
 		tourState,
 		prevTourState,
@@ -574,9 +479,6 @@ export default function ChatPage() {
 			queryClient.setQueryData(["chatHistory"], context.previousHistory)
 			if (error.name === "AbortError") {
 				toast.info("Message generation stopped.")
-			} else if (error.status === 429) {
-				toast.error(error.message || "You've reached a usage limit.")
-				if (!isPro) openUpgradeModal()
 			} else {
 				toast.error(`Error: ${error.message}`)
 			}
@@ -1055,17 +957,9 @@ export default function ChatPage() {
 			)
 		} catch (error) {
 			console.error("[ChatPage] Error during handleStartVoice:", error)
-			if (error.status === 429) {
-				toast.error(
-					error.message ||
-						"You've used all your voice minutes for today on the free plan."
-				)
-				if (!isPro) openUpgradeModal()
-			} else {
-				toast.error(
-					`Failed to connect: ${error.message || "Unknown error"}`
-				)
-			}
+			toast.error(
+				`Failed to connect: ${error.message || "Unknown error"}`
+			)
 			handleStatusChange("disconnected")
 		}
 	}
@@ -1170,11 +1064,6 @@ export default function ChatPage() {
 	}
 
 	const toggleVoiceMode = async () => {
-		if (!isPro) {
-			openUpgradeModal()
-			return
-		}
-
 		if (isVoiceMode) {
 			setVoiceMode(false)
 			handleStopVoice()
@@ -1312,10 +1201,6 @@ export default function ChatPage() {
 				src="/audio/connected.mp3"
 				preload="auto"
 			></audio>
-			<UpgradeToProModal
-				isOpen={isUpgradeModalOpen}
-				onClose={closeUpgradeModal}
-			/>
 			{renderWelcomeModal()}
 			<audio ref={remoteAudioRef} autoPlay playsInline />
 			<div className="flex-1 flex flex-col overflow-hidden relative w-full pt-16 md:pt-0">
@@ -1395,7 +1280,6 @@ export default function ChatPage() {
 									integrations,
 									setIsWelcomeModalOpen,
 									toggleVoiceMode,
-									isPro,
 									thinking: sendMessageMutation.isPending,
 									handleStopStreaming,
 									replyingTo,

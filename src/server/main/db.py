@@ -5,7 +5,7 @@ import uuid
 import json
 import logging
 import motor.motor_asyncio
-from pymongo import ASCENDING, DESCENDING, IndexModel, ReturnDocument
+from pymongo import ASCENDING, DESCENDING, IndexModel
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 from typing import Dict, List, Optional, Any, Tuple
@@ -24,8 +24,6 @@ def _decrypt_docs(docs: List[Dict], fields: List[str]):
 
 USER_PROFILES_COLLECTION = "user_profiles"
 NOTIFICATIONS_COLLECTION = "notifications"
-DAILY_USAGE_COLLECTION = "daily_usage"
-MONTHLY_USAGE_COLLECTION = "monthly_usage"
 PROCESSED_ITEMS_COLLECTION = "processed_items_log"
 tasks_collection = "tasks"
 MESSAGES_COLLECTION = "messages"
@@ -41,8 +39,6 @@ class MongoManager:
 
         self.user_profiles_collection = self.db[USER_PROFILES_COLLECTION]
         self.notifications_collection = self.db[NOTIFICATIONS_COLLECTION]
-        self.daily_usage_collection = self.db[DAILY_USAGE_COLLECTION]
-        self.monthly_usage_collection = self.db[MONTHLY_USAGE_COLLECTION]
         self.processed_items_collection = self.db[PROCESSED_ITEMS_COLLECTION]
         self.tasks_collection = self.db[tasks_collection]
         self.messages_collection = self.db[MESSAGES_COLLECTION]
@@ -63,13 +59,6 @@ class MongoManager:
             self.notifications_collection: [
                 IndexModel([("user_id", ASCENDING)], name="notification_user_id_idx"),
                 IndexModel([("user_id", ASCENDING), ("notifications.timestamp", DESCENDING)], name="notification_timestamp_idx", sparse=True)
-            ],
-            self.daily_usage_collection: [
-                IndexModel([("user_id", ASCENDING), ("date", DESCENDING)], unique=True, name="usage_user_date_unique_idx"),
-                IndexModel([("date", DESCENDING)], name="usage_date_idx", expireAfterSeconds=2 * 24 * 60 * 60) # Expire docs after 2 days
-            ],
-            self.monthly_usage_collection: [
-                IndexModel([("user_id", ASCENDING), ("month", DESCENDING)], unique=True, name="usage_user_month_unique_idx"),
             ],
             self.processed_items_collection: [
                 IndexModel([("user_id", ASCENDING), ("service_name", ASCENDING), ("item_id", ASCENDING)], unique=True, name="processed_item_unique_idx_main"),
@@ -193,43 +182,6 @@ class MongoManager:
             {"user_id": user_id, "notifications.type": notification_type}
         )
         return notification_doc is not None
-
-    # --- Usage Tracking Methods ---
-    async def get_or_create_daily_usage(self, user_id: str) -> Dict[str, Any]:
-        today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-        usage_doc = await self.daily_usage_collection.find_one_and_update(
-            {"user_id": user_id, "date": today_str},
-            {"$setOnInsert": {"user_id": user_id, "date": today_str}},
-            upsert=True,
-            return_document=ReturnDocument.AFTER
-        )
-        return usage_doc
-
-    async def increment_daily_usage(self, user_id: str, feature: str, amount: int = 1):
-        today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-        await self.daily_usage_collection.update_one(
-            {"user_id": user_id, "date": today_str},
-            {"$inc": {feature: amount}},
-            upsert=True
-        )
-
-    async def get_or_create_monthly_usage(self, user_id: str) -> Dict[str, Any]:
-        current_month_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
-        usage_doc = await self.monthly_usage_collection.find_one_and_update(
-            {"user_id": user_id, "month": current_month_str},
-            {"$setOnInsert": {"user_id": user_id, "month": current_month_str}},
-            upsert=True,
-            return_document=ReturnDocument.AFTER
-        )
-        return usage_doc
-
-    async def increment_monthly_usage(self, user_id: str, feature: str, amount: int = 1):
-        current_month_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
-        await self.monthly_usage_collection.update_one(
-            {"user_id": user_id, "month": current_month_str},
-            {"$inc": {feature: amount}},
-            upsert=True
-        )
 
     # --- Notification Methods ---
     async def get_notifications(self, user_id: str) -> List[Dict]:
@@ -383,16 +335,6 @@ class MongoManager:
         doc = await self.tasks_collection.find_one({"task_id": task_id, "user_id": user_id})
         decrypt_doc(doc, SENSITIVE_TASK_FIELDS)
         return doc
-
-    async def count_active_workflows(self, user_id: str) -> int:
-        """Counts active recurring and triggered tasks for a user."""
-        query = {
-            "user_id": user_id,
-            "status": "active",
-            "task_type": {"$in": ["recurring", "triggered"]}
-        }
-        count = await self.tasks_collection.count_documents(query)
-        return count
 
     async def get_all_tasks_for_user(self, user_id: str) -> List[Dict]:
         """Fetches all tasks for a given user."""

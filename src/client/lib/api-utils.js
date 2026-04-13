@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { auth0, getBackendAuthHeader } from "@lib/auth0"
+import { auth0, getBackendAuthHeader, isAuth0ClientReady } from "@lib/auth0"
 
 const isSelfHost = process.env.NEXT_PUBLIC_ENVIRONMENT === "selfhost"
 
@@ -29,6 +29,15 @@ export function withAuth(handler) {
 	}
 
 	return async function (request, params) {
+		if (!isAuth0ClientReady) {
+			return NextResponse.json(
+				{
+					error:
+						"Auth0 is not configured (missing AUTH0_DOMAIN or issuer URL). See .env.template."
+				},
+				{ status: 503 }
+			)
+		}
 		const session = await auth0.getSession()
 		if (!session?.user?.sub) {
 			return NextResponse.json(

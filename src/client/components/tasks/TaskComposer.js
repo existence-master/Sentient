@@ -61,8 +61,6 @@ const triggers = [
 const TaskComposer = ({
 	view,
 	onTaskCreated,
-	isPro,
-	onUpgradeClick,
 	onClose,
 	initialData
 }) => {

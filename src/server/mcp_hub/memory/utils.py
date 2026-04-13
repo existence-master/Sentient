@@ -5,10 +5,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
 
 import numpy as np
-import google.generativeai as genai
 from pgvector.asyncpg import register_vector
 from fastmcp.utilities.logging import get_logger
 
+from main.gemini_embed import ensure_embedding_ready, get_normalized_embedding
 from . import db, llm
 from .prompts import (
     fact_relevance_user_prompt_template,
@@ -17,23 +17,17 @@ from .prompts import (
     cud_decision_user_prompt_template,
     fact_analysis_user_prompt_template,
 )
-from main.config import EMBEDDING_MODEL_NAME, GEMINI_API_KEY
+from main.config import EMBEDDING_MODEL_NAME
 
 logger = get_logger(__name__)
 
 # --- Module-level state (initialized by lifespan event) ---
-embed_model_name: str = None
 agents: Dict[str, Any] = {}
 
 # --- Initialization Functions ---
 def initialize_embedding_model():
-    global embed_model_name
-    if embed_model_name is None:
-        if not GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY is not set in main.config.")
-        logger.info(f"Initializing embedding model: {EMBEDDING_MODEL_NAME}")
-        genai.configure(api_key=GEMINI_API_KEY)
-        embed_model_name = EMBEDDING_MODEL_NAME
+    logger.info(f"Initializing embedding model: {EMBEDDING_MODEL_NAME}")
+    ensure_embedding_ready()
 
 def initialize_agents():
     global agents
@@ -102,29 +96,6 @@ def clean_llm_output(data: Any) -> Any:
         return [clean_llm_output(i) for i in data]
     return data
 
-def _get_normalized_embedding(text: str, task_type: str) -> np.ndarray:
-    """
-    Generates and normalizes an embedding for the given text using Gemini.
-    We use a truncated embedding dimension (768), which requires manual normalization for
-    optimal performance as per the Gemini API documentation.
-    See: https://ai.google.dev/gemini-api/docs/embeddings#ensuring_quality_for_smaller_dimensions
-    """
-    # Task types: "RETRIEVAL_QUERY", "RETRIEVAL_DOCUMENT", "SEMANTIC_SIMILARITY", "CLASSIFICATION", "CLUSTERING"
-    result = genai.embed_content(
-        model=embed_model_name,
-        content=text,
-        task_type=task_type,
-        output_dimensionality=768
-    )
-    embedding_np = np.array(result['embedding'], dtype=np.float32)
-
-    norm = np.linalg.norm(embedding_np)
-    if norm == 0:
-        return embedding_np # Return zero vector if norm is zero
-
-    normalized_embedding = embedding_np / norm
-    return normalized_embedding
-
 async def search_memory(user_id: str, query: str) -> str: # noqa: E501
     """Searches memory by performing a semantic search, filtering for relevance, and summarizing results."""
     if not query or not query.strip():
@@ -137,7 +108,7 @@ async def search_memory(user_id: str, query: str) -> str: # noqa: E501
         await register_vector(conn)
         
         logger.info("Step 1/4: Performing semantic search in database.")
-        query_embedding = _get_normalized_embedding(query, task_type="RETRIEVAL_QUERY")
+        query_embedding = get_normalized_embedding(query, task_type="RETRIEVAL_QUERY")
         
         records = await conn.fetch(
             """
@@ -199,7 +170,7 @@ async def search_memory_by_source(user_id: str, query: str, source_name: str) ->
 
         if query and query.strip():
             logger.info(f"Step 1/2: Performing semantic search in database for source '{source_name}'.")
-            query_embedding = _get_normalized_embedding(query, task_type="RETRIEVAL_QUERY")
+            query_embedding = get_normalized_embedding(query, task_type="RETRIEVAL_QUERY")
 
             records = await conn.fetch(
                 """
@@ -248,7 +219,7 @@ async def _insert_fact_with_analysis(conn, user_id: str, content: str, source: O
         expires_at = parse_duration(analysis.get("duration"))
 
     async with conn.transaction():
-        embedding = _get_normalized_embedding(content, task_type="RETRIEVAL_DOCUMENT")
+        embedding = get_normalized_embedding(content, task_type="RETRIEVAL_DOCUMENT")
         
         fact_id = await conn.fetchval(
             """
@@ -280,7 +251,7 @@ async def _update_fact_with_analysis(conn, user_id: str, fact_id: int, content: 
         expires_at = parse_duration(analysis.get("duration"))
 
     async with conn.transaction():
-        embedding = _get_normalized_embedding(content, task_type="RETRIEVAL_DOCUMENT")
+        embedding = get_normalized_embedding(content, task_type="RETRIEVAL_DOCUMENT")
         
         await conn.execute(
             """
@@ -320,7 +291,7 @@ async def _process_single_fact_cud(conn, user_id: str, fact_content: str, source
     await register_vector(conn)
     
     logger.info("Step 1/3: Finding potentially related facts via semantic search.")
-    query_embedding = _get_normalized_embedding(fact_content, task_type="RETRIEVAL_QUERY")
+    query_embedding = get_normalized_embedding(fact_content, task_type="RETRIEVAL_QUERY")
     similar_records = await conn.fetch(
         """
         SELECT DISTINCT f.id, f.content, 1 - (f.embedding <=> $2) AS similarity

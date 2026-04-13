@@ -3,4 +3,4 @@ fastmcp
 python-dotenv
 motor
 cryptography
-composio
+composio==0.11.5

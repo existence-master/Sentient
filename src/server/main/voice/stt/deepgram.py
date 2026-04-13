@@ -8,9 +8,14 @@ from deepgram import AsyncDeepgramClient
 
 logger = logging.getLogger(__name__)
 
+
 class DeepgramSTT(BaseSTT):
     """
     Deepgram Speech-to-Text implementation using Nova-3 model.
+
+    Uses deepgram-sdk v6+ (``AsyncDeepgramClient.listen.v1.media``); the legacy
+    ``ListenRESTOptions`` / ``listen.asyncrest`` API was removed in favor of
+    Fern-generated clients.
     """
     def __init__(self):
         if not DEEPGRAM_API_KEY:
@@ -18,6 +23,7 @@ class DeepgramSTT(BaseSTT):
 
         try:
             self.client = AsyncDeepgramClient(api_key=DEEPGRAM_API_KEY)
+            self._media = self.client.listen.v1.media
             logger.info("DeepgramSTT initialized successfully.")
         except Exception as e:
             logger.error(f"Failed to initialize Deepgram client: {e}", exc_info=True)
@@ -30,7 +36,9 @@ class DeepgramSTT(BaseSTT):
             return "", None
 
         try:
-            response = await self.client.listen.v1.media.transcribe_file(
+            # Raw PCM requires sample_rate on the query string; v6 media client does not
+            # expose it as a typed arg, so pass via request_options.
+            response = await self._media.transcribe_file(
                 request=audio_bytes,
                 model="nova-3",
                 smart_format=True,
@@ -38,16 +46,22 @@ class DeepgramSTT(BaseSTT):
                 punctuate=True,
                 utterances=True,
                 encoding="linear16",
-                sample_rate=sample_rate,
+                request_options={
+                    "additional_query_parameters": {"sample_rate": sample_rate},
+                },
             )
 
-            if response.results and response.results.channels:
+            if getattr(response, "results", None) and response.results.channels:
                 channel = response.results.channels[0]
                 if channel.alternatives:
                     transcript = channel.alternatives[0].transcript
                     detected_language = channel.detected_language
-                    logger.info(f"Deepgram transcription successful. Language: {detected_language}, Transcript: '{transcript[:50]}...'")
-                    return transcript.strip(), detected_language
+                    preview = (transcript or "")[:50]
+                    logger.info(
+                        f"Deepgram transcription successful. Language: {detected_language}, "
+                        f"Transcript: '{preview}...'"
+                    )
+                    return (transcript or "").strip(), detected_language
 
             logger.warning("Deepgram STT response was empty or malformed.")
             return "", None

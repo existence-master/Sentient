@@ -19,7 +19,6 @@ from main.auth.utils import AuthHelper
 from main.dependencies import mongo_manager, auth_helper
 from main.chat.utils import process_voice_command
 from main.config import ENVIRONMENT, HF_TOKEN
-from main.plans import PLAN_LIMITS
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/voice", tags=["Voice"])
@@ -33,27 +32,13 @@ class VoiceUsageRequest(BaseModel):
 
 @router.post("/initiate", summary="Initiate a voice chat session")
 async def initiate_voice_session(
-    user_id_and_plan: Tuple[str, str] = Depends(auth_helper.get_current_user_id_and_plan)
+    user_id: str = Depends(auth_helper.get_current_user_id),
 ):
     """
     Generates a short-lived, single-use token for authenticating a WebRTC/WebSocket voice stream
     and provides the necessary ICE server configuration.
     """
-    user_id, plan = user_id_and_plan
-    logger.info(f"Initiating voice session for user: {user_id} on plan: {plan}")
-
-    # --- Check Usage Limit ---
-    usage = await mongo_manager.get_or_create_daily_usage(user_id)
-    limit_seconds = PLAN_LIMITS[plan].get("voice_chat_daily_seconds", 0)
-    used_seconds = usage.get("voice_chat_seconds", 0)
-
-    if used_seconds >= limit_seconds:
-        logger.warning(f"User {user_id} has exceeded their daily voice chat limit.")
-        raise HTTPException(
-            status_code=429,
-            detail=f"You have used all of your daily voice chat time ({int(limit_seconds/60)} minutes). Please upgrade or try again tomorrow."
-        )
-    # --- End Limit Check ---
+    logger.info(f"Initiating voice session for user: {user_id}")
 
     # Clean up expired tokens to prevent the cache from growing indefinitely
     now = time.time()
@@ -272,10 +257,7 @@ async def update_voice_usage(
     request: VoiceUsageRequest,
     user_id: str = Depends(auth_helper.get_current_user_id)
 ):
-    logger.info(f"Updating voice usage for user {user_id} by {request.duration_seconds} seconds.")
+    """Legacy no-op: clients may still POST; usage is not tracked."""
     if request.duration_seconds < 0:
         raise HTTPException(status_code=400, detail="Invalid duration.")
-    
-    await mongo_manager.increment_daily_usage(user_id, "voice_chat_seconds", request.duration_seconds)
-    logger.info(f"Usage updated successfully for user {user_id}.")
-    return {"message": "Usage updated successfully."}
+    return {"message": "ok"}

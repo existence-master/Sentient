@@ -10,7 +10,7 @@ import logging
 
 from main.models import OnboardingRequest
 from main.memories.db import get_db_pool as get_memories_pg_pool
-from mcp_hub.memory.utils import _get_normalized_embedding
+from main.gemini_embed import get_normalized_embedding
 from pgvector.asyncpg import register_vector
 from main.auth.utils import PermissionChecker, AuthHelper
 from main.config import AUTH0_AUDIENCE
@@ -372,7 +372,7 @@ async def interactive_search(
         pool = await get_memories_pg_pool()
         async with pool.acquire() as conn:
             await register_vector(conn)
-            query_embedding = _get_normalized_embedding(query, task_type="RETRIEVAL_QUERY")
+            query_embedding = get_normalized_embedding(query, task_type="RETRIEVAL_QUERY")
 
             # MODIFIED: Add a keyword search (ILIKE) and a similarity threshold to the WHERE clause.
             memories_records = await conn.fetch(

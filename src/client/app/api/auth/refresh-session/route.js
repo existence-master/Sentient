@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { auth0 } from "@lib/auth0"
+import { auth0, isAuth0ClientReady } from "@lib/auth0"
 
 // This route is only for Auth0 environments
 export async function GET(request) {
@@ -12,6 +12,13 @@ export async function GET(request) {
 			{
 				headers: { "Cache-Control": "no-store, max-age=0" }
 			}
+		)
+	}
+
+	if (!isAuth0ClientReady) {
+		return NextResponse.json(
+			{ error: "Auth0 is not configured" },
+			{ status: 503 }
 		)
 	}
 

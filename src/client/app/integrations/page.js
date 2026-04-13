@@ -34,12 +34,10 @@ import {
 	IconCalendarEvent,
 	IconWorldSearch,
 	IconSearch,
-	IconBolt,
 	IconSparkles,
 	IconAlertTriangle,
 	IconEye,
 	IconPlug,
-	IconArrowUpCircle,
 	IconCheck,
 	IconListCheck
 } from "@tabler/icons-react"
@@ -71,11 +69,7 @@ import { Button } from "@components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader } from "@components/ui/card"
 import apiClient from "@lib/apiClient"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
-import {
-	useUIStore,
-	useUserStore,
-	useIntegrationStore
-} from "@stores/app-stores"
+import { useIntegrationStore } from "@stores/app-stores"
 import { usePostHog } from "posthog-js/react"
 
 const integrationColorIcons = {
@@ -105,7 +99,7 @@ const integrationColorIcons = {
 
 const IconPlaceholder = IconSettingsCog
 
-const PRO_ONLY_INTEGRATIONS = [
+const INTEGRATIONS_PREFER_SESSION_REFRESH = [
 	"notion",
 	"github",
 	"slack",
@@ -115,100 +109,6 @@ const PRO_ONLY_INTEGRATIONS = [
 	"gpeople",
 	"gslides"
 ]
-
-const proPlanFeatures = [
-	{ name: "Text Chat", limit: "100 messages per day" },
-	{ name: "Voice Chat", limit: "10 minutes per day" },
-	{ name: "Async Tasks", limit: "100 tasks per month" },
-	{ name: "Active Workflows", limit: "25 recurring & triggered" },
-	{
-		name: "Parallel Agents",
-		limit: "5 complex tasks per day with 50 sub agents"
-	},
-	{ name: "File Uploads", limit: "20 files per day" },
-	{ name: "Memories", limit: "Unlimited memories" },
-	{
-		name: "Other Integrations",
-		limit: "Notion, GitHub, Slack, Discord, Trello"
-	}
-]
-
-const UpgradeToProModal = ({ isOpen, onClose }) => {
-	if (!isOpen) return null
-
-	const handleUpgrade = () => {
-		const dashboardUrl = process.env.NEXT_PUBLIC_LANDING_PAGE_URL
-		if (dashboardUrl) {
-			window.location.href = `${dashboardUrl}/dashboard`
-		}
-		onClose()
-	}
-
-	return (
-		<AnimatePresence>
-			{isOpen && (
-				<motion.div
-					initial={{ opacity: 0 }}
-					animate={{ opacity: 1 }}
-					exit={{ opacity: 0 }}
-					className="fixed inset-0 bg-black/70 backdrop-blur-md z-[100] flex items-center justify-center p-4"
-					onClick={onClose}
-				>
-					<motion.div
-						initial={{ scale: 0.95, y: 20 }}
-						animate={{ scale: 1, y: 0 }}
-						exit={{ scale: 0.95, y: -20 }}
-						transition={{ duration: 0.2, ease: "easeInOut" }}
-						onClick={(e) => e.stopPropagation()}
-						className="relative bg-neutral-900/90 backdrop-blur-xl p-6 rounded-2xl shadow-2xl w-full max-w-lg border border-neutral-700 flex flex-col"
-					>
-						<header className="text-center mb-4">
-							<h2 className="text-2xl font-bold text-white flex items-center justify-center gap-2">
-								<IconBolt className="text-yellow-400" />
-								Unlock Pro Features
-							</h2>
-							<p className="text-neutral-400 mt-2">
-								Unlock powerful features to conquer your day.
-							</p>
-						</header>
-						<main className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 my-4">
-							{proPlanFeatures.map((feature) => (
-								<div
-									key={feature.name}
-									className="flex items-start gap-2.5"
-								>
-									<IconCheck
-										size={18}
-										className="text-green-400 flex-shrink-0 mt-0.5"
-									/>
-									<div>
-										<p className="text-white text-sm font-medium">
-											{feature.name}
-										</p>
-										<p className="text-neutral-400 text-xs">
-											{feature.limit}
-										</p>
-									</div>
-								</div>
-							))}
-						</main>
-						<footer className="mt-4 flex flex-col gap-2">
-							<Button
-								onClick={handleUpgrade}
-								className="w-full bg-brand-orange hover:bg-brand-orange/90 text-brand-black font-semibold"
-							>
-								Upgrade Now - $9/month
-							</Button>
-							<Button onClick={onClose} variant="ghost">
-								Cancel
-							</Button>
-						</footer>
-					</motion.div>
-				</motion.div>
-			)}
-		</AnimatePresence>
-	)
-}
 
 const WhatsAppDisclaimerModal = ({ isOpen, onAgree, onClose }) => {
 	// This modal doesn't need to know if it's open, the parent handles it.
@@ -731,13 +631,7 @@ const IntegrationTag = ({ type }) => {
 	)
 }
 
-const IntegrationCard = ({
-	integration,
-	icon: Icon,
-	isProFeature,
-	isProUser,
-	onUpgradeClick
-}) => {
+const IntegrationCard = ({ integration, icon: Icon }) => {
 	const getTagType = (authType) => {
 		if (authType === "builtin") return "Native"
 		if (["oauth", "manual", "composio"].includes(authType))
@@ -753,8 +647,6 @@ const IntegrationCard = ({
 
 	const isConnected =
 		integration.connected || integration.auth_type === "builtin"
-
-	const isDisabledForFree = isProFeature && !isProUser
 
 	return (
 		<Card className="transition-all duration-300 hover:border-brand-orange hover:-translate-y-1 flex flex-col text-left h-full">
@@ -782,16 +674,6 @@ const IntegrationCard = ({
 				</div>
 				<div className="flex flex-col items-end gap-1">
 					{tagType && <IntegrationTag type={tagType} />}
-					{isProFeature && (
-						<div
-							className={cn(
-								"p-1.5 rounded-full text-xs font-semibold",
-								"bg-yellow-500/20 text-yellow-300"
-							)}
-						>
-							<IconBolt size={12} />
-						</div>
-					)}
 				</div>
 			</CardHeader>
 
@@ -805,20 +687,9 @@ const IntegrationCard = ({
 			{/* Bottom Section */}
 			{isConnectable && (
 				<CardFooter className="pt-4 border-t border-neutral-800 flex justify-end">
-					{isDisabledForFree ? (
-						<Button
-							onClick={onUpgradeClick}
-							variant="link"
-							className="text-brand-orange group-hover:text-yellow-300"
-						>
-							<IconArrowUpCircle size={16} className="mr-1.5" />
-							Upgrade to Unlock
-						</Button>
-					) : (
-						<span className="text-sm font-medium text-neutral-400 group-hover:text-white transition-colors">
-							View Details →
-						</span>
-					)}
+					<span className="text-sm font-medium text-neutral-400 group-hover:text-white transition-colors">
+						View Details →
+					</span>
 				</CardFooter>
 			)}
 		</Card>
@@ -841,9 +712,6 @@ const IntegrationsPage = () => {
 		closePrivacyModal,
 		setDisconnectingIntegration
 	} = useIntegrationStore()
-	const { isUpgradeModalOpen, openUpgradeModal, closeUpgradeModal } =
-		useUIStore()
-	const { isPro } = useUserStore()
 	const [processingIntegration, setProcessingIntegration] = useState(null)
 	const [selectedIntegration, setSelectedIntegration] = useState(null)
 	const [activeManualIntegration, setActiveManualIntegration] = useState(null)
@@ -911,20 +779,10 @@ const IntegrationsPage = () => {
 		return { userIntegrations: connectable, defaultTools: builtIn }
 	}, [integrationsData])
 
-	const handleUpgradeClick = () => {
-		openUpgradeModal()
-	}
-
 	const handleConnect = async (integration) => {
-		const isProFeature = PRO_ONLY_INTEGRATIONS.includes(integration.name)
-		if (isProFeature && !isPro) {
-			handleUpgradeClick()
-			return
-		}
-
-		// If it's a pro feature, refresh the session cookie before redirecting
-		// to ensure the backend gets a fresh token with the correct roles.
-		if (isProFeature) {
+		if (
+			INTEGRATIONS_PREFER_SESSION_REFRESH.includes(integration.name)
+		) {
 			const toastId = toast.loading("Preparing secure connection...")
 			try {
 				await apiClient("/api/auth/refresh-session")
@@ -1226,18 +1084,11 @@ const IntegrationsPage = () => {
 						"manual",
 						"composio"
 					].includes(integration.auth_type)
-					const isProFeature = PRO_ONLY_INTEGRATIONS.includes(
-						integration.name
-					)
-					const isDisabledForFree = isProFeature && !isPro
 
 					const card = (
 						<IntegrationCard
 							integration={integration}
 							icon={Icon}
-							isProFeature={isProFeature}
-							isProUser={isPro}
-							onUpgradeClick={handleUpgradeClick}
 						/>
 					)
 
@@ -1252,7 +1103,7 @@ const IntegrationsPage = () => {
 						}
 					}
 
-					if (isConnectable && !isDisabledForFree) {
+					if (isConnectable) {
 						return (
 							<motion.div
 								key={integration.name}
@@ -1283,24 +1134,16 @@ const IntegrationsPage = () => {
 								</MorphingDialog>
 							</motion.div>
 						)
-					} else {
-						return (
-							<motion.div
-								key={integration.name}
-								variants={cardVariants}
-								className="h-full"
-							>
-								<div
-									className={cn(
-										"h-full",
-										isDisabledForFree && "opacity-70"
-									)}
-								>
-									{card}
-								</div>
-							</motion.div>
-						)
 					}
+					return (
+						<motion.div
+							key={integration.name}
+							variants={cardVariants}
+							className="h-full"
+						>
+							<div className="h-full">{card}</div>
+						</motion.div>
+					)
 				})}
 			</AnimatePresence>
 		</motion.div>
@@ -1476,10 +1319,6 @@ const IntegrationsPage = () => {
 				id="page-help-tooltip"
 				place="right-start"
 				style={{ zIndex: 9999 }}
-			/>
-			<UpgradeToProModal
-				isOpen={isUpgradeModalOpen}
-				onClose={closeUpgradeModal}
 			/>
 			<AnimatePresence>
 				{disconnectingIntegration && (
