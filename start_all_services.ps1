@@ -145,7 +145,7 @@ try {
     foreach ($serverName in $mcpServers) {
         $windowTitle = "MCP - $($serverName.ToUpper())"
         $pythonModule = "mcp_hub.$serverName.main"
-        $commandToRun = "& '$venvActivatePath'; python -m '$pythonModule'"
+        $commandToRun = "& '$venvActivatePath'; python -m $pythonModule"
         Write-Host "🚀 Launching $windowTitle..." -ForegroundColor Yellow
         Start-NewTerminal -WindowTitle $windowTitle -Command $commandToRun -WorkDir $serverPath
         Start-Sleep -Milliseconds 500

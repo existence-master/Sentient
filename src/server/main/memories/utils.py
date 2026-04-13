@@ -59,6 +59,8 @@ def _get_normalized_embedding(text: str, task_type: str) -> np.ndarray:
 def clean_llm_output(data: Any) -> Any:
     """Cleans JSON string from LLM output."""
     if isinstance(data, str):
+        # Strip <think>...</think> blocks (from reasoning models like qwen3)
+        data = re.sub(r"<think>[\s\S]*?</think>", "", data)
         if "```json" in data:
             match = re.search(r"```json\s*([\s\S]+?)\s*```", data)
             if match:
@@ -87,7 +89,8 @@ async def _insert_fact_with_analysis(conn, user_id: str, content: str, source: O
     """Internal function to insert a fact and its related metadata into the database."""
     expires_at = parse_duration(analysis.get("duration")) if analysis.get("memory_type") == "short-term" else None
     embedding = _get_normalized_embedding(content, task_type="RETRIEVAL_DOCUMENT")
-    
+
+    await register_vector(conn)
     async with conn.transaction():
         fact_id = await conn.fetchval(
             "INSERT INTO facts (user_id, content, embedding, source, expires_at) VALUES ($1, $2, $3, $4, $5) RETURNING id",
@@ -137,7 +140,8 @@ async def update_memory(user_id: str, memory_id: int, new_content: str) -> str:
         new_embedding = _get_normalized_embedding(new_content, task_type="RETRIEVAL_DOCUMENT")
         # Also re-evaluate the expiration based on the new content analysis
         expires_at = parse_duration(analysis.get("duration")) if analysis.get("memory_type") == "short-term" else None
-        
+
+        await register_vector(conn)
         async with conn.transaction():
             await conn.execute(
                 # Update content, embedding, timestamp, and expiration

@@ -61,7 +61,8 @@ async def _execute_tool(ctx: Context, action_name: str, **kwargs) -> Dict[str, A
             composio.tools.execute,
             action_name,
             arguments=kwargs,
-            connected_account_id=connection_id
+            connected_account_id=connection_id,
+            dangerously_skip_version_check=True
         )
 
         if not result.get("successful"):

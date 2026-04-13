@@ -193,7 +193,7 @@ def _get_tool_lists(user_integrations: Dict) -> Tuple[Dict, Dict]:
     disconnected_tools = {}
     for tool_name, config in INTEGRATIONS_CONFIG.items():
         auth_type = config.get("auth_type")
-        if tool_name in ["progress_updater", "chat_tools"]:
+        if tool_name in ["progress_updater", "chat_tools", "orchestrator"]:
             continue
         if auth_type == "builtin":
             connected_tools[tool_name] = config.get("description", "")

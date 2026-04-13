@@ -29,7 +29,6 @@ def run_agent(system_message: str, function_list: list, messages: list):
         'api_key': OPENAI_API_KEY,
         'generate_cfg': {
             'max_input_tokens': 128000, # Set a high limit to avoid truncation errors
-            'tools': [{"urlContext": {}}]    # enable URL context tool
         }
     }
 

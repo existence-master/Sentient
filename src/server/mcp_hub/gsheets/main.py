@@ -44,9 +44,10 @@ async def _execute_tool(ctx: Context, action_name: str, **kwargs) -> Dict[str, A
             composio.tools.execute,
             action_name,
             arguments=kwargs,
-            connected_account_id=connection_id
+            connected_account_id=connection_id,
+            dangerously_skip_version_check=True
         )
-        
+
         return {"status": "success", "result": result}
     except Exception as e:
         logger.error(f"Tool execution failed for action '{action_name}': {e}", exc_info=True)

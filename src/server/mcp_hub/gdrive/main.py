@@ -52,7 +52,8 @@ async def _execute_tool(ctx: Context, action_name: str, **kwargs) -> Dict[str, A
             composio.tools.execute,
             action_name,
             arguments=kwargs,
-            connected_account_id=connection_id
+            connected_account_id=connection_id,
+            dangerously_skip_version_check=True
         )
 
         return {"status": "success", "result": result}
@@ -87,7 +88,8 @@ async def gdrive_read_file(ctx: Context, file_id: str) -> Dict[str, Any]:
             lambda: composio.tools.execute(
                 "GOOGLEDRIVE_GET_FILE_METADATA",
                 arguments={"fileId": file_id},
-                connected_account_id=connection_id
+                connected_account_id=connection_id,
+                dangerously_skip_version_check=True
             )
         )
         if not metadata_result.get("successful"):
@@ -117,7 +119,8 @@ async def gdrive_read_file(ctx: Context, file_id: str) -> Dict[str, Any]:
             lambda: composio.tools.execute(
                 "GOOGLEDRIVE_DOWNLOAD_FILE",
                 arguments=download_params,
-                connected_account_id=connection_id
+                connected_account_id=connection_id,
+                dangerously_skip_version_check=True
             )
         )
 

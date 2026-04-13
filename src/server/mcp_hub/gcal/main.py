@@ -63,7 +63,8 @@ async def _execute_tool(ctx: Context, action_name: str, **kwargs) -> Dict[str, A
             composio.tools.execute,
             action_name,
             arguments=filtered_kwargs,
-            connected_account_id=connection_id
+            connected_account_id=connection_id,
+            dangerously_skip_version_check=True
         )
 
         # NEW: Apply privacy filters if the action is fetching events

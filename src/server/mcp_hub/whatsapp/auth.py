@@ -2,6 +2,7 @@ import os
 import motor.motor_asyncio
 from dotenv import load_dotenv
 from fastmcp import Context
+from fastmcp.server.dependencies import get_http_request as _get_http_request
 from fastmcp.exceptions import ToolError
 
 # Load .env file for 'dev-local' environment.
@@ -23,7 +24,7 @@ def get_user_id_from_context(ctx: Context) -> str:
     Extracts the Sentient User ID from the 'X-User-ID' header.
     This user_id is used as the session name for the user's own WhatsApp account.
     """
-    http_request = ctx.get_http_request()
+    http_request = _get_http_request()
     if not http_request:
         raise ToolError("HTTP request context is not available.")
     user_id = http_request.headers.get("X-User-ID")

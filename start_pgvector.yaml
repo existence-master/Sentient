@@ -9,7 +9,7 @@ services:
       - POSTGRES_PASSWORD=test
       - POSTGRES_DB=mcp_memory
     ports:
-      - "5432:5432" # Maps your local port 5432 to the container's port 5432
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data # Persists data even if the container is removed
 

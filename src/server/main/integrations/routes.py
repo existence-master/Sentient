@@ -307,7 +307,8 @@ async def initiate_composio_connection(
             callback_url=callback_url,
             config={
                 "authScheme": "OAUTH2"
-            }
+            },
+            allow_multiple=True
         )
 
         return JSONResponse(content={"redirect_url": connection_request.redirect_url})

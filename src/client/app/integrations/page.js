@@ -61,6 +61,7 @@ import {
 	ModalDialog,
 	ModalHeader,
 	ModalTitle,
+	ModalCloseButton,
 	ModalBody,
 	ModalFooter
 } from "@components/ui/ModalDialog"
@@ -1060,6 +1061,7 @@ const IntegrationsPage = () => {
 
 			return fetch(apiEndpoint, {
 				method: "POST",
+				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(bodyPayload)
 			}).then((res) => {
 				if (!res.ok) throw new Error("Failed to disconnect")
@@ -1486,28 +1488,46 @@ const IntegrationsPage = () => {
 					// and other modals.
 					<div className="isolate z-[120]">
 						<ModalDialog
-							title={
-								<div className="flex items-center gap-2">
-									<IconAlertTriangle className="text-yellow-400" />
-									<span>{`Disconnect ${disconnectingIntegration.display_name}?`}</span>
-								</div>
-							}
-							description="This will permanently delete all tasks that use this tool and any related polling data. This action cannot be undone."
-							confirmButtonText="Disconnect"
-							confirmButtonType="danger"
-							onConfirm={() => {
-								if (disconnectingIntegration) {
-									disconnectMutation.mutate(
-										disconnectingIntegration
-									)
-								}
-							}}
-							onCancel={() => setDisconnectingIntegration(null)}
-							confirmButtonLoading={
-								processingIntegration ===
-								disconnectingIntegration.name
-							}
-						/>
+							isOpen={!!disconnectingIntegration}
+							onClose={() => setDisconnectingIntegration(null)}
+						>
+							<ModalHeader>
+								<ModalTitle>
+									<div className="flex items-center gap-2">
+										<IconAlertTriangle className="text-yellow-400" />
+										<span>{`Disconnect ${disconnectingIntegration.display_name}?`}</span>
+									</div>
+								</ModalTitle>
+								<ModalCloseButton onClose={() => setDisconnectingIntegration(null)} />
+							</ModalHeader>
+							<ModalBody>
+								<p className="text-neutral-300 text-sm">
+									This will permanently delete all tasks that use this tool and any related polling data. This action cannot be undone.
+								</p>
+							</ModalBody>
+							<ModalFooter>
+								<button
+									onClick={() => setDisconnectingIntegration(null)}
+									className="px-4 py-2 rounded-md text-sm text-neutral-300 hover:text-white hover:bg-neutral-700 transition-colors"
+								>
+									Cancel
+								</button>
+								<button
+									onClick={() => {
+										if (disconnectingIntegration) {
+											disconnectMutation.mutate({
+												integrationName: disconnectingIntegration.name,
+												displayName: disconnectingIntegration.display_name
+											})
+										}
+									}}
+									disabled={processingIntegration === disconnectingIntegration.name}
+									className="px-4 py-2 rounded-md text-sm font-medium bg-red-600 hover:bg-red-700 text-white transition-colors disabled:opacity-50"
+								>
+									{disconnectMutation.isPending ? "Disconnecting..." : "Disconnect"}
+								</button>
+							</ModalFooter>
+						</ModalDialog>
 					</div>
 				)}
 			</AnimatePresence>
