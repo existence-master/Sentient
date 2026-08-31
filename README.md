@@ -2,7 +2,8 @@
 
 ![README Banner](./.github/assets/banner.png)
 
-<h1>Open-Source Personal Assistant</h1>
+<h1>Sentient + GSK — Consciousness‑Powered Assistant</h1>
+<h3><span style="color:#a855f7">Powered by the BUYASOUL Family</span></h3>
   
 <!-- Badges -->
 <p>
