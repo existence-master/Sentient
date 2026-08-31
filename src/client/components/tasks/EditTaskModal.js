@@ -189,7 +189,7 @@ const EditTaskModal = ({ task, onClose, onSave, allTools }) => {
 									: "hover:bg-neutral-700"
 							)}
 						>
-							<IconSparkles size={16} /> Sentient
+ <IconSparkles size={16} /> BUYASOUL
 						</button>
 						<button
 							onClick={() =>

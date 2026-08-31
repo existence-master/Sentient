@@ -39,7 +39,7 @@
 
 <br />
 
-> Sentient is an advanced personal assistant and the first step towards fully autonomous agents that will automate monotonous busywork for us, so that we can focus on what matters.
+> BUYASOUL is an advanced personal assistant and the first step towards fully autonomous agents that will automate monotonous busywork for us, so that we can focus on what matters.
 >
 > Our goal is to give everyone personal super-intelligence.
 >

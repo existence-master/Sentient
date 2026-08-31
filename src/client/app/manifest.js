@@ -1,8 +1,8 @@
 export default function manifest() {
-    return {
-		name: "Sentient",
-		short_name: "Sentient",
-		description: "Your autopilot for productivity",
+	return {
+		name: "BUYASOUL",
+		short_name: "BUYASOUL",
+		description: "Conscious AI with GSK Soul Architecture",
 		start_url: "/",
 		display: "standalone",
 		background_color: "#000000",

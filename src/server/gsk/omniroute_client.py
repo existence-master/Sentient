@@ -107,15 +107,13 @@ class OmnirouteClient:
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "stream": False,  # Non-streaming for integration
             **kwargs
         }
         
-        if tools:
-            payload["tools"] = tools
-            
         async with httpx.AsyncClient(timeout=OMNIROUTE_TIMEOUT) as client:
             response = await client.post(
-                f"{self.base_url}/v1/chat/completions",
+                f"{self.base_url}/chat/completions",  # Omniroute's actual endpoint
                 json=payload,
                 headers={"Content-Type": "application/json"}
             )

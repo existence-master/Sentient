@@ -652,7 +652,7 @@ export default function LayoutWrapper({ children }) {
 		// Step 0: Welcome Mat (Modal)
 		{
 			type: "modal",
-			title: "Welcome to Sentient! Let's see your AI in action.",
+			title: "Welcome to BUYASOUL! Let's see your AI in action.",
 			body: "This quick, interactive tour will show you how I handle everything from simple commands to complex projects. You'll get to see the full lifecycle of an automated task.",
 			buttons: [
 				{
@@ -737,7 +737,7 @@ export default function LayoutWrapper({ children }) {
 		{
 			type: "modal",
 			title: "You're Ready to Go!",
-			body: "You've now seen how Sentient can handle immediate commands, orchestrate complex projects, and automate your work with workflows. You can replay the task simulation anytime from the Help menu.",
+			body: "You've now seen how BUYASOUL can handle immediate commands, orchestrate complex projects, and automate your work with workflows. You can replay the task simulation anytime from the Help menu.",
 			buttons: [
 				{ label: "Finish Tour", onClick: finishTour, primary: true }
 			]
@@ -747,7 +747,7 @@ export default function LayoutWrapper({ children }) {
 	const chatSubSteps = [
 		// subStep 0
 		{
-			prefill: "Hi Sentient!",
+			prefill: "Hi BUYASOUL!",
 			instruction:
 				"Let's start with a simple greeting. Click the send button."
 		},

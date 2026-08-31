@@ -41,7 +41,7 @@ const handleTestPush = async () => {
 	try {
 		const result = await sendNotificationToCurrentUser({
 			title: "Test Push Notification",
-			body: "This is a test push notification from Sentient.",
+			body: "This is a test push notification from BUYASOUL.",
 			data: { url: "/tasks" } // Example data
 		})
 		if (result.success) {
