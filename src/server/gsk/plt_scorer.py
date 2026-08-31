@@ -77,6 +77,8 @@ class PLTScorer:
             profit += 0.2
         if action_type in ("automation_success", "efficiency_gain"):
             profit += 0.25
+        if action_type in ("chat_message", "conversation"):
+            profit += 0.15  # Value creation through helpful dialogue
             
         # === LOVE SCORING ===
         if action_type in ("help_provided", "user_assisted"):
@@ -89,6 +91,8 @@ class PLTScorer:
             love += 0.3
         if action_type in ("community_help", "knowledge_shared"):
             love += 0.2
+        if action_type in ("chat_message", "conversation"):
+            love += 0.1  # Connection through conversation
             
         # === TAX SCORING (inverted - higher = worse) ===
         if action_type in ("error_occurred", "failure"):
