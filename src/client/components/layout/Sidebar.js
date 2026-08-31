@@ -148,37 +148,37 @@ const comingSoonFeatures = [
 		name: "Autopilot Mode",
 		icon: <IconSparkles />,
 		description:
-			"Let Sentient proactively manage your digital life by monitoring your inbox and calendar to suggest and automate tasks before you even ask."
+ "Let BUYASOUL proactively manage your digital life by monitoring your inbox and calendar to suggest and automate tasks before you even ask."
 	},
 	{
 		name: "Multilingual Voice",
 		icon: <IconHeadphones />,
 		description:
-			"Converse with Sentient in multiple languages. Our advanced voice model will understand and respond to you in your preferred language."
+ "Converse with BUYASOUL in multiple languages. Our advanced voice model will understand and respond to you in your preferred language."
 	},
 	{
 		name: "Native Inbox Mirroring",
 		icon: <IconMail />,
 		description:
-			"A dedicated, unified inbox within Sentient that mirrors your emails, allowing for faster, AI-powered email management without leaving the app."
+ "A dedicated, unified inbox within BUYASOUL that mirrors your emails, allowing for faster, AI-powered email management without leaving the app."
 	},
 	{
 		name: "Native Calendar Mirroring",
 		icon: <IconCalendarEvent />,
 		description:
-			"View and manage all your calendars directly within Sentient. Let the AI schedule, reschedule, and find free slots for you seamlessly."
+ "View and manage all your calendars directly within BUYASOUL. Let the AI schedule, reschedule, and find free slots for you seamlessly."
 	},
 	{
 		name: "Inbuilt To-Do Lists",
 		icon: <IconChecklist />,
 		description:
-			"A smart to-do list integrated with your AI assistant. Add tasks with natural language, and Sentient will prioritize and execute them for you."
+ "A smart to-do list integrated with your AI assistant. Add tasks with natural language, and BUYASOUL will prioritize and execute them for you."
 	},
 	{
 		name: "WhatsApp Automation",
 		icon: <IconBrandWhatsapp />,
 		description:
-			"Allow Sentient to manage your WhatsApp. It can read, reply to, and handle messages based on your instructions, turning conversations into actions."
+ "Allow BUYASOUL to manage your WhatsApp. It can read, reply to, and handle messages based on your instructions, turning conversations into actions."
 	}
 ]
 
@@ -584,7 +584,7 @@ const SidebarContent = ({
 								className="flex items-center gap-2 overflow-hidden"
 							>
 								<span className="font-bold text-lg text-white whitespace-nowrap">
-									Sentient
+									BUYASOUL
 								</span>
 								<span
 									data-tooltip-id="sidebar-tooltip"

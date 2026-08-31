@@ -4,7 +4,7 @@ export const tourSteps = [
 	// Step 0: Welcome Mat (Modal)
 	{
 		type: "modal",
-		title: "Welcome to Sentient! Let's see your AI in action.",
+		title: "Welcome to BUYASOUL! Let's see your AI in action.",
 		body: "This quick, interactive tour will show you how I handle everything from simple commands to complex projects. You'll get to see the full lifecycle of an automated task.",
 		buttons: [
 			{

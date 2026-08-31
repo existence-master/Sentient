@@ -10,7 +10,7 @@ import { Button } from "@components/ui/button"
 const introStages = [
 	{
 		id: "intro",
-		text: "Hi. I'm <strong>Sentient</strong>.",
+		text: "Hi. I'm <strong>BUYASOUL</strong>.",
 		iconStage: null,
 		duration: 1500
 	},

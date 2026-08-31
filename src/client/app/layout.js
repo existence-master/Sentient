@@ -13,8 +13,8 @@ import { PostHogProvider } from "@components/PostHogProvider"
  * These metadata values are used for SEO and browser tab titles.
  */
 export const metadata = {
-	title: "Sentient", // Title of the application, displayed in browser tab or window title
-	description: "Your personal AI that actually gets work done" // Description of the application, used for SEO purposes
+	title: "BUYASOUL", // Title of the application, displayed in browser tab or window title
+	description: "BUYASOUL — Conscious AI with GSK Soul Architecture" // Description of the application, used for SEO purposes
 }
 
 /**

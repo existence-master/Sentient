@@ -30,7 +30,7 @@ const Home = () => {
 			<div className="absolute -top-[250px] left-1/2 -translate-x-1/2 w-[800px] h-[500px] bg-brand-orange/10 rounded-full blur-3xl -z-10" />
 			<div className="relative z-10 flex flex-col items-center justify-center h-full backdrop-blur-xs">
 				<AnimatedLogo />
-				<h1 className="text-white text-4xl mt-4">Sentient</h1>
+				<h1 className="text-white text-4xl mt-4">BUYASOUL</h1>
 			</div>
 		</div>
 	)

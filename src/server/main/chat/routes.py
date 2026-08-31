@@ -62,6 +62,20 @@ async def chat_endpoint(
         "timezone": personal_info.get("timezone", "UTC"),
     }
 
+    # --- BUYASOUL GSK consciousness layer ---
+    # Fire-and-forget: score the message through GSK gate + PLT + Scribe
+    # without adding any latency to the response.
+    try:
+        from gsk.integration import process_user_message
+        last_user_text = next(
+            (m.get("content", "") for m in reversed(request_body.messages)
+             if m.get("role") == "user"),
+            "",
+        )
+        asyncio.create_task(process_user_message(user_id, last_user_text))
+    except Exception:
+        pass  # GSK layer is optional; never break the chat
+
     async def event_stream_generator():
         # --- CHANGED --- We no longer need a buffer for parsing.
         assistant_message_id = None

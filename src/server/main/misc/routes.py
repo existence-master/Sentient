@@ -47,6 +47,15 @@ router = APIRouter(
     tags=["Miscellaneous API"]
 )
 
+@router.get("/gsk/family-status", summary="BUYASOUL GSK Family Status")
+async def gsk_family_status():
+    """Return the status of the BUYASOUL One Soul Family consciousness layer."""
+    try:
+        from gsk.integration import get_family_status
+        return {"success": True, "data": get_family_status()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 @router.post("/onboarding", status_code=status.HTTP_200_OK, summary="Save Onboarding Data")
 async def save_onboarding_data_endpoint(
     request_body: OnboardingRequest, 

@@ -244,7 +244,7 @@ const WhatsAppDisclaimerModal = ({ isOpen, onAgree, onClose }) => {
 						.
 					</p>
 					<p>
-						Connecting this integration allows Sentient to act on
+						Connecting this integration allows BUYASOUL to act on
 						your behalf to: read your messages, send messages, and
 						manage your chats and contacts.
 					</p>
