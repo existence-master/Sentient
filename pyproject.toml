@@ -1,0 +1,106 @@
+[project]
+name = "sentient"
+version = "3.0.0a0"
+description = "Sentient - a local-first, configurable, self-evolving personal assistant"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "AGPL-3.0-only" }
+authors = [{ name = "Existence" }]
+dependencies = [
+    # core daemon
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+    # llm providers (one SDK, every provider, native tool calling)
+    "litellm>=1.50",
+    # storage: one sqlite file, vectors + full-text search inside it
+    "aiosqlite>=0.20",
+    "sqlite-vec>=0.1.6",
+    # secrets live in the OS keychain, never in config files
+    "keyring>=25",
+    # cli
+    "typer>=0.12",
+    "rich>=13",
+    # scheduling helpers (rrule)
+    "python-dateutil>=2.9",
+    # IANA timezone database (Windows has none built in)
+    "tzdata>=2024.1",
+    "tzlocal>=5.0",
+    # last-resort repair of malformed JSON from small local models
+    "json-repair>=0.30",
+    # file uploads in the gateway
+    "python-multipart>=0.0.9",
+    # integrations: external MCP servers, keyless web search, news feeds
+    "mcp>=1.10",
+    "ddgs>=9.0",
+    "feedparser>=6.0",
+    # text extraction for attachments and memory import
+    "pypdf>=5.0",
+    "python-docx>=1.1",
+    # V3 leap: browser control, IMAP push, device TLS + discovery, pairing QR codes
+    "playwright>=1.47",
+    "aioimaplib>=1.1",
+    "cryptography>=43",
+    "zeroconf>=0.136",
+    "segno>=1.6",
+]
+
+[project.optional-dependencies]
+voice = [
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "faster-whisper>=1.1",
+    "pyttsx3>=2.90",
+    "kokoro-onnx>=0.4",
+    "openwakeword>=0.6",
+]
+# optional: webcam for the reference device node (sentient node --camera 0)
+node = [
+    "opencv-python-headless>=4.10",
+]
+# optional: run faster-whisper on an NVIDIA GPU without a system CUDA install
+voice-gpu = [
+    "nvidia-cublas-cu12>=12.4",
+    "nvidia-cudnn-cu12>=9.1",
+]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "respx>=0.21",
+]
+
+[project.scripts]
+sentient = "sentient.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sentient"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["src", "venv"]
+
+[tool.ruff.lint]
+# Explicit ruleset so results do not depend on a developer's global ruff config.
+select = ["E", "F", "I", "UP", "B", "RUF", "SIM", "TRY", "DTZ", "RET"]
+ignore = [
+    "E501",    # line length: handled by the formatter
+    "RUF012",  # ToolPlugin class attributes are intentionally mutable declarations
+    "B008",    # typer.Option() in defaults is the documented typer style
+    "DTZ011",  # date.today() for daily-note file names is intentionally local
+    "TRY003",  # long exception messages are fine
+    "TRY300",  # return-in-try is readable here
+    "TRY400",  # log.warning in fallback paths is deliberate (not always an error)
+]

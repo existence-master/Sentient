@@ -1,0 +1,121 @@
+"""Human-in-the-loop gate for risky tool calls.
+
+The agent loop emits an ``ApprovalRequest`` event and then awaits the broker.
+Whichever client is attached (CLI prompt, web UI dialog, a phone notification,
+the glasses) resolves it with ``allow``, ``allow_session`` or ``deny``.
+
+Decisions use the call's *effective* risk (``Tool.risk_fn``). "Allow for this chat"
+covers the tool up to the risk level that was approved: allowing ordinary browser
+clicks never covers a call whose ``risk_fn`` raised it to ``send`` or ``exec`` ("Place order" asks every time).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+from dataclasses import dataclass, field
+from typing import Any
+
+from sentient.config.schema import ApprovalsConfig
+from sentient.tools.base import Risk, Tool, ToolContext, effective_risk
+
+Decision = str  # "allow" | "allow_session" | "deny"
+
+
+def _sync_effective_risk(tool: Tool, arguments: dict, ctx: Any) -> Risk:
+    try:
+        value: Any = tool.risk_fn(arguments or {}, ctx)  # type: ignore[misc]
+    except Exception:
+        return Risk.exec
+    if inspect.isawaitable(value):
+        close = getattr(value, "close", None)
+        if callable(close):
+            close()
+        return max(tool.risk, Risk.send)
+    if value is None:
+        return tool.risk
+    if isinstance(value, str):
+        return Risk[value] if value in Risk.__members__ else Risk.exec
+    try:
+        return Risk(value)
+    except (TypeError, ValueError):
+        return Risk.exec
+
+
+@dataclass
+class ApprovalBroker:
+    config: ApprovalsConfig
+    timeout_s: float = 600.0
+    _pending: dict[str, asyncio.Future] = field(default_factory=dict)
+    # (session_id, tool name) -> highest risk the user allowed for this chat
+    _session_allow: dict[tuple[str, str], Risk] = field(default_factory=dict)
+
+    async def requires_approval(
+        self, tool: Tool, arguments: dict, ctx: ToolContext, session_id: str | None = None
+    ) -> tuple[bool, Risk]:
+        """Evaluate ``tool.risk_fn`` (sync or async) and decide. Returns ``(needs_approval, effective_risk)``."""
+        risk = await effective_risk(tool, arguments, ctx)
+        sid = session_id if session_id is not None else getattr(ctx, "session_id", None)
+        return self.needs_approval(tool, sid, risk), risk
+
+    def needs_approval(
+        self,
+        tool: Tool,
+        session_id: str | None,
+        risk: Risk | None = None,
+        *,
+        arguments: dict | None = None,
+        ctx: ToolContext | None = None,
+    ) -> bool:
+        """``risk`` is the call's effective risk. Without it, pass ``arguments`` (and ``ctx``) so a synchronous
+        ``tool.risk_fn`` is evaluated here; an async ``risk_fn`` cannot be awaited in this sync method and is
+        treated as at least ``send`` (use ``await requires_approval(...)`` instead)."""
+        if risk is None and arguments is not None and getattr(tool, "risk_fn", None) is not None:
+            risk = _sync_effective_risk(tool, arguments, ctx)
+        risk = tool.risk if risk is None else Risk(risk)
+        mode = self.config.mode
+        if mode == "off":
+            return False
+        if self.config.remember_session and session_id:
+            allowed = self._session_allow.get((session_id, tool.name))
+            # a call the tool's risk_fn raised to send/exec (a click on "Place order") always asks again
+            escalated = risk >= Risk.send and risk > tool.risk
+            if allowed is not None and allowed >= risk and not escalated:
+                return False
+        if mode == "always":
+            return True
+        # "ask": confirm things that leave Sentient or cannot be undone; the assistant's own
+        # memory, skills (reviewed separately), files folder and task list do not interrupt.
+        return risk >= Risk.write and not (tool.internal and risk < Risk.send)
+
+    def create(self, approval_id: str) -> asyncio.Future:
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        self._pending[approval_id] = fut
+        return fut
+
+    async def wait(
+        self, approval_id: str, session_id: str | None, tool_name: str, risk: Risk | None = None
+    ) -> Decision:
+        fut = self._pending.get(approval_id) or self.create(approval_id)
+        try:
+            decision: Decision = await asyncio.wait_for(fut, timeout=self.timeout_s)
+        except TimeoutError:
+            decision = "deny"
+        finally:
+            self._pending.pop(approval_id, None)
+        if decision == "allow_session" and session_id:
+            level = Risk.exec if risk is None else Risk(risk)
+            key = (session_id, tool_name)
+            self._session_allow[key] = max(level, self._session_allow.get(key, Risk.read))
+        return decision
+
+    def resolve(self, approval_id: str, decision: Decision) -> bool:
+        fut = self._pending.get(approval_id)
+        if fut is None or fut.done():
+            return False
+        fut.set_result(decision)
+        return True
+
+    def pending_ids(self) -> list[str]:
+        return list(self._pending)
