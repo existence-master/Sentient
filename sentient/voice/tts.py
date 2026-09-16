@@ -357,7 +357,13 @@ class KokoroTTS(TTSProvider):
     def _load(self) -> Any:
         with self._lock:
             if self._kokoro is None:
-                from kokoro_onnx import Kokoro
+                try:
+                    from kokoro_onnx import Kokoro
+                except ImportError as exc:  # installed builds ship without the optional voice extras
+                    raise VoiceError(
+                        "The Kokoro voice needs the voice extras. Install them with: "
+                        "uv pip install -e .[voice], or pick the system voice in Settings > Voice."
+                    ) from exc
 
                 started = time.perf_counter()
                 kokoro = Kokoro(str(self.model_path), str(self.voices_path))

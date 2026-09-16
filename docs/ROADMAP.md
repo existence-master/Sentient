@@ -62,9 +62,21 @@ Approved by the founder on 2026-09-15. Contract: `docs/API.md` sections 10-16.
 - Agent improvements: tool progress streaming, dynamic risk, parallel read tools, large-result guard, prompt caching.
 - Not doing: multiple named assistants, open skill marketplace, network-exposed gateway by default.
 
-## M5 · Packaging (later)
-One installer per OS: bundled Python runtime (uv-managed) or frozen engine,
-electron-builder NSIS/DMG/AppImage, auto-update, first-run model download helper.
+## M5 · Packaging (Windows done 2026-09-16)
+A non-technical person double-clicks one installer and gets a working assistant
+with no Python and no terminal.
+- Engine frozen with PyInstaller (`packaging/sentient-engine.spec`, onedir) into
+  `sentient-engine.exe`, shipped as `resources/engine` by electron-builder.
+  `electron/main/paths.ts` prefers it in a packaged build; `npm run dev` still runs
+  `.venv/Scripts/python.exe -m sentient serve`. `~/.sentient` in both modes.
+- `npm run package` → `desktop/dist/Sentient-Setup-<version>.exe`: per-user NSIS,
+  no administrator rights, ~216 MiB. Installed, launched, screenshotted and
+  uninstalled on the founder's PC; uninstall leaves `~/.sentient` intact.
+- Heavy optional extras (faster-whisper, CTranslate2, onnxruntime, Kokoro,
+  openWakeWord, OpenCV, PyTorch) and browser binaries are left out on purpose;
+  a runtime hook explains what to use instead.
+- Still to do: macOS DMG and Linux AppImage are configured but unbuilt and
+  unsigned, no code signing or notarization, no auto-update feed.
 
 ## M6 · Devices and channels (moved into M4.5)
 Device node protocol over the same engine (`node.hello` with capabilities:

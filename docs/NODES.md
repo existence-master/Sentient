@@ -136,6 +136,10 @@ Three equivalent ways to return `camera.photo` / `screen.capture` data, pick wha
 
 WebSocket frames up to 32 MB are accepted on the LAN listener.
 
+The engine sends payloads the same way: an `invoke` whose `params` contain `"binary": true` and `"bytes": <length>` is
+followed by exactly one binary frame with that payload. This is how `audio.pcm` delivers speech (§5), so a
+microcontroller never has to hold a base64 string of a whole sentence in RAM.
+
 ## 5. Capabilities
 
 | capability | params | data |
@@ -147,6 +151,7 @@ WebSocket frames up to 32 MB are accepted on the LAN listener.
 | `display.text` | `text`, `duration_ms?` | `{shown}` |
 | `display.card` | `title?`, `text`, `image_base64?`, `image_mime?`, `duration_ms?` | `{shown}` |
 | `audio.play` | `mime: "audio/wav"`, `base64`, `text?` (what is said) | `{playing}` |
+| `audio.pcm` | `format: "pcm16"`, `sample_rate`, `channels`, `text?`, `binary: true`, `bytes` + one binary frame | `{playing}` |
 | `speak` | `text`, `lang?` | `{spoken}` (on-device TTS) |
 | `mic.stream` | | advertises that the device talks over `/ws/voice` (§6) |
 | `clipboard.read` / `clipboard.write` | `text` (write) | `{text}` (read) |
@@ -154,12 +159,12 @@ WebSocket frames up to 32 MB are accepted on the LAN listener.
 | `battery` | | `{battery, charging}` |
 
 `audio.play` WAVs are PCM16 mono with a 44-byte header; a speaker driver can skip the header and play the samples at
-the rate in the header (usually 24 kHz or 16 kHz). The assistant uses `speak` when a device has it and falls back to
-synthesizing speech in the engine and sending `audio.play`.
+the rate in the header (usually 24 kHz or 16 kHz). For speech the engine picks, in order, `speak` (on-device TTS),
+`audio.pcm` (raw frame, best for microcontrollers) and `audio.play` (base64 WAV).
 
 ### Recommended set for glasses
 `camera.photo` (binary follow frame, JPEG ≤ 1280 px), `display.text` (and `display.card` with a screen),
-`audio.play`, `mic.stream`, `button.events`, `battery`. Skip on-device `speak` unless the chip has TTS: the engine
+`audio.pcm`, `mic.stream`, `button.events`, `battery`. Skip on-device `speak` unless the chip has TTS: the engine
 speaks better. A tiny display should show the last `display.text` until the next one or `duration_ms`.
 
 Agent tools use these capabilities: `device_take_photo`, `device_capture_screen`, `device_get_location`,
@@ -257,3 +262,115 @@ Invoke failures seen by the engine (`POST /api/nodes/{id}/invoke`) add: `offline
 - Reference node: `sentient node --url "sentient://pair?url=…&code=…&fp=…"` or
   `sentient node --url wss://192.168.1.20:7778/ws/node --code 123456 --fingerprint <fp> --camera 0`.
   Press Enter to send a button press, type `b 40` to report 40% battery, `q` to quit. `--insecure` skips pinning (dev only).
+
+---
+
+## 11. Reference hardware: ESP32-S3 glasses
+
+The first Sentient glasses: **ESP32-S3** (8 MB PSRAM, Wi-Fi), **INMP441** I2S microphone, **MAX98357A** I2S
+amplifier, **OV3660** camera, one button. Firmware: `firmware/esp32s3-glasses/` (ESP-IDF). Pin numbers below are
+`#define`s in `main/app_config.h`; change them to match the board, they are not fixed by the protocol.
+
+Advertise: `camera.photo`, `display.text`, `notify.show`, `audio.pcm`, `mic.stream`, `button.events`, `battery`.
+
+### 11.1 Microphone (INMP441 → I2S0 RX)
+
+| setting | value | why |
+|---|---|---|
+| peripheral | `I2S_NUM_0`, master, RX only | leaves `I2S_NUM_1` for the amplifier, so capture and playback run at the same time |
+| standard | Philips, `I2S_SLOT_MODE_MONO`, `slot_mask = I2S_STD_SLOT_LEFT` | INMP441 with `L/R` tied to GND drives the left slot |
+| data width | `I2S_DATA_BIT_WIDTH_32BIT` on the wire | the INMP441 sends 24 bits MSB-aligned inside a 32-bit slot |
+| sample rate | 16000 | what `/ws/voice` expects; no resampling on the device |
+| conversion | `int16 = clamp(raw32 >> MIC_GAIN_SHIFT)`, default shift 14 | `>> 16` would be correct 16-bit but very quiet; 14 adds ~12 dB. Tune `MIC_GAIN_SHIFT` (12 loud, 16 quiet) |
+| DMA | 4 buffers × 240 frames | ~60 ms of slack; the reader task wakes every ~15 ms |
+| pins (defaults) | `SCK=GPIO4`, `WS=GPIO5`, `SD=GPIO6` | any free GPIO; keep them away from the camera's data bus |
+
+Send microphone audio as **PCM16 little-endian mono at 16 kHz** in binary frames of 640 samples (1280 bytes,
+40 ms). That is the exact format §6 asks for, so no conversion happens anywhere.
+
+### 11.2 Speaker (MAX98357A → I2S1 TX)
+
+| setting | value |
+|---|---|
+| peripheral | `I2S_NUM_1`, master, TX only |
+| format | Philips, `I2S_DATA_BIT_WIDTH_16BIT`, `I2S_SLOT_MODE_MONO` (the same sample goes to both slots) |
+| sample rate | whatever the engine announces: 16000 from `/ws/voice` with `audio_format: "pcm16"`, or the `sample_rate` in `audio.pcm` params (often 24000) |
+| pins (defaults) | `BCLK=GPIO15`, `LRCLK/WS=GPIO16`, `DIN=GPIO7`; `SD` pulled high (or to a GPIO to mute), `GAIN` left floating for 9 dB |
+| rate changes | `i2s_channel_disable()` → `i2s_channel_reconfig_std_clock()` → `i2s_channel_enable()` before the first frame of a reply |
+
+Two ways audio arrives, both raw PCM16 that goes straight to I2S with no decoding:
+
+- **Voice replies**: `/ws/voice` `start` with `audio_format: "pcm16"` sends an `{"type":"audio",…}` header followed by one
+  binary frame per sentence, at the `sample_rate` from `ready`.
+- **`audio.pcm` invokes** (what `device_speak` uses for this board): `params` carry `format`, `sample_rate`, `channels`,
+  `binary: true` and `bytes`, and the samples follow in one binary frame.
+
+A sentence is roughly 32 KB/s at 16 kHz, so stream the websocket chunks into a ring buffer and start playing at the first
+chunk instead of waiting for the whole frame. Never buffer a whole reply in DRAM.
+
+### 11.3 Camera (OV3660 → `camera.photo`)
+
+```
+pixel_format = PIXFORMAT_JPEG    frame_size = FRAMESIZE_VGA (640x480)   jpeg_quality = 12   (0 best … 63 worst)
+fb_count = 2                     fb_location = CAMERA_FB_IN_PSRAM       grab_mode = CAMERA_GRAB_LATEST
+xclk_freq_hz = 20 MHz            OV3660 extras: set_vflip(1), set_brightness(1), set_saturation(-2)
+```
+
+VGA at quality 12 gives a **30-60 KB** JPEG, which decides how to return it:
+
+| way | cost on this board | verdict |
+|---|---|---|
+| binary follow frame (§4.4 #2) | sends straight from the PSRAM frame buffer, no copy, no extra RAM | **use this** |
+| `POST /api/nodes/upload` (§4.4 #3) | a second TLS session, ~40 KB heap during the upload | fallback when the socket is busy with audio, or for photos over ~200 KB |
+| inline base64 (§4.4 #1) | +33% bytes and a 40-80 KB string built in RAM on top of the frame buffer | avoid |
+
+Always `esp_camera_fb_return()` the buffer immediately after the send, and keep only one capture in flight.
+
+### 11.4 TLS on the ESP32-S3
+
+An mbedTLS session costs roughly 35-45 KB of heap with default buffers. Two sockets (node + voice) means two sessions.
+What keeps it comfortable:
+
+- `CONFIG_MBEDTLS_DYNAMIC_BUFFER=y` frees handshake buffers afterwards (saves ~20 KB per session).
+- `CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=4096` and `OUT_CONTENT_LEN=2048`: our frames are small, and the engine never sends
+  a TLS record larger than this to a device.
+- The engine's certificate is **ECDSA P-256**, so the handshake needs far less RAM and CPU than RSA-2048.
+- If RAM is still tight: open the voice socket only while the button is held and close it after the reply, keep
+  `buffer_size` at 2048, put Wi-Fi/LWIP buffers in PSRAM (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`), and drop the
+  camera to `FRAMESIZE_QVGA` while talking.
+
+**Pinning** (§2) in two steps, because `esp_websocket_client` does not expose the peer certificate:
+
+1. Once per engine: `esp_tls_conn_new_sync()` with no CA (verification off), then
+   `mbedtls_ssl_get_peer_cert()` → SHA-256 of `crt->raw` → compare with the expected fingerprint. The user reads that
+   fingerprint off the Devices screen in Sentient (`GET /api/nodes/lan` → `fingerprint`), or it comes from the mDNS TXT
+   record or the pairing QR's `fp=`.
+2. Store that certificate as PEM in NVS and pass it as `cert_pem` to `esp_websocket_client` with
+   `skip_cert_common_name_check = true` for every later connection. mbedTLS then verifies the real connection against
+   exactly that certificate, and the check costs nothing at runtime.
+
+Redo step 1 only if the connection starts failing with a certificate error (Sentient was reset): treat it as "pair again".
+
+### 11.5 Wi-Fi, keepalive, sleep and battery
+
+- **Wi-Fi**: reconnect on `WIFI_EVENT_STA_DISCONNECTED` with 1, 2, 4 … 30 s backoff plus jitter, the same curve as §8.
+  Re-run mDNS discovery after every join: the engine's address changes with DHCP, the fingerprint does not.
+- **Keepalive**: use the `keepalive_s` from `welcome` (default 60) for `{"type":"ping"}` on the node socket. Do not
+  enable the websocket library's own protocol pings: the engine does not need them and they wake the radio twice.
+- **Modem sleep**: `esp_wifi_set_ps(WIFI_PS_MAX_MODEM)` is safe with a 60 s ping and cuts idle current a lot.
+- **Deep sleep** drops the sockets, so use it only for long idles: wake on the button with `esp_sleep_enable_ext1_wakeup()`,
+  then reconnect with the token from NVS (no pairing needed) and send the button event once connected. Budget ~2 s from
+  wake to `welcome` on a known network.
+- **Battery**: read the divider with ADC1 oneshot + calibration, send `{"type":"state","battery":N,"charging":false}` on
+  connect, every 5 minutes, and whenever it moves 2% or more. Report percent, not volts.
+
+### 11.6 The button
+
+One GPIO with an internal pull-up, 30 ms debounce, polled in a small task:
+
+- **Press**: send `{"type":"event","event":"button","data":{"action":"press"}}` on the node socket, open `/ws/voice?node_token=…`
+  (already pinned, so it is one round trip), send `start`, and begin streaming microphone frames.
+- **Release**: send `{"type":"end_utterance"}`, stop streaming, keep the socket open for the reply, then close it after
+  `VOICE_IDLE_CLOSE_MS` (default 20 s) of silence.
+- **Press while the assistant is speaking**: send `{"type":"interrupt"}` and stop playback immediately (barge-in).
+- A long press (2 s) can send `{"event":"button","data":{"action":"long_press"}}`; the engine just forwards it as `node.event`.

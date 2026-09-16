@@ -45,12 +45,12 @@ DESKTOP_ID = "desktop"
 KINDS = {"phone", "glasses", "desktop", "watch", "custom"}
 CAPABILITIES = [
     "camera.photo", "screen.capture", "location.get", "notify.show", "display.text", "display.card",
-    "audio.play", "speak", "mic.stream", "clipboard.read", "clipboard.write", "button.events", "battery",
+    "audio.play", "audio.pcm", "speak", "mic.stream", "clipboard.read", "clipboard.write", "button.events", "battery",
 ]  # fmt: skip
 EVENTS = {"button", "wake", "gesture", "battery", "presence", "notification_action"}
 # capabilities the agent tools use; a device offering none of them does not make the tools visible
 TOOL_CAPABILITIES = {"camera.photo", "screen.capture", "location.get", "notify.show", "display.text",
-                     "display.card", "speak", "audio.play"}  # fmt: skip
+                     "display.card", "speak", "audio.play", "audio.pcm"}  # fmt: skip
 
 PAIR_CODE_TTL_S = 600
 PAIR_MAX_ACTIVE_CODES = 5
@@ -106,11 +106,15 @@ class NodeConnection:
     last_seen_write: float = 0.0
     closed: bool = False
 
-    async def send(self, obj: dict) -> None:
+    async def send(self, obj: dict, payload: bytes | None = None) -> None:
+        """Send one JSON message, optionally followed by its binary payload frame (same lock, so
+        the two frames are never interleaved with another message)."""
         if self.closed:
             raise ConnectionError("device disconnected")
         async with self.send_lock:
             await self.ws.send_text(json.dumps(obj, ensure_ascii=False, default=str))
+            if payload is not None:
+                await self.ws.send_bytes(payload)
 
     def fail_pending(self, message: str) -> None:
         for fut in self.pending.values():
@@ -676,9 +680,17 @@ class NodeService(Service):
 
     # ------------------------------------------------------------------ invoking capabilities
     async def invoke(
-        self, node_id: str, capability: str, params: dict | None = None, timeout_ms: int | None = None
+        self,
+        node_id: str,
+        capability: str,
+        params: dict | None = None,
+        timeout_ms: int | None = None,
+        payload: bytes | None = None,
     ) -> dict:
-        """Ask a connected device to do something. Returns ``{ok, data?, error?, code?}``; never raises."""
+        """Ask a connected device to do something. Returns ``{ok, data?, error?, code?}``; never raises.
+
+        ``payload`` sends raw bytes as one binary frame right after the invoke (``params.binary``,
+        ``params.bytes``), so small devices never have to parse a large base64 JSON string."""
         conn = self._conns.get(node_id)
         if conn is None:
             return {"ok": False, "code": "offline", "error": "That device is not connected right now."}
@@ -691,9 +703,13 @@ class NodeService(Service):
         call_id = secrets.token_hex(6)
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         conn.pending[call_id] = fut
+        sent_params = dict(params or {})
+        if payload is not None:
+            sent_params.update({"binary": True, "bytes": len(payload)})
         try:
             await conn.send(
-                {"type": "invoke", "id": call_id, "capability": capability, "params": params or {}, "timeout_ms": timeout}
+                {"type": "invoke", "id": call_id, "capability": capability, "params": sent_params, "timeout_ms": timeout},
+                payload,
             )
             return await asyncio.wait_for(fut, timeout / 1000)
         except TimeoutError:
@@ -736,9 +752,16 @@ class NodeService(Service):
             raise DeviceError(f"{pool[0].name} cannot do that ({label}).")
         raise DeviceError(f"None of the connected devices ({names}) can do that ({label}).")
 
-    async def call(self, conn: NodeConnection, capability: str, params: dict | None = None, timeout_ms: int | None = None) -> dict:
+    async def call(
+        self,
+        conn: NodeConnection,
+        capability: str,
+        params: dict | None = None,
+        timeout_ms: int | None = None,
+        payload: bytes | None = None,
+    ) -> dict:
         """``invoke`` for tools: returns ``data`` or raises DeviceError with the device's reason."""
-        result = await self.invoke(conn.node_id, capability, params, timeout_ms)
+        result = await self.invoke(conn.node_id, capability, params, timeout_ms, payload)
         if not result.get("ok"):
             raise DeviceError(f"{conn.name}: {result.get('error') or 'the request failed'}")
         return result.get("data") or {}

@@ -2,7 +2,7 @@ import { IconCopy, IconFolderOpen, IconRefresh } from '@tabler/icons-react'
 import { motion } from 'motion/react'
 import { useEffect, useState } from 'react'
 import { Logo } from '@/components/brand/Logo'
-import { Button, ProgressBar } from '@/components/ui'
+import { Button, ProgressBar, Tooltip } from '@/components/ui'
 import { errorMessage } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
 import { copyText } from '@/lib/utils'
@@ -56,6 +56,8 @@ export function EngineError({ status, error, onRetry }: { status?: BackendStatus
   const bridge = getBridge()
   const [copied, setCopied] = useState(false)
   const logTail = status?.logTail?.trim()
+  // Packaged builds ship a frozen engine; only a development checkout runs Python itself.
+  const bundledEngine = /sentient-engine(\.exe)?$/i.test(status?.pythonPath ?? '')
 
   useEffect(() => {
     const t = setTimeout(() => bridge.readyForScreenshot(), 600)
@@ -114,11 +116,24 @@ export function EngineError({ status, error, onRetry }: { status?: BackendStatus
           <div className="mt-8 space-y-2 text-sm text-fg-subtle">
             <p className="font-medium text-fg-muted">Things to check</p>
             <ul className="list-disc space-y-1 pl-5">
-              <li>Python 3.12+ is installed, or set SENTIENT_PYTHON to the Python that has Sentient installed.</li>
-              <li>In a development checkout, the repository&apos;s .venv exists and `pip install -e .` has been run.</li>
+              {bundledEngine ? (
+                <li>Your antivirus isn&apos;t blocking Sentient&apos;s engine. Reinstalling Sentient usually puts it back.</li>
+              ) : (
+                <>
+                  <li>Python 3.12+ is installed, or set SENTIENT_PYTHON to the Python that has Sentient installed.</li>
+                  <li>In a development checkout, the repository&apos;s .venv exists and `pip install -e .` has been run.</li>
+                </>
+              )}
               <li>Another program isn&apos;t blocking local connections to 127.0.0.1.</li>
             </ul>
-            {status?.pythonPath && <p className="pt-2 font-mono text-xs">Python: {status.pythonPath}</p>}
+            {status?.pythonPath &&
+              (bundledEngine ? (
+                <Tooltip content={status.pythonPath}>
+                  <p className="w-fit cursor-default pt-2 text-xs">Sentient engine</p>
+                </Tooltip>
+              ) : (
+                <p className="pt-2 font-mono text-xs">Engine: {status.pythonPath}</p>
+              ))}
             {status?.logPath && <p className="font-mono text-xs">Log: {status.logPath}</p>}
           </div>
         </motion.div>

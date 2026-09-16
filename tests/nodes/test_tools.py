@@ -131,3 +131,50 @@ def test_display_notify_speak_and_errors(nodes_client):
     assert caps[2][0] == "audio.play" and caps[2][1]["mime"] == "audio/wav" and caps[2][1]["text"] == "Hello"
     assert loc["lat"] == 18.52 and "openstreetmap" in loc["map"]
     assert listed["devices"][0]["name"] == "Pixel" and listed["devices"][0]["online"] is True
+
+
+def test_speak_sends_raw_pcm_to_small_devices(nodes_client):
+    """Microcontrollers get PCM16 in a binary frame instead of a large base64 JSON string."""
+    client = nodes_client()
+    _, token = pair_device(client)
+    pcm = b"\x01\x00\x02\x00" * 8
+    wav = (
+        b"RIFF" + (36 + len(pcm)).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "little")
+        + (1).to_bytes(2, "little") + (1).to_bytes(2, "little") + (24000).to_bytes(4, "little")
+        + (48000).to_bytes(4, "little") + (2).to_bytes(2, "little") + (16).to_bytes(2, "little")
+        + b"data" + len(pcm).to_bytes(4, "little") + pcm
+    )
+
+    async def fake_speak(text, voice=None):
+        return wav
+
+    client.core.voice.speak = fake_speak
+    with client.websocket_connect("/ws/node") as ws:
+        ws.send_json(hello(token=token, capabilities=["audio.pcm", "button.events"]))
+        ws.receive_json()
+        device = FakeDevice(ws, {"audio.pcm": lambda m: {"playing": True}})
+        assert _call(client, "device_speak", text="Turn left")["ok"] is True
+        wait_for(lambda: bool(device.payloads))
+    invoke = device.invokes[0]
+    assert invoke["capability"] == "audio.pcm"
+    assert invoke["params"] == {
+        "format": "pcm16", "sample_rate": 24000, "channels": 1, "text": "Turn left",
+        "binary": True, "bytes": len(pcm),
+    }
+    assert device.payloads == [pcm]
+
+
+def test_wav_without_pcm16_falls_back_to_audio_play(nodes_client):
+    client = nodes_client()
+    _, token = pair_device(client)
+
+    async def fake_speak(text, voice=None):
+        return b"OggS-not-a-wav"
+
+    client.core.voice.speak = fake_speak
+    with client.websocket_connect("/ws/node") as ws:
+        ws.send_json(hello(token=token, capabilities=["audio.pcm", "audio.play"]))
+        ws.receive_json()
+        device = FakeDevice(ws, {"audio.play": lambda m: {"playing": True}})
+        assert _call(client, "device_speak", text="Hi")["ok"] is True
+    assert device.invokes[0]["capability"] == "audio.play" and device.payloads == []

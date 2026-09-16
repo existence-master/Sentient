@@ -625,8 +625,11 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `revoked` (4401), `rate_limited` (4429, 5 wrong codes per minute per address), `disabled` (4403), `protocol` (4400), `replaced` (4409, the
   same node connected again). Later non-fatal errors: `protocol`, `unknown_type`.
 - Capabilities: `camera.photo`, `screen.capture`, `location.get`, `notify.show`, `display.text`, `display.card`,
-  `audio.play`, `speak`, `mic.stream`, `clipboard.read`, `clipboard.write`, `button.events`, `battery`. Params per capability in `docs/NODES.md`.
-- server → node `invoke` `{id, capability, params, timeout_ms}`; node → server `result` `{id, ok, data?, error?: string | {code, message}}`.
+  `audio.play`, `audio.pcm`, `speak`, `mic.stream`, `clipboard.read`, `clipboard.write`, `button.events`, `battery`. Params per
+  capability in `docs/NODES.md`. `audio.pcm` is `audio.play` for microcontrollers: the engine sends raw PCM16 as a binary frame
+  instead of base64 (`params` `{format: "pcm16", sample_rate, channels, text, binary: true, bytes}`).
+- server → node `invoke` `{id, capability, params, timeout_ms}`, optionally followed by one binary frame when
+  `params.binary` is true (`params.bytes` is its length); node → server `result` `{id, ok, data?, error?: string | {code, message}}`.
   `camera.photo` and `screen.capture` data `{mime, base64}`; `location.get` `{lat, lon, accuracy_m, label?}`. Large payloads may instead
   arrive as `data: {mime, binary: true}` followed by one binary frame, or as `data: {mime, upload_id}` after `POST /api/nodes/upload`
   (`Authorization: Bearer <node token>`, raw body or multipart `file`, max 20 MB → `{upload_id, mime, size}`); the engine converts both to `base64`.

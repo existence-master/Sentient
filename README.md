@@ -54,6 +54,12 @@ your data lives in one folder on your computer and your keys stay in your system
 - **Safe by default.** Sending, deleting or running anything asks for approval first. The engine only
   listens on your own machine.
 
+## Install it
+
+Windows: build the installer with `cd desktop && npm run package`, then run `desktop/dist/Sentient-Setup-*.exe`.
+It installs for your user only, brings its own engine, and keeps your data in `~/.sentient`. Prebuilt
+downloads and signed builds come next; macOS and Linux packaging is configured but not built yet.
+
 ## Run it from source
 
 Prerequisites: Python 3.12 with [uv](https://docs.astral.sh/uv/), Node 22, and either
@@ -118,6 +124,15 @@ its public REST and WebSocket interface, and the desktop screens were captured f
 | Wake word: synthesized "Hey Sentient, what is two plus two?" answered by voice | Pass. About 10 s end to end |
 | Sandbox status and a direct run | Pass |
 
+**Also verified on 2026-09-16**
+
+| Check | Result |
+|---|---|
+| The same 12 flows on cloud models: Claude Sonnet 5 for chat, Claude Haiku 4.5 for background work | Pass, and much faster: most flows finish in 5 to 15 s |
+| Smart glasses over the home network: mDNS discovery, TLS with certificate pinning, pairing code, text and notification shown on the device | Pass with the reference device program |
+| "What can you see?" through a device camera, using a real webcam frame and a local vision model | Pass with `ollama_chat/qwen2.5vl:3b` |
+| Telegram bot connects and polls with a real bot token | Pass. Pairing a chat needs a person on Telegram |
+
 The automated suite (522 engine tests, desktop typecheck and build) passes.
 
 Real-model runs found and fixed these problems, each now covered by a test: a memory update dropped a
@@ -128,11 +143,16 @@ action had happened (declined results now say plainly that nothing was done).
 
 **Not yet verified on real hardware or accounts:**
 
-- Integrations, Telegram and Discord with real accounts. They are covered by tests with mocked APIs only.
-- A real phone, webcam, microphone and smart glasses. Devices were simulated over the real protocol.
+- Integrations with real Google, GitHub, Slack, Notion, Discord, Trello or WhatsApp accounts, and a paired
+  Telegram or Discord chat. The Telegram bot itself was connected live; pairing needs a person to send the code.
+- A real phone and real glasses hardware. The device protocol was exercised over the network with the
+  reference device program, and the camera path with this laptop's webcam. The firmware in `firmware/` has
+  never been compiled or flashed.
 - The Docker code-execution backend (Docker was not running) and IMAP push against a real mail server.
-- Cloud models. The model settings support them, but no API key was used in these runs.
-- Installers for Windows, macOS and Linux.
+- A live microphone in voice mode. Wake word and speech were driven with synthesized audio.
+- The macOS and Linux installers. The Windows installer is built and verified: a per-user setup that needs no
+  admin rights, installs in about a minute, starts the app with its own bundled engine (no Python needed)
+  and uninstalls without touching your data. It is not code signed yet, so Windows will warn on first run.
 
 **Known limits:** older `qwen3:4b` pulls cannot call tools in Ollama, so use `qwen3:8b` or larger. Photo
 and screen questions need a vision-capable model. With qwen3:8b on this laptop, chat replies with tools take
