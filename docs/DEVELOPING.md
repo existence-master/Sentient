@@ -64,7 +64,8 @@ Open the Vite URL with `?api=http://127.0.0.1:7777&token=<token>`.
 | `npm run dev:web` | Renderer only, in a browser |
 | `npm run typecheck` | TypeScript, zero errors expected |
 | `npm run build` | Production build into `desktop/out/{main,preload,renderer}` |
-| `npm run package:win` | NSIS installer (Python is not bundled yet) |
+| `npm run package:engine` | Freeze the Python engine into `desktop/build/engine` |
+| `npm run package` | Frozen engine + installer for this OS (see Packaging) |
 | `node scripts/smoke.mjs <route> <out.png> [WxH]` | Launch the built app, capture a route to PNG, quit |
 
 In Git Bash write smoke routes without a leading slash (`settings/models`), or MSYS
@@ -94,6 +95,53 @@ machine run it per folder (`tests/test_*.py`, `tests/tasks`, `tests/memory` ...)
 The web device app is served at `http://127.0.0.1:<port>/node/` so it can be tried on the same computer
 (camera and microphone work on localhost). For a phone, turn on Devices → Allow devices on my Wi-Fi.
 
+## Packaging
+
+The shipped app carries its own engine, so the person installing it needs neither
+Python nor a virtualenv. PyInstaller freezes `python -m sentient serve` into
+`sentient-engine.exe`, electron-builder ships that folder as `resources/engine`,
+and `electron/main/paths.ts` picks it in a packaged build while `npm run dev`
+keeps using `.venv/Scripts/python.exe -m sentient serve`. `~/.sentient` is the
+data folder in both modes.
+
+```bash
+uv pip install --python .venv/Scripts/python.exe pyinstaller   # once
+cd desktop
+npm run package            # frozen engine + installer for this OS  (~5 min cold)
+npm run package:engine     # just the engine -> desktop/build/engine
+npm run package:win        # just the installer (reuses desktop/build/engine)
+```
+
+Take `desktop/.build.lock` first: packaging rebuilds the shared `desktop/out`.
+The Windows result is `desktop/dist/Sentient-Setup-<version>.exe` (~216 MiB), a
+per-user NSIS installer that needs no administrator rights and installs into
+`%LOCALAPPDATA%\Programs\Sentient`. `/S` installs and uninstalls silently.
+Uninstalling leaves `~/.sentient` alone: that is the user's memories and tasks.
+
+| File | What it is |
+|---|---|
+| `packaging/sentient-engine.spec` | PyInstaller spec: hidden imports, data files, exclusions |
+| `packaging/engine_entry.py` | Entry point; defaults to `serve` when run with no command |
+| `packaging/build_engine.py` | Freezes, smoke-tests and stages the engine |
+| `packaging/runtime_hooks/excluded_extras.py` | Friendly message when a left-out extra is imported |
+| `desktop/electron-builder.yml` | NSIS / DMG / AppImage targets and `extraResources` |
+
+A frozen build cannot see packages the user installs later, so the heavy optional
+extras (faster-whisper, CTranslate2, onnxruntime, Kokoro, openWakeWord, OpenCV,
+PyTorch) are deliberately left out and the runtime hook turns an attempt to import
+them into a sentence that points at Settings → Voice. Voice models still download
+on demand for source installs, and the browser drives the user's own Edge or
+Chrome, so no browser binaries are bundled either.
+
+To test the packaged shell without installing, build the engine and run the app
+with `SENTIENT_ENGINE=/path/to/sentient-engine.exe`; `SENTIENT_PYTHON` still
+forces the interpreter path.
+
+Only the Windows installer is built and verified on the founder's PC. The macOS
+DMG and Linux AppImage blocks in `electron-builder.yml` are written but untested,
+and each needs `npm run package:engine` run on that OS first (PyInstaller does not
+cross-compile). macOS builds are unsigned and unnotarized so far.
+
 ## Where to change things
 
 | You want to… | Go to |
@@ -117,7 +165,11 @@ Ownership rules for parallel work are in `CLAUDE.md`.
   times faster for background jobs and spoken replies.
 - Do not time anything while other engines or smoke runs share the GPU: Ollama can
   fall back to CPU when RAM runs out.
-- Photo and screen questions need a vision-capable model in the vision role (for example a
-  `qwen2.5vl` or `llava` model in Ollama, or a cloud model); without one Sentient saves the image and says so.
+- Photo and screen questions need a vision-capable model in the vision role. With Ollama use the
+  `ollama_chat/` prefix (`ollama_chat/qwen2.5vl:3b` works well and is about 3 GB); the `ollama/` prefix also
+  works now that Pillow is a dependency. Without a vision model Sentient saves the image and says so.
+- The Docker code-execution backend needs Docker Desktop running. If it fails to start with an inference
+  socket error, turn off Docker Model Runner in its settings or reboot; Sentient falls back to the process
+  backend, which is the default.
 - The wake word uses the base local Whisper model on the CPU by default (tiny often hears "Hey" as "He"),
   downloaded on first use.

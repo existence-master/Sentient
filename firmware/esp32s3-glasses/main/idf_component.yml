@@ -1,0 +1,11 @@
+## Managed components pulled from the ESP Component Registry on the first build.
+## Pinned to major versions that exist for ESP-IDF 5.3/5.4 (checked 2026-09; `idf.py reconfigure` resolves them).
+dependencies:
+  idf:
+    version: ">=5.3"
+  espressif/esp_websocket_client:
+    version: "^1.2.0"
+  espressif/esp32-camera:
+    version: "^2.0.9"
+  espressif/mdns:
+    version: "^1.2.0"

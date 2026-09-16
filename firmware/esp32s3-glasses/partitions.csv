@@ -1,0 +1,6 @@
+# name,     type, subtype, offset,   size
+# 4 MB flash layout with a single app partition: OTA is not implemented yet.
+nvs,         data, nvs,     0x9000,   0x6000
+phy_init,    data, phy,     0xf000,   0x1000
+factory,     app,  factory, 0x10000,  0x300000
+storage,     data, nvs,     ,         0x10000

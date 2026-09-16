@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0f1115">
+  <meta name="theme-color" content="#0b0b0f">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="referrer" content="no-referrer">
   <title>Sentient device</title>
   <link rel="stylesheet" href="style.css">
@@ -12,7 +13,23 @@
 <body>
   <header class="top">
     <div class="brand">
-      <span class="logo" aria-hidden="true"></span>
+      <!-- The Sentient orb: a dark core ringed by amber light (same mark as the desktop app). -->
+      <svg width="26" height="26" viewBox="0 0 64 64" role="img" aria-label="Sentient">
+        <defs>
+          <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+            <stop offset="52%" stop-color="var(--accent)" stop-opacity="0.95"></stop>
+            <stop offset="70%" stop-color="var(--accent)" stop-opacity="0.35"></stop>
+            <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"></stop>
+          </radialGradient>
+          <radialGradient id="core" cx="42%" cy="38%" r="70%">
+            <stop offset="0%" stop-color="#26262e"></stop>
+            <stop offset="100%" stop-color="#050507"></stop>
+          </radialGradient>
+        </defs>
+        <circle cx="32" cy="32" r="31" fill="url(#halo)"></circle>
+        <circle cx="32" cy="32" r="18.5" fill="url(#core)"></circle>
+        <circle cx="32" cy="32" r="18.5" fill="none" stroke="#ffffff" stroke-opacity="0.14" stroke-width="0.8"></circle>
+      </svg>
       <span id="assistant-name">Sentient</span>
     </div>
     <span id="status" class="pill pill-off" role="status">Not paired</span>
@@ -26,13 +43,14 @@
     <!-- Pairing -->
     <section id="pair" class="card" hidden>
       <h1>Connect this device</h1>
-      <p class="muted">On your computer, open <b>Sentient &rsaquo; Devices &rsaquo; Pair a device</b> and type the 6-digit code here.</p>
+      <p class="muted small">On your computer open <b>Sentient &rsaquo; Devices &rsaquo; Pair a device</b>, then enter the 6-digit code here.</p>
       <form id="pair-form" autocomplete="off">
         <label for="code">Pairing code</label>
-        <input id="code" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required>
+        <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}"
+               maxlength="6" placeholder="000000" required>
         <label for="device-name">Name this device</label>
-        <input id="device-name" name="name" maxlength="60" placeholder="My phone">
-        <button id="pair-btn" class="primary" type="submit">Pair</button>
+        <input id="device-name" name="name" maxlength="60" autocomplete="off" placeholder="My phone">
+        <button id="pair-btn" class="primary" type="submit">Pair this device</button>
         <p id="pair-error" class="error" role="alert" hidden></p>
       </form>
     </section>
@@ -47,7 +65,7 @@
       </div>
 
       <div class="talk-wrap">
-        <button id="talk" class="talk" type="button" aria-live="polite">
+        <button id="talk" class="talk" type="button" aria-live="polite" aria-label="Hold to talk">
           <span class="talk-ring" aria-hidden="true"></span>
           <span class="talk-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="44" height="44"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>

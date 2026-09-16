@@ -84,6 +84,19 @@
     return (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "web";
   }
 
+  // A name the user recognises in the Devices list, without making them type one.
+  function defaultDeviceName() {
+    const ua = navigator.userAgent || "";
+    const p = platform();
+    if (/iPhone/i.test(ua)) return "My iPhone";
+    if (/iPad/i.test(ua)) return "My iPad";
+    if (/Android/i.test(ua)) return /Mobile/i.test(ua) ? "My Android phone" : "My Android tablet";
+    if (/Mac/i.test(p)) return "My Mac";
+    if (/Win/i.test(p)) return "My Windows PC";
+    if (/Linux/i.test(p)) return "My Linux device";
+    return "My device";
+  }
+
   // ------------------------------------------------------------------ audio output
   const player = {
     ctx: null, queue: [], source: null, busy: false,
@@ -301,7 +314,11 @@
           ...(msg.token ? { token: msg.token } : {}),
         });
         this.retryMs = 1000;
-        if (this.pairing) { toast("Paired", `This device is now connected to ${msg.assistant}.`); this.pairing = null; }
+        if (this.pairing) {
+          toast("Paired", `This device is now connected to ${msg.assistant}.`);
+          this.pairing = null;
+          clearCodeFromUrl(); // the code is used up; a reload should not try it again
+        }
         $("assistant-name").textContent = msg.assistant || "Sentient";
         $("device-label").textContent = saved.name || "";
         setStatus("Connected", "ok");
@@ -439,7 +456,9 @@
             this.ready = null;
             if (this.micOn) this.stopMic(false);
             setTalk("idle");
-            if (ev.code === 4401) toast("Voice unavailable", "This device needs to be paired again.");
+            // 4401 here means the voice socket refused the node token: either this device was
+            // unpaired, or the engine does not accept device tokens on /ws/voice yet.
+            if (ev.code === 4401) toast("Voice unavailable", "Sentient did not accept this device for voice yet.");
           }
           reject(new Error("Voice connection closed."));
         };
@@ -648,20 +667,43 @@
   }
 
   // ------------------------------------------------------------------ boot
-  function readLinkParams() {
+  // The pairing code arrives as /node/#code=123456 (the QR link) or ?code=123456.
+  // The hash is left in place until pairing succeeds, so a reload still works.
+  function codeFromUrl() {
     const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
     const query = new URLSearchParams(location.search);
-    const code = (hash.get("code") || query.get("code") || "").replace(/\D/g, "").slice(0, 6);
-    if (code) history.replaceState(null, "", location.pathname); // keep the code out of history
-    return { code };
+    return (hash.get("code") || query.get("code") || "").replace(/\D/g, "").slice(0, 6);
+  }
+
+  function clearCodeFromUrl() {
+    if (location.hash || location.search) history.replaceState(null, "", location.pathname);
+  }
+
+  // Called on load and whenever the hash changes, so opening the link in an already
+  // open tab prefills too (that navigation fires hashchange and nothing else).
+  function applyPairingCode() {
+    const code = codeFromUrl();
+    if (!code) return false;
+    const field = $("code");
+    field.value = code;
+    if (!$("device-name").value.trim()) $("device-name").value = defaultDeviceName();
+    showPairError("");
+    showScreen("pair");
+    setStatus(store.load().token ? "Pair again?" : "Not paired", "off");
+    // The code is filled in, so the only thing left to do is confirm the name.
+    try {
+      $("device-name").focus({ preventScroll: true });
+    } catch {
+      $("device-name").focus();
+    }
+    return true;
   }
 
   function boot() {
     if (!window.isSecureContext) $("insecure").hidden = false;
-    const { code } = readLinkParams();
     const saved = store.load();
     if (saved.assistant) $("assistant-name").textContent = saved.assistant;
-    $("device-name").value = saved.name || (/iPhone|Android/i.test(navigator.userAgent) ? "My phone" : "My device");
+    $("device-name").value = saved.name || defaultDeviceName();
 
     $("pair-form").addEventListener("submit", (e) => {
       e.preventDefault();
@@ -700,15 +742,12 @@
       if (!document.hidden && !node.ws && !node.halted && store.load().token) { node.retryMs = 1000; node.connect(); }
     });
     window.addEventListener("online", () => { if (!node.ws && !node.halted && store.load().token) node.connect(); });
+    window.addEventListener("hashchange", applyPairingCode);
     setupTalk();
     refreshPermissions();
 
-    if (code) {
-      $("code").value = code;
-      showScreen("pair");
-      setStatus(saved.token ? "Pair again?" : "Not paired", "off");
-      if (!saved.token) $("device-name").focus();
-    } else if (saved.token) {
+    if (applyPairingCode()) return; // a code in the link: show the pair screen with it filled in
+    if (saved.token) {
       showScreen("home");
       node.connect();
     } else {

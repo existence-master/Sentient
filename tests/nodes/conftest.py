@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import threading
 import time
 from collections.abc import Callable
@@ -56,15 +57,24 @@ class FakeDevice:
         self.handlers = handlers
         self.invokes: list[dict] = []
         self.other: list[dict] = []
+        self.payloads: list[bytes] = []
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
     def _run(self) -> None:
         while True:
             try:
-                msg = self.ws.receive_json()
+                raw = self.ws.receive()
             except Exception:
                 return
+            if raw.get("type") == "websocket.close":
+                return
+            if raw.get("bytes") is not None:
+                self.payloads.append(raw["bytes"])  # a binary frame that follows an invoke
+                continue
+            if raw.get("text") is None:
+                continue
+            msg = json.loads(raw["text"])
             if msg.get("type") != "invoke":
                 self.other.append(msg)
                 continue

@@ -1,6 +1,13 @@
-# Windows installer (NSIS). Build with: npm run package:win
-# The Python engine is not bundled yet: packaged builds look for SENTIENT_PYTHON,
-# then resources/python/python.exe, then `python` on PATH (see electron/main/paths.ts).
+# Installers for Sentient. Build everything with: npm run package
+#
+# The Python engine is frozen by PyInstaller (packaging/sentient-engine.spec) into
+# desktop/build/engine and shipped below as extraResources, so it lands next to the
+# app as resources/engine/sentient-engine[.exe]. The user never installs Python.
+# electron/main/paths.ts prefers that binary in a packaged build and keeps using
+# .venv/Scripts/python.exe -m sentient serve during development.
+#
+# Only the Windows target is built and verified on this machine; the macOS and
+# Linux blocks below are written to be correct but have not been run.
 appId: technology.existence.sentient
 productName: Sentient
 copyright: Copyright (c) Existence
@@ -17,25 +24,55 @@ extraResources:
   - from: resources
     to: resources
     filter: ["icon.*"]
+  # The frozen engine (onedir). Built by `npm run package:engine` for the host OS.
+  - from: build/engine
+    to: engine
+    filter: ["**/*"]
+# No file associations and no protocol handlers: Sentient does not own any file type.
+fileAssociations: []
 win:
   target:
     - target: nsis
       arch: [x64]
-  icon: resources/icon.png
+  icon: resources/icon.png # 512x512; electron-builder generates the .ico
   executableName: Sentient
 nsis:
+  # Per-user install into %LOCALAPPDATA%\Programs\Sentient: no UAC prompt, no admin rights.
   oneClick: false
   perMachine: false
+  allowElevation: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: Sentient
   artifactName: Sentient-Setup-${version}.${ext}
+  # ~/.sentient is the user's own data (memories, tasks, skills): never delete it.
   deleteAppDataOnUninstall: false
+  runAfterFinish: true
 mac:
-  target: dmg
+  target:
+    - target: dmg
+      arch: [x64, arm64]
   category: public.app-category.productivity
+  icon: resources/icon.png
+  # Unsigned for now: an identity here would fail the build on machines without a cert.
+  identity: null
+  hardenedRuntime: false
+  extendInfo:
+    NSMicrophoneUsageDescription: Sentient listens when you start voice mode or say the wake word.
+    NSCameraUsageDescription: Sentient uses the camera only when you ask it to look at something.
+dmg:
+  artifactName: Sentient-${version}-${arch}.${ext}
 linux:
-  target: AppImage
+  target:
+    - target: AppImage
+      arch: [x64]
   category: Utility
+  icon: resources/icon.png
+  synopsis: Your local-first personal assistant
+  desktop:
+    entry:
+      StartupWMClass: Sentient
+appImage:
+  artifactName: Sentient-${version}.${ext}
 npmRebuild: false

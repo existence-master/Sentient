@@ -28,6 +28,7 @@ export interface BackendStatus {
   willRestart?: boolean
   /** Milliseconds until the next restart attempt when `restarting`. */
   retryInMs?: number
+  /** Path of the engine that was launched: the bundled `sentient-engine` exe, or Python in a dev checkout. */
   pythonPath?: string
   logPath?: string
 }

@@ -160,7 +160,13 @@ class FasterWhisperSTT(STTProvider):
         with self._lock:
             if self._model is not None:
                 return self._model
-            from faster_whisper import WhisperModel
+            try:
+                from faster_whisper import WhisperModel
+            except ImportError as exc:  # installed builds ship without the optional voice extras
+                raise VoiceError(
+                    "Speech to text needs the voice extras. Install them with: "
+                    "uv pip install -e .[voice] and restart Sentient."
+                ) from exc
 
             started = time.perf_counter()
             root = str(self._root())

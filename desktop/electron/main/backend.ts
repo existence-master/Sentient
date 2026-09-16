@@ -1,6 +1,11 @@
 /**
- * Spawns and supervises the Python engine (`python -m sentient serve`).
+ * Spawns and supervises the engine.
  *
+ * - development: `.venv/Scripts/python.exe -m sentient serve` from the repo
+ * - packaged:    the frozen `resources/engine/sentient-engine.exe serve`, so the
+ *                user never installs Python (see electron/main/paths.ts)
+ *
+ * Everything else is identical in both modes, including `~/.sentient` as the data folder:
  * - picks a free loopback port and a random 32-byte token per launch
  * - pipes stdout/stderr to <home>/logs/backend.log (token redacted) and keeps a tail
  * - polls GET /api/health (then verifies the token with /api/bootstrap)
@@ -14,7 +19,7 @@ import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import type { BackendStatus } from '../../src/types/bridge'
-import { homePaths, resolvePython } from './paths'
+import { homePaths, resolveEngine } from './paths'
 
 const START_TIMEOUT_MS = Number(process.env.SENTIENT_BACKEND_START_TIMEOUT_MS) || 120_000
 const MAX_CONSECUTIVE_CRASHES = 5
@@ -58,7 +63,8 @@ export class BackendManager extends EventEmitter {
   private generation = 0
   private restartTimer: NodeJS.Timeout | null = null
   private stopping = false
-  private pythonPath = ''
+  private enginePath = ''
+  private frozen = false
 
   get baseUrl(): string {
     return `http://127.0.0.1:${this.port}`
@@ -97,7 +103,8 @@ export class BackendManager extends EventEmitter {
 
   // ------------------------------------------------------------------ internals
   private setStatus(s: BackendStatus): void {
-    this.status = { pythonPath: this.pythonPath, logPath: this.logPath, ...s }
+    // `pythonPath` is what the error screen shows; in a packaged build it is the frozen engine.
+    this.status = { pythonPath: this.enginePath, logPath: this.logPath, ...s }
     this.emit('status', this.status)
   }
 
@@ -123,10 +130,13 @@ export class BackendManager extends EventEmitter {
   private async spawnOnce(): Promise<void> {
     const gen = ++this.generation
     if (!this.port || !(await portIsFree(this.port))) this.port = await freePort()
-    const py = resolvePython()
-    this.pythonPath = py.command
+    const engine = resolveEngine()
+    this.enginePath = engine.command
+    this.frozen = engine.frozen
     this.openLog()
-    this.record(`\n===== ${new Date().toISOString()} starting engine: ${py.command} (${py.source}) port ${this.port} =====\n`)
+    this.record(
+      `\n===== ${new Date().toISOString()} starting engine: ${engine.command} (${engine.source}) port ${this.port} =====\n`
+    )
     this.setStatus({ state: 'starting', attempt: this.crashes + 1 })
 
     const env: NodeJS.ProcessEnv = {
@@ -135,19 +145,26 @@ export class BackendManager extends EventEmitter {
       PYTHONUNBUFFERED: '1',
       PYTHONIOENCODING: 'utf-8'
     }
-    // SENTIENT_HOME (if set) is inherited from process.env.
+    // SENTIENT_HOME (if set) is inherited from process.env; otherwise the engine uses ~/.sentient.
+
+    // The frozen engine runs from the data folder, which must exist before we chdir into it.
+    try {
+      mkdirSync(engine.cwd, { recursive: true })
+    } catch {
+      /* the engine creates it too */
+    }
 
     let child: ChildProcess
     try {
-      child = spawn(py.command, ['-m', 'sentient', 'serve', '--host', '127.0.0.1', '--port', String(this.port)], {
-        cwd: py.cwd,
+      child = spawn(engine.command, [...engine.args, '--host', '127.0.0.1', '--port', String(this.port)], {
+        cwd: engine.cwd,
         env,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: process.platform !== 'win32'
       })
     } catch (err) {
-      this.fail(`Couldn't launch Python (${py.command}): ${String(err)}`)
+      this.fail(`${this.missingEngineMessage()} (${String(err)})`)
       return
     }
     this.proc = child
@@ -158,9 +175,7 @@ export class BackendManager extends EventEmitter {
       if (gen !== this.generation) return
       this.exited = true
       if (err.code === 'ENOENT') {
-        this.fail(
-          `Python wasn't found (${py.command}). Install Python 3.12+ or set SENTIENT_PYTHON to your Python executable.`
-        )
+        this.fail(this.missingEngineMessage())
       } else {
         this.record(`\n[shell] spawn error: ${err.message}\n`)
       }
@@ -224,6 +239,20 @@ export class BackendManager extends EventEmitter {
     this.restartTimer = setTimeout(() => {
       if (gen === this.generation && !this.stopping) void this.spawnOnce()
     }, retryInMs)
+  }
+
+  /** Plain words for the two very different ways the engine can be missing. */
+  private missingEngineMessage(): string {
+    if (this.frozen) {
+      return (
+        "Sentient couldn't start its own engine. The installation looks incomplete - " +
+        'reinstalling Sentient should fix it.'
+      )
+    }
+    return (
+      `Python wasn't found (${this.enginePath}). Install Python 3.12+ and create the project ` +
+      'virtualenv, or set SENTIENT_PYTHON to your Python executable.'
+    )
   }
 
   private fail(message: string): void {

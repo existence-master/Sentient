@@ -13,6 +13,8 @@ from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 
 IMAGE_EXT = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 NO_VISION_HINTS = ("vision", "image", "multimodal", "multi-modal", "not support", "unsupported content", "image_url")
+# a missing library or an unreachable server is not the model lacking vision
+SETUP_HINTS = ("pip install", "pillow", "no module named", "connection", "timed out", "refused")
 
 
 def _app(ctx: ToolContext) -> Any:
@@ -53,6 +55,31 @@ def _save_image(data: dict, prefix: str) -> tuple[str, str, str]:
     return f"outputs/devices/{name}", mime, b64
 
 
+def _pcm_from_wav(wav: bytes) -> tuple[bytes, int, int] | None:
+    """Split a PCM16 WAV into (samples, sample_rate, channels) so tiny devices get raw frames.
+
+    Returns None for anything that is not 16-bit PCM, and the caller falls back to sending the WAV.
+    """
+    if len(wav) < 44 or wav[:4] != b"RIFF" or wav[8:12] != b"WAVE":
+        return None
+    pos, rate, channels, bits, pcm = 12, 16000, 1, 16, None
+    while pos + 8 <= len(wav):
+        chunk, size, body = wav[pos : pos + 4], int.from_bytes(wav[pos + 4 : pos + 8], "little"), pos + 8
+        if chunk == b"fmt " and size >= 16:
+            if int.from_bytes(wav[body : body + 2], "little") != 1:  # 1 = uncompressed PCM
+                return None
+            channels = int.from_bytes(wav[body + 2 : body + 4], "little")
+            rate = int.from_bytes(wav[body + 4 : body + 8], "little")
+            bits = int.from_bytes(wav[body + 14 : body + 16], "little")
+        elif chunk == b"data":
+            pcm = wav[body : body + size]
+            break
+        pos = body + size + (size & 1)  # chunks are word aligned
+    if pcm is None or bits != 16 or not rate:
+        return None
+    return pcm, rate, channels
+
+
 async def _describe(app: Any, mime: str, b64: str, question: str, source: str) -> tuple[str | None, str | None]:
     prompt = (
         f"This image was just captured from the user's {source}. {question.strip()}\n"
@@ -76,7 +103,7 @@ async def _describe(app: Any, mime: str, b64: str, question: str, source: str) -
         except Exception:
             model = "the current model"
         low = str(exc).lower()
-        if any(h in low for h in NO_VISION_HINTS):
+        if any(h in low for h in NO_VISION_HINTS) and not any(h in low for h in SETUP_HINTS):
             return None, (
                 f"The image was saved, but {model} cannot look at images. Choose a model that supports images "
                 "for the Vision role in Settings > Models."
@@ -175,18 +202,28 @@ async def device_display(ctx: ToolContext, text: str, device: str = "") -> dict:
 async def device_speak(ctx: ToolContext, text: str, device: str = "") -> dict:
     """Say something out loud through a device speaker (glasses, phone). device: name or kind; empty picks the best one."""
     app = _app(ctx)
-    conn, cap = app.nodes.resolve(device, ["speak", "audio.play"])
+    conn, cap = app.nodes.resolve(device, ["speak", "audio.pcm", "audio.play"])
     if cap == "speak":
         await app.nodes.call(conn, cap, {"text": text})
+        return {"ok": True, "device": conn.name}
+    voice = getattr(app, "voice", None)
+    if voice is None:
+        raise DeviceError(f"{conn.name} can only play audio and voice is not available.")
+    try:
+        wav = await voice.speak(text)
+    except Exception as exc:
+        raise DeviceError(f"Could not turn the text into speech: {exc}") from exc
+    split = _pcm_from_wav(wav) if cap == "audio.pcm" else None
+    if split is not None:
+        # microcontrollers get raw PCM16 in one binary frame: no base64, no big JSON string in RAM
+        pcm, rate, channels = split
+        params = {"format": "pcm16", "sample_rate": rate, "channels": channels, "text": text}
+        await app.nodes.call(conn, "audio.pcm", params, timeout_ms=60_000, payload=pcm)
     else:
-        voice = getattr(app, "voice", None)
-        if voice is None:
-            raise DeviceError(f"{conn.name} can only play audio and voice is not available.")
-        try:
-            wav = await voice.speak(text)
-        except Exception as exc:
-            raise DeviceError(f"Could not turn the text into speech: {exc}") from exc
-        await app.nodes.call(conn, cap, {"mime": "audio/wav", "base64": base64.b64encode(wav).decode(), "text": text})
+        target = "audio.play" if cap == "audio.pcm" else cap
+        if target not in conn.capabilities:
+            raise DeviceError(f"{conn.name} cannot play this audio format.")
+        await app.nodes.call(conn, target, {"mime": "audio/wav", "base64": base64.b64encode(wav).decode(), "text": text})
     return {"ok": True, "device": conn.name}
 
 
