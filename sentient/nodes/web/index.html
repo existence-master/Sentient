@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1115">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="referrer" content="no-referrer">
+  <title>Sentient device</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <span id="assistant-name">Sentient</span>
+    </div>
+    <span id="status" class="pill pill-off" role="status">Not paired</span>
+  </header>
+
+  <div id="insecure" class="banner" hidden>
+    Camera, microphone and location need a secure link. Open the <b>https://</b> address shown in Sentient.
+  </div>
+
+  <main>
+    <!-- Pairing -->
+    <section id="pair" class="card" hidden>
+      <h1>Connect this device</h1>
+      <p class="muted">On your computer, open <b>Sentient &rsaquo; Devices &rsaquo; Pair a device</b> and type the 6-digit code here.</p>
+      <form id="pair-form" autocomplete="off">
+        <label for="code">Pairing code</label>
+        <input id="code" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required>
+        <label for="device-name">Name this device</label>
+        <input id="device-name" name="name" maxlength="60" placeholder="My phone">
+        <button id="pair-btn" class="primary" type="submit">Pair</button>
+        <p id="pair-error" class="error" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <!-- Home -->
+    <section id="home" hidden>
+      <div id="display" class="display" hidden>
+        <button class="close" id="display-close" aria-label="Dismiss">&times;</button>
+        <div id="display-title" class="display-title"></div>
+        <div id="display-text" class="display-text"></div>
+        <img id="display-image" alt="" hidden>
+      </div>
+
+      <div class="talk-wrap">
+        <button id="talk" class="talk" type="button" aria-live="polite">
+          <span class="talk-ring" aria-hidden="true"></span>
+          <span class="talk-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="44" height="44"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+          </span>
+        </button>
+        <div id="talk-label" class="talk-label">Hold to talk</div>
+        <div class="muted small">Tap once for hands-free, tap again to stop.</div>
+      </div>
+
+      <div id="conversation" class="conversation" hidden>
+        <div id="you" class="bubble you" hidden></div>
+        <div id="reply" class="bubble bot" hidden></div>
+        <div id="approval" class="approval" hidden>
+          <div id="approval-text"></div>
+          <div class="row">
+            <button id="approve" class="primary" type="button">Allow</button>
+            <button id="deny" type="button">Deny</button>
+          </div>
+        </div>
+      </div>
+
+      <form id="type-form" class="type-form" autocomplete="off">
+        <input id="type-input" placeholder="Or type a message" maxlength="2000">
+        <button type="submit" aria-label="Send">&rarr;</button>
+      </form>
+
+      <details class="card" id="permissions">
+        <summary>Permissions</summary>
+        <p class="muted small">Sentient only uses these when you or your assistant ask for them.</p>
+        <div class="perm-grid">
+          <button type="button" data-perm="camera">Camera</button>
+          <button type="button" data-perm="microphone">Microphone</button>
+          <button type="button" data-perm="location">Location</button>
+          <button type="button" data-perm="notifications">Notifications</button>
+        </div>
+      </details>
+
+      <details class="card">
+        <summary>Activity</summary>
+        <ul id="log" class="log"></ul>
+      </details>
+
+      <div class="footer">
+        <span id="device-label" class="muted small"></span>
+        <button id="forget" class="link" type="button">Forget this device</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="flash" class="flash" hidden><video id="preview" playsinline muted></video><span>Taking a photo…</span></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

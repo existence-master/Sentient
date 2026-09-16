@@ -1,0 +1,41 @@
+# Windows installer (NSIS). Build with: npm run package:win
+# The Python engine is not bundled yet: packaged builds look for SENTIENT_PYTHON,
+# then resources/python/python.exe, then `python` on PATH (see electron/main/paths.ts).
+appId: technology.existence.sentient
+productName: Sentient
+copyright: Copyright (c) Existence
+directories:
+  output: dist
+  buildResources: resources
+files:
+  - out/**/*
+  - package.json
+  - "!**/*.map"
+asarUnpack:
+  - resources/**
+extraResources:
+  - from: resources
+    to: resources
+    filter: ["icon.*"]
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: resources/icon.png
+  executableName: Sentient
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Sentient
+  artifactName: Sentient-Setup-${version}.${ext}
+  deleteAppDataOnUninstall: false
+mac:
+  target: dmg
+  category: public.app-category.productivity
+linux:
+  target: AppImage
+  category: Utility
+npmRebuild: false

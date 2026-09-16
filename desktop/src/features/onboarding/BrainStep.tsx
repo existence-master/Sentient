@@ -1,0 +1,265 @@
+import { IconAlertTriangle, IconCircleCheck, IconCloud, IconDeviceDesktop, IconDownload, IconExternalLink, IconEye, IconEyeOff, IconKey, IconRefresh } from '@tabler/icons-react'
+import { useEffect, useState } from 'react'
+import { toast } from 'sonner'
+import { Alert, Badge, Button, Card, Field, IconButton, Input, SegmentedControl, Skeleton } from '@/components/ui'
+import { ModelPicker } from '@/features/models/ModelPicker'
+import { ModelTest } from '@/features/models/ModelTest'
+import { OllamaPull } from '@/features/models/OllamaPull'
+import { useConfig } from '@/hooks/core'
+import { useLocalModels, useProviders, useSetSecret } from '@/hooks/models'
+import { errorMessage } from '@/lib/api'
+import { getBridge } from '@/lib/bridge'
+import { looksLikeEmbedding, recommendFastLocal, recommendLocal } from '@/lib/models'
+import { cn } from '@/lib/utils'
+import { useOnboardingDraft } from './draft'
+import { StepHeader } from './Steps'
+
+export function BrainStep() {
+  const d = useOnboardingDraft()
+  const local = useLocalModels()
+  const config = useConfig()
+
+  // Pre-fill sensible defaults once we know what's installed.
+  useEffect(() => {
+    if (!local.data || d.primary) return
+    const roles = config.data?.models.roles
+    const primary = recommendLocal(local.data) ?? roles?.primary ?? ''
+    d.set({
+      primary,
+      fast: recommendFastLocal(local.data) ?? primary,
+      embedding: recommendLocal(local.data, true) ?? roles?.embedding ?? ''
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [local.data, config.data])
+
+  return (
+    <div>
+      <StepHeader
+        title="Choose my brain"
+        subtitle="Run a model privately on this computer, or use a cloud provider with your own key. You can change this any time."
+      />
+      <SegmentedControl
+        fullWidth
+        value={d.brainMode}
+        onChange={(brainMode) => d.set({ brainMode })}
+        options={[
+          { value: 'local', label: 'On this computer', icon: <IconDeviceDesktop size={15} /> },
+          { value: 'cloud', label: 'Cloud provider', icon: <IconCloud size={15} /> }
+        ]}
+        className="mb-5"
+      />
+      {d.brainMode === 'local' ? <LocalBrain /> : <CloudBrain />}
+    </div>
+  )
+}
+
+function LocalBrain() {
+  const d = useOnboardingDraft()
+  const local = useLocalModels()
+  const ollama = local.data?.ollama
+  const chatModels = (ollama?.models ?? []).filter((m) => !(m.is_embedding ?? looksLikeEmbedding(m.name)))
+  const embedModels = (ollama?.models ?? []).filter((m) => m.is_embedding ?? looksLikeEmbedding(m.name))
+  const [showPull, setShowPull] = useState(false)
+
+  if (local.isLoading) {
+    return (
+      <Card className="space-y-4 p-5">
+        <Skeleton className="h-5 w-48" />
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-9 w-full" />
+      </Card>
+    )
+  }
+
+  if (!ollama?.reachable) {
+    return (
+      <div className="space-y-4">
+        <Alert tone="warning" icon={<IconAlertTriangle />} title="Ollama isn't running">
+          Sentient uses Ollama to run models privately on your computer. Install it, open it once, then check again.
+        </Alert>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="primary" leftIcon={<IconDownload size={15} />} onClick={() => void getBridge().openExternal('https://ollama.com/download')}>
+            Install Ollama
+          </Button>
+          <Button leftIcon={<IconRefresh size={15} className={cn(local.isFetching && 'animate-spin')} />} onClick={() => void local.refetch()}>
+            Check again
+          </Button>
+          <Button variant="ghost" onClick={() => d.set({ brainMode: 'cloud' })}>
+            Use a cloud provider instead
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  if (!chatModels.length) {
+    return (
+      <Card className="p-5">
+        <div className="flex items-center gap-2 text-sm font-medium text-fg">
+          <IconCircleCheck size={17} className="text-success" /> Ollama is running
+        </div>
+        <p className="mt-1 text-sm text-fg-muted">Now download a model. qwen3:8b is a great all-rounder if you have 8 GB of RAM or more.</p>
+        <OllamaPull className="mt-4" installed={(ollama.models ?? []).map((m) => m.name)} />
+      </Card>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card className="p-5">
+        <div className="mb-4 flex items-center gap-2">
+          <IconCircleCheck size={17} className="text-success" />
+          <span className="text-sm font-medium text-fg">Ollama detected</span>
+          <Badge size="xs" tone="success">
+            {chatModels.length} chat model{chatModels.length === 1 ? '' : 's'}
+          </Badge>
+          <div className="flex-1" />
+          <Button size="xs" variant="ghost" onClick={() => setShowPull((s) => !s)}>
+            {showPull ? 'Hide' : 'Download another model'}
+          </Button>
+        </div>
+        <div className="space-y-4">
+          <Field label="Main model" description="Talks with you and uses tools. We picked the best one you have installed.">
+            <div className="flex items-center gap-2">
+              <ModelPicker value={d.primary} onChange={(primary) => d.set({ primary })} className="flex-1" />
+              <ModelTest model={d.primary} role="primary" className="shrink-0" />
+            </div>
+          </Field>
+          <Field label="Background model" description="Handles memory, summaries and triage quietly. A smaller model keeps things snappy.">
+            <ModelPicker value={d.fast} onChange={(fast) => d.set({ fast })} />
+          </Field>
+          <Field
+            label="Memory search"
+            description={embedModels.length ? 'An embedding model lets me find relevant memories.' : 'No embedding model installed yet. nomic-embed-text is small and works well.'}
+          >
+            <div className="flex items-center gap-2">
+              <ModelPicker embedding value={d.embedding} onChange={(embedding) => d.set({ embedding })} className="flex-1" />
+              <ModelTest embedding model={d.embedding} className="shrink-0" />
+            </div>
+          </Field>
+        </div>
+        {(showPull || !embedModels.length) && (
+          <div className="mt-5 border-t border-border pt-4">
+            <OllamaPull installed={(ollama.models ?? []).map((m) => m.name)} />
+          </div>
+        )}
+      </Card>
+    </div>
+  )
+}
+
+function CloudBrain() {
+  const d = useOnboardingDraft()
+  const providers = useProviders()
+  const setSecret = useSetSecret()
+  const [key, setKey] = useState('')
+  const [show, setShow] = useState(false)
+  const cloud = (providers.data ?? []).filter((p) => p.kind === 'cloud')
+  const selected = cloud.find((p) => p.id === d.cloudProvider)
+
+  useEffect(() => {
+    if (!d.cloudProvider && cloud.length) d.set({ cloudProvider: cloud[0].id })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloud.length])
+
+  const choose = (id: string) => {
+    const p = cloud.find((x) => x.id === id)
+    const firstChat = p?.suggested.find((s) => !looksLikeEmbedding(s)) ?? ''
+    d.set({ cloudProvider: id, primary: firstChat, fast: p?.suggested.filter((s) => !looksLikeEmbedding(s))[1] ?? firstChat })
+    setKey('')
+  }
+
+  if (providers.isLoading) {
+    return (
+      <div className="grid grid-cols-4 gap-2">
+        {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+          <Skeleton key={i} className="h-16 rounded-xl" />
+        ))}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-4 gap-2">
+        {cloud.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => choose(p.id)}
+            className={cn(
+              'flex h-16 flex-col items-start justify-center rounded-xl border px-3 text-left transition-colors',
+              d.cloudProvider === p.id ? 'border-accent/60 bg-accent/[0.06]' : 'border-border bg-surface/70 hover:border-border-strong'
+            )}
+          >
+            <span className="text-sm font-medium text-fg">{p.label}</span>
+            <span className={cn('text-2xs', p.key_set ? 'text-success' : 'text-fg-subtle')}>{p.key_set ? 'Key saved' : 'Needs a key'}</span>
+          </button>
+        ))}
+      </div>
+
+      {selected && (
+        <Card className="space-y-4 p-5">
+          {selected.key_set ? (
+            <div className="flex items-center gap-2 text-sm text-fg">
+              <IconCircleCheck size={17} className="text-success" />
+              Your {selected.label} key is saved in the system keychain.
+            </div>
+          ) : (
+            <Field label={`${selected.label} API key`} description="Stored in your operating system's keychain. Never written to files or logs.">
+              <form
+                className="flex gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  if (!key.trim()) return
+                  setSecret.mutate(
+                    { name: selected.id, value: key.trim() },
+                    {
+                      onSuccess: () => {
+                        setKey('')
+                        toast.success('Key saved')
+                      },
+                      onError: (err) => toast.error("Couldn't save the key", { description: errorMessage(err) })
+                    }
+                  )
+                }}
+              >
+                <Input
+                  type={show ? 'text' : 'password'}
+                  autoComplete="off"
+                  value={key}
+                  onChange={(e) => setKey(e.target.value)}
+                  placeholder="Paste your API key"
+                  leftIcon={<IconKey />}
+                  className="font-mono text-xs"
+                  rightSlot={<IconButton size="xs" tooltip={false} label={show ? 'Hide' : 'Show'} icon={show ? <IconEyeOff size={14} /> : <IconEye size={14} />} onClick={() => setShow((s) => !s)} />}
+                />
+                <Button type="submit" variant="primary" loading={setSecret.isPending} disabled={!key.trim()}>
+                  Save
+                </Button>
+              </form>
+              <button type="button" onClick={() => void getBridge().openExternal(selected.docs_url)} className="mt-2 flex items-center gap-1 text-xs text-accent-text hover:underline">
+                Get a {selected.label} key <IconExternalLink size={12} />
+              </button>
+            </Field>
+          )}
+          <Field label="Main model">
+            <div className="flex items-center gap-2">
+              <ModelPicker provider={selected.id} value={d.primary} onChange={(primary) => d.set({ primary })} className="flex-1" />
+              <ModelTest model={d.primary} role="primary" className="shrink-0" />
+            </div>
+          </Field>
+          <Field label="Background model" description="Used for memory and summaries. A cheaper model is ideal.">
+            <ModelPicker provider={selected.id} value={d.fast} onChange={(fast) => d.set({ fast })} />
+          </Field>
+          <Field label="Memory search" description="Embeddings can stay local even with a cloud chat model.">
+            <div className="flex items-center gap-2">
+              <ModelPicker embedding value={d.embedding} onChange={(embedding) => d.set({ embedding })} className="flex-1" />
+              <ModelTest embedding model={d.embedding} className="shrink-0" />
+            </div>
+          </Field>
+        </Card>
+      )}
+    </div>
+  )
+}
