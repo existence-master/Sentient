@@ -1,205 +1,245 @@
-<div align="center">
+<p align="center">
+  <img src=".github/assets/banner.png" alt="Sentient" width="100%">
+</p>
 
-![Sentient](./.github/assets/banner.png)
+<p align="center">
+  <b>Your personal assistant, running on your own computer.</b><br>
+  It runs long tasks for you, remembers what matters, notices things before you ask, and talks with you by voice.<br>
+  Any model, local or cloud. No account, no servers, no setup files.
+</p>
 
-<h1>Sentient</h1>
-<p><b>Your personal assistant, running on your own computer.</b></p>
+<p align="center">
+  <a href="https://github.com/existence-master/Sentient/actions/workflows/ci.yaml"><img alt="CI" src="https://github.com/existence-master/Sentient/actions/workflows/ci.yaml/badge.svg"></a>
+  <a href="LICENSE.txt"><img alt="License: AGPL v3" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg"></a>
+  <a href="https://github.com/existence-master/Sentient/labels/good%20first%20issue"><img alt="Good first issues" src="https://img.shields.io/github/issues/existence-master/Sentient/good%20first%20issue?label=good%20first%20issues&color=f1a21d"></a>
+  <a href="https://github.com/existence-master/Sentient/discussions"><img alt="Discussions" src="https://img.shields.io/github/discussions/existence-master/Sentient?color=555"></a>
+  <a href="https://github.com/existence-master/Sentient/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/existence-master/Sentient?style=flat&color=555"></a>
+</p>
 
-[![CI](https://github.com/existence-master/Sentient/actions/workflows/ci.yaml/badge.svg)](https://github.com/existence-master/Sentient/actions/workflows/ci.yaml)
-[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE.txt)
-[![good first issues](https://img.shields.io/github/issues/existence-master/Sentient/good%20first%20issue?label=good%20first%20issues)](https://github.com/existence-master/Sentient/labels/good%20first%20issue)
+<p align="center">
+  <a href="docs/GETTING_STARTED.md"><b>Get started</b></a> ·
+  <a href="docs/README.md"><b>Docs</b></a> ·
+  <a href="CONTRIBUTING.md"><b>Contribute</b></a> ·
+  <a href="https://github.com/existence-master/Sentient/discussions"><b>Discussions</b></a> ·
+  <a href="docs/ROADMAP.md"><b>Roadmap</b></a>
+</p>
 
-</div>
+<p align="center">
+  <img src=".github/assets/screenshots/chat.png" alt="Sentient chat: a code run and a browser task answered in one reply" width="92%">
+</p>
 
-Sentient is a desktop app that learns who you are, runs long tasks for you in the background,
-notices things in your apps before you ask, and talks with you by voice. It works with a model on
-your own machine (Ollama, LM Studio) or any cloud model you choose. There is no account and no login:
-your data lives in one folder on your computer and your keys stay in your system keychain.
+> [!NOTE]
+> **Sentient v3 is in alpha.** It runs from source, its tests run on Windows and Linux on every change, and a Windows
+> installer builds from this repository. [Here is exactly what has been tested.](docs/VERIFICATION.md)
 
-> **Status: v3 alpha.** Runs from source, and a Windows installer builds from this repo. See
-> [Verified on a real PC](#verified-on-a-real-pc) for exactly what has been tested.
+## Why Sentient
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>🔒 Yours</h3>
+      Everything lives in one folder on your computer. Keys stay in your system keychain. Run it on a free local
+      model and nothing leaves your machine. No account, no telemetry.
+    </td>
+    <td width="50%" valign="top">
+      <h3>⏱️ Works while you're away</h3>
+      Describe a job in plain words. Sentient plans it, asks you once, then runs it now, on a schedule, when an email
+      arrives, or whenever a watched price drops.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>🧠 Gets to know you</h3>
+      It remembers what you tell it, builds a picture of your preferences and goals that you can correct, and tidies
+      its memory every night.
+    </td>
+    <td width="50%" valign="top">
+      <h3>📱 Goes where you are</h3>
+      Talk to it with "Hey Sentient", message it on Telegram, and pair your phone or smart glasses so it can see,
+      speak and reach you anywhere.
+    </td>
+  </tr>
+</table>
 
 ## What it does
 
-- **Long-running tasks.** Describe work in plain language. Sentient refines it, drafts a plan you
-  approve, and runs it: once, on a schedule ("every weekday at 9"), when something happens ("when an
-  email arrives from…"), or as a swarm of parallel agents. Every run keeps a live log and a structured
-  result, and you can chat with a task to change its plan.
-- **Memory.** Atomic facts about you, grouped into topics, with short-term facts that expire, a memory
-  graph, document import, conversation summaries, and editable profile files. What it remembers is
-  used in every conversation, and you can correct or forget anything.
-- **Proactivity.** Sentient watches connected apps such as Gmail and Calendar, reasons over your
-  context, and suggests actions. Approve and it becomes a task; dismiss and it learns what you don't want.
-- **Integrations.** Gmail, Google Calendar, Drive, Docs, Sheets, Slides and Contacts, GitHub, Slack,
-  Notion, Discord, Trello and WhatsApp, plus web search, weather, maps, news, web pages and charts that
-  need no setup. Add any MCP server for more.
-- **Voice mode.** Hands-free or push-to-talk conversation with interruptions, local speech-to-text
-  (faster-whisper) and your choice of system, local neural or cloud voices.
-- **Self-evolution.** After substantial work Sentient proposes reusable skills (inspired by Hermes
-  Agent). You review each proposal with a diff before it becomes active; unused skills are retired.
-- **Your devices.** Pair a phone or smart glasses with a six-digit code. Sentient can show text on them,
-  speak through them, check where you are, or look through the camera when you ask. The desktop app is a
-  device too (screen, camera, clipboard), and a documented protocol lets anyone build their own hardware.
-- **Message it from anywhere.** Connect your own Telegram or Discord bot and pair your chat. Replies stream
-  in, voice notes are transcribed, approvals arrive as buttons, and task results and suggestions follow you.
-- **Hands on the web and on data.** Sentient can drive a real browser for sites without an integration (you
-  sign in yourself; purchases and posts always ask first) and write short Python scripts that call its tools,
-  so a dozen lookups become one step.
-- **Helpers and steering.** It can hand work to helper agents that run beside your chat, and you can add a
-  message while it is still replying to change course.
-- **It gets to know you.** Beyond facts, Sentient keeps an evolving picture of your preferences, goals and
-  style that you can confirm or correct on the About you page. Overnight it consolidates memory: merging
-  duplicates, settling contradictions and writing a short journal of what changed.
-- **Acts on its own, cheaply.** Gmail and Calendar changes arrive within a minute with no model calls, IMAP
-  mail is pushed, webhooks let any app start a task, and watcher jobs run small scripts on a schedule and only
-  wake the model when something happens. Say "Hey Sentient" for hands-free voice.
-- **Any model, any job.** Pick different models for chat, background work, planning, running tasks,
-  voice, vision and embeddings, with fallbacks and a one-click test that checks tool support.
-- **Safe by default.** Sending, deleting or running anything asks for approval first. The engine only
-  listens on your own machine.
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src=".github/assets/screenshots/tasks.png" alt="Tasks">
+      <h3>Long-running tasks</h3>
+      One-off, recurring, triggered by your apps, or split across parallel helpers. Every run keeps a live log and a
+      clear report, and failed runs can be retried from where they stopped.
+    </td>
+    <td width="50%" valign="top">
+      <img src=".github/assets/screenshots/task-watcher.png" alt="A watcher task">
+      <h3>Watchers that cost nothing</h3>
+      "Tell me when this changes" becomes a tiny script that checks on a schedule and only wakes the AI when
+      something happens.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src=".github/assets/screenshots/about-you.png" alt="About you">
+      <h3>About you</h3>
+      How Sentient understands you, with the reasons behind each thing it noticed. Confirm it, correct it, or tell it
+      it's wrong.
+    </td>
+    <td width="50%" valign="top">
+      <img src=".github/assets/screenshots/dreams.png" alt="Nightly memory consolidation">
+      <h3>It tidies up overnight</h3>
+      Each night it merges duplicate memories, settles contradictions (an old "lives in Chennai" gives way to
+      "lives in Bengaluru") and writes a short journal of what changed.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src=".github/assets/screenshots/devices.png" alt="Devices">
+      <h3>Phones and smart glasses</h3>
+      Pair a device with a six-digit code. Sentient can show text, speak, check where you are, or take a photo and
+      tell you what it sees. The <a href="docs/NODES.md">protocol</a> is open, with reference glasses firmware.
+    </td>
+    <td width="50%" valign="top">
+      <img src=".github/assets/screenshots/voice.png" alt="Voice mode">
+      <h3>Voice, hands-free</h3>
+      Say "Hey Sentient", talk naturally and interrupt whenever you like. Speech recognition runs on your computer.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src=".github/assets/screenshots/skills.png" alt="Skill fix waiting for review">
+      <h3>Learns new skills, with your OK</h3>
+      After real work Sentient writes reusable skills, and proposes fixes when one goes wrong. Nothing changes until
+      you approve the diff.
+    </td>
+    <td width="50%" valign="top">
+      <img src=".github/assets/screenshots/models.png" alt="Model settings">
+      <h3>Any model, any job</h3>
+      Pick a model for chat, background work, planning, voice and vision. Mix free local models with your own cloud
+      keys, and test each one with a click.
+    </td>
+  </tr>
+</table>
 
-## Install it
+**And more:** Gmail, Calendar, Drive, Docs, Sheets, GitHub, Slack, Notion, Trello, Discord, WhatsApp and any MCP
+server · near-instant updates from Gmail and Calendar, IMAP push and webhooks · proactive suggestions you approve
+or dismiss · browser control on your own Edge or Chrome · code that runs in a sandbox · helper agents that work
+beside the chat · messages you can add while it is still answering.
 
-Windows: build the installer with `cd desktop && npm run package`, then run `desktop/dist/Sentient-Setup-*.exe`.
-It installs for your user only, brings its own engine, and keeps your data in `~/.sentient`. Prebuilt
-downloads and signed builds come next; macOS and Linux packaging is configured but not built yet.
+## Get started
 
-## Run it from source
+**Windows:** build the installer with `cd desktop && npm run package` and run `desktop/dist/Sentient-Setup-*.exe`.
+Prebuilt, signed downloads are coming with the first public release.
 
-Prerequisites: Python 3.12 with [uv](https://docs.astral.sh/uv/), Node 22, and either
-[Ollama](https://ollama.com/download) or an API key for a cloud provider.
+**From source** (Windows, macOS, Linux) with Python 3.12, [uv](https://docs.astral.sh/uv/) and Node 22:
 
 ```bash
-ollama pull qwen3:8b
-ollama pull nomic-embed-text
-```
-
-```bash
+git clone https://github.com/existence-master/Sentient.git && cd Sentient
 uv venv .venv --python 3.12
-uv pip install --python .venv/Scripts/python.exe -e ".[voice]"
+uv pip install --python .venv/Scripts/python.exe -e ".[voice]"   # macOS/Linux: .venv/bin/python
 cd desktop && npm install && npm run dev
 ```
 
-On macOS or Linux use `.venv/bin/python`. The window starts the engine for you and walks you
-through setup. Full developer notes are in [docs/DEVELOPING.md](docs/DEVELOPING.md).
+Then pick a brain: install [Ollama](https://ollama.com/download) and run `ollama pull qwen3:8b` for a free, private
+model, or paste your own Anthropic, OpenAI or Gemini key. The app walks you through the rest.
+[Getting started](docs/GETTING_STARTED.md) has first things to try and troubleshooting.
 
-## How it is built
+## How it works
 
-- `desktop/` Electron window with a React and TypeScript interface.
-- `sentient/` the local engine the window starts: agent loop with subagents and steering, tasks,
-  memory and the user model, proactivity, self-evolution, integrations, browser, code execution,
-  devices, messaging channels and voice, backed by a single SQLite database.
-- `docs/NODES.md` the device protocol for phones, glasses and your own hardware.
-- `docs/` [architecture](docs/ARCHITECTURE.md), the [window-to-engine contract](docs/API.md) and the
-  [roadmap](docs/ROADMAP.md).
-- `firmware/` reference firmware for ESP32-S3 smart glasses, and `packaging/` the installer build.
+```mermaid
+flowchart LR
+    subgraph you["Where you are"]
+        app["Desktop app"]
+        phone["Phone"]
+        glasses["Smart glasses"]
+        chat["Telegram · Discord"]
+    end
+    subgraph engine["Sentient engine, on your computer"]
+        agent["Agent loop"]
+        tasks["Tasks and scheduler"]
+        memory["Memory and user model"]
+        proactive["Proactivity and skills"]
+        tools["Tools: apps, browser, code, devices"]
+        db[("One SQLite file")]
+    end
+    local["Local model (Ollama)"]
+    cloud["Cloud model (your key)"]
+    apps["Your apps"]
 
-The previous cloud version (v2) lives on the [`v2` branch](https://github.com/existence-master/Sentient/tree/v2)
-and is no longer developed.
+    app <--> agent
+    phone <--> agent
+    glasses <--> agent
+    chat <--> agent
+    agent --- tasks & memory & proactive & tools
+    tasks & memory & proactive --> db
+    agent --> local
+    agent -.-> cloud
+    tools <--> apps
+```
 
-## Verified on a real PC
+The desktop app starts a local Python engine. One agent loop powers chat, tasks, helpers, proactivity and voice, and
+everything is stored in a single SQLite file. Read the [architecture](docs/ARCHITECTURE.md), the
+[API contract](docs/API.md), and the [decision records](docs/adr/README.md) that explain why it is built this way.
 
-Tested on 2026-09-15 on a Windows 11 laptop (RTX 4060 with 8 GB, 15 GB RAM) with local Ollama models only:
-`qwen3:8b` for every chat role and `nomic-embed-text` for embeddings. Scripts drove the real engine through
-its public REST and WebSocket interface, and the desktop screens were captured from the same data.
+## Privacy and safety
 
-**Core flows**
+- On a local model, nothing leaves your computer. With a cloud model, only what each request needs goes to the
+  provider you chose.
+- Sentient asks before it sends, deletes, buys or runs code. Purchases always ask.
+- It never types passwords or card numbers. You sign in to websites yourself.
+- Code it writes runs without your keys. Device photos ask first. Only paired chats can message it.
 
-| Flow | Result |
-|---|---|
-| Onboarding, chat with a tool call, recurring task, triggered task | Pass |
-| Memory: learn a fact in chat and recall it later | Pass |
-| One-off task: plan, approve, run, file created, report, notification | Pass |
-| Proactive suggestion from a calendar event | Pass |
-| Skill proposed for review after multi-step work | Pass |
-| Voice turn with system text-to-speech | Pass. First token in about 6 s |
-
-**New in this release**
-
-| Flow | Result |
-|---|---|
-| Code execution: the model writes and runs Python that returns a number | Pass |
-| Steering: a message sent mid-reply changes the answer | Pass |
-| Subagents: a helper runs with its own tools and reports back | Pass |
-| Browser: open a local shop page and read a price | Pass |
-| Browser: "Place order" asks for approval as a purchase; declining stops it | Pass |
-| Devices: pair simulated glasses, show text on them, read their location | Pass |
-| User model refresh and nightly consolidation (Pune to Bengaluru contradiction settled) | Pass |
-| Skill repair: a failed step produces a fix proposal with the reason | Pass |
-| Webhook: wrong secret refused, right secret starts a triggered task | Pass |
-| Watcher script job alerts with no model call | Pass |
-| Wake word: synthesized "Hey Sentient, what is two plus two?" answered by voice | Pass. About 10 s end to end |
-| Sandbox status and a direct run | Pass |
-
-**Also verified on 2026-09-16**
-
-| Check | Result |
-|---|---|
-| The same 12 flows on cloud models: Claude Sonnet 5 for chat, Claude Haiku 4.5 for background work | Pass, and much faster: most flows finish in 5 to 15 s |
-| Smart glasses over the home network: mDNS discovery, TLS with certificate pinning, pairing code, text and notification shown on the device | Pass with the reference device program |
-| "What can you see?" through a device camera, using a real webcam frame and a local vision model | Pass with `ollama_chat/qwen2.5vl:3b` |
-| Telegram bot connects and polls with a real bot token | Pass. Pairing a chat needs a person on Telegram |
-
-The automated suite (522 engine tests, desktop typecheck and build) passes.
-
-Real-model runs found and fixed these problems, each now covered by a test: a memory update dropped a
-city; a task run stopped after announcing its next step; the model passed a whole snapshot line as a browser
-element reference, which hid a purchase from the approval check; empty replies after a tool call; scripts
-that forgot to import `result`; the tiny wake-word model hearing "Hey" as "He"; and a model claiming a declined
-action had happened (declined results now say plainly that nothing was done).
-
-**Not yet verified on real hardware or accounts:**
-
-- Integrations with real Google, GitHub, Slack, Notion, Discord, Trello or WhatsApp accounts, and a paired
-  Telegram or Discord chat. The Telegram bot itself was connected live; pairing needs a person to send the code.
-- A real phone and real glasses hardware. The device protocol was exercised over the network with the
-  reference device program, and the camera path with this laptop's webcam. The firmware in `firmware/` has
-  never been compiled or flashed.
-- The Docker code-execution backend (Docker was not running) and IMAP push against a real mail server.
-- A live microphone in voice mode. Wake word and speech were driven with synthesized audio.
-- The macOS and Linux installers. The Windows installer is built and verified: a per-user setup that needs no
-  admin rights, installs in about a minute, starts the app with its own bundled engine (no Python needed)
-  and uninstalls without touching your data. It is not code signed yet, so Windows will warn on first run.
-
-**Known limits:** older `qwen3:4b` pulls cannot call tools in Ollama, so use `qwen3:8b` or larger. Photo
-and screen questions need a vision-capable model. With qwen3:8b on this laptop, chat replies with tools take
-about 15 to 45 seconds; cloud models are much faster. Running several engines at once on 8 GB of VRAM pushes
-Ollama onto the CPU.
+Details in [Privacy](docs/PRIVACY.md). Found a vulnerability? Please report it privately: [SECURITY.md](SECURITY.md).
 
 ## Contributing
 
-Contributions are welcome, and you never need our API keys: Sentient runs on a free local model or your own
-key, and every test runs offline with a fake model.
+You never need our API keys: Sentient runs on a free local model or your own key, and every test runs offline with a
+fake model.
 
-1. Pick an issue labelled [good first issue](https://github.com/existence-master/Sentient/labels/good%20first%20issue)
-   or [help wanted](https://github.com/existence-master/Sentient/labels/help%20wanted), or fix something that bugs you.
-2. Fork, branch from `main`, and open a small pull request back to `main`.
-3. The checks run automatically; one maintainer review and it's in.
+1. Pick a [good first issue](https://github.com/existence-master/Sentient/labels/good%20first%20issue) or
+   [help wanted](https://github.com/existence-master/Sentient/labels/help%20wanted) issue, or fix something that
+   bugs you.
+2. Fork, branch from `main`, and open a small pull request.
+3. Checks run automatically, one maintainer review, and it's in.
 
-Details are in [CONTRIBUTING.md](CONTRIBUTING.md). Questions go to
-[Discussions](https://github.com/existence-master/Sentient/discussions/categories/q-a).
+Read [CONTRIBUTING.md](CONTRIBUTING.md). Using an AI coding agent? Point it at [AGENTS.md](AGENTS.md).
 
-## License
+## Documentation
 
-Distributed under the GNU AGPL. See [LICENSE.txt](LICENSE.txt).
+| | |
+|---|---|
+| [Getting started](docs/GETTING_STARTED.md) | Install, choose a model, first steps, troubleshooting |
+| [Privacy](docs/PRIVACY.md) | What stays on your computer and what leaves it |
+| [Developing](docs/DEVELOPING.md) | Run, test, capture screenshots, build installers |
+| [Architecture](docs/ARCHITECTURE.md) · [Decisions](docs/adr/README.md) | How it fits together, and why |
+| [API contract](docs/API.md) | Everything the app and the engine exchange |
+| [Devices protocol](docs/NODES.md) | Build your own device or firmware |
+| [Verification](docs/VERIFICATION.md) · [Roadmap](docs/ROADMAP.md) · [Changelog](CHANGELOG.md) | What's tested, what's next, what changed |
+
+Looking for the old cloud version? It lives on the [`v2` branch](https://github.com/existence-master/Sentient/tree/v2).
 
 ## Team
 
 <table>
   <tr>
-     <td align="center">
-       <a href="https://github.com/itsskofficial">
-         <img src="https://avatars.githubusercontent.com/u/65887545?v=4?s=100" width="100px;" alt=""/>
-         <br />
-         <sub><b>itsskofficial (Sarthak)</b></sub>
-       </a>
-     </td>
-     <td align="center">
-       <a href="https://github.com/kabeer2004">
-         <img src="https://avatars.githubusercontent.com/u/59280736?v=4" width="100px;" alt=""/>
-         <br />
-         <sub><b>kabeer2004</b></sub>
-       </a>
-     </td>
+    <td align="center">
+      <a href="https://github.com/itsskofficial">
+        <img src="https://avatars.githubusercontent.com/u/65887545?v=4" width="88" alt=""><br>
+        <sub><b>Sarthak (itsskofficial)</b></sub>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://github.com/kabeer2004">
+        <img src="https://avatars.githubusercontent.com/u/59280736?v=4" width="88" alt=""><br>
+        <sub><b>kabeer2004</b></sub>
+      </a>
+    </td>
   </tr>
 </table>
+
+And every [contributor](https://github.com/existence-master/Sentient/graphs/contributors). Thank you.
+
+## License
+
+Sentient is free software under the [GNU AGPL v3](LICENSE.txt). Contributions are accepted under our
+[Contributor License Agreement](CLA.md).

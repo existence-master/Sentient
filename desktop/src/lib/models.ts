@@ -27,7 +27,7 @@ export const ROLE_META: Record<RoleName, RoleMeta> = {
   voice: {
     role: 'voice',
     label: 'Voice',
-    description: 'Spoken conversations — pick something fast. Leave empty to use the primary model.',
+    description: 'Spoken conversations, so pick something fast. Leave empty to use the primary model.',
     required: false,
     fallsBackTo: 'primary'
   },

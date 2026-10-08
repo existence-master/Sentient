@@ -106,11 +106,28 @@ const PREFIX: Array<[RegExp, Icon]> = [
   [/find|lookup|query/, IconSearch]
 ]
 
+/** App prefixes of integration tools, shown as "Calendar: find free time" instead of "Gcalendar find free time". */
+const APP_PREFIX: Record<string, string> = {
+  gcalendar: 'Calendar',
+  gmail: 'Gmail',
+  gdrive: 'Drive',
+  gdocs: 'Docs',
+  gsheets: 'Sheets',
+  gslides: 'Slides',
+  gpeople: 'Contacts',
+  github: 'GitHub',
+  notion: 'Notion',
+  slack: 'Slack',
+  trello: 'Trello'
+}
+
 export function toolMeta(name: string): ToolMeta {
   const known = KNOWN[name]
   if (known) return known
   const icon = PREFIX.find(([re]) => re.test(name))?.[1] ?? IconTool
-  const label = humanize(name)
+  const [prefix, ...rest] = name.split('_')
+  const app = APP_PREFIX[prefix]
+  const label = app && rest.length ? `${app}: ${humanize(rest.join('_')).toLowerCase()}` : humanize(name)
   return { running: label, done: label, icon }
 }
 

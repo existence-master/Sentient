@@ -3,7 +3,9 @@
 No LLM traffic: a tiny fake provider stands in while seeding, and every model role in the saved
 config points at a black-holed address, so the real engine never reaches a model either.
 
-    .venv/Scripts/python.exe desktop/scripts/seed-leap-a.py --home <dir> [--reset] [--theme dark|light|system]
+    .venv/Scripts/python.exe desktop/scripts/seed-leap-a.py --home <dir> [--reset | --add] [--theme dark|light|system]
+
+`--add` layers these chats onto a home other seed scripts already filled (keeps its data and config).
 
 Sessions and messages are written with plain SQL so ids and timestamps are fixed. Re-running on the
 same home first deletes the rows of the fixed session ids. Engine tables for subagents, devices and
@@ -114,29 +116,29 @@ def bill_stdout() -> str:
     return "\n".join(lines) + "\n"
 
 
-RESTAURANT_GOAL = "Shortlist 3 quiet restaurants near Koregaon Park with good vegetarian options, open Saturday 8 pm"
+RESTAURANT_GOAL = "Shortlist 3 quiet restaurants in Indiranagar with good vegetarian options, open Saturday 8 pm"
 RESTAURANT_SUMMARY = (
-    "Three quiet places near Koregaon Park with strong vegetarian menus, all taking tables on Saturday at 8 pm:\n\n"
-    "1. **The Flour Works**, Lane 5: European bistro with calm garden seating and plenty of vegetarian mains.\n"
-    "2. **Olive Courtyard**, Lane 6: Mediterranean, soft music, a good mezze platter and a separate vegetarian menu.\n"
-    "3. **Lotus Leaf Kitchen**, Lane 5: Southeast Asian with a big vegetarian section; quieter before 9 pm.\n\n"
+    "Three quiet places in Indiranagar with strong vegetarian menus, all taking tables on Saturday at 8 pm:\n\n"
+    "1. **The Flour Works**, 12th Main: European bistro with calm garden seating and plenty of vegetarian mains.\n"
+    "2. **Olive Courtyard**, CMH Road: Mediterranean, soft music, a good mezze platter and a separate vegetarian menu.\n"
+    "3. **Lotus Leaf Kitchen**, 12th Main: Southeast Asian with a big vegetarian section; quieter before 9 pm.\n\n"
     "All three are rated 4.3 or higher and take bookings on TableFinder."
 )
-LISTING_URL = "https://tablefinder.example/pune/koregaon-park"
-LISTING_TITLE = "Restaurants in Koregaon Park, Pune - TableFinder"
-BOOK_URL = "https://tablefinder.example/pune/the-flour-works/book"
+LISTING_URL = "https://tablefinder.example/bengaluru/indiranagar"
+LISTING_TITLE = "Restaurants in Indiranagar, Bengaluru - TableFinder"
+BOOK_URL = "https://tablefinder.example/bengaluru/the-flour-works/book"
 SNAPSHOT_TEXT = "\n".join([
     '[e3] link "TableFinder"',
     '[e7] textbox "Search for restaurant, cuisine or a dish"',
     '[e9] button "Filters"',
     '[e12] link "The Flour Works"',
-    "    European, Cafe. Lane 5, Koregaon Park. Rated 4.4. 650 m from Riverside Park",
+    "    European, Cafe. 12th Main, Indiranagar. Rated 4.4. 650 m from Indiranagar metro",
     '[e14] button "Book a table"',
     '[e18] link "Olive Courtyard"',
-    "    Mediterranean. Lane 6, Koregaon Park. Rated 4.3. 1.2 km from Riverside Park",
+    "    Mediterranean. CMH Road, Indiranagar. Rated 4.3. 1.2 km from Indiranagar metro",
     '[e20] button "Book a table"',
     '[e24] link "Lotus Leaf Kitchen"',
-    "    Asian, Thai. Lane 5, Koregaon Park. Rated 4.4. 900 m from Riverside Park",
+    "    Asian, Thai. 12th Main, Indiranagar. Rated 4.4. 900 m from Indiranagar metro",
     '[e26] button "Book a table"',
 ])
 MAIN_FINAL = (
@@ -145,24 +147,30 @@ MAIN_FINAL = (
     f"(about Rs 3,220), **{CHANGE[1:]} more** than July. June and July came in at 282 and 300 kWh. "
     "I saved the comparison as `bill-comparison.csv` and a small bar chart as `bill-comparison.png` in your outputs folder.\n\n"
     "**Saturday dinner**\n\n"
-    "I suggest **The Flour Works** on Lane 5, Koregaon Park. It is about an 8 minute walk from Riverside Park, "
+    "I suggest **The Flour Works** on 12th Main, Indiranagar. It is about an 8 minute walk from Indiranagar metro, "
     "has calm garden seating and lots of vegetarian mains, and has tables at 8 pm on Saturday.\n\n"
-    "If it is full, **Lotus Leaf Kitchen** (Lane 5) is also walkable, and **Olive Courtyard** (Lane 6) is a short auto ride.\n\n"
+    "If it is full, **Lotus Leaf Kitchen** (12th Main) is also walkable, and **Olive Courtyard** (CMH Road) is a short auto ride.\n\n"
     "The booking page for The Flour Works is open in the browser. Pick 8 pm and the number of guests, "
     "then confirm the reservation yourself when you are ready."
 )
 
-DESK_GOAL = "Compare 4 standing desks under 40,000 rupees available in Pune"
+README_BILL_STDOUT = "June      282 kWh   Rs 2,540\nJuly      300 kWh   Rs 2,710\nAugust    354 kWh   Rs 3,220\n"
+README_FINAL = (
+    "**Bills:** August was the highest at 354 kWh, 18% more than July. "
+    "**Dinner:** The Flour Works on 12th Main has a quiet table at 8 pm Saturday, and the booking page is open."
+)
+
+DESK_GOAL ="Compare 4 standing desks under 40,000 rupees available in Bengaluru"
 DESK_SUMMARY = (
-    "Your standing desk comparison is ready. All four deliver to Pune and cost under Rs 40,000.\n\n"
+    "Your standing desk comparison is ready. All four deliver to Bengaluru and cost under Rs 40,000.\n\n"
     "| Desk | Price | Motors | Height range | Warranty | Delivery |\n"
     "|---|---|---|---|---|---|\n"
-    "| Featherlite Optima Dual Motor | Rs 36,500 | Dual | 62 to 127 cm | 5 years | 5 days |\n"
-    "| Green Soul Ergo Pro | Rs 32,999 | Dual | 60 to 125 cm | 3 years | 4 days |\n"
-    "| Sunon Electric Desk | Rs 27,900 | Single | 72 to 121 cm | 3 years | 7 days |\n"
-    "| Wakefit Stand Up Desk | Rs 24,999 | Single | 71 to 117 cm | 1 year | 3 days |\n\n"
-    "**My pick:** the Featherlite Optima. Dual motors stay steady with two monitors, and the 5 year warranty "
-    "is the longest here. If you want to save, the Green Soul Ergo Pro is nearly as sturdy for Rs 3,500 less."
+    "| Northdesk Lift Pro Dual Motor | Rs 36,500 | Dual | 62 to 127 cm | 5 years | 5 days |\n"
+    "| Ergowell Rise 2 | Rs 32,999 | Dual | 60 to 125 cm | 3 years | 4 days |\n"
+    "| Tallform Electric Desk | Rs 27,900 | Single | 72 to 121 cm | 3 years | 7 days |\n"
+    "| Homeline Stand Up Desk | Rs 24,999 | Single | 71 to 117 cm | 1 year | 3 days |\n\n"
+    "**My pick:** the Northdesk Lift Pro. Dual motors stay steady with two monitors, and the 5 year warranty "
+    "is the longest here. If you want to save, the Ergowell Rise 2 is nearly as sturdy for Rs 3,500 less."
 )
 
 RENAME_CODE = '''import os
@@ -232,7 +240,7 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
     main = Convo("leap-a-main", "desktop", "Electricity bills and Saturday dinner", timedelta(minutes=4))
     main.user(
         "Can you compare my last three electricity bills from my files? And then find a quiet place for dinner "
-        "near Koregaon Park on Saturday at 8, somewhere with good vegetarian food."
+        "in Indiranagar on Saturday at 8, somewhere with good vegetarian food."
     )
     main.tool(
         "execute_code", {"code": BILL_CODE, "purpose": "Compare the last three electricity bills"},
@@ -251,16 +259,16 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
         "delegate_task",
         {
             "goal": RESTAURANT_GOAL,
-            "context": "Sarthak lives in Pune and prefers calm places where you can talk. Table for two or three, "
+            "context": "Maya lives in Bengaluru and prefers calm places where you can talk. Table for two or three, "
             "Saturday at 8 pm. Vegetarian options matter.",
             "background": False,
         },
         {"subagent_id": "sub-leap-a-1", "status": "completed", "summary": RESTAURANT_SUMMARY, "files_created": []},
         text="Now I will ask a helper to shortlist restaurants.",
     )
-    main.user("Oh and it should be walking distance from the Riverside Park if possible")
+    main.user("Oh and it should be walking distance from the metro if possible")
     main.tool("browser_open", {"url": LISTING_URL}, {"ok": True, "url": LISTING_URL, "title": LISTING_TITLE},
-              thinking="He wants it walkable from Riverside Park. TableFinder lists distance, so I will check there.")
+              thinking="She wants it walkable from the metro. TableFinder lists distance, so I will check there.")
     main.tool("browser_snapshot", {}, {"url": LISTING_URL, "title": LISTING_TITLE, "text": SNAPSHOT_TEXT})
     main.tool("browser_click", {"ref": "e14"},
               {"ok": True, "url": BOOK_URL, "title": "Book a table - The Flour Works"})
@@ -268,13 +276,13 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
 
     # 2. background subagent ---------------------------------------------------------
     bg = Convo("leap-a-background", "desktop", "Research standing desks", timedelta(days=1, hours=3, minutes=12))
-    bg.user("Can you research standing desks for me? Sturdy enough for two monitors, under 40k, and available in Pune.")
+    bg.user("Can you research standing desks for me? Sturdy enough for two monitors, under 40k, and available in Bengaluru.")
     refs["bg_delegate_idx"] = len(bg.rows)
     refs["bg_delegate_call"] = bg.tool(
         "delegate_task",
         {
             "goal": DESK_GOAL,
-            "context": "Two monitors on the desk, used for long work days. Prefer dual motor frames and delivery to Pune.",
+            "context": "Two monitors on the desk, used for long work days. Prefer dual motor frames and delivery to Bengaluru.",
             "background": True,
         },
         {"subagent_id": "sub-leap-a-2", "status": "running"},
@@ -311,8 +319,8 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
     vo = Convo("leap-a-voice", "voice", "Morning check-in", timedelta(days=2, hours=6, minutes=30))
     vo.user("Good morning. What does my day look like?")
     vo.assistant(
-        "Morning, Sarthak. Your morning is clear for deep work. At 3 you have a call with Rohan about the glasses "
-        "prototype. It should be sunny in Pune, around 29 degrees."
+        "Morning, Maya. Your morning is clear for deep work. At 3 you have a call with Rohan about the glasses "
+        "prototype. It should be sunny in Bengaluru, around 29 degrees."
     )
     vo.user("Okay. Remind me to call the electrician before lunch.")
     vo.assistant("Sure. I will remind you at 12:30 to call the electrician.")
@@ -356,7 +364,21 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
         "so you can check out yourself whenever you like. I also did not run the total calculation."
     )
 
-    convos = [main, bg, tg, gl, vo, ce, dc]
+    # 8. README: one compact chat with a code run, a browser card and a short answer (newest chat)
+    rd = Convo("leap-a-readme", "desktop", "Bills and a dinner booking", timedelta(seconds=20))
+    rd.user("Compare my last three electricity bills, then find somewhere quiet in Indiranagar for dinner on Saturday at 8.")
+    rd.tool(
+        "execute_code", {"code": BILL_CODE, "purpose": "Compare the last three electricity bills"},
+        {"ok": True, "backend": "process", "stdout": README_BILL_STDOUT, "stderr": "", "result": None,
+         "files_created": ["bill-comparison.png"], "tool_calls": 0, "duration_ms": 1840, "error": None},
+    )
+    rd.tool("browser_open", {"url": LISTING_URL}, {"ok": True, "url": LISTING_URL, "title": LISTING_TITLE})
+    rd.tool("browser_click", {"ref": '[e14] button "Book a table"'},
+            {"ok": True, "url": BOOK_URL, "title": "Book a table - The Flour Works"})
+    rd.tool("browser_screenshot", {}, {"file": "outputs/tablefinder-booking.png"})
+    rd.assistant(README_FINAL)
+
+    convos = [main, bg, tg, gl, vo, ce, dc, rd]
     for c in convos:
         c.stamp()
     return convos, refs
@@ -481,7 +503,56 @@ def write_files(home: Path) -> tuple[list[str], str]:
     encoder = bill_chart(out / "bill-comparison.png")
     plant_photo(out / "glasses-photo-leap-a.png")
     names = ["bill-comparison.csv", "bill-comparison.png", "glasses-photo-leap-a.png"]
+    if booking_page(out / "tablefinder-booking.png"):
+        names.append("tablefinder-booking.png")
     return [f"files/outputs/{n}" for n in names], encoder
+
+
+def booking_page(path: Path) -> bool:
+    """A mock booking page on the fictional tablefinder.example, for the browser card thumbnail (needs Pillow)."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        return False
+
+    def font(size: int, bold: bool = False):
+        for name in (("segoeuib.ttf", "DejaVuSans-Bold.ttf") if bold else ("segoeui.ttf", "DejaVuSans.ttf")):
+            try:
+                return ImageFont.truetype(name, size)
+            except OSError:
+                continue
+        return ImageFont.load_default(size=size)
+
+    img = Image.new("RGB", (960, 600), "#fbfaf7")
+    d = ImageDraw.Draw(img)
+    teal, ink, grey = "#2f6f6a", "#1c1c1c", "#6b6b6b"
+    d.rectangle((0, 0, 960, 64), fill=teal)
+    d.text((32, 16), "tablefinder", font=font(26, True), fill="white")
+    d.rounded_rectangle((220, 17, 700, 47), radius=15, fill="white")
+    d.text((240, 22), "Indiranagar, Bengaluru", font=font(15), fill="#8a8a8a")
+    d.rounded_rectangle((32, 96, 452, 356), radius=14, fill="#d9c7a8")
+    d.ellipse((80, 150, 220, 290), fill="#c4a57a")
+    d.ellipse((256, 136, 364, 244), fill="#8f6f45")
+    d.text((484, 96), "The Flour Works", font=font(32, True), fill=ink)
+    d.text((484, 144), "European, Cafe, Vegetarian friendly", font=font(17), fill=grey)
+    d.text((484, 172), "12th Main, Indiranagar, 6 min walk from the metro", font=font(17), fill=grey)
+    d.rounded_rectangle((484, 206, 548, 236), radius=6, fill="#267e3e")
+    d.text((498, 208), "4.4", font=font(18, True), fill="white")
+    d.rounded_rectangle((484, 262, 684, 312), radius=10, fill=teal)
+    d.text((518, 274), "Book a table", font=font(19, True), fill="white")
+    d.rounded_rectangle((700, 262, 850, 312), radius=10, outline=teal, width=2, fill="white")
+    d.text((748, 274), "Menu", font=font(19), fill=teal)
+    d.line((32, 388, 928, 388), fill="#e8e8e8", width=1)
+    d.text((32, 404), "Saturday, 8:00 PM", font=font(20, True), fill=ink)
+    for i, slot in enumerate(("7:30 PM", "8:00 PM", "8:30 PM")):
+        x = 32 + i * 132
+        chosen = slot == "8:00 PM"
+        d.rounded_rectangle((x, 446, x + 120, 488), radius=8, fill="#e6f2f1" if chosen else "white",
+                            outline=teal if chosen else "#dddddd", width=2 if chosen else 1)
+        d.text((x + 26, 455), slot, font=font(17), fill=teal if chosen else "#333333")
+    d.text((32, 516), "2 guests  .  Garden seating", font=font(17), fill=grey)
+    img.save(path, optimize=True)
+    return True
 
 
 # ============================================================================ engine tables
@@ -533,22 +604,22 @@ async def seed_engine_tables(store, convos: list[Convo], refs: dict) -> tuple[di
          "capabilities": ["screen.capture", "camera.photo", "clipboard.read", "clipboard.write", "notify.show"],
          "online": 1, "last_seen_at": iso(NOW - timedelta(minutes=1)), "battery": None,
          "created_at": iso(NOW - timedelta(days=6, hours=2)), "revoked": 0},
-        {"id": "node-phone", "node_id": "node-phone", "name": "Sarthak's phone", "kind": "phone",
+        {"id": "node-phone", "node_id": "node-phone", "name": "Maya's phone", "kind": "phone",
          "platform": "android",
          "capabilities": ["camera.photo", "location.get", "notify.show", "speak", "mic.stream", "battery"],
          "online": 1, "battery": 0.72, "last_seen_at": iso(NOW - timedelta(minutes=2)),
          "created_at": iso(NOW - timedelta(days=5, hours=4)), "revoked": 0},
         {"id": "node-glasses", "node_id": "node-glasses", "name": "Smart glasses", "kind": "glasses",
-         "platform": "glasses",
+         "platform": "esp32-s3",
          "capabilities": ["camera.photo", "display.text", "display.card", "mic.stream", "button.events", "battery",
                           "speak"],
          "online": 0, "battery": 0.34, "last_seen_at": iso(NOW - timedelta(hours=3)),
          "created_at": iso(NOW - timedelta(days=4, hours=7)), "revoked": 0},
     ]
     channel_state = [{"id": "telegram", "channel": "telegram", "display_name": "Telegram", "enabled": 1,
-                      "status": "connected", "account_label": "@sentient_sarthak_bot", "error": None,
+                      "status": "connected", "account_label": "@maya_sentient_bot", "error": None,
                       "updated_at": iso(NOW - timedelta(days=2, hours=1))}]
-    paired = [{"channel": "telegram", "channel_id": "telegram", "chat_id": "581230944", "label": "Sarthak Karandikar",
+    paired = [{"channel": "telegram", "channel_id": "telegram", "chat_id": "100200301", "label": "Maya Rao",
                "paired_at": iso(NOW - timedelta(days=2, hours=1)), "deliver": 1, "session_id": "leap-a-telegram"}]
 
     names = [r["name"] for r in await store.fetchall("SELECT name FROM sqlite_master WHERE type = 'table'")]
@@ -587,20 +658,23 @@ async def seed_engine_tables(store, convos: list[Convo], refs: dict) -> tuple[di
 
 
 # ============================================================================ seeding
-def configure(theme: str):
+def configure(theme: str, add: bool = False):
     from sentient.config import SentientConfig, save_config
+    from sentient.config.loader import load_config
     from sentient.config.schema import ModelRoles, ProviderConfig
 
-    cfg = SentientConfig()
+    # --add keeps what other seed scripts already configured and only adjusts what this demo needs.
+    cfg = load_config() if add else SentientConfig()
     cfg.assistant.name = "Sentient"
-    cfg.assistant.user_name = "Sarthak"
+    cfg.assistant.user_name = "Maya"
     cfg.assistant.timezone = "Asia/Kolkata"
-    cfg.assistant.location = "Pune, India"
+    cfg.assistant.location = "Bengaluru, India"
     cfg.assistant.onboarding_complete = True
     cfg.ui.theme = theme
     # keep the real engine from reaching any model while the demo is open
-    for role in ModelRoles.model_fields:
-        setattr(cfg.models.roles, role, "ollama_chat/qwen3:8b")
+    if not add:
+        for role in ModelRoles.model_fields:
+            setattr(cfg.models.roles, role, "ollama_chat/qwen3:8b")
     cfg.models.roles.embedding = "ollama/seeded-demo-no-embeddings"
     cfg.models.fallbacks = {}
     if hasattr(cfg.models, "request_timeout_s"):
@@ -616,16 +690,18 @@ def configure(theme: str):
     cfg.evolution.user_profile_updates = False
     cfg.evolution.skill_repair = False
     cfg.proactivity.enabled = False
-    cfg.user_model.enabled = False
-    cfg.dreaming.enabled = False
+    if not add:
+        # --add keeps these on for screenshots; start the engine with SENTIENT_DISABLE_BACKGROUND=1 so they never run.
+        cfg.user_model.enabled = False
+        cfg.dreaming.enabled = False
     save_config(cfg)
     return cfg
 
 
-async def seed(home: Path, theme: str) -> None:
+async def seed(home: Path, theme: str, add: bool = False) -> None:
     from sentient.app import SentientApp
 
-    cfg = configure(theme)
+    cfg = configure(theme, add)
     files, encoder = write_files(home)
     convos, refs = build_conversations()
 
@@ -678,10 +754,17 @@ def main() -> None:
     ap.add_argument("--home", default=os.environ.get("SENTIENT_HOME"), help="target SENTIENT_HOME (required)")
     ap.add_argument("--reset", action="store_true", help=f"wipe the home first (only if it contains {MARKER})")
     ap.add_argument("--theme", choices=["dark", "light", "system"], default="dark")
+    ap.add_argument("--add", action="store_true",
+                    help="add this demo to a home other seed scripts already filled (keeps its data and config)")
     args = ap.parse_args()
     if not args.home:
         ap.error("--home or SENTIENT_HOME is required")
     home = Path(args.home).expanduser().resolve()
+    if args.add:
+        home.mkdir(parents=True, exist_ok=True)
+        os.environ["SENTIENT_HOME"] = str(home)
+        asyncio.run(seed(home, args.theme, add=True))
+        return
     if home.exists() and any(home.iterdir()):
         if not args.reset:
             ap.error(f"{home} is not empty; pass --reset to re-seed it")

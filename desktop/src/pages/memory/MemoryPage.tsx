@@ -438,7 +438,7 @@ function Stats({
       <StatCard label="Expiring soon" icon={<IconHourglassHigh size={14} />} onClick={expiring.length ? onExpiring : undefined}>
         <div className={cn('text-2xl font-semibold tabular-nums tracking-tight', expiring.length ? 'text-warning' : 'text-fg')}>{expiring.length}</div>
         <div className="truncate text-xs text-fg-subtle">
-          {expiring.length ? `next in ${countdown(expiring[0].ms)} · ${truncate(expiring[0].m.content.replace(/^Sarthak\s/, ''), 28)}` : 'Nothing expires in the next 2 days'}
+          {expiring.length ? `next in ${countdown(expiring[0].ms)} · ${truncate(expiring[0].m.content, 28)}` : 'Nothing expires in the next 2 days'}
         </div>
       </StatCard>
       <StatCard label="Last learned" icon={<IconSparkles size={14} />} onClick={latest ? () => onSelect(latest.id) : undefined}>

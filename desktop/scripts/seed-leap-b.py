@@ -85,9 +85,9 @@ class OfflineProvider:
 
 def configure():
     cfg = load_config()
-    cfg.assistant.user_name = cfg.assistant.user_name or "Sarthak"
+    cfg.assistant.user_name = cfg.assistant.user_name or "Maya"
     cfg.assistant.timezone = "Asia/Kolkata"
-    cfg.assistant.location = cfg.assistant.location or "Pune, India"
+    cfg.assistant.location = cfg.assistant.location or "Bengaluru, India"
     cfg.assistant.onboarding_complete = True
     cfg.models.roles.primary = "ollama_chat/qwen3:8b"
     cfg.models.roles.fast = "ollama_chat/qwen3:4b"
@@ -134,18 +134,18 @@ async def call(fn, *args, **kwargs):
 async def seed_notifications(app: SentientApp, script_task_id: str | None) -> None:
     n = app.notifications
     task_ref = {"task_id": script_task_id} if script_task_id else {}
-    await n.create("task", "The Sony WH-1000XM6 is now **₹24,490**, below your ₹25,000 target.",
-                   title="Tell me when the Sony headphones drop below ₹25,000",
+    await n.create("task", "The Aura X2 is now **₹24,490**, below your ₹25,000 target.",
+                   title="Tell me when the Aura X2 headphones drop below ₹25,000",
                    payload={**task_ref, "event": "script_alert", "result": {"alert": True, "price": 24490}})
-    await n.create("task", "The price check couldn't reach Amazon, so I'll try again at the next check.",
+    await n.create("task", "The price check couldn't reach GadgetBay, so I'll try again at the next check.",
                    title="A watcher couldn't check", payload={**task_ref, "event": "script_failed"})
     await n.create("task", "The price check is working again.", title="A watcher is back on track",
                    payload={**task_ref, "event": "script_recovered"})
     await n.create("task", "**Morning inbox digest** stopped: Gmail rejected the saved sign-in.",
                    title="A task run failed", payload={"task_id": "demo-daily", "run_id": "demo-run", "event": "run_failed"})
-    await n.create("info", "I compared the five CRMs you listed. **HubSpot** and **Zoho** fit a team of five best.",
+    await n.create("info", "I compared four portfolio site builders. **Folio** and **Canvasly** suit a designer best: clean templates and easy case studies.",
                    title="Your helper finished",
-                   payload={"event": "subagent_completed", "subagent_id": "sa_demo", "goal": "Compare five CRMs for a small team"})
+                   payload={"event": "subagent_completed", "subagent_id": "sa_demo", "goal": "Compare four portfolio site builders for a designer"})
     await n.create("info", "I reviewed 146 memories, merged 6 duplicates and settled 2 contradictions.",
                    title="I tidied up my memory overnight",
                    payload={"event": "dream_completed", "dream_id": "demo-dream",
@@ -204,11 +204,11 @@ async def seed_skill_repair(app: SentientApp) -> None:
     REPORT["skill repair"] = "invoice-filing (pending fix with diff)"
 
 
-SCRIPT = '''"""Watch the price of the Sony WH-1000XM6 and alert below the target."""
+SCRIPT = '''"""Watch the price of the Aura X2 headphones and alert below the target."""
 from sentient_tools import tools, result
 
 TARGET = 25_000
-page = tools.web_fetch(url="https://www.amazon.in/dp/B0DX4Q6ZR1")
+page = tools.web_fetch(url="https://gadgetbay.example/p/aura-x2")
 text = page.get("text", "")
 price = None
 for line in text.splitlines():
@@ -221,7 +221,7 @@ if price is None:
     raise RuntimeError("Couldn't find the price on the page")
 print(f"Current price: ₹{price:,}")
 result({"alert": price < TARGET, "price": price,
-        "message": f"The Sony WH-1000XM6 is now ₹{price:,}, below your ₹{TARGET:,} target."})
+        "message": f"The Aura X2 is now ₹{price:,}, below your ₹{TARGET:,} target."})
 '''
 
 
@@ -236,14 +236,14 @@ async def seed_script_job(app: SentientApp) -> str | None:
     except Exception:
         pass
     fields = {
-        "id": task_id, "name": "Tell me when the Sony headphones drop below ₹25,000",
-        "description": "Check the Amazon price of the Sony WH-1000XM6 every hour and tell me when it drops below ₹25,000.",
+        "id": task_id, "name": "Tell me when the Aura X2 headphones drop below ₹25,000",
+        "description": "Check the GadgetBay price of the Aura X2 headphones every hour and tell me when it drops below ₹25,000.",
         "status": "active", "priority": 1, "task_type": "script", "assignee": "ai", "enabled": True,
         "schedule": {"type": "recurring", "frequency": "interval", "interval_minutes": 60, "timezone": "Asia/Kolkata"},
         "plan": [], "chat_history": [], "clarifying_questions": [],
         "script": {"code": SCRIPT, "condition": "alert", "then": "notify",
                    "last_result": {"alert": False, "price": 26490}, "last_run_at": ago(minutes=40), "last_error": None},
-        "original_context": {"source": "chat"}, "original_prompt": "Tell me when the Sony headphones drop below ₹25,000",
+        "original_context": {"source": "chat"}, "original_prompt": "Tell me when the Aura X2 headphones drop below ₹25,000",
         "source": "chat", "next_execution_at": (NOW + timedelta(minutes=20)).isoformat(), "last_execution_at": ago(minutes=40),
         "created_at": ago(days=6), "updated_at": ago(minutes=40),
     }
@@ -281,12 +281,12 @@ async def seed_hooks(app: SentientApp) -> None:
 
 INSIGHTS = [
     ("preferences", "Prefers short, direct answers with the key point first."),
-    ("communication", "Writes to investors formally but keeps team messages casual and brief."),
-    ("goals", "Wants to ship the Sentient desktop beta before the end of September."),
-    ("routines", "Does deep work early in the morning and keeps meetings after lunch."),
-    ("values", "Cares about privacy and prefers tools that keep data on his own computer."),
-    ("work_style", "Likes plans broken into small steps he can approve."),
-    ("relationships", "Calls his mother most Sundays."),
+    ("communication", "Writes to clients formally but keeps studio chat casual and brief."),
+    ("goals", "Wants to finish her portfolio refresh before the end of October."),
+    ("routines", "Does deep work early in the morning and keeps client calls after lunch."),
+    ("values", "Cares about privacy and prefers tools that keep data on her own computer."),
+    ("work_style", "Likes plans broken into small steps she can approve."),
+    ("relationships", "Calls her sister Anika most Sundays."),
 ]
 
 
@@ -310,12 +310,12 @@ async def seed_user_model(app: SentientApp) -> None:
     if {"confidence", "evidence", "source"} <= columns("user_insights"):
         shape = [
             (0.92, "confirmed", "inferred", [("feedback", "You said: “Just give me the answer, skip the preamble.”", 3)]),
-            (0.78, "active", "inferred", [("message", "“Hi Priya, thank you for the thoughtful notes on the deck.”", 2), ("message", "“yo, pushing the fix tonight”", 1)]),
+            (0.78, "active", "inferred", [("message", "“Hi Priya, thank you for the thoughtful notes on the deck.”", 2), ("message", "“yo, sending the new mockups tonight”", 1)]),
             (1.0, "confirmed", "user", []),
             (0.81, "active", "inferred", [("summary", "Most focused sessions start between 6 and 7 AM", 4)]),
             (0.9, "confirmed", "inferred", [("message", "“I don’t want my notes going to someone else’s server.”", 20)]),
             (0.64, "active", "inferred", [("summary", "Asked for step-by-step plans in 6 recent tasks", 3)]),
-            (0.42, "disputed", "inferred", [("message", "“Remind me to call Mom on Sunday evening”", 7)]),
+            (0.42, "disputed", "inferred", [("message", "“Remind me to call Anika on Sunday evening”", 7)]),
         ]
         for iid, (conf, status, source, ev) in zip(made, shape):
             if not iid:
@@ -328,7 +328,7 @@ async def seed_user_model(app: SentientApp) -> None:
         if "question" in columns("user_questions") and len(made) >= 7:
             questions = [
                 ("demo-q1", "Should I keep suggestions quiet until 10 AM so your mornings stay free for deep work?", made[3]),
-                ("demo-q2", "Is calling your mother on Sundays still a routine I should plan around?", made[6]),
+                ("demo-q2", "Is calling Anika on Sundays still a routine I should plan around?", made[6]),
             ]
             for qid, text, iid in questions:
                 await app.store.execute("DELETE FROM user_questions WHERE id = ?", (qid,))
@@ -339,9 +339,9 @@ async def seed_user_model(app: SentientApp) -> None:
     if hasattr(app.store, "set_meta"):
         await app.store.set_meta(
             "user_model.summary",
-            "Sarthak is a founder in Pune building a private, local-first assistant, and the September beta is front of mind. "
-            "He does his best thinking early in the morning, likes answers short and plans in small steps he can approve, "
-            "and protects both his data and his focus. Outside work he stays close to his family.",
+            "Maya is a product designer at Northwind Studio in Bengaluru, and her portfolio refresh is front of mind. "
+            "She does her best thinking early in the morning, likes answers short and plans in small steps she can approve, "
+            "and protects both her data and her focus. Outside work she stays close to her sister Anika.",
         )
     REPORT.setdefault("user model", f"{count} insights, 2 questions, summary")
 
@@ -349,13 +349,13 @@ async def seed_user_model(app: SentientApp) -> None:
 DREAMS = [
     ("demo-dream-1", 9, "schedule", {"facts_reviewed": 146, "merged": 6, "contradictions_resolved": 2, "promoted": 3, "expired": 5, "insights_updated": 4},
      "Tonight I went through **146 memories** from the past week.\n\n"
-     "I had written down your Thursday investor call three different ways, so I merged them into one. "
-     "You told me in April that you live in Mumbai, but everything since says **Pune**, so I kept Pune and let the old note go.\n\n"
+     "I had written down your Thursday client review three different ways, so I merged them into one. "
+     "You told me in April that you live in Chennai, but everything since says **Bengaluru**, so I kept Bengaluru and let the old note go.\n\n"
      "Your morning runs have become a habit, so I now keep “training for a 10 km” in mind. "
      "I also let five short-term reminders fade now that their dates have passed.", None),
     ("demo-dream-2", 33, "manual", {"facts_reviewed": 38, "merged": 1, "promoted": 1, "expired": 2, "insights_updated": 1},
      "You asked me to tidy up after importing your resume. I found **38 new memories**, merged a duplicate about your time at "
-     "Existence, and noted that you now lead a small team.", None),
+     "Northwind Studio, and noted that you now lead the design systems work.", None),
     ("demo-dream-3", 57, "schedule", {"facts_reviewed": 121, "merged": 3, "contradictions_resolved": 1, "expired": 7},
      "A quiet night. I merged three notes about the Goa trip, settled when your sister’s birthday is (the 14th, not the 4th), "
      "and cleared seven reminders that were done.", None),

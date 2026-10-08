@@ -26,7 +26,7 @@ const base = (): VoiceTurn[] => [
   turn({ role: 'user', text: "What's on my calendar tomorrow?" }),
   turn({
     role: 'assistant',
-    text: 'You have three things tomorrow: the design review at 11, lunch with Priya at 1, and the Northwind investor call at 4.',
+    text: 'You have three things tomorrow: the design review at 11, lunch with Priya at 1, and the Lumen Health check-in at 4.',
     tools: [{ callId: 'c1', name: 'gcalendar_list_events', status: 'done' }]
   }),
   turn({ role: 'user', text: 'Can you move the design review to Thursday afternoon?' }),
@@ -104,7 +104,7 @@ export function previewState(kind: PreviewKind): {
                 name: 'gmail_reply',
                 risk: 'send',
                 reason: 'Reply to Priya Sharma: “Thursday at 3 works, I’ll share the Figma link before.”',
-                arguments: { to: 'priya@acme.com', subject: 'Re: Design review moved to Thursday?' },
+                arguments: { to: 'priya@northwind.example', subject: 'Re: Design review moved to Thursday?' },
                 status: 'pending'
               }
             ]

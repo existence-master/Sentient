@@ -1,0 +1,35 @@
+# Privacy
+
+Sentient is built so that your assistant's data stays yours. There is no Sentient account and no Sentient server.
+
+## What stays on your computer
+
+Everything Sentient keeps lives in `~/.sentient` on your own disk: chats, memories and what Sentient believes about
+you, tasks and their results, skills, files it creates, and settings. Keys and tokens are kept in your operating
+system's keychain, not in that folder. **Sentient itself sends no analytics or telemetry.**
+
+To erase everything, quit Sentient and delete `~/.sentient`. Remove saved keys from your system keychain under the
+service name `sentient`.
+
+## What leaves your computer, and only when you set it up
+
+| You choose to... | What is sent, and to whom |
+|---|---|
+| Use a **local model** (Ollama, LM Studio) | Nothing. Prompts stay on your machine. |
+| Use a **cloud model** | The conversation, relevant memories and tool results for each request go to that provider (for example Anthropic or OpenAI) under their terms. |
+| **Connect an app** (Gmail, Slack, Notion...) | Sentient talks directly to that app's servers with your own login. |
+| Use **web search, weather, maps or news** | Your query goes to that service. Web search uses DuckDuckGo by default. |
+| Let Sentient **use the browser** | It visits the sites the task needs, in a separate browser profile. You sign in yourself; Sentient never types passwords or card numbers. |
+| Pair **Telegram or Discord** | Messages in paired chats pass through Telegram's or Discord's servers. |
+| Pair a **phone or glasses** | Traffic stays on your home network, encrypted. This is off until you turn it on. |
+| Create a **webhook** | Whoever has its secret link can start the tasks you attached to it. |
+
+## Safety rails
+
+- Sentient asks before sending, deleting, buying or running code, and purchases always ask, even if you allowed an
+  action for the rest of a chat.
+- Code that Sentient writes runs without your keys and can only read, not send.
+- Photos and screenshots from your devices ask first.
+- Only chats you paired with a code can talk to Sentient on Telegram or Discord.
+
+Found a problem? Please report it privately: see [SECURITY.md](../SECURITY.md).
