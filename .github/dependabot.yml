@@ -8,6 +8,10 @@ updates:
       python:
         patterns: ["*"]
     open-pull-requests-limit: 3
+    ignore:
+      # Major upgrades are done on purpose in their own pull requests.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: npm
     directory: "/desktop"
     schedule:
@@ -16,6 +20,10 @@ updates:
       desktop:
         patterns: ["*"]
     open-pull-requests-limit: 3
+    ignore:
+      # Major upgrades are done on purpose in their own pull requests.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
