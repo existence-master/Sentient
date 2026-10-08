@@ -34,10 +34,14 @@ OFFLINE_API_BASE = "http://10.255.255.1:11434"
 
 def _args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("home", help="SENTIENT_HOME folder to seed (created if missing)")
+    p.add_argument("home", nargs="?", default=os.environ.get("SENTIENT_HOME"),
+                   help="folder to seed (created if missing); defaults to SENTIENT_HOME")
     p.add_argument("--reset", action="store_true", help="delete sentient.db in that home first")
     p.add_argument("--theme", choices=["dark", "light", "system"], default=None)
-    return p.parse_args()
+    args = p.parse_args()
+    if not args.home:
+        p.error("pass a folder or set SENTIENT_HOME")
+    return args
 
 
 ARGS = _args()

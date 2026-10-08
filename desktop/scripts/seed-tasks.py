@@ -33,12 +33,16 @@ OFFLINE_API_BASE = "http://10.255.255.1:11434"
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("home", help="SENTIENT_HOME folder to seed (created if missing)")
+    p.add_argument("home", nargs="?", default=os.environ.get("SENTIENT_HOME"),
+                   help="folder to seed (created if missing); defaults to SENTIENT_HOME")
     p.add_argument("--user", default="Maya", help="user name written to config")
     p.add_argument("--timezone", default="Asia/Kolkata", help="assistant timezone written to config")
     p.add_argument("--theme", choices=["dark", "light", "system"], default=None, help="set ui.theme (for screenshots)")
     p.add_argument("--config-only", action="store_true", help="only update config.yaml (theme, models); keep tasks")
-    return p.parse_args()
+    args = p.parse_args()
+    if not args.home:
+        p.error("pass a folder or set SENTIENT_HOME")
+    return args
 
 
 ARGS = _parse_args()
