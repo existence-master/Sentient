@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      python:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
+  - package-ecosystem: npm
+    directory: "/desktop"
+    schedule:
+      interval: monthly
+    groups:
+      desktop:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

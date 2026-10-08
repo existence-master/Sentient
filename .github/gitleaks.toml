@@ -1,15 +1,17 @@
-# 🚨 Ensure .env.template Variables Are Empty
-[[rules]]
-id = "env-template-check"
-description = "Ensure .env.template variables are not filled"
-regex = '''(?i)^[A-Z0-9_]+=\s*["']?.+["']?$'''
-path = '''\.env\.template$'''
-tags = ["env", "secrets"]
+# Secret scanning for CI. Starts from gitleaks' built-in rules (API keys, tokens, private keys...).
+title = "Sentient gitleaks config"
 
-# 🚨 Ensure Python os.environ Variables Are Empty
-[[rules]]
-id = "python-os-env-check"
-description = "Ensure Python os.environ variables are not assigned non-empty values"
-regex = '''os\.environ\[[\'"][A-Z0-9_]+[\'"]\]\s*=\s*["'][^"']+["']'''
-path = '''.*\.py$'''
-tags = ["python", "secrets"]
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures, docs examples and generated files"
+paths = [
+  '''(^|/)tests/''',
+  '''(^|/)desktop/scripts/seed-[^/]+\.py$''',
+  '''(^|/)desktop/package-lock\.json$''',
+  '''(^|/)node_modules/''',
+  '''(^|/)\.venv/''',
+  '''(^|/)desktop/(out|dist|build)/''',
+  '''(^|/)firmware/esp32s3-glasses/sdkconfig\.defaults$''',
+]

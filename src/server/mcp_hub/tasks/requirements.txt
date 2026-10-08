@@ -1,3 +1,0 @@
-fastmcp
-python-dotenv
-# Dependencies are inherited from the main server environment

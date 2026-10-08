@@ -1,0 +1,85 @@
+name: Bug report
+description: Something in Sentient doesn't work the way it should.
+labels: ["bug", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please **never paste API keys, tokens or personal data** into an issue.
+        Sentient never needs our keys to run: use Ollama or your own provider key in Settings → Models.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+      placeholder: I asked Sentient to... and it...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Tasks
+        2. Create a recurring task "every Monday at 9"
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Chat
+        - Tasks
+        - Memory / About you
+        - Proactivity / Notifications
+        - Skills
+        - Integrations
+        - Messaging apps (Telegram, Discord)
+        - Devices / phone / glasses
+        - Browser
+        - Code execution
+        - Voice
+        - Settings / models
+        - Installer / startup
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Sentient version or commit
+      description: The installer version (for example 3.0.0-alpha.0), or `git rev-parse --short HEAD` when running from source.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model used
+      description: For example `ollama_chat/qwen3:8b` or `anthropic/claude-sonnet-5`.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The end of `~/.sentient/logs/backend.log`. Check it for personal data before pasting.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I removed keys, tokens and personal data from everything above.
+          required: true

@@ -5,6 +5,10 @@
 <h1>Sentient</h1>
 <p><b>Your personal assistant, running on your own computer.</b></p>
 
+[![CI](https://github.com/existence-master/Sentient/actions/workflows/ci.yaml/badge.svg)](https://github.com/existence-master/Sentient/actions/workflows/ci.yaml)
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE.txt)
+[![good first issues](https://img.shields.io/github/issues/existence-master/Sentient/good%20first%20issue?label=good%20first%20issues)](https://github.com/existence-master/Sentient/labels/good%20first%20issue)
+
 </div>
 
 Sentient is a desktop app that learns who you are, runs long tasks for you in the background,
@@ -12,7 +16,7 @@ notices things in your apps before you ask, and talks with you by voice. It work
 your own machine (Ollama, LM Studio) or any cloud model you choose. There is no account and no login:
 your data lives in one folder on your computer and your keys stay in your system keychain.
 
-> **Status: v3 alpha.** The app runs from source today. An installer is next. See
+> **Status: v3 alpha.** Runs from source, and a Windows installer builds from this repo. See
 > [Verified on a real PC](#verified-on-a-real-pc) for exactly what has been tested.
 
 ## What it does
@@ -88,7 +92,10 @@ through setup. Full developer notes are in [docs/DEVELOPING.md](docs/DEVELOPING.
 - `docs/NODES.md` the device protocol for phones, glasses and your own hardware.
 - `docs/` [architecture](docs/ARCHITECTURE.md), the [window-to-engine contract](docs/API.md) and the
   [roadmap](docs/ROADMAP.md).
-- `src/` the previous cloud version (v2), kept as a reference while the last pieces are ported.
+- `firmware/` reference firmware for ESP32-S3 smart glasses, and `packaging/` the installer build.
+
+The previous cloud version (v2) lives on the [`v2` branch](https://github.com/existence-master/Sentient/tree/v2)
+and is no longer developed.
 
 ## Verified on a real PC
 
@@ -161,8 +168,16 @@ Ollama onto the CPU.
 
 ## Contributing
 
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the ownership notes in
-[CLAUDE.md](CLAUDE.md).
+Contributions are welcome, and you never need our API keys: Sentient runs on a free local model or your own
+key, and every test runs offline with a fake model.
+
+1. Pick an issue labelled [good first issue](https://github.com/existence-master/Sentient/labels/good%20first%20issue)
+   or [help wanted](https://github.com/existence-master/Sentient/labels/help%20wanted), or fix something that bugs you.
+2. Fork, branch from `main`, and open a small pull request back to `main`.
+3. The checks run automatically; one maintainer review and it's in.
+
+Details are in [CONTRIBUTING.md](CONTRIBUTING.md). Questions go to
+[Discussions](https://github.com/existence-master/Sentient/discussions/categories/q-a).
 
 ## License
 

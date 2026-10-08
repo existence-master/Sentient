@@ -1,0 +1,50 @@
+name: Feature request
+description: Suggest something Sentient should do.
+labels: ["enhancement", "needs triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the situation and why it matters to you, not just the solution.
+      placeholder: Every Monday I... and right now I have to...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should Sentient do?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Chat
+        - Tasks
+        - Memory / About you
+        - Proactivity / Notifications
+        - Skills
+        - Integrations (new app)
+        - Messaging apps
+        - Devices / phone / glasses
+        - Browser
+        - Code execution
+        - Voice
+        - Desktop app / UI
+        - Installer / packaging
+        - Docs
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to work on this myself.

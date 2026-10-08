@@ -1,0 +1,39 @@
+"area: engine":
+  - changed-files:
+      - any-glob-to-any-file: ["sentient/agent/**", "sentient/llm/**", "sentient/store/**", "sentient/tools/**", "sentient/gateway/**", "sentient/config/**", "sentient/*.py"]
+"area: tasks":
+  - changed-files:
+      - any-glob-to-any-file: ["sentient/tasks/**", "tests/tasks/**"]
+"area: memory":
+  - changed-files:
+      - any-glob-to-any-file: ["sentient/memory/**", "tests/memory/**"]
+"area: proactivity":
+  - changed-files:
+      - any-glob-to-any-file: ["sentient/proactivity/**", "sentient/evolution/**", "sentient/skills/**", "tests/proactivity/**", "tests/evolution/**"]
+"area: integrations":
+  - changed-files:
+      - any-glob-to-any-file: ["sentient/integrations/**", "tests/integrations/**"]
+"area: channels":
+  - changed-files:
+      - any-glob-to-any-file: ["sentient/channels/**", "tests/channels/**"]
+"area: devices":
+  - changed-files:
+      - any-glob-to-any-file: ["sentient/nodes/**", "tests/nodes/**", "firmware/**", "docs/NODES.md"]
+"area: browser":
+  - changed-files:
+      - any-glob-to-any-file: ["sentient/browser/**", "tests/browser/**"]
+"area: sandbox":
+  - changed-files:
+      - any-glob-to-any-file: ["sentient/sandbox/**", "tests/sandbox/**"]
+"area: voice":
+  - changed-files:
+      - any-glob-to-any-file: ["sentient/voice/**", "tests/voice/**"]
+"area: desktop":
+  - changed-files:
+      - any-glob-to-any-file: ["desktop/**"]
+"area: packaging":
+  - changed-files:
+      - any-glob-to-any-file: ["packaging/**", "desktop/electron-builder.yml", ".github/workflows/release.yaml"]
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: ["docs/**", "*.md"]

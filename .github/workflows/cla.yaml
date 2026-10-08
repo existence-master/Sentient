@@ -29,7 +29,7 @@ jobs:
 
         with:
           path-to-signatures: '.github/signatures/version1/cla.json'
-          path-to-document: 'https://github.com/existence-master/Sentient/blob/master/CLA.md'
+          path-to-document: 'https://github.com/existence-master/Sentient/blob/main/CLA.md'
           branch: 'oss'  
           allowlist: itsskofficial,Kabeer2004,dependabot[bot]
           remote-organization-name: existence-master

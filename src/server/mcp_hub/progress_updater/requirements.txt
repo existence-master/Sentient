@@ -1,3 +1,0 @@
-fastmcp
-python-dotenv
-motor

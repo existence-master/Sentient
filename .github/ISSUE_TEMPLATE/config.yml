@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or setup help
+    url: https://github.com/existence-master/Sentient/discussions/categories/q-a
+    about: Ask how to install, configure or use Sentient. You never need our API keys.
+  - name: Idea to discuss
+    url: https://github.com/existence-master/Sentient/discussions/categories/ideas
+    about: Bigger ideas that need a conversation before they become an issue.
+  - name: Security vulnerability
+    url: https://github.com/existence-master/Sentient/security/advisories/new
+    about: Please report security problems privately.

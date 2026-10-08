@@ -142,6 +142,17 @@ DMG and Linux AppImage blocks in `electron-builder.yml` are written but untested
 and each needs `npm run package:engine` run on that OS first (PyInstaller does not
 cross-compile). macOS builds are unsigned and unnotarized so far.
 
+## Checks, branches and releases
+
+- Every pull request runs [CI](../.github/workflows/ci.yaml): ruff, the engine tests on Linux and Windows, the
+  desktop typecheck and build, and a secret scan. It needs no secrets, so it runs the same on forks.
+- `main` is the only long-lived branch. Contributors fork, branch from `main` and open pull requests back to it;
+  maintainers squash-merge after one approval and green checks. See [CONTRIBUTING.md](../CONTRIBUTING.md).
+- Releases are tags on `main`. Pushing a tag such as `v3.0.0-alpha.1` runs the
+  [release workflow](../.github/workflows/release.yaml), which builds the Windows, macOS and Linux installers and
+  attaches them to a draft GitHub release for a maintainer to review and publish.
+- Sentient v2 lives on the `v2` branch and the `v2-final` tag. It is not developed any more.
+
 ## Where to change things
 
 | You want to… | Go to |
