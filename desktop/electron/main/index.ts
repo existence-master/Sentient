@@ -174,7 +174,7 @@ backend.on('status', (status) => {
   if (win && !win.isDestroyed()) win.webContents.send(CH.backendStatus, status)
   if (status.state === 'ready') {
     void syncFromBackend()
-    if (!smoke) desktopNode.start(backend.baseUrl, backend.token)
+    desktopNode.start(backend.baseUrl, backend.token)
   } else {
     if (status.state === 'failed' || status.state === 'stopped') desktopNode.stop()
     tray?.refresh()

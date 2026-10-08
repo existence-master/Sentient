@@ -70,7 +70,7 @@ const PLATFORMS: Record<string, string> = {
   android: 'Android',
   ios: 'iPhone',
   web: 'Web browser',
-  'brilliant-frame': 'Brilliant Frame'
+  'esp32-s3': 'ESP32-S3'
 }
 
 export const platformLabel = (p: string | null | undefined) => (p ? (PLATFORMS[p.toLowerCase()] ?? p) : '')

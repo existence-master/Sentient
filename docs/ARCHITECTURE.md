@@ -1,6 +1,7 @@
 # Sentient v3 architecture
 
-*Living document. Direction set 2026-09-12, refined 2026-09-15. Branch `feat/v3-local-first`.*
+*Living document. Direction set 2026-09-12, refined 2026-09-15. The reasons behind each major choice are recorded as
+[architecture decision records](adr/README.md).*
 
 ## What Sentient is
 

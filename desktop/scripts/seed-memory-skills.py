@@ -31,10 +31,10 @@ TOPICS = [
     "Personal Identity", "Interests & Lifestyle", "Work & Learning", "Health & Wellbeing",
     "Relationships & Social Life", "Financial", "Goals & Challenges", "Miscellaneous",
 ]
-STOP = set(
-    "a an the and or of to in on at for with is are was be has have his her he she it its as by from that this"
-    " sarthak sarthak's".split()
-)
+STOP = {
+    "a", "an", "the", "and", "or", "of", "to", "in", "on", "at", "for", "with", "is", "are", "was", "be", "has",
+    "have", "his", "her", "he", "she", "it", "its", "as", "by", "from", "that", "this", "maya", "maya's",
+}
 
 
 def bow(text: str) -> list[float]:
@@ -81,133 +81,133 @@ class FakeProvider:
 
 # (content, topics, source, memory_type, duration, days_ago)
 FACTS = [
-    ("Sarthak is the founder of Existence, a startup building Sentient", ["Work & Learning", "Personal Identity"], "onboarding", "long-term", None, 41),
-    ("Sarthak lives in Pune, India", ["Personal Identity"], "onboarding", "long-term", None, 41),
-    ("Sarthak's timezone is Asia/Kolkata", ["Personal Identity"], "onboarding", "long-term", None, 41),
-    ("Sarthak prefers short, direct answers without filler", ["Personal Identity"], "onboarding", "long-term", None, 41),
-    ("Sarthak values privacy and wants his assistant to run locally", ["Personal Identity", "Work & Learning"], "onboarding", "long-term", None, 41),
-    ("Sarthak is an early riser and does deep work before 10am", ["Interests & Lifestyle", "Work & Learning"], "conversation", "long-term", None, 38),
-    ("Sarthak writes most of his code in Python and TypeScript", ["Work & Learning"], "conversation", "long-term", None, 37),
-    ("Sarthak uses a Windows 11 desktop with an 8 GB NVIDIA GPU for development", ["Work & Learning"], "conversation", "long-term", None, 36),
-    ("Sarthak runs local models through Ollama for Sentient development", ["Work & Learning"], "conversation", "long-term", None, 35),
-    ("Sarthak is planning a smart glasses companion for Sentient", ["Work & Learning", "Goals & Challenges"], "conversation", "long-term", None, 33),
-    ("Sarthak wants to launch Sentient v3 publicly in September 2026", ["Goals & Challenges", "Work & Learning"], "conversation", "long-term", None, 30),
-    ("Sarthak studied computer engineering", ["Work & Learning"], "file:resume.pdf", "long-term", None, 29),
-    ("Sarthak previously built Sentient v2 with FastAPI, Celery and Next.js", ["Work & Learning"], "file:resume.pdf", "long-term", None, 29),
-    ("Sarthak has experience with LLM agents, MCP servers and vector databases", ["Work & Learning"], "file:resume.pdf", "long-term", None, 29),
-    ("Sarthak gave a talk on local-first AI assistants at a Pune meetup", ["Work & Learning", "Relationships & Social Life"], "file:resume.pdf", "long-term", None, 29),
-    ("Sarthak is reading Designing Data-Intensive Applications", ["Work & Learning", "Interests & Lifestyle"], "conversation", "long-term", None, 26),
-    ("Sarthak is learning Rust on weekends", ["Work & Learning", "Goals & Challenges"], "conversation", "long-term", None, 24),
-    ("Sarthak enjoys playing chess online in the evenings", ["Interests & Lifestyle"], "conversation", "long-term", None, 23),
-    ("Sarthak likes filter coffee and drinks two cups a day", ["Interests & Lifestyle", "Health & Wellbeing"], "conversation", "long-term", None, 22),
-    ("Sarthak goes trekking in the Sahyadri hills during monsoon", ["Interests & Lifestyle", "Health & Wellbeing"], "conversation", "long-term", None, 21),
-    ("Sarthak listens to lo-fi music while coding", ["Interests & Lifestyle"], "conversation", "long-term", None, 20),
-    ("Sarthak is a fan of science fiction, especially The Expanse", ["Interests & Lifestyle"], "manual", "long-term", None, 19),
-    ("Sarthak photographs street scenes with a Fujifilm camera", ["Interests & Lifestyle"], "manual", "long-term", None, 18),
-    ("Sarthak runs 5 km three times a week", ["Health & Wellbeing", "Interests & Lifestyle"], "conversation", "long-term", None, 18),
-    ("Sarthak is trying to sleep before midnight on weekdays", ["Health & Wellbeing", "Goals & Challenges"], "conversation", "long-term", None, 17),
-    ("Sarthak is lactose intolerant", ["Health & Wellbeing"], "manual", "long-term", None, 16),
-    ("Sarthak meditates for ten minutes after waking up", ["Health & Wellbeing"], "conversation", "long-term", None, 15),
-    ("Sarthak has an annual health checkup due in October", ["Health & Wellbeing"], "conversation", "long-term", None, 14),
-    ("Sarthak's sister Aditi is a doctor in Bengaluru", ["Relationships & Social Life"], "conversation", "long-term", None, 14),
-    ("Sarthak's parents live in Nashik", ["Relationships & Social Life"], "conversation", "long-term", None, 13),
-    ("Sarthak calls his parents every Sunday evening", ["Relationships & Social Life", "Interests & Lifestyle"], "conversation", "long-term", None, 13),
-    ("Sarthak's cofounder Rohan handles hardware for the glasses project", ["Relationships & Social Life", "Work & Learning"], "conversation", "long-term", None, 12),
-    ("Sarthak's close friend Neha is a product designer who reviews Sentient's UI", ["Relationships & Social Life", "Work & Learning"], "conversation", "long-term", None, 12),
-    ("Sarthak's mother's birthday is on 2 November", ["Relationships & Social Life"], "manual", "long-term", None, 11),
-    ("Sarthak mentors two engineering students every month", ["Relationships & Social Life", "Work & Learning"], "conversation", "long-term", None, 10),
-    ("Sarthak bootstraps Existence from savings and consulting income", ["Financial", "Work & Learning"], "conversation", "long-term", None, 10),
-    ("Sarthak tracks expenses in a monthly spreadsheet", ["Financial"], "conversation", "long-term", None, 9),
-    ("Sarthak invests a fixed amount in index funds every month", ["Financial"], "conversation", "long-term", None, 9),
-    ("Sarthak's cloud budget for Sentient is capped at 50 dollars a month", ["Financial", "Work & Learning"], "conversation", "long-term", None, 8),
-    ("Sarthak wants to reach 1000 beta users by the end of the year", ["Goals & Challenges", "Work & Learning"], "conversation", "long-term", None, 8),
-    ("Sarthak finds it hard to stop working late at night", ["Goals & Challenges", "Health & Wellbeing"], "conversation", "long-term", None, 7),
-    ("Sarthak wants to write a weekly founder newsletter", ["Goals & Challenges", "Work & Learning"], "conversation", "long-term", None, 7),
-    ("Sarthak is preparing a pitch deck for a pre-seed round", ["Goals & Challenges", "Financial"], "conversation", "long-term", None, 6),
-    ("Sarthak wants to run a half marathon next year", ["Goals & Challenges", "Health & Wellbeing"], "manual", "long-term", None, 6),
-    ("Sarthak prefers meetings after 2pm", ["Work & Learning", "Personal Identity"], "conversation", "long-term", None, 5),
-    ("Sarthak uses Gmail and Google Calendar for work", ["Work & Learning", "Miscellaneous"], "conversation", "long-term", None, 5),
-    ("Sarthak keeps project notes in Notion", ["Work & Learning", "Miscellaneous"], "conversation", "long-term", None, 4),
-    ("Sarthak's laptop is a ThinkPad X1 Carbon", ["Miscellaneous"], "conversation", "long-term", None, 4),
-    ("Sarthak's favourite restaurant in Pune is Vaishali on FC Road", ["Interests & Lifestyle", "Miscellaneous"], "conversation", "long-term", None, 3),
-    ("Sarthak drives a grey Maruti Swift", ["Miscellaneous"], "manual", "long-term", None, 3),
-    ("Sarthak switched Sentient's database from MongoDB to SQLite", ["Work & Learning"], "conversation", "long-term", None, 2),
-    ("Sarthak decided the v3 UI uses React, Tailwind and Electron", ["Work & Learning"], "conversation", "long-term", None, 2),
-    ("Sarthak is reviewing Neha's designs for the memory graph", ["Work & Learning", "Relationships & Social Life"], "conversation", "long-term", None, 1),
-    ("Sarthak wants weekly reviews compiled every Friday evening", ["Work & Learning", "Goals & Challenges"], "conversation", "long-term", None, 1),
-    ("Sarthak prefers dark mode in every app", ["Personal Identity", "Miscellaneous"], "conversation", "long-term", None, 0),
+    ("Maya is a product designer at Northwind Studio, a small design studio", ["Work & Learning", "Personal Identity"], "onboarding", "long-term", None, 41),
+    ("Maya lives in Bengaluru, India", ["Personal Identity"], "onboarding", "long-term", None, 41),
+    ("Maya's timezone is Asia/Kolkata", ["Personal Identity"], "onboarding", "long-term", None, 41),
+    ("Maya prefers short, concise answers without filler", ["Personal Identity"], "onboarding", "long-term", None, 41),
+    ("Maya values privacy and likes that her assistant keeps her data on her own computer", ["Personal Identity", "Work & Learning"], "onboarding", "long-term", None, 41),
+    ("Maya is a morning person and does her best design work before 11am", ["Interests & Lifestyle", "Work & Learning"], "conversation", "long-term", None, 38),
+    ("Maya does most of her design work in Figma", ["Work & Learning"], "conversation", "long-term", None, 37),
+    ("Maya looks after the design system at Northwind Studio", ["Work & Learning"], "conversation", "long-term", None, 36),
+    ("Maya leads a design critique every Wednesday afternoon", ["Work & Learning"], "conversation", "long-term", None, 35),
+    ("Maya is planning a refresh of her design portfolio", ["Work & Learning", "Goals & Challenges"], "conversation", "long-term", None, 33),
+    ("Maya wants to finish her portfolio refresh by the end of November", ["Goals & Challenges", "Work & Learning"], "conversation", "long-term", None, 30),
+    ("Maya studied communication design", ["Work & Learning"], "file:resume.pdf", "long-term", None, 29),
+    ("Maya previously worked as a visual designer at a small branding agency", ["Work & Learning"], "file:resume.pdf", "long-term", None, 29),
+    ("Maya has experience with user research, prototyping and accessibility reviews", ["Work & Learning"], "file:resume.pdf", "long-term", None, 29),
+    ("Maya gave a talk on accessible colour palettes at a Bengaluru design meetup", ["Work & Learning", "Relationships & Social Life"], "file:resume.pdf", "long-term", None, 29),
+    ("Maya is reading a book about how everyday objects are designed", ["Work & Learning", "Interests & Lifestyle"], "conversation", "long-term", None, 26),
+    ("Maya is learning the veena on weekends", ["Work & Learning", "Goals & Challenges"], "conversation", "long-term", None, 24),
+    ("Maya enjoys pottery classes on Thursday evenings", ["Interests & Lifestyle"], "conversation", "long-term", None, 23),
+    ("Maya likes masala chai and drinks two cups a day", ["Interests & Lifestyle", "Health & Wellbeing"], "conversation", "long-term", None, 22),
+    ("Maya goes on sunrise hikes near Bengaluru after the monsoon", ["Interests & Lifestyle", "Health & Wellbeing"], "conversation", "long-term", None, 21),
+    ("Maya listens to instrumental music while designing", ["Interests & Lifestyle"], "conversation", "long-term", None, 20),
+    ("Maya is a fan of cosy mystery novels", ["Interests & Lifestyle"], "manual", "long-term", None, 19),
+    ("Maya sketches street scenes in a pocket sketchbook", ["Interests & Lifestyle"], "manual", "long-term", None, 18),
+    ("Maya runs 5 km three times a week", ["Health & Wellbeing", "Interests & Lifestyle"], "conversation", "long-term", None, 18),
+    ("Maya is trying to keep screens off after 10pm", ["Health & Wellbeing", "Goals & Challenges"], "conversation", "long-term", None, 17),
+    ("Maya is vegetarian", ["Health & Wellbeing"], "manual", "long-term", None, 16),
+    ("Maya does ten minutes of stretching after waking up", ["Health & Wellbeing"], "conversation", "long-term", None, 15),
+    ("Maya has an eye checkup due in October", ["Health & Wellbeing"], "conversation", "long-term", None, 14),
+    ("Maya's sister Anika is a school teacher in Mysuru", ["Relationships & Social Life"], "conversation", "long-term", None, 14),
+    ("Maya's parents live in Mangaluru", ["Relationships & Social Life"], "conversation", "long-term", None, 13),
+    ("Maya calls her parents every Sunday evening", ["Relationships & Social Life", "Interests & Lifestyle"], "conversation", "long-term", None, 13),
+    ("Maya's friend Rohan is her running partner on weekend mornings", ["Relationships & Social Life", "Health & Wellbeing"], "conversation", "long-term", None, 12),
+    ("Maya's colleague Kavya is a developer who builds the components Maya designs", ["Relationships & Social Life", "Work & Learning"], "conversation", "long-term", None, 12),
+    ("Maya's mother's birthday is on 2 November", ["Relationships & Social Life"], "manual", "long-term", None, 11),
+    ("Maya mentors two design students from a local college every month", ["Relationships & Social Life", "Work & Learning"], "conversation", "long-term", None, 10),
+    ("Maya is saving for a two-week trip to Japan next spring", ["Financial", "Goals & Challenges"], "conversation", "long-term", None, 10),
+    ("Maya tracks expenses in a monthly spreadsheet", ["Financial"], "conversation", "long-term", None, 9),
+    ("Maya puts a fixed amount into a recurring deposit every month", ["Financial"], "conversation", "long-term", None, 9),
+    ("Maya's monthly budget for eating out is 4000 rupees", ["Financial", "Interests & Lifestyle"], "conversation", "long-term", None, 8),
+    ("Maya wants her design newsletter to reach 500 readers by the end of the year", ["Goals & Challenges", "Work & Learning"], "conversation", "long-term", None, 8),
+    ("Maya finds it hard to stop tweaking designs late at night", ["Goals & Challenges", "Health & Wellbeing"], "conversation", "long-term", None, 7),
+    ("Maya wants to write a short case study for every client project", ["Goals & Challenges", "Work & Learning"], "conversation", "long-term", None, 7),
+    ("Maya is preparing a rate card for freelance illustration work", ["Goals & Challenges", "Financial"], "conversation", "long-term", None, 6),
+    ("Maya wants to run a 10 km race next year", ["Goals & Challenges", "Health & Wellbeing"], "manual", "long-term", None, 6),
+    ("Maya prefers meetings after 2pm", ["Work & Learning", "Personal Identity"], "conversation", "long-term", None, 5),
+    ("Maya uses Gmail and Google Calendar for work", ["Work & Learning", "Miscellaneous"], "conversation", "long-term", None, 5),
+    ("Maya keeps meeting notes in Google Docs", ["Work & Learning", "Miscellaneous"], "conversation", "long-term", None, 4),
+    ("Maya has a ginger cat named Biscuit", ["Miscellaneous", "Interests & Lifestyle"], "conversation", "long-term", None, 4),
+    ("Maya's favourite place to eat in Bengaluru is a small dosa cafe near her flat", ["Interests & Lifestyle", "Miscellaneous"], "conversation", "long-term", None, 3),
+    ("Maya rides a blue scooter to the studio", ["Miscellaneous"], "manual", "long-term", None, 3),
+    ("Maya is moving the Lumen Health app redesign onto the new design system", ["Work & Learning"], "conversation", "long-term", None, 2),
+    ("Maya chose a warm serif font and soft pastel colours for the Paperkite website", ["Work & Learning"], "conversation", "long-term", None, 2),
+    ("Maya is reviewing Kavya's build of the new button components", ["Work & Learning", "Relationships & Social Life"], "conversation", "long-term", None, 1),
+    ("Maya wants weekly reviews compiled every Friday evening", ["Work & Learning", "Goals & Challenges"], "conversation", "long-term", None, 1),
+    ("Maya prefers dark mode in every app", ["Personal Identity", "Miscellaneous"], "conversation", "long-term", None, 0),
     # short-term (a few expire soon)
-    ("Sarthak has a call with Rohan tomorrow at 3pm about the glasses prototype", ["Work & Learning", "Relationships & Social Life"], "conversation", "short-term", "1 day", 0),
-    ("Sarthak is travelling to Mumbai this weekend", ["Interests & Lifestyle"], "conversation", "short-term", "3 days", 0),
-    ("Sarthak needs to renew his car insurance this week", ["Financial", "Miscellaneous"], "conversation", "short-term", "5 days", 1),
-    ("Sarthak is fasting today and skipping lunch", ["Health & Wellbeing"], "conversation", "short-term", "6 hours", 0),
-    ("Sarthak is waiting for a reply from an investor about the pitch deck", ["Goals & Challenges", "Financial"], "conversation", "short-term", "2 weeks", 2),
+    ("Maya has a call with the Lumen Health team tomorrow at 3pm about the onboarding screens", ["Work & Learning", "Relationships & Social Life"], "conversation", "short-term", "1 day", 0),
+    ("Maya is visiting Anika in Mysuru this weekend", ["Interests & Lifestyle"], "conversation", "short-term", "3 days", 0),
+    ("Maya needs to renew her scooter insurance this week", ["Financial", "Miscellaneous"], "conversation", "short-term", "5 days", 1),
+    ("Maya has a dentist appointment this afternoon", ["Health & Wellbeing"], "conversation", "short-term", "6 hours", 0),
+    ("Maya is waiting for Paperkite to approve her quote for the website", ["Goals & Challenges", "Financial"], "conversation", "short-term", "2 weeks", 2),
 ]
 
 UPDATED = {
-    "Sarthak runs 5 km three times a week": "Sarthak runs 3 km twice a week",
-    "Sarthak's cloud budget for Sentient is capped at 50 dollars a month": "Sarthak's cloud budget for Sentient is capped at 30 dollars a month",
+    "Maya runs 5 km three times a week": "Maya runs 5 km on Saturday and Sunday mornings",
+    "Maya's monthly budget for eating out is 4000 rupees": "Maya's monthly budget for eating out is 3000 rupees",
 }
 
 SUMMARIES = [
-    ("Planning the Sentient v3 launch", 1,
-     "I helped Sarthak turn the September launch into a checklist: finish the memory and skills screens, record a demo video, "
-     "and invite the first 50 beta users from the waitlist. He wants the release notes written in plain language."),
-    ("Weekly review, week 36", 3,
-     "Sarthak and I went through his week. He shipped the SQLite migration, missed two runs because of late nights, and "
-     "asked me to remind him about sleep before midnight. We moved the investor follow-ups to Monday."),
-    ("Glasses prototype with Rohan", 6,
-     "We compared microphones and battery packs for the smart glasses. Rohan prefers a bone-conduction speaker; Sarthak "
-     "wants voice latency under 800 ms. I drafted an email to two suppliers and saved their quotes."),
-    ("Trek planning for Rajmachi", 11,
-     "Sarthak asked for a monsoon trek near Pune. I suggested Rajmachi, checked the weather for Saturday, and listed what to pack. "
-     "He invited Neha and two friends."),
-    ("Budget and pre-seed deck", 16,
-     "I summarised Sarthak's monthly spending sheet and helped outline a pre-seed deck: problem, local-first privacy, traction, "
-     "and a 12-month plan. He wants to keep cloud costs under 30 dollars a month."),
+    ("Planning the portfolio refresh", 1,
+     "I helped Maya turn her portfolio refresh into a checklist: pick four case studies, rewrite the about page, "
+     "and ask Rohan and Anika for feedback before the end of November. She wants each case study to fit on one screen."),
+    ("Weekly review, week 40", 3,
+     "Maya and I went through her week. She shipped the Lumen Health onboarding screens, missed one weekend run because "
+     "of rain, and asked me to remind her to keep screens off after 10pm. We moved the Paperkite follow-up to Monday."),
+    ("Glasses: reading a recipe card", 6,
+     "Maya used her glasses to read her mother's handwritten recipe card for bisi bele bath. I read out each step, "
+     "scaled it for six people, converted cups to grams and turned the ingredients into a shopping list."),
+    ("Sunrise hike at Nandi Hills", 11,
+     "Maya asked for an easy sunrise hike near Bengaluru. I suggested Nandi Hills, checked the weather for Saturday, "
+     "and listed what to pack. She invited Rohan and two friends from her pottery class."),
+    ("Budget and Japan trip savings", 16,
+     "I summarised Maya's monthly spending sheet and helped plan savings for her Japan trip: flights, a rail pass and "
+     "a 12-day budget. She wants to keep eating out under 3000 rupees a month."),
 ]
 
 SOUL = """# Soul
 
-You are Sentient, a personal assistant that lives on Sarthak's own computer.
+You are Sentient, a personal assistant that lives on Maya's own computer.
 
 ## How you behave
 - Warm, direct, and brief. You talk like a capable friend.
 - You act. When a request can be done with your tools, do it, then report the result in one or two sentences.
-- You remember. Facts about Sarthak that come up are worth saving.
+- You remember. Facts about Maya that come up are worth saving.
 - You respect approvals. Anything that sends, deletes, or spends waits for a yes.
 
 ## Voice
 Plain language, short sentences, no filler.
 """
 
-USER = """# About Sarthak
+USER = """# About Maya
 
-- Founder of **Existence**, building Sentient, a local-first personal assistant.
-- Lives in Pune, India (Asia/Kolkata). Early riser; deep work before 10am.
-- Prefers short, direct answers. Meetings after 2pm, please.
+- Product designer at **Northwind Studio**, a small design studio in Bengaluru.
+- Lives in Bengaluru, India (Asia/Kolkata). Morning person; best design work before 11am.
+- Prefers short, concise answers. Meetings after 2pm, please.
 
 ## Work
-- Python and TypeScript. Windows 11 desktop, 8 GB GPU, Ollama for local models.
-- Launching Sentient v3 in September 2026; smart glasses companion is next.
+- Designs in Figma and looks after the studio's design system. Leads the design critique on Wednesdays.
+- Current clients: Lumen Health (app redesign) and Paperkite (new website). Portfolio refresh due in November.
 
 ## Learned
 
-- Sarthak is learning Rust on weekends
-- Sarthak's sister Aditi is a doctor in Bengaluru
-- Sarthak wants weekly reviews compiled every Friday evening
+- Maya is learning the veena on weekends
+- Maya's sister Anika is a school teacher in Mysuru
+- Maya wants weekly reviews compiled every Friday evening
 """
 
 MEMORY_MD = """# Long-term memory
 
 ## Ongoing projects
-- **Sentient v3 launch** (Sept 2026): memory + skills screens, demo video, first 50 beta invites.
-- **Smart glasses** with Rohan: voice latency target under 800 ms; supplier quotes saved.
-- **Pre-seed round**: deck outlined; waiting on one investor reply.
+- **Portfolio refresh** (end of November): four case studies, a new about page, feedback from Rohan and Anika.
+- **Lumen Health app**: onboarding screens shipped; moving the rest onto the new design system.
+- **Paperkite website**: homepage designs sent; waiting on approval of the quote.
 
 ## Preferences
 - Short answers, dark mode, meetings after 2pm.
-- Keep cloud spend under $30/month.
+- Vegetarian. Keep eating out under 3000 rupees a month; saving for Japan next spring.
 
 ## Commitments
 - Weekly review every Friday evening.
@@ -216,16 +216,16 @@ MEMORY_MD = """# Long-term memory
 
 SKILLS = [
     dict(name="weekly-review", author="user", tags=["productivity", "planning"], requires_tools=["gcalendar", "gmail"],
-         description="Compile Sarthak's weekly review from calendar, email and task results every Friday.",
+         description="Compile Maya's weekly review from calendar, email and task results every Friday.",
          uses=14, views=22, patches=2, last_used_days=1,
          body="""# Weekly review
 
 ## When to use
-Every Friday evening, or when Sarthak asks "how did my week go?".
+Every Friday evening, or when Maya asks "how did my week go?".
 
 ## Procedure
-1. Pull this week's calendar events and count meetings vs. focus blocks.
-2. Search Gmail for threads Sarthak replied to and anything still waiting on him.
+1. Pull this week's calendar events and count client meetings vs. design time.
+2. Search Gmail for client threads Maya replied to and anything still waiting on her.
 3. List completed and failed tasks from the task log.
 4. Write three sections: **Shipped**, **Slipped**, **Next week**.
 5. End with one question about priorities for Monday.
@@ -237,62 +237,64 @@ Every Friday evening, or when Sarthak asks "how did my week go?".
 ## Verification
 - Every item links back to an email, event or task.
 """),
-    dict(name="investor-follow-up", author="assistant", tags=["fundraising", "email"], requires_tools=["gmail"],
-         description="Draft a polite follow-up to investors who have not replied in five business days.",
+    dict(name="client-feedback-digest", author="assistant", tags=["clients", "email"], requires_tools=["gmail"],
+         description="Collect client feedback from email into one list of changes per screen.",
          uses=6, views=9, patches=1, last_used_days=3, created_by_review=True,
-         body="""# Investor follow-up
+         body="""# Client feedback digest
 
 ## When to use
-An investor thread has had no reply for five business days.
+A client has sent feedback on designs across several emails, or Maya asks "what did they want changed?".
 
 ## Procedure
-1. Find the last message Sarthak sent in the thread.
-2. Draft a two-sentence follow-up with one new piece of traction.
-3. Ask for approval before sending.
+1. Search Gmail for the client's messages since the last design review.
+2. Pull out every requested change and group it by screen or page.
+3. Mark each change as clear, unclear or conflicting with earlier feedback.
+4. Draft a short reply that confirms the list and asks about the unclear items, and wait for approval before sending.
 
 ## Pitfalls
-- Never follow up more than twice.
+- Don't treat a question as a change request.
+- Never reply to a client without approval.
 
 ## Verification
-- The draft references the original deck or meeting.
+- Every change cites the email it came from.
 """),
-    dict(name="trek-planner", author="assistant", tags=["travel", "weather"], requires_tools=["weather", "maps"],
-         description="Plan a day trek near Pune with weather, travel time and a packing list.",
+    dict(name="hike-planner", author="assistant", tags=["travel", "weather"], requires_tools=["weather", "maps"],
+         description="Plan an easy day hike near Bengaluru with weather, travel time and a packing list.",
          uses=3, views=4, patches=0, last_used_days=11, created_by_review=True,
-         body="""# Trek planner
+         body="""# Hike planner
 
 ## When to use
-Sarthak wants to go trekking this weekend.
+Maya wants to go hiking this weekend.
 
 ## Procedure
-1. Check the weather for Saturday and Sunday at 2-3 candidate forts.
-2. Estimate drive time from Pune with maps.
-3. Pick the best option and list a monsoon packing list.
+1. Check the weather for Saturday and Sunday at 2-3 candidate trails.
+2. Estimate travel time from Bengaluru with maps, aiming to arrive before sunrise.
+3. Pick the best option and list what to pack, including vegetarian snacks.
 
 ## Pitfalls
-- Avoid routes with red rainfall alerts.
+- Avoid trails with heavy rain alerts.
 
 ## Verification
 - Forecast fetched within the last 12 hours.
 """),
-    dict(name="meeting-prep", author="user", tags=["meetings"], requires_tools=["gcalendar"],
-         description="Prepare a one-page brief before any external meeting.",
+    dict(name="critique-prep", author="user", tags=["meetings", "design"], requires_tools=["gcalendar"],
+         description="Prepare a short agenda before the Wednesday design critique.",
          uses=9, views=12, patches=1, last_used_days=2,
-         body="""# Meeting prep
+         body="""# Critique prep
 
 ## When to use
-30 minutes before an external meeting on the calendar.
+On Wednesday morning, before the design critique on the calendar.
 
 ## Procedure
-1. Read the event description and attendees.
-2. Search email for the last thread with each attendee.
-3. Summarise context, open questions and a proposed agenda.
+1. Read the event description and the list of attendees.
+2. Search email for designs people asked to have reviewed this week.
+3. Write an agenda with one slot per design, the question each designer wants answered, and the time allowed.
 
 ## Pitfalls
-- Don't include private notes about attendees.
+- Keep feedback about the work, never about the person.
 
 ## Verification
-- Brief fits on one screen.
+- The agenda fits on one screen.
 """),
     dict(name="expense-summary", author="community", tags=["finance"], requires_tools=[],
          description="Summarise a monthly expense spreadsheet into categories and trends.",
@@ -300,12 +302,12 @@ Sarthak wants to go trekking this weekend.
          body="""# Expense summary
 
 ## When to use
-Sarthak shares or mentions his monthly spending sheet.
+Maya shares or mentions her monthly spending sheet.
 
 ## Procedure
 1. Group rows by category.
 2. Compare with the previous month and flag changes above 20%.
-3. Produce a short table and two suggestions.
+3. Produce a short table and two suggestions, including progress toward the Japan trip savings.
 
 ## Pitfalls
 - Never move money or change the sheet.
@@ -313,62 +315,62 @@ Sarthak shares or mentions his monthly spending sheet.
 ## Verification
 - Totals match the sheet.
 """),
-    dict(name="release-notes", author="assistant", tags=["writing", "product"], requires_tools=["github"],
-         description="Turn merged pull requests into plain-language release notes.",
+    dict(name="case-study-draft", author="assistant", tags=["writing", "portfolio"], requires_tools=[],
+         description="Turn a finished client project into a short portfolio case study.",
          uses=1, views=2, patches=0, last_used_days=21, created_by_review=True, stale=True,
-         body="""# Release notes
+         body="""# Case study draft
 
 ## When to use
-Before tagging a Sentient release.
+A client project has wrapped up and Maya wants it in her portfolio.
 
 ## Procedure
-1. List merged pull requests since the last tag.
-2. Group them into New, Improved and Fixed.
-3. Rewrite each in one plain sentence a non-technical user understands.
+1. Ask which screens and results she wants to show.
+2. Write four short parts: the problem, what she tried, what shipped, and what changed for the client.
+3. Suggest three images to go with it.
 
 ## Pitfalls
-- Leave out internal refactors.
+- Leave out anything the client asked to keep private.
 
 ## Verification
-- Every line maps to a merged PR.
+- The draft fits on one screen and names no private client details.
 """),
 ]
 
 PENDING_NEW = dict(
-    name="supplier-quote-compare", tags=["hardware", "email"], requires_tools=["gmail"],
-    description="Compare hardware supplier quotes from email into a table with price, lead time and MOQ.",
-    reason="In the glasses prototype chat you asked me to collect three supplier quotes and compare them. "
-    "I used 6 tool calls to search Gmail, open attachments and build a table; this is likely to repeat.",
-    body="""# Supplier quote comparison
+    name="recipe-shopping-list", tags=["cooking", "groceries"], requires_tools=[],
+    description="Turn a recipe into a scaled shopping list grouped by shop section.",
+    reason="While reading your mother's recipe card you asked me to scale it for six people and turn it into a "
+    "shopping list. I used 5 tool calls to read the card, convert units and group the items; this is likely to repeat.",
+    body="""# Recipe to shopping list
 
 ## When to use
-Sarthak asks to compare quotes from hardware suppliers.
+Maya shares a recipe (a photo, a card read through her glasses, or a link) and wants to cook it.
 
 ## Procedure
-1. Search Gmail for recent emails with "quote" or "quotation" from the named suppliers.
-2. Open PDF or spreadsheet attachments and extract unit price, currency, lead time and minimum order quantity.
-3. Convert prices to INR using today's rate.
-4. Present a table sorted by total cost for the requested quantity.
-5. Recommend one supplier in a single sentence and list open questions.
+1. Read the recipe and list every ingredient with its quantity.
+2. Scale the quantities to the number of people she names.
+3. Convert cups and spoons to grams where it helps.
+4. Leave out items she has said are already at home.
+5. Group the list by shop section: vegetables, dairy, grains and spices.
 
 ## Pitfalls
-- Quotes often exclude shipping and GST; call that out.
-- Don't reply to suppliers without approval.
+- Maya is vegetarian; flag any ingredient that is not.
+- Don't order groceries without approval.
 
 ## Verification
-- Every row cites the email it came from.
+- Every item on the list appears in the recipe.
 """)
 
 PENDING_UPDATE_BODY = """# Weekly review
 
 ## When to use
-Every Friday evening, or when Sarthak asks "how did my week go?".
+Every Friday evening, or when Maya asks "how did my week go?".
 
 ## Procedure
-1. Pull this week's calendar events and count meetings vs. focus blocks.
-2. Search Gmail for threads Sarthak replied to and anything still waiting on him.
+1. Pull this week's calendar events and count client meetings vs. design time.
+2. Search Gmail for client threads Maya replied to and anything still waiting on her.
 3. List completed and failed tasks from the task log.
-4. Check health goals: runs logged and nights he slept before midnight.
+4. Check health goals: weekend runs logged and nights she kept screens off after 10pm.
 5. Write four sections: **Shipped**, **Slipped**, **Health**, **Next week**.
 6. End with one question about priorities for Monday.
 
@@ -382,23 +384,23 @@ Every Friday evening, or when Sarthak asks "how did my week go?".
 """
 
 ARCHIVED = dict(
-    name="standup-notes", tags=["meetings"], requires_tools=["slack"],
-    description="Post daily stand-up notes to Slack from yesterday's commits.",
-    body="""# Stand-up notes
+    name="inspiration-roundup", tags=["design"], requires_tools=["slack"],
+    description="Post a weekly roundup of saved design inspiration to the studio's Slack.",
+    body="""# Inspiration roundup
 
 ## When to use
-Each weekday at 10am.
+Each Monday at 10am.
 
 ## Procedure
-1. Collect yesterday's commits.
-2. Summarise into three bullets.
-3. Post to the team channel after approval.
+1. Collect the links and screenshots Maya saved last week.
+2. Pick the five best and write one line about each.
+3. Post to the studio channel after approval.
 
 ## Pitfalls
-- Skip weekends.
+- Skip weeks with fewer than three saves.
 
 ## Verification
-- Posted once per day.
+- Posted once per week.
 """)
 
 
@@ -414,9 +416,9 @@ async def seed(home: Path, theme: str) -> None:
     now = datetime.now(UTC)
     cfg = SentientConfig()
     cfg.assistant.name = "Sentient"
-    cfg.assistant.user_name = "Sarthak"
+    cfg.assistant.user_name = "Maya"
     cfg.assistant.timezone = "Asia/Kolkata"
-    cfg.assistant.location = "Pune, India"
+    cfg.assistant.location = "Bengaluru, India"
     cfg.assistant.onboarding_complete = True
     cfg.ui.theme = theme
     # keep the real engine from calling models while the demo is open
@@ -548,14 +550,14 @@ async def seed(home: Path, theme: str) -> None:
         wr = SKILLS[0]
         lib.write(
             "weekly-review",
-            "Compile Sarthak's weekly review from calendar, email, tasks and health goals every Friday.",
+            "Compile Maya's weekly review from calendar, email, tasks and health goals every Friday.",
             PENDING_UPDATE_BODY, author="user", tags=[*wr["tags"], "health"], requires_tools=wr["requires_tools"],
             pending=True, created_by_review=True,
         )
         await lib.record_patch("weekly-review", "pending_review", store)
         reason = (
-            "During the last two weekly reviews you asked me to add how many runs you logged and how often you slept "
-            "before midnight. Adding a Health section makes that automatic."
+            "During the last two weekly reviews you asked me to add how many runs you logged and how often you kept "
+            "screens off after 10pm. Adding a Health section makes that automatic."
         )
         await log_event(
             store, "skill_patched",
@@ -573,7 +575,7 @@ async def seed(home: Path, theme: str) -> None:
         await log_event(store, "skill_archived", {"name": ARCHIVED["name"], "by": "curator", "idle_days": 34},
                         ts=iso(now - timedelta(days=4, hours=6)))
         await log_event(
-            store, "curator_run", {"staled": ["release-notes"], "archived": [ARCHIVED["name"]], "merge_proposals": []},
+            store, "curator_run", {"staled": ["case-study-draft"], "archived": [ARCHIVED["name"]], "merge_proposals": []},
             ts=iso(now - timedelta(days=4, hours=5, minutes=59)),
         )
         await log_event(

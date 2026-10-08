@@ -40,24 +40,24 @@ let insights: Insight[] = [
     ['message', '“tl;dr first please”', 9 * D]
   ]),
   ins('i2', 'preferences', 'Likes working with dark themes and quiet, minimal interfaces.', 0.64, 'active', 'inferred', [['fact', 'Switched Sentient, VS Code and Figma to dark mode', 12 * D]]),
-  ins('i3', 'communication', 'Writes to investors formally, but keeps messages to the team casual and brief.', 0.78, 'active', 'inferred', [
+  ins('i3', 'communication', 'Writes to clients formally, but keeps studio chat casual and brief.', 0.78, 'active', 'inferred', [
     ['message', '“Hi Priya, thank you for the thoughtful notes on the deck.”', 2 * D],
-    ['message', '“yo, pushing the fix tonight 👍”', 1 * D]
+    ['message', '“yo, sending the new mockups tonight 👍”', 1 * D]
   ]),
-  ins('i4', 'goals', 'Wants to ship the Sentient desktop beta before the end of September.', 0.88, 'confirmed', 'user', [['summary', 'Planning chat about the September beta milestone', 5 * D]]),
+  ins('i4', 'goals', 'Wants to finish her portfolio refresh before the end of October.', 0.88, 'confirmed', 'user', [['summary', 'Planning chat about the portfolio refresh', 5 * D]]),
   ins('i5', 'goals', 'Is training for a 10 km run in December.', 0.55, 'active', 'inferred', [['fact', 'Logged 4 runs this week, longest 6.2 km', 2 * D]]),
   ins('i6', 'routines', 'Does deep work early, usually from 6 to 10 in the morning, and keeps meetings after lunch.', 0.81, 'active', 'inferred', [
     ['summary', 'Most focused sessions start between 6 and 7 AM', 4 * D],
     ['fact', 'Declined three morning meetings last week', 6 * D]
   ]),
-  ins('i7', 'relationships', 'Calls his mother most Sundays and plans family events well ahead.', 0.7, 'active', 'inferred', [['message', '“Remind me to call Mom on Sunday evening”', 7 * D]]),
-  ins('i8', 'values', 'Cares about privacy and prefers tools that keep data on his own computer.', 0.9, 'confirmed', 'inferred', [
+  ins('i7', 'relationships', 'Calls her sister Anika most Sundays and plans family events well ahead.', 0.7, 'active', 'inferred', [['message', '“Remind me to call Anika on Sunday evening”', 7 * D]]),
+  ins('i8', 'values', 'Cares about privacy and prefers tools that keep data on her own computer.', 0.9, 'confirmed', 'inferred', [
     ['message', '“I don’t want my notes going to someone else’s server.”', 20 * D],
     ['fact', 'Chose local models for memory and voice', 14 * D]
   ]),
-  ins('i9', 'work_style', 'Thinks in checklists and likes plans broken into small steps he can approve.', 0.74, 'active', 'inferred', [['summary', 'Asked for step-by-step plans in 6 recent tasks', 3 * D]]),
+  ins('i9', 'work_style', 'Thinks in checklists and likes plans broken into small steps she can approve.', 0.74, 'active', 'inferred', [['summary', 'Asked for step-by-step plans in 6 recent tasks', 3 * D]]),
   ins('i10', 'dislikes', 'Does not like being interrupted with notifications during focus hours.', 0.42, 'disputed', 'inferred', [['feedback', 'Dismissed 4 suggestions sent before 10 AM', 2 * D]]),
-  ins('i11', 'context', 'Is a founder in Pune building a local-first AI assistant with a small team.', 0.95, 'confirmed', 'user', [['fact', 'Onboarding: professional context', 30 * D]])
+  ins('i11', 'context', 'Is a product designer at Northwind Studio in Bengaluru.', 0.95, 'confirmed', 'user', [['fact', 'Onboarding: professional context', 30 * D]])
 ]
 
 function ins(id: string, dimension: InsightDimension, statement: string, confidence: number, status: InsightStatus, source: 'inferred' | 'user', ev: Array<[string, string, number]>): Insight {
@@ -80,22 +80,22 @@ let questions = [
 ]
 
 const SUMMARY =
-  'Sarthak is a founder in Pune building a private, local-first assistant, and the September beta is front of mind. ' +
-  'He does his best thinking early in the morning, likes answers short and plans in small, approvable steps, and ' +
-  'protects his data and his focus. Outside work he is training for a December 10 km and stays close to his family.'
+  'Maya is a product designer at Northwind Studio in Bengaluru, and her portfolio refresh is front of mind. ' +
+  'She does her best thinking early in the morning, likes answers short and plans in small, approvable steps, and ' +
+  'protects her data and her focus. Outside work she is training for a December 10 km and stays close to her sister Anika.'
 
 // ---------------------------------------------------------------------------- dreams
 let dreams: Dream[] = [
   dream('d1', 9 * H, 'schedule', { facts_reviewed: 146, merged: 6, contradictions_resolved: 2, promoted: 3, expired: 5, insights_updated: 4 },
     'Last night I went through **146 memories** from the past week.\n\n' +
-      'I noticed I had written down your Thursday investor call three different ways, so I merged them into one. ' +
-      'You told me in April that you live in Mumbai, but everything since says **Pune**, so I kept Pune and let the old note go.\n\n' +
+      'I noticed I had written down your Thursday client review three different ways, so I merged them into one. ' +
+      'You told me in April that you live in Chennai, but everything since says **Bengaluru**, so I kept Bengaluru and let the old note go.\n\n' +
       'Your morning runs have become a habit, so I moved “training for a 10 km” from a passing mention into something I keep in mind. ' +
       'I also let five short-term reminders fade now that their dates have passed.\n\n' +
       'One thing I am unsure about: you dismissed several suggestions early in the day. I added a question for you rather than guessing.'),
   dream('d2', D + 9 * H, 'manual', { facts_reviewed: 38, merged: 1, contradictions_resolved: 0, promoted: 1, expired: 2, insights_updated: 1 },
     'You asked me to tidy up after importing your resume. I found **38 new memories**, merged a duplicate about your ' +
-      'time at Existence, and noted that you now lead a small team.'),
+      'time at Northwind Studio, and noted that you now lead the design systems work.'),
   dream('d3', 2 * D + 9 * H, 'schedule', { facts_reviewed: 121, merged: 3, contradictions_resolved: 1, promoted: 2, expired: 7, insights_updated: 2 },
     'A quiet night. I merged three notes about the Goa trip, settled when your sister’s birthday is (it is the 14th, not the 4th), ' +
       'and cleared seven reminders that were done.'),
@@ -138,11 +138,11 @@ export const DEMO_FEEDS: FeedStatus[] = [
 // ---------------------------------------------------------------------------- script jobs
 export const DEMO_SCRIPT_TASK_ID = 'demo-script-watch'
 
-const SCRIPT_CODE = `"""Watch the price of the Sony WH-1000XM6 and alert below the target."""
+const SCRIPT_CODE = `"""Watch the price of the Aura X2 headphones and alert below the target."""
 from sentient_tools import tools, result
 
 TARGET = 25_000  # rupees
-URL = "https://www.amazon.in/dp/B0DX4Q6ZR1"
+URL = "https://gadgetbay.example/p/aura-x2"
 
 page = tools.web_fetch(url=URL)
 text = page.get("text", "")
@@ -162,15 +162,15 @@ print(f"Current price: ₹{price:,}")
 result({
     "alert": price < TARGET,
     "price": price,
-    "message": f"The Sony WH-1000XM6 is now ₹{price:,}, below your ₹{TARGET:,} target.",
+    "message": f"The Aura X2 is now ₹{price:,}, below your ₹{TARGET:,} target.",
 })
 `
 
 function scriptTask(id: string, patch: Partial<TaskWithScript>): TaskWithScript {
   const base: TaskWithScript = {
     task_id: id,
-    name: 'Tell me when the Sony headphones drop below ₹25,000',
-    description: 'Check the Amazon price of the Sony WH-1000XM6 every morning and tell me when it drops below ₹25,000.',
+    name: 'Tell me when the Aura X2 headphones drop below ₹25,000',
+    description: 'Check the GadgetBay price of the Aura X2 headphones every morning and tell me when it drops below ₹25,000.',
     status: 'active',
     priority: 1,
     assignee: 'ai',
@@ -193,7 +193,7 @@ function scriptTask(id: string, patch: Partial<TaskWithScript>): TaskWithScript 
       code: SCRIPT_CODE,
       condition: 'alert',
       then: 'notify',
-      last_result: { alert: false, price: 26_490, message: 'The Sony WH-1000XM6 is now ₹26,490, below your ₹25,000 target.' },
+      last_result: { alert: false, price: 26_490, message: 'The Aura X2 is now ₹26,490, below your ₹25,000 target.' },
       last_run_at: ago(10 * H),
       last_error: null
     },
@@ -207,12 +207,12 @@ const scriptTasks: TaskWithScript[] = [
   scriptTask(DEMO_SCRIPT_TASK_ID, {}),
   scriptTask('demo-script-status', {
     name: 'Watch the Sentient status page for changes',
-    description: 'Every hour, check status.existence.technology and run a task to summarise what changed.',
+    description: 'Every hour, check status.northwind.example and run a task to summarise what changed.',
     schedule: { type: 'recurring', frequency: 'daily', time: '08:00', timezone: 'Asia/Kolkata' },
     status: 'approval_pending',
     last_execution_at: null,
     script: {
-      code: 'from sentient_tools import tools, result\n\npage = tools.web_fetch(url="https://status.existence.technology")\nresult(page.get("text", "")[:2000])\n',
+      code: 'from sentient_tools import tools, result\n\npage = tools.web_fetch(url="https://status.northwind.example")\nresult(page.get("text", "")[:2000])\n',
       condition: 'changed',
       then: 'run',
       last_result: null,
@@ -260,8 +260,8 @@ function note(id: string, kind: string, title: string, message: string, payload:
 }
 
 const demoNotes: Notification[] = [
-  note('demo-n-script', 'task', 'Price alert: Sony WH-1000XM6', 'The Sony WH-1000XM6 is now **₹24,490**, below your ₹25,000 target.', { event: 'script_alert', message: 'The Sony WH-1000XM6 is now ₹24,490, below your ₹25,000 target.', result: { price: 24490 } }, 12, DEMO_SCRIPT_TASK_ID),
-  note('demo-n-sub', 'info', 'Your helper finished', 'I compared the five CRMs you listed. **HubSpot** and **Zoho** fit best for a team of five.', { event: 'subagent_completed', subagent_id: 'sa_1', session_id: 'demo-session', goal: 'Compare five CRMs for a small team' }, 55),
+  note('demo-n-script', 'task', 'Price alert: Aura X2 headphones', 'The Aura X2 is now **₹24,490**, below your ₹25,000 target.', { event: 'script_alert', message: 'The Aura X2 is now ₹24,490, below your ₹25,000 target.', result: { price: 24490 } }, 12, DEMO_SCRIPT_TASK_ID),
+  note('demo-n-sub', 'info', 'Your helper finished', 'I compared four portfolio site builders. **Folio** and **Canvasly** suit a designer best.', { event: 'subagent_completed', subagent_id: 'sa_1', session_id: 'demo-session', goal: 'Compare four portfolio site builders for a designer' }, 55),
   note('demo-n-dream', 'info', 'I tidied up my memory overnight', 'I reviewed 146 memories, merged 6 duplicates and settled 2 contradictions.', { event: 'dream_completed', dream_id: 'd1', stats: dreams[0].stats }, 9 * H),
   note('demo-n-repair', 'skill', 'A fix for invoice-filing', 'Filing an invoice failed because a Drive folder was missing. I drafted a fix to **invoice-filing**.', { skill: REPAIR_NAME, action: 'patch', origin: { repair: true, task_id: 'demo-trigger-mail' } }, 3 * H)
 ]
@@ -310,7 +310,7 @@ export const demo = {
     backend: 'process',
     stdout: 'Current price: ₹24,490\n',
     stderr: '',
-    result: { alert: true, price: 24_490, message: 'The Sony WH-1000XM6 is now ₹24,490, below your ₹25,000 target.' },
+    result: { alert: true, price: 24_490, message: 'The Aura X2 is now ₹24,490, below your ₹25,000 target.' },
     files_created: [],
     tool_calls: 1,
     duration_ms: 1840,

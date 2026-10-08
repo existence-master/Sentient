@@ -55,7 +55,7 @@ export function useDeviceActions() {
             capability === 'camera.photo' || capability === 'screen.capture'
               ? { ok: true, data: { mime: 'image/svg+xml', base64: previewPhotoBase64 } }
               : capability === 'location.get'
-                ? { ok: true, data: { lat: 18.5362, lon: 73.8939, accuracy_m: 18, label: 'Koregaon Park, Pune' } }
+                ? { ok: true, data: { lat: 12.9784, lon: 77.6408, accuracy_m: 18, label: 'Indiranagar, Bengaluru' } }
                 : { ok: true }
         )
     }),

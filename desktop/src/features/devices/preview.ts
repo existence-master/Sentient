@@ -49,7 +49,7 @@ export const previewNodes = (): DeviceNode[] => [
   },
   {
     node_id: 'node-phone',
-    name: "Sarthak's phone",
+    name: "Maya's phone",
     kind: 'phone',
     platform: 'android',
     capabilities: ['camera.photo', 'location.get', 'notify.show', 'speak', 'mic.stream', 'battery'],
@@ -107,9 +107,9 @@ export const previewChannels = (): Channel[] => [
     id: 'telegram',
     display_name: 'Telegram',
     status: 'connected',
-    account_label: '@sentient_sarthak_bot',
+    account_label: '@maya_sentient_bot',
     error: null,
-    paired: [{ chat_id: '581230944', label: 'Sarthak Karandikar', paired_at: ago(60 * 50), deliver: true, session_id: 'leap-a-telegram' }],
+    paired: [{ chat_id: '100200301', label: 'Maya Rao', paired_at: ago(60 * 50), deliver: true, session_id: 'leap-a-telegram' }],
     setup: { fields: [{ key: 'bot_token', label: 'Bot token', secret: true, required: true }], instructions_md: TELEGRAM_SETUP }
   },
   {
@@ -130,7 +130,7 @@ export const previewSubagents = (sessionId: string): Subagent[] =>
           subagent_id: 'sub-leap-a-2',
           session_id: sessionId,
           parent_call_id: null,
-          goal: 'Compare 4 standing desks under 40,000 rupees available in Pune',
+          goal: 'Compare 4 standing desks under 40,000 rupees available in Bengaluru',
           status: 'running',
           background: true,
           summary: null,
@@ -146,7 +146,7 @@ export const previewSubagent = (id: string): Subagent => ({
   subagent_id: id,
   session_id: 'leap-a-main',
   parent_call_id: null,
-  goal: 'Shortlist 3 quiet restaurants near Koregaon Park',
+  goal: 'Shortlist 3 quiet restaurants in Indiranagar',
   status: 'completed',
   background: false,
   summary: null,
@@ -161,13 +161,13 @@ const PAGE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="60
 <rect width="960" height="64" fill="#2f6f6a"/>
 <text x="32" y="41" font-family="Segoe UI, Arial" font-size="24" font-weight="700" fill="#fff">tablefinder</text>
 <rect x="180" y="18" width="520" height="30" rx="15" fill="#fff" opacity=".95"/>
-<text x="200" y="38" font-family="Segoe UI, Arial" font-size="13" fill="#888">Koregaon Park, Pune</text>
+<text x="200" y="38" font-family="Segoe UI, Arial" font-size="13" fill="#888">Indiranagar, Bengaluru</text>
 <rect x="32" y="96" width="420" height="260" rx="14" fill="#d9c7a8"/>
 <circle cx="150" cy="210" r="70" fill="#c4a57a"/><circle cx="310" cy="190" r="54" fill="#8f6f45"/>
 <rect x="484" y="96" width="444" height="36" rx="6" fill="none"/>
 <text x="484" y="124" font-family="Segoe UI, Arial" font-size="30" font-weight="700" fill="#1c1c1c">The Flour Works</text>
 <text x="484" y="156" font-family="Segoe UI, Arial" font-size="15" fill="#696969">European, Cafe, Vegetarian friendly</text>
-<text x="484" y="182" font-family="Segoe UI, Arial" font-size="15" fill="#696969">Lane 5, Koregaon Park, 6 min walk from Riverside Park</text>
+<text x="484" y="182" font-family="Segoe UI, Arial" font-size="15" fill="#696969">12th Main, Indiranagar, 6 min walk from the metro</text>
 <rect x="484" y="206" width="64" height="28" rx="6" fill="#267e3e"/>
 <text x="498" y="226" font-family="Segoe UI, Arial" font-size="15" font-weight="700" fill="#fff">4.4</text>
 <rect x="484" y="262" width="200" height="48" rx="10" fill="#2f6f6a"/>
@@ -190,14 +190,14 @@ export const previewBrowser = (): BrowserStatus => ({
   engine: 'Microsoft Edge',
   headless: true,
   tabs: [
-    { index: 0, url: 'https://tablefinder.example/pune/the-flour-works/book', title: 'Book a table - The Flour Works', active: true },
-    { index: 1, url: 'https://maps.example/place/riverside-park', title: 'Riverside Park - Maps', active: false }
+    { index: 0, url: 'https://tablefinder.example/bengaluru/the-flour-works/book', title: 'Book a table - The Flour Works', active: true },
+    { index: 1, url: 'https://maps.example/place/indiranagar-metro', title: 'Indiranagar metro - Maps', active: false }
   ],
   error: null
 })
 
 export const previewFrame = (): BrowserFrame => ({
-  url: 'https://tablefinder.example/pune/the-flour-works/book',
+  url: 'https://tablefinder.example/bengaluru/the-flour-works/book',
   title: 'Book a table - The Flour Works',
   image: previewFrameImage
 })
