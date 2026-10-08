@@ -223,15 +223,15 @@ next-env.d.ts
 .history
 .ionide
 
-#Custom folders
-secrets
-models
-input
-results
-checkpoints
-chroma_db
-uploads
-outputs
+# Runtime data folders at the repository root only (unanchored patterns once hid desktop/src/features/models)
+/secrets/
+/models/
+/input/
+/results/
+/checkpoints/
+/chroma_db/
+/uploads/
+/outputs/
 
 # Custom files
 .env*
@@ -278,3 +278,6 @@ desktop/release/
 e2e-home/
 
 src/server/audio_debug_logs/
+
+# Leftover v2 files in old checkouts (v2 lives on the v2 branch now)
+/src/
