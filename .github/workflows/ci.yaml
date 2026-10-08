@@ -42,8 +42,9 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
+          activate-environment: true
       - name: Install
-        run: uv pip install --system -e ".[dev,voice,node]" keyrings.alt
+        run: uv pip install -e ".[dev,voice,node]" keyrings.alt
       - name: Test
         run: python -m pytest -q -p no:warnings --timeout=300
 
