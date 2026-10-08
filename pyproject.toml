@@ -57,7 +57,9 @@ voice = [
     "faster-whisper>=1.1",
     "pyttsx3>=2.90",
     "kokoro-onnx>=0.4",
-    "openwakeword>=0.6",
+    # openWakeWord pulls tflite-runtime on Linux, which has no Python 3.12 wheels; Linux uses the default
+    # Whisper wake engine instead (Sentient runs openWakeWord through ONNX where it is installed).
+    "openwakeword>=0.6; sys_platform != 'linux'",
 ]
 # optional: webcam for the reference device node (sentient node --camera 0)
 node = [
