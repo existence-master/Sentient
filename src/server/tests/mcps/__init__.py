@@ -1,1 +1,0 @@
-# This file makes the 'mcps' subdirectory a Python package.

@@ -1,6 +1,0 @@
-# src/server/mcp_hub/trello/requirements.txt
-fastmcp
-python-dotenv
-motor
-cryptography
-httpx

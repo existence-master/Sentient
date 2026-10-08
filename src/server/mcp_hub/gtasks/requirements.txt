@@ -1,6 +1,0 @@
-# Create new file: src/server/mcp_hub/gtasks/requirements.txt
-fastmcp
-python-dotenv
-motor
-cryptography
-composio

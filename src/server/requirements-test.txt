@@ -1,6 +1,0 @@
-pytest
-pytest-asyncio
-pytest-mock
-httpx
-celery[pytest]
-freezegun

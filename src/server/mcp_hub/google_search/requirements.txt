@@ -1,4 +1,0 @@
-fastmcp
-python-dotenv
-httpx
-motor

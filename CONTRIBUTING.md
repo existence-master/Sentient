@@ -1,142 +1,131 @@
-**Contributing to Sentient**
-============================
+# Contributing to Sentient
 
-We welcome contributions! Please read these guidelines carefully.
+Thanks for helping. Sentient is a personal assistant that runs on your own computer, and it is built in the
+open. This guide gets you from zero to a merged pull request.
 
-**Code of Conduct**
--------------------
+## You never need our keys
 
-All contributors must adhere to our [Code of Conduct](CODE_OF_CONDUCT.md).
+Sentient v3 has no `.env` file and no shared API keys. Please do not ask for them: there is nothing to share.
 
-**Development Workflow**
-------------------------
+- **To run the app**, use a free local model through [Ollama](https://ollama.com/download), or paste your own
+  provider key (Anthropic, OpenAI, Gemini and others) in **Settings → Models**. Keys stay in your own system
+  keychain.
+- **To run the tests**, you need nothing at all. Every test uses a scripted fake model and no network.
+- **Integrations** (Gmail, Slack, Notion, Telegram...) connect with your own accounts from inside the app, and
+  each one has step-by-step setup instructions. Their tests use mocked APIs.
 
-### **1\. Branch Strategy**
+If something only works with a key you don't have, that is a bug in our tests or docs: open an issue.
 
-We follow a structured branching model to ensure smooth collaboration:
+## Get it running
 
-*   **`master`** → Stable, production-ready code.
-*   **`development`** → Active development branch (target all PRs here).
-*   **`feature/<some-feature>`** → New features are developed in separate branches prefixed with `feature/`.
-*   **`bugfix/<some-bug>`** → Bug fixes should be addressed in dedicated `bugfix/` branches.
-*   **`research/<some-research>`** → Experimental branches used for exploring ideas. These are sandbox environments that can later be integrated into `feature/` branches and then merged into `development`.
+You need Python 3.12 with [uv](https://docs.astral.sh/uv/), Node 22, and optionally Ollama.
 
-> 🔹 **Research branches (`research/`) are meant for exploration and testing.** Once a concept is validated, it should be merged into a `feature/` branch before integration into `development`.
-
-### **2\. Pull Request Process**
-
-*   Fork the repository and create a relevant branch (`feature/`, `bugfix/`, or `research/`).
-*   Open PRs **only** to the `development` branch.
-*   PRs must include:
-    *   A clear description of changes.
-    *   Updated documentation (if applicable).
-
-### **3\. Code Standards**
-
-*   Follow existing code style and architecture patterns.
-*   Document new APIs and features thoroughly.
-*   Keep commits atomic and well-described.
-
-### **4\. Testing Requirements**
-
-*   All code must pass existing test suites.
-*   New features require ≥80% test coverage.
-*   Manual testing steps must be documented in PRs.
-
-### **5\. Commit Message Format (Conventional Commits)**
-
-To maintain a clean and meaningful commit history, follow the **Conventional Commits** format:
-
-```
-<type>(<scope>): <description>
+```bash
+git clone https://github.com/<you>/Sentient.git && cd Sentient
+uv venv .venv --python 3.12
+uv pip install --python .venv/Scripts/python.exe -e ".[dev,voice]"   # macOS/Linux: .venv/bin/python
+cd desktop && npm install && npm run dev
 ```
 
-#### **Examples**:
+The window starts the engine for you and walks you through setup. More detail, including how to run the
+engine on its own and how to capture screenshots, is in [docs/DEVELOPING.md](docs/DEVELOPING.md).
 
-✅ **Feature Addition:**
+## How we work
 
-```
-feat(auth): add OAuth2 login support
-```
+We use **GitHub flow**:
 
-✅ **Bug Fix:**
+1. **Find or open an issue.** Look for [`good first issue`](../../labels/good%20first%20issue) and
+   [`help wanted`](../../labels/help%20wanted). For anything bigger than a small fix, comment on the issue first
+   so we can agree on the approach and avoid duplicate work. Small fixes and docs need no issue.
+2. **Fork, then branch from `main`.** Name the branch after what it does, for example
+   `fix/telegram-long-messages` or `feat/outlook-integration`.
+3. **Keep the pull request small and focused.** One change per PR is much faster to review.
+4. **Open the PR against `main`.** The checks below run automatically, also on forks.
+5. **A maintainer reviews it.** One approval and green checks are enough. We squash-merge, so the PR title
+   becomes the commit message.
 
-```
-fix(ui): resolve button alignment issue in navbar
-```
+There are no long-lived `development` or `staging` branches. `main` is always the latest working version, and
+releases are tags on `main`.
 
-✅ **Documentation Update:**
+### PR titles
 
-```
-docs(contributing): clarify PR submission process
-```
-
-✅ **Refactor:**
-
-```
-refactor(api): optimize query handling for performance
-```
-
-✅ **Chore (dependencies, CI/CD, etc.):**
+Use [Conventional Commits](https://www.conventionalcommits.org/) with an area, because the title becomes the
+commit message:
 
 ```
-chore(deps): update dependency eslint to v8.3.1
+feat(channels): send Telegram replies as voice notes
+fix(browser): keep refs stable after a scroll
+docs(nodes): document the battery event
 ```
 
-#### **Valid Types:**
+Types: `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `chore`. Areas match the folders below.
 
-Type
+### What the checks run
 
-Description
+Run the same things locally before you push:
 
-`feat`
+```bash
+.venv/Scripts/ruff.exe check sentient tests            # lint (macOS/Linux: .venv/bin/ruff)
+.venv/Scripts/python.exe -m pytest -q                  # engine tests, or one folder: pytest tests/tasks
+cd desktop && npm run typecheck && npm run build       # desktop
+```
 
-Introduces a new feature
+The full engine suite takes a few minutes. While you work, run just the folder you touched.
 
-`fix`
+### A good pull request
 
-Fixes a bug
+- Says what changed and why, and links the issue (`Closes #123`).
+- Adds or updates tests. Bug fixes come with a test that failed before the fix.
+- Updates [docs/API.md](docs/API.md) in the same PR when it changes anything the desktop app and the engine
+  exchange. The contract comes first.
+- Includes a screenshot or short clip for visible UI changes.
+- Keeps the product rules: no login or accounts, keys only in the keychain, every tool declares a risk, and
+  sending, deleting, buying or running code asks the user first.
 
-`docs`
+## Where things live
 
-Documentation updates
+| Area | Folder | Notes |
+|---|---|---|
+| Engine core | `sentient/agent`, `sentient/llm`, `sentient/store`, `sentient/tools`, `sentient/gateway` | Agent loop, model roles, approvals, SQLite |
+| Tasks | `sentient/tasks` | Long-running, scheduled, triggered and watcher tasks |
+| Memory | `sentient/memory` | Facts, user model, nightly consolidation |
+| Proactivity and skills | `sentient/proactivity`, `sentient/evolution`, `sentient/skills` | Suggestions, self-improving skills |
+| Integrations | `sentient/integrations` | One plugin per app; start from an existing one |
+| Channels | `sentient/channels` | Telegram, Discord |
+| Devices | `sentient/nodes`, `firmware/`, `docs/NODES.md` | Phones, glasses, the device protocol |
+| Browser and code | `sentient/browser`, `sentient/sandbox` | Browser control, sandboxed scripts |
+| Voice | `sentient/voice` | Speech in and out, wake word |
+| Desktop app | `desktop/` | Electron + React + TypeScript |
+| Packaging | `packaging/`, `desktop/electron-builder.yml` | Installers |
 
-`style`
+Each area's tests live in the matching `tests/<area>` folder. [CLAUDE.md](CLAUDE.md) has the deeper
+conventions; it is written for AI coding assistants but is a good read for people too.
 
-Code style (formatting, missing semicolons, etc.)
+### Adding an integration
 
-`refactor`
+Copy a small plugin such as `sentient/integrations/plugins/trello.py`: declare the setup fields, write each
+tool as a typed async function with a docstring and a `Risk`, and add tests with mocked HTTP (`respx`). The
+desktop app renders the connect screen from your plugin, so most integrations need no UI code.
 
-Code refactoring (no new features or bug fixes)
+## Using AI coding assistants
 
-`test`
+Welcome. Point your assistant at [CLAUDE.md](CLAUDE.md) (also linked from `AGENTS.md`). You are still the
+author: read the diff, run the checks, and make sure the PR description is yours and accurate.
 
-Adding or updating tests
+## Contributor License Agreement
 
-`chore`
+The first time you open a PR, a bot asks you to agree to our [CLA](CLA.md) by posting one comment. It lets us
+keep offering Sentient under the AGPL and fund its development. You only do this once.
 
-Maintenance tasks (dependencies, CI/CD, etc.)
+## Questions, bugs and security
 
-> **🔹 Note:** All PR titles must follow the **Conventional Commits** format. PRs with invalid commit messages may be rejected.
+- **Questions and setup help:** [GitHub Discussions](../../discussions/categories/q-a).
+- **Bugs and feature requests:** [open an issue](../../issues/new/choose).
+- **Security problems:** please report privately, see [SECURITY.md](SECURITY.md).
 
-### **6\. CLA Requirement**
+## The previous version
 
-*   When a pull request is raised, the CLA Assistant bot will guide you with the steps required to sign our CLA, you have to simply follow them
-*   Along with the steps of the bot, you have to sign with your name in [CLA.md](./CLA.md) at the bottom in your own fork of the repository
-*   Unsigned PRs will be blocked automatically.
+Sentient v2 was a cloud web app with its own servers. It now lives on the [`v2` branch](../../tree/v2) and the
+`v2-final` tag, and it is no longer developed. New work goes into v3 on `main`.
 
-### **7\. Review Process**
-
-*   **2 maintainer approvals** required for merging.
-*   **Security-critical code** requires **3 approvals**.
-*   Reviewers may request changes or additional tests.
-
-### **8\. Community Guidelines**
-
-*   **Early Adopter Community**: [Join Here](https://chat.whatsapp.com/IOHxuf2W8cKEuyZrMo8DOJ)
-*   **Feature Requests**: Use GitHub Discussions.
-*   **Critical Bugs**: Use the "Security Advisory" template.
-
-* * *
-
-**Thank you for contributing to Sentient! 🚀**
+Everyone taking part follows our [Code of Conduct](CODE_OF_CONDUCT.md).

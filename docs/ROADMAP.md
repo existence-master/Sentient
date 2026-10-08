@@ -40,7 +40,7 @@ Integrations (connect flows, privacy filters, MCP servers), Skills (active,
 pending review with diff, archived, evolution log), Notifications panel with
 proactive suggestion approve/dismiss, Voice mode.
 
-## M4 · Integration and real-machine verification (in progress 2026-09-15)
+## M4 · Integration and real-machine verification (done 2026-09-16)
 End-to-end runs on the founder's PC with local models: onboarding → chat with
 tools → memory → task lifecycle → triggered task → proactive suggestion → skill
 proposal → voice round trip. Screenshot review of every screen. Fix everything
@@ -50,7 +50,7 @@ Done so far: every screen captured from seeded data and reviewed; engine gaps fo
 UI builders fixed (live notification updates, OAuth cancel, readable poll errors, skill
 proposal editing, tool selection and a no-tools fallback for small local models).
 
-## M4.5 · V3 leap (built 2026-09-15, real-model verification in progress)
+## M4.5 · V3 leap (done 2026-09-16: verified on local qwen3:8b and on Claude Sonnet 5)
 Approved by the founder on 2026-09-15. Contract: `docs/API.md` sections 10-16.
 - Biggest leaps: device nodes (desktop, phone web app, reference glasses node, `docs/NODES.md`),
   messaging channels with pairing (Telegram, Discord), browser control, code execution that calls tools,
@@ -82,3 +82,14 @@ with no Python and no terminal.
 Device node protocol over the same engine (`node.hello` with capabilities:
 audio in/out, camera, notify) for phone and the smart glasses; messaging
 channels (Telegram first) with pairing codes.
+
+## Open source and contributors (2026-10-08)
+- v3 became the default branch (`main`); v2 moved to the `v2` branch and `v2-final` tag.
+- GitHub flow: forks, small pull requests to `main`, one maintainer approval, squash merge.
+- CI on every pull request with no secrets needed; release workflow builds installers from version tags.
+- Issue forms, area labels applied automatically, `good first issue` and `help wanted` backlog.
+
+## Next
+- Signed installers and auto-update; first public v3 release.
+- macOS and Linux installers verified on real machines (the release workflow builds them).
+- Real-account testing of integrations and messaging channels; real phones and the glasses hardware.

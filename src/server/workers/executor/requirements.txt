@@ -1,9 +1,0 @@
-celery
-redis
-python-dotenv
-motor
-pymongo
-qwen-agent
-httpx
-nest_asyncio
-python-jose[cryptography]

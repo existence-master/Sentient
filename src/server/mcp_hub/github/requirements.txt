@@ -1,5 +1,0 @@
-fastmcp
-python-dotenv
-motor
-cryptography
-PyGithub

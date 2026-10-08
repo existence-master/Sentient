@@ -1,0 +1,19 @@
+# Adds area labels to pull requests from the files they touch. pull_request_target lets it label PRs from forks;
+# it never checks out or runs the PR's code.
+name: Label pull requests
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          sync-labels: false

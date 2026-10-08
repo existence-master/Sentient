@@ -73,6 +73,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.6",
     "respx>=0.21",
+    "pytest-timeout>=2.3",
     # packaging: freezes the engine for the installer (packaging/build_engine.py)
     "pyinstaller>=6.22",
 ]

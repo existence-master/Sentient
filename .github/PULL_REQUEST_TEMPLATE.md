@@ -1,19 +1,20 @@
-### 🚀 Summary
-Describe what this PR does.
+<!-- Title: conventional commit with an area, e.g. "fix(tasks): keep the schedule when a plan is edited" -->
 
-### ✅ Related Issues
-Closes #issue_number (if applicable).
+## What and why
 
-### 🔍 Changes Made
-- [ ] Bugfix 🐛
-- [ ] Feature 🚀
-- [ ] Refactor ♻️
+<!-- What does this change, and why? Link the issue: Closes #123 -->
 
-### 📸 Screenshots (if applicable)
-Attach before/after screenshots.
+## How I tested it
 
-### 💡 How to Test?
-Steps to test the PR.
+<!-- Commands you ran, and manual steps for anything the tests don't cover. -->
 
-### 🔄 Additional Context
-Any other relevant information.
+## Screenshots
+
+<!-- For visible UI changes. Delete if not applicable. -->
+
+## Checklist
+
+- [ ] Tests added or updated, and `pytest` / `npm run typecheck` pass locally for what I touched
+- [ ] `ruff check sentient tests` is clean
+- [ ] `docs/API.md` updated if the desktop ↔ engine contract changed
+- [ ] No keys, tokens or personal data in the code, tests or screenshots
