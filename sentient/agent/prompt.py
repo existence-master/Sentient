@@ -77,6 +77,7 @@ _MESSAGING_GUIDANCE = (
     "## You are chatting in {app}\n"
     "- The user reads replies on a phone: keep them short and easy to scan, with short paragraphs or brief bullet lists.\n"
     "- No wide tables and no long code blocks; links are fine.\n"
+    "- No LaTeX, since {app} shows it as raw symbols. Write math as plain text, like 2^100.\n"
     "- Images and files you create are sent as attachments, so mention them by name instead of pasting their contents.\n"
 )
 CHANNEL_GUIDANCE["telegram"] = _MESSAGING_GUIDANCE.format(app="Telegram")
