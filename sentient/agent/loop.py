@@ -904,6 +904,23 @@ class Agent:
         except Exception as exc:
             log.debug("context compression skipped: %s", exc)
 
-    async def drain(self) -> None:
+    async def drain(self, timeout: float | None = None) -> None:
+        """Wait for background work (fact extraction, titles, compression).
+
+        With ``timeout``, anything still running after that many seconds is cancelled, so shutting
+        Sentient down can never hang on a stuck model call.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
         while self._background:
-            await asyncio.gather(*list(self._background), return_exceptions=True)
+            pending = list(self._background)
+            remaining = None if deadline is None else deadline - loop.time()
+            if remaining is not None and remaining <= 0:
+                log.warning("cancelling %d background job(s) still running at shutdown", len(pending))
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                self._background.difference_update(pending)
+                return
+            done, _ = await asyncio.wait(pending, timeout=remaining)
+            self._background.difference_update(done)

@@ -86,3 +86,21 @@ def test_browser_ref_from_whole_snapshot_line():
     assert _clean_ref("E12") == "e12"
     assert _clean_ref("e2e test") is None
     assert _clean_ref("") is None
+
+
+async def test_shutdown_cancels_stuck_background_work(config):
+    """Seen on a Linux CI runner: a background job that never finished made app.stop() hang forever."""
+    import asyncio
+
+    import sentient.app as app_module
+
+    app = await _app(config)
+    stuck = asyncio.Event()
+    app.agent._spawn(stuck.wait())  # never set
+    original = app_module.SHUTDOWN_GRACE_S
+    app_module.SHUTDOWN_GRACE_S = 0.2
+    try:
+        await asyncio.wait_for(app.stop(), 10)
+    finally:
+        app_module.SHUTDOWN_GRACE_S = original
+    assert not app.agent._background
