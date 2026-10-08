@@ -104,6 +104,12 @@ async def call_hook(request: Request, hook_id: str):
     given = request.headers.get(SECRET_HEADER) or request.query_params.get("secret")
     if not hooks.secret_ok(hook, given):
         raise HTTPException(401, "Wrong or missing webhook secret.")
+    # After the secret check, so callers without the secret can't use up a real caller's budget.
+    wait = hooks.rate_limited(hook["id"], core.config.integrations.webhook_rate_limit_per_minute)
+    if wait is not None:
+        raise HTTPException(
+            429, f"This webhook is being called too often. Try again in {wait} s.", headers={"Retry-After": str(wait)}
+        )
     raw = await _read_limited(request, core.config.integrations.webhook_max_body_kb * 1024)
     body, ctype = await _parse_body(request, raw)
     query = {k: v for k, v in request.query_params.items() if k != "secret"}

@@ -135,3 +135,92 @@ def test_call_hook_errors(client, core, published):
     assert items_of(published) == []
     client.headers["Authorization"] = "Bearer hook-token"
     assert client.get("/api/hooks").json()[0]["calls"] == 0
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """A movable clock for the rate limiter; asyncio keeps the real one."""
+    now = [1000.0]
+    monkeypatch.setattr("sentient.integrations.hooks._monotonic", lambda: now[0])
+    return now
+
+
+def test_rate_limit_defaults_to_30_a_minute_with_a_description():
+    from sentient.config.schema import IntegrationsConfig
+
+    field = IntegrationsConfig.model_fields["webhook_rate_limit_per_minute"]
+    assert field.default == 30 and "429" in field.description
+
+
+def test_calls_over_the_limit_get_429_with_retry_after_and_the_bucket_refills(client, core, published, clock):
+    core.config.integrations.webhook_rate_limit_per_minute = 3
+    hook = client.post("/api/hooks", json={"name": "Alarm"}).json()
+    url, headers = f"/hooks/{hook['id']}", {"X-Sentient-Secret": hook["secret"]}
+    del client.headers["Authorization"]
+
+    for _ in range(3):
+        assert client.post(url, json={}, headers=headers).status_code == 200
+    blocked = client.post(url, json={}, headers=headers)
+    assert blocked.status_code == 429 and blocked.headers["Retry-After"] == "20"  # 60 s / 3 calls
+    assert "20 s" in blocked.json()["detail"]
+    assert len(items_of(published)) == 3  # a refused call is never published
+
+    clock[0] += 19  # one second short of the next free call
+    assert client.post(url, json={}, headers=headers).status_code == 429
+    clock[0] += 1
+    assert client.post(url, json={}, headers=headers).status_code == 200
+    assert client.post(url, json={}, headers=headers).status_code == 429
+
+    clock[0] += 3600  # a long quiet spell refills the bucket to its size, not beyond it
+    assert [client.post(url, json={}, headers=headers).status_code for _ in range(4)] == [200, 200, 200, 429]
+
+    client.headers["Authorization"] = "Bearer hook-token"
+    assert client.get("/api/hooks").json()[0]["calls"] == 7  # refused calls are not counted
+
+
+def test_each_hook_has_its_own_budget_and_wrong_secrets_spend_none(client, core, clock):
+    core.config.integrations.webhook_rate_limit_per_minute = 1
+    first = client.post("/api/hooks", json={"name": "First"}).json()
+    second = client.post("/api/hooks", json={"name": "Second"}).json()
+    del client.headers["Authorization"]
+    one = (f"/hooks/{first['id']}", {"X-Sentient-Secret": first["secret"]})
+    two = (f"/hooks/{second['id']}", {"X-Sentient-Secret": second["secret"]})
+
+    for _ in range(5):  # someone who guesses the URL but not the secret cannot use up the real caller's budget
+        assert client.post(one[0], json={}, headers={"X-Sentient-Secret": "wrong"}).status_code == 401
+    assert client.post(one[0], json={}, headers=one[1]).status_code == 200
+    assert client.post(one[0], json={}, headers=one[1]).status_code == 429
+    assert client.post(two[0], json={}, headers=two[1]).status_code == 200  # the other hook is unaffected
+    assert client.post(one[0], json={}, headers={"X-Sentient-Secret": "wrong"}).status_code == 401  # not 429
+
+
+def test_zero_turns_the_rate_limit_off(client, core, clock):
+    core.config.integrations.webhook_rate_limit_per_minute = 0
+    hook = client.post("/api/hooks", json={"name": "Busy"}).json()
+    del client.headers["Authorization"]
+    codes = {client.post(f"/hooks/{hook['id']}", json={}, headers={"X-Sentient-Secret": hook["secret"]}).status_code
+             for _ in range(40)}
+    assert codes == {200}
+
+
+def test_a_deleted_hook_gives_up_its_bucket(client, core, clock):
+    core.config.integrations.webhook_rate_limit_per_minute = 5
+    hook = client.post("/api/hooks", json={"name": "Temp"}).json()
+    assert core.integrations.hooks.rate_limited(hook["id"], 5) is None
+    assert hook["id"] in core.integrations.hooks._buckets
+    assert client.delete(f"/api/hooks/{hook['id']}").json() == {"ok": True}
+    assert hook["id"] not in core.integrations.hooks._buckets
+
+
+def test_the_lan_listener_shares_the_same_budget(client, core, clock):
+    from sentient.nodes.lan import create_lan_app
+
+    core.config.integrations.webhook_rate_limit_per_minute = 2
+    hook = client.post("/api/hooks", json={"name": "Gadget"}).json()
+    url, headers = f"/hooks/{hook['id']}", {"X-Sentient-Secret": hook["secret"]}
+    with TestClient(create_lan_app(core, "lan-secret")) as lan:
+        assert lan.post(url, json={}, headers=headers).status_code == 200  # the LAN app mounts the same route
+        del client.headers["Authorization"]
+        assert client.post(url, json={}, headers=headers).status_code == 200
+        blocked = lan.post(url, json={}, headers=headers)  # one bucket per hook, whichever door the call uses
+        assert blocked.status_code == 429 and blocked.headers["Retry-After"] == "30"

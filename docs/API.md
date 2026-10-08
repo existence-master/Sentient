@@ -814,8 +814,11 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `DELETE /api/hooks/{id}` → `{ok}` (404 unknown). `url` is the loopback gateway address the request came in on.
   `POST /hooks/{id}` (no bearer token; header `X-Sentient-Secret: <secret>` or `?secret=`, header preferred because
   query strings can end up in logs) accepts a JSON, form (urlencoded or multipart), text or empty body up to
-  `integrations.webhook_max_body_kb` (default 256) → `{ok: true, item_id}`. Errors: 404 unknown hook, 401 wrong or
-  missing secret, 413 body too large, 400 invalid JSON with a JSON content type. It publishes `source.items`
+  `integrations.webhook_max_body_kb` (default 256) → `{ok: true, item_id}`. Each hook accepts at most
+  `integrations.webhook_rate_limit_per_minute` calls a minute (default 30, a token bucket per hook; 0 turns it off).
+  Errors: 404 unknown hook, 401 wrong or missing secret, 429 too many calls (header `Retry-After` in whole seconds;
+  checked after the secret, so wrong-secret calls never use up a hook's budget, and a refused call is not published
+  or counted), 413 body too large, 400 invalid JSON with a JSON content type. It publishes `source.items`
   `{source: "webhook", event: <hook id>, origin: "webhook", items: [{id, name, body, received_at, content_type, query}]}`
   (`query` excludes `secret`; multipart files appear as `{filename, content_type, size}`).
   Triggered tasks use `schedule: {type: "triggered", source: "webhook", event: <hook id>, filter}`; the `webhook`
