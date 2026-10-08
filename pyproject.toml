@@ -8,76 +8,76 @@ license = { text = "AGPL-3.0-only" }
 authors = [{ name = "Existence" }]
 dependencies = [
     # core daemon
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
-    "pydantic>=2.8",
-    "pydantic-settings>=2.4",
-    "pyyaml>=6.0",
-    "httpx>=0.27",
+    "fastapi>=0.142.2",
+    "uvicorn[standard]>=0.54.0",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+    "pyyaml>=6.0.3",
+    "httpx>=0.28.1",
     # llm providers (one SDK, every provider, native tool calling)
-    "litellm>=1.50",
+    "litellm>=1.104.0",
     # storage: one sqlite file, vectors + full-text search inside it
-    "aiosqlite>=0.20",
-    "sqlite-vec>=0.1.6",
+    "aiosqlite>=0.22.1",
+    "sqlite-vec>=0.1.9",
     # secrets live in the OS keychain, never in config files
-    "keyring>=25",
+    "keyring>=25.7.0",
     # cli
-    "typer>=0.12",
-    "rich>=13",
+    "typer>=0.27.2",
+    "rich>=15.0.0",
     # scheduling helpers (rrule)
-    "python-dateutil>=2.9",
+    "python-dateutil>=2.9.0.post0",
     # IANA timezone database (Windows has none built in)
-    "tzdata>=2024.1",
-    "tzlocal>=5.0",
+    "tzdata>=2026.5",
+    "tzlocal>=5.4.4",
     # last-resort repair of malformed JSON from small local models
-    "json-repair>=0.30",
+    "json-repair>=0.63.5",
     # file uploads in the gateway
-    "python-multipart>=0.0.9",
+    "python-multipart>=0.0.32",
     # integrations: external MCP servers, keyless web search, news feeds
-    "mcp>=1.10",
-    "ddgs>=9.0",
-    "feedparser>=6.0",
+    "mcp>=2.3.0",
+    "ddgs>=9.16.0",
+    "feedparser>=6.0.14",
     # text extraction for attachments and memory import
-    "pypdf>=5.0",
-    "python-docx>=1.1",
+    "pypdf>=6.19.0",
+    "python-docx>=1.2.0",
     # V3 leap: browser control, IMAP push, device TLS + discovery, pairing QR codes
-    "playwright>=1.47",
-    "aioimaplib>=1.1",
-    "cryptography>=43",
-    "zeroconf>=0.136",
-    "segno>=1.6",
+    "playwright>=1.63.0",
+    "aioimaplib>=2.0.1",
+    "cryptography>=50.0.2",
+    "zeroconf>=0.151.5",
+    "segno>=1.6.6",
     # local vision models through Ollama: LiteLLM converts images with Pillow
-    "pillow>=10.0",
+    "pillow>=12.3.0",
 ]
 
 [project.optional-dependencies]
 voice = [
-    "numpy>=1.26",
-    "soundfile>=0.12",
-    "faster-whisper>=1.1",
-    "pyttsx3>=2.90",
-    "kokoro-onnx>=0.4",
+    "numpy>=2.5.3",
+    "soundfile>=0.14.0",
+    "faster-whisper>=1.2.1",
+    "pyttsx3>=2.99",
+    "kokoro-onnx>=0.6.1",
     # openWakeWord pulls tflite-runtime on Linux, which has no Python 3.12 wheels; Linux uses the default
     # Whisper wake engine instead (Sentient runs openWakeWord through ONNX where it is installed).
     "openwakeword>=0.6; sys_platform != 'linux'",
 ]
 # optional: webcam for the reference device node (sentient node --camera 0)
 node = [
-    "opencv-python-headless>=4.10",
+    "opencv-python-headless>=5.0.0.93",
 ]
 # optional: run faster-whisper on an NVIDIA GPU without a system CUDA install
 voice-gpu = [
-    "nvidia-cublas-cu12>=12.4",
-    "nvidia-cudnn-cu12>=9.1",
+    "nvidia-cublas-cu12>=12.9.2.10",
+    "nvidia-cudnn-cu12>=9.27.0.42",
 ]
 dev = [
-    "pytest>=8",
-    "pytest-asyncio>=0.24",
-    "ruff>=0.6",
-    "respx>=0.21",
-    "pytest-timeout>=2.3",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.10",
+    "respx>=0.23.1",
+    "pytest-timeout>=2.4.0",
     # packaging: freezes the engine for the installer (packaging/build_engine.py)
-    "pyinstaller>=6.22",
+    "pyinstaller>=6.22.3",
 ]
 
 [project.scripts]
