@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import types as pytypes
 
@@ -281,5 +282,7 @@ async def test_system_tts_real_windows_voice():
     finally:
         tts.close()
     pcm, sr = wav_to_pcm16(wav)
+    if not pcm and os.environ.get("CI"):
+        pytest.skip("this machine has no speech voices installed (headless CI runner)")
     assert sr > 8000 and len(pcm) > sr * 2 * 0.3
     assert again[:4] == b"RIFF" and tts.backend in {"pyttsx3", "powershell"}

@@ -133,10 +133,12 @@ def docker_available_sync() -> bool:
     if shutil.which("docker"):
         try:
             proc = subprocess.run(
-                ["docker", "info", "--format", "{{.ServerVersion}}"],
+                ["docker", "info", "--format", "{{.OSType}}"],
                 capture_output=True, timeout=8, creationflags=CREATE_NO_WINDOW if IS_WINDOWS else 0,
             )
-            ok = proc.returncode == 0 and bool(proc.stdout.strip())
+            # the sandbox image is Linux; Docker in Windows-container mode cannot run it
+            ok = proc.returncode == 0 and proc.stdout.strip().lower() == b"linux"
+
         except (OSError, subprocess.SubprocessError):
             ok = False
     _docker_cache = (now, ok)

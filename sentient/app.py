@@ -44,6 +44,9 @@ from sentient.voice import VoiceService
 
 log = logging.getLogger(__name__)
 
+# Background work gets this long to finish when Sentient shuts down; then it is cancelled.
+SHUTDOWN_GRACE_S = 15.0
+
 
 class SentientApp:
     def __init__(
@@ -161,6 +164,6 @@ class SentientApp:
             except Exception:
                 log.exception("service %s failed to stop", svc.name)
         if self.agent is not None:
-            await self.agent.drain()
+            await self.agent.drain(timeout=SHUTDOWN_GRACE_S)
         await self.store.close()
         self._started = False
