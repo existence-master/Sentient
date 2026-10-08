@@ -8,6 +8,8 @@
  * - Non-2xx responses throw `ApiError` with the backend's `detail`.
  * - NDJSON endpoints use `streamNdjson` (async iterator) and accept an AbortSignal.
  * - Uploads use XHR so callers get progress events.
+ * - In dev demo mode (`?demo=1`, never in a packaged build) a few endpoints answer from lib/demo.ts when the
+ *   engine does not have them yet; whenever the engine answers, its data is used.
  */
 import type {
   BrowserStatus,
@@ -17,6 +19,13 @@ import type {
   DeviceLanInfo,
   DeviceNode,
   DevicePairing,
+  Dream,
+  FeedStatus,
+  Hook,
+  HookCreated,
+  Insight,
+  InsightDimension,
+  InsightStatus,
   SandboxResult,
   SandboxStatus,
   Subagent,
@@ -76,11 +85,14 @@ import type {
   TaskCreateRequest,
   TaskPatch,
   TaskPreview,
+  TaskScript,
   ToolPlugin,
   TranscribeResult,
   TranscriptMessage,
   UploadedFile,
   UsageReport,
+  UserModel,
+  UserModelRefreshResult,
   VoicePrepareProgress,
   VoicePrepareTarget,
   VoiceStatus,
@@ -88,6 +100,7 @@ import type {
   WorkspaceSnapshot
 } from './types'
 import type { Connection } from '@/types/bridge'
+import { DEMO_FEEDS, demo, isDemoMode } from './demo'
 
 // ---------------------------------------------------------------------------- connection
 let connection: Connection | null = null
@@ -138,6 +151,11 @@ export function isApiError(e: unknown): e is ApiError {
 /** True when an endpoint isn't implemented yet (404/405/501) - render an empty/"coming soon" state. */
 export function isNotImplemented(e: unknown): boolean {
   return isApiError(e) && [404, 405, 501].includes(e.status)
+}
+
+/** React Query `retry`: give up at once when the endpoint is missing, otherwise retry twice. */
+export function noRetryWhenMissing(count: number, err: unknown): boolean {
+  return !isNotImplemented(err) && count < 2
 }
 
 export function errorMessage(e: unknown): string {
@@ -329,6 +347,27 @@ export function authedUrl(path: string, query?: Query): string {
 const enc = encodeURIComponent
 const encPath = (name: string) => name.split('/').map(enc).join('/')
 
+/** Webhook URLs may come back relative (`/hooks/abc`); make them absolute against the engine. */
+export function absoluteHookUrl(url: string): string {
+  if (/^https?:\/\//i.test(url)) return url
+  const base = getConnection()?.baseUrl ?? 'http://127.0.0.1:7777'
+  return `${base}${url.startsWith('/') ? '' : '/'}${url}`
+}
+
+/**
+ * Real engine first, always. Only in dev demo mode, and only when the endpoint is missing (404/405/501) or the
+ * engine is unreachable, answer from the demo fixtures in lib/demo.ts. Real engine data is never replaced.
+ */
+async function withDemoFallback<T>(real: () => Promise<T>, fake: () => T | Promise<T>): Promise<T> {
+  if (!isDemoMode()) return real()
+  try {
+    return await real()
+  } catch (err) {
+    if (isNotImplemented(err) || (isApiError(err) && err.status === 0)) return fake()
+    throw err
+  }
+}
+
 // ---------------------------------------------------------------------------- endpoints
 export const api = {
   // §2 core ------------------------------------------------------------------
@@ -419,7 +458,15 @@ export const api = {
       http.post<Task>(`/api/tasks/${enc(id)}/clarifications`, { answers }),
     cancelRun: (id: string, runId: string) => http.post<Task>(`/api/tasks/${enc(id)}/runs/${enc(runId)}/cancel`),
     runEvents: (id: string, runId: string) =>
-      http.get<ProgressUpdate[]>(`/api/tasks/${enc(id)}/runs/${enc(runId)}/events`)
+      http.get<ProgressUpdate[]>(`/api/tasks/${enc(id)}/runs/${enc(runId)}/events`),
+    /** Failed or cancelled run of a non-swarm task: a new run with `retry_of`. 409 otherwise. */
+    retryRun: (id: string, runId: string) => http.post<Task>(`/api/tasks/${enc(id)}/runs/${enc(runId)}/retry`),
+    /** §16 script jobs: runs the stored script, or `code` (unsaved edits), once. 400 when the code does not compile. */
+    testScript: (id: string, code?: string) =>
+      withDemoFallback(() => http.post<SandboxResult>(`/api/tasks/${enc(id)}/script/test`, code !== undefined ? { code } : undefined), () => demo.scriptTest(id)),
+    /** `PATCH /api/tasks/{id}` with a partial `script`; 400 when the code does not compile. */
+    updateScript: (id: string, script: Partial<Pick<TaskScript, 'condition' | 'then' | 'code'>>) =>
+      withDemoFallback(() => http.patch<Task>(`/api/tasks/${enc(id)}`, { script }), () => demo.patchScript(id, script))
   },
 
   // §5 integrations ------------------------------------------------------------
@@ -440,6 +487,11 @@ export const api = {
       add: (body: McpServerCreate) => http.post<McpServer>('/api/integrations/mcp', body),
       remove: (name: string) => http.delete<OkResponse>(`/api/integrations/mcp/${enc(name)}`),
       test: (name: string) => http.post<McpTestResult>(`/api/integrations/mcp/${enc(name)}/test`)
+    },
+    /** §16 change feeds (Gmail, Calendar) and IMAP push watchers. */
+    feeds: {
+      list: () => withDemoFallback(() => http.get<FeedStatus[]>('/api/integrations/feeds'), () => DEMO_FEEDS),
+      sync: (source: string) => http.post<{ ok: boolean; emitted?: number; error?: string }>(`/api/integrations/feeds/${enc(source)}/sync`)
     }
   },
 
@@ -478,7 +530,12 @@ export const api = {
     workspace: () => http.get<WorkspaceSnapshot>('/api/memories/workspace'),
     writeWorkspace: (which: WorkspaceFileId, content: string) =>
       http.put<{ saved: boolean }>(`/api/memories/workspace/${which}`, { content }),
-    personas: () => http.get<Persona[]>('/api/memories/personas')
+    personas: () => http.get<Persona[]>('/api/memories/personas'),
+    /** §15 dreams: overnight memory consolidation. */
+    dreams: {
+      list: (limit = 30) => withDemoFallback(() => http.get<Dream[]>('/api/memories/dreams', { query: { limit } }), () => demo.dreams()),
+      run: () => withDemoFallback(() => http.post<Dream>('/api/memories/dreams/run'), () => demo.runDream())
+    }
   },
 
   // §8 skills & self-evolution ---------------------------------------------------
@@ -522,7 +579,11 @@ export const api = {
 
   // §11 code execution --------------------------------------------------------------
   sandbox: {
-    status: () => http.get<SandboxStatus>('/api/sandbox/status'),
+    status: () =>
+      withDemoFallback(
+        () => http.get<SandboxStatus>('/api/sandbox/status'),
+        () => ({ enabled: true, backend: 'process', docker_available: false, python_version: '3.12.7' })
+      ),
     run: (code: string) => http.post<SandboxResult>('/api/sandbox/run', { code })
   },
 
@@ -557,6 +618,30 @@ export const api = {
       http.patch<Channel>(`/api/channels/${enc(id)}/paired/${enc(chatId)}`, { deliver }),
     removePaired: (id: string, chatId: string) => http.delete<Channel>(`/api/channels/${enc(id)}/paired/${enc(chatId)}`),
     test: (id: string, chatId?: string) => http.post<{ ok: boolean; error?: string }>(`/api/channels/${enc(id)}/test`, chatId ? { chat_id: chatId } : {})
+  },
+
+  // §15 user model ------------------------------------------------------------------------
+  userModel: {
+    get: () => withDemoFallback(() => http.get<UserModel>('/api/user-model'), () => demo.userModel()),
+    addInsight: (statement: string, dimension: InsightDimension | string) =>
+      withDemoFallback(() => http.post<Insight>('/api/user-model/insights', { statement, dimension }), () => demo.addInsight(statement, dimension)),
+    patchInsight: (id: string, patch: { statement?: string; status?: InsightStatus }) =>
+      withDemoFallback(() => http.patch<Insight>(`/api/user-model/insights/${enc(id)}`, patch), () => demo.patchInsight(id, patch)),
+    deleteInsight: (id: string) =>
+      withDemoFallback(() => http.delete<{ ok: boolean }>(`/api/user-model/insights/${enc(id)}`), () => demo.deleteInsight(id)),
+    refresh: () =>
+      withDemoFallback(() => http.post<UserModelRefreshResult>('/api/user-model/refresh'), () => ({ added: 1, updated: 2, disputed: 0, questions: 1 })),
+    answerQuestion: (id: string, answer: string) =>
+      withDemoFallback(() => http.post<{ ok: boolean }>(`/api/user-model/questions/${enc(id)}`, { answer }), () => demo.dropQuestion(id)),
+    dismissQuestion: (id: string) =>
+      withDemoFallback(() => http.delete<{ ok: boolean }>(`/api/user-model/questions/${enc(id)}`), () => demo.dropQuestion(id))
+  },
+
+  // §16 webhooks --------------------------------------------------------------------------
+  hooks: {
+    list: () => withDemoFallback(() => http.get<Hook[]>('/api/hooks'), () => demo.hooks()),
+    create: (name: string) => withDemoFallback(() => http.post<HookCreated>('/api/hooks', { name }), () => demo.createHook(name)),
+    delete: (id: string) => withDemoFallback(() => http.delete<{ ok: boolean }>(`/api/hooks/${enc(id)}`), () => demo.deleteHook(id))
   }
 } as const
 

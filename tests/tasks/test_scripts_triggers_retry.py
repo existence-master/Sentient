@@ -1,4 +1,4 @@
-"""V3 task features: source.items triggers, webhooks, task.run_finished, script jobs, run retry."""
+"""Task automation: source.items triggers, webhooks, task.run_finished, script jobs and run retry."""
 
 from __future__ import annotations
 

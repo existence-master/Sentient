@@ -16,7 +16,7 @@ import {
   IconWorld,
   type Icon
 } from '@tabler/icons-react'
-import type { DreamStats, Insight, InsightDimension } from '@/lib/leap/types-b'
+import type { DreamStats, Insight, InsightDimension } from '@/lib/types'
 import { humanize } from '@/lib/utils'
 
 export interface DimensionMeta {

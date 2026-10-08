@@ -40,7 +40,7 @@ dependencies = [
     # text extraction for attachments and memory import
     "pypdf>=6.19.0",
     "python-docx>=1.2.0",
-    # V3 leap: browser control, IMAP push, device TLS + discovery, pairing QR codes
+    # browser control, IMAP push, device TLS + discovery, pairing QR codes
     "playwright>=1.63.0",
     "aioimaplib>=2.0.1",
     "cryptography>=50.0.2",

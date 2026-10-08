@@ -10,7 +10,7 @@ import { errorMessage, isNotImplemented } from '@/lib/api'
 import { relativeTime } from '@/lib/utils'
 import { SchemaForm } from '../SchemaForm'
 import type { SectionProps } from '../SettingsPage'
-import { WAKE_KEYS, WakeWordSection } from './LeapSections'
+import { WAKE_KEYS, WakeWordSection } from './AbilitySections'
 
 export function MemorySection({ query }: SectionProps) {
   const navigate = useNavigate()

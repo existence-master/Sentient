@@ -28,8 +28,10 @@ export const qk = {
     all: ['integrations'] as const,
     detail: (id: string) => ['integrations', id] as const,
     privacyFilters: (id: string) => ['integrations', id, 'privacy-filters'] as const,
-    mcp: ['integrations-mcp'] as const
+    mcp: ['integrations-mcp'] as const,
+    feeds: ['integrations', 'feeds'] as const
   },
+  hooks: ['hooks'] as const,
 
   notifications: ['notifications'] as const,
   proactivity: {
@@ -44,8 +46,10 @@ export const qk = {
     graph: ['memories', 'graph'] as const,
     summaries: ['memories', 'summaries'] as const,
     workspace: ['memories', 'workspace'] as const,
-    personas: ['memories', 'personas'] as const
+    personas: ['memories', 'personas'] as const,
+    dreams: ['memories', 'dreams'] as const
   },
+  userModel: ['user-model'] as const,
 
   skills: {
     all: ['skills'] as const,
@@ -55,6 +59,7 @@ export const qk = {
   },
 
   voiceStatus: ['voice', 'status'] as const,
+  sandboxStatus: ['sandbox', 'status'] as const,
   usage: (days: number) => ['usage', days] as const,
   files: ['files'] as const,
   tools: ['tools'] as const

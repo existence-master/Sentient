@@ -1,12 +1,11 @@
 /** Month grid: past runs, upcoming recurring occurrences and scheduled one-off runs. Click a day for its timeline. */
 import { IconChevronLeft, IconChevronRight, IconRadar } from '@tabler/icons-react'
-import { isScriptJob } from '@/lib/leap/types-b'
 import { useMemo } from 'react'
 import { Button, IconButton, Tooltip } from '@/components/ui'
 import type { Task } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { calendarItems, groupByDay, monthKeyOf, monthLabel, shiftMonth, type CalendarItem } from './calendar'
-import { displayName, runStatusMeta, statusMeta } from './meta'
+import { displayName, isScriptJob, runStatusMeta, statusMeta } from './meta'
 import { addDays, dayKey, formatInZone, parseDayKey, weekdayOfKey, zonedTime } from './schedule'
 
 const WEEKDAY_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']

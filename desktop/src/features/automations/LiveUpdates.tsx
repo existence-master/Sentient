@@ -7,8 +7,8 @@ import { toast } from 'sonner'
 import { Button, StatusDot, Tooltip } from '@/components/ui'
 import { BrandIcon } from '@/features/integrations/BrandIcon'
 import { errorMessage } from '@/lib/api'
-import { useFeedSync, useFeeds } from '@/lib/leap/hooks-b'
-import type { FeedStatus } from '@/lib/leap/types-b'
+import { useFeedSync, useFeeds } from '@/hooks/automations'
+import type { FeedStatus } from '@/lib/types'
 import { cn, relativeTime } from '@/lib/utils'
 
 function describe(f: FeedStatus): { tone: 'success' | 'danger' | 'warning' | 'neutral'; text: string; hint: string } {

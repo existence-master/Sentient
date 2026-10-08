@@ -1,14 +1,14 @@
-"""Seed demo data for desktop agent B screens into a SENTIENT_HOME (no LLM calls, no network, no real keychain).
+"""Seed demo data for the automation and About you screens (no LLM calls, no network, no real keychain).
 
-    .venv/Scripts/python.exe desktop/scripts/seed-leap-b.py <SENTIENT_HOME> [--reset] [--theme dark|light]
+    .venv/Scripts/python.exe desktop/scripts/seed-automations-usermodel.py <SENTIENT_HOME> [--reset] [--theme dark|light]
 
-Covers: leap notifications (script alert / failure / recovery, failed run, helper finished, dream, skill fix),
+Covers: notifications (script alert / failure / recovery, failed run, helper finished, dream, skill fix),
 a skill repair proposal with a diff, a script job task, webhooks, the user model and dreams.
 
-Engine packages for docs/API.md sections 15 and 16 are built in parallel, so each block first checks that the
-engine supports it (a service method, or a table/column) and is skipped with a note otherwise. The desktop
-screens stay friendly when data is missing. To design screens before an engine piece exists, use the renderer's
-dev-only demo mode instead (`#/about?demo=1`, see desktop/src/lib/leap/demo-b.ts; never active in packaged builds).
+Each block first checks that the engine supports it (a service method, or a table/column) and is skipped with a
+note otherwise. The desktop screens stay friendly when data is missing. To design screens before an engine piece
+exists, use the renderer's dev-only demo mode instead (`#/about?demo=1`, see desktop/src/lib/demo.ts; never active
+in packaged builds).
 
 The profile's models point at a black-holed address so `sentient serve` on this home makes no model calls;
 start it with SENTIENT_DISABLE_BACKGROUND=1 for screenshots.
@@ -34,10 +34,14 @@ OFFLINE_API_BASE = "http://10.255.255.1:11434"
 
 def _args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("home", help="SENTIENT_HOME folder to seed (created if missing)")
+    p.add_argument("home", nargs="?", default=os.environ.get("SENTIENT_HOME"),
+                   help="folder to seed (created if missing); defaults to SENTIENT_HOME")
     p.add_argument("--reset", action="store_true", help="delete sentient.db in that home first")
     p.add_argument("--theme", choices=["dark", "light", "system"], default=None)
-    return p.parse_args()
+    args = p.parse_args()
+    if not args.home:
+        p.error("pass a folder or set SENTIENT_HOME")
+    return args
 
 
 ARGS = _args()
@@ -153,7 +157,7 @@ async def seed_notifications(app: SentientApp, script_task_id: str | None) -> No
     await n.create("skill", "Filing an invoice failed because a Drive folder was missing. I drafted a fix to **invoice-filing**.",
                    title="A fix for invoice-filing",
                    payload={"skill": "invoice-filing", "action": "patch", "origin": {"repair": True, "task_id": "demo-invoices"}})
-    REPORT["notifications"] = "7 leap notifications"
+    REPORT["notifications"] = "7 automation, helper, dream and skill notifications"
 
 
 CURRENT = """# Invoice filing

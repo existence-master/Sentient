@@ -1,5 +1,4 @@
 /** Filtering, grouping and click-through helpers for notifications. */
-import { notificationVariant } from '@/lib/leap/types-b'
 import type { Notification } from '@/lib/types'
 import { parseDate } from '@/lib/utils'
 
@@ -84,5 +83,23 @@ export function clickRoute(n: Notification): string | null {
   const taskId = n.task_id ?? (typeof p.task_id === 'string' ? p.task_id : null)
   if (taskId) return taskRoute(taskId)
   if (typeof p.integration === 'string') return `/integrations?open=${encodeURIComponent(p.integration)}`
+  return null
+}
+
+export type NotificationVariant = 'script_alert' | 'script_failed' | 'script_recovered' | 'run_failed' | 'subagent' | 'dream' | 'skill_repair' | null
+
+/** Recognises the richer notification flavours from `kind` or `payload.event` (docs/API.md §4, §15, §16). */
+export function notificationVariant(n: Notification): NotificationVariant {
+  const kind = String(n.kind)
+  const p = (n.payload ?? {}) as Record<string, unknown>
+  const event = typeof p.event === 'string' ? p.event : typeof p.type === 'string' ? p.type : ''
+  if (kind === 'script_alert' || event === 'script_alert') return 'script_alert'
+  if (event === 'script_failed') return 'script_failed'
+  if (event === 'script_recovered') return 'script_recovered'
+  if (event === 'run_failed') return 'run_failed'
+  if (kind === 'subagent' || event.startsWith('subagent') || typeof p.subagent_id === 'string') return 'subagent'
+  if (kind === 'dream' || event.startsWith('dream') || typeof p.dream_id === 'string') return 'dream'
+  const origin = p.origin as unknown
+  if (kind === 'skill' && (origin === 'repair' || (!!origin && typeof origin === 'object' && (origin as { repair?: unknown }).repair === true) || p.action === 'repair')) return 'skill_repair'
   return null
 }

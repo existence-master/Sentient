@@ -25,7 +25,7 @@ import {
   type Icon
 } from '@tabler/icons-react'
 import type { Tone } from '@/components/ui'
-import type { RunStatus, Task, TaskStatus } from '@/lib/types'
+import type { RunStatus, Task, TaskScript, TaskStatus } from '@/lib/types'
 import { parseDate } from '@/lib/utils'
 
 export interface StatusMeta {
@@ -197,4 +197,20 @@ export function runDurationMs(run: { execution_start_time?: string | null; creat
   if (!start) return null
   const end = parseDate(run.finished_at)?.getTime() ?? now
   return Math.max(0, end - start)
+}
+
+// ---------------------------------------------------------------------------- script jobs and retries (§16, §4)
+export function isScriptJob(task: Pick<Task, 'task_type'> | null | undefined): boolean {
+  return (task as { task_type?: string } | null | undefined)?.task_type === 'script'
+}
+
+export function scriptOf(task: Task | null | undefined): TaskScript | null {
+  const s = task?.script
+  return s && typeof s === 'object' && typeof s.code === 'string' ? s : null
+}
+
+/** A run that retries an earlier one (`POST /runs/{id}/retry`). */
+export function retryOf(run: unknown): string | null {
+  const r = (run as { retry_of?: unknown } | null)?.retry_of
+  return typeof r === 'string' && r ? r : null
 }

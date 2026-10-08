@@ -9,7 +9,7 @@
  *   notification.updated  -> replace in place (payload status changed)
  *   notification.read     -> mark read (id null = all)
  *   notification.deleted  -> remove (id null = all)
- *   integration.updated   -> upsert into ['integrations']
+ *   integration.updated   -> upsert into ['integrations'], refetch change feeds (+ ['hooks'] for the webhook integration)
  *   memory.updated        -> invalidate ['memories']
  *   skill.updated         -> invalidate ['skills']
  *   session.updated       -> rename in ['sessions']
@@ -19,12 +19,16 @@
  *   browser.updated       -> ['browser', 'status']; browser.frame -> useBrowserView (live view)
  *   node.updated/deleted  -> ['nodes']; node.event battery -> node battery
  *   channel.updated       -> ['channels']; channel.message -> refresh sessions (+ that transcript)
+ *   user_model.updated    -> refetch ['user-model']
+ *   dream.updated         -> upsert into ['memories', 'dreams'] (and refetch the user model when one completes)
+ *   source.items          -> webhook calls refresh ['hooks'] (last called / call count)
  */
 import type { QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { qk } from '@/hooks/queryKeys'
 import { removeTask, upsertTask } from '@/hooks/tasks'
 import { upsertIntegration } from '@/hooks/integrations'
+import { upsertDream } from '@/hooks/userModel'
 import { browserKeys, useBrowserView } from '@/features/browser/state'
 import { channelKeys, upsertChannel } from '@/features/channels/hooks'
 import { upsertSubagent } from '@/features/chat/subagents'
@@ -33,7 +37,7 @@ import { useChat } from '@/stores/chat'
 import { useNotificationStore } from '@/stores/notifications'
 import { useUI } from '@/stores/ui'
 import { getBridge } from './bridge'
-import type { DeviceNode, Notification, NotificationList, Session, Task } from './types'
+import type { DeviceNode, Dream, Notification, NotificationList, Session, Task } from './types'
 import { live, type SocketState } from './ws'
 
 export function notificationRoute(n: Notification): string {
@@ -116,7 +120,14 @@ export function installDomainEvents(qc: QueryClient): () => void {
     })
   )
 
-  offs.push(live.onDomain('integration.updated', (e) => upsertIntegration(qc, e.data)))
+  offs.push(
+    live.onDomain('integration.updated', (e) => {
+      upsertIntegration(qc, e.data)
+      // feed state changes with connections; the builtin `webhook` integration changes when hooks do
+      void qc.invalidateQueries({ queryKey: qk.integrations.feeds })
+      if (e.data?.id === 'webhook') void qc.invalidateQueries({ queryKey: qk.hooks })
+    })
+  )
   offs.push(live.onDomain('memory.updated', () => void qc.invalidateQueries({ queryKey: qk.memories.all })))
   offs.push(live.onDomain('skill.updated', () => void qc.invalidateQueries({ queryKey: qk.skills.all })))
 
@@ -199,6 +210,24 @@ export function installDomainEvents(qc: QueryClient): () => void {
       if (session_id && !useChat.getState().live[session_id]?.streaming && qc.getQueryData(qk.messages(session_id))) {
         void qc.invalidateQueries({ queryKey: qk.messages(session_id) })
       }
+    })
+  )
+
+  // §15 user model and dreams
+  offs.push(live.onDomain('user_model.updated', () => void qc.invalidateQueries({ queryKey: qk.userModel })))
+  offs.push(
+    live.onDomain('dream.updated', (e) => {
+      const d = e.data
+      if (!d?.id) return
+      qc.setQueryData<Dream[]>(qk.memories.dreams, (old) => upsertDream(old, d))
+      if (d.status === 'completed') void qc.invalidateQueries({ queryKey: qk.userModel })
+    })
+  )
+
+  // §16 webhooks: a call updates the hook's last-called time and count
+  offs.push(
+    live.onDomain('source.items', (e) => {
+      if (e.data?.origin === 'webhook' || e.data?.source === 'webhook') void qc.invalidateQueries({ queryKey: qk.hooks })
     })
   )
 

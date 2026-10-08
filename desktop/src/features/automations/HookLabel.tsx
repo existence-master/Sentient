@@ -1,6 +1,6 @@
 /** "Webhook: Shopify orders" line for triggered tasks that start from a webhook. */
 import { IconWebhook } from '@tabler/icons-react'
-import { useHooks } from '@/lib/leap/hooks-b'
+import { useHooks } from '@/hooks/automations'
 import { cn, relativeTime } from '@/lib/utils'
 
 export function HookName({ id, className }: { id: string; className?: string }) {

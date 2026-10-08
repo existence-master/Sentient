@@ -7,8 +7,8 @@ import { setAlwaysListening, useWakeStore } from '@/features/voice/wake'
 import { useConfigEditor } from '@/hooks/config'
 import { useConfigSchema } from '@/hooks/core'
 import { useVoicePrepare, useVoiceStatus } from '@/hooks/voice'
-import { notReady, useSandboxStatus } from '@/lib/leap/hooks-b'
-import type { VoiceStatusB } from '@/lib/leap/types-b'
+import { isNotImplemented } from '@/lib/api'
+import { useSandboxStatus } from '@/hooks/tasks'
 import type { VoicePrepareTarget } from '@/lib/types'
 import { SchemaForm } from '../SchemaForm'
 import type { SectionProps } from '../SettingsPage'
@@ -104,7 +104,7 @@ export function SandboxSection({ query }: SectionProps) {
           </div>
           <Badge tone={s.docker_available ? 'success' : 'neutral'}>{s.docker_available ? 'Docker available' : 'No Docker'}</Badge>
         </Card>
-      ) : status.isError && !notReady(status.error) ? (
+      ) : status.isError && !isNotImplemented(status.error) ? (
         <Alert tone="warning" title="Couldn’t check code execution">
           It may still work. Try again in a moment.
         </Alert>
@@ -151,7 +151,7 @@ export function WakeWordSection({ query }: SectionProps) {
   const voiceStatus = useVoiceStatus()
   const prepare = useVoicePrepare()
   const { config } = useConfigEditor()
-  const wake = (voiceStatus.data as VoiceStatusB | undefined)?.wake
+  const wake = voiceStatus.data?.wake
   const raw = config?.voice.wake_word || wake?.phrase || 'hey sentient'
   const phrase = raw.replace(/\b\p{L}/gu, (c) => c.toUpperCase())
   const q = query.trim().toLowerCase()

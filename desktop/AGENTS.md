@@ -12,7 +12,10 @@ Read the root [AGENTS.md](../AGENTS.md) first.
 - `src/`: the React renderer (React 19, TypeScript, Tailwind 4, Radix, zustand, React Query).
   - `lib/api.ts`, `lib/types.ts`, `lib/events.ts`: the typed REST client, shared types and domain-event wiring.
     They mirror [docs/API.md](../docs/API.md); change them together.
-  - `features/<area>/`: screens and components per area. `components/ui/`: the design system; reuse it.
+  - `features/<area>/`: screens (`<Area>Page.tsx`) and components per area. `components/ui/`: the design system;
+    reuse it.
+  - `hooks/`: React Query hooks per area, with every query key in `hooks/queryKeys.ts`.
+  - `lib/demo.ts`: dev-only demo data behind `#/<route>?demo=1`, never active in a packaged build.
   - `stores/`: zustand stores for app-wide state (chat stream, connection, UI).
 
 ## Conventions
@@ -31,6 +34,6 @@ node scripts/smoke.mjs chat shot.png 1440x900   # launch the built app, capture 
 ```
 
 Point `SENTIENT_HOME` at an empty folder and run the seed scripts with the engine's Python in this order, then
-capture with the same `SENTIENT_HOME`: `seed-memory-skills.py --reset`, `seed-leap-a.py --add`, `seed-tasks.py`,
-`seed-integrations-notifications.py --keep-db`, `seed-leap-b.py`. They all use one fictional persona (Maya Rao). In Git Bash write routes without a leading slash. When several people or agents build at once,
+capture with the same `SENTIENT_HOME`: `seed-memory-skills.py --reset`, `seed-chats-devices-channels.py --add`,
+`seed-tasks.py`, `seed-integrations-notifications.py --keep-db`, `seed-automations-usermodel.py`. They all use one fictional persona (Maya Rao). In Git Bash write routes without a leading slash. When several people or agents build at once,
 take `desktop/.build.lock` before `npm run build` and remove it after, because `out/` is shared.

@@ -1,5 +1,4 @@
 import { IconArrowUpRight, IconCheck, IconCode, IconEyeCheck, IconFileDescription, IconFilePencil, IconFirstAidKit, IconPencil, IconSparkles, IconX } from '@tabler/icons-react'
-import { isRepairProposal } from '@/lib/leap/types-b'
 import { useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -16,7 +15,7 @@ import { DiffView } from './DiffView'
 import { AuthorBadge } from './SkillCard'
 import { SkillBody } from './SkillDetail'
 import { SkillEditor, splitList, type SkillDraft } from './SkillEditor'
-import { splitFrontmatter } from './meta'
+import { isRepairProposal, splitFrontmatter } from './meta'
 
 function proposalFor(log: EvolutionLogEntry[] | undefined, name: string) {
   return log?.find(

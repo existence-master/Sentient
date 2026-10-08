@@ -24,8 +24,7 @@ import { useHotkey } from '@/hooks/useHotkey'
 import { useVoicePrepare, useVoiceStatus } from '@/hooks/voice'
 import { errorMessage, isNotImplemented } from '@/lib/api'
 import { useConfig } from '@/hooks/core'
-import type { VoiceStateB, VoiceStatusB } from '@/lib/leap/types-b'
-import type { VoiceStatus } from '@/lib/types'
+import type { VoiceState, VoiceStatus } from '@/lib/types'
 import { useWakeStore } from './wake'
 import { cn, isEditableTarget } from '@/lib/utils'
 import { PREVIEW_KINDS, previewAllowed, previewState, type PreviewKind } from './preview'
@@ -60,7 +59,7 @@ export function VoiceMode() {
   const wakePhrase = useVoiceStore((s) => s.wakePhrase)
   const followUpUntil = useVoiceStore((s) => s.followUpUntil)
   const config = useConfig()
-  const phrase = titleCase(wakePhrase || (status.data as VoiceStatusB | undefined)?.wake?.phrase || config.data?.voice.wake_word || 'Hey Sentient')
+  const phrase = titleCase(wakePhrase || status.data?.wake?.phrase || config.data?.voice.wake_word || 'Hey Sentient')
   const autoStarted = useRef(false)
 
   const previewKind = params.get('voicePreview') as PreviewKind | null
@@ -151,7 +150,7 @@ export function VoiceMode() {
           Voice mode
         </div>
         <EngineChips status={status.data} loading={status.isLoading} unavailable={status.isError} />
-        <WakeChip status={status.data as VoiceStatusB | undefined} phrase={phrase} />
+        <WakeChip status={status.data} phrase={phrase} />
         <div className="flex-1" />
         {sessionId && !preview && (live || phase === 'ended') && (
           <Button size="sm" variant="ghost" leftIcon={<IconMessageCircle size={15} />} onClick={() => navigate(`/chat/${sessionId}`)}>
@@ -220,7 +219,7 @@ export function VoiceMode() {
 }
 
 // ---------------------------------------------------------------------------- pieces
-function Backdrop({ state }: { state: VoiceStateB }) {
+function Backdrop({ state }: { state: VoiceState }) {
   const strong = state === 'speaking' || state === 'thinking'
   return (
     <motion.div
@@ -273,7 +272,7 @@ function EngineChips({ status, loading, unavailable }: { status?: VoiceStatus; l
   )
 }
 
-const LABEL: Record<VoiceStateB, string> = {
+const LABEL: Record<VoiceState, string> = {
   standby: 'Resting',
   idle: 'Ready',
   listening: 'Listening',
@@ -292,7 +291,7 @@ function StateLabel({
   followUp
 }: {
   phase: VoicePhase
-  state: VoiceStateB
+  state: VoiceState
   muted: boolean
   mode: 'handsfree' | 'ptt'
   talking: boolean
@@ -485,7 +484,7 @@ function ControlDock() {
 
 const titleCase = (s: string) => s.trim().replace(/\b\p{L}/gu, (c) => c.toUpperCase())
 
-function WakeChip({ status, phrase }: { status?: VoiceStatusB; phrase: string }) {
+function WakeChip({ status, phrase }: { status?: VoiceStatus; phrase: string }) {
   const always = useWakeStore((s) => s.enabled)
   const wakeMode = useVoiceStore((s) => s.wakeMode)
   const wake = status?.wake

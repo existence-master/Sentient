@@ -3,7 +3,7 @@
 No LLM traffic: a tiny fake provider stands in while seeding, and every model role in the saved
 config points at a black-holed address, so the real engine never reaches a model either.
 
-    .venv/Scripts/python.exe desktop/scripts/seed-leap-a.py --home <dir> [--reset | --add] [--theme dark|light|system]
+    .venv/Scripts/python.exe desktop/scripts/seed-chats-devices-channels.py --home <dir> [--reset | --add] [--theme dark|light|system]
 
 `--add` layers these chats onto a home other seed scripts already filled (keeps its data and config).
 
@@ -237,7 +237,7 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
     refs: dict[str, Any] = {}
 
     # 1. main: code, foreground subagent, interjection, browser ------------------
-    main = Convo("leap-a-main", "desktop", "Electricity bills and Saturday dinner", timedelta(minutes=4))
+    main = Convo("demo-chat-main", "desktop", "Electricity bills and Saturday dinner", timedelta(minutes=4))
     main.user(
         "Can you compare my last three electricity bills from my files? And then find a quiet place for dinner "
         "in Indiranagar on Saturday at 8, somewhere with good vegetarian food."
@@ -263,7 +263,7 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
             "Saturday at 8 pm. Vegetarian options matter.",
             "background": False,
         },
-        {"subagent_id": "sub-leap-a-1", "status": "completed", "summary": RESTAURANT_SUMMARY, "files_created": []},
+        {"subagent_id": "sub-demo-1", "status": "completed", "summary": RESTAURANT_SUMMARY, "files_created": []},
         text="Now I will ask a helper to shortlist restaurants.",
     )
     main.user("Oh and it should be walking distance from the metro if possible")
@@ -275,7 +275,7 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
     main.assistant(MAIN_FINAL)
 
     # 2. background subagent ---------------------------------------------------------
-    bg = Convo("leap-a-background", "desktop", "Research standing desks", timedelta(days=1, hours=3, minutes=12))
+    bg = Convo("demo-chat-background", "desktop", "Research standing desks", timedelta(days=1, hours=3, minutes=12))
     bg.user("Can you research standing desks for me? Sturdy enough for two monitors, under 40k, and available in Bengaluru.")
     refs["bg_delegate_idx"] = len(bg.rows)
     refs["bg_delegate_call"] = bg.tool(
@@ -285,13 +285,13 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
             "context": "Two monitors on the desk, used for long work days. Prefer dual motor frames and delivery to Bengaluru.",
             "background": True,
         },
-        {"subagent_id": "sub-leap-a-2", "status": "running"},
+        {"subagent_id": "sub-demo-2", "status": "running"},
     )
     bg.assistant("I have a helper researching that in the background. I will post the comparison here when it is ready.")
     bg.assistant(DESK_SUMMARY)
 
     # 3. telegram ----------------------------------------------------------------------
-    tg = Convo("leap-a-telegram", "telegram", "Groceries for the week", timedelta(days=1, hours=9, minutes=40))
+    tg = Convo("demo-chat-telegram", "telegram", "Groceries for the week", timedelta(days=1, hours=9, minutes=40))
     tg.user("hey can u make a grocery list for the week")
     tg.assistant("Sure. Your usual, or anything different this week?")
     tg.user("usual + oats, bananas and paneer. also out of coffee")
@@ -303,11 +303,11 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
     tg.assistant("Anytime. Happy shopping!")
 
     # 4. glasses -----------------------------------------------------------------------
-    gl = Convo("leap-a-glasses", "glasses", "What plant is this?", timedelta(days=2, hours=1, minutes=5))
+    gl = Convo("demo-chat-glasses", "glasses", "What plant is this?", timedelta(days=2, hours=1, minutes=5))
     gl.user("what plant is this on the balcony")
     gl.tool(
         "device_take_photo", {"device": "glasses", "question": "What plant is this?"},
-        {"file": "outputs/glasses-photo-leap-a.png",
+        {"file": "outputs/glasses-photo-demo.png",
          "description": "A money plant (golden pothos) in a terracotta pot, leaves slightly yellow at the edges."},
     )
     gl.assistant(
@@ -316,7 +316,7 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
     )
 
     # 5. voice -------------------------------------------------------------------------
-    vo = Convo("leap-a-voice", "voice", "Morning check-in", timedelta(days=2, hours=6, minutes=30))
+    vo = Convo("demo-chat-voice", "voice", "Morning check-in", timedelta(days=2, hours=6, minutes=30))
     vo.user("Good morning. What does my day look like?")
     vo.assistant(
         "Morning, Maya. Your morning is clear for deep work. At 3 you have a call with Rohan about the glasses "
@@ -326,7 +326,7 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
     vo.assistant("Sure. I will remind you at 12:30 to call the electrician.")
 
     # 6. code error --------------------------------------------------------------------
-    ce = Convo("leap-a-code-error", "desktop", "Rename my holiday photos", timedelta(days=2, hours=20, minutes=15))
+    ce = Convo("demo-chat-code-error", "desktop", "Rename my holiday photos", timedelta(days=2, hours=20, minutes=15))
     ce.user("Rename my holiday photos in Pictures/Goa 2025 so each name starts with the date it was taken")
     ce.tool(
         "execute_code", {"code": RENAME_CODE, "purpose": "Rename the Goa 2025 photos by the date they were taken"},
@@ -343,7 +343,7 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
     )
 
     # 7. declined approvals: new engine shape (declined: true) and an older transcript (error text only)
-    dc = Convo("leap-a-declined", "desktop", "Order a blue mug", timedelta(minutes=1))
+    dc = Convo("demo-chat-declined", "desktop", "Order a blue mug", timedelta(minutes=1))
     shop = "https://mugshop.example/shop"
     dc.user("Add the blue mug to the cart and then click the Place order button.")
     dc.tool("browser_open", {"url": shop}, {"ok": True, "url": shop, "title": "Mug Shop"})
@@ -365,7 +365,7 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
     )
 
     # 8. README: one compact chat with a code run, a browser card and a short answer (newest chat)
-    rd = Convo("leap-a-readme", "desktop", "Bills and a dinner booking", timedelta(seconds=20))
+    rd = Convo("demo-chat-readme", "desktop", "Bills and a dinner booking", timedelta(seconds=20))
     rd.user("Compare my last three electricity bills, then find somewhere quiet in Indiranagar for dinner on Saturday at 8.")
     rd.tool(
         "execute_code", {"code": BILL_CODE, "purpose": "Compare the last three electricity bills"},
@@ -501,8 +501,8 @@ def write_files(home: Path) -> tuple[list[str], str]:
     csv_lines = ["month,kwh,amount"] + [f"{m},{k},{a}" for m, k, a in BILLS]
     (out / "bill-comparison.csv").write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
     encoder = bill_chart(out / "bill-comparison.png")
-    plant_photo(out / "glasses-photo-leap-a.png")
-    names = ["bill-comparison.csv", "bill-comparison.png", "glasses-photo-leap-a.png"]
+    plant_photo(out / "glasses-photo-demo.png")
+    names = ["bill-comparison.csv", "bill-comparison.png", "glasses-photo-demo.png"]
     if booking_page(out / "tablefinder-booking.png"):
         names.append("tablefinder-booking.png")
     return [f"files/outputs/{n}" for n in names], encoder
@@ -585,16 +585,16 @@ async def insert_matching(store, table: str, records: list[dict]) -> int:
 
 async def seed_engine_tables(store, convos: list[Convo], refs: dict) -> tuple[dict[str, int], list[str]]:
     by_id = {c.sid: c for c in convos}
-    main, bg = by_id["leap-a-main"], by_id["leap-a-background"]
+    main, bg = by_id["demo-chat-main"], by_id["demo-chat-background"]
     sub1_start = main.rows[refs["main_delegate_idx"]]["created_at"]
     sub1_end = main.rows[refs["main_delegate_idx"] + 1]["created_at"]
     sub2_start = bg.rows[refs["bg_delegate_idx"]]["created_at"]
     subagents = [
-        {"id": "sub-leap-a-1", "subagent_id": "sub-leap-a-1", "session_id": "leap-a-main",
+        {"id": "sub-demo-1", "subagent_id": "sub-demo-1", "session_id": "demo-chat-main",
          "parent_call_id": refs["main_delegate_call"], "goal": RESTAURANT_GOAL, "status": "completed",
          "background": 0, "summary": RESTAURANT_SUMMARY, "error": None, "tool_calls": 6,
          "started_at": sub1_start, "finished_at": sub1_end, "created_at": sub1_start, "updated_at": sub1_end},
-        {"id": "sub-leap-a-2", "subagent_id": "sub-leap-a-2", "session_id": "leap-a-background",
+        {"id": "sub-demo-2", "subagent_id": "sub-demo-2", "session_id": "demo-chat-background",
          "parent_call_id": refs["bg_delegate_call"], "goal": DESK_GOAL, "status": "running",
          "background": 1, "summary": None, "error": None, "tool_calls": 3,
          "started_at": sub2_start, "finished_at": None, "created_at": sub2_start, "updated_at": sub2_start},
@@ -620,7 +620,7 @@ async def seed_engine_tables(store, convos: list[Convo], refs: dict) -> tuple[di
                       "status": "connected", "account_label": "@maya_sentient_bot", "error": None,
                       "updated_at": iso(NOW - timedelta(days=2, hours=1))}]
     paired = [{"channel": "telegram", "channel_id": "telegram", "chat_id": "100200301", "label": "Maya Rao",
-               "paired_at": iso(NOW - timedelta(days=2, hours=1)), "deliver": 1, "session_id": "leap-a-telegram"}]
+               "paired_at": iso(NOW - timedelta(days=2, hours=1)), "deliver": 1, "session_id": "demo-chat-telegram"}]
 
     names = [r["name"] for r in await store.fetchall("SELECT name FROM sqlite_master WHERE type = 'table'")]
     targets: dict[str, list[tuple[str, list[dict]]]] = {"subagents": [], "nodes": [], "channels": [], "paired chats": []}
@@ -772,7 +772,7 @@ def main() -> None:
             ap.error(f"refusing to wipe {home}: it was not created by a seed script")
         shutil.rmtree(home)
     home.mkdir(parents=True, exist_ok=True)
-    (home / MARKER).write_text("created by desktop/scripts/seed-leap-a.py\n", encoding="utf-8")
+    (home / MARKER).write_text("created by desktop/scripts/seed-chats-devices-channels.py\n", encoding="utf-8")
     os.environ["SENTIENT_HOME"] = str(home)
     asyncio.run(seed(home, args.theme))
 

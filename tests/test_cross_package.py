@@ -1,4 +1,4 @@
-"""Cross-package behaviour wired by the lead after the V3 leap builders finished."""
+"""Behaviour that spans engine packages: webhooks and tasks, the LAN listener, approval wording, shutdown."""
 
 from __future__ import annotations
 

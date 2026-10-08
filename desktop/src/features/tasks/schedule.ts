@@ -4,9 +4,21 @@
  * Mirrors sentient/tasks/schedule.py: naive `run_at` values are wall-clock times in the
  * schedule's timezone, recurring times are HH:MM in that zone, weekly uses day names.
  */
-import { intervalMinutes, isIntervalSchedule } from '@/lib/leap/types-b'
-import type { RecurringSchedule, Task, TaskSchedule, TriggeredSchedule, Weekday } from '@/lib/types'
+import type { IntervalSchedule, RecurringSchedule, Task, TaskSchedule, TriggeredSchedule, Weekday } from '@/lib/types'
 import { detectTimezone, humanize, parseDate } from '@/lib/utils'
+
+export function isIntervalSchedule(s: unknown): s is IntervalSchedule {
+  const f = (s as { type?: string; frequency?: string } | null)?.frequency
+  return (s as { type?: string } | null)?.type === 'recurring' && (f === 'interval' || f === 'hourly')
+}
+
+/** Every N minutes, never below 5 (`hourly` is 60). */
+export function intervalMinutes(s: unknown): number {
+  const raw = s as { frequency?: string; interval_minutes?: unknown }
+  if (raw?.frequency === 'hourly') return 60
+  const n = Math.round(Number(raw?.interval_minutes))
+  return Number.isFinite(n) && n > 0 ? Math.max(5, n) : 60
+}
 
 export const WEEKDAYS: Weekday[] = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 

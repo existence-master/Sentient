@@ -25,10 +25,9 @@ import { api, errorMessage } from '@/lib/api'
 import type { ApprovalDecision, Notification, NotificationKind, NotificationList } from '@/lib/types'
 import { cn, formatTime, relativeTime, truncate } from '@/lib/utils'
 import { RISK_LABEL, riskOf, toolLabel } from '@/features/integrations/meta'
-import { notificationVariant } from '@/lib/leap/types-b'
-import { LeapNotificationBody, variantIcon } from './LeapNotification'
+import { VariantBody, variantIcon } from './VariantBody'
 import { SuggestionCard } from './SuggestionCard'
-import { clickRoute, taskRoute } from './utils'
+import { clickRoute, notificationVariant, taskRoute } from './utils'
 
 const KIND: Record<NotificationKind, { icon: Icon; tone: string }> = {
   info: { icon: IconInfoCircle, tone: 'text-fg-muted' },
@@ -138,7 +137,7 @@ export function NotificationItem({
             {proactive ? (
               <SuggestionCard n={n} onNavigate={onNavigate} />
             ) : variant ? (
-              <LeapNotificationBody n={n} variant={variant} onNavigate={onNavigate} />
+              <VariantBody n={n} variant={variant} onNavigate={onNavigate} />
             ) : (
               <>
                 <Markdown className="text-sm text-fg-muted [&_p]:my-0.5">{n.message}</Markdown>

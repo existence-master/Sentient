@@ -21,8 +21,7 @@ import { useLocalModels } from '@/hooks/models'
 import { useTaskPreview } from '@/hooks/tasks'
 import { errorMessage, isApiError } from '@/lib/api'
 import { localModelValue, looksLikeEmbedding, modelShortName } from '@/lib/models'
-import type { TaskPreviewB } from '@/lib/leap/types-b'
-import type { Task, TaskPreview } from '@/lib/types'
+import type { Task, TaskPreview, TaskPreviewWithScript } from '@/lib/types'
 import { cn, modKey } from '@/lib/utils'
 import { KIND_META, priorityMeta, taskKind } from './meta'
 import { describeSchedule } from './schedule'
@@ -236,7 +235,7 @@ function PreviewCard({
       </div>
     )
   } else if (data) {
-    const pb = data as TaskPreviewB
+    const pb = data as TaskPreviewWithScript
     const script = pb.task_type === 'script' || !!pb.script
     const kind = taskKind({ task_type: (script ? 'script' : 'single') as Task['task_type'], schedule: data.schedule })
     const KindIcon = KIND_META[kind].icon

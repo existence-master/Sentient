@@ -18,12 +18,10 @@ import { toast } from 'sonner'
 import { Badge, Button, Markdown } from '@/components/ui'
 import { dreamStatChips } from '@/features/usermodel/meta'
 import { useNotificationActions } from '@/hooks/notifications'
-import { useTaskActions } from '@/hooks/tasks'
+import { useRetryRun, useTaskActions } from '@/hooks/tasks'
 import { errorMessage } from '@/lib/api'
-import { useRetryRun } from '@/lib/leap/hooks-b'
-import type { DreamStats, NotificationVariant } from '@/lib/leap/types-b'
-import type { Notification } from '@/lib/types'
-import { taskRoute } from './utils'
+import type { DreamStats, Notification } from '@/lib/types'
+import { taskRoute, type NotificationVariant } from './utils'
 
 const VARIANT: Record<Exclude<NotificationVariant, null>, { icon: Icon; tone: string }> = {
   script_alert: { icon: IconBellRinging, tone: 'text-warning' },
@@ -41,7 +39,7 @@ export function variantIcon(v: NotificationVariant): { icon: Icon; tone: string 
 
 const str = (v: unknown) => (typeof v === 'string' && v ? v : null)
 
-export function LeapNotificationBody({ n, variant, onNavigate }: { n: Notification; variant: Exclude<NotificationVariant, null>; onNavigate?: () => void }) {
+export function VariantBody({ n, variant, onNavigate }: { n: Notification; variant: Exclude<NotificationVariant, null>; onNavigate?: () => void }) {
   const navigate = useNavigate()
   const { markRead } = useNotificationActions()
   const tasks = useTaskActions()

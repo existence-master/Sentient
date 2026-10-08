@@ -4,8 +4,7 @@ import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { Alert, Button, Combobox, IconButton, Input, SegmentedControl, Select, Textarea } from '@/components/ui'
 import { useIntegrations } from '@/hooks/integrations'
-import { useHooks } from '@/lib/leap/hooks-b'
-import { intervalMinutes, isIntervalSchedule } from '@/lib/leap/types-b'
+import { useHooks } from '@/hooks/automations'
 import type { RecurringSchedule, TaskSchedule, TriggeredSchedule, Weekday } from '@/lib/types'
 import { cn, listTimezones } from '@/lib/utils'
 import {
@@ -15,6 +14,8 @@ import {
   SOURCE_LABELS,
   WEEKDAYS,
   filterRules,
+  intervalMinutes,
+  isIntervalSchedule,
   normalizeDays,
   rulesToFilter,
   scheduleSentence,

@@ -11,6 +11,7 @@ import {
   IconWorld,
   type Icon
 } from '@tabler/icons-react'
+import type { Skill } from '@/lib/types'
 
 export const AUTHOR_META: Record<string, { label: string; icon: Icon; description: string }> = {
   user: { label: 'You', icon: IconUser, description: 'Written by you' },
@@ -167,4 +168,10 @@ export function diffStats(rows: DiffRow[]): { added: number; removed: number } {
     }
   }
   return { added, removed }
+}
+
+/** A pending proposal that fixes a skill after a failed run (`origin.repair`). */
+export function isRepairProposal(skill: Skill): boolean {
+  const o = skill.origin as { repair?: boolean } | 'repair' | null | undefined
+  return o === 'repair' || (!!o && typeof o === 'object' && o.repair === true)
 }

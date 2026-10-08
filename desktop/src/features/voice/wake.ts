@@ -142,7 +142,7 @@ class WakeListener {
 
 const listener = new WakeListener()
 
-/** Installed once from lib/leap/events-b.ts. Does nothing unless the user turned it on. */
+/** Installed once from App.tsx. Does nothing unless the user turned it on. */
 export function installWakeListener(): () => void {
   const sync = () => listener.sync()
   window.addEventListener('hashchange', sync)

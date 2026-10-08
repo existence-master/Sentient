@@ -1,7 +1,7 @@
 /** React Query hooks for §4 tasks. Live updates arrive via `task.updated` (see lib/events.ts). */
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { api } from '@/lib/api'
-import type { ClarificationAnswer, Task, TaskCreateRequest, TaskPatch } from '@/lib/types'
+import { api, noRetryWhenMissing } from '@/lib/api'
+import type { ClarificationAnswer, Task, TaskCreateRequest, TaskPatch, TaskScript } from '@/lib/types'
 import { qk } from './queryKeys'
 
 export function upsertTask(qc: QueryClient, task: Task) {
@@ -61,4 +61,33 @@ export function useTaskActions() {
     cancelRun: useMutation({ mutationFn: ({ id, runId }: { id: string; runId: string }) => api.tasks.cancelRun(id, runId), onSuccess }),
     remove: useMutation({ mutationFn: (id: string) => api.tasks.delete(id), onSuccess: (_r, id) => removeTask(qc, id) })
   }
+}
+
+// ---------------------------------------------------------------------------- script jobs, retries & sandbox
+export function useScriptTest() {
+  return useMutation({
+    mutationFn: (arg: string | { taskId: string; code?: string }) => (typeof arg === 'string' ? api.tasks.testScript(arg) : api.tasks.testScript(arg.taskId, arg.code))
+  })
+}
+
+/** Retry a failed or cancelled run; the updated task is upserted. */
+export function useRetryRun() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ taskId, runId }: { taskId: string; runId: string }) => api.tasks.retryRun(taskId, runId),
+    onSuccess: (task) => upsertTask(qc, task)
+  })
+}
+
+export function useScriptUpdate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ taskId, script }: { taskId: string; script: Partial<Pick<TaskScript, 'condition' | 'then' | 'code'>> }) => api.tasks.updateScript(taskId, script),
+    onSuccess: (task) => upsertTask(qc, task),
+    onError: () => void qc.invalidateQueries({ queryKey: qk.tasks.all })
+  })
+}
+
+export function useSandboxStatus() {
+  return useQuery({ queryKey: qk.sandboxStatus, queryFn: api.sandbox.status, retry: noRetryWhenMissing, staleTime: 60_000 })
 }

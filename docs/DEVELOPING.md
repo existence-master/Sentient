@@ -70,8 +70,9 @@ Open the Vite URL with `?api=http://127.0.0.1:7777&token=<token>`.
 
 In Git Bash write smoke routes without a leading slash (`settings/models`), or MSYS
 turns them into Windows paths. Set `SENTIENT_HOME` to a seeded profile to capture
-realistic screens. Demo data seeders live in `desktop/scripts/seed-*.py` (`seed-leap-a.py` for chat tool
-cards, devices and helpers; `seed-leap-b.py` for About you, dreams, watcher jobs and webhooks).
+realistic screens. Demo data seeders live in `desktop/scripts/seed-*.py` (`seed-chats-devices-channels.py` for
+chat tool cards, devices, helpers and messaging channels; `seed-automations-usermodel.py` for About you, dreams,
+watcher jobs and webhooks).
 
 When several people build and capture screenshots at once, take `desktop/.build.lock`
 (write your name, delete it when done) because `desktop/out` is shared.
@@ -164,7 +165,7 @@ cross-compile). macOS builds are unsigned and unnotarized so far.
 | Change prompts | `sentient/agent/prompt.py`, `sentient/tasks/prompts.py`, `sentient/memory/prompts.py`, `sentient/proactivity/prompts.py`, `sentient/evolution/prompts.py` |
 | Add a device capability | `docs/NODES.md`, `sentient/nodes/tools.py`, and the device (web app in `sentient/nodes/web/`, `sentient/nodes/reference.py`, or your firmware) |
 | Add a messaging channel | a `Channel` subclass in `sentient/channels/` (see `telegram.py`) |
-| Add a screen | `desktop/src/pages/` or `desktop/src/features/`, reusing `components/ui`, `lib/api.ts`, `hooks/` |
+| Add a screen | `desktop/src/features/<area>/`, reusing `components/ui`, `lib/api.ts`, `hooks/` |
 
 Ownership rules for parallel work are in `CLAUDE.md`.
 
