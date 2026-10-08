@@ -10,7 +10,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import math
 import secrets as pysecrets
+import time
 from typing import TYPE_CHECKING, Any
 
 from sentient.store.db import new_id, now_iso
@@ -23,6 +25,7 @@ log = logging.getLogger(__name__)
 SOURCE = "webhook"
 SECRET_HEADER = "X-Sentient-Secret"
 MAX_NAME_CHARS = 80
+_monotonic = time.monotonic  # a module attribute so tests can move the clock without touching asyncio's
 
 
 def hash_secret(secret: str) -> str:
@@ -38,6 +41,7 @@ def hook_url(hook_id: str, base_url: str | None) -> str:
 class HookStore:
     def __init__(self, mgr: IntegrationManager):
         self.mgr = mgr
+        self._buckets: dict[str, tuple[float, float]] = {}  # hook id -> (tokens left, last refill time)
 
     def _public(self, row: dict, base_url: str | None) -> dict:
         return {"id": row["id"], "name": row["name"], "url": hook_url(row["id"], base_url),
@@ -72,6 +76,7 @@ class HookStore:
         cur = await self.mgr.app.store.execute("DELETE FROM hooks WHERE id = ?", (hook_id,))
         if cur.rowcount <= 0:
             return False
+        self._buckets.pop(hook_id, None)
         await self._disable_tasks_for(hook_id)
         await self.mgr.publish(SOURCE)
         return True
@@ -110,6 +115,25 @@ class HookStore:
         if not given:
             return False
         return hmac.compare_digest(hash_secret(given), str(hook["secret_hash"]))
+
+    def rate_limited(self, hook_id: str, per_minute: int) -> int | None:
+        """Spend one call from the hook's token bucket.
+
+        Returns ``None`` when the call may go ahead, else the whole seconds to wait for the next free call.
+        The bucket holds ``per_minute`` calls and refills steadily, so an idle hook can take a burst of that
+        size and a steady caller is held to ``per_minute``. ``per_minute <= 0`` turns the limit off.
+        """
+        if per_minute <= 0:
+            self._buckets.pop(hook_id, None)
+            return None
+        now = _monotonic()
+        tokens, last = self._buckets.get(hook_id, (float(per_minute), now))
+        tokens = min(float(per_minute), tokens + (now - last) * per_minute / 60.0)
+        if tokens < 1.0:
+            self._buckets[hook_id] = (tokens, now)
+            return max(1, math.ceil((1.0 - tokens) * 60.0 / per_minute))
+        self._buckets[hook_id] = (tokens - 1.0, now)
+        return None
 
     async def receive(self, hook: dict, body: Any, *, content_type: str | None = None,
                       query: dict[str, Any] | None = None) -> dict:

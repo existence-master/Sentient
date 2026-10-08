@@ -251,6 +251,13 @@ class IntegrationsConfig(BaseModel):
     webhook_max_body_kb: int = Field(
         256, ge=1, le=10240, description="Largest request body (in KB) an inbound webhook accepts."
     )
+    webhook_rate_limit_per_minute: int = Field(
+        30, ge=0, le=6000,
+        description=(
+            "Most calls one inbound webhook accepts per minute. Extra calls get a 429 with a Retry-After header, "
+            "so a leaked webhook URL can't flood Sentient with task runs. 0 turns the limit off."
+        ),
+    )
 
 
 # ----------------------------------------------------------------------------- proactivity (owner: memory/proactivity agent)
