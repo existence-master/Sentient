@@ -1,27 +1,43 @@
 /**
- * Dev-only demo data for desktop agent B screens, used to design and screenshot them before the engine
- * packages land. Enabled by `demo=1` in the hash route (`#/about?demo=1`) and never in a packaged build.
+ * Dev-only demo data for the About you, automation, script job and skill repair screens, used to design and
+ * screenshot them without an engine that supports them. Enabled by `demo=1` in the hash route
+ * (`#/about?demo=1`) and never in a packaged build.
  *
- * - apiB calls answer from here (see api-b.ts).
- * - installLeapDemo() also adds (never replaces) clearly-labelled demo rows with demo-only ids to caches owned
- *   by lib/api.ts (a script job task, a skill repair proposal, leap notifications) so the Tasks, Skills and
+ * - lib/api.ts answers from here when an endpoint is missing in demo mode (see `withDemoFallback`).
+ * - installDemoData() also adds (never replaces) clearly-labelled demo rows with demo-only ids to the
+ *   React Query caches (a script job task, a skill repair proposal, notifications) so the Tasks, Skills and
  *   notification screens can be captured before those engine features exist.
  * - Packaged builds load from app.asar and can never enable it.
  */
 import type { QueryClient } from '@tanstack/react-query'
 import { qk } from '@/hooks/queryKeys'
-import type { Notification, NotificationList, SkillDiff, SkillsList, Task } from '@/lib/types'
-import type { Dream, FeedStatus, Hook, HookCreated, Insight, InsightDimension, InsightStatus, SandboxResult, ScriptJob, TaskWithScript, UserModel } from './types-b'
+import type {
+  Dream,
+  FeedStatus,
+  Hook,
+  HookCreated,
+  Insight,
+  InsightDimension,
+  InsightStatus,
+  Notification,
+  NotificationList,
+  SandboxResult,
+  SkillDiff,
+  SkillsList,
+  Task,
+  TaskScript,
+  UserModel
+} from '@/lib/types'
 
 let enabled: boolean | null = null
 
-export function isLeapDemo(): boolean {
+export function isDemoMode(): boolean {
   if (enabled !== null) return enabled
   try {
     const packaged = window.location.href.includes('app.asar')
-    const flag = /[?&]demo=1\b/.test(window.location.hash) || sessionStorage.getItem('sentient.leapDemo') === '1'
+    const flag = /[?&]demo=1\b/.test(window.location.hash) || sessionStorage.getItem('sentient.demo') === '1'
     enabled = !packaged && flag
-    if (enabled) sessionStorage.setItem('sentient.leapDemo', '1')
+    if (enabled) sessionStorage.setItem('sentient.demo', '1')
   } catch {
     enabled = false
   }
@@ -166,8 +182,8 @@ result({
 })
 `
 
-function scriptTask(id: string, patch: Partial<TaskWithScript>): TaskWithScript {
-  const base: TaskWithScript = {
+function scriptTask(id: string, patch: Partial<Task>): Task {
+  const base: Task = {
     task_id: id,
     name: 'Tell me when the Aura X2 headphones drop below ₹25,000',
     description: 'Check the GadgetBay price of the Aura X2 headphones every morning and tell me when it drops below ₹25,000.',
@@ -203,7 +219,7 @@ function scriptTask(id: string, patch: Partial<TaskWithScript>): TaskWithScript 
   return base
 }
 
-const scriptTasks: TaskWithScript[] = [
+const scriptTasks: Task[] = [
   scriptTask(DEMO_SCRIPT_TASK_ID, {}),
   scriptTask('demo-script-status', {
     name: 'Watch the Sentient status page for changes',
@@ -316,16 +332,16 @@ export const demo = {
     duration_ms: 1840,
     error: null
   }),
-  patchScript: (taskId: string, script: Partial<ScriptJob>): Task => {
+  patchScript: (taskId: string, script: Partial<TaskScript>): Task => {
     const t = scriptTasks.find((x) => x.task_id === taskId) ?? scriptTasks[0]
-    t.script = { ...(t.script as ScriptJob), ...script }
+    t.script = { ...(t.script as TaskScript), ...script }
     return clone(t)
   }
 }
 
 // ---------------------------------------------------------------------------- cache injection
-export function installLeapDemo(qc: QueryClient): () => void {
-  if (!isLeapDemo()) return () => {}
+export function installDemoData(qc: QueryClient): () => void {
+  if (!isDemoMode()) return () => {}
   const frozen = { staleTime: Infinity, retry: false } as const
 
   for (const t of scriptTasks) {

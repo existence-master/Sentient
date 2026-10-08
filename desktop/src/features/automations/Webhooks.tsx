@@ -4,10 +4,9 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, IconButton, Input, Skeleton } from '@/components/ui'
-import { errorMessage } from '@/lib/api'
-import { absoluteHookUrl } from '@/lib/leap/api-b'
-import { notReady, useHookActions, useHooks } from '@/lib/leap/hooks-b'
-import type { Hook, HookCreated } from '@/lib/leap/types-b'
+import { absoluteHookUrl, errorMessage, isNotImplemented } from '@/lib/api'
+import { useHookActions, useHooks } from '@/hooks/automations'
+import type { Hook, HookCreated } from '@/lib/types'
 import { cn, copyText, relativeTime } from '@/lib/utils'
 
 export function WebhooksSection({ id }: { id?: string }) {
@@ -15,7 +14,7 @@ export function WebhooksSection({ id }: { id?: string }) {
   const { remove } = useHookActions()
   const [creating, setCreating] = useState(false)
   const [deleting, setDeleting] = useState<Hook | null>(null)
-  const missing = hooks.isError && notReady(hooks.error)
+  const missing = hooks.isError && isNotImplemented(hooks.error)
 
   return (
     <section id={id} className="scroll-mt-6">

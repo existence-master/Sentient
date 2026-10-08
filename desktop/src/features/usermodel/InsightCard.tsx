@@ -15,7 +15,7 @@ import {
   Textarea,
   Tooltip
 } from '@/components/ui'
-import type { Insight } from '@/lib/leap/types-b'
+import type { Insight } from '@/lib/types'
 import { cn, relativeTime } from '@/lib/utils'
 import { certainty, dimensionMeta, evidenceMeta, tint } from './meta'
 

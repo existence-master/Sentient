@@ -109,7 +109,7 @@ export const previewChannels = (): Channel[] => [
     status: 'connected',
     account_label: '@maya_sentient_bot',
     error: null,
-    paired: [{ chat_id: '100200301', label: 'Maya Rao', paired_at: ago(60 * 50), deliver: true, session_id: 'leap-a-telegram' }],
+    paired: [{ chat_id: '100200301', label: 'Maya Rao', paired_at: ago(60 * 50), deliver: true, session_id: 'demo-chat-telegram' }],
     setup: { fields: [{ key: 'bot_token', label: 'Bot token', secret: true, required: true }], instructions_md: TELEGRAM_SETUP }
   },
   {
@@ -124,10 +124,10 @@ export const previewChannels = (): Channel[] => [
 ]
 
 export const previewSubagents = (sessionId: string): Subagent[] =>
-  sessionId === 'leap-a-background' || sessionId === 'leap-a-main'
+  sessionId === 'demo-chat-background' || sessionId === 'demo-chat-main'
     ? [
         {
-          subagent_id: 'sub-leap-a-2',
+          subagent_id: 'sub-demo-2',
           session_id: sessionId,
           parent_call_id: null,
           goal: 'Compare 4 standing desks under 40,000 rupees available in Bengaluru',
@@ -144,7 +144,7 @@ export const previewSubagents = (sessionId: string): Subagent[] =>
 
 export const previewSubagent = (id: string): Subagent => ({
   subagent_id: id,
-  session_id: 'leap-a-main',
+  session_id: 'demo-chat-main',
   parent_call_id: null,
   goal: 'Shortlist 3 quiet restaurants in Indiranagar',
   status: 'completed',

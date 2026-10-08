@@ -14,7 +14,7 @@ import { ModelsSection } from './sections/Models'
 import { PersonalitySection } from './sections/Personality'
 import { ApprovalsSection, EvolutionSection, MemorySection, ProactivitySection, TasksSection, VoiceSection } from './sections/SchemaSections'
 import { UsageSection } from './sections/Usage'
-import { BrowserSection, KnowingSection, SandboxSection, SubagentsSection } from './sections/LeapSections'
+import { BrowserSection, KnowingSection, SandboxSection, SubagentsSection } from './sections/AbilitySections'
 
 export interface SectionProps {
   query: string

@@ -16,9 +16,9 @@ import { InsightCard, type InsightActions } from '@/features/usermodel/InsightCa
 import { DIMENSION_ORDER, dimensionMeta, tint } from '@/features/usermodel/meta'
 import { AddInsightDialog, Portrait } from '@/features/usermodel/Portrait'
 import { OpenQuestions } from '@/features/usermodel/Questions'
-import { errorMessage } from '@/lib/api'
-import { notReady, useUserModel, useUserModelActions } from '@/lib/leap/hooks-b'
-import type { Insight, InsightDimension } from '@/lib/leap/types-b'
+import { errorMessage, isNotImplemented } from '@/lib/api'
+import { useUserModel, useUserModelActions } from '@/hooks/userModel'
+import type { Insight, InsightDimension } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 export function AboutPage() {
@@ -109,7 +109,7 @@ export function AboutPage() {
                 ))}
               </div>
             ) : model.isError ? (
-              notReady(model.error) ? (
+              isNotImplemented(model.error) ? (
                 <EmptyState
                   icon={<IconUserHeart />}
                   title="This part of Sentient is on its way"

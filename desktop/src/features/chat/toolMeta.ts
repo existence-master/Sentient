@@ -63,7 +63,7 @@ const KNOWN: Record<string, ToolMeta> = {
   skill_save: { running: 'Saving a skill', done: 'Saved a skill', icon: IconSparkles },
   skill_list: { running: 'Listing skills', done: 'Listed skills', icon: IconSparkles },
   web_search: { running: 'Searching the web', done: 'Searched the web', icon: IconWorld },
-  // §10-13 leap tools
+  // §10-13 code, helpers, browser and devices
   execute_code: { running: 'Running code', done: 'Ran code', icon: IconTerminal2 },
   delegate_task: { running: 'Asking a helper', done: 'Asked a helper', icon: IconUserBolt },
   delegate_tasks: { running: 'Asking helpers', done: 'Asked helpers', icon: IconUsersGroup },

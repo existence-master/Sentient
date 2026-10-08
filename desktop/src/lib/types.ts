@@ -4,8 +4,6 @@
  * change it here too and keep field names identical to the JSON.
  */
 
-import type { Dream, SourceItemsData, UserModelUpdatedData } from './leap/types-b'
-
 export type ISODate = string
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [k: string]: JsonValue }
 
@@ -571,7 +569,7 @@ export interface DomainEventMap {
   'session.updated': { session_id: string; title: string }
   'config.updated': { sections: string[] }
   'voice.state': { state: VoiceState }
-  // §16 leap features
+  // §10-14
   'subagent.updated': Subagent
   'browser.updated': BrowserStatus
   'browser.frame': BrowserFrame
@@ -580,7 +578,7 @@ export interface DomainEventMap {
   'node.event': { node_id: string; event: string; data: Record<string, unknown> }
   'channel.updated': Channel
   'channel.message': ChannelMessage
-  // §15-16 (shapes owned by desktop agent B in lib/leap/types-b.ts)
+  // §15-16
   'user_model.updated': UserModelUpdatedData
   'dream.updated': Dream
   'source.items': SourceItemsData
@@ -964,6 +962,17 @@ export interface TaskPreview {
   schedule: TaskSchedule | null
 }
 
+/** `POST /api/tasks/preview` may also describe a script job when the planner proposes one. */
+export type TaskPreviewWithScript = TaskPreview & { task_type?: string; script?: Partial<TaskScript> | null }
+
+/** `{type: "recurring", frequency: "interval", interval_minutes}` (minimum 5). */
+export interface IntervalSchedule {
+  type: 'recurring'
+  frequency: 'interval'
+  interval_minutes: number
+  timezone?: string
+}
+
 export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model'>>
 
 export interface ClarificationAnswer {
@@ -1324,6 +1333,13 @@ export interface SkillNotificationPayload {
 /** `standby` = wake mode, waiting for the wake word (§16). */
 export type VoiceState = 'standby' | 'listening' | 'transcribing' | 'thinking' | 'speaking' | 'idle'
 
+export interface WakeStatus {
+  engine: string
+  phrase: string
+  ready: boolean
+  error?: string
+}
+
 export interface VoiceStatus {
   sessions?: number
   stt: {
@@ -1347,6 +1363,8 @@ export interface VoiceStatus {
     variant?: string
     error?: string
   }
+  /** Wake-word engine (§16). */
+  wake?: WakeStatus
 }
 
 export interface TranscribeResult {
@@ -1398,3 +1416,126 @@ export type VoiceServerMessage =
   | ApprovalAckEvent
   | PongEvent
   | AgentEvent
+
+// ============================================================================ §15 User model
+export const INSIGHT_DIMENSIONS = [
+  'preferences',
+  'communication',
+  'goals',
+  'routines',
+  'relationships',
+  'values',
+  'work_style',
+  'dislikes',
+  'context'
+] as const
+export type InsightDimension = (typeof INSIGHT_DIMENSIONS)[number]
+
+export type InsightStatus = 'active' | 'confirmed' | 'disputed' | 'retired'
+
+export interface InsightEvidence {
+  kind: 'fact' | 'message' | 'summary' | 'feedback' | string
+  ref: string | number | null
+  quote: string
+  at: ISODate | null
+}
+
+export interface Insight {
+  id: string
+  dimension: InsightDimension | string
+  statement: string
+  /** 0..1 */
+  confidence: number
+  status: InsightStatus
+  source: 'inferred' | 'user'
+  evidence: InsightEvidence[]
+  created_at: ISODate
+  updated_at: ISODate
+}
+
+export interface UserModelQuestion {
+  id: string
+  question: string
+  insight_id: string | null
+  created_at: ISODate
+}
+
+export interface UserModel {
+  summary: string
+  updated_at: ISODate | null
+  insights: Insight[]
+  questions: UserModelQuestion[]
+}
+
+export interface UserModelRefreshResult {
+  added: number
+  updated: number
+  disputed: number
+  questions: number
+}
+
+export interface UserModelUpdatedData {
+  summary_changed: boolean
+  insights: number | string[] | unknown
+  questions: number | string[] | unknown
+}
+
+// ============================================================================ §15 Dreams
+export interface DreamStats {
+  facts_reviewed: number
+  merged: number
+  contradictions_resolved: number
+  promoted: number
+  expired: number
+  insights_updated: number
+}
+
+export interface Dream {
+  id: string
+  started_at: ISODate
+  finished_at: ISODate | null
+  status: 'running' | 'completed' | 'error'
+  trigger: 'schedule' | 'manual'
+  stats: Partial<DreamStats>
+  journal_md: string
+  error: string | null
+}
+
+// ============================================================================ §16 Webhooks and change feeds
+export interface Hook {
+  id: string
+  name: string
+  url: string
+  created_at: ISODate
+  last_called_at: ISODate | null
+  calls: number
+}
+
+/** `POST /api/hooks` answer: the hook plus its secret, shown once. */
+export type HookCreated = Hook & { secret: string }
+
+export type WebhookSchedule = TriggeredSchedule & { source: 'webhook' }
+
+export interface SourceItemsData {
+  source: string
+  event: string
+  origin: 'poll' | 'feed' | 'webhook'
+  items: unknown[]
+}
+
+/** `GET /api/integrations/feeds` row: a change feed (Gmail, Calendar) or IMAP push watcher. */
+export interface FeedStatus {
+  source: string
+  display_name: string
+  kind: 'gmail_history' | 'calendar_sync_token' | 'imap_idle' | string
+  connected: boolean
+  active: boolean
+  status: 'disconnected' | 'off' | 'starting' | 'ok' | 'error' | string
+  last_sync_at: ISODate | null
+  last_success_at: ISODate | null
+  last_error: string | null
+  note: string | null
+  failures: number
+  next_attempt_at: ISODate | null
+  emitted: number
+}

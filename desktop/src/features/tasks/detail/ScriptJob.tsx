@@ -24,9 +24,9 @@ import { toast } from 'sonner'
 import { IconPencil } from '@tabler/icons-react'
 import { Alert, Button, IconButton, JsonView, Textarea } from '@/components/ui'
 import { errorMessage } from '@/lib/api'
-import { useScriptTest, useScriptUpdate } from '@/lib/leap/hooks-b'
-import { scriptOf, type SandboxResult, type ScriptCondition, type ScriptJob, type ScriptThen } from '@/lib/leap/types-b'
-import type { Task } from '@/lib/types'
+import { useScriptTest, useScriptUpdate } from '@/hooks/tasks'
+import { scriptOf } from '../meta'
+import type { SandboxResult, ScriptCondition, ScriptThen, Task, TaskScript } from '@/lib/types'
 import { cn, copyText, formatDuration, relativeTime, truncate } from '@/lib/utils'
 import { useNow, useUserTimezone } from '../hooks'
 import { SectionHeading } from '../parts'
@@ -72,7 +72,7 @@ export function ScriptJobSection({ task }: { task: Task }) {
     )
   }
 
-  const change = (patch: Partial<Pick<ScriptJob, 'condition' | 'then'>>) =>
+  const change = (patch: Partial<Pick<TaskScript, 'condition' | 'then'>>) =>
     update.mutate(
       { taskId: task.task_id, script: patch },
       {
@@ -203,7 +203,7 @@ function resultSummary(v: unknown): string {
   return truncate(String(v), 60)
 }
 
-function LastCheck({ script, next, now }: { script: ScriptJob; next: string | null; now: Date }) {
+function LastCheck({ script, next, now }: { script: TaskScript; next: string | null; now: Date }) {
   const hasObject = script.last_result !== null && script.last_result !== undefined && typeof script.last_result === 'object'
   return (
     <div className="space-y-2">
@@ -337,7 +337,7 @@ export function CodeViewer({
   )
 }
 
-function describeOutcome(r: SandboxResult, s: ScriptJob): { accent: boolean; icon: Icon; title: string; body: string } | null {
+function describeOutcome(r: SandboxResult, s: TaskScript): { accent: boolean; icon: Icon; title: string; body: string } | null {
   if (!r.ok) return null
   const then = s.then === 'run' ? 'Sentient would run the task' : 'you would get a notification'
   if (s.condition === 'alert') {
@@ -357,7 +357,7 @@ function describeOutcome(r: SandboxResult, s: ScriptJob): { accent: boolean; ico
     : { accent: true, icon: IconArrowsDiff, title: 'Something changed since the last check', body: `So ${then}.` }
 }
 
-function TestResult({ result, script, onClose }: { result: SandboxResult; script: ScriptJob; onClose: () => void }) {
+function TestResult({ result, script, onClose }: { result: SandboxResult; script: TaskScript; onClose: () => void }) {
   const outcome = describeOutcome(result, script)
   const calls = Array.isArray(result.tool_calls) ? result.tool_calls.length : Number(result.tool_calls) || 0
   const hasResult = result.result !== null && result.result !== undefined

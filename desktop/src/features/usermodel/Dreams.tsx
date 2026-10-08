@@ -5,9 +5,9 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Button, EmptyState, Markdown, Skeleton, Spinner } from '@/components/ui'
 import { useConfig } from '@/hooks/core'
-import { errorMessage } from '@/lib/api'
-import { notReady, useDreams, useRunDream } from '@/lib/leap/hooks-b'
-import type { Dream } from '@/lib/leap/types-b'
+import { errorMessage, isNotImplemented } from '@/lib/api'
+import { useDreams, useRunDream } from '@/hooks/userModel'
+import type { Dream } from '@/lib/types'
 import { cn, formatDuration, formatTime, parseDate } from '@/lib/utils'
 import { dreamStatChips } from './meta'
 
@@ -61,7 +61,7 @@ export function DreamsView() {
           ))}
         </div>
       ) : dreams.isError ? (
-        notReady(dreams.error) ? (
+        isNotImplemented(dreams.error) ? (
           <EmptyState icon={<IconMoonStars />} title="Dreams arrive with the next engine update" description="Once it’s here, you’ll find a short note from Sentient every morning about what it tidied up overnight." />
         ) : (
           <Alert tone="danger" title="Couldn’t load the dream journal" action={<Button size="sm" onClick={() => void dreams.refetch()}>Retry</Button>}>

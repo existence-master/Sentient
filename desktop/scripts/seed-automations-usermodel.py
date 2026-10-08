@@ -1,14 +1,14 @@
-"""Seed demo data for desktop agent B screens into a SENTIENT_HOME (no LLM calls, no network, no real keychain).
+"""Seed demo data for the automation and About you screens (no LLM calls, no network, no real keychain).
 
-    .venv/Scripts/python.exe desktop/scripts/seed-leap-b.py <SENTIENT_HOME> [--reset] [--theme dark|light]
+    .venv/Scripts/python.exe desktop/scripts/seed-automations-usermodel.py <SENTIENT_HOME> [--reset] [--theme dark|light]
 
-Covers: leap notifications (script alert / failure / recovery, failed run, helper finished, dream, skill fix),
+Covers: notifications (script alert / failure / recovery, failed run, helper finished, dream, skill fix),
 a skill repair proposal with a diff, a script job task, webhooks, the user model and dreams.
 
-Engine packages for docs/API.md sections 15 and 16 are built in parallel, so each block first checks that the
-engine supports it (a service method, or a table/column) and is skipped with a note otherwise. The desktop
-screens stay friendly when data is missing. To design screens before an engine piece exists, use the renderer's
-dev-only demo mode instead (`#/about?demo=1`, see desktop/src/lib/leap/demo-b.ts; never active in packaged builds).
+Each block first checks that the engine supports it (a service method, or a table/column) and is skipped with a
+note otherwise. The desktop screens stay friendly when data is missing. To design screens before an engine piece
+exists, use the renderer's dev-only demo mode instead (`#/about?demo=1`, see desktop/src/lib/demo.ts; never active
+in packaged builds).
 
 The profile's models point at a black-holed address so `sentient serve` on this home makes no model calls;
 start it with SENTIENT_DISABLE_BACKGROUND=1 for screenshots.
@@ -153,7 +153,7 @@ async def seed_notifications(app: SentientApp, script_task_id: str | None) -> No
     await n.create("skill", "Filing an invoice failed because a Drive folder was missing. I drafted a fix to **invoice-filing**.",
                    title="A fix for invoice-filing",
                    payload={"skill": "invoice-filing", "action": "patch", "origin": {"repair": True, "task_id": "demo-invoices"}})
-    REPORT["notifications"] = "7 leap notifications"
+    REPORT["notifications"] = "7 automation, helper, dream and skill notifications"
 
 
 CURRENT = """# Invoice filing

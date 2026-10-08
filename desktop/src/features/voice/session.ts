@@ -6,9 +6,8 @@ import { toast } from 'sonner'
 import { create } from 'zustand'
 import { api } from '@/lib/api'
 import { qk } from '@/hooks/queryKeys'
-import type { VoiceStateB } from '@/lib/leap/types-b'
 import { queryClient } from '@/lib/queryClient'
-import type { ApprovalDecision, Risk, VoiceAudioMetrics, VoiceServerMessage } from '@/lib/types'
+import type { ApprovalDecision, Risk, VoiceAudioMetrics, VoiceServerMessage, VoiceState } from '@/lib/types'
 import { uid } from '@/lib/utils'
 import { MicError, startMic, TARGET_RATE, type MicCapture } from './audio/capture'
 import { SentencePlayer } from './audio/player'
@@ -48,7 +47,7 @@ export interface VoiceTurn {
 
 interface VoiceStoreState {
   phase: VoicePhase
-  state: VoiceStateB
+  state: VoiceState
   sessionId: string | null
   mode: InputMode
   muted: boolean

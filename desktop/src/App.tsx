@@ -6,27 +6,27 @@ import { Toaster } from 'sonner'
 import { AppShell } from '@/components/shell/AppShell'
 import { EngineError, Splash } from '@/components/shell/EngineScreens'
 import { TooltipProvider } from '@/components/ui'
+import { ChannelsPage } from '@/features/channels/ChannelsPage'
 import { ChatPage } from '@/features/chat/ChatPage'
+import { DevicesPage } from '@/features/devices/DevicesPage'
+import { IntegrationsPage } from '@/features/integrations/IntegrationsPage'
+import { MemoryPage } from '@/features/memory/MemoryPage'
+import { NotificationsPage } from '@/features/notifications/NotificationsPage'
 import { OnboardingPage } from '@/features/onboarding/OnboardingPage'
 import { SettingsPage } from '@/features/settings/SettingsPage'
+import { SkillsPage } from '@/features/skills/SkillsPage'
+import { TasksPage } from '@/features/tasks/TasksPage'
+import { AboutPage } from '@/features/usermodel/AboutPage'
 import { VoiceMode } from '@/features/voice/VoiceMode'
-import { setAlwaysListening, useWakeStore } from '@/features/voice/wake'
-import { NotificationsPage } from '@/features/notifications/NotificationsPage'
+import { installWakeListener, setAlwaysListening, useWakeStore } from '@/features/voice/wake'
 import { useBootstrap } from '@/hooks/core'
 import { useHotkey } from '@/hooks/useHotkey'
 import { useSmokeReady } from '@/hooks/useSmokeReady'
 import { getBridge } from '@/lib/bridge'
+import { installDemoData } from '@/lib/demo'
 import { installDomainEvents } from '@/lib/events'
 import { queryClient } from '@/lib/queryClient'
-import { installLeapBEvents } from '@/lib/leap/events-b'
-import { LEAP_B_ROUTES } from '@/lib/leap/routes-b'
 import { resolveTheme } from '@/lib/theme'
-import { ChannelsPage } from '@/pages/channels/ChannelsPage'
-import { DevicesPage } from '@/pages/devices/DevicesPage'
-import { IntegrationsPage } from '@/pages/integrations/IntegrationsPage'
-import { MemoryPage } from '@/pages/memory/MemoryPage'
-import { SkillsPage } from '@/pages/skills/SkillsPage'
-import { TasksPage } from '@/pages/tasks/TasksPage'
 import { installChatEvents } from '@/stores/chat'
 import { useConnection } from '@/stores/connection'
 import { useNotificationStore } from '@/stores/notifications'
@@ -38,7 +38,8 @@ export function App() {
       useConnection.getState().init(),
       installChatEvents(),
       installDomainEvents(queryClient),
-      installLeapBEvents(queryClient)
+      installDemoData(queryClient),
+      installWakeListener()
     ]
     return () => offs.forEach((off) => off())
   }, [])
@@ -69,9 +70,8 @@ export function App() {
                     <Route path="/channels" element={<ChannelsPage />} />
                     <Route path="/settings/:section?" element={<SettingsPage />} />
                     <Route path="/notifications" element={<OpenNotifications />} />
-                    {LEAP_B_ROUTES.map((r) => (
-                      <Route key={r.path} path={r.path} element={r.element} />
-                    ))}
+                    <Route path="/about" element={<AboutPage />} />
+                    <Route path="/about/:tab" element={<AboutPage />} />
                     <Route path="*" element={<Navigate to="/chat" replace />} />
                   </Route>
                 </Route>
@@ -86,7 +86,7 @@ export function App() {
 }
 
 /**
- * Keeps the wake-word switch (voice/wake.ts, owned by agent B) and the shell in sync: the shell keeps the
+ * Keeps the wake-word switch (features/voice/wake.ts) and the shell in sync: the shell keeps the
  * renderer awake while hidden and shows a tray checkbox; hearing the wake word brings the window forward.
  */
 function useAlwaysListeningShell() {

@@ -14,6 +14,7 @@ import {
   IconSettings,
   IconSparkles,
   IconTrash,
+  IconUserHeart,
   IconX,
   type Icon
 } from '@tabler/icons-react'
@@ -41,7 +42,6 @@ import { TasksNavBadge } from '@/features/tasks/TasksNavBadge'
 import { SkillsNavBadge } from '@/features/skills/SkillsNavBadge'
 import { useBootstrap, useDeleteSession, useRenameSession, useSessionSearch, useSessions } from '@/hooks/core'
 import { errorMessage } from '@/lib/api'
-import { LEAP_B_NAV } from '@/lib/leap/routes-b'
 import { modelShortName } from '@/lib/models'
 import type { Session } from '@/lib/types'
 import { cn, dateBucket, modKey } from '@/lib/utils'
@@ -56,7 +56,7 @@ const NAV: Array<{ to: string; label: string; icon: Icon; match: string }> = [
   { to: '/integrations', label: 'Integrations', icon: IconPlugConnected, match: '/integrations' },
   { to: '/devices', label: 'Devices', icon: IconDevices, match: '/devices' },
   { to: '/skills', label: 'Skills', icon: IconSparkles, match: '/skills' },
-  ...LEAP_B_NAV
+  { to: '/about', label: 'About you', icon: IconUserHeart, match: '/about' }
 ]
 
 export const SIDEBAR_WIDTH = 256

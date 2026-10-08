@@ -2,7 +2,7 @@
  * Dev-only mock data for `#/voice?voicePreview=listening|transcribing|thinking|speaking|setup|ended`.
  * Read only when the app isn't packaged (screenshots, design work without a mic).
  */
-import type { VoiceStateB } from '@/lib/leap/types-b'
+import type { VoiceState } from '@/lib/types'
 import type { VoiceTurn } from './session'
 
 export const PREVIEW_KINDS = ['listening', 'transcribing', 'thinking', 'speaking', 'setup', 'ended', 'standby', 'woke', 'followup'] as const
@@ -42,7 +42,7 @@ const base = (): VoiceTurn[] => [
 
 export function previewState(kind: PreviewKind): {
   phase: 'live' | 'setup' | 'ended'
-  state: VoiceStateB
+  state: VoiceState
   turns: VoiceTurn[]
   sessionId: string | null
   engine: { stt: string; tts: string } | null

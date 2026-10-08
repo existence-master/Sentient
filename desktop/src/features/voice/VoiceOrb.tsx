@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { VoiceStateB } from '@/lib/leap/types-b'
+import type { VoiceState } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { levels } from './session'
 
@@ -46,7 +46,7 @@ function rotateHue([r, g, b]: RGB, deg: number): RGB {
 
 const rgba = ([r, g, b]: RGB, a: number) => `rgba(${r},${g},${b},${Math.max(0, Math.min(1, a))})`
 
-const MOOD: Record<VoiceStateB | 'connecting', number> = {
+const MOOD: Record<VoiceState | 'connecting', number> = {
   standby: 0.2,
   idle: 0.35,
   connecting: 0.45,
@@ -69,7 +69,7 @@ export function VoiceOrb({
   label,
   className
 }: {
-  state: VoiceStateB
+  state: VoiceState
   connecting?: boolean
   muted?: boolean
   size?: number
