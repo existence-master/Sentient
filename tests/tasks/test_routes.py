@@ -30,11 +30,11 @@ def client(config, isolated_home, monkeypatch):
         yield c
 
 
-def wait_for(client, task_id, statuses, timeout=10.0):
+def wait_for(client, task_id, statuses, timeout=10.0, until=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         task = client.get(f"/api/tasks/{task_id}").json()
-        if task["status"] in statuses:
+        if task["status"] in statuses and (until is None or until(task)):
             return task
         time.sleep(0.05)
     raise AssertionError(f"task stuck in {task['status']}")
@@ -60,7 +60,8 @@ def test_task_routes_end_to_end(client):
 
     approved = client.post(f"/api/tasks/{task_id}/approve").json()
     assert approved["status"] in {"processing", "completed"}
-    task = wait_for(client, task_id, {"completed"})
+    # the task settles before its report is written (service._finish_run), so wait for the report too
+    task = wait_for(client, task_id, {"completed"}, until=lambda t: t["runs"] and t["runs"][0].get("result"))
     run = task["runs"][0]
     assert set(run) == RUN_KEYS and run["status"] == "completed"
     assert run["result"]["summary"] == "Saved a haiku."
