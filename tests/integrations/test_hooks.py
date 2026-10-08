@@ -210,3 +210,17 @@ def test_a_deleted_hook_gives_up_its_bucket(client, core, clock):
     assert hook["id"] in core.integrations.hooks._buckets
     assert client.delete(f"/api/hooks/{hook['id']}").json() == {"ok": True}
     assert hook["id"] not in core.integrations.hooks._buckets
+
+
+def test_the_lan_listener_shares_the_same_budget(client, core, clock):
+    from sentient.nodes.lan import create_lan_app
+
+    core.config.integrations.webhook_rate_limit_per_minute = 2
+    hook = client.post("/api/hooks", json={"name": "Gadget"}).json()
+    url, headers = f"/hooks/{hook['id']}", {"X-Sentient-Secret": hook["secret"]}
+    with TestClient(create_lan_app(core, "lan-secret")) as lan:
+        assert lan.post(url, json={}, headers=headers).status_code == 200  # the LAN app mounts the same route
+        del client.headers["Authorization"]
+        assert client.post(url, json={}, headers=headers).status_code == 200
+        blocked = lan.post(url, json={}, headers=headers)  # one bucket per hook, whichever door the call uses
+        assert blocked.status_code == 429 and blocked.headers["Retry-After"] == "30"
