@@ -394,6 +394,8 @@ THREAD_HEADERS = ("list-unsubscribe", "list-id", "precedence", "auto-submitted",
 THREAD_SKIP_LABELS = {"DRAFT", "SPAM", "TRASH", "CHAT"}
 THREAD_BODY_CHARS = 4000
 THREAD_SCAN_MAX = 50
+THREAD_PAGE_SIZE = 50
+THREAD_PAGES = 5  # listing pages read per check at most
 
 
 def normalize_thread_message(msg: dict, body_chars: int = THREAD_BODY_CHARS) -> dict:
@@ -416,16 +418,37 @@ async def gmail_recent_threads(mgr: IntegrationManager, *, newer_than_days: int,
     if idle_days > 0:
         query += f" older_than:{int(idle_days)}d"
     n = max(1, min(int(limit or 40), THREAD_SCAN_MAX))
-    listing = await gapi(None, PID, "GET", f"{API}/threads", params={"q": query, "maxResults": n}, mgr=mgr)
-    ids = [str(t["id"]) for t in listing.get("threads") or [] if t.get("id")]
+    idle_cutoff_ms = (datetime.now(UTC).timestamp() - max(0, int(idle_days)) * 86400) * 1000
     sem = asyncio.Semaphore(8)
 
-    async def one(tid: str) -> dict:
+    async def one(tid: str, fmt: str) -> dict:
         async with sem:
-            return await gapi(None, PID, "GET", f"{API}/threads/{tid}", params={"format": "full"}, mgr=mgr)
+            return await gapi(None, PID, "GET", f"{API}/threads/{tid}", params={"format": fmt}, mgr=mgr)
+
+    def newest_ms(raw: dict) -> int:
+        stamps = [int(m.get("internalDate") or 0) for m in raw.get("messages") or []
+                  if not set(m.get("labelIds") or []) & THREAD_SKIP_LABELS]
+        return max(stamps, default=0)
+
+    # `older_than` matches threads with ANY old message and the listing is newest-activity first, so active
+    # threads can fill whole pages: page on, and keep only threads whose newest message is past the idle cutoff
+    eligible: list[str] = []
+    page_token: str | None = None
+    for _ in range(THREAD_PAGES):
+        params: dict[str, Any] = {"q": query, "maxResults": THREAD_PAGE_SIZE}
+        if page_token:
+            params["pageToken"] = page_token
+        listing = await gapi(None, PID, "GET", f"{API}/threads", params=params, mgr=mgr)
+        ids = [str(t["id"]) for t in listing.get("threads") or [] if t.get("id")]
+        for raw in await asyncio.gather(*(one(i, "minimal") for i in ids)):
+            if 0 < newest_ms(raw) <= idle_cutoff_ms and str(raw.get("id")) not in eligible:
+                eligible.append(str(raw.get("id")))
+        page_token = listing.get("nextPageToken")
+        if len(eligible) >= n or not page_token:
+            break
 
     threads = []
-    for raw in await asyncio.gather(*(one(i) for i in ids)):
+    for raw in await asyncio.gather(*(one(i, "full") for i in eligible[:n])):
         msgs = [normalize_thread_message(m) for m in raw.get("messages") or []
                 if not set(m.get("labelIds") or []) & THREAD_SKIP_LABELS]
         if not msgs:

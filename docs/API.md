@@ -209,6 +209,13 @@ task-creation prompt still only produces daily/weekly (v2), the planner uses `in
  "pending_question": {"question": "Which flight should I book?", "options": ["IndiGo 07:10", "Air India 09:40"], "asked_at": "..."} | null}
 ```
 `pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question" below).
+Already approved one-call tasks (a follow-up's Send, section 6) carry `original_context.fixed_call = {tool, arguments,
+done_text}` and a one-step `plan`. They are created `pending`, start a run at once with no planner and no executor model,
+and the run makes exactly that call with exactly those arguments (`tool_call`, `tool_result`, `final_answer` updates). A
+lasting Never rule on the tool or its app fails the run with the rule's message; a tool error fails it with that error. A
+run interrupted by a restart after the call started is not repeated: it fails and asks the user to check. Backend API:
+`await app.tasks.create_approved_call(name, tool, arguments, *, step, description=None, source, original_context, done_text)`
+→ Task.
 **ProgressUpdate** `{"timestamp": "...", "message": {"type": "info|thought|tool_call|tool_result|final_answer|error", "content": "...", "tool_name": "...", "parameters": {}, "result": "...", "is_error": false}}`
 
 ### Endpoints
@@ -354,6 +361,10 @@ Backend-only API used by tasks/proactivity (not HTTP):
   of its messages or people. IMAP finds the Sent mailbox by SPECIAL-USE `\Sent`, else the names `Sent`, `Sent Items`,
   `[Gmail]/Sent Mail`, `Sent Messages`, `Sent Mail`, `INBOX.Sent`; without one it returns no threads and
   `note: "no_sent_mailbox"`. Read-only; raises `IntegrationError` when the service call fails.
+  Gmail pages through the thread listing (at most 5 pages of 50) and drops threads whose newest message is newer than
+  the idle cutoff before they count toward `limit`, so busy threads can't crowd out quiet ones. IMAP runs two capped
+  searches per mailbox (INBOX and Sent): quiet messages from the max age up to the idle cutoff (newest 150) and recent
+  messages after it (newest 400, to see which conversations are still active), and reads the headers of both.
 
 Item shapes. gmail: `{id, thread_id, from, sender_email, to, subject, snippet, body, date, labels, url}`;
 email_imap: the gmail shape plus `message_id` (`id` is the IMAP UID, `url` is null, `labels` are `INBOX` plus `UNREAD`/`STARRED`);
@@ -413,12 +424,16 @@ Follow-up suggestion: `suggestion_type` `follow_up_reply` or `follow_up_nudge`, 
   "to": "priya@acme.example", "subject": "Re: Invoice for September", "draft": "Hi Priya, ...", "days_waiting": 4,
   "thread_id": "...", "message_id": "<gmail id or IMAP uid>", "mailbox": "INBOX (IMAP only)"}
 ```
-Approving it creates a task that sends exactly the draft (`gmail_reply` in the same thread, or `email_imap_send`); the task's
-plan approval is the send approval, as for every task.
+Approving it (the card's **Send reply** / **Send nudge**, which shows the exact draft) is the approval of that one send:
+it creates an already approved task (`app.tasks.create_approved_call`, section 4) that runs right away, whatever
+`tasks.require_plan_approval` says, and makes exactly one call with the draft unchanged: `gmail_reply {message_id, body}` in
+the same thread, or `email_imap_send {to, subject, body, reply_to_message_id?}`. No model is involved in the send. A lasting
+Never rule on that tool or its app (`tools.approvals.rules`) still applies: the run fails with the rule's message and
+nothing is sent.
 - `GET /api/notifications?limit=&unread_only=` → `{notifications: [Notification], unread}`
 - `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all`
 - `DELETE /api/notifications/{id}`, `DELETE /api/notifications`
-- `POST /api/proactivity/suggestions/{notification_id}` `{action: "approve"|"dismiss"}` → `{ok, task_id?}` (approve creates a task from `action_details` with `original_context.source = "proactive"`; both update the learned per-type threshold, mark the notification read and set `payload.status`/`payload.task_id`). Errors: 400 bad action, 404 not a suggestion, 409 already actioned or expired, 503 tasks unavailable. v2 spellings `approved`/`dismissed` are accepted.
+- `POST /api/proactivity/suggestions/{notification_id}` `{action: "approve"|"dismiss"}` → `{ok, task_id?}` (approve creates a task from `action_details` with `original_context.source = "proactive"`; for a follow-up it creates the already approved send task described above; both update the learned per-type threshold, mark the notification read and set `payload.status`/`payload.task_id`). Errors: 400 bad action, 404 not a suggestion, 409 already actioned or expired, 503 tasks unavailable. v2 spellings `approved`/`dismissed` are accepted.
 - `GET /api/proactivity/status` → `{enabled, last_poll_at: {gmail, gcalendar}, sources: [{source, connected, last_poll_at, last_error, feed_active}], suggestions_today, quiet_now, heartbeat_minutes, followups: {enabled, last_run_at}}`. `sources[].last_error` is the message the integrations package recorded when `poll_source` raised `IntegrationError` (other sources keep polling); `null` after the next successful poll. `feed_active: true` means a change feed delivers that source's items, so it is not timer-polled.
 - `POST /api/proactivity/poll-now` → `{ok, events}` (`events` = new items seen; polls every connected source, including ones with an active change feed, then starts a follow-up check in the background when follow-ups are on. Triggered tasks are fired by the tasks package from `source.items`, section 16)
 - `GET /api/proactivity/preferences` → `[{suggestion_type, score, threshold, approvals, dismissals}]`

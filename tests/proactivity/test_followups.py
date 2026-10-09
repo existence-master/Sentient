@@ -6,10 +6,11 @@ Gmail is mocked with respx, IMAP with a fake session, the model with FakeProvide
 from __future__ import annotations
 
 import base64
+import email
 import json
 import time
 from datetime import UTC, datetime, timedelta
-from email.utils import format_datetime
+from email.utils import format_datetime, parsedate_to_datetime
 
 import httpx
 import pytest
@@ -22,7 +23,6 @@ from sentient.integrations.plugins.email_imap import find_sent_mailbox, group_th
 from sentient.proactivity import followups
 from sentient.proactivity import service as pro_service
 from tests.conftest import FakeProvider
-from tests.proactivity.conftest import FakeTasks
 
 GMAIL = "gmail.googleapis.com"
 API = "/gmail/v1/users/me"
@@ -40,11 +40,11 @@ def keychain(monkeypatch) -> dict[str, str]:
 
 
 @pytest.fixture
-async def mail_app(config, isolated_home, monkeypatch):
+async def mail_app(config, isolated_home):
+    """The real app (real tasks service, so approving a follow-up really runs the send)."""
     llm = FakeProvider()
     a = SentientApp(config, llm=llm, db_path=isolated_home / "followups.db", enable_background=False)
     await a.start()
-    monkeypatch.setattr(a, "tasks", FakeTasks())
     a.config.assistant.user_name = "Maya Rao"
     a.config.assistant.timezone = "UTC"
     a.fake = llm
@@ -343,6 +343,65 @@ async def test_privacy_filters_apply(mail_app, keychain):
     assert app.fake.text_calls == []
 
 
+async def test_gmail_pages_past_active_threads(mail_app, keychain):
+    """`older_than` also matches busy threads with one old message; the idle one sits on page 2."""
+    app = mail_app
+    await connect_gmail(app, keychain)
+    active = {
+        f"busy{i}": [
+            gmsg(f"b{i}a", f"busy{i}", f"Person {i} <p{i}@acme.example>", ME, f"Project {i}", "Could you look?", days=6),
+            gmsg(f"b{i}b", f"busy{i}", f"Person {i} <p{i}@acme.example>", ME, f"Re: Project {i}", "Any news?", days=0.5),
+        ]
+        for i in range(40)
+    }
+    idle = {"t-direct": base_threads()["t-direct"]}
+    seen_tokens: list[str | None] = []
+
+    def listing(request):
+        token = request.url.params.get("pageToken")
+        seen_tokens.append(token)
+        if token is None:
+            return httpx.Response(200, json={"threads": [{"id": t} for t in active], "nextPageToken": "p2"})
+        return httpx.Response(200, json={"threads": [{"id": t} for t in idle]})
+
+    app.fake.text_replies.append(yes("the invoice", "Confirming today. Maya"))
+    with respx.mock() as router:
+        router.get(host=GMAIL, path=f"{API}/threads").mock(side_effect=listing)
+        full_fetches: list[str] = []
+        for tid, msgs in {**active, **idle}.items():
+            def thread(request, tid=tid, msgs=msgs):
+                if request.url.params.get("format") == "full":
+                    full_fetches.append(tid)
+                return httpx.Response(200, json={"id": tid, "messages": msgs})
+            router.get(host=GMAIL, path=f"{API}/threads/{tid}").mock(side_effect=thread)
+        [rec] = await app.proactivity.run_followups(now=NOW)
+    assert seen_tokens == [None, "p2"]
+    assert rec["suggestion"]["follow_up"]["thread_id"] == "t-direct"
+    assert full_fetches == ["t-direct"]  # active threads are left out before the full fetch
+    assert len(app.fake.text_calls) == 1
+
+
+async def test_gmail_paging_is_bounded(mail_app, keychain, monkeypatch):
+    from sentient.integrations.plugins import gmail as gmail_mod
+
+    app = mail_app
+    await connect_gmail(app, keychain)
+    monkeypatch.setattr(gmail_mod, "THREAD_PAGES", 3)
+    busy = [gmsg("b1", "busy", PRIYA, ME, "Busy", "Could you look?", days=0.5)]
+    pages: list[str | None] = []
+
+    def listing(request):
+        pages.append(request.url.params.get("pageToken"))
+        return httpx.Response(200, json={"threads": [{"id": "busy"}], "nextPageToken": f"p{len(pages) + 1}"})
+
+    with respx.mock() as router:
+        router.get(host=GMAIL, path=f"{API}/threads").mock(side_effect=listing)
+        router.get(host=GMAIL, path=f"{API}/threads/busy").mock(
+            return_value=httpx.Response(200, json={"id": "busy", "messages": busy}))
+        assert await app.proactivity.run_followups(now=NOW) == []
+    assert len(pages) == 3 and app.fake.text_calls == []
+
+
 async def test_off_when_proactivity_or_followups_off(mail_app, keychain):
     app = mail_app
     await connect_gmail(app, keychain)
@@ -370,18 +429,60 @@ async def test_runs_once_a_day_in_the_morning(mail_app):
     assert (await pro.status())["followups"]["last_run_at"] == morning.isoformat()
 
 
-async def test_approving_creates_a_task_that_sends_exactly_the_draft(mail_app, keychain):
-    app = mail_app
+DRAFT = "Hi Priya,\n\nThe amount is right. I will confirm on Friday.\n\nMaya"
+
+
+async def suggest_priya(app, keychain, router) -> dict:
     await connect_gmail(app, keychain)
-    app.fake.text_replies += [yes("the invoice", "Hi Priya, confirming by Friday. Maya"), NO]
-    with respx.mock() as router:
-        mock_gmail(router, base_threads())
-        [rec] = await app.proactivity.run_followups(now=NOW)
-    res = await app.proactivity.act_on_suggestion(rec["notification_id"], "approve")
-    assert res == {"ok": True, "task_id": "task1"}
-    prompt = app.tasks.created[0]["prompt"]
-    assert prompt.startswith('Send this reply to Priya Shah about "Invoice for September".')
-    assert 'gmail_reply with message_id "m1"' in prompt and "Hi Priya, confirming by Friday. Maya" in prompt
+    app.fake.text_replies += [yes("the invoice", DRAFT), NO]
+    mock_gmail(router, base_threads())
+    [rec] = await app.proactivity.run_followups(now=NOW)
+    return rec
+
+
+async def test_send_runs_right_away_with_exactly_the_draft(mail_app, keychain):
+    app = mail_app
+    assert app.config.tasks.require_plan_approval is True  # the click is the approval, so this doesn't apply
+    with respx.mock(assert_all_called=False) as router:
+        rec = await suggest_priya(app, keychain, router)
+        router.get(host=GMAIL, path=f"{API}/messages/m1").mock(return_value=httpx.Response(200, json=gmsg(
+            "m1", "t-direct", PRIYA, ME, "Invoice for September", "Could you confirm?", days=4)))
+        send = router.post(host=GMAIL, path=f"{API}/messages/send").mock(
+            return_value=httpx.Response(200, json={"id": "s1", "threadId": "t-direct"}))
+        calls_before = len(app.fake.calls) + len(app.fake.text_calls)
+        res = await app.proactivity.act_on_suggestion(rec["notification_id"], "approve")
+        await app.tasks.drain(10)
+    assert res["ok"] is True and res["task_id"]
+    task = await app.tasks.get(res["task_id"])
+    assert task["status"] == "completed"
+    assert task["name"] == "Send reply to Priya Shah: Invoice for September"
+    assert task["plan"] == [{"tool": "gmail", "description": "Send the reply to priya@acme.example exactly as drafted"}]
+    assert task["original_context"]["fixed_call"]["arguments"] == {"message_id": "m1", "body": DRAFT}
+    assert send.call_count == 1
+    req = json.loads(send.calls.last.request.content)
+    raw = base64.urlsafe_b64decode(req["raw"]).decode()
+    assert req["threadId"] == "t-direct" and "To: Priya Shah <priya@acme.example>" in raw
+    assert "The amount is right. I will confirm on Friday." in raw and "Subject: Re: Invoice for September" in raw
+    # no planner and no executor model call decided anything about the send
+    assert not any(c["role"] in {"planner", "executor", "primary"} for c in app.fake.calls[calls_before:])
+    note = await app.notifications.get(rec["notification_id"])
+    assert note["payload"]["status"] == "approved" and note["payload"]["task_id"] == res["task_id"]
+
+
+@pytest.mark.parametrize("rule_key", ["gmail_reply", "gmail"])
+async def test_send_respects_a_never_rule(mail_app, keychain, rule_key):
+    app = mail_app
+    with respx.mock(assert_all_called=False) as router:
+        rec = await suggest_priya(app, keychain, router)
+        send = router.post(host=GMAIL, path=f"{API}/messages/send").mock(
+            return_value=httpx.Response(200, json={"id": "s1", "threadId": "t-direct"}))
+        app.config.tools.approvals.rules = {rule_key: "never"}
+        res = await app.proactivity.act_on_suggestion(rec["notification_id"], "approve")
+        await app.tasks.drain(10)
+    assert send.call_count == 0
+    task = await app.tasks.get(res["task_id"])
+    assert task["status"] == "error"
+    assert "You've set Sentient to never use" in task["error"] and "Settings > Approvals & safety" in task["error"]
 
 
 async def test_gmail_nudge_reply_goes_to_the_original_recipients(mail_app, keychain):
@@ -414,6 +515,7 @@ class FakeImap:
         self.listing = listing
         self.mailbox = "INBOX"
         self.selected: list[str] = []
+        self.searches: list[tuple] = []
 
     async def list_mailboxes(self):
         return parse_list(self.listing)
@@ -423,7 +525,21 @@ class FakeImap:
         self.selected.append(mailbox)
 
     async def uid_search(self, *criteria: str) -> list[int]:
-        return sorted(self.boxes.get(self.mailbox, {}))
+        """Honors SINCE and BEFORE (by the Date header's day), like a real server."""
+        self.searches.append(criteria)
+        box = self.boxes.get(self.mailbox, {})
+        bounds = dict(zip(criteria[::2], criteria[1::2], strict=False))
+        def day(value: str):
+            return datetime.strptime(value, "%d-%b-%Y").replace(tzinfo=UTC).date()
+
+        since = day(bounds["SINCE"]) if "SINCE" in bounds else None
+        before = day(bounds["BEFORE"]) if "BEFORE" in bounds else None
+        out = []
+        for uid, raw in box.items():
+            day = parsedate_to_datetime(email.message_from_bytes(raw)["Date"]).astimezone(UTC).date()
+            if (since is None or day >= since) and (before is None or day < before):
+                out.append(uid)
+        return sorted(out)
 
     async def fetch_headers(self, uids: list[int]) -> list[dict]:
         box = self.boxes.get(self.mailbox, {})
@@ -483,12 +599,47 @@ async def test_imap_both_directions_via_special_use_sent(mail_app, monkeypatch):
     assert out[0]["suggestion"]["source_event"]["source"] == "email_imap"
     assert len(app.fake.text_calls) == 2  # the answered venue thread and the list mail never reach the model
     assert "Sent Messages" in fake.selected
-    app.tasks.created.clear()
-    await app.proactivity.act_on_suggestion(out[0]["notification_id"], "approve")
-    await app.proactivity.act_on_suggestion(out[1]["notification_id"], "approve")
-    first, second = (t["prompt"] for t in app.tasks.created)
-    assert 'reply_to_message_id "1"' in first and "Confirming today. Maya" in first
-    assert "reply_to_message_id" not in second and f'to "{ROHAN}"' in second
+    sent: list = []
+    monkeypatch.setattr(email_imap, "smtp_send", lambda c, message: sent.append(message))
+    for r in out:
+        await app.proactivity.act_on_suggestion(r["notification_id"], "approve")
+    await app.tasks.drain(10)
+    reply_msg, nudge_msg = sorted(sent, key=lambda m: str(m["To"]) != "priya@acme.example")
+    assert reply_msg.get_content().strip() == "Confirming today. Maya"
+    assert reply_msg["In-Reply-To"] == "<i1@mail.example>" and reply_msg["Subject"] == "Re: Invoice for September"
+    assert nudge_msg["To"] == ROHAN and nudge_msg.get_content().strip() == "Still on? Maya"
+    assert nudge_msg["In-Reply-To"] is None and nudge_msg["Subject"] == "Re: Saturday"
+
+
+async def test_imap_send_respects_a_never_rule_on_the_app(mail_app, monkeypatch):
+    app = mail_app
+    await connect_imap(app, monkeypatch, FakeImap(imap_boxes(), LISTING))
+    app.fake.text_replies += [yes("the invoice", "Confirming today. Maya"), NO]
+    [rec] = await app.proactivity.run_followups(now=NOW)
+    sent: list = []
+    monkeypatch.setattr(email_imap, "smtp_send", lambda c, message: sent.append(message))
+    app.config.tools.approvals.rules = {"email_imap": "never"}
+    res = await app.proactivity.act_on_suggestion(rec["notification_id"], "approve")
+    await app.tasks.drain(10)
+    assert sent == []
+    task = await app.tasks.get(res["task_id"])
+    assert task["status"] == "error" and "never use Email (IMAP)" in task["error"]
+
+
+async def test_imap_busy_inbox_does_not_hide_the_quiet_thread(mail_app, monkeypatch):
+    """Over 150 messages in the last day used to push the 4-day-old direct email out of the scan."""
+    app = mail_app
+    boxes = imap_boxes()
+    for uid in range(100, 300):  # 200 recent messages, newer UIDs than the quiet one
+        boxes["INBOX"][uid] = raw_email(f"Team {uid} <team{uid}@acme.example>", "team@acme.example", f"Standup {uid}",
+                                        "Notes from today.", f"r{uid}", days=0.5)
+    fake = FakeImap(boxes, LISTING)
+    await connect_imap(app, monkeypatch, fake)
+    app.fake.text_replies += [yes("the invoice", "Confirming today. Maya"), NO]
+    out = await app.proactivity.run_followups(now=NOW)
+    assert [r["suggestion"]["follow_up"]["message_id"] for r in out] == ["1"]
+    inbox_searches = [s for s in fake.searches if "BEFORE" in s]
+    assert inbox_searches and all(s[0] == "SINCE" for s in fake.searches)  # quiet and recent searched separately
 
 
 async def test_imap_without_a_sent_mailbox_is_skipped_quietly(mail_app, monkeypatch):

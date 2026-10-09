@@ -547,7 +547,8 @@ async def email_imap_send(ctx: ToolContext, to: str, subject: str, body: str, cc
 
 
 # ---------------------------------------------------------------------------- recent threads (follow-ups)
-THREAD_HEADER_SCAN = 150  # newest messages per mailbox whose headers are read
+THREAD_HEADER_SCAN = 150  # newest quiet messages (max age .. idle cutoff) per mailbox whose headers are read
+THREAD_RECENT_SCAN = 400  # newest recent messages (after the idle cutoff) per mailbox, to spot active threads
 THREAD_HEADERS = ("list-unsubscribe", "list-id", "precedence", "auto-submitted", "content-type")
 
 
@@ -603,15 +604,24 @@ async def imap_recent_threads(mgr: IntegrationManager, *, newer_than_days: int, 
     me = {str(c.get("username") or "").strip().lower()} - {""}
     now = datetime.now(UTC)
     since = imap_date(now - timedelta(days=max(1, int(newer_than_days))))
-    idle_before = (now - timedelta(days=max(0, int(idle_days)))).isoformat()
+    idle_at = now - timedelta(days=max(0, int(idle_days)))
+    idle_before = idle_at.isoformat()
+
+    async def scan(s: Any) -> list[dict]:
+        # two capped searches, so a busy last few days can't push the quiet candidates out of the scan:
+        # (a) quiet ones, from the max age up to the idle cutoff; (b) recent ones, to see which threads are active
+        quiet = (await s.uid_search("SINCE", since, "BEFORE", imap_date(idle_at)))[-THREAD_HEADER_SCAN:]
+        recent = (await s.uid_search("SINCE", imap_date(idle_at)))[-THREAD_RECENT_SCAN:]
+        return await s.fetch_headers(sorted(set(quiet) | set(recent)))
+
     async with _session(c, "INBOX") as s:
         sent_box = find_sent_mailbox(await s.list_mailboxes())
         if not sent_box:
             log.info("no Sent mailbox found, so follow-ups skip this IMAP account")
             return {"addresses": sorted(me), "threads": [], "note": "no_sent_mailbox"}
-        inbox_rows = await s.fetch_headers((await s.uid_search("SINCE", since))[-THREAD_HEADER_SCAN:])
+        inbox_rows = await scan(s)
         await s.select(sent_box)
-        sent_rows = await s.fetch_headers((await s.uid_search("SINCE", since))[-THREAD_HEADER_SCAN:])
+        sent_rows = await scan(s)
         sent = [_thread_message(r, sent_box, body=False) for r in sent_rows]
         me.update(m["sender_email"] for m in sent if m["sender_email"])
         by_id: dict[str, dict] = {}

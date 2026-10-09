@@ -7,8 +7,9 @@ Two kinds:
       ``followups.waiting_on_them_days``
 
 Everything here is deterministic. The service (``ProactiveEngine.run_followups``) asks the ``fast`` model only about
-the threads that survive ``classify``, and the draft is sent only after the user approves (a task whose plan the user
-approves, like every other suggestion). This module never sends anything.
+the threads that survive ``classify``, and the draft is sent only when the user clicks Send on the suggestion: that
+creates an already approved task that makes exactly one tool call with the draft unchanged (``send_call``). This
+module never sends anything.
 """
 
 from __future__ import annotations
@@ -343,20 +344,27 @@ def notification_message(suggestion: dict) -> str:
     return f"{suggestion.get('description')}\n\n{quoted}"
 
 
-def task_prompt(suggestion: dict) -> str:
-    """What the task created on approval does: send exactly the draft, in the same conversation when possible."""
+def send_call(suggestion: dict) -> dict:
+    """The one exact tool call that approving a follow-up runs: the draft, unchanged, in the same conversation
+    when possible. Returns ``{tool, arguments, name, description, step, done_text}``."""
     f = suggestion.get("follow_up") or {}
     source = (suggestion.get("source_event") or {}).get("source")
     draft = str(f.get("draft") or "")
-    kind = "reply" if f.get("kind") == WAITING_ON_YOU else "follow-up"
-    head = f"Send this {kind} to {f.get('person') or f.get('to')} about \"{clean_subject(f.get('subject'))}\"."
+    kind = "reply" if f.get("kind") == WAITING_ON_YOU else "nudge"
+    who = str(f.get("person") or f.get("to") or "")
     if source == "gmail":
-        how = (f"Use gmail_reply with message_id \"{f.get('message_id')}\" so it goes into the same conversation "
-               f"(it reaches {f.get('to')}).")
-    elif f.get("kind") == WAITING_ON_YOU and str(f.get("mailbox") or "INBOX").upper() == "INBOX":
-        how = (f"Use email_imap_send with to \"{f.get('to')}\", subject \"{f.get('subject')}\" and "
-               f"reply_to_message_id \"{f.get('message_id')}\".")
+        tool, arguments = "gmail_reply", {"message_id": str(f.get("message_id")), "body": draft}
     else:
-        how = f"Use email_imap_send with to \"{f.get('to')}\" and subject \"{f.get('subject')}\"."
-    return (f"{head}\n\n{how} The body must be exactly this text:\n\n{draft}\n\n"
-            "Do not change the text and do not send anything else.")
+        tool = "email_imap_send"
+        arguments = {"to": str(f.get("to") or ""), "subject": str(f.get("subject") or ""), "body": draft}
+        if f.get("kind") == WAITING_ON_YOU and str(f.get("mailbox") or "INBOX").upper() == "INBOX":
+            arguments["reply_to_message_id"] = str(f.get("message_id"))
+    subject = clean_subject(f.get("subject"))
+    return {
+        "tool": tool,
+        "arguments": arguments,
+        "name": f"Send {kind} to {who}" + (f": {subject}" if subject else ""),
+        "description": f"Sends this {kind} to {who} exactly as you approved it:\n\n{draft}",
+        "step": f"Send the {kind} to {f.get('to') or who} exactly as drafted",
+        "done_text": f"Sent your {kind} to {who}.",
+    }

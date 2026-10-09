@@ -958,9 +958,7 @@ class ProactiveEngine(Service):
     @staticmethod
     def task_prompt(suggestion: dict) -> str:
         """v2 create_task_from_suggestion: name from the description, body from details + reasoning + trigger."""
-        if isinstance(suggestion.get("follow_up"), dict):
-            return followups.task_prompt(suggestion)
-        ev = suggestion.get("source_event") or {}
+        ev =suggestion.get("source_event") or {}
         parts = [
             str(suggestion.get("description") or "Proactive task"),
             "Action details:\n" + json.dumps(suggestion.get("action_details") or {}, indent=2, default=str),
@@ -987,18 +985,30 @@ class ProactiveEngine(Service):
         task_id = None
         if action == "approve":
             tasks = self.app.tasks
-            if not hasattr(tasks, "create_task"):
+            context = {
+                "source": "proactive", "suggestion_type": stype, "notification_id": notification_id,
+                "trigger_event": suggestion.get("source_event"),
+            }
+            if isinstance(suggestion.get("follow_up"), dict):
+                # "Send reply" showed the exact draft: that click approves this one exact call, so the task runs
+                # now with the arguments fixed (no plan to approve, no model in between)
+                if not hasattr(tasks, "create_approved_call"):
+                    raise SuggestionError(503, "tasks are not available yet")
+                call = followups.send_call(suggestion)
+                try:
+                    created = await _maybe_await(tasks.create_approved_call(
+                        call["name"], call["tool"], call["arguments"], step=call["step"],
+                        description=call["description"], source="proactive", original_context=context,
+                        done_text=call["done_text"],
+                    ))
+                except ValueError as exc:
+                    raise SuggestionError(503, f"Sending isn't available right now ({exc}).") from exc
+            elif not hasattr(tasks, "create_task"):
                 raise SuggestionError(503, "tasks are not available yet")
-            created = await _maybe_await(
-                tasks.create_task(
-                    self.task_prompt(suggestion),
-                    source="proactive",
-                    original_context={
-                        "source": "proactive", "suggestion_type": stype, "notification_id": notification_id,
-                        "trigger_event": suggestion.get("source_event"),
-                    },
+            else:
+                created = await _maybe_await(
+                    tasks.create_task(self.task_prompt(suggestion), source="proactive", original_context=context)
                 )
-            )
             if isinstance(created, dict):
                 task_id = created.get("task_id") or created.get("id")
             elif isinstance(created, str):

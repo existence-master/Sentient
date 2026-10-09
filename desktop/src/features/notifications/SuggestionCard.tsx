@@ -68,8 +68,8 @@ export function SuggestionCard({ n, onNavigate }: { n: Notification; onNavigate?
         onSuccess: (res) => {
           if (action === 'approve') {
             patchPayload(qc, n.id, { status: 'approved', task_id: res.task_id ?? null })
-            toast.success('On it', {
-              description: followUp ? 'Sentient made a task to send your draft.' : 'Sentient created a task for this suggestion.',
+            toast.success(followUp ? 'Sending' : 'On it', {
+              description: followUp ? `Sending your ${isReply ? 'reply' : 'nudge'} to ${followUp.person} now.` : 'Sentient created a task for this suggestion.',
               action: res.task_id
                 ? {
                     label: 'View task',
@@ -165,7 +165,7 @@ export function SuggestionCard({ n, onNavigate }: { n: Notification; onNavigate?
         {status === 'pending' ? (
           <>
             {followUp ? (
-              <Tooltip content="Sentient makes a task to send this draft. It never sends on its own.">
+              <Tooltip content="Sends exactly this draft now. You can follow it in Tasks.">
                 <Button size="sm" variant="primary" leftIcon={<IconSend size={14} />} disabled={busy} onClick={() => act('approve')}>
                   {isReply ? 'Send reply' : 'Send nudge'}
                 </Button>
