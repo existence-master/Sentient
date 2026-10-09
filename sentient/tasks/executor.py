@@ -14,7 +14,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
-from sentient.agent.loop import LoopResult, history_to_openai
+from sentient.agent.loop import Budget, LoopResult, history_to_openai
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent
 from sentient.tasks import ask
 from sentient.tasks.jsonio import complete_json_object
@@ -38,6 +38,7 @@ log = logging.getLogger(__name__)
 
 # Literal fallback text Agent.run_loop leaves when it runs out of rounds.
 STEP_LIMIT_TEXT = "I reached the step limit before finishing. Tell me how to continue."
+LIMITS_HINT = "The limits for one run are in Settings > Tasks."
 MAX_PROGRESS_RESULT_CHARS = 6000
 # Writing skills is the evolution reviewer's job; inside a run it only distracts small models.
 EXECUTOR_EXCLUDED_TOOLS = {"skill_save"}
@@ -66,6 +67,11 @@ def announces_unfinished_work(text: str) -> bool:
 
 class RunFailed(RuntimeError):
     """A run ended without a usable final answer."""
+
+
+def run_budget(config: Any) -> Budget:
+    """The token and cost limits of one task run (``tasks.max_tokens_per_run``, ``tasks.max_cost_per_run_usd``)."""
+    return Budget(max_tokens=config.tasks.max_tokens_per_run, max_cost_usd=config.tasks.max_cost_per_run_usd)
 
 
 class RunPaused(Exception):
@@ -248,6 +254,7 @@ async def execute_single(
     if app.registry.get(ask.ASK_TOOL) is not None:
         tool_names = [*tool_names, ask.ASK_TOOL]
     result = LoopResult()
+    budget = run_budget(app.config)  # shared by the continue nudges below: one run, one limit
     mapper = ProgressMapper(svc, task_id, run_id)
     rounds = max_rounds
     for attempt in range(MAX_CONTINUE_NUDGES + 1):
@@ -262,6 +269,7 @@ async def execute_single(
             use_approvals=False,  # v2: approving the plan is the approval
             source="task",
             stop=lambda: bool(asking.get("question")),
+            budget=budget,
         ):
             await mapper.handle(event, messages)
         await mapper.flush_thought()
@@ -282,6 +290,10 @@ async def execute_single(
 
     if result.stopped_by_rule:  # an "ask" rule stopped the run; say which and how to change it (ADR 0016)
         raise RunFailed(result.stopped_by_rule)
+    if result.stopped_by_repeat:  # the loop breaker: the same call kept getting the same result
+        raise RunFailed(f"{result.stopped_by_repeat} Edit the task to add what it needs, or retry it.")
+    if result.stopped_by_budget:
+        raise RunFailed(f"{result.stopped_by_budget} {LIMITS_HINT}")
     if result.paused:
         raise RunPaused({
             "question": asking["question"],
@@ -297,7 +309,7 @@ async def execute_single(
             "The task may be incomplete."
         )
     if final == STEP_LIMIT_TEXT:
-        raise RunFailed(f"The executor used all {max_rounds} tool rounds (tasks.max_tool_rounds) before finishing.")
+        raise RunFailed(f"Stopped after {max_rounds} steps without finishing. {LIMITS_HINT}")
     await svc.progress(task_id, run_id, {"type": "final_answer", "content": final})
     return result
 

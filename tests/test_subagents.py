@@ -236,3 +236,26 @@ def test_subagent_routes(config, isolated_home, monkeypatch):
         assert c.post("/api/subagents/missing/cancel").status_code == 404
         c.delete(f"/api/sessions/{sid}")
         assert c.get(f"/api/sessions/{sid}/subagents").json() == []
+
+
+async def test_subagent_stops_on_repeated_calls_and_on_its_token_limit(config, isolated_home):
+    from tests.test_loop_breaker import RecordingProvider, read
+
+    llm = RecordingProvider(replies=[read("notes.txt", i) for i in range(4)])
+    s = await start(config, isolated_home, llm, "loop")
+    try:
+        res = await s.subagents.delegate("Read my notes", tools=["file_read"])
+        assert res["status"] == "error" and "file_read ran 3 times with the same details" in res["error"]
+        assert len(llm.seen) == 3
+    finally:
+        await s.stop()
+
+    config.subagents.max_tokens = 1000
+    llm = RecordingProvider(replies=[read(f"n{i}.txt", i) for i in range(6)], model="openai/gpt-test", tokens=600)
+    s = await start(config, isolated_home, llm, "budget")
+    try:
+        res = await s.subagents.delegate("Read my notes", tools=["file_read"])
+        assert res["status"] == "error" and res["error"].startswith("Stopped after using 1,200 tokens")
+        assert len(llm.seen) == 2
+    finally:
+        await s.stop()

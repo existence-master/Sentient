@@ -294,6 +294,26 @@ Behaviour notes:
   started by the scheduler until the answer arrives; triggered tasks keep accepting events (each in its own run) and
   return to `waiting_for_user` when those runs end.
 
+### Limits on a run
+Every task run has limits, checked deterministically (no model decides). When one is reached the run ends with
+status `error`, a plain `error` on the run, an `error` progress update and the usual `Task failed` notification
+(`payload.event: "run_failed"`). Retry continues from the checkpoint as for any failed run.
+
+| Limit | Config (`tasks.*`) | Default | Error |
+|---|---|---|---|
+| Steps (tool rounds) | `max_tool_rounds` | 40 | `Stopped after 40 steps without finishing. The limits for one run are in Settings > Tasks.` |
+| Wall time | `run_timeout_minutes` | 30 | `Stopped after 30 minutes without finishing. The limits for one run are in Settings > Tasks.` |
+| Tokens on cloud models | `max_tokens_per_run` | 2000000 | `Stopped after using 2,000,400 tokens without finishing. The limit for one run is 2,000,000. ...` |
+| Spend on cloud models | `max_cost_per_run_usd` | 5.0 | `Stopped after spending about $5.03 on the model without finishing. The limit for one run is $5.00. ...` |
+| Repeated calls | `tools.repeated_call_limit` | 3 | `Stopped because the same step kept repeating: file_read ran 3 times with the same details and got the same result each time. Edit the task to add what it needs, or retry it.` |
+
+- Tokens and cost are checked before each model call, so a run stops at most one call past its limit. Models with a
+  local prefix (`ollama`, `ollama_chat`, `lm_studio`, `llamafile`, `vllm`, `hosted_vllm`) are not counted. Cost uses
+  LiteLLM's price list and only adds up for models whose price it knows. `0` turns a token or cost limit off.
+- All workers of one swarm run share one token and cost limit; a worker that hits it (or loops) ends with an error and
+  the swarm finishes `completed_with_errors`.
+- The counts start again when a run continues after an answer or a restart.
+
 ---
 
 ## 5. Integrations
@@ -634,6 +654,10 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - While a foreground subagent runs, the parent emits `tool_progress` with `kind: "subagent"` and `data: {subagent_id, message}`.
 - Subagents cannot spawn subagents, use the voice role, or run tools of effective risk `send` or `exec`; those calls are
   denied with an explanation the parent can relay.
+- Limits: `subagents.max_rounds` steps (default 24), `subagents.timeout_minutes` (20), and on cloud models
+  `subagents.max_tokens` (1000000) and `subagents.max_cost_usd` (2.0, when the price is known; `0` = no limit). The
+  repeated-call breaker applies too. Reaching one ends the subagent with `status: "error"` and a plain `error`
+  (`Stopped after 24 steps without finishing.`, `Stopped after using 1,000,600 tokens without finishing. ...`).
 
 ### Hooks other packages rely on
 - Before compressing old turns, `run_turn` calls the memory package's
@@ -643,6 +667,15 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   Task runs publish `task.run_finished` `{task_id, run_id, status, tool_errors, skills_viewed}`.
 - `Agent.run_loop(..., stop=fn)`: `fn()` is checked after each round of tool results; when it returns True the loop ends
   without another model call and sets `LoopResult.paused` (task runs use it for `ask_user`).
+- `Agent.run_loop(..., budget=Budget(max_tokens, max_cost_usd))` (`sentient.agent.loop.Budget`): checked before each
+  model call; when it has run out the loop ends with `LoopResult.stopped_by_budget` (also in `error`). Usage from
+  local models is not counted; `StreamChunk.cost` (US dollars, or None when the price is unknown) feeds the cost.
+- Loop breaker, on every surface: when the same tool with the same arguments returns the same result
+  `tools.repeated_call_limit` times (default 3; a different result starts the count again; `0` = off), the loop ends
+  with `LoopResult.stopped_by_repeat`. Unattended loops (tasks, swarm workers, subagents, proactivity) also set `error`.
+  With `repeat_nudge=True` (chat turns, including voice and channels) the model is first told once to try something
+  else; a further repeat ends the turn with a plain assistant reply (streamed as `text_delta`, then `done`) saying it
+  stopped because it kept repeating the same step.
 - A `ToolPlugin` with `scoped = True` is never offered by default: `registry.tools()`, `registry.catalog()` and
   `registry.openai_schemas()` leave it out, and `openai_schemas(names)` includes its tools only when named.
 

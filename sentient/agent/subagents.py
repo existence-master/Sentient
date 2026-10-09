@@ -26,7 +26,7 @@ from datetime import datetime
 from typing import Any
 
 from sentient import paths
-from sentient.agent.loop import LoopResult
+from sentient.agent.loop import Budget, LoopResult
 from sentient.llm.events import Error, TextDelta, ToolCallEvent, ToolResultEvent
 from sentient.services import Service
 from sentient.store.db import new_id, now_iso
@@ -361,6 +361,7 @@ class SubagentManager(Service):
                     async for event in agent.run_loop(
                         messages, ctx, result=result, role=cfg.role, tool_names=names, max_rounds=cfg.max_rounds,
                         use_approvals=False, policy=self.policy(session_id), source="subagent",
+                        budget=Budget(max_tokens=cfg.max_tokens, max_cost_usd=cfg.max_cost_usd),
                     ):
                         if isinstance(event, TextDelta):
                             narration += event.text
@@ -384,9 +385,9 @@ class SubagentManager(Service):
             if result.error:
                 status, error = "error", result.error
             elif result.hit_step_limit:
-                status, error = "error", f"Used all {cfg.max_rounds} steps (subagents.max_rounds) before finishing."
+                status, error = "error", f"Stopped after {cfg.max_rounds} steps without finishing."
         except TimeoutError:
-            status, error = "error", f"Stopped after {cfg.timeout_minutes} minutes (subagents.timeout_minutes)."
+            status, error = "error", f"Stopped after {cfg.timeout_minutes} minutes without finishing."
         except asyncio.CancelledError:
             status, error = "cancelled", None
             await asyncio.shield(self._finish(sub_id, goal, session_id, background, status, error, result, events, before))

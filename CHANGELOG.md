@@ -16,6 +16,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - **Follow-ups:** once a day Sentient notices emails waiting on your reply, and your own questions nobody answered,
   in Gmail and IMAP email, and suggests a ready draft. Newsletters, no-reply senders and answered threads are skipped,
   and nothing is sent until you approve it. Settings under Proactivity.
+- Sentient stops when it keeps repeating itself: the same tool with the same details giving the same result three
+  times. In chat it is first asked to try something else, then it tells you it stopped; a task fails with a clear
+  reason and the usual "Task failed" notification. Settings > Approvals & safety.
+- Task runs and helpers now have token and spending limits on cloud models (2,000,000 tokens and about $5 per run,
+  1,000,000 tokens and about $2 per helper by default), alongside the step and time limits. Reaching any limit fails
+  the run with a plain message such as "Stopped after 40 steps without finishing."
 
 ### Security
 - Purchases now ask even when approvals are switched off, and code Sentient writes can never make one. A tool set

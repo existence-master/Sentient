@@ -42,6 +42,8 @@ export const LABELS: Record<string, FieldLabel> = {
   'tasks.max_concurrent_runs': { label: 'Runs at the same time' },
   'tasks.run_timeout_minutes': { label: 'Stop a run after', unit: 'min' },
   'tasks.max_tool_rounds': { label: 'Max tool steps per run', unit: 'steps' },
+  'tasks.max_tokens_per_run': { label: 'Most tokens per run', unit: 'tokens' },
+  'tasks.max_cost_per_run_usd': { label: 'Most spending per run', unit: 'USD' },
   'tasks.require_plan_approval': { label: 'Approve plans before they run' },
   'tasks.swarm_max_agents': { label: 'Parallel agents per swarm', unit: 'agents' },
   // proactivity
@@ -68,6 +70,7 @@ export const LABELS: Record<string, FieldLabel> = {
     description: "After you allow a tool for a chat, Sentient won't ask again for that tool in the same chat."
   },
   'tools.approvals.timeout_s': { label: 'Deny unanswered requests after', unit: 's' },
+  'tools.repeated_call_limit': { label: 'Stop when the same step repeats', unit: 'times' },
   'tools.disabled': { label: 'Disabled tools', hidden: true },
   'tools.approvals.rules': { label: 'Rules for apps and tools', hidden: true },
   // evolution & skills
@@ -172,6 +175,8 @@ export const LABELS: Record<string, FieldLabel> = {
   'subagents.max_rounds': { label: 'Most steps per helper', unit: 'steps' },
   'subagents.role': { label: 'Model helpers use', options: { executor: 'Task model', primary: 'Main model', fast: 'Fast model' } },
   'subagents.timeout_minutes': { label: 'Stop a helper after', unit: 'min' },
+  'subagents.max_tokens': { label: 'Most tokens per helper', unit: 'tokens' },
+  'subagents.max_cost_usd': { label: 'Most spending per helper', unit: 'USD' },
   // integrations
   'integrations.oauth_redirect_port': { label: 'OAuth callback port', description: '0 picks a free port each time.' },
   'integrations.search_provider': {

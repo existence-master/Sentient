@@ -1226,7 +1226,7 @@ class TaskService(Service):
             await self._pause_run(task_id, run_id, paused.question)
             return
         except TimeoutError:
-            status, error = "error", f"The run was stopped after {cfg.run_timeout_minutes} minutes (tasks.run_timeout_minutes)."
+            status, error = "error", f"Stopped after {cfg.run_timeout_minutes} minutes without finishing. {executor.LIMITS_HINT}"
         except RunFailed as exc:
             status, error = "error", str(exc)
         except ProviderError as exc:
