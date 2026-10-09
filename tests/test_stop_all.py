@@ -220,9 +220,10 @@ def test_messages_queued_before_the_stop_are_dropped(config, isolated_home, monk
             first = _until(ws, "done", seen)
             assert first["cancelled"] is True and "dropped" not in first
             second = _until(ws, "done", seen)
-            assert second == {"type": "done", "content": "", "session_id": sid, "cancelled": True, "dropped": ["then this"]}
+            assert second == {"type": "done", "content": "", "session_id": sid, "cancelled": True,
+                              "dropped": ["then this"], "client_id": "k2"}  # client_id: the window matches its message
             assert {"type": "error", "message": "Stopped. Your queued message wasn't sent.", "session_id": sid,
-                    "recoverable": True} in seen
+                    "recoverable": True, "dropped": True, "client_id": "k2"} in seen
             assert len(llm.calls) == 1  # neither queued message reached the model
             assert core.stop_dropped == {sid: ["and use metric units"]}
 
@@ -240,3 +241,30 @@ def _until(ws, kind: str, seen: list[dict]) -> dict:
         seen.append(msg)
         if msg["type"] == kind:
             return msg
+
+
+async def test_a_slow_device_never_holds_up_stop_or_resume(make, monkeypatch):
+    from sentient.nodes import service as nodes_service
+
+    monkeypatch.setattr(nodes_service, "STOP_STATE_SEND_S", 0.2)
+    app = await make()
+    heard: list[dict] = []
+
+    class Stuck:  # e.g. busy receiving a long audio frame
+        async def send(self, obj, payload=None):
+            await asyncio.Event().wait()
+
+    class Fast:
+        async def send(self, obj, payload=None):
+            heard.append(obj)
+
+    app.nodes._conns = {"stuck": Stuck(), "fast": Fast()}
+    try:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        await asyncio.wait_for(app.stop_all(), 2)
+        await asyncio.wait_for(app.resume(), 2)
+        assert loop.time() - started < 1.5
+        assert [m["stopped"] for m in heard] == [True, False]
+    finally:
+        app.nodes._conns = {}

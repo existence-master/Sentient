@@ -171,7 +171,7 @@ function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPro
           <Timeline items={items} streaming={streaming} loading={loadingHistory}>
             {items.map((item, i) =>
               item.kind === 'user' ? (
-                <UserMessage key={item.id} message={item} />
+                <UserMessage key={item.id} message={item} onRestore={(text) => setInject({ text, nonce: Date.now() })} />
               ) : (
                 <AssistantTurn
                   key={item.id}

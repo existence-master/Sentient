@@ -1054,6 +1054,8 @@ can ignore it.
   jobs were cancelled). Calling it again while stopped keeps `stopped_at` and `source` and cancels anything started since.
 - `POST /api/resume` `{source?}` → StopState (`stopped: false`, `stopped_at: null`).
 - Every change publishes domain event `stop.updated` (StopState) and `stop_state` to connected devices (section 13).
+  Devices hear about a stop after the work is cancelled; each device gets at most 2 s, side by side, so a slow
+  device never holds up the stop, the resume or the other devices.
   `GET /api/bootstrap` includes it as `stop`.
 - Stop everything, in this order: the flag is set and saved (so nothing new starts), then every running chat reply
   (desktop, channels, voice; the partial reply is kept with "(stopped)"), task run (status `cancelled`, progress
@@ -1062,8 +1064,9 @@ can ignore it.
   (memory notes, reviews, suggestions) is cancelled. Code runs and browser actions stop with the reply or run they
   belong to. Runs waiting for the user's answer keep waiting.
 - Messages queued before the stop are dropped, never sent: steer messages the running reply had not picked up yet,
-  `chat.send` turns waiting behind it on `/ws` (they end with `error` "Stopped. Your queued message wasn't sent." and
-  `done` `{cancelled: true, dropped: [text]}`), and messages queued in Telegram or Discord chats (the chat gets the
+  `chat.send` turns waiting behind it on `/ws` (they end with `error` `{message: "Stopped. Your queued message wasn't
+  sent.", dropped: true, client_id}` and `done` `{cancelled: true, dropped: [text], client_id}`, echoing the
+  `client_id` the message was sent with so the window can mark that message, not the newest turn), and messages queued in Telegram or Discord chats (the chat gets the
   same note). The window shows steers of a cancelled reply as not sent. Messages sent after the stop work as usual.
 - While stopped: the scheduler claims nothing (due tasks start on the first tick after Resume), triggered tasks
   do not fire, change feeds, polls, push watchers and webhooks publish nothing (`source.items`), and proactivity,

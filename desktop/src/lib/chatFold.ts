@@ -88,6 +88,8 @@ export interface UserMessageView {
   attachments: AttachmentView[]
   createdAt: string
   pending?: boolean
+  /** §17: queued, then dropped by Stop everything before it was sent. */
+  notSent?: boolean
 }
 
 export type TimelineItem = UserMessageView | AssistantTurnView

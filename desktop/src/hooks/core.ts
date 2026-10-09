@@ -1,6 +1,8 @@
 /** React Query hooks for §2 core resources. */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '@/lib/api'
+import { useEffect } from 'react'
+import { api, isNotImplemented } from '@/lib/api'
+import { useConnection } from '@/stores/connection'
 import type { OnboardingRequest, Session, StopState } from '@/lib/types'
 import { qk } from './queryKeys'
 
@@ -11,12 +13,24 @@ export function useBootstrap() {
 // ---------------------------------------------------------------------------- §17 stop everything
 const NOT_STOPPED: StopState = { stopped: false, stopped_at: null, source: null }
 
-/** Live from `stop.updated` (lib/events.ts); an engine without §17 reads as not stopped. */
+/**
+ * Live from `stop.updated` (lib/events.ts). Fetched only once the engine is ready, and again every time it
+ * becomes ready (a restarted engine reads its saved state). Only an engine without §17 reads as not stopped;
+ * any other failure stays an error and is retried, so a stopped Sentient is never shown as running.
+ */
 export function useStopState() {
+  const ready = useConnection((s) => s.backend.state === 'ready')
+  const qc = useQueryClient()
+  useEffect(() => {
+    if (ready) void qc.invalidateQueries({ queryKey: qk.stop })
+  }, [ready, qc])
   return useQuery({
     queryKey: qk.stop,
-    queryFn: () => api.stop.get().catch(() => NOT_STOPPED),
-    staleTime: Infinity
+    queryFn: () => api.stop.get().catch((err) => (isNotImplemented(err) ? NOT_STOPPED : Promise.reject(err))),
+    enabled: ready,
+    staleTime: Infinity,
+    retry: true,
+    retryDelay: (n) => Math.min(1000 * 2 ** n, 10_000)
   })
 }
 

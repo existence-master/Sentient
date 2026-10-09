@@ -144,8 +144,10 @@ class SentientApp:
         self.stop_state = state
         await self.store.set_meta(STOP_META_KEY, json.dumps(state))
         self.bus.publish("stop.updated", dict(state))
+
+    async def _tell_devices(self) -> None:
         try:
-            await self.nodes.send_stop_state()
+            await self.nodes.send_stop_state()  # bounded per device (nodes.STOP_STATE_SEND_S)
         except Exception:
             log.exception("could not tell devices about the stop state")
 
@@ -155,7 +157,8 @@ class SentientApp:
         Safe to call again while stopped (it cancels anything started since). Returns the stop state
         plus ``cancelled``, the number of running jobs that were cancelled."""
         async with self._stop_lock:
-            if not self.stopped:
+            changed = not self.stopped
+            if changed:
                 await self._set_stop_state({"stopped": True, "stopped_at": now_iso(), "source": source})
                 log.warning("stop everything (from %s)", source)
             self.stop_generation += 1
@@ -168,6 +171,8 @@ class SentientApp:
                     cancelled += await svc.halt()
                 except Exception:
                     log.exception("service %s failed to halt", svc.name)
+            if changed:  # devices hear about it after the work is cancelled, never before
+                await self._tell_devices()
             return {**self.stop_state, "cancelled": cancelled}
 
     async def resume(self, source: str = "desktop") -> dict[str, Any]:
@@ -176,6 +181,7 @@ class SentientApp:
             if self.stopped:
                 await self._set_stop_state({"stopped": False, "stopped_at": None, "source": source})
                 log.warning("resumed (from %s)", source)
+                await self._tell_devices()
                 if self._started and self.enable_background:
                     try:
                         await self.tasks.recover_interrupted()

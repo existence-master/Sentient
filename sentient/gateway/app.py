@@ -87,9 +87,12 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                     await asyncio.wait({previous})
                 if s.stop_generation != generation:
                     # queued behind a reply when Stop everything was pressed: never sent (docs/API.md section 17)
-                    await send({"type": "error", "message": DROPPED_NOTE, "session_id": session_id, "recoverable": True})
+                    # client_id lets the window match these to the message it queued, not the latest turn
+                    client_id = msg.get("client_id")
+                    await send({"type": "error", "message": DROPPED_NOTE, "session_id": session_id, "recoverable": True,
+                                "dropped": True, "client_id": client_id})
                     await send({"type": "done", "content": "", "session_id": session_id, "cancelled": True,
-                                "dropped": [str(msg.get("text", ""))]})
+                                "dropped": [str(msg.get("text", ""))], "client_id": client_id})
                     return
                 async for event in s.agent.run_turn(
                     session_id,

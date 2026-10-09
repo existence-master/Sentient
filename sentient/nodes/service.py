@@ -160,6 +160,9 @@ def _normalize_result(msg: dict) -> dict:
     return {"ok": False, "error": str(err or "The device reported an error.")}
 
 
+STOP_STATE_SEND_S = 2.0  # deadline per device for a stop_state message
+
+
 class NodeService(Service):
     name = "nodes"
 
@@ -567,11 +570,18 @@ class NodeService(Service):
                 self._refresh_tools()
                 log.info("device disconnected: %s", conn.name)
 
-    async def send_stop_state(self) -> None:
-        """Tell every connected device that Stop everything was turned on or off (``stop_state``)."""
+    async def send_stop_state(self, timeout: float | None = None) -> None:
+        """Tell every connected device that Stop everything was turned on or off (``stop_state``).
+
+        Sends go out side by side, each with a deadline, so a device that is slow to read (or busy receiving
+        audio) never holds up the others or the caller."""
         message = {"type": "stop_state", **self.app.stop_state}
-        for conn in list(self._conns.values()):
-            await self._safe_send(conn, message)
+
+        async def one(conn: NodeConnection) -> None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(conn.send(message), timeout or STOP_STATE_SEND_S)
+
+        await asyncio.gather(*(one(c) for c in list(self._conns.values())))
 
     async def _safe_send(self, conn: NodeConnection, obj: dict) -> None:
         with contextlib.suppress(Exception):

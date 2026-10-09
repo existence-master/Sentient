@@ -520,6 +520,9 @@ export interface ErrorEvent extends TurnScoped {
   type: 'error'
   message: string
   recoverable?: boolean
+  /** §17: a queued message was dropped by Stop everything (echoes the `client_id` it was sent with). */
+  dropped?: boolean
+  client_id?: string | null
 }
 export interface DoneEvent extends TurnScoped {
   type: 'done'
@@ -527,8 +530,9 @@ export interface DoneEvent extends TurnScoped {
   message_id: string | null
   cancelled?: boolean
   memory_sources?: MemorySource[]
-  /** §17: texts that were queued behind the reply when everything was stopped; they were never sent. */
+  /** §17: a queued message dropped by Stop everything (its text; never sent). Comes with the `client_id` it was sent with. */
   dropped?: string[]
+  client_id?: string | null
 }
 export interface ApprovalAckEvent {
   type: 'approval.ack'
