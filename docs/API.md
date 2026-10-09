@@ -289,12 +289,14 @@ Routes:
   "swarm_details": {"goal": "...", "items": [], "total_agents": 0, "completed_agents": 0,
                     "progress_updates": [{"worker_id": "agent-1|aggregator", "timestamp": "...", "status": "processing|completed|error|aggregating", "message": "..."}],
                     "aggregated_results": []} | null,
-  "enabled": true, "model": null, "original_context": {"source": "manual_creation|chat|proactive|trigger", "...": "..."},
+  "enabled": true, "model": null, "browser_profile": "x-posting|null",
+  "original_context": {"source": "manual_creation|chat|proactive|trigger", "...": "..."},
   "error": "...|null",
   "next_execution_at": "...|null", "last_execution_at": "...|null", "created_at": "...", "updated_at": "..."
 }
 ```
 `swarm_details` is `null` for single tasks. `script` is `null` unless `task_type` is `script` (section 16).
+`browser_profile` is the browser profile its runs use (section 12); `null` means `default`.
 `error` holds the last planning/run failure message (v2 `task.error`).
 Each run embeds its most recent 200 progress updates; the full log is at the `/events` endpoint.
 `interval` schedules (every `interval_minutes`, minimum 5; `frequency: "hourly"` is normalized to 60) are additive; the
@@ -335,9 +337,10 @@ notifies skips the planner and goes straight to `approval_pending` with a one-st
 ### Endpoints
 - `GET /api/tasks` → `[Task]`
 - `GET /api/tasks/{id}` → `Task`
-- `POST /api/tasks` `{prompt, is_swarm?: bool, assignee?: "ai", model?}` → `Task` (status `planning`; refinement + planning continue in the background and arrive as `task.updated`)
+- `POST /api/tasks` `{prompt, is_swarm?: bool, assignee?: "ai", model?, browser_profile?}` → `Task` (status `planning`; refinement + planning continue in the background and arrive as `task.updated`)
 - `POST /api/tasks/preview` `{prompt}` → `{name, description, priority, schedule}` (v2 generate-plan)
-- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script}` → `Task`
+- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile}` → `Task`
+  (`browser_profile`: a name from `browser.profiles`, 400 for an unknown one; `null`, `""` or `"default"` clear it)
   (`script`: partial `{code?, condition?, then?}` merged into the current script and validated, 400 when the code does not
   compile; changing `code` or `condition` resets `last_result`/`last_run_at`/`last_error`; `script: null` turns a script job back
   into a `single` task; a `script` on a single task makes it a script job)
@@ -809,7 +812,9 @@ facts). Bulk and consolidation changes publish `memory.updated` with `reason` (`
 
 ## 8. Skills & self-evolution
 
-**Skill** `{name, description, author: "user|assistant|community", state: "active|pending_review|stale|archived", tags, requires_tools, version, use_count, view_count, patch_count, last_used_at, success_count, failure_count, last_failure_at, created_by_review: bool}`
+**Skill** `{name, description, author: "user|assistant|community", state: "active|pending_review|stale|archived", tags, requires_tools, version, use_count, view_count, patch_count, last_used_at, success_count, failure_count, last_failure_at, created_by_review: bool, browser_profile: "<name>"|null}`
+(`browser_profile` comes from the skill's frontmatter; once `skill_view` reads that skill, the run's browser tools use
+that profile, section 12, and the result includes it.)
 (`success_count`/`failure_count` count chat turns and task runs that viewed the skill and went well or failed, see section 15)
 
 - `GET /api/skills` → `{active: [Skill], pending: [Skill & {reason, origin, proposed_at}], archived: [Skill]}` (`active` includes skills whose `state` is `stale`; a pending entry whose name also appears in `active` is a proposed update, see `/diff`; `origin` is `{session_id?, task_id?, run_id?, curator?, merged_from?, repair?: true}` or `null`)
@@ -1088,14 +1093,35 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 
 ## 12. Browser (owner: browser)
 
-- One persistent browser profile under `~/.sentient/browser/profile`, driven with Playwright through an installed Edge
-  or Chrome (`browser.engine` auto: Edge, then Chrome). Starts on the first tool call, hidden unless `browser.headless`
-  is false, one window with tabs, closes itself after `browser.idle_minutes` without use (not while visible).
-- The `browser` plugin is hidden from the model when `browser.enabled` is false or no supported browser is installed;
-  status `error` says why in plain words. Config: `enabled, engine, headless, idle_minutes, allow_domains,
-  block_domains, max_snapshot_chars, max_extract_chars, confirm_purchases, live_view`.
+- Named browser profiles, `browser.profiles` `{"<name>": {kind: "launch"|"attach", engine: ""|"auto"|"msedge"|"chrome"|"chromium",
+  endpoint, notes}}`. Names are lowercase letters, numbers and dashes (up to 40). `default` always exists, is a
+  `launch` profile and can't be renamed or deleted.
+  - `launch`: a persistent Playwright context on `~/.sentient/browser/profiles/<name>` (its own cookies, storage and
+    sign-ins), driven through an installed Edge or Chrome (`engine` empty uses `browser.engine`; auto: Edge, then
+    Chrome). Older versions' `~/.sentient/browser/profile` moves to `profiles/default` on first use (if it can't be
+    moved, it keeps being used). Starts on the first tool call, hidden unless `browser.headless` is false, one window
+    with tabs, closes itself after `browser.idle_minutes` without use (not while visible).
+  - `attach`: connects with `connect_over_cdp` to a browser the user started with `--remote-debugging-port`.
+    `endpoint` must be on this computer (`localhost`, `127.0.0.0/8`, `::1`; `9333` and `127.0.0.1:9333` are
+    normalized to `http://127.0.0.1:9333`); anything else is refused with a plain message, and so is a DevTools port
+    whose `webSocketDebuggerUrl` points elsewhere. Sentient opens a tab of its own and follows only tabs that tab
+    opens. Closing, idling out, switching profiles or deleting the profile only disconnects; the user's browser and
+    its tabs stay open. `browser_switch_tab` refuses a tab on a blocked or not-allowed site (it is left as it is).
+  - One profile is open at a time. A tool call uses the run's profile (`ctx.extra["browser_profile"]`), else
+    `default`, switching if another profile is open: profiles are signed in as different people, so a chat or run
+    that picked none never keeps using a profile another run left open. The run's profile is the task's `browser_profile` when a task run starts, and is
+    replaced by a skill's `browser_profile` when `skill_view` reads it and by a `profile` argument (the latest wins,
+    for the rest of that chat turn or run). Switching closes the open one cleanly first, except a window the user opened
+    with `POST /api/browser/open` (signing in): then the call returns `{error}` asking the user to close it. An unknown
+    name returns `{error}` listing the profiles.
+- The `browser` plugin is hidden from the model when `browser.enabled` is false, or when no supported browser is
+  installed and no `attach` profile exists; status `error` says why in plain words. Config: `enabled, engine, headless,
+  idle_minutes, allow_domains, block_domains, max_snapshot_chars, max_extract_chars, confirm_purchases, live_view,
+  profiles`. Every safety rule below applies the same in every profile, attached ones included.
 - Tools (plugin `browser`). Failures return `{error}` with a message the model can act on.
-  - `browser_open(url)` read → same as `browser_snapshot` (http/https only; allow/block lists apply, also after redirects).
+  - `browser_open(url, profile="")` read → same as `browser_snapshot` plus `profile` (http/https only; allow/block lists
+    apply, also after redirects). `profile` switches to that profile for this and the following calls of the run;
+    empty uses the run's profile, else `default`.
   - `browser_snapshot()` read → `{url, title, text, truncated?}`. `text` is `Page:`/`URL:`/`Scroll:` header, interactive
     elements one per line (`[e12] button "Sign in"`, `[e4] textbox "Search" value=""`, `[e7] combobox "Country"
     value="India" options: India | Japan`, `[e3] link "Docs" -> /docs`, flags `checked`, `disabled`, `focused`) and the
@@ -1115,18 +1141,31 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   - `browser_press(key)` write (`send` for Enter under the same rules as submit; friendly names like `enter`, `esc`,
     `page down`, `ctrl+a`) → `{ok, pressed, url}`.
   - `browser_scroll(direction="down")` read (`down|up|top|bottom|left|right`) → `{ok, scrolled, from_top, more_below}`.
-  - `browser_back()` read → `{ok, url, title}`; `browser_tabs()` read → `{tabs: [{index, url, title, active}]}`;
+  - `browser_back()` read → `{ok, url, title}`; `browser_tabs(profile="")` read → `{profile, tabs: [{index, url, title, active}]}`;
     `browser_switch_tab(index)` read → `{ok, index, url, title}`.
   - `browser_extract(question="")` read → `{url, title, content, question?, truncated?}`: readable main text without
     nav/header/footer/scripts, capped at `browser.max_extract_chars`; with a question, the most related paragraphs are kept.
   - `browser_screenshot()` read → `{file: "outputs/browser/screenshot-....png", url, title}` (name usable with `/api/files`).
-  - `browser_close()` read → `{ok, message}`: closes the whole browser (it reopens on the next tool call).
-- Signing in is always done by the user: `POST /api/browser/open` `{url?}` closes the hidden browser and relaunches the
-  same profile as a visible window at `url` (default: the page the assistant was on). When the user closes that window,
-  the next tool call relaunches hidden.
-- `GET /api/browser/status` → `{available, running, engine: "msedge"|"chrome"|"chromium"|null, headless, tabs: [{index, url, title, active}], error}`
-- `POST /api/browser/open` `{url?}` → status (409 `{detail}` when the browser is off, missing, the URL is blocked or it
-  cannot start); `POST /api/browser/close` → status; `GET /api/browser/screenshot` → `image/jpeg` (409 when not running).
+  - `browser_close()` read → `{ok, message}`: closes the whole browser, or disconnects from an attached one (it reopens
+    on the next tool call).
+- Signing in is always done by the user: `POST /api/browser/open` `{url?, profile?}` closes the hidden browser and
+  relaunches the profile (default: the open one, else `default`) as a visible window at `url` (default: the page the
+  assistant was on). For an `attach` profile it connects and opens `url` in Sentient's tab. When the user closes that
+  window, the next tool call relaunches hidden.
+- `GET /api/browser/status` → `{available, running, engine: "msedge"|"chrome"|"chromium"|null, headless, tabs: [{index, url, title, active}], error, profile, attached}`
+  (`profile`: the open profile, `default` when closed; `engine` is `null` while attached).
+- `POST /api/browser/open` `{url?, profile?}` → status (409 `{detail}` when the browser is off, missing, the profile is
+  unknown, the URL is blocked or it cannot start or attach); `POST /api/browser/close` → status (attached: disconnects);
+  `GET /api/browser/screenshot` → `image/jpeg` (409 when not running).
+- Profiles (409 `{detail}` with a plain message for a bad or taken name, an address not on this computer, an unknown
+  profile, renaming or deleting `default`, or a folder in use):
+  - `GET /api/browser/profiles` → `{active: "<name>"|null, profiles: [{name, kind, engine, endpoint, notes, running}]}`
+  - `POST /api/browser/profiles` `{name, kind?: "launch"|"attach", engine?, endpoint?, notes?}` → same. `name` is
+    normalized ("X growth" → `x-growth`); `endpoint` is required for `attach` and normalized.
+  - `PATCH /api/browser/profiles/{name}` `{name?, engine?, endpoint?, notes?}` → same. A rename moves the profile's
+    folder and the tasks that use it; changing the name, browser or address of the open profile closes it first.
+  - `DELETE /api/browser/profiles/{name}` → same. Closes it if open; a `launch` profile's folder (its sign-ins) is
+    deleted. Tasks that still name it get `{error}` from browser tools until another profile is picked.
 - Domain events: `browser.updated` → status (start, stop, window closed by the user, tab list/url/title changes);
   `browser.frame` `{url, title, image: "data:image/jpeg;base64,..."}` (~1024px wide, quality 55) at most once per second
   after acting tools, with a trailing frame so the last state is shown. The same image also goes to the running chat as

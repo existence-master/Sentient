@@ -59,7 +59,8 @@ def test_enabled_browser_visible_with_risk_fns(make_client, monkeypatch):
     core = c.app.state.sentient
     assert not core.registry.is_hidden("browser")
     st = c.get("/api/browser/status").json()
-    assert st == {"available": True, "running": False, "engine": "msedge", "headless": True, "tabs": [], "error": None}
+    assert st == {"available": True, "running": False, "engine": "msedge", "headless": True, "tabs": [], "error": None,
+                  "profile": "default", "attached": False}
     names = {t.name for t in core.registry.tools() if t.plugin == "browser"}
     assert {"browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_select", "browser_press",
             "browser_scroll", "browser_back", "browser_tabs", "browser_switch_tab", "browser_extract",

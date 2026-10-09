@@ -23,7 +23,11 @@ async def skill_view(ctx: ToolContext, name: str) -> dict:
         return {"error": f"no skill named {name}", "available": [k.name for k in lib.list()][:30]}
     if ctx.store is not None:
         await lib.mark_used(s.name, ctx.store, viewed=True)
-    return {"name": s.name, "description": s.description, "version": s.version, "body": s.body}
+    out = {"name": s.name, "description": s.description, "version": s.version, "body": s.body}
+    if s.browser_profile:  # the skill's browser work happens in its own profile (docs/API.md section 12)
+        ctx.extra["browser_profile"] = s.browser_profile
+        out["browser_profile"] = s.browser_profile
+    return out
 
 
 @tool("skill_save", risk=Risk.write, internal=True)

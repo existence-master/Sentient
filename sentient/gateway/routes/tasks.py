@@ -20,6 +20,7 @@ class CreateTaskBody(BaseModel):
     is_swarm: bool = False
     assignee: str | None = "ai"
     model: str | None = None
+    browser_profile: str | None = None
 
 
 class PreviewBody(BaseModel):
@@ -65,7 +66,9 @@ async def list_tasks(request: Request):
 
 @router.post("")
 async def create_task(request: Request, body: CreateTaskBody):
-    return await _guard(_tasks(request).create_task(body.prompt, is_swarm=body.is_swarm, model=body.model))
+    return await _guard(_tasks(request).create_task(
+        body.prompt, is_swarm=body.is_swarm, model=body.model, browser_profile=body.browser_profile
+    ))
 
 
 @router.post("/preview")

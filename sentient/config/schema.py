@@ -664,6 +664,23 @@ class TerminalConfig(BaseModel):
 
 
 # ----------------------------------------------------------------------------- browser (owner: browser agent)
+class BrowserProfileConfig(BaseModel):
+    """One named browser profile (docs/API.md section 12)."""
+
+    kind: Literal["launch", "attach"] = Field(
+        "launch",
+        description="launch: Sentient starts its own browser with this profile's sign-ins. attach: Sentient connects "
+        "to a browser you started yourself with a DevTools port.",
+    )
+    engine: Literal["", "auto", "msedge", "chrome", "chromium"] = Field(
+        "", description="Browser for this profile. Empty uses the main Browser setting."
+    )
+    endpoint: str = Field(
+        "", description="attach only: the DevTools address on this computer, for example http://127.0.0.1:9333."
+    )
+    notes: str = Field("", description="What this profile is for, for example the account it is signed in to.")
+
+
 class BrowserConfig(BaseModel):
     enabled: bool = Field(True, description="Let the assistant use a web browser for sites without an integration.")
     engine: Literal["auto", "msedge", "chrome", "chromium"] = Field(
@@ -691,6 +708,20 @@ class BrowserConfig(BaseModel):
         description="Ask before clicking anything that looks like buying, paying, sending, posting or deleting.",
     )
     live_view: bool = Field(True, description="Stream small pictures of the page while the assistant uses the browser.")
+    profiles: dict[str, BrowserProfileConfig] = Field(
+        default_factory=lambda: {"default": BrowserProfileConfig()},
+        description="Named browser profiles, each with its own sign-ins. 'default' always exists. Edited in "
+        "Settings > Browser.",
+    )
+
+    @field_validator("profiles")
+    @classmethod
+    def _keep_default_profile(cls, v: dict[str, BrowserProfileConfig]) -> dict[str, BrowserProfileConfig]:
+        out = dict(v)
+        default = out.get("default")
+        if default is None or default.kind != "launch":
+            out["default"] = BrowserProfileConfig(notes=default.notes if default else "")
+        return out
 
 
 # ----------------------------------------------------------------------------- devices (owner: nodes agent)

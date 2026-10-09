@@ -119,7 +119,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'Browser',
     description: 'The web browser Sentient uses for sites without an integration.',
     icon: IconWorldWww,
-    keywords: ['browser', 'chrome', 'edge', 'websites', 'shopping', 'purchases', 'live view'],
+    keywords: ['browser', 'chrome', 'edge', 'websites', 'shopping', 'purchases', 'live view', 'profiles', 'sign in', 'brave', 'attach'],
     schemaSections: ['browser']
   },
   {

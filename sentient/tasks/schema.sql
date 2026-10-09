@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     swarm_details         TEXT,                       -- JSON (swarm tasks only)
     original_context      TEXT,                       -- JSON
     script                TEXT,                       -- JSON (script jobs only): {code, condition, then, last_result, last_run_at, last_error}
+    browser_profile       TEXT,                       -- named browser profile the task's browser calls use (NULL: default)
     error                 TEXT,
     next_execution_at     TEXT,                       -- UTC ISO-8601, seconds precision (lexicographically comparable)
     last_execution_at     TEXT,

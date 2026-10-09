@@ -17,6 +17,7 @@ TASK_COLUMNS = {
     "name", "description", "status", "priority", "task_type", "schedule", "plan", "original_prompt",
     "source", "enabled", "assignee", "model", "chat_history", "clarifying_questions", "swarm_details",
     "original_context", "script", "error", "next_execution_at", "last_execution_at", "created_at", "updated_at",
+    "browser_profile",
 }
 RUN_JSON_FIELDS = {"plan", "trigger_data", "messages", "result", "pending_question", "limits"}
 RUN_COLUMNS = {
@@ -35,6 +36,7 @@ _ADDED_TASK_COLUMNS = {
     "next_execution_at": "TEXT",
     "last_execution_at": "TEXT",
     "script": "TEXT",
+    "browser_profile": "TEXT",
 }
 _ADDED_RUN_COLUMNS = {
     "plan": "TEXT", "resume_count": "INTEGER NOT NULL DEFAULT 0", "retry_of": "TEXT", "pending_question": "TEXT",
@@ -350,6 +352,7 @@ class TaskRepo:
             "swarm_details": task.get("swarm_details"),
             "enabled": bool(task.get("enabled", True)),
             "model": task.get("model"),
+            "browser_profile": task.get("browser_profile"),
             "original_context": task.get("original_context") or {"source": "manual_creation"},
             "script": task.get("script") if task.get("task_type") == "script" else None,
             "error": task.get("error"),

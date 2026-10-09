@@ -22,7 +22,8 @@ service name `sentient`.
 | Use **Nous Portal** | Requests go to Nous Research with your Nous Portal key. |
 | **Connect an app** (Gmail, Slack, Notion...) | Sentient talks directly to that app's servers with your own login. |
 | Use **web search, weather, maps or news** | Your query goes to that service. Web search uses DuckDuckGo by default. |
-| Let Sentient **use the browser** | It visits the sites the task needs, in a separate browser profile. You sign in yourself; Sentient never types passwords or card numbers. |
+| Let Sentient **use the browser** | It visits the sites the task needs, in its own browser profiles (each in `~/.sentient/browser/profiles/<name>`, with its own sign-ins). You sign in yourself; Sentient never types passwords or card numbers. Deleting a profile deletes its folder. |
+| Let Sentient **attach to a browser you started** | Sentient connects to that browser's DevTools port, only on this computer (`127.0.0.1` or `localhost`; other addresses are refused). It works in a tab of its own, but can see the titles and addresses of your open tabs. While the port is open, any program on your computer can control that browser, so start it that way only when you need it and with a separate profile. Disconnecting never closes your browser. |
 | Pair **Telegram or Discord** | Messages in paired chats pass through Telegram's or Discord's servers. |
 | Link **WhatsApp** | Sentient becomes a linked device on your account, like WhatsApp Web. Messages in your "Message yourself" chat (and any chat you pair) pass through WhatsApp's servers, end-to-end encrypted as usual. The link's keys are kept in `~/.sentient/whatsapp`; Disconnect removes them and unlinks Sentient. This is not an official WhatsApp product, so WhatsApp could limit an account that uses it. |
 | Pair a **phone or glasses** | Traffic stays on your home network, encrypted. This is off until you turn it on. |
