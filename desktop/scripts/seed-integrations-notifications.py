@@ -18,7 +18,8 @@ Every name, client and address in the data is made up.
 Creates:
 - integration state: GitHub + Google Calendar connected, Gmail in an error state with privacy filters
 - one MCP server config entry whose command doesn't exist (shows the error state when the engine runs)
-- notifications of every kind, including 3 proactive suggestions (approved, pending gmail, pending gcalendar)
+- notifications of every kind, including 4 proactive suggestions (approved, pending gmail, pending gcalendar,
+  pending follow-up with a draft reply)
 - proactive preference rows, proactive source poll state and suggestion rows
 - assistant.onboarding_complete = true
 """
@@ -314,6 +315,33 @@ async def seed_notifications(app: SentientApp) -> None:
     note = await notify(app, "proactive", mail["suggestion"]["description"], title="Suggestion from Gmail", payload=mail)
     await backdate(app, note, ago(minutes=12))
     await suggestion_row(app, note, mail, ago(minutes=12), 0.55)
+
+    # 10. pending follow-up: an email waiting on Maya's reply for 4 days, with a ready draft (most recent)
+    draft = ("Hi Leela,\n\nThanks for the revised quote, and sorry for the slow reply. The new scope looks right to me. "
+             "Could you send the updated timeline as well? Then I can confirm the project.\n\nMaya")
+    follow_up = {
+        "suggestion": {
+            "suggestion_type": "follow_up_reply",
+            "description": "Leela is waiting for your reply about the revised quote",
+            "action_details": {"action_type": "send_email_reply", "to": "leela@paperkite.example",
+                               "subject": "Re: Revised quote for the Paperkite site", "body": draft},
+            "reasoning": "Leela Menon wrote to you directly 4 days ago and you have not replied yet.",
+            "confidence": 0.86,
+            "source_event": {"source": "gmail", "event_type": "follow_up", "summary": "Leela Menon: Revised quote for the Paperkite site",
+                             "item_id": "18f2b9e05c1a7f33:<quote-v2@paperkite.example>",
+                             "url": "https://mail.example/inbox/18f2b9e05c1a7f33"},
+            "follow_up": {"kind": "waiting_on_you", "person": "Leela Menon", "person_email": "leela@paperkite.example",
+                          "to": "leela@paperkite.example", "subject": "Re: Revised quote for the Paperkite site",
+                          "draft": draft, "days_waiting": 4, "thread_id": "18f2b9e05c1a7f33", "message_id": "18f2b9e05c1a7f33"},
+        },
+        "status": "pending",
+        "task_id": None,
+    }
+    quoted = "\n".join(f"> {line}" if line else ">" for line in draft.split("\n"))
+    note = await notify(app, "proactive", f"{follow_up['suggestion']['description']}\n\n{quoted}",
+                        title="Gmail: Leela Menon: Revised quote for the Paperkite site", payload=follow_up)
+    await backdate(app, note, ago(minutes=5))
+    await suggestion_row(app, note, follow_up, ago(minutes=5), 0.7)
 
 
 async def seed_proactivity(app: SentientApp) -> None:

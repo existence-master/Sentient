@@ -175,6 +175,43 @@ def parse_fetch(lines: list[Any]) -> list[dict]:
     return out
 
 
+_LIST_RE = re.compile(rb'^(?:LIST\s+)?\((?P<flags>[^)]*)\)\s+(?:"(?:[^"\\]|\\.)*"|NIL)\s+(?P<name>.+)$', re.IGNORECASE)
+SENT_NAMES = ("Sent", "Sent Items", "[Gmail]/Sent Mail", "Sent Messages", "Sent Mail", "INBOX.Sent")
+
+
+def parse_list(lines: list[Any]) -> list[tuple[set[str], str]]:
+    """aioimaplib LIST response -> [(lowercase flags, mailbox name)]. Quoted, atom and literal names."""
+    out: list[tuple[set[str], str]] = []
+    rows = [bytes(x) for x in lines or [] if isinstance(x, bytes | bytearray)]
+    i = 0
+    while i < len(rows):
+        m = _LIST_RE.match(rows[i].strip())
+        i += 1
+        if not m:
+            continue
+        name = m.group("name").strip()
+        if re.fullmatch(rb"\{\d+\}", name) and i < len(rows):
+            name = rows[i].strip()
+            i += 1
+        elif name.startswith(b'"') and name.endswith(b'"') and len(name) >= 2:
+            name = re.sub(rb"\\(.)", rb"\1", name[1:-1])
+        flags = {f.lower() for f in m.group("flags").decode(errors="ignore").split()}
+        out.append((flags, name.decode("utf-8", errors="replace")))
+    return out
+
+
+def find_sent_mailbox(entries: list[tuple[set[str], str]]) -> str | None:
+    """The SPECIAL-USE ``\\Sent`` mailbox, else one with a common sent-mail name, else None."""
+    for flags, name in entries:
+        if "\\sent" in flags:
+            return name
+    by_lower = {name.lower(): name for _, name in entries}
+    for candidate in SENT_NAMES:
+        if candidate.lower() in by_lower:
+            return by_lower[candidate.lower()]
+    return None
+
+
 def parse_message(raw: bytes) -> EmailMessage:
     return email.message_from_bytes(raw or b"", policy=policy.default)  # type: ignore[return-value]
 
@@ -309,6 +346,21 @@ class ImapSession:
         if res.result != "OK":
             raise IntegrationError("The mail server couldn't return those messages.")
         return parse_fetch(res.lines)
+
+    async def fetch_headers(self, uids: list[int]) -> list[dict]:
+        """Like ``fetch`` but only the header block (``raw`` holds the headers)."""
+        if not uids:
+            return []
+        res = await self._c.uid("fetch", ",".join(str(u) for u in uids), "(UID FLAGS BODY.PEEK[HEADER])")
+        if res.result != "OK":
+            raise IntegrationError("The mail server couldn't return those messages.")
+        return parse_fetch(res.lines)
+
+    async def list_mailboxes(self) -> list[tuple[set[str], str]]:
+        res = await self._c.list('""', "*")
+        if res.result != "OK":
+            return []
+        return parse_list(res.lines)
 
     async def idle_wait(self, timeout: float) -> bool:
         """Wait in IDLE until the server reports new mail (True) or the timeout passes (False)."""
@@ -494,6 +546,117 @@ async def email_imap_send(ctx: ToolContext, to: str, subject: str, body: str, cc
     return {"sent": True, "message_id": m["Message-ID"], "to": to, "cc": cc}
 
 
+# ---------------------------------------------------------------------------- recent threads (follow-ups)
+THREAD_HEADER_SCAN = 150  # newest quiet messages (max age .. idle cutoff) per mailbox whose headers are read
+THREAD_RECENT_SCAN = 400  # newest recent messages (after the idle cutoff) per mailbox, to spot active threads
+THREAD_HEADERS = ("list-unsubscribe", "list-id", "precedence", "auto-submitted", "content-type")
+
+
+def _thread_message(row: dict, mailbox: str, *, body: bool) -> dict:
+    item = normalize_raw(row["uid"], row["raw"], row["flags"], mailbox=mailbox,
+                         body_chars=4000 if body else LIST_BODY_CHARS)
+    msg = parse_message(row["raw"])
+    item["mailbox"] = mailbox
+    item["cc"] = _header(msg, "Cc") or None
+    item["headers"] = {k: _header(msg, k) for k in THREAD_HEADERS if _header(msg, k)}
+    refs = _header(msg, "References").split() + _header(msg, "In-Reply-To").split()
+    item["_refs"] = [r.strip() for r in refs if r.strip()]
+    return item
+
+
+def group_threads(messages: list[dict]) -> list[list[dict]]:
+    """Group messages into conversations by Message-ID, References and In-Reply-To (union-find)."""
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def key(m: dict) -> str:
+        return m.get("message_id") or f"{m['mailbox']}:{m['id']}"
+
+    for m in messages:
+        k = find(key(m))
+        for ref in m.get("_refs") or []:
+            r = find(ref)
+            if r != k:
+                parent[r] = k
+    groups: dict[str, list[dict]] = {}
+    for m in messages:
+        groups.setdefault(find(key(m)), []).append(m)
+    return list(groups.values())
+
+
+def _ts(m: dict) -> str:
+    return str(m.get("date") or "")
+
+
+async def imap_recent_threads(mgr: IntegrationManager, *, newer_than_days: int, idle_days: int,
+                              limit: int = 40) -> dict:
+    """INBOX and Sent conversations active in the last ``newer_than_days`` days whose newest message is at least
+    ``idle_days`` old. Returns no threads (quietly) when the account has no recognisable Sent mailbox."""
+    c = await mgr.get_credentials(PID)
+    if not c:
+        return {"addresses": [], "threads": []}
+    me = {str(c.get("username") or "").strip().lower()} - {""}
+    now = datetime.now(UTC)
+    since = imap_date(now - timedelta(days=max(1, int(newer_than_days))))
+    idle_at = now - timedelta(days=max(0, int(idle_days)))
+    idle_before = idle_at.isoformat()
+
+    async def scan(s: Any) -> list[dict]:
+        # two capped searches, so a busy last few days can't push the quiet candidates out of the scan:
+        # (a) quiet ones, from the max age up to the idle cutoff; (b) recent ones, to see which threads are active
+        quiet = (await s.uid_search("SINCE", since, "BEFORE", imap_date(idle_at)))[-THREAD_HEADER_SCAN:]
+        recent = (await s.uid_search("SINCE", imap_date(idle_at)))[-THREAD_RECENT_SCAN:]
+        return await s.fetch_headers(sorted(set(quiet) | set(recent)))
+
+    async with _session(c, "INBOX") as s:
+        sent_box = find_sent_mailbox(await s.list_mailboxes())
+        if not sent_box:
+            log.info("no Sent mailbox found, so follow-ups skip this IMAP account")
+            return {"addresses": sorted(me), "threads": [], "note": "no_sent_mailbox"}
+        inbox_rows = await scan(s)
+        await s.select(sent_box)
+        sent_rows = await scan(s)
+        sent = [_thread_message(r, sent_box, body=False) for r in sent_rows]
+        me.update(m["sender_email"] for m in sent if m["sender_email"])
+        by_id: dict[str, dict] = {}
+        for m in sent + [_thread_message(r, "INBOX", body=False) for r in inbox_rows]:
+            # a message in both mailboxes (mail to yourself) keeps its Sent copy
+            by_id.setdefault(m.get("message_id") or f"{m['mailbox']}:{m['id']}", m)
+        groups = []
+        for msgs in group_threads(list(by_id.values())):
+            msgs.sort(key=_ts)
+            if msgs[-1].get("date") and _ts(msgs[-1]) <= idle_before:
+                groups.append(msgs)
+        groups.sort(key=lambda g: _ts(g[-1]), reverse=True)
+        groups = groups[: max(1, min(int(limit or 40), 50))]
+        # full text only for each conversation's newest message, one mailbox at a time
+        wanted: dict[str, list[int]] = {}
+        for g in groups:
+            wanted.setdefault(g[-1]["mailbox"], []).append(int(g[-1]["id"]))
+        full: dict[tuple[str, int], dict] = {}
+        for box in sorted(wanted, key=lambda b: b != sent_box):  # Sent is selected already
+            if box != s.mailbox:
+                await s.select(box)
+            for r in await s.fetch(wanted[box]):
+                full[(box, r["uid"])] = _thread_message(r, box, body=True)
+    threads = []
+    for g in groups:
+        last = g[-1]
+        g[-1] = full.get((last["mailbox"], int(last["id"])), last)
+        for m in g:
+            m["from_me"] = m["mailbox"] == sent_box or m["sender_email"] in me
+            m.pop("_refs", None)
+        threads.append({"source": PID, "thread_id": g[0].get("message_id") or f"{g[0]['mailbox']}:{g[0]['id']}",
+                        "url": None, "messages": g})
+    return {"addresses": sorted(me), "threads": threads}
+
+
 # ---------------------------------------------------------------------------- plugin
 class EmailImapPlugin(IntegrationPlugin):
     id = PID
@@ -553,6 +716,10 @@ class EmailImapPlugin(IntegrationPlugin):
         s = await open_session(c, "INBOX")
         await s.close()
         return f"Signed in to {c.get('host')} as {c.get('username')}."
+
+    async def recent_threads(self, mgr: IntegrationManager, *, newer_than_days: int, idle_days: int,
+                             limit: int = 40) -> dict:
+        return await imap_recent_threads(mgr, newer_than_days=newer_than_days, idle_days=idle_days, limit=limit)
 
     # ------------------------------------------------------------------ push watcher
     async def check_new(self, mgr: IntegrationManager, session: Any) -> int:

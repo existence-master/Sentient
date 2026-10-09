@@ -38,7 +38,7 @@ import inspect
 import json
 import logging
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 from sentient.agent.loop import LoopResult
@@ -51,7 +51,7 @@ except ImportError:  # pragma: no cover
         pass
 
 from sentient.llm.provider import parse_json_loose
-from sentient.proactivity import prompts
+from sentient.proactivity import followups, prompts
 from sentient.proactivity.prefilter import (
     event_pre_filter,
     event_start,
@@ -77,6 +77,12 @@ INACTIVE_TASK_STATUSES = {"archived", "cancelled", "declined", "completed"}
 OPEN_STATUSES = ("pending", "deferred")
 HEARTBEAT_TTL_HOURS = 12
 DUPLICATE_SIMILARITY = 0.8
+FOLLOWUP_SOURCES = ("gmail", "email_imap")  # email accounts follow-ups can read; followups.sources picks among them
+FOLLOWUP_LOCAL_TIME = time(8, 0)  # the daily follow-up check runs from this local time on
+FOLLOWUP_MAX_CANDIDATES = 10      # threads per check that reach the model
+FOLLOWUP_SCAN_THREADS = 40        # recent threads read per mail account per check
+FOLLOWUP_META = "proactivity.followups_last_run"
+FOLLOWUP_SEEN_SOURCE = "followups"
 
 
 class SuggestionError(Exception):
@@ -149,6 +155,8 @@ class ProactiveEngine(Service):
     def __init__(self, app):
         super().__init__(app)
         self._poll_lock = asyncio.Lock()  # one pipeline at a time: polls and pushed items share the model
+        self._followup_lock = asyncio.Lock()
+        self._acting: set[str] = set()  # suggestions being approved or dismissed right now
         self._background: set[asyncio.Task] = set()
 
     @property
@@ -191,6 +199,8 @@ class ProactiveEngine(Service):
             "proactivity.heartbeat_last_run", timedelta(minutes=self.cfg.heartbeat_minutes), now
         ):
             await self.heartbeat()
+        if self.cfg.enabled and self.cfg.followups.enabled and await self._followups_due(now):
+            await self.run_followups(now=now)
         if self.cfg.enabled:
             await self.flush_deferred()
         await self.expire_stale(now)
@@ -369,7 +379,13 @@ class ProactiveEngine(Service):
             return None
 
     async def poll_now(self) -> dict:
-        return {"ok": True, "events": await self.poll_all(force=True)}
+        """The "Check now" button: poll every source, and start a follow-up check in the background."""
+        events = await self.poll_all(force=True)
+        if self.cfg.enabled and self.cfg.followups.enabled and not self._followup_lock.locked():
+            task = asyncio.create_task(self.run_followups(), name="proactivity:followups")
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
+        return {"ok": True, "events": events}
 
     async def _hook_has_task(self, hook_id: str) -> bool:
         for t in await self._task_list():
@@ -732,7 +748,8 @@ class ProactiveEngine(Service):
 
     async def _notify(self, sid: str, payload: dict, record: dict) -> dict:
         s = payload["suggestion"]
-        note = await self.app.notify("proactive", s["description"], title=self.notification_title(s), payload=payload)
+        message = followups.notification_message(s) if s.get("follow_up") else s["description"]
+        note = await self.app.notify("proactive", message, title=self.notification_title(s), payload=payload)
         await self.app.store.execute(
             "UPDATE proactive_suggestions SET notification_id = ?, status = 'pending' WHERE id = ?", (note["id"], sid)
         )
@@ -785,6 +802,126 @@ class ProactiveEngine(Service):
             expired += 1
         return expired
 
+    # ------------------------------------------------------------------ follow-ups (dropped email threads)
+    async def _followups_due(self, now: datetime) -> bool:
+        """Once a day, from FOLLOWUP_LOCAL_TIME in the user's timezone."""
+        tz = resolve_tz(self.app.config.assistant.timezone)
+        local = now.astimezone(tz)
+        if local.time() < FOLLOWUP_LOCAL_TIME:
+            return False
+        raw = await self.app.store.get_meta(FOLLOWUP_META)
+        last = followups.parse_when(raw)
+        return last is None or last.astimezone(tz).date() < local.date()
+
+    async def _followup_known(self, source: str, key: str) -> bool:
+        """Already suggested (pending, approved, dismissed or expired) or already judged by the model."""
+        if await self._already_suggested(source, key):
+            return True
+        row = await self.app.store.fetchone(
+            "SELECT 1 AS x FROM proactive_seen WHERE source = ? AND item_id = ?", (FOLLOWUP_SEEN_SOURCE, f"{source}:{key}")
+        )
+        return row is not None
+
+    async def _mark_followup_checked(self, c: followups.Candidate, now: datetime) -> None:
+        await self.app.store.execute(
+            "INSERT OR IGNORE INTO proactive_seen(source, item_id, event_type, item, starts_at, seen_at) VALUES(?,?,?,?,?,?)",
+            (FOLLOWUP_SEEN_SOURCE, f"{c.source}:{c.key}", followups.EVENT_TYPE, None, None, _iso(now)),
+        )
+
+    async def followup_candidates(self, now: datetime | None = None) -> list[followups.Candidate]:
+        """Threads from the email accounts in ``followups.sources`` that are connected, pass the deterministic
+        filters and are new."""
+        now = now or datetime.now(UTC)
+        fu = self.cfg.followups
+        fetch = getattr(self.app.integrations, "recent_threads", None)
+        if not callable(fetch):
+            return []
+        out: list[followups.Candidate] = []
+        wanted = {str(s).strip().lower() for s in fu.sources}
+        for source in FOLLOWUP_SOURCES:
+            if source not in wanted or not await self._is_connected(source):
+                continue
+            try:
+                data = await _maybe_await(fetch(
+                    source, newer_than_days=fu.max_age_days,
+                    idle_days=min(fu.waiting_on_you_days, fu.waiting_on_them_days), limit=FOLLOWUP_SCAN_THREADS,
+                ))
+            except Exception as exc:  # one account failing never stops the other
+                log.warning("follow-ups: reading %s failed: %s", source, exc)
+                continue
+            me = {str(a).lower() for a in (data or {}).get("addresses") or []}
+            user = await self._user_email(source)
+            if user:
+                me.add(user.lower())
+            for thread in (data or {}).get("threads") or []:
+                c, why = followups.classify(source, thread, me, fu, now)
+                if c is None:
+                    log.debug("follow-ups: skipped %s thread %s: %s", source, thread.get("thread_id"), why)
+                    continue
+                if await self._followup_known(source, c.key):
+                    continue
+                out.append(c)
+        out.sort(key=lambda c: (c.kind != followups.WAITING_ON_YOU, -followups.parse_when(c.last["date"]).timestamp()))  # type: ignore[union-attr]
+        return out
+
+    async def run_followups(self, *, now: datetime | None = None) -> list[dict]:
+        """One follow-up check: deterministic filters, then the fast model per candidate (at most
+        FOLLOWUP_MAX_CANDIDATES), at most ``followups.max_suggestions`` suggestions. Never sends anything."""
+        now = now or datetime.now(UTC)
+        fu = self.cfg.followups
+        if not (self.cfg.enabled and fu.enabled) or self._followup_lock.locked():
+            return []
+        async with self._followup_lock:
+            await self.app.store.set_meta(FOLLOWUP_META, now.isoformat())
+            delivered: list[dict] = []
+            for c in (await self.followup_candidates(now))[:FOLLOWUP_MAX_CANDIDATES]:
+                if len(delivered) >= fu.max_suggestions:
+                    break
+                try:
+                    record = await self._follow_up(c, now)
+                except Exception:
+                    log.exception("follow-up for %s thread %s failed", c.source, c.key)
+                    continue
+                if record is not None:
+                    delivered.append(record)
+            return delivered
+
+    async def _follow_up(self, c: followups.Candidate, now: datetime) -> dict | None:
+        messages = followups.build_messages(
+            c, self.app.config.assistant.user_name, prompts.FOLLOW_UP_SYSTEM,
+            prompts.FOLLOW_UP_WAITING_ON_YOU, prompts.FOLLOW_UP_WAITING_ON_THEM,
+        )
+        try:
+            text = await self.app.llm.complete_text("fast", messages)
+        except Exception as exc:
+            log.warning("follow-up model call failed: %s", exc)
+            return None
+        decision = followups.parse_decision(text)
+        if decision is None:
+            log.info("follow-up for %s %s: no usable answer from the model, trying again next check", c.source, c.key)
+            return None
+        if decision.needed and followups.has_placeholder(decision.draft):
+            # the draft would be sent exactly as written: drop it now, ask again next check
+            log.info("follow-up for %s %s: the draft has a placeholder, trying again next check", c.source, c.key)
+            return None
+        await self._mark_followup_checked(c, now)
+        if not decision.needed:
+            log.info("follow-up for %s %s: the model says no follow-up is needed", c.source, c.key)
+            return None
+        stype = followups.TYPE_FOR[c.kind]
+        threshold = self.threshold_for((await self.preference_scores()).get(stype, 0))
+        if decision.confidence < threshold:
+            log.info("follow-up %s suppressed: confidence %.2f < threshold %.2f", stype, decision.confidence, threshold)
+            return None
+        payload = {
+            "suggestion": followups.suggestion_for(c, decision, confidence=decision.confidence),
+            "status": "pending",
+            "task_id": None,
+        }
+        context = {"follow_up": {"kind": c.kind, "thread_id": c.thread.get("thread_id"), "days_waiting": c.days,
+                                 "last_message_at": c.last.get("date")}}
+        return await self._deliver(payload, context, threshold=threshold, now=now)
+
     # ------------------------------------------------------------------ feedback & preferences
     async def preference_scores(self) -> dict[str, int]:
         rows = await self.app.store.fetchall("SELECT suggestion_type, score FROM proactive_preferences")
@@ -822,7 +959,7 @@ class ProactiveEngine(Service):
     @staticmethod
     def task_prompt(suggestion: dict) -> str:
         """v2 create_task_from_suggestion: name from the description, body from details + reasoning + trigger."""
-        ev = suggestion.get("source_event") or {}
+        ev =suggestion.get("source_event") or {}
         parts = [
             str(suggestion.get("description") or "Proactive task"),
             "Action details:\n" + json.dumps(suggestion.get("action_details") or {}, indent=2, default=str),
@@ -844,23 +981,45 @@ class ProactiveEngine(Service):
         payload = note["payload"]
         if payload.get("status", "pending") != "pending":
             raise SuggestionError(409, f"suggestion already {payload.get('status')}")
+        # claim it before the first await: two clicks at once (window and Telegram) must not send twice
+        if notification_id in self._acting:
+            raise SuggestionError(409, "suggestion already being handled")
+        self._acting.add(notification_id)
+        try:
+            return await self._act_on_suggestion(notification_id, note, payload, action)
+        finally:
+            self._acting.discard(notification_id)
+
+    async def _act_on_suggestion(self, notification_id: str, note: dict, payload: dict, action: str) -> dict:
         suggestion = payload["suggestion"]
         stype = suggestion.get("suggestion_type") or DEFAULT_TYPE
         task_id = None
         if action == "approve":
             tasks = self.app.tasks
-            if not hasattr(tasks, "create_task"):
+            context = {
+                "source": "proactive", "suggestion_type": stype, "notification_id": notification_id,
+                "trigger_event": suggestion.get("source_event"),
+            }
+            if isinstance(suggestion.get("follow_up"), dict):
+                # "Send reply" showed the exact draft: that click approves this one exact call, so the task runs
+                # now with the arguments fixed (no plan to approve, no model in between)
+                if not hasattr(tasks, "create_approved_call"):
+                    raise SuggestionError(503, "tasks are not available yet")
+                call = followups.send_call(suggestion)
+                try:
+                    created = await _maybe_await(tasks.create_approved_call(
+                        call["name"], call["tool"], call["arguments"], step=call["step"],
+                        description=call["description"], source="proactive", original_context=context,
+                        done_text=call["done_text"],
+                    ))
+                except ValueError as exc:
+                    raise SuggestionError(503, f"Sending isn't available right now ({exc}).") from exc
+            elif not hasattr(tasks, "create_task"):
                 raise SuggestionError(503, "tasks are not available yet")
-            created = await _maybe_await(
-                tasks.create_task(
-                    self.task_prompt(suggestion),
-                    source="proactive",
-                    original_context={
-                        "source": "proactive", "suggestion_type": stype, "notification_id": notification_id,
-                        "trigger_event": suggestion.get("source_event"),
-                    },
+            else:
+                created = await _maybe_await(
+                    tasks.create_task(self.task_prompt(suggestion), source="proactive", original_context=context)
                 )
-            )
             if isinstance(created, dict):
                 task_id = created.get("task_id") or created.get("id")
             elif isinstance(created, str):
@@ -905,6 +1064,10 @@ class ProactiveEngine(Service):
             "suggestions_today": int(n["n"]) if n else 0,
             "quiet_now": self._quiet(now),
             "heartbeat_minutes": self.cfg.heartbeat_minutes,
+            "followups": {
+                "enabled": bool(self.cfg.enabled and self.cfg.followups.enabled),
+                "last_run_at": await self.app.store.get_meta(FOLLOWUP_META),
+            },
         }
 
     def _local_midnight_iso(self, now: datetime) -> str:

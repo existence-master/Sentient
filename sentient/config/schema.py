@@ -281,6 +281,31 @@ class IntegrationsConfig(BaseModel):
 
 
 # ----------------------------------------------------------------------------- proactivity (owner: memory/proactivity agent)
+class FollowUpsConfig(BaseModel):
+    """Once a day, Sentient looks for emails still waiting on a reply, from you or from someone else."""
+
+    enabled: bool = Field(
+        True,
+        description="Once a day, find emails still waiting on a reply and offer a ready draft. Nothing is sent "
+        "without your approval.",
+    )
+    sources: list[str] = Field(
+        default_factory=lambda: ["gmail", "email_imap"],
+        description="Which connected email accounts follow-ups check (gmail, email_imap).",
+    )
+    waiting_on_you_days: int = Field(
+        3, ge=1, le=60, description="Suggest a reply when an email sent to you has had no answer for this many days."
+    )
+    waiting_on_them_days: int = Field(
+        4, ge=1, le=60,
+        description="Suggest a nudge when your own question has had no answer for this many days.",
+    )
+    max_age_days: int = Field(
+        21, ge=2, le=180, description="Leave conversations alone once they have been quiet for longer than this."
+    )
+    max_suggestions: int = Field(3, ge=1, le=20, description="At most this many follow-up suggestions per check.")
+
+
 class ProactivityConfig(BaseModel):
     enabled: bool = Field(True, description="Let Sentient watch connected apps and suggest actions.")
     poll_interval_minutes: int = Field(10, ge=1, description="How often Gmail/Calendar are checked.")
@@ -314,6 +339,10 @@ class ProactivityConfig(BaseModel):
     )
     webhook_suggestions: bool = Field(
         True, description="Also suggest actions for webhook calls that no triggered task handles."
+    )
+    followups: FollowUpsConfig = Field(
+        default_factory=FollowUpsConfig,
+        description="Notice emails waiting on a reply (from you or to you) and offer a draft. Gmail and IMAP email.",
     )
 
 

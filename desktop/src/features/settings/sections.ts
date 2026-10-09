@@ -79,7 +79,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'Proactivity',
     description: 'Suggestions from your connected apps.',
     icon: IconBolt,
-    keywords: ['suggestions', 'quiet hours', 'poll', 'confidence', 'heartbeat'],
+    keywords: ['suggestions', 'quiet hours', 'poll', 'confidence', 'heartbeat', 'unanswered emails', 'follow-ups', 'nudge'],
     schemaSections: ['proactivity']
   },
   {

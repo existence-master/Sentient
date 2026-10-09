@@ -236,6 +236,8 @@ async def _reply_parts(ctx: ToolContext, message_id: str, reply_all: bool) -> di
     h = _headers(orig)
     me = (mgr._get_state(PID).get("account_label") or "").lower()
     to = h.get("reply-to") or h.get("from") or ""
+    if "SENT" in (orig.get("labelIds") or []) or (me and email_of(h.get("from")) == me):
+        to = h.get("to") or to  # replying to your own message (a nudge) goes to its recipients, like Gmail does
     cc = None
     if reply_all:
         others = [f"{n} <{a}>" if n else a for n, a in getaddresses([h.get("to", ""), h.get("cc", "")])
@@ -387,6 +389,80 @@ async def gmail_change_feed(mgr: IntegrationManager, cursor: str | None) -> Feed
     return FeedBatch(cursor=latest, items=items)
 
 
+# ---------------------------------------------------------------------------- recent threads (follow-ups)
+THREAD_HEADERS = ("list-unsubscribe", "list-id", "precedence", "auto-submitted", "content-type")
+THREAD_SKIP_LABELS = {"DRAFT", "SPAM", "TRASH", "CHAT"}
+THREAD_BODY_CHARS = 4000
+THREAD_SCAN_MAX = 50
+THREAD_PAGE_SIZE = 50
+THREAD_PAGES = 5  # listing pages read per check at most
+
+
+def normalize_thread_message(msg: dict, body_chars: int = THREAD_BODY_CHARS) -> dict:
+    """``normalize_message`` plus ``cc``, ``message_id`` and the headers that mark bulk or automated mail."""
+    item = normalize_message(msg, body_chars)
+    h = _headers(msg)
+    item["cc"] = h.get("cc")
+    item["message_id"] = h.get("message-id")
+    item["headers"] = {k: h[k] for k in THREAD_HEADERS if k in h}
+    return item
+
+
+async def gmail_recent_threads(mgr: IntegrationManager, *, newer_than_days: int, idle_days: int,
+                               limit: int = 40) -> dict:
+    """Inbox and sent threads with activity in the last ``newer_than_days`` days whose newest message is at least
+    ``idle_days`` old. Bulk categories are left out by the search; every message carries ``from_me``."""
+    me = {(mgr._get_state(PID).get("account_label") or "").lower()} - {""}
+    query = (f"{{in:inbox in:sent}} newer_than:{max(1, int(newer_than_days))}d -in:chats "
+             "-category:promotions -category:social -category:updates -category:forums")
+    if idle_days > 0:
+        query += f" older_than:{int(idle_days)}d"
+    n = max(1, min(int(limit or 40), THREAD_SCAN_MAX))
+    idle_cutoff_ms = (datetime.now(UTC).timestamp() - max(0, int(idle_days)) * 86400) * 1000
+    sem = asyncio.Semaphore(8)
+
+    async def one(tid: str, fmt: str) -> dict:
+        async with sem:
+            return await gapi(None, PID, "GET", f"{API}/threads/{tid}", params={"format": fmt}, mgr=mgr)
+
+    def newest_ms(raw: dict) -> int:
+        stamps = [int(m.get("internalDate") or 0) for m in raw.get("messages") or []
+                  if not set(m.get("labelIds") or []) & THREAD_SKIP_LABELS]
+        return max(stamps, default=0)
+
+    # `older_than` matches threads with ANY old message and the listing is newest-activity first, so active
+    # threads can fill whole pages: page on, and keep only threads whose newest message is past the idle cutoff
+    eligible: list[str] = []
+    page_token: str | None = None
+    for _ in range(THREAD_PAGES):
+        params: dict[str, Any] = {"q": query, "maxResults": THREAD_PAGE_SIZE}
+        if page_token:
+            params["pageToken"] = page_token
+        listing = await gapi(None, PID, "GET", f"{API}/threads", params=params, mgr=mgr)
+        ids = [str(t["id"]) for t in listing.get("threads") or [] if t.get("id")]
+        for raw in await asyncio.gather(*(one(i, "minimal") for i in ids)):
+            if 0 < newest_ms(raw) <= idle_cutoff_ms and str(raw.get("id")) not in eligible:
+                eligible.append(str(raw.get("id")))
+        page_token = listing.get("nextPageToken")
+        if len(eligible) >= n or not page_token:
+            break
+
+    threads = []
+    for raw in await asyncio.gather(*(one(i, "full") for i in eligible[:n])):
+        msgs = [normalize_thread_message(m) for m in raw.get("messages") or []
+                if not set(m.get("labelIds") or []) & THREAD_SKIP_LABELS]
+        if not msgs:
+            continue
+        me.update(m["sender_email"] for m in msgs if "SENT" in m["labels"] and m["sender_email"])
+        tid = str(raw.get("id") or msgs[0]["thread_id"])
+        threads.append({"source": PID, "thread_id": tid, "url": f"https://mail.google.com/mail/u/0/#all/{tid}",
+                        "messages": msgs})
+    for t in threads:
+        for m in t["messages"]:
+            m["from_me"] = "SENT" in m["labels"] or m["sender_email"] in me
+    return {"addresses": sorted(me), "threads": threads}
+
+
 class GmailPlugin(GooglePlugin):
     id = PID
     display_name = "Gmail"
@@ -410,6 +486,10 @@ class GmailPlugin(GooglePlugin):
 
     async def change_feed(self, mgr: IntegrationManager, cursor: str | None) -> FeedBatch:
         return await gmail_change_feed(mgr, cursor)
+
+    async def recent_threads(self, mgr: IntegrationManager, *, newer_than_days: int, idle_days: int,
+                             limit: int = 40) -> dict:
+        return await gmail_recent_threads(mgr, newer_than_days=newer_than_days, idle_days=idle_days, limit=limit)
 
     async def poll(self, mgr: IntegrationManager, since: datetime) -> list[dict]:
         """New inbox messages since ``since`` (normalized, unfiltered; the manager filters)."""

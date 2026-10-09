@@ -298,6 +298,56 @@ class TaskService(Service):
         assert data is not None
         return data
 
+    async def create_approved_call(
+        self,
+        prompt: str,
+        tool: str,
+        arguments: dict,
+        *,
+        step: str,
+        description: str | None = None,
+        source: str = "user",
+        original_context: dict | None = None,
+        done_text: str = "Done.",
+    ) -> dict:
+        """A one-off task the user has already approved as one exact tool call (a follow-up's "Send reply").
+
+        No planner and no executor model: the run calls ``tool`` with exactly ``arguments`` right away, whatever
+        ``tasks.require_plan_approval`` says, because the user approved this exact call. Lasting "never" rules
+        still stop it (the run fails with the rule's message)."""
+        prompt = (prompt or "").strip()
+        t = self.app.registry.get(tool)
+        if not prompt or t is None:
+            raise ValueError("A prompt and a known tool are required.")
+        context = dict(original_context or {})
+        context.setdefault("source", source)
+        context["fixed_call"] = {"tool": tool, "arguments": dict(arguments), "done_text": done_text}
+        now = self.now_iso()
+        task_id = await self.repo.insert_task({
+            "name": _title(prompt),
+            "description": (description or prompt).strip(),
+            "status": "pending",
+            "priority": 1,
+            "assignee": "ai",
+            "original_prompt": prompt,
+            "source": source,
+            "enabled": True,
+            "model": None,
+            "original_context": context,
+            "plan": [{"tool": t.plugin, "description": step}],
+            "chat_history": [],
+            "clarifying_questions": [],
+            "task_type": "single",
+            "schedule": None,
+            "created_at": now,
+            "updated_at": now,
+        })
+        task = await self._require(task_id)
+        await self._start_run(task)
+        data = await self.publish(task_id)
+        assert data is not None
+        return data
+
     async def preview(self, prompt: str) -> dict:
         """v2 generate-plan: ``{name, description, priority, schedule}`` without creating a task."""
         prompt = (prompt or "").strip()
@@ -1168,6 +1218,8 @@ class TaskService(Service):
             async with asyncio.timeout(cfg.run_timeout_minutes * 60):
                 if task.get("task_type") == "swarm":
                     status, aggregated = await swarm.execute_swarm(self, task, run)
+                elif executor.fixed_call_of(task) is not None:
+                    loop_result = await executor.execute_fixed_call(self, task, run, resume=resume)
                 else:
                     loop_result = await executor.execute_single(self, task, run, resume=resume, answered=answered)
         except RunPaused as paused:

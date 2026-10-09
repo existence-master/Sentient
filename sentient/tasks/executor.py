@@ -28,6 +28,7 @@ from sentient.tasks.prompts import (
 )
 from sentient.tasks.schedule import get_tz
 from sentient.tools.base import Risk
+from sentient.tools.rules import never_message
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.tasks.service import TaskService
@@ -299,6 +300,47 @@ async def execute_single(
         raise RunFailed(f"The executor used all {max_rounds} tool rounds (tasks.max_tool_rounds) before finishing.")
     await svc.progress(task_id, run_id, {"type": "final_answer", "content": final})
     return result
+
+
+def fixed_call_of(task: dict) -> dict | None:
+    """``original_context.fixed_call`` of a task the user approved as one exact tool call, else None."""
+    call = (task.get("original_context") or {}).get("fixed_call")
+    return call if isinstance(call, dict) and call.get("tool") else None
+
+
+async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume: bool = False) -> LoopResult:
+    """Run the one tool call the user approved, with exactly the stored arguments: no planner, no executor model,
+    so nothing can change them. Lasting "never" rules still apply (ADR 0016): the run fails with the rule's
+    message instead of calling the tool. A run interrupted mid-call is never repeated on resume."""
+    app = svc.app
+    call = fixed_call_of(task) or {}
+    name = str(call.get("tool") or "")
+    arguments = dict(call.get("arguments") or {})
+    task_id, run_id = task["id"], run["id"]
+    if resume and any((e.get("message") or {}).get("type") == "tool_call" for e in await svc.repo.events(run_id)):
+        raise RunFailed("Sentient restarted while doing this, so it did not do it again. Check whether it went through.")
+    tool = app.registry.get(name)
+    if tool is None:
+        raise RunFailed(f"The tool {name} is not available, so nothing was done.")
+    if app.approvals.rule(tool) == "never":
+        raise RunFailed(never_message(app.approvals.label(tool, app.registry)))
+    await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": name, "parameters": arguments})
+    ctx = app.agent.tool_context(None, "task") if app.agent is not None else None
+    if ctx is not None:
+        ctx.extra.update({"task_id": task_id, "run_id": run_id})
+    try:
+        result = await tool.call(ctx, arguments)
+    except Exception as exc:
+        result = {"error": f"{type(exc).__name__}: {exc}"}
+    is_error = isinstance(result, dict) and bool(result.get("error"))
+    await svc.progress(
+        task_id, run_id, {"type": "tool_result", "tool_name": name, "result": truncate(result), "is_error": is_error}
+    )
+    if is_error:
+        raise RunFailed(str(result["error"]))
+    final = str(call.get("done_text") or "Done.")
+    await svc.progress(task_id, run_id, {"type": "final_answer", "content": final})
+    return LoopResult(text=final, tool_calls=1, tools_used=[tool.plugin])
 
 
 # ---------------------------------------------------------------------------- results
