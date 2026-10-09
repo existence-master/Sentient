@@ -329,7 +329,11 @@ async def _starttls(client: aioimaplib.IMAP4, host: str) -> None:
     if res.result != "OK":
         raise IntegrationError("The mail server refused to start TLS (STARTTLS).")
     loop = asyncio.get_running_loop()
-    await loop.start_tls(protocol.transport, protocol, ssl.create_default_context(), server_hostname=host)
+    # start_tls returns a NEW transport; the protocol must switch to it immediately, or every command
+    # after this point -- including LOGIN -- keeps going out over the raw, unencrypted socket.
+    protocol.transport = await loop.start_tls(
+        protocol.transport, protocol, ssl.create_default_context(), server_hostname=host
+    )
     protocol.state = aioimaplib.NONAUTH
     protocol.capabilities = set()
     await protocol.execute(aioimaplib.Command("CAPABILITY", protocol.new_tag(), loop=protocol.loop))
