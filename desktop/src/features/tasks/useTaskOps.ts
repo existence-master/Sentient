@@ -37,6 +37,7 @@ export type TaskOp =
   | 'cancelRun'
   | 'chat'
   | 'answer'
+  | 'answerQuestion'
   | 'enabled'
 
 export function useTaskOps() {
@@ -179,6 +180,17 @@ export function useTaskOps() {
           }),
           success: 'Thanks. Sentient is planning with your answers.',
           error: "Couldn't submit your answers"
+        }),
+
+      answerQuestion: (id: string, runId: string, answer: string) =>
+        perform('answerQuestion', id, () => api.tasks.answerQuestion(id, runId, answer), {
+          optimistic: (t) => ({
+            ...t,
+            status: 'processing',
+            runs: t.runs.map((r) => (r.run_id === runId ? { ...r, status: 'processing', pending_question: null } : r))
+          }),
+          success: 'Thanks. The task is carrying on.',
+          error: "Couldn't send your answer"
         })
     }),
     [perform, qc]

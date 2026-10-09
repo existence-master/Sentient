@@ -32,6 +32,7 @@ import { LiveDot, RunStatusBadge, SectionHeading } from '../parts'
 import { formatInZone, sourceLabel } from '../schedule'
 import { ToolIcon, toolIdentity, useToolNames } from '../tools'
 import { RunLog } from './RunLog'
+import { RunQuestion } from './RunQuestion'
 
 export function RunHistory({
   task,
@@ -173,6 +174,7 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
                   </Button>
                 </div>
               )}
+              {run.status === 'waiting_for_user' && <RunQuestion task={task} run={run} />}
               {run.trigger_event_data && Object.keys(run.trigger_event_data).length > 0 && (
                 <TriggerEventCard source={task.schedule?.type === 'triggered' ? task.schedule.source : undefined} data={run.trigger_event_data} tz={tz} />
               )}

@@ -43,6 +43,7 @@ export const STATUS_META: Record<TaskStatus, StatusMeta> = {
   pending: { label: 'Scheduled', tone: 'neutral', icon: IconClock },
   active: { label: 'Active', tone: 'success', icon: IconRepeat },
   processing: { label: 'Running', tone: 'info', icon: IconLoader2, live: true },
+  waiting_for_user: { label: 'Waiting for you', tone: 'warning', icon: IconMessageQuestion },
   completed: { label: 'Completed', tone: 'success', icon: IconCircleCheck },
   completed_with_errors: { label: 'Completed with errors', tone: 'warning', icon: IconAlertTriangle },
   error: { label: 'Failed', tone: 'danger', icon: IconAlertCircle },
@@ -53,6 +54,7 @@ export const STATUS_META: Record<TaskStatus, StatusMeta> = {
 
 export const RUN_STATUS_META: Record<RunStatus, StatusMeta> = {
   processing: STATUS_META.processing,
+  waiting_for_user: STATUS_META.waiting_for_user,
   completed: STATUS_META.completed,
   completed_with_errors: STATUS_META.completed_with_errors,
   error: STATUS_META.error,
@@ -120,7 +122,7 @@ export function taskSource(task: Pick<Task, 'original_context'>): TaskSource {
 }
 
 // ---------------------------------------------------------------------------- grouping
-export const ATTENTION_STATUSES: TaskStatus[] = ['approval_pending', 'clarification_pending', 'error']
+export const ATTENTION_STATUSES: TaskStatus[] = ['approval_pending', 'clarification_pending', 'waiting_for_user', 'error']
 
 export const needsAttention = (t: Pick<Task, 'status'>) => ATTENTION_STATUSES.includes(t.status)
 
@@ -139,6 +141,7 @@ export function taskGroup(task: Task): GroupId {
   switch (task.status) {
     case 'approval_pending':
     case 'clarification_pending':
+    case 'waiting_for_user':
     case 'error':
       return 'attention'
     case 'planning':
@@ -159,7 +162,7 @@ export function taskGroup(task: Task): GroupId {
 /** Board columns (kanban by status). */
 export const BOARD_COLUMNS: Array<{ id: string; label: string; statuses: TaskStatus[]; tone: Tone }> = [
   { id: 'planning', label: 'Planning', statuses: ['planning'], tone: 'info' },
-  { id: 'you', label: 'Needs you', statuses: ['approval_pending', 'clarification_pending', 'error'], tone: 'accent' },
+  { id: 'you', label: 'Needs you', statuses: ['approval_pending', 'clarification_pending', 'waiting_for_user', 'error'], tone: 'accent' },
   { id: 'scheduled', label: 'Scheduled', statuses: ['pending', 'active'], tone: 'neutral' },
   { id: 'running', label: 'Running', statuses: ['processing'], tone: 'info' },
   { id: 'done', label: 'Done', statuses: ['completed', 'completed_with_errors', 'declined', 'cancelled'], tone: 'success' }
@@ -173,6 +176,11 @@ export function latestRun(task: Pick<Task, 'runs'>) {
 
 export function processingRun(task: Pick<Task, 'runs'>) {
   return [...(task.runs ?? [])].reverse().find((r) => r.status === 'processing')
+}
+
+/** The oldest run waiting for the user's answer (`ask_user`), with its question. */
+export function waitingRun(task: Pick<Task, 'runs'>) {
+  return (task.runs ?? []).find((r) => r.status === 'waiting_for_user' && !!r.pending_question?.question)
 }
 
 /** v2 getDisplayName: generic proactive names fall back to the description. */

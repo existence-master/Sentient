@@ -114,10 +114,15 @@ export interface ChatConfig {
 
 export type ApprovalMode = 'off' | 'ask' | 'always'
 
+/** Lasting rule for a tool or a whole app (ADR 0016). No entry means the normal approvals setting. */
+export type ApprovalRule = 'allow' | 'ask' | 'never'
+
 export interface ApprovalsConfig {
   mode: ApprovalMode
   remember_session: boolean
   timeout_s: number
+  /** Key: a tool name (`gmail_send_email`) or an app id (`gmail`). A tool's own rule beats its app's rule. */
+  rules: Record<string, ApprovalRule>
 }
 
 export interface ToolsConfig {
@@ -798,6 +803,8 @@ export type TaskStatus =
   | 'pending'
   | 'active'
   | 'processing'
+  /** A run asked the user a question (`ask_user`) and waits for the answer. */
+  | 'waiting_for_user'
   | 'completed'
   | 'completed_with_errors'
   | 'error'
@@ -874,7 +881,15 @@ export interface TaskRunResult {
   tools_used: string[]
 }
 
-export type RunStatus = 'processing' | 'completed' | 'completed_with_errors' | 'error' | 'cancelled'
+export type RunStatus = 'processing' | 'waiting_for_user' | 'completed' | 'completed_with_errors' | 'error' | 'cancelled'
+
+/** The question a `waiting_for_user` run asked (§4). Answer with `POST /api/tasks/{id}/runs/{run_id}/answer`. */
+export interface RunQuestion {
+  question: string
+  /** Suggested answers (0 to 6). A free-text answer is always allowed. */
+  options: string[]
+  asked_at: ISODate | null
+}
 
 export interface Run {
   run_id: string
@@ -889,6 +904,8 @@ export interface Run {
   error: string | null
   /** Run id this run retries (`POST /api/tasks/{id}/runs/{run_id}/retry`). */
   retry_of?: string | null
+  /** Set while `status` is `waiting_for_user`, otherwise `null`. */
+  pending_question?: RunQuestion | null
 }
 
 export interface TaskChatMessage {

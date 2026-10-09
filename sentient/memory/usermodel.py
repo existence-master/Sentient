@@ -1,7 +1,7 @@
 """Dialectic user model: evolving insights about the user (docs/API.md section 15).
 
-Facts say what is true ("Sarthak lives in Pune"); insights say what the user is like
-("Sarthak prefers short, direct answers"). Insights carry evidence and a confidence that
+Facts say what is true ("Maya lives in Pune"); insights say what the user is like
+("Maya prefers short, direct answers"). Insights carry evidence and a confidence that
 moves with new evidence:
 
 - refresh: after ``refresh_after_turns`` completed chat turns (at most every

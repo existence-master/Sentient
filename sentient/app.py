@@ -68,6 +68,7 @@ class SentientApp:
         )
         self.registry = ToolRegistry(disabled=self.config.tools.disabled)
         self.approvals = ApprovalBroker(self.config.tools.approvals, timeout_s=self.config.tools.approvals.timeout_s)
+        self.registry.set_blocked(self.approvals.is_never)  # "never" rules hide tools from the model (ADR 0016)
         self.memory: FactMemory | None = None
         self.agent: Agent | None = None
 

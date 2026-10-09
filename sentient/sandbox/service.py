@@ -225,6 +225,7 @@ class SandboxService(Service):
             allowed_tools=allowed_tools,
             read_only=read_only,
             max_tool_calls=cfg.max_tool_calls,
+            rules=self.app.config.tools.approvals.rules,
         )
         ctx = self._tool_context(session_id, channel)
         transport = self._transport_for(backend)

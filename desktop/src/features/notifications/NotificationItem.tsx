@@ -143,6 +143,7 @@ export function NotificationItem({
                 <Markdown className="text-sm text-fg-muted [&_p]:my-0.5">{n.message}</Markdown>
                 {n.kind === 'approval' && <ApprovalActions n={n} />}
                 {n.kind === 'task' && n.payload?.event === 'approval_needed' && <PlanApprovalActions n={n} onNavigate={onNavigate} />}
+                {n.kind === 'task' && n.payload?.event === 'question' && <TaskQuestionActions n={n} onNavigate={onNavigate} />}
                 {n.kind === 'skill' && (
                   <Button
                     size="xs"
@@ -245,6 +246,61 @@ function ApprovalActions({ n }: { n: Notification }) {
           </Button>
         </div>
       ) : null}
+    </div>
+  )
+}
+
+/** A running task asked a question (`payload.event = "question"`): its options as buttons. */
+function TaskQuestionActions({ n, onNavigate }: { n: Notification; onNavigate?: () => void }) {
+  const navigate = useNavigate()
+  const { markRead } = useNotificationActions()
+  const { answerQuestion } = useTaskActions()
+  const [answered, setAnswered] = useState<string | null>(null)
+  const p = (n.payload ?? {}) as Record<string, unknown>
+  const taskId = n.task_id ?? (typeof p.task_id === 'string' ? p.task_id : null)
+  const runId = typeof p.run_id === 'string' ? p.run_id : null
+  const options = Array.isArray(p.options) ? p.options.filter((o): o is string => typeof o === 'string' && !!o.trim()) : []
+  // the engine marks the card when the question was answered or the run cancelled anywhere (task page, a chat app)
+  const status = p.status === 'answered' || p.status === 'cancelled' ? p.status : null
+  const shown = answered ?? (status === 'answered' && typeof p.answer === 'string' ? p.answer : null)
+  if (!taskId || !runId) return null
+
+  const send = (answer: string) =>
+    answerQuestion.mutate(
+      { id: taskId, runId, answer },
+      {
+        onSuccess: () => {
+          setAnswered(answer)
+          if (!n.read) markRead.mutate(n.id)
+          toast.success('Thanks. The task is carrying on.')
+        },
+        onError: (e) => toast.error("Couldn't send your answer", { description: errorMessage(e) })
+      }
+    )
+
+  return (
+    <div className="mt-2.5 flex flex-wrap items-center gap-2">
+      {shown !== null || status ? (
+        <Badge tone={status === 'cancelled' && shown === null ? 'neutral' : 'success'}>
+          {shown !== null ? `You answered: ${truncate(shown, 60)}` : status === 'cancelled' ? 'Run cancelled' : 'Answered'}
+        </Badge>
+      ) : (
+        options.map((o) => (
+          <Button key={o} size="sm" variant="secondary" loading={answerQuestion.isPending && answerQuestion.variables?.answer === o} disabled={answerQuestion.isPending} onClick={() => send(o)}>
+            {o}
+          </Button>
+        ))
+      )}
+      <button
+        type="button"
+        onClick={() => {
+          onNavigate?.()
+          navigate(taskRoute(taskId))
+        }}
+        className="ml-auto flex items-center gap-1 text-xs font-medium text-fg-muted hover:text-fg"
+      >
+        {shown === null && !status ? (options.length ? 'Other answer' : 'Answer') : 'Open task'} <IconArrowRight size={12} />
+      </button>
     </div>
   )
 }

@@ -11,6 +11,7 @@ import { relativeTime } from '@/lib/utils'
 import { SchemaForm } from '../SchemaForm'
 import type { SectionProps } from '../SettingsPage'
 import { WAKE_KEYS, WakeWordSection } from './AbilitySections'
+import { ApprovalRulesSection } from './ApprovalRules'
 
 export function MemorySection({ query }: SectionProps) {
   const navigate = useNavigate()
@@ -102,6 +103,7 @@ export function ApprovalsSection({ query }: SectionProps) {
   return (
     <div className="space-y-8">
       <SchemaForm section="tools" title="Approvals" filter={query} exclude={['tools.disabled']} />
+      <ApprovalRulesSection query={query} />
       <FormSection title="Tools" description="Turn off tool groups Sentient shouldn't use at all.">
         {tools.isLoading ? (
           <div className="p-4">
