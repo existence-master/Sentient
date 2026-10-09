@@ -814,6 +814,8 @@ class Agent:
         tool = self.registry.get(tc.name)
         if tool is None:
             return {"error": f"unknown tool {tc.name}"}, True, 0
+        if self.approvals.is_never(tool):  # a "never" rule set while this call waited for approval still wins
+            return {"error": never_message(self.approvals.label(tool, self.registry))}, True, 0
         started = time.perf_counter()
         if "_raw" in tc.arguments and len(tc.arguments) == 1:
             return self._raw_arguments_error(tool, tc)
