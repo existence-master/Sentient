@@ -86,6 +86,7 @@ class OnboardingBody(BaseModel):
     professional_context: str = ""
     personal_context: str = ""
     persona: str = "friendly"
+    daily_brief: bool = False
 
 
 @router.post("/api/onboarding", dependencies=_auth)
@@ -134,6 +135,8 @@ async def onboarding(request: Request, body: OnboardingBody):
 
         assert s.agent is not None
         s.agent._spawn(_seed())
+    if body.daily_brief:  # the first opt-in: a recurring task the user can edit, pause or delete later
+        await s.proactivity.brief.setup({})
     return {"ok": True}
 
 
@@ -224,7 +227,14 @@ async def patch_config(request: Request, body: dict):
 # ----------------------------------------------------------------------------- sessions
 @router.get("/api/sessions", dependencies=_auth)
 async def sessions(request: Request, limit: int = 100):
-    return await get_core(request).store.list_sessions(limit)
+    rows = await get_core(request).store.list_sessions(limit)
+    for row in rows:  # stored as JSON text; the API gives a list (or null)
+        raw = row.get("visited_hosts")
+        try:
+            row["visited_hosts"] = json.loads(raw) if raw else None
+        except (TypeError, ValueError):
+            row["visited_hosts"] = None
+    return rows
 
 
 @router.post("/api/sessions", dependencies=_auth)

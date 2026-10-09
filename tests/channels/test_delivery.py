@@ -100,3 +100,23 @@ async def test_background_subagent_summary_goes_to_its_chat_once(tg):
     await tg.app.notify("task", "x", title="Task failed", payload={"task_id": "t", "event": "run_failed"})
     await until(lambda: "Task failed" in tg.api.screen()[-1])
     assert len(tg.api.sent("sendMessage")) == before + 2  # the subagent notification was not repeated
+
+
+async def test_daily_brief_is_delivered_when_enabled(tg):
+    await tg.pair(42)
+    brief = {"day": "2026-10-12", "title": "Your Daily Brief for Monday",
+             "sections": [{"id": "calendar", "label": "Calendar", "feedback": None}],
+             "items": [{"id": "calendar-1", "section": "calendar", "text": "09:30 Design review",
+                        "link": "https://calendar.google.com/event?eid=ev1", "why": "On your calendar today", "feedback": None}],
+             "skipped": [], "expires_at": "2026-10-13T00:00:00+00:00"}
+    before = len(tg.api.sent("sendMessage"))
+    tg.app.config.channels.deliver_briefs = False
+    await tg.app.notify("brief", "- 09:30 Design review", title=brief["title"], payload={"brief": brief, "status": "active"})
+    await asyncio.sleep(0.3)  # let the delivery listener handle it while briefs are off
+    assert len(tg.api.sent("sendMessage")) == before
+    tg.app.config.channels.deliver_briefs = True
+    await tg.app.notify("brief", "- 09:30 Design review", title=brief["title"], payload={"brief": brief, "status": "active"})
+    await until(lambda: len(tg.api.sent("sendMessage")) > before)
+    text = tg.api.sent("sendMessage")[-1]["text"]
+    assert text.startswith("<b>Your Daily Brief for Monday</b>") and "<b>Calendar</b>" in text
+    assert '<a href="https://calendar.google.com/event?eid=ev1">09:30 Design review</a>' in text

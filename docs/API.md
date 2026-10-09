@@ -35,7 +35,7 @@ All carry `session_id` and `turn_id`.
 | `tool_call` | `call_id`, `name`, `arguments` |
 | `tool_progress` | `call_id`, `name`, `kind: stdout\|stderr\|status\|frame\|subagent`, `text?`, `image?`, `data?` (section 10) |
 | `tool_result` | `call_id`, `name`, `result`, `is_error`, `duration_ms` (a call the user declined has `result: {error, declined: true}`) |
-| `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?` (section 10) |
+| `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10) |
 | `user_interjection` | `text` (a steer message the model just received, section 10) |
 | `steer_ack` | `session_id`, `queued`, `client_id` (echo; no `turn_id`) |
 | `usage` | `model`, `prompt_tokens`, `completion_tokens` |
@@ -90,10 +90,11 @@ Everything the renderer needs on launch.
 `POST /api/onboarding`
 ```json
 {"user_name": "Sarthak", "assistant_name": "Sentient", "timezone": "Asia/Kolkata", "location": "Pune, India",
- "professional_context": "...", "personal_context": "...", "persona": "friendly|professional|concise|custom"}
+ "professional_context": "...", "personal_context": "...", "persona": "friendly|professional|concise|custom",
+ "daily_brief": false}
 ```
 Saves config, writes USER.md, seeds memory facts (source `onboarding`) in the background, sets
-`assistant.onboarding_complete = true`. → `{ok: true}`
+`assistant.onboarding_complete = true`. `daily_brief: true` sets up the Daily Brief with its defaults (section 6). → `{ok: true}`
 
 ### Config
 - `GET /api/config` → full config object (see `sentient/config/schema.py`).
@@ -128,7 +129,9 @@ Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
 `await app.approvals.decide(tool, session_id, risk, arguments, ctx) -> bool`, pure helpers in `sentient.tools.rules`.
 
 ### Sessions (chats)
-- `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at}]` newest first
+- `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts}]` newest first
+  (`untrusted`: the app whose content the chat read, e.g. `"Gmail"`, `""` when clean, `null` before its first turn;
+  `visited_hosts`: list of web hosts it loaded, or `null`; section 10)
 - `POST /api/sessions` → `{session_id}`
 - `PATCH /api/sessions/{id}` `{title}` → `{ok}`
 - `DELETE /api/sessions/{id}` → `{ok}`
@@ -177,6 +180,33 @@ Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
 - `GET /api/models/local` → `{ollama: {reachable, models: [{name, size, family, parameter_size, is_embedding, capabilities: string[]}]}, lm_studio: {reachable, models: [...]}}` (`capabilities` from Ollama, e.g. completion/tools/thinking/vision/embedding — a hint; `POST /api/models/test` is the authoritative tool-support check)
 - `POST /api/models/test` `{model, role?}` → `{ok, latency_ms, reply?, error?, supports_tools?}`
 - `POST /api/models/test-embedding` `{model}` → `{ok, dim?, error?}`
+- `POST /api/models/checkup` `{roles?: {role: model | null}}` → streams NDJSON while it checks each role's model,
+  one role at a time (local models are never loaded side by side). Without `roles` it checks every role in the saved
+  config; with `roles` it checks only those, with those models (onboarding checks its picks before saving). It is
+  informational only and never changes config. Each step has a short timeout (60 s). Roles with the same model
+  and the same settings the tests depend on (provider address, reasoning effort, context length, temperature) run
+  each model test (`reply`, `tools`, `chain`, `json`) once; the later role reuses it with a detail starting
+  "Same as primary." (the first role's name). Lines:
+  - `{type: "start", roles: [{role, model}]}` (`model` null = an optional role that uses the main model)
+  - `{type: "step", role, label}` progress, e.g. "Trying a tool call"
+  - `{type: "role", role, model, provider, local, inherits, status, checks: [Check]}` when a role is finished.
+    `inherits: "primary"` with `status: "skip"` and no checks for an optional role with no model of its own.
+  - `{type: "done", status, roles: [role results]}` (`status` = the worst role)
+
+  `Check` = `{id, label, status: "pass"|"warn"|"fail"|"skip", detail, fix?, action?}`. `detail` and `fix` are
+  plain sentences for the UI. Checks, in order, skipping those that do not apply:
+  `connection` (Ollama running and model downloaded, or a cloud key set; a failure stops the rest), `reply` (one
+  short answer), `tools` (one scripted `find_city` call; roles that use tools: primary, fast, executor, vision,
+  voice), `chain` (a second `get_weather` call using the first result; primary and executor), `json` (a JSON reply;
+  fast and planner), `thinking` (Ollama models that can think: thinking matches the role's reasoning setting),
+  `context` (tokens in use vs the model's maximum from `/api/show`), `gpu` (from Ollama `/api/ps`: `size_vram` vs
+  `size`, warns when part of the model runs on the processor), `embedding` (embedding role only). Cloud and
+  LM Studio models get no Ollama checks. `action` is an optional one-click fix the window may offer:
+  `{kind: "use_model", role, model, label}` (`PUT /api/models/roles`), `{kind: "pull_model", name, label}`
+  (`POST /api/models/ollama/pull`), `{kind: "set_reasoning", role, value, label}` (`models.reasoning`),
+  `{kind: "set_context_length", value, role: string|null, label}` (`models.context_length`, or
+  `models.context_length_per_role[role]` when `role` is set). Unknown role → 400. `sentient doctor --models` prints
+  the same check-up as a table.
 - `PUT /api/models/roles` `{primary?, fast?, planner?, executor?, embedding?, vision?, voice?}` → updated roles (null = use primary). The `voice` role is used for `channel` voice/glasses turns and defaults to reasoning `none`.
 - `PUT /api/models/fallbacks` `{role: [model, ...]}` → `{ok}`
 - `POST /api/models/ollama/pull` `{name}` → streams NDJSON `{status, completed?, total?}`
@@ -234,8 +264,11 @@ done_text}` and a one-step `plan`. They are created `pending`, start a run at on
 and the run makes exactly that call with exactly those arguments (`tool_call`, `tool_result`, `final_answer` updates). A
 lasting Never rule on the tool or its app fails the run with the rule's message; a tool error fails it with that error. A
 run interrupted by a restart after the call started is not repeated: it fails and asks the user to check. Backend API:
-`await app.tasks.create_approved_call(name, tool, arguments, *, step, description=None, source, original_context, done_text)`
-→ Task.
+`await app.tasks.create_approved_call(name, tool, arguments, *, step, description=None, source, original_context, done_text,
+schedule=None, quiet=False)` → Task. With a recurring `schedule` the task is created `active` with its next run computed
+and makes the same call at each run (the Daily Brief, section 6); with `quiet` (`fixed_call.quiet: true`) a finished run
+sends no "Task completed" notification because the tool sends its own (failures still notify), and its result is the done
+text with no model call.
 **ProgressUpdate** `{"timestamp": "...", "message": {"type": "info|thought|tool_call|tool_result|final_answer|error", "content": "...", "tool_name": "...", "parameters": {}, "result": "...", "is_error": false}}`
 
 ### Endpoints
@@ -310,6 +343,15 @@ Behaviour notes:
 - Answering (`POST .../answer`, a button, or a reply to the question message in a paired chat) puts the answer in place of the `ask_user` tool
   result, logs `You answered: ...`, sets the notification's `payload.status = "answered"` (and marks it read), moves run and
   task back to `processing` and continues the run without the restart note.
+- A run that read outside content and then tries to send asks the same way (section 10, "Outside content"):
+  the question is `This task read content from <app>, so it checks with you before anything leaves Sentient. OK to
+  use <tool>(<details>)?` with `options: ["Yes, go ahead", "No, stop the task"]`. `Yes, go ahead` or `yes` (any case,
+  a final `.`/`!` ignored) runs exactly the held call once when the run continues (its result replaces the
+  placeholder; a restart in the middle never repeats it); any other answer fails the run with
+  `You said no, so the task stopped without doing that step.` and the usual `Task failed` notification.
+  `pending_question` also stores `untrusted_call: true` and `stop_error`; the API shows only `{question, options, asked_at}`.
+  A run asks one question at a time: its own `ask_user` question first, then a held call, then a stuck step
+  (a stuck step in the same round shows up again later if it still is).
 - While a task waits: `approve`, `chat`, `run-now` and `retry` on a one-off task return 409; recurring tasks are not
   started by the scheduler until the answer arrives; triggered tasks keep accepting events (each in its own run) and
   return to `waiting_for_user` when those runs end.
@@ -390,6 +432,10 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   `Skipped: it was due Sep 14, 18:30, while the computer was off or asleep. Choose Run now if you still want it.`
 - `interval` schedules (every N minutes) run once and are not reported, since their next check is due anyway; with
   `catch_up: "skip"` the missed check is skipped (and reported) instead.
+- Quiet fixed-call tasks (the Daily and Evening Brief, section 6) follow the same rules but only run while it is still
+  the local day they were due (a brief is about its day; an evening brief missed at 21:00 is skipped at 01:00), and are
+  never listed in the catch-up notification: the brief is its own notification, and a skipped one just moves to its
+  next time.
 - One notification per catch-up: `kind: "task"`, title `Caught up after sleep: ran 1, skipped 2` (or `after Sentient was
   off` on startup, `after resuming` after Stop everything), message `Ran once now: 'A'.` and/or `Skipped: 'B', 'C'. Open
   one and choose Run now if you still want it.`, `payload: {event: "caught_up", reason: "start"|"sleep"|"resume",
@@ -432,11 +478,30 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
 - `POST /api/integrations/{id}/test` → `{ok, detail}`
 - `GET /api/integrations/{id}/privacy-filters` → `{keywords: [], emails: [], labels: []}`
 - `PUT /api/integrations/{id}/privacy-filters` same shape → `{ok}`
-- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, enabled, status: "connecting|connected|error|disconnected|disabled", tools: [{name, mcp_name, description, risk}], error}]`
-  (`name` is the Sentient tool name `mcp_<server>_<tool>`; `env` values are kept in the keychain, only `env_keys` are returned)
-- `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, enabled?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input)
-- `DELETE /api/integrations/mcp/{name}` → `{ok}`
+- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, auth: "none|headers|oauth", header_keys, signed_in, signing_in, enabled, status: "connecting|connected|needs_sign_in|error|disconnected|disabled", tools: [{name, mcp_name, description, risk}], error}]`
+  (`name` is the Sentient tool name `mcp_<server>_<tool>`; `env` and header values are kept in the keychain, only `env_keys` and `header_keys` are returned)
+  - `auth` (remote servers only): `none`, `headers` (static headers such as `Authorization: Bearer ...` sent on every request) or `oauth` (sign-in with the MCP authorization spec). Header values are sent in every mode when `header_keys` is not empty.
+  - `signed_in`: an OAuth sign-in is stored (only with `auth: "oauth"`). `signing_in`: a browser sign-in is waiting for the user.
+  - `status: "needs_sign_in"`: the server answered 401, or `auth` is `oauth` with no stored sign-in, or the stored sign-in expired and could not be refreshed. `error` says what to do: `"This server asks you to sign in."` (none), `"The server didn't accept the saved headers. Check them and add the server again."` (headers), `"Sign in to use this server."` (oauth). The engine retries a server in this state every 5 minutes, and at once after a sign-in or a test.
+- `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, headers?, auth?, enabled?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input)
+  - `headers`: `{name: value}`; values go to the keychain. `auth` defaults to `headers` when headers are given, else `none`. 400 when `auth` is `headers` without headers, a header name or value is invalid, or a stdio server has headers or `auth` other than `none`.
+  - Replacing a server with a different URL drops its stored sign-in. Headers not given are deleted.
+- `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain)
 - `POST /api/integrations/mcp/{name}/test` → `{ok, tools: [mcp tool names], error?}`
+- `POST /api/integrations/mcp/{name}/sign-in` → `{auth_url, state}`; the desktop opens `auth_url` in the system browser. The engine
+  discovers the server's protected resource metadata and authorization server metadata (RFC 9728, RFC 8414), registers
+  a client when needed (RFC 7591, `client_name: "Sentient"`, public client), and uses PKCE (S256) with the `resource`
+  parameter (RFC 8707). The provider redirects to the shared loopback listener `http://127.0.0.1:<port>/oauth/callback`
+  (`integrations.oauth_redirect_port`, 0 = a free port; the client is registered again when the port changes), which
+  exchanges the code and shows a "You're connected" or "Connection failed" page. On success the server's `auth` becomes
+  `oauth` and it reconnects; poll `GET /api/integrations/mcp` while `signing_in` is true. A sign-in waits at most 15
+  minutes. 404 unknown server; 400 for stdio servers, a server that doesn't support sign-in (no metadata or
+  registration), a server that didn't ask for one, or no answer within 30 s.
+- `POST /api/integrations/mcp/{name}/sign-out` → server object; deletes the stored tokens (the client registration is kept)
+  and cancels a pending sign-in. A server with `auth: "oauth"` then shows `needs_sign_in`.
+- Tokens are refreshed with the refresh token before they expire (60 s early) and once after a 401 before asking for a
+  new sign-in. Keychain entries: `mcp:<name>` (env), `mcp:<name>:headers`, `mcp:<name>:oauth` (tokens),
+  `mcp:<name>:client` (registration); values too long for one entry continue in `<entry>:1`, `<entry>:2`...
 - `PUT /api/integrations/{id}/privacy-filters` → 400 when the integration has `privacy_filters.supported: false`
 
 - `GET /api/integrations/feeds` → `[{source, display_name, kind: "gmail_history"|"calendar_sync_token"|"imap_idle", connected, active,
@@ -493,7 +558,7 @@ run the same masking again before their prompts. The original stays in the user'
 
 ## 6. Notifications & proactivity
 
-**Notification** `{id, kind: "info|task|approval|proactive|skill|error", title, message (markdown), payload: {}, task_id, read, created_at}`
+**Notification** `{id, kind: "info|task|approval|proactive|skill|error|brief", title, message (markdown), payload: {}, task_id, read, created_at}`
 
 Proactive suggestion payload:
 ```json
@@ -559,6 +624,93 @@ nothing is sent.
 - `DELETE /api/proactivity/preferences/{suggestion_type}` → `{ok}` (`ok: false` when there was nothing to reset)
 
 `threshold = clamp(base_confidence_threshold - 0.05 * score, 0.40, 0.95)` (v2).
+
+### Daily Brief and Evening Brief
+
+A short morning digest, and an optional evening wrap-up, each an ordinary recurring task the user can see, edit, pause or
+delete in Tasks. Setting one up (the "Set up my Daily Brief" button, the card's menu, or `daily_brief: true` at
+onboarding for the morning one) creates one already approved task through `app.tasks.create_approved_call` with a
+recurring schedule and `fixed_call = {tool: "daily_brief_build", arguments: {kind}, quiet: true}`
+(`original_context = {source: "brief", brief: kind}`):
+
+| kind | Task name | Default schedule | Task id in `meta` |
+|---|---|---|---|
+| `morning` | Daily Brief | weekdays at 07:30 local | `brief.task_id` |
+| `evening` | Evening Brief | every day at 21:00 local | `brief.evening_task_id` |
+
+The user set up that exact call, so it does not wait for plan approval. Deleting a task turns that brief off. Pausing
+(`enabled: false`) and changing the schedule work like any task (`PATCH /api/tasks/{id}`), and Stop everything pauses
+them like every scheduled task. A quiet run sends no "Task completed" notification and no model writes its report (the
+run's result summary is the done text, "Your Daily Brief is ready."). A brief missed while the computer was off or asleep
+runs once if it is less than `tasks.catch_up_window_hours` late and still the same day, otherwise it is skipped quietly
+(section 4, "Missed runs").
+
+Each run reads, using only `read` tools and never one behind an Ask or Never rule (`tools.approvals.rules`). Morning
+sections:
+- `calendar`: today's events from `gcal_list_events` that are not over yet (`HH:MM Title (place)`), when Google Calendar is connected.
+- `email`: pending proactive suggestions from `gmail`/`email_imap` (follow-ups included), then unread important Gmail from
+  the last two days that no suggestion covers. The `fast` model may shorten each unread email to one line
+  (`proactivity.brief.summarize_emails`, one call for all of them, numbered lines parsed loosely; the sender and subject
+  are kept when an answer is unusable). The model never adds or removes lines.
+- `tasks`: tasks waiting for the user (a question, a plan to approve, answers to give, a failure), most urgent first, then
+  tasks due later today. The briefs' own tasks are left out of every section.
+- `weather`: `weather_current` for `assistant.location` (skipped without a city).
+- `news`: one headline per topic in `proactivity.brief.news_topics` (up to 3) from `news_search`.
+
+Evening sections (no model call at all):
+- `done`: tasks whose latest run today failed (first, "Name: failed") or finished ("Name: done").
+- `sent`: runs that finished today and sent email: an approved follow-up (`fixed_call.tool` is `gmail_reply`, `gmail_send`
+  or `email_imap_send`; "Send reply to Priya: ..." becomes "Sent reply to Priya: ...") or a run that called one of those tools.
+- `files`: `files_created` of runs that finished today, then files changed today in the files folder (`files/uploads/`
+  and `files/outputs/tool-*.txt` left out).
+- `waiting`: tasks waiting for the user (except ones that failed today, already under `done`) and pending suggestions.
+- `tomorrow`: tomorrow's first 3 events from `gcal_list_events`.
+
+Sections come from `proactivity.brief.sections` (default `calendar, email, tasks, weather`; news needs topics) and
+`proactivity.brief.evening_sections` (default all five). They are ordered by their learned score
+(`daily_brief_<section>` in the proactivity preferences), best liked first. A section may show 3 lines (weather 1, news,
+sent and files 2), one more with a score of 3 or above and one fewer with -3 or below (never fewer than 1). The brief takes
+one line from every section first, then fills up in section order, up to `proactivity.brief.max_items` (7) lines.
+Delivery is a `brief` notification. One brief shows at a time: a new one (of either kind) expires the brief still showing.
+
+`brief` notification payload: `{"brief": Brief, "status": "active|expired", "task_id": "..."}`; `message` is the brief as
+markdown (a bold label per section, one `- line` per item); `title` is `"Your Daily Brief for Monday"` or
+`"Your Evening Brief for Monday"`.
+```json
+{"kind": "morning|evening", "day": "2026-10-12", "title": "Your Daily Brief for Monday",
+ "expires_at": "2026-10-13T00:00:00+00:00",
+ "sections": [{"id": "calendar", "label": "Calendar", "feedback": null}],
+ "items": [{"id": "calendar-3f2a9c01de", "section": "calendar", "text": "09:30 Design review (Room 4)",
+   "link": "https://calendar.google.com/...", "why": "On your calendar today", "feedback": "up|down|null",
+   "notification_id": "only on lines that came from a suggestion"}],
+ "skipped": [{"section": "weather", "label": "Weather", "reason": "Add your city in Settings to see the weather."}]}
+```
+`link` is a web address, an in-app route (`/tasks/<id>`, `/notifications`) or `null`. A brief expires at the end of the
+user's local day: `payload.status` becomes `expired` (`notification.updated`) and it is marked read. The desktop shows the
+brief as a card above the feed rather than as a feed row, and marks it read when the card shows it. Paired chats with
+`deliver` on receive it as text with links (`channels.deliver_briefs`, section 14). The `daily_brief_today` tool (read,
+optional `kind`) returns the brief showing as plain lines, or builds one without delivering it, so "read my brief" works
+in chat, by voice and in paired chats; `daily_brief_build` (internal write, `kind`) makes and delivers one now. Neither is
+offered to proactive look-ups.
+
+- `GET /api/proactivity/brief` → `{set_up, task_id, enabled, time: "07:30", days: ["Monday", ...], next_at, sections,
+  news_topics, max_items, available: {<section>: bool}, today: Brief + {id, status, task_id, created_at} | null,
+  evening: {set_up, task_id, enabled, time, days, next_at, sections}}` (the morning brief's fields at the top level;
+  `available` says whether a section can find anything now: an app connected, a city or topics set; `today` is the brief
+  showing, of either kind, and `today.id` is the notification id)
+- `POST /api/proactivity/brief` `{kind?: "morning"|"evening", time?, days?, sections?, news_topics?, max_items?}` → same
+  shape. Creates that brief's task the first time, otherwise changes it; `days` left out keeps the task's days. `time` is
+  `HH:MM` or one of `early` (06:30), `morning` (07:30), `midday`/`noon` (12:00), `afternoon` (14:00), `evening` (18:00),
+  `night` (21:00); `days` is a list of day names, `"weekdays"` or `"daily"`. `sections` (saved to `sections` or
+  `evening_sections`, unknown ids dropped), `news_topics` (up to 5) and `max_items` (1 to 20) are saved to
+  `proactivity.brief`. 400 on a bad value or kind.
+- `POST /api/proactivity/brief/run` `{kind?}` → `{ok, task_id}`: runs that brief's task now (409 when it is not set up or
+  cannot run now).
+- `POST /api/proactivity/brief/feedback` `{brief_id, value: "up"|"down", item_id? | section?}` → the updated brief. Records
+  `+1`/`-1` for `daily_brief_<section>` (the same scores as suggestions, so they show and reset in
+  `GET/DELETE /api/proactivity/preferences`). Changing a rating replaces it: the earlier one is taken back first, so the
+  latest wins; the same rating again changes nothing. 400 bad value or neither/both targets, 404 unknown brief or line,
+  409 expired.
 
 ---
 
@@ -752,6 +904,52 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - Proactive look-ups run with origin `"proactive"`; held calls are passed to the reasoner, which can offer them as a
   suggestion card. A subagent started from an unprompted run inherits its origin (`delegate(..., origin=)`).
   Heartbeat, follow-ups and dreaming make no tool calls.
+
+### Outside content (ADR 0018)
+- `Tool.untrusted_output: bool | None` (also `@tool(..., untrusted_output=)`): the result can carry content someone
+  else wrote. `None` uses `sentient.tools.rules.brings_untrusted`: look-ups (base risk `read`) of every app outside
+  `TRUSTED_PLUGINS` (`memory`, `files`, `skills`, `time`, `tasks`, `task_questions`, `subagents`, `devices`,
+  `weather`, `charts`) count; internal tools, writes and sends do not. Marked explicitly: every browser tool,
+  `execute_code`, every MCP server tool, `delegate_task`/`delegate_tasks`, `device_take_photo`, `device_capture_screen`.
+- `Tool.exfiltrates: bool | fn(arguments, ctx) -> bool` (also `@tool(..., exfiltrates=)`, `itool(..., exfiltrates=)`):
+  the call can move data out below `send`. Set on `browser_type`, `github_update_issue`, MCP tools that are not
+  read-only, `gcal_update_event` (an event's existing guests see every change), and per call on
+  `gcal_create_event` when `attendees` names anyone other than the calendar's owner (`calendar_id`). Drafts
+  (`gmail_create_draft`) and new private events stay free. `rules.sends_out(tool, risk, arguments, ctx)` is effective risk `send`/`exec` or `exfiltrates` (a per-call
+  function that fails counts as true).
+- `Tool.url_fn(arguments, ctx) -> str | None` (also `@tool(..., url_fn=)`, `itool(..., url_fn=)`): the web address a
+  call loads. Set on `web_fetch` and `browser_open` (`url`) and `browser_click` (the clicked link's address, resolved
+  against the page). `rules.address_carries_data(url)` is true for a query string, a path over 100 characters, a
+  fragment over 40, a user name, or a link the page snapshot cut short.
+- `ToolContext.untrusted: str`: `""`, or the app's display name once a tool with untrusted output ran in this run
+  (`rules.untrusted_source`). Calls the model chose in that same round are not affected. Chats save it on the session
+  (`sessions.untrusted`) and start every later turn with it; a new chat starts clean. Task runs start with it when an
+  outside event started them (the trigger's app, e.g. `"Webhooks"`) or when their transcript already holds such a
+  result (`rules.untrusted_in(messages, registry)`; a result whose tool is no longer registered counts, as
+  `"a tool that is no longer available"`, except the engine's own "unknown tool" refusal). A chat whose
+  `sessions.untrusted` is still `NULL` (created before this mark) is classified once from its stored tool results the
+  same way and saved (`""` = clean). Subagents inherit it (`delegate(..., untrusted=)`).
+- `ToolContext.visited: set[str]`: web hosts this run loaded (a call with a `url_fn` that ran). Chats save them on the
+  session (`sessions.visited_hosts`, a JSON list) and start every turn with them; task runs keep them for one stretch
+  of work (a resumed run starts empty, so it asks more, never less).
+- While it is set, `run_loop` treats any call where `sends_out` is true as needing the user: with approvals
+  (chat, voice, channels) it always sends an `approval_request` with
+  `untrusted: "Sentient read content from <app> in this chat, so it checks with you before sending anything."`,
+  whatever the mode, Allow rules or "Allow for this chat" say, and "Allow for this chat" does not cover the next
+  one (cards and channel messages leave that button out). "Never" rules and the unprompted-work limit come first.
+  Without approvals the call does not run: its result is `{error: "Not done: this run read content from <app>, so
+  <tool> needs the user's OK first. ..."}` and the first one is described in `LoopResult.needs_ok`
+  `{tool, arguments, call_id, question}`. Task runs stop after that round and ask (section 4); subagents and swarm
+  workers just carry on without it. No model output can clear the mark.
+- Addresses: while the mark is set, a call whose `url_fn` address is on a host not in `ToolContext.visited` and
+  `address_carries_data` asks (or is held) the same way, with
+  `untrusted: "Sentient read content from <app> in this chat, and this address could carry your data to <host>, so it checks with you first."`
+  Short clean addresses and hosts already visited in the run or chat load freely.
+- The held call a task user approved is replaced, before it runs, by `{error: "The user said yes, but Sentient
+  stopped while doing this, so it is not known whether it went through. ..."}`, and then by its real result; a
+  restart in between leaves that note and never repeats the call.
+- `await app.agent.run_tool(ToolCall, ctx) -> (result, is_error, content)` runs one call the user approved outside
+  the loop (lasting rules still apply).
 
 ### Subagents
 - Tools (plugin `subagents`):
@@ -977,7 +1175,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `payload.subagent_id`. Text is a short, link-free summary. Buttons are replaced by the outcome when pressed, or when
   `notification.updated` shows the plan/suggestion was handled elsewhere. A background subagent (`subagent.updated`,
   `background: true`, `completed`/`error`) whose session belongs to a paired chat sends its summary to that chat once.
-  Toggles: `channels.deliver_task_results`, `deliver_plans`, `deliver_suggestions`, `deliver_subagents`.
+  The Daily Brief (`kind: "brief"`, `payload.status: "active"`) is sent as its sections and lines, with links.
+  Toggles: `channels.deliver_task_results`, `deliver_plans`, `deliver_suggestions`, `deliver_subagents`, `deliver_briefs`.
 - Answering a task's question by replying: the delivered question ends with "Tap an option, or reply to this message
   with your answer." (without options: "Reply to this message with your answer."). The ids of the messages that carried
   the question are stored per chat in SQLite (`channel_questions`, kept 90 days), so this survives restarts. A text

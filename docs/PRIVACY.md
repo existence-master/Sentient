@@ -34,6 +34,13 @@ service name `sentient`.
   and change Sentient's own data, such as its memory and notes. Anything that would send, delete, buy, run code or
   change something outside Sentient is not done, whatever your approval settings say. Sentient may offer it to you
   as a suggestion to approve instead.
+- Once Sentient has read something other people wrote (an email, a web page, a message, the event that started a
+  task), it asks you before sending, posting, inviting people to an event, typing into a web page, running code,
+  or opening a web address on a new site that could carry your data (one with extra details after a `?`, or a very
+  long one). Plain addresses and sites it already opened in that chat or task open without asking, so a short,
+  clean address is the one way out it doesn't check. This holds even for apps you set to Allow and with approvals
+  switched off, and no email or web page can talk it out of asking. In a chat it lasts until you start a new chat; a
+  task asks with a notification and waits for your yes.
 - Photos and screenshots from your devices ask first.
 - One-time codes, sign-in links and password reset links in your email are hidden from the AI, so a tricky email
   can't get them out of Sentient. You still see them when you open the email in your mail app. You can turn this off

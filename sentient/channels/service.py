@@ -24,6 +24,7 @@ from sentient.channels.formatting import summary_text
 from sentient.channels.store import ChannelStore
 from sentient.channels.telegram import TelegramChannel
 from sentient.channels.whatsapp import WhatsAppChannel
+from sentient.proactivity.brief import DailyBrief
 from sentient.services import Service
 
 log = logging.getLogger(__name__)
@@ -322,6 +323,11 @@ class ChannelService(Service):
                 return None
             md = f"**{title or 'Suggestion'}**\n{message}"
             return md, [[Button("Approve", f"sg:a:{nid}", "success"), Button("Dismiss", f"sg:d:{nid}", "secondary")]]
+        if kind == "brief":
+            brief = payload.get("brief")
+            if not cfg.deliver_briefs or not isinstance(brief, dict) or payload.get("status", "active") != "active":
+                return None
+            return f"**{title or 'Your Daily Brief'}**\n{DailyBrief.as_text(brief, links=True)}", None
         if payload.get("subagent_id") and cfg.deliver_subagents:
             return f"**{title or 'Background work finished'}**\n{message}", None
         return None

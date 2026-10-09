@@ -59,7 +59,8 @@ export function OnboardingPage() {
         location: draft.location.trim(),
         professional_context: draft.professional_context.trim(),
         personal_context: draft.personal_context.trim(),
-        persona: draft.persona
+        persona: draft.persona,
+        daily_brief: draft.daily_brief
       })
       go('done')
     } catch (err) {

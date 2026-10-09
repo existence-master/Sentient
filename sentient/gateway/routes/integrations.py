@@ -37,6 +37,8 @@ class MCPServerBody(BaseModel):
     args: list[str] = Field(default_factory=list)
     url: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
+    auth: Literal["none", "headers", "oauth"] | None = None
     enabled: bool = True
 
 
@@ -71,6 +73,24 @@ async def delete_mcp(request: Request, name: str):
 async def test_mcp(request: Request, name: str):
     try:
         return await _mgr(request).mcp.test(name)
+    except KeyError as exc:
+        raise HTTPException(404, f"no MCP server named {name}") from exc
+
+
+@router.post("/mcp/{name}/sign-in")
+async def sign_in_mcp(request: Request, name: str):
+    try:
+        return await _mgr(request).mcp.sign_in(name)
+    except KeyError as exc:
+        raise HTTPException(404, f"no MCP server named {name}") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/mcp/{name}/sign-out")
+async def sign_out_mcp(request: Request, name: str):
+    try:
+        return await _mgr(request).mcp.sign_out(name)
     except KeyError as exc:
         raise HTTPException(404, f"no MCP server named {name}") from exc
 
