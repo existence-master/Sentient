@@ -4,6 +4,7 @@ import {
   IconCreditCard,
   IconEdit,
   IconEye,
+  IconFolder,
   IconSend,
   IconShieldCheck,
   IconShieldQuestion,
@@ -35,6 +36,7 @@ interface EffectiveRisk {
  */
 export function effectiveRisk(approval: Pick<ApprovalView, 'risk' | 'reason' | 'name' | 'arguments'>): EffectiveRisk {
   const text = `${approval.reason ?? ''} ${JSON.stringify(approval.arguments ?? {})}`.toLowerCase()
+  if (approval.name === 'terminal_run') return { label: 'Runs a command', verb: 'run a command on this computer', icon: IconTerminal2, tone: 'danger' }
   if (approval.risk === 'exec') return { label: 'Runs code', verb: 'run code on your computer', icon: IconTerminal2, tone: 'danger' }
   if (approval.risk === 'send') {
     if (/(purchase|buy|order|checkout|pay\b|payment|card|subscribe|book(ing)? and pay)/.test(text))
@@ -106,6 +108,7 @@ export function ApprovalCard({
   const purpose = approval.name === 'execute_code' ? String((approval.arguments as { purpose?: string }).purpose ?? '') : ''
   const isBrowser = approval.name.startsWith('browser_')
   const args = approval.arguments ?? {}
+  const command = approval.name === 'terminal_run' ? String(args.command ?? '') : ''
   // A purchase or a send asks for a single, deliberate "yes": no blanket "allow for this chat".
   const allowSession = !(risk.label === 'Purchase' || risk.label === 'Deletes')
 
@@ -128,13 +131,20 @@ export function ApprovalCard({
           </div>
           {action && <div className="mt-1 text-md font-medium text-fg">{action}</div>}
           <p className="mt-0.5 text-sm text-fg-muted">
-            {purpose ||
+            {(command && 'It runs on this computer with your permissions, in this folder:') ||
+              purpose ||
               approval.reason?.trim() || (
                 <>
                   {meta.done} using <span className="font-mono text-xs">{approval.name}</span>
                 </>
               )}
           </p>
+          {command && (
+            <div className="mt-1 flex items-center gap-1 text-xs text-fg-subtle">
+              <IconFolder size={12} className="shrink-0" />
+              <span className="selectable truncate font-mono">{approval.target || (typeof args.cwd === 'string' && args.cwd) || 'The default folder'}</span>
+            </div>
+          )}
           {isBrowser && typeof args.url === 'string' && (
             <div className="mt-1 flex items-center gap-1 text-xs text-fg-subtle">
               <IconWorldWww size={12} /> {hostOf(args.url)}
@@ -142,9 +152,9 @@ export function ApprovalCard({
           )}
         </div>
       </div>
-      {code ? (
+      {code || command ? (
         <div className="mx-4 mt-3 max-h-56 overflow-auto [&_.md-code]:bg-surface">
-          <Markdown>{'```python\n' + code.replace(/\s+$/, '') + '\n```'}</Markdown>
+          <Markdown>{(code ? '```python\n' : '```shell\n') + (code || command).replace(/\s+$/, '') + '\n```'}</Markdown>
         </div>
       ) : (
         !isBrowser &&

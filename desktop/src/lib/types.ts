@@ -704,6 +704,36 @@ export interface SandboxStatus {
   python_version: string
 }
 
+// ============================================================================ §18 Terminal
+/** Result of `terminal_run` (§18). */
+export interface TerminalResult {
+  ok: boolean
+  command: string
+  cwd: string | null
+  shell: string | null
+  exit_code: number | null
+  stdout: string
+  stderr: string
+  timed_out: boolean
+  stopped: boolean
+  duration_ms: number
+  /** Full output under `files/` when it was too long to keep, e.g. `outputs/terminal-<id>.txt`. */
+  output_file: string | null
+  error: string | null
+}
+
+export interface TerminalStatus {
+  enabled: boolean
+  /** `pwsh`, `powershell`, `bash`, `zsh` or `sh`; null when no shell was found. */
+  shell: string | null
+  shell_path: string | null
+  allowed_folders: string[]
+  default_folder: string | null
+  /** Plain descriptions of what the built-in blocklist refuses. */
+  blocked: string[]
+  running: { id: string; command: string; cwd: string; started_at: string }[]
+}
+
 // ============================================================================ §12 Browser
 export interface BrowserTab {
   index: number

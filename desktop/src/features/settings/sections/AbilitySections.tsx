@@ -1,5 +1,5 @@
-/** Settings for the newer abilities: knowing you, code execution, browser, helpers and the wake word. */
-import { IconArrowRight, IconCode, IconDownload, IconEar, IconMoonStars, IconShieldLock, IconUserHeart, IconUsersGroup, IconWorldWww } from '@tabler/icons-react'
+/** Settings for the newer abilities: knowing you, code execution, the terminal, browser, helpers and the wake word. */
+import { IconArrowRight, IconBan, IconCode, IconDownload, IconEar, IconMoonStars, IconShieldLock, IconTerminal2, IconUserHeart, IconUsersGroup, IconWorldWww } from '@tabler/icons-react'
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { Alert, Badge, Button, Card, FormRow, FormSection, ProgressBar, Skeleton, StatusDot, Switch } from '@/components/ui'
@@ -9,6 +9,7 @@ import { useConfigSchema } from '@/hooks/core'
 import { useVoicePrepare, useVoiceStatus } from '@/hooks/voice'
 import { isNotImplemented } from '@/lib/api'
 import { useSandboxStatus } from '@/hooks/tasks'
+import { useTerminalStatus } from '@/hooks/terminal'
 import type { VoicePrepareTarget } from '@/lib/types'
 import { SchemaForm } from '../SchemaForm'
 import type { SectionProps } from '../SettingsPage'
@@ -113,6 +114,58 @@ export function SandboxSection({ query }: SectionProps) {
         Scripts never see your API keys. They can look things up with Sentient’s tools, but anything that sends, deletes or spends still goes through your approvals.
       </Explainer>
       {has === false ? <NotYet what="Code execution" /> : <SchemaForm section="sandbox" title="Running scripts" filter={query} />}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------- terminal
+const SHELL_NAMES: Record<string, string> = { pwsh: 'PowerShell 7', powershell: 'Windows PowerShell', bash: 'bash', zsh: 'zsh', sh: 'sh' }
+
+export function TerminalSection({ query }: SectionProps) {
+  const status = useTerminalStatus()
+  const has = useHasSections('terminal')
+  const s = status.data
+  const folder = s?.default_folder
+  return (
+    <div className="space-y-8">
+      {status.isLoading ? (
+        <Skeleton className="h-16 rounded-xl" />
+      ) : s ? (
+        <Card className="flex items-center gap-3 px-4 py-3.5">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent-text">
+            <IconTerminal2 size={18} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 text-sm font-medium text-fg">
+              <StatusDot tone={s.enabled && folder ? 'success' : 'neutral'} />
+              {!s.enabled ? 'Turned off' : folder ? 'Ready to run commands' : 'Add a folder to get started'}
+            </div>
+            <div className="truncate text-xs text-fg-subtle">
+              {s.shell ? `Commands run in ${SHELL_NAMES[s.shell] ?? s.shell}` : 'No command shell was found on this computer'}
+              {s.enabled && folder ? `, starting in ${folder}.` : '.'}
+            </div>
+          </div>
+          {s.running.length > 0 && <Badge tone="accent">{s.running.length === 1 ? '1 command running' : `${s.running.length} commands running`}</Badge>}
+        </Card>
+      ) : status.isError && !isNotImplemented(status.error) ? (
+        <Alert tone="warning" title="Couldn’t check the terminal">
+          It may still work. Try again in a moment.
+        </Alert>
+      ) : null}
+      <Explainer icon={<IconShieldLock size={18} />} title="You stay in charge">
+        Sentient shows you the exact command and folder and waits for your OK, unless the command is on your list below. Your API keys and passwords are kept out of its commands, and work Sentient starts on its own never runs any. Stop everything ends a running command at once.
+      </Explainer>
+      {s && s.blocked.length > 0 && (
+        <Explainer icon={<IconBan size={18} />} title="Never allowed, whatever you set">
+          Sentient refuses commands that:
+          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            {s.blocked.map((what) => (
+              <li key={what}>{what}</li>
+            ))}
+          </ul>
+        </Explainer>
+      )}
+      {has === false ? <NotYet what="Terminal" /> : <SchemaForm section="terminal" title="Commands on this computer" filter={query} />}
     </div>
   )
 }

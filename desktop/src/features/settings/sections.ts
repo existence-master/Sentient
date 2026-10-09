@@ -10,6 +10,7 @@ import {
   IconSettings,
   IconShieldCheck,
   IconSparkles,
+  IconTerminal2,
   IconTool,
   IconUserHeart,
   IconUsersGroup,
@@ -104,6 +105,14 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     icon: IconCode,
     keywords: ['sandbox', 'python', 'docker', 'scripts', 'execute', 'code', 'watchers'],
     schemaSections: ['sandbox']
+  },
+  {
+    id: 'terminal',
+    label: 'Terminal',
+    description: 'Commands Sentient can run on this computer, with your OK.',
+    icon: IconTerminal2,
+    keywords: ['terminal', 'shell', 'command', 'commands', 'powershell', 'bash', 'git', 'folders', 'allowed commands', 'blocked'],
+    schemaSections: ['terminal']
   },
   {
     id: 'browser',

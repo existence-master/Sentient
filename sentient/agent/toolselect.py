@@ -11,7 +11,7 @@ without an LLM call:
   similarity to its description and selection hint, plus a keyword boost;
 - plugins used recently in the same conversation stay available;
 - a few capabilities that embeddings match poorly (browser, code, devices,
-  subagents, messaging channels) get a boost when trigger phrases appear;
+  subagents, messaging channels, the terminal) get a boost when trigger phrases appear;
 - the best plugins are added until the tool budget is reached.
 
 Cloud models get a large budget (effectively all tools); local models a small
@@ -65,6 +65,10 @@ TOOL_TRIGGERS: dict[str, tuple[str, ...]] = {
         "deep dive", "investigate", "compare", "each of", "meanwhile", "while i", "several",
     ),
     "channel_": ("telegram", "discord", "message me", "text me"),
+    "terminal_": (
+        "terminal", "command", "commands", "command line", "shell", "powershell", "bash", "git", "npm", "pip",
+        "compile", "run the tests", "my repo", "repository",
+    ),
 }
 TRIGGER_BOOST = 0.45
 

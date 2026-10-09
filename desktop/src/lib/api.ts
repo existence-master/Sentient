@@ -29,6 +29,7 @@ import type {
   SandboxResult,
   SandboxStatus,
   Subagent,
+  TerminalStatus,
   ApprovalDecision,
   Bootstrap,
   StopResult,
@@ -597,6 +598,13 @@ export const api = {
         () => ({ enabled: true, backend: 'process', docker_available: false, python_version: '3.12.7' })
       ),
     run: (code: string) => http.post<SandboxResult>('/api/sandbox/run', { code })
+  },
+
+  // §18 terminal ------------------------------------------------------------------------
+  terminal: {
+    status: () => http.get<TerminalStatus>('/api/terminal/status'),
+    /** Kills one running command; `id` is the tool call id. */
+    stop: (id: string) => http.post<{ stopped: boolean }>('/api/terminal/stop', { id })
   },
 
   // §12 browser -------------------------------------------------------------------------
