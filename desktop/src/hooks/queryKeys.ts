@@ -63,6 +63,7 @@ export const qk = {
 
   voiceStatus: ['voice', 'status'] as const,
   sandboxStatus: ['sandbox', 'status'] as const,
+  terminalStatus: ['terminal', 'status'] as const,
   usage: (days: number) => ['usage', days] as const,
   files: ['files'] as const,
   tools: ['tools'] as const

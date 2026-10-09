@@ -172,6 +172,8 @@ class Tool:
     exfiltrates: bool | ExfilFn = False
     # The web address a call loads (``url_fn(arguments, ctx) -> str | None``), for ``rules.address_carries_data``.
     url_fn: UrlFn | None = None
+    # False when every call must ask again: "Allow for this chat" never covers this tool (commands on the host)
+    allow_for_chat: bool = True
 
     def openai_schema(self) -> dict:
         schema = self.params_model.model_json_schema()
@@ -273,6 +275,7 @@ def tool(
     untrusted_output: bool | None = None,
     exfiltrates: bool | ExfilFn = False,
     url_fn: UrlFn | None = None,
+    allow_for_chat: bool = True,
 ):
     """Decorator turning ``async def fn(ctx, arg: type = default)`` into a Tool."""
 
@@ -283,7 +286,7 @@ def tool(
         return Tool(
             name=tool_name, description=desc, fn=fn, params_model=model, risk=risk, internal=internal,
             risk_fn=risk_fn, describe_fn=describe_fn, untrusted_output=untrusted_output, exfiltrates=exfiltrates,
-            url_fn=url_fn,
+            url_fn=url_fn, allow_for_chat=allow_for_chat,
         )
 
     return wrap

@@ -9,6 +9,7 @@ import { ApprovalCard } from './ApprovalCard'
 import { asRecord, DeclinedText, StatusGlyph } from './cards/bits'
 import { CodeRunCard } from './cards/CodeRunCard'
 import { isSubagentTool, SubagentCard } from './cards/SubagentCard'
+import { TerminalCard } from './cards/TerminalCard'
 import { IMAGE_FILE_RE, openOutputFile, outputPath } from './files'
 import { argsPreview, toolMeta } from './toolMeta'
 
@@ -124,9 +125,16 @@ function GenericToolCard({
 
 type ApproveFn = (approvalId: string, decision: 'allow' | 'allow_session' | 'deny') => void
 
-/** Picks a dedicated card for code runs, helpers and device photos; everything else uses the generic row. */
+/** Picks a dedicated card for code runs, commands, helpers and device photos; everything else uses the generic row. */
 export function ToolCallCard({ tool, approval, onApprove }: { tool: ToolCallView; approval?: ApprovalView; onApprove?: ApproveFn }) {
-  const special = tool.name === 'execute_code' ? <CodeRunCard tool={tool} /> : isSubagentTool(tool.name) ? <SubagentCard tool={tool} /> : null
+  const special =
+    tool.name === 'execute_code' ? (
+      <CodeRunCard tool={tool} />
+    ) : tool.name === 'terminal_run' ? (
+      <TerminalCard tool={tool} />
+    ) : isSubagentTool(tool.name) ? (
+      <SubagentCard tool={tool} />
+    ) : null
   if (special) {
     return (
       <div className="space-y-2">
