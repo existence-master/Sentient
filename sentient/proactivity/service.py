@@ -72,6 +72,7 @@ EMAIL_SOURCES = {"gmail", "email_imap"}
 PUSH_ORIGINS = {"feed", "webhook"}
 SOURCE_LABELS = {"gmail": "Gmail", "gcalendar": "Calendar", "email_imap": "Email", "heartbeat": "Check-in", "webhook": "Webhook"}
 DEFAULT_TYPE = "custom_proactive_action"
+LIVE_SEARCH_MAX_CHARS = 4000  # longest look-up summary handed to the reasoner
 CONTEXT_EXCLUDED_PLUGINS = {"memory", "skills", "files", "core"}
 ATTENTION_STATUSES = {"approval_pending", "clarification_pending", "waiting_for_user", "error", "completed_with_errors"}
 INACTIVE_TASK_STATUSES = {"archived", "cancelled", "declined", "completed"}
@@ -600,8 +601,10 @@ class ProactiveEngine(Service):
             text = "\n".join(tool_outputs)
         if result.held:  # actions it wanted to take: the reasoner can offer them as a suggestion instead
             held = "; ".join(f"{h['tool']} {json.dumps(h['arguments'], default=str)[:200]}" for h in result.held[:3])
-            text = f"{text}\n\nNot done, because it needs the user's approval: {held}".strip()
-        return text[:4000] or None
+            note = f"Not done, because it needs the user's approval: {held}"[:LIVE_SEARCH_MAX_CHARS // 2]
+            room = LIVE_SEARCH_MAX_CHARS - len(note) - 2  # cut the search text, never the held actions
+            return f"{text[:room]}\n\n{note}".strip()
+        return text[:LIVE_SEARCH_MAX_CHARS] or None
 
     async def run_reasoner(self, scratchpad: dict) -> dict:
         body = json.dumps(scratchpad, indent=1, default=str, ensure_ascii=False)

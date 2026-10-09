@@ -407,6 +407,8 @@ class Agent:
         """
         ev = ev or {}
         unprompted = is_unprompted(getattr(ctx, "origin", None)) or is_unprompted(source)
+        if unprompted and not is_unprompted(getattr(ctx, "origin", None)):
+            ctx.origin = str(source).strip().lower()  # tools this run starts (a subagent) must see it as unprompted too
         tools = self.registry.openai_schemas(tool_names) or None
         rounds = max_rounds or self.config.models.max_tool_rounds
         text_acc = ""

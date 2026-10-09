@@ -171,9 +171,10 @@ async def test_proactive_lookups_cannot_act_and_the_held_action_reaches_the_reas
     assert "vault_lookup" in offered and not offered & {"vault_edit", "vault_send", "vault_run", "vault_note"}
 
 
-async def test_a_subagent_started_by_unprompted_work_is_unprompted_too(app):
+@pytest.mark.parametrize("channel", ["proactive", "web"])  # "web": only the run's source says it is unprompted
+async def test_a_subagent_started_by_unprompted_work_is_unprompted_too(app, channel):
     app.config.subagents.enabled = True
-    ctx = app.agent.tool_context(None, "proactive")
+    ctx = app.agent.tool_context(None, channel)
     app.fake.replies[:] = [[tool_call("delegate_task", goal="look into the invoice", tools=["vault"])],
                            [tool_call("vault_edit"), tool_call("vault_lookup", query="x")], "sub done", "all done"]
     result = LoopResult()
@@ -183,6 +184,23 @@ async def test_a_subagent_started_by_unprompted_work_is_unprompted_too(app):
     assert "vault_edit" not in RAN and RAN == ["vault_lookup"]
     delegated = next(m["content"] for m in result.messages if m.get("role") == "tool")
     assert '"status": "completed"' in delegated and "sub done" in delegated
+    assert ctx.origin == "proactive"
+
+
+async def test_held_actions_survive_a_long_lookup_summary(app):
+    """Five long look-ups and a step limit: the search text is cut, the held action is not."""
+    from sentient.proactivity.service import LIVE_SEARCH_MAX_CHARS
+
+    app.config.proactivity.context_agent_rounds = 3
+    long = "x" * 2000
+    app.fake.replies[:] = [[tool_call("vault_lookup", query=long), tool_call("vault_lookup", query="invoice", buy=True)],
+                           [tool_call("vault_lookup", query=long), tool_call("vault_lookup", query=long + "y")],
+                           [tool_call("vault_lookup", query=long + "z"), tool_call("vault_lookup", query=long + "w")]]
+    text = await app.proactivity.live_search("gmail", "new_email", {"id": "m1", "subject": "Invoice"},
+                                             {"q": "is the invoice paid"})
+    assert text is not None and len(text) <= LIVE_SEARCH_MAX_CHARS
+    assert "xxxx" in text and "needs the user's approval: vault_lookup" in text and '"buy": true' in text
+    assert "vault_lookup:buy" not in RAN
 
 
 async def test_every_unprompted_entry_point_runs_unprompted(app, monkeypatch):

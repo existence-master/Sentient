@@ -648,7 +648,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   suggestions the user accepted), or one of `sentient.tools.base.UNPROMPTED_ORIGINS` (`"proactive"`, `"heartbeat"`,
   `"followups"`, `"dreaming"`, `"background"`) for work nobody asked for. `app.agent.tool_context(session_id, channel,
   origin=None)` uses the channel when it is one of those names, else `"user"`.
-- `run_loop` treats a run as unprompted when `ctx.origin` or its `source` is in `UNPROMPTED_ORIGINS`. Such a run only
+- `run_loop` treats a run as unprompted when `ctx.origin` or its `source` is in `UNPROMPTED_ORIGINS`. When only the
+  `source` says so, `ctx.origin` is set to it, so tools the run starts (a subagent) inherit it. Such a run only
   runs calls whose effective risk is `read`, or `internal` tools at `write` outside the `tasks` app
   (`sentient.tools.rules.unprompted_allows`). Anything else is refused before approval modes and lasting rules are
   looked at, so an Allow rule never lifts it; the tool result is `{error: "Nobody asked for this work, so Sentient can

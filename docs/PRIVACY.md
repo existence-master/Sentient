@@ -29,9 +29,10 @@ service name `sentient`.
 - Sentient asks before sending, deleting, buying or running code, and purchases always ask, even if you allowed an
   action for the rest of a chat.
 - Code that Sentient writes runs without your keys and can only read, not send.
-- Work Sentient starts on its own (suggestions, follow-up checks, the nightly memory tidy-up) can only look things up.
-  Anything that would send, delete, buy or run code becomes a suggestion you approve, whatever your approval
-  settings say.
+- Work Sentient starts on its own (suggestions, follow-up checks, the nightly memory tidy-up) can only look things up
+  and change Sentient's own data, such as its memory and notes. Anything that would send, delete, buy, run code or
+  change something outside Sentient is not done, whatever your approval settings say. Sentient may offer it to you
+  as a suggestion to approve instead.
 - Photos and screenshots from your devices ask first.
 - One-time codes, sign-in links and password reset links in your email are hidden from the AI, so a tricky email
   can't get them out of Sentient. You still see them when you open the email in your mail app. You can turn this off

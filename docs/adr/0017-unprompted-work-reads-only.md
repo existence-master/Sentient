@@ -30,8 +30,8 @@ run that started them.
 ## Consequences
 
 The rule holds whatever the settings say, and new background jobs get it by naming their channel or source. A
-proactive check can still read mail, calendars and the web. Anything it wants to do reaches the user as a suggestion,
-and approving it starts a user-origin task, so approved work is unaffected. A future background job that needs to
+proactive check can still read mail, calendars and the web. Anything else it wants to do is not done; the reasoner
+may offer it as a suggestion, and approving one starts a user-origin task, so approved work is unaffected. A future background job that needs to
 act must go through a suggestion or a task the user approves.
 
 ## Alternatives considered
