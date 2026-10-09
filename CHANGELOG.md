@@ -16,6 +16,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - **Follow-ups:** once a day Sentient notices emails waiting on your reply, and your own questions nobody answered,
   in Gmail and IMAP email, and suggests a ready draft. Newsletters, no-reply senders and answered threads are skipped,
   and nothing is sent until you approve it. Settings under Proactivity.
+- Sentient stops when it keeps repeating itself: the same tool with the same details giving the same result three
+  times. In chat it is first asked to try something else, then it tells you it stopped; a task fails with a clear
+  reason and the usual "Task failed" notification. Settings > Approvals & safety.
+- When a task reaches one of its limits (40 steps, 30 minutes of work, and on cloud models 2,000,000 tokens or about
+  $5 by default) it pauses and asks: "This task has used 40 steps and isn't finished yet. Keep going for another 40,
+  or stop here?" Keep going raises that limit for this run; Stop here ends it with a plain message. Time spent waiting
+  for your answer doesn't count. Helpers have their own token and spending limits too (1,000,000 tokens and about $2).
 - **Memory sources:** under a chat reply, "Used 3 memories" shows what Sentient had in mind when it answered: the
   memories and things it has learned about you that were in front of it, and any it looked up. Each one has
   **This is wrong** to fix or forget it on the spot, and a link to it on the Memory or About you page.

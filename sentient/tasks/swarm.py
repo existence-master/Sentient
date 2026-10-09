@@ -13,9 +13,9 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from sentient.agent.loop import LoopResult
+from sentient.agent.loop import Budget, LoopResult
 from sentient.llm.provider import parse_json_loose
-from sentient.tasks.executor import select_tools
+from sentient.tasks.executor import run_budget, select_tools
 from sentient.tasks.jsonio import complete_json
 from sentient.tasks.prompts import (
     ITEM_EXTRACTOR_SYSTEM_PROMPT,
@@ -116,7 +116,9 @@ def parse_worker_output(text: str) -> Any:
     return cleaned
 
 
-async def run_worker(svc: TaskService, task: dict, run_id: str, worker_id: str, item: Any, config: dict) -> Any:
+async def run_worker(
+    svc: TaskService, task: dict, run_id: str, worker_id: str, item: Any, config: dict, budget: Budget | None = None
+) -> Any:
     app = svc.app
     assert app.agent is not None
     task_id = task["id"]
@@ -144,6 +146,7 @@ async def run_worker(svc: TaskService, task: dict, run_id: str, worker_id: str, 
             max_rounds=app.config.tasks.max_tool_rounds,
             use_approvals=False,
             source="task",
+            budget=budget,
         ):
             pass
     except Exception as exc:
@@ -169,10 +172,11 @@ async def execute_swarm(svc: TaskService, task: dict, run: dict) -> tuple[str, l
         if isinstance(i, int) and 0 <= i < len(items)
     ]
     limit = asyncio.Semaphore(svc.app.config.tasks.swarm_max_agents)
+    budget = run_budget(svc.app.config)  # all workers of one swarm run share one token and cost limit
 
     async def one(n: int, config: dict, index: int) -> Any:
         async with limit:
-            return await run_worker(svc, task, run_id, f"agent-{n + 1}", items[index], config)
+            return await run_worker(svc, task, run_id, f"agent-{n + 1}", items[index], config, budget)
 
     results = list(await asyncio.gather(*(one(n, c, i) for n, (c, i) in enumerate(jobs))))
     failed = sum(1 for r in results if isinstance(r, dict) and "error" in r)

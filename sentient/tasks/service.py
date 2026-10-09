@@ -29,7 +29,7 @@ from typing import Any
 
 from sentient.llm.provider import ProviderError
 from sentient.services import Service, cancel_tasks
-from sentient.tasks import ask, executor, scripts, swarm
+from sentient.tasks import ask, executor, limits, scripts, swarm
 from sentient.tasks.executor import RunFailed, RunPaused
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
@@ -699,9 +699,31 @@ class TaskService(Service):
             raise TaskNotFound(run_id)
         if run["status"] != "waiting_for_user":
             raise TaskConflict("This run is not waiting for an answer.")
-        call_id = (run.get("pending_question") or {}).get("tool_call_id")
+        pending = run.get("pending_question") or {}
+        if pending.get("limit") in limits.KINDS:
+            return await self._answer_limit(task_id, run, pending, text)
+        call_id = pending.get("tool_call_id")
         messages = ask.fill_result(run.get("messages") or [], call_id, ask.answer_content(text))
         if not await self.repo.resume_run(run_id, messages):
+            raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
+        await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
+        await self._set(task_id, {"status": "processing", "error": None})
+        await self._resolve_question_notifications(run_id, "answered", answer=text)
+        self._dispatch(task_id, run_id, resume=True, answered=True)
+        return await self.get_and_publish(task_id)
+
+    async def _answer_limit(self, task_id: str, run: dict, pending: dict, text: str) -> dict:
+        """A run waiting at a limit: "Keep going" raises that limit for this run; anything else fails the run."""
+        run_id = run["id"]
+        if not limits.keeps_going(text):
+            await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
+            await self._resolve_question_notifications(run_id, "answered", answer=text)
+            error = str(pending.get("stop_error") or "Stopped at a limit without finishing.")
+            await self._finish_run(task_id, run_id, "error", error=error, from_statuses=("waiting_for_user",))
+            return await self.get_and_publish(task_id)
+        state = limits.raise_limit(limits.load(run, self.app.config), pending["limit"])
+        # one guarded write: a run cancelled meanwhile keeps its limits; the raised one survives a restart
+        if not await self.repo.resume_run(run_id, run.get("messages") or [], limits=state):
             raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
         await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
         await self._set(task_id, {"status": "processing", "error": None})
@@ -1245,8 +1267,10 @@ class TaskService(Service):
         status, error = "completed", None
         loop_result = None
         aggregated: list | None = None
+        # a single run keeps its own clock of active time and asks before going over (tasks/limits.py)
+        single = task.get("task_type") != "swarm" and executor.fixed_call_of(task) is None
         try:
-            async with asyncio.timeout(cfg.run_timeout_minutes * 60):
+            async with asyncio.timeout(None if single else cfg.run_timeout_minutes * 60):
                 if task.get("task_type") == "swarm":
                     status, aggregated = await swarm.execute_swarm(self, task, run)
                 elif executor.fixed_call_of(task) is not None:
@@ -1257,7 +1281,7 @@ class TaskService(Service):
             await self._pause_run(task_id, run_id, paused.question)
             return
         except TimeoutError:
-            status, error = "error", f"The run was stopped after {cfg.run_timeout_minutes} minutes (tasks.run_timeout_minutes)."
+            status, error = "error", f"Stopped after {cfg.run_timeout_minutes} minutes without finishing. {limits.LIMITS_HINT}"
         except RunFailed as exc:
             status, error = "error", str(exc)
         except ProviderError as exc:
@@ -1269,9 +1293,9 @@ class TaskService(Service):
 
     async def _finish_run(
         self, task_id: str, run_id: str, status: str, *, error: str | None,
-        loop_result: Any = None, aggregated: list | None = None,
+        loop_result: Any = None, aggregated: list | None = None, from_statuses: tuple[str, ...] = ("processing",),
     ) -> None:
-        if not await self.repo.finish_run(run_id, status, error=error, now=self.now_iso()):
+        if not await self.repo.finish_run(run_id, status, error=error, now=self.now_iso(), from_statuses=from_statuses):
             return  # cancelled meanwhile
         task = await self.repo.get_task(task_id)
         if task is None:

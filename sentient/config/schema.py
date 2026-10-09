@@ -172,6 +172,13 @@ class ApprovalsConfig(BaseModel):
 class ToolsConfig(BaseModel):
     approvals: ApprovalsConfig = Field(default_factory=ApprovalsConfig)
     disabled: list[str] = Field(default_factory=list, description="Tool or plugin ids to hide.")
+    repeated_call_limit: int = Field(
+        3,
+        ge=0,
+        le=20,
+        description="Stop when the assistant uses the same tool with the same details and gets the same result "
+        "this many times. In chat it is first asked to try something else. 0 turns this off.",
+    )
 
 
 class SubagentsConfig(BaseModel):
@@ -182,6 +189,14 @@ class SubagentsConfig(BaseModel):
     max_rounds: int = Field(24, ge=1, le=200, description="Tool rounds per subagent.")
     role: Literal["executor", "primary", "fast"] = Field("executor", description="Model role subagents use.")
     timeout_minutes: int = Field(20, ge=1, description="A subagent is stopped after this long.")
+    max_tokens: int = Field(
+        1_000_000, ge=0, description="A subagent is stopped after using this many tokens on a cloud model "
+        "(local models are not counted). 0 means no limit.",
+    )
+    max_cost_usd: float = Field(
+        2.0, ge=0, description="A subagent is stopped after spending about this many US dollars on a cloud model, "
+        "when the model's price is known. 0 means no limit.",
+    )
 
 
 class UIConfig(BaseModel):
@@ -236,8 +251,21 @@ class MemoryConfig(BaseModel):
 class TasksConfig(BaseModel):
     tick_seconds: int = Field(30, ge=5, description="Scheduler poll interval.")
     max_concurrent_runs: int = Field(2, ge=1, le=16, description="Task runs allowed at the same time.")
-    run_timeout_minutes: int = Field(30, ge=1, description="A single run is stopped after this long.")
-    max_tool_rounds: int = Field(40, ge=1, le=200, description="Max tool-call rounds per task run.")
+    run_timeout_minutes: int = Field(
+        30, ge=1, description="Minutes of work after which a run asks whether to keep going (time spent waiting for "
+        "your answer doesn't count). A swarm is stopped instead.",
+    )
+    max_tool_rounds: int = Field(
+        40, ge=1, le=200, description="Steps after which a run asks whether to keep going (a swarm worker stops)."
+    )
+    max_tokens_per_run: int = Field(
+        2_000_000, ge=0, description="Tokens on a cloud model after which a run asks whether to keep going "
+        "(local models are not counted). A swarm shares one limit and stops. 0 means no limit.",
+    )
+    max_cost_per_run_usd: float = Field(
+        5.0, ge=0, description="US dollars spent on a cloud model after which a run asks whether to keep going, "
+        "when the model's price is known. A swarm shares one limit and stops. 0 means no limit.",
+    )
     require_plan_approval: bool = Field(True, description="Plans wait for your approval before running.")
     swarm_max_agents: int = Field(5, ge=1, le=50, description="Parallel sub-agents per swarm task.")
     resume_interrupted_runs: bool = Field(

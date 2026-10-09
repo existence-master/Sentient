@@ -51,6 +51,7 @@ class StreamChunk:
     tool_calls: list[ToolCall] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
     model: str = ""
+    cost: float | None = None  # US dollars for this call when the provider knows the model's price
 
 
 class LLMProvider(Protocol):
@@ -71,6 +72,17 @@ class LLMProvider(Protocol):
 
 def _provider_prefix(model: str) -> str:
     return model.split("/", 1)[0] if "/" in model else ""
+
+
+def _response_cost(litellm: Any, response: Any, model: str) -> float | None:
+    """Price of one completion from LiteLLM's bundled price list; None when the model's price is unknown."""
+    if response is None or not getattr(response, "usage", None):
+        return None
+    try:
+        cost = litellm.completion_cost(completion_response=response, model=model)
+    except Exception:  # unknown or local model: no price
+        return None
+    return float(cost) if cost else None
 
 
 CACHE_PREFIXES = {"anthropic"}
@@ -197,6 +209,9 @@ class LiteLLMProvider:
         for model in self._chain(role, override):
             try:
                 kwargs = await self._call_kwargs(model, role)
+                if _provider_prefix(model) not in {"ollama", "ollama_chat"}:
+                    # OpenAI-style streams leave out token usage unless asked; budgets and prices need it
+                    kwargs["stream_options"] = {"include_usage": True}
                 sent_messages, sent_tools = apply_prompt_cache(model, messages, tools)
                 if sent_tools:
                     kwargs["tools"] = sent_tools
@@ -247,7 +262,9 @@ class LiteLLMProvider:
                         "prompt_tokens": full.usage.prompt_tokens or 0,
                         "completion_tokens": full.usage.completion_tokens or 0,
                     }
-                yield StreamChunk(done=True, tool_calls=tool_calls, usage=usage, model=model)
+                yield StreamChunk(
+                    done=True, tool_calls=tool_calls, usage=usage, model=model, cost=_response_cost(litellm, full, model)
+                )
                 return
             except Exception as exc:
                 last_error = exc

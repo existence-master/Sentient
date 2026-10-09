@@ -18,10 +18,10 @@ TASK_COLUMNS = {
     "source", "enabled", "assignee", "model", "chat_history", "clarifying_questions", "swarm_details",
     "original_context", "script", "error", "next_execution_at", "last_execution_at", "created_at", "updated_at",
 }
-RUN_JSON_FIELDS = {"plan", "trigger_data", "messages", "result", "pending_question"}
+RUN_JSON_FIELDS = {"plan", "trigger_data", "messages", "result", "pending_question", "limits"}
 RUN_COLUMNS = {
     "status", "plan", "trigger_data", "messages", "result", "error", "resume_count", "retry_of",
-    "pending_question", "started_at", "finished_at", "created_at",
+    "pending_question", "limits", "started_at", "finished_at", "created_at",
 }
 # Columns added after the first stub schema; ensured on start for older databases.
 _ADDED_TASK_COLUMNS = {
@@ -38,6 +38,7 @@ _ADDED_TASK_COLUMNS = {
 }
 _ADDED_RUN_COLUMNS = {
     "plan": "TEXT", "resume_count": "INTEGER NOT NULL DEFAULT 0", "retry_of": "TEXT", "pending_question": "TEXT",
+    "limits": "TEXT",
 }
 
 # Progress updates embedded in each run of a serialized Task; the full log is at
@@ -238,12 +239,13 @@ class TaskRepo:
         )
         return (cur.rowcount or 0) > 0
 
-    async def resume_run(self, run_id: str, messages: list[dict]) -> bool:
-        """Compare-and-set a waiting run back to processing with the answered transcript. False if not waiting."""
+    async def resume_run(self, run_id: str, messages: list[dict], *, limits: dict | None = None) -> bool:
+        """Compare-and-set a waiting run back to processing with the answered transcript (and, for "Keep going",
+        its raised ``limits``, in the same write). False if not waiting."""
         cur = await self.store.execute(
-            "UPDATE task_runs SET status = 'processing', pending_question = NULL, messages = ?"
-            " WHERE id = ? AND status = 'waiting_for_user'",
-            (_dumps(messages), run_id),
+            "UPDATE task_runs SET status = 'processing', pending_question = NULL, messages = ?,"
+            " limits = COALESCE(?, limits) WHERE id = ? AND status = 'waiting_for_user'",
+            (_dumps(messages), _dumps(limits), run_id),
         )
         return (cur.rowcount or 0) > 0
 

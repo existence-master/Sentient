@@ -39,7 +39,7 @@ from pydantic import ValidationError
 from sentient import paths
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.prompt import build_system_prompt
-from sentient.agent.toolselect import ToolSelector
+from sentient.agent.toolselect import ToolSelector, is_local_model
 from sentient.config.schema import SentientConfig
 from sentient.files.extract import extract_text, is_image
 from sentient.llm.events import (
@@ -89,6 +89,11 @@ SPOKEN_CHANNELS = {"voice", "glasses", "phone"}  # these turns use the voice rol
 DECLINED = (
     "NOT DONE. The user declined this action, so it did not happen. Tell the user plainly that it was not done "
     "and never say or imply that it succeeded."
+)
+# Loop breaker: small models can repeat one failing call many times. Said once in chat; the next repeat ends the turn.
+REPEAT_NUDGE = (
+    "You called {name} with exactly the same arguments several times and got the same result each time. "
+    "Do not call it again with these arguments. Try something different, or answer the user with what you have."
 )
 PersistFn = Callable[..., Awaitable[Any]]
 # policy(tool, effective_risk, arguments) -> refusal message or None (sync or async)
@@ -218,8 +223,68 @@ class LoopResult:
     paused: bool = False  # ``stop`` ended the loop after a round of tool results (a task run asked the user)
     # set when an "ask" rule stopped an unattended run (also copied to ``error``); plain words for the user
     stopped_by_rule: str | None = None
+    # set when the loop breaker ended the loop (unattended runs also copy it to ``error``); plain words
+    stopped_by_repeat: str | None = None
+    stopped_by_budget: str | None = None  # a token or cost ``Budget`` ran out (also copied to ``error``)
     # calls refused because nobody asked for this work (ADR 0017): [{tool, arguments}], for a suggestion instead
     held: list[dict] = field(default_factory=list)
+
+
+def repeat_message(name: str, times: int) -> str:
+    return (
+        f"Stopped because the same step kept repeating: {name} ran {times} times with the same details "
+        "and got the same result each time."
+    )
+
+
+@dataclass
+class Budget:
+    """Spending limits for one unattended run (a task run, a swarm, a subagent), checked before each model call.
+
+    Only cloud models count: a local model costs nothing per token. Cost adds up only for models whose price
+    the provider knows. 0 means no limit. One object can be shared by several loops (a swarm's workers).
+    """
+
+    max_tokens: int = 0
+    max_cost_usd: float = 0.0
+    tokens: int = 0
+    cost_usd: float = 0.0
+    steps: int = 0  # model calls made under this budget (task runs carry it across loops and pauses)
+    deadline: float | None = None  # ``time.monotonic()`` after which no new model call starts (task runs)
+
+    def add(self, model: str, usage: dict, cost: float | None) -> None:
+        if is_local_model(model or ""):
+            return
+        self.tokens += int(usage.get("prompt_tokens", 0) or 0) + int(usage.get("completion_tokens", 0) or 0)
+        if cost:
+            self.cost_usd += cost
+
+    def over(self) -> str | None:
+        """Which limit is reached: ``"tokens"``, ``"cost_usd"``, ``"seconds"`` or None."""
+        if self.max_tokens and self.tokens >= self.max_tokens:
+            return "tokens"
+        if self.max_cost_usd and self.cost_usd >= self.max_cost_usd:
+            return "cost_usd"
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            return "seconds"
+        return None
+
+    def exceeded(self) -> str | None:
+        """Plain words for the user when a limit is reached, else None."""
+        kind = self.over()
+        if kind == "tokens":
+            return (
+                f"Stopped after using {self.tokens:,} tokens without finishing. "
+                f"The limit for one run is {self.max_tokens:,}."
+            )
+        if kind == "cost_usd":
+            return (
+                f"Stopped after spending about ${self.cost_usd:.2f} on the model without finishing. "
+                f"The limit for one run is ${self.max_cost_usd:.2f}."
+            )
+        if kind == "seconds":
+            return "Stopped at the time limit without finishing."
+        return None
 
 
 class SteerQueue:
@@ -257,6 +322,7 @@ class _CallPlan:
     concurrent: bool = False  # may run at the same time as neighbouring look-ups
     outcome: tuple[Any, bool, int] | None = None
     rule_stop: bool = False  # an "ask" rule refused this call in a run nobody can answer
+    seen: str = ""  # the result as JSON; the loop breaker compares it
     held: bool = False  # refused because nobody asked for this work (ADR 0017)
 
 
@@ -396,6 +462,8 @@ class Agent:
         steer: SteerQueue | None = None,
         policy: PolicyFn | None = None,
         stop: Callable[[], bool] | None = None,
+        budget: Budget | None = None,
+        repeat_nudge: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         """Stream a tool-calling conversation. Mutates ``messages`` and fills ``result``.
 
@@ -406,7 +474,13 @@ class Agent:
         for (ADR 0017), only look-ups and Sentient-internal changes run, whatever the approval mode or rules
         say; refused calls are listed in ``result.held``. ``stop()`` is checked after each round of tool
         results; when it returns True the loop ends without another model call and sets
-        ``result.paused`` (task runs use it to wait for the user's answer). Yields everything except ``Done``.
+        ``result.paused`` (task runs use it to wait for the user's answer). ``budget`` is checked
+        before each model call; when it has run out the loop ends with ``result.stopped_by_budget``.
+
+        Loop breaker (``tools.repeated_call_limit``): when the same tool with the same arguments gets
+        the same result that many times, the loop ends with ``result.stopped_by_repeat`` (and ``error``).
+        With ``repeat_nudge`` (chat) the model is first told once to try something else, and a stop ends
+        the turn with a plain reply instead of an error. Yields everything except ``Done``.
         """
         ev = ev or {}
         unprompted = is_unprompted(getattr(ctx, "origin", None)) or is_unprompted(source)
@@ -414,12 +488,23 @@ class Agent:
             ctx.origin = str(source).strip().lower()  # tools this run starts (a subagent) must see it as unprompted too
         tools = self.registry.openai_schemas(tool_names) or None
         rounds = max_rounds or self.config.models.max_tool_rounds
+        repeat_limit = self.config.tools.repeated_call_limit
+        repeats: dict[tuple[str, str], tuple[str, int]] = {}  # (tool, arguments) -> (last result, times it came back)
+        repeat_nudged = False
         text_acc = ""
         tools_disabled = False
         empty_nudged = False
         round_no = 0
         while round_no < rounds:
             round_no += 1
+            over = budget.exceeded() if budget is not None else None
+            if over:
+                result.stopped_by_budget = result.error = over
+                result.text = text_acc
+                result.messages = messages
+                return
+            if budget is not None:
+                budget.steps += 1
             if steer is not None:
                 for text in steer.take():
                     async for e in self._interject(text, messages, persist, result, ev):
@@ -441,6 +526,8 @@ class Agent:
                             result.prompt_tokens += chunk.usage.get("prompt_tokens", 0)
                             result.completion_tokens += chunk.usage.get("completion_tokens", 0)
                             yield Usage(model=chunk.model, **chunk.usage, **ev)
+                            if budget is not None:
+                                budget.add(chunk.model, chunk.usage, getattr(chunk, "cost", None))
                             with contextlib.suppress(Exception):
                                 await self.store.record_usage(
                                     chunk.model, chunk.usage.get("prompt_tokens", 0),
@@ -543,6 +630,25 @@ class Agent:
                 result.text = ""
                 result.messages = messages
                 return
+            looping = self._repeated(plans, repeats, repeat_limit)
+            if looping is not None:
+                if repeat_nudge and not repeat_nudged:  # chat: one nudge, consistent with the other small-model nudges
+                    repeat_nudged = True
+                    messages.append({"role": "user", "content": REPEAT_NUDGE.format(name=looping[0])})
+                    continue
+                result.stopped_by_repeat = repeat_message(*looping)
+                result.messages = messages
+                if repeat_nudge:  # a chat turn ends with a plain reply the user can act on
+                    reply = (
+                        f"I stopped because I kept repeating the same step ({looping[0]} with the same details) "
+                        "without getting anywhere. Tell me what to change, or give me the missing detail, and I'll try again."
+                    )
+                    yield TextDelta(text=reply, **ev)
+                    result.text = reply
+                else:
+                    result.error = result.stopped_by_repeat
+                    result.text = text_acc
+                return
 
         result.hit_step_limit = True
         result.text = text_acc or "I reached the step limit before finishing. Tell me how to continue."
@@ -598,6 +704,27 @@ class Agent:
             plan.preset = ({"error": unattended_ask_message(self.approvals.label(tool, self.registry))}, True, 0)
             plan.rule_stop = True
         return plan
+
+    @staticmethod
+    def _repeated(
+        plans: list[_CallPlan], repeats: dict[tuple[str, str], tuple[str, int]], limit: int
+    ) -> tuple[str, int] | None:
+        """Count calls that repeat an earlier call (same tool, same arguments) and got the same result again.
+
+        Returns ``(tool name, times)`` once a call has done that ``limit`` times, else None. A different
+        result starts the count again, so polling something that changes never trips it. Deterministic.
+        """
+        if limit <= 0:
+            return None
+        hit: tuple[str, int] | None = None
+        for p in plans:
+            key = (p.tc.name, json.dumps(p.tc.arguments, sort_keys=True, ensure_ascii=False, default=str))
+            last, times = repeats.get(key, ("", 0))
+            times = times + 1 if times and last == p.seen else 1
+            repeats[key] = (p.seen, times)
+            if times >= limit and hit is None:
+                hit = (p.tc.name, times)
+        return hit
 
     def _groups(self, plans: list[_CallPlan]) -> list[list[_CallPlan]]:
         """Consecutive look-ups that need no approval run together; everything else runs alone, in order."""
@@ -677,6 +804,7 @@ class Agent:
         ):
             result.skills_viewed.append(tc.arguments["name"])
         # record the result before yielding so a checkpoint taken on this event is complete
+        p.seen = _json_safe(res)
         content = await self._tool_content(res, tc.id)
         messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": content})
         if persist:
@@ -819,7 +947,7 @@ class Agent:
 
             async for event in self.run_loop(
                 messages, ctx, result=result, role=role, model=model, tool_names=tool_names,
-                persist=persist, source="chat", ev=ev, steer=steer,
+                persist=persist, source="chat", ev=ev, steer=steer, repeat_nudge=True,
             ):
                 if isinstance(event, TextDelta):
                     partial += event.text

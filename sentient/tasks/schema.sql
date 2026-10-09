@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS task_runs (
     error         TEXT,
     resume_count  INTEGER NOT NULL DEFAULT 0,
     retry_of      TEXT,                           -- run id this run retries (continues from its transcript)
-    pending_question TEXT,                        -- JSON {question, options, tool_call_id, asked_at} while waiting_for_user
+    pending_question TEXT,                        -- JSON {question, options, tool_call_id, asked_at, limit?, stop_error?} while waiting_for_user
+    limits        TEXT,                           -- JSON {base, max, used} of steps, seconds, tokens, cost_usd (tasks/limits.py)
     started_at    TEXT,
     finished_at   TEXT,
     created_at    TEXT NOT NULL

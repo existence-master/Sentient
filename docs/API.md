@@ -223,7 +223,7 @@ task-creation prompt still only produces daily/weekly (v2), the planner uses `in
  "error": null, "retry_of": "run id this run retries|null",
  "pending_question": {"question": "Which flight should I book?", "options": ["IndiGo 07:10", "Air India 09:40"], "asked_at": "..."} | null}
 ```
-`pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question" below).
+`pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question" and "Limits on a run" below).
 Already approved one-call tasks (a follow-up's Send, section 6) carry `original_context.fixed_call = {tool, arguments,
 done_text}` and a one-step `plan`. They are created `pending`, start a run at once with no planner and no executor model,
 and the run makes exactly that call with exactly those arguments (`tool_call`, `tool_result`, `final_answer` updates). A
@@ -305,6 +305,42 @@ Behaviour notes:
 - While a task waits: `approve`, `chat`, `run-now` and `retry` on a one-off task return 409; recurring tasks are not
   started by the scheduler until the answer arrives; triggered tasks keep accepting events (each in its own run) and
   return to `waiting_for_user` when those runs end.
+
+### Limits on a run
+Every task run has limits, checked deterministically (no model decides). A single run that reaches its step, time,
+token or cost limit **pauses and asks**, using the same `waiting_for_user` machinery as `ask_user` above: the run's
+`pending_question` is the question below with `options: ["Keep going", "Stop here"]`, and the same
+`"<task name> needs your answer"` notification (`payload.event: "question"`) is sent. The run's transcript is kept.
+
+| Limit | Config (`tasks.*`) | Default | Question | Error after "Stop here" |
+|---|---|---|---|---|
+| Steps (model rounds) | `max_tool_rounds` | 40 | `This task has used 40 steps and isn't finished yet. Keep going for another 40 steps, or stop here?` | `Stopped after 40 steps without finishing. The limits for one run are in Settings > Tasks.` |
+| Active time | `run_timeout_minutes` | 30 | `This task has been working for 30 minutes and isn't finished yet. Keep going for another 30 minutes, or stop here?` | `Stopped after 30 minutes without finishing. ...` |
+| Tokens on cloud models | `max_tokens_per_run` | 2000000 | `This task has used 2,000,400 tokens of your 2,000,000 token limit and isn't finished yet. Keep going for another 2,000,000 tokens, or stop here?` | `Stopped after using 2,000,400 tokens without finishing. The limit for one run is 2,000,000 tokens. ...` |
+| Spend on cloud models | `max_cost_per_run_usd` | 5.0 | `This task has used $5.02 of your $5.00 limit and isn't finished yet. Keep going for another $5.00, or stop here?` | `Stopped after spending about $5.02 on the model without finishing. The limit for one run is $5.00. ...` |
+
+- Answering `Keep going` (any case, surrounding spaces and a final `.`/`!` ignored) raises that limit by its original
+  amount for this run only and continues from the transcript (no restart note). Any other answer, including
+  `Stop here`, fails the run: status `error` with the message above, an `error` progress update and the usual
+  `Task failed` notification (`payload.event: "run_failed"`). Cancel works as for any waiting run.
+- The run keeps `limits: {base, max, used}` (each `{steps, seconds, tokens, cost_usd}`) in `task_runs.limits`, saved
+  whenever the run pauses, ends or is interrupted (quit or Cancel), and together with the resume when a limit is
+  raised, so used amounts and raised limits carry across questions and restarts.
+  `pending_question` also stores `limit` (`steps`|`seconds`|`tokens`|`cost_usd`) and `stop_error`; the API shows only
+  `{question, options, asked_at}`.
+- Time counts only while the run is working, never while it waits for an answer. Time, tokens and cost are checked
+  before each model call, so a run goes at most one call past its limit. A tool or model call still running 120 s
+  after the time limit (`executor.HARD_DEADLINE_GRACE_S`) is cancelled and the run asks the time question; the
+  transcript keeps every finished step and the cancelled call is dropped, so "Keep going" simply tries it again.
+  Steps include the executor's "carry on" nudges. Tokens and cost of models with a local prefix (`ollama`,
+  `ollama_chat`, `lm_studio`, `llamafile`, `vllm`, `hosted_vllm`) are not counted. Streamed calls to every model except
+  Ollama ask for usage (`stream_options.include_usage`). Cost uses LiteLLM's price list and only adds up for models
+  whose price it knows. `0` turns a token or cost limit off. A retry starts with fresh limits.
+- Repeated calls (`tools.repeated_call_limit`, default 3) never ask: the run fails at once with
+  `Stopped because the same step kept repeating: file_read ran 3 times with the same details and got the same result each time. Edit the task to add what it needs, or retry it.`
+- Swarm runs and fixed-call runs do not ask. A swarm's workers share one token and cost limit and stop with an error
+  when it runs out (the swarm finishes `completed_with_errors`); `run_timeout_minutes` stops the whole swarm or
+  fixed call with `Stopped after 30 minutes without finishing. ...`.
 
 ---
 
@@ -675,6 +711,10 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - While a foreground subagent runs, the parent emits `tool_progress` with `kind: "subagent"` and `data: {subagent_id, message}`.
 - Subagents cannot spawn subagents, use the voice role, or run tools of effective risk `send` or `exec`; those calls are
   denied with an explanation the parent can relay.
+- Limits: `subagents.max_rounds` steps (default 24), `subagents.timeout_minutes` (20), and on cloud models
+  `subagents.max_tokens` (1000000) and `subagents.max_cost_usd` (2.0, when the price is known; `0` = no limit). The
+  repeated-call breaker applies too. Reaching one ends the subagent with `status: "error"` and a plain `error`
+  (`Stopped after 24 steps without finishing.`, `Stopped after using 1,000,600 tokens without finishing. ...`).
 
 ### Hooks other packages rely on
 - Before compressing old turns, `run_turn` calls the memory package's
@@ -684,6 +724,15 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   Task runs publish `task.run_finished` `{task_id, run_id, status, tool_errors, skills_viewed}`.
 - `Agent.run_loop(..., stop=fn)`: `fn()` is checked after each round of tool results; when it returns True the loop ends
   without another model call and sets `LoopResult.paused` (task runs use it for `ask_user`).
+- `Agent.run_loop(..., budget=Budget(max_tokens, max_cost_usd))` (`sentient.agent.loop.Budget`): checked before each
+  model call; when it has run out the loop ends with `LoopResult.stopped_by_budget` (also in `error`). Usage from
+  local models is not counted; `StreamChunk.cost` (US dollars, or None when the price is unknown) feeds the cost.
+- Loop breaker, on every surface: when the same tool with the same arguments returns the same result
+  `tools.repeated_call_limit` times (default 3; a different result starts the count again; `0` = off), the loop ends
+  with `LoopResult.stopped_by_repeat`. Unattended loops (tasks, swarm workers, subagents, proactivity) also set `error`.
+  With `repeat_nudge=True` (chat turns, including voice and channels) the model is first told once to try something
+  else; a further repeat ends the turn with a plain assistant reply (streamed as `text_delta`, then `done`) saying it
+  stopped because it kept repeating the same step.
 - A `ToolPlugin` with `scoped = True` is never offered by default: `registry.tools()`, `registry.catalog()` and
   `registry.openai_schemas()` leave it out, and `openai_schemas(names)` includes its tools only when named.
 
