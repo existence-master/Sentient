@@ -200,6 +200,15 @@ async def test_undo_puts_the_previous_setup_back_once(app, keys):
     assert err.value.status == 409
 
 
+async def test_picking_the_preset_in_use_again_keeps_the_undo_step(app):
+    app.config.models.roles.primary = "ollama_chat/qwen3:14b"  # a setup that isn't a preset
+    await presets.apply(app, "Local only")
+    again = await presets.apply(app, "Local only")
+    assert again["changed"] == [] and again["can_undo"] is True
+    await presets.undo(app)
+    assert app.config.models.roles.primary == "ollama_chat/qwen3:14b" and app.config.models.active_preset is None
+
+
 async def test_changing_a_role_by_hand_marks_the_preset_modified(app):
     await presets.apply(app, "Local only")
     app.config.models.roles.fast = "ollama_chat/qwen3:4b"

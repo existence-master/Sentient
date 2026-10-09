@@ -163,9 +163,18 @@ async def apply(app: Any, name: str) -> dict[str, Any]:
             value = preset[f]
             setattr(cfg.models, f, dict(value) if isinstance(value, dict) else value)
     cfg.models.active_preset = preset["name"]
-    undo = {"preset": before.models.active_preset, "setup": _snapshot(before)}
-    app.save_config(cfg)
-    await app.store.set_meta(UNDO_META_KEY, json.dumps(undo))
+    if _snapshot(cfg) == _snapshot(before) and cfg.models.active_preset == before.models.active_preset:
+        # already in use, unchanged: nothing to save, and the undo step still points at the setup before it
+        return {"preset": preset["name"], "changed": [], "missing": await missing(cfg),
+                "can_undo": await _undo_entry(app) is not None}
+    previous = await app.store.get_meta(UNDO_META_KEY)
+    await app.store.set_meta(UNDO_META_KEY, json.dumps({"preset": before.models.active_preset,
+                                                        "setup": _snapshot(before)}))
+    try:
+        app.save_config(cfg)
+    except Exception:
+        await app.store.set_meta(UNDO_META_KEY, previous or "null")
+        raise
     return {"preset": preset["name"], "changed": _changes(before, cfg), "missing": await missing(cfg),
             "can_undo": True}
 
