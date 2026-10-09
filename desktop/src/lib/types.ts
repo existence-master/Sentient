@@ -95,6 +95,8 @@ export interface ModelsConfig {
   fallbacks: Record<string, string[]>
   reasoning: Record<string, ReasoningEffort | string>
   temperature: Record<string, number>
+  context_length: number
+  context_length_per_role: Record<string, number>
   providers: Record<string, ProviderConfig>
   max_tool_rounds: number
   request_timeout_s: number

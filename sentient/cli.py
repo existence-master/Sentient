@@ -138,6 +138,13 @@ async def _doctor() -> None:
             row("primary model", True, f"{s.llm.model_for('primary')} -> {text.strip()[:40]!r}")
         except Exception as exc:
             row("primary model", False, f"{s.llm.model_for('primary')}: {exc}")
+        sizes: dict[int, list[str]] = {}
+        for role in ("primary", "fast", "planner", "executor", "vision", "voice"):
+            n = await s.llm.context_length(role)
+            if n:
+                sizes.setdefault(n, []).append(role)
+        if sizes:
+            row("context length", True, "; ".join(f"{n} tokens: {', '.join(roles)}" for n, roles in sizes.items()))
         try:
             [vec] = await s.llm.embed(["hello"])
             row("embedding model", True, f"{s.llm.model_for('embedding')} (dim {len(vec)})")
