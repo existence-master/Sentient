@@ -39,6 +39,9 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 MAX_PROGRESS_RESULT_CHARS = 6000
+# A run's time limit is checked before each model call. A tool or model call still running this long after the
+# limit is cancelled (a hung call must not run forever) and the run asks whether to keep going, as at the limit.
+HARD_DEADLINE_GRACE_S = 120.0
 # Writing skills is the evolution reviewer's job; inside a run it only distracts small models.
 EXECUTOR_EXCLUDED_TOOLS = {"skill_save"}
 MAX_CONTINUE_NUDGES = 2
@@ -229,43 +232,49 @@ async def execute_single(
     assert app.agent is not None
     task_id, run_id = task["id"], run["id"]
     state = limits.load(run, app.config)
-    started = time.monotonic()
-    plan = run.get("plan") or task.get("plan") or []
-    requested = [str(s.get("tool", "")) for s in plan if isinstance(s, dict)]
-    tool_names, tool_map, missing = select_tools(app.registry, requested)
-    if missing:
-        await svc.progress(task_id, run_id, {
-            "type": "info",
-            "content": f"The plan mentions tools that are not available: {', '.join(missing)}. The executor will work around them.",
-        })
-
-    checkpoint = run.get("messages") if resume else None
-    if isinstance(checkpoint, list) and checkpoint:
-        messages = history_to_openai(checkpoint)
-        if not answered and not is_first_retry_attempt(run):  # a retry's checkpoint already ends with the retry note
-            messages.append({"role": "user", "content": RESUME_NOTE})
-    else:
-        system = await _executor_system_prompt(svc, task, run, plan, tool_map)
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": EXECUTOR_KICKOFF}]
-        await svc.repo.update_run(run_id, {"messages": messages})
-
-    ctx = app.agent.tool_context(None, "task")
-    asking: dict[str, Any] = {"asked": ask.count_questions(messages)}
-    ctx.extra.update({"task_id": task_id, "run_id": run_id, ask.STATE_KEY: asking})
-    if app.registry.get(ask.ASK_TOOL) is not None:
-        tool_names = [*tool_names, ask.ASK_TOOL]
-    result = LoopResult()
     used, limit = state["used"], state["max"]
-    # one budget for the whole run (continue nudges included), carried across pauses in ``state``
+    started = time.monotonic()
+    remaining_s = max(limit["seconds"] - used["seconds"], 0)
+    # One budget for the whole run (continue nudges included), carried across pauses in ``state``. Its deadline is
+    # checked before each model call, so a call in flight may finish; the hard deadline below catches a hung one.
     budget = Budget(
         max_tokens=int(limit["tokens"]), max_cost_usd=float(limit["cost_usd"]),
         tokens=int(used["tokens"]), cost_usd=float(used["cost_usd"]), steps=int(used["steps"]),
+        deadline=started + remaining_s,
     )
-    mapper = ProgressMapper(svc, task_id, run_id)
-    remaining_s = limit["seconds"] - used["seconds"]
-    timer = asyncio.timeout(max(remaining_s, 0))  # active time only: waiting for an answer is not counted
+    result = LoopResult()
+    messages: list[dict] = []
+    asking: dict[str, Any] = {}
+    # active time only (waiting for an answer is not counted), plus a grace so a slow call can finish first
+    hard = asyncio.timeout(remaining_s + HARD_DEADLINE_GRACE_S)
     try:
-        async with timer:
+        async with hard:
+            plan = run.get("plan") or task.get("plan") or []
+            requested = [str(s.get("tool", "")) for s in plan if isinstance(s, dict)]
+            tool_names, tool_map, missing = select_tools(app.registry, requested)
+            if missing:
+                await svc.progress(task_id, run_id, {
+                    "type": "info",
+                    "content": f"The plan mentions tools that are not available: {', '.join(missing)}. "
+                    "The executor will work around them.",
+                })
+
+            checkpoint = run.get("messages") if resume else None
+            if isinstance(checkpoint, list) and checkpoint:
+                messages = history_to_openai(checkpoint)
+                if not answered and not is_first_retry_attempt(run):  # a retry's checkpoint already has its note
+                    messages.append({"role": "user", "content": RESUME_NOTE})
+            else:
+                system = await _executor_system_prompt(svc, task, run, plan, tool_map)
+                messages = [{"role": "system", "content": system}, {"role": "user", "content": EXECUTOR_KICKOFF}]
+                await svc.repo.update_run(run_id, {"messages": messages})
+
+            ctx = app.agent.tool_context(None, "task")
+            asking["asked"] = ask.count_questions(messages)
+            ctx.extra.update({"task_id": task_id, "run_id": run_id, ask.STATE_KEY: asking})
+            if app.registry.get(ask.ASK_TOOL) is not None:
+                tool_names = [*tool_names, ask.ASK_TOOL]
+            mapper = ProgressMapper(svc, task_id, run_id)
             for attempt in range(MAX_CONTINUE_NUDGES + 1):
                 rounds = int(limit["steps"]) - budget.steps
                 if rounds <= 0:  # every step of this run is used
@@ -286,7 +295,7 @@ async def execute_single(
                 ):
                     await mapper.handle(event, messages)
                 await mapper.flush_thought()
-                if result.paused:
+                if result.paused or result.stopped_by_budget:
                     break
                 announced = (result.text or "").strip()
                 if (
@@ -302,13 +311,16 @@ async def execute_single(
                     "content": "The executor described its next step without doing it, so I asked it to carry on.",
                 })
     except TimeoutError:
-        if not timer.expired():
+        if not hard.expired():
             raise
+        # a hung tool or model call was cancelled. The transcript keeps every finished step; a tool call left
+        # without its result is dropped when the run resumes (history_to_openai), so the model simply asks again.
+        log.warning("task run %s passed its hard time limit; the call in flight was cancelled", run_id)
     used.update(
         steps=budget.steps, tokens=budget.tokens, cost_usd=budget.cost_usd,
         seconds=used["seconds"] + (time.monotonic() - started),
     )
-    await svc.repo.update_run(run_id, {"messages": messages, "limits": state})
+    await svc.repo.update_run(run_id, {"limits": state, **({"messages": messages} if messages else {})})
 
     if result.stopped_by_rule:  # an "ask" rule stopped the run; say which and how to change it (ADR 0016)
         raise RunFailed(result.stopped_by_rule)
@@ -321,7 +333,7 @@ async def execute_single(
             "tool_call_id": asking.get("tool_call_id") or ask.last_call_id(messages),
         })
     reached = (
-        "seconds" if timer.expired()
+        "seconds" if hard.expired()
         else budget.over() if result.stopped_by_budget
         else "steps" if result.hit_step_limit
         else None

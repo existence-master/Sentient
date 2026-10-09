@@ -13,6 +13,7 @@ import asyncio
 import pytest
 
 from sentient.llm.provider import StreamChunk, ToolCall
+from sentient.tasks import executor
 from sentient.tasks.limits import KEEP_GOING, STOP_HERE
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from tests.conftest import FakeProvider
@@ -141,26 +142,68 @@ async def test_limit_asks_and_stop_here_fails(make_app, config, kind, llm_kwargs
     assert len(stream_calls(llm)) == calls  # nothing more ran
 
 
-async def test_time_limit_asks_and_waiting_is_not_counted(make_app, config):
-    config.tasks.run_timeout_minutes = 0.02  # 1.2 s of work
+async def waiting_question(app, task_id: str) -> tuple[str, str]:
+    task = await app.tasks.get(task_id)
+    run = task["runs"][-1]
+    assert task["status"] == "waiting_for_user" and run["status"] == "waiting_for_user", run["error"]
+    assert run["pending_question"]["options"] == [KEEP_GOING, STOP_HERE]
+    return run["run_id"], run["pending_question"]["question"]
+
+
+async def test_hung_tool_hits_the_hard_deadline_and_the_run_resumes(make_app, config, monkeypatch):
+    monkeypatch.setattr(executor, "HARD_DEADLINE_GRACE_S", 0.3)
+    config.tasks.run_timeout_minutes = 0.02  # 1.2 s of work, then 0.3 s of grace for the call in flight
     llm = FakeProvider(
         replies=[[{"id": "c1", "name": "slow_lookup", "arguments": {}}], "Looked it up."], json_replies=[dict(RESULT)]
     )
     app = await make_app(llm)
     app.registry.register(Slow())
     task_id = await start_task(app, plan_tool="slow")
-    run_id = await assert_waiting(
-        app, task_id,
-        "This task has been working for 0.02 minutes and isn't finished yet. Keep going for another 0.02 minutes, "
-        "or stop here?",
-    )
-    used = (await app.tasks.repo.get_run(run_id))["limits"]["used"]["seconds"]
-    assert 1.1 < used < 2.4
+    run_id, question = await waiting_question(app, task_id)
+    assert question.startswith("This task has been working for ")
+    assert question.endswith("Keep going for another 0.02 minutes, or stop here?")
+    run = await app.tasks.repo.get_run(run_id)
+    assert 1.4 < run["limits"]["used"]["seconds"] < 2.4  # the hung call was cancelled at limit + grace
+    assert len(stream_calls(llm)) == 1
 
     await asyncio.sleep(3.0)  # waiting for the answer is longer than the whole limit, and is not counted
     task = await answer(app, task_id, run_id, KEEP_GOING)
     assert task["status"] == "completed", task["runs"][-1]["error"]
-    assert (await app.tasks.repo.get_run(run_id))["limits"]["max"]["seconds"] == pytest.approx(2.4)
+    run = await app.tasks.repo.get_run(run_id)
+    assert run["limits"]["max"]["seconds"] == pytest.approx(2.4)
+    # resumed from the saved transcript: the cancelled call (no result) was dropped, nothing else was lost
+    resumed = stream_calls(llm)[1]["messages"]
+    assert resumed[0]["role"] == "system" and not any(m.get("tool_calls") for m in resumed)
+
+
+async def test_time_limit_lets_the_call_in_flight_finish_then_asks(make_app, config):
+    @tool("steady_lookup", risk=Risk.read)
+    async def steady_lookup(ctx: ToolContext) -> str:
+        """Look something up, taking a moment."""
+        await asyncio.sleep(1.0)
+        return "found it"
+
+    class Steady(ToolPlugin):
+        id = "steady"
+        display_name = "Steady"
+        tools = [steady_lookup]
+
+    config.tasks.run_timeout_minutes = 0.01  # 0.6 s: passed while the lookup runs
+    llm = FakeProvider(
+        replies=[[{"id": "c1", "name": "steady_lookup", "arguments": {}}], "Done."], json_replies=[dict(RESULT)]
+    )
+    app = await make_app(llm)
+    app.registry.register(Steady())
+    task_id = await start_task(app, plan_tool="steady")
+    run_id, question = await waiting_question(app, task_id)
+    assert question.startswith("This task has been working for ")
+    assert len(stream_calls(llm)) == 1  # no model call after the limit
+    saved = (await app.tasks.repo.get_run(run_id))["messages"]
+    assert any(m.get("role") == "tool" and "found it" in m.get("content", "") for m in saved)  # the call finished
+
+    task = await answer(app, task_id, run_id, STOP_HERE)
+    run = task["runs"][-1]
+    assert run["status"] == "error" and run["error"].startswith("Stopped after 0.0") and run["error"].endswith(HINT)
 
 
 # ---------------------------------------------------------------------- Keep going

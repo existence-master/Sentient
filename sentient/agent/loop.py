@@ -235,6 +235,7 @@ class Budget:
     tokens: int = 0
     cost_usd: float = 0.0
     steps: int = 0  # model calls made under this budget (task runs carry it across loops and pauses)
+    deadline: float | None = None  # ``time.monotonic()`` after which no new model call starts (task runs)
 
     def add(self, model: str, usage: dict, cost: float | None) -> None:
         if is_local_model(model or ""):
@@ -244,11 +245,13 @@ class Budget:
             self.cost_usd += cost
 
     def over(self) -> str | None:
-        """Which limit is reached: ``"tokens"``, ``"cost_usd"`` or None."""
+        """Which limit is reached: ``"tokens"``, ``"cost_usd"``, ``"seconds"`` or None."""
         if self.max_tokens and self.tokens >= self.max_tokens:
             return "tokens"
         if self.max_cost_usd and self.cost_usd >= self.max_cost_usd:
             return "cost_usd"
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            return "seconds"
         return None
 
     def exceeded(self) -> str | None:
@@ -264,6 +267,8 @@ class Budget:
                 f"Stopped after spending about ${self.cost_usd:.2f} on the model without finishing. "
                 f"The limit for one run is ${self.max_cost_usd:.2f}."
             )
+        if kind == "seconds":
+            return "Stopped at the time limit without finishing."
         return None
 
 

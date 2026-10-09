@@ -315,9 +315,11 @@ token or cost limit **pauses and asks**, using the same `waiting_for_user` machi
   whenever the run pauses or ends and when a limit is raised, so used amounts and raised limits carry across questions and restarts.
   `pending_question` also stores `limit` (`steps`|`seconds`|`tokens`|`cost_usd`) and `stop_error`; the API shows only
   `{question, options, asked_at}`.
-- Time counts only while the run is working, never while it waits for an answer. Steps include the executor's
-  "carry on" nudges. Tokens and cost are checked before each model call, so a run goes at most one call past its
-  limit. Models with a local prefix (`ollama`, `ollama_chat`, `lm_studio`, `llamafile`, `vllm`, `hosted_vllm`) are not
+- Time counts only while the run is working, never while it waits for an answer. Time, tokens and cost are checked
+  before each model call, so a run goes at most one call past its limit. A tool or model call still running 120 s
+  after the time limit (`executor.HARD_DEADLINE_GRACE_S`) is cancelled and the run asks the time question; the
+  transcript keeps every finished step and the cancelled call is dropped, so "Keep going" simply tries it again.
+  Steps include the executor's "carry on" nudges. Models with a local prefix (`ollama`, `ollama_chat`, `lm_studio`, `llamafile`, `vllm`, `hosted_vllm`) are not
   counted. Cost uses LiteLLM's price list and only adds up for models whose price it knows. `0` turns a token or cost
   limit off. A retry starts with fresh limits.
 - Repeated calls (`tools.repeated_call_limit`, default 3) never ask: the run fails at once with
