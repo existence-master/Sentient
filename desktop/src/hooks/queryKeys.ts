@@ -21,8 +21,8 @@ export const qk = {
   signIn: (state: string) => ['models', 'sign-in', state] as const,
   modelPresets: ['models', 'presets'] as const,
   secrets: ['secrets'] as const,
-  /** Mutation key for saving a secret (see `useSecretSaves`). */
-  saveSecret: ['save-secret'] as const,
+  /** How many times a secret was saved in this window (see `useSecretSaves`). Never fetched. */
+  secretSaves: (name: string) => ['secret-saves', name] as const,
 
   tasks: {
     all: ['tasks'] as const,
