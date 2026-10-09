@@ -869,7 +869,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   `risk` per call (a browser click on "Place order" becomes `send`). A `risk_fn` that raises counts as `exec`. Approvals
   use the effective risk; `approval_request.risk` reports it. `internal` keeps its meaning: an internal tool whose
   effective risk is `write` does not ask in mode "ask"; `send`/`exec` always ask. "Allow for this chat" covers that tool
-  up to the risk level that was approved, but never a call whose `risk_fn` raised it to `send`/`exec` (those ask every time).
+  up to the risk level that was approved, but never a call whose `risk_fn` raised it to `send`/`exec` (those ask every time),
+  and never a tool declared with `allow_for_chat=False` (`@tool(..., allow_for_chat=False)`; the terminal, section 18).
   Lasting rules (`tools.approvals.rules`, section 2) are checked before the mode: `ask` and `never` win over everything,
   `allow` skips the question except for purchases.
   Outside `run_loop`, use `await app.approvals.requires_approval(tool, arguments, ctx) -> (bool, Risk)`;
@@ -1001,7 +1002,7 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - Tool calls from a script: effective risk `read` and internal `write` tools run; other `write`, `send` and `exec` tools
   are refused with a message telling the model to call that tool directly (where approvals can ask the user), unless
   approvals mode is `off`. Lasting rules apply (section 2): `never` tools are not listed and are refused, `ask` tools
-  are refused, and `allow` changes nothing here (scripts still only read). Subagent, voice and code tools are not available inside scripts. At most
+  are refused, and `allow` changes nothing here (scripts still only read). Subagent, voice, code and terminal tools are not available inside scripts, in any approvals mode. At most
   `sandbox.max_tool_calls` calls run per script; `tool_calls` counts calls that ran (refused ones are not counted).
 - Returns **SandboxResult** `{ok, backend: "process"|"docker", stdout, stderr, result, files_created: [name], tool_calls, duration_ms, error}`.
   stdout and stderr stream as `tool_progress` (`kind: "stdout"|"stderr"`, newlines normalized to `\n`) and are each capped at
@@ -1416,8 +1417,8 @@ can ignore it.
   (desktop, channels, voice; the partial reply is kept with "(stopped)"), task run (status `cancelled`, progress
   "Run stopped by Stop everything.", retryable from its checkpoint), task planning and check scripts, helper
   (subagent, status `cancelled`), running dream (status `error`, "Stopped by Stop everything.") and background job
-  (memory notes, reviews, suggestions) is cancelled. Code runs and browser actions stop with the reply or run they
-  belong to. Runs waiting for the user's answer keep waiting.
+  (memory notes, reviews, suggestions) is cancelled. Code runs, terminal commands (section 18) and browser actions stop
+  with the reply or run they belong to; a command's whole process tree is killed. Runs waiting for the user's answer keep waiting.
 - Messages queued before the stop are dropped, never sent: steer messages the running reply had not picked up yet,
   `chat.send` turns waiting behind it on `/ws` (they end with `error` `{message: "Stopped. Your queued message wasn't
   sent.", dropped: true, client_id}` and `done` `{cancelled: true, dropped: [text], client_id}`, echoing the
@@ -1437,3 +1438,66 @@ can ignore it.
 - Surfaces: the desktop title bar button and banner, the tray menu, the global shortcut `Ctrl+Alt+Shift+S`
   (`Cmd+Alt+Shift+S` on macOS; stop only), `/stopall` and `/resume` in paired Telegram and Discord chats, and the
   `stop_all` / `resume` device messages (the web device app has a button).
+
+## 18. Commands on this computer (owner: terminal)
+
+Off by default ([ADR 0019](adr/0019-host-terminal.md)). Settings > Terminal (config section `terminal`) turns it on.
+
+- Config `terminal`: `enabled` (default `false`), `allowed_folders: [path]` (default `[]`; nothing runs until one is
+  added), `default_folder` (default `""`: the first allowed folder), `allowed_commands: [prefix]` (default
+  `["git status", "git diff", "git log", "ls", "dir", "pwd"]`), `timeout_s` (default 180, 5 to 3600) and
+  `max_output_chars` (default 8000, per stream). While `enabled` is false the `terminal` plugin is hidden: the tool is
+  not offered or listed, and a call made anyway returns an error without running.
+- Tool `terminal_run(command: str, cwd: str | None = None)` (plugin `terminal`, risk `exec`). Runs `command` as a new
+  shell process: PowerShell on Windows (`pwsh` when installed, else `powershell.exe`, with `-NoProfile
+  -NonInteractive`), else the user's bash or zsh, else bash, zsh or sh (`-c`). Each call is a fresh process; nothing
+  carries over between calls, and anything the command leaves running is stopped when it ends. stdin is empty.
+- Checks, in code and in this order, before anything runs (a failed check returns `{ok: false, error}` and nothing runs):
+  1. turned on; 2. not work nobody asked for (ADR 0017: `ToolContext.origin` unprompted is refused even with an
+  Allow rule or a listed command); 3. a command of at most 8000 characters; 4. not on the built-in blocklist
+  (formatting or wiping disks, shutting down, restarting or signing out, deleting from the registry, deleting or
+  re-owning a whole drive, system folder or home folder, deleting backups, changing boot settings, fork bombs),
+  which no setting or rule overrides; 5. the folder: `cwd` absolute or relative to the default folder, resolved
+  with links followed, must exist and be inside an allowed folder; 6. in task runs, helpers and other runs nobody
+  can be asked in (channel `task`, `subagent` or `system`) only a listed command runs, unless `terminal` or
+  `terminal_run` has an Allow rule or approvals mode is `off`.
+- Effective risk (`risk_fn`): `exec`, so it asks in modes `ask` and `always` unless an Allow rule says otherwise
+  (section 2). A listed command is `read`: it runs without asking (mode `always` still asks). A command matches a
+  listed prefix when it equals it or starts with it plus a space (case-insensitive on Windows), and contains none of
+  ``; & | < > ` $ ( ) { }``, line breaks, `--output`, `--exec`, `--ext-diff` or `--textconv`. A call that fails a check is also `read`, so the user
+  is not asked to approve a refusal; work nobody asked for stays `exec`. "Allow for this chat" never
+  covers it (`Tool.allow_for_chat = False`): each command asks again unless a listed command or an Allow rule applies,
+  and the card offers no "Allow for this chat" button.
+- `approval_request` for it: `risk_label` "Runs a command", `target` the folder it will run in (its last 120
+  characters when longer). The card shows the exact command and the folder.
+- Output streams as `tool_progress` (`kind: "stdout" | "stderr"`, newlines normalized) up to `max_output_chars` per
+  stream, then one `kind: "status"` note. Returns **TerminalResult** `{ok, command, cwd, shell, exit_code, stdout,
+  stderr, timed_out, stopped, duration_ms, output_file, error}`. `ok` is true when the exit code is 0. A non-zero exit
+  code is not an `error`. `stdout` and `stderr` keep the start and the end of each stream within `max_output_chars`
+  (`[... N characters cut here ...]` in between); when anything was cut the full output (up to 2,000,000 characters per
+  stream) is saved and `output_file` names it under the files folder (`outputs/terminal-<run id>.txt`). `error` is a
+  plain sentence for refusals, timeouts ("The command took longer than 180 seconds and was stopped. ..."), a stopped
+  command ("The command was stopped before it finished.", `stopped: true`) and a shell that could not start.
+- The environment is the engine's own without secrets: variables whose names look like keys, tokens, passwords or
+  credentials, Sentient's own `SENTIENT_*` and `LITELLM_*` variables and every `models.providers.*.api_key_env` are
+  removed; keychain secrets are never added. `SSH_AUTH_SOCK` is kept. `GIT_TERMINAL_PROMPT=0` is set, and
+  `SENTIENT_TERMINAL_RUN=<run id>` marks the run's processes. A listed command also gets `core.fsmonitor=false`
+  through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, so a repository's config can't make `git status`
+  or `git diff` start a program without a question.
+- Stopping: at `timeout_s`, from the card's Stop button and from Stop everything (section 17) the command's whole
+  process tree is killed: a Job Object on Windows; elsewhere its process group plus every process carrying its run
+  marker, so a child that left the group (`setsid`) dies too. The same sweep runs when a command ends, so nothing it
+  started keeps running (a process that clears its own environment can still escape on macOS and Linux).
+  Cancelling the chat reply also kills it.
+- Outside content (ADR 0018): the tool is tagged `untrusted_output`, so its output marks the chat; a command that
+  isn't listed has effective risk `exec`, which counts as sending out, so after outside content it asks with the
+  `untrusted` reason on the card even with an Allow rule (and is held in runs nobody can be asked in). Listed commands
+  stay `read` and free.
+- Scripts (section 11) can never call it, in any approvals mode.
+- `GET /api/terminal/status` → `{enabled, shell, shell_path, allowed_folders, default_folder, blocked: [string],
+  running: [{id, call_id, command, cwd, started_at}]}` (`id` is unique per run). `shell` is `pwsh`, `powershell`, `bash`, `zsh`, `sh` or null.
+  `default_folder` is where a command without `cwd` would start, or null when none can.
+- `POST /api/terminal/stop` `{id}` (a run id or the tool call id) → `{stopped: bool}`. The tool then returns what the command
+  printed so far with `stopped: true`.
+- Engine API: `await app.terminal.run(command, cwd, ctx) -> dict` (TerminalResult), `app.terminal.check(command, cwd,
+  ctx)`, `app.terminal.stop_command(id) -> bool`, `app.terminal.status() -> dict`; pure checks in `sentient.terminal.guard`.

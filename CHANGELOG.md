@@ -38,6 +38,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
   title bar, the tray menu, the shortcut Ctrl+Alt+Shift+S, `/stopall` in paired Telegram and Discord chats, and on
   paired phones. Messages you queued before the stop are not sent. It never asks the model, so nothing can
   talk its way past it.
+- **Terminal:** Sentient can run commands on your computer, like git, builds, tests and scripts, in folders you
+  allow (PowerShell on Windows, your shell on macOS and Linux). It is off until you turn it on in Settings >
+  Terminal and add a folder. Each command shows you the exact command and folder and waits for your OK every time,
+  unless it is on your list of commands that never need asking (`git status` and friends) or you set an Allow rule.
+  Output shows live in the chat, with a Stop button; commands stop after 3 minutes by default, and Stop everything
+  ends them too.
+  Formatting disks, shutting down, deleting from the registry and deleting whole drives are never allowed. Your keys
+  and passwords are kept out of its commands, and work Sentient starts on its own can't run any.
 - **Daily Brief:** a few lines each weekday morning at 07:30 with today's meetings, emails that need you, tasks due
   or waiting for you and the weather, plus headlines on topics you pick. Turn it on in onboarding or with **Set up my
   Daily Brief** in Notifications. It is a normal task you can reschedule, pause or delete, it only reads (it never

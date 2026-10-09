@@ -582,6 +582,37 @@ class SandboxConfig(BaseModel):
     )
 
 
+# ----------------------------------------------------------------------------- terminal (owner: terminal)
+class TerminalConfig(BaseModel):
+    """Commands on this computer (ADR 0019). Off until the user turns it on and adds a folder."""
+
+    enabled: bool = Field(
+        False,
+        description="Let Sentient run commands on this computer, like git or a build script. It asks first unless "
+        "the command is in the list below or you set an Allow rule.",
+    )
+    allowed_folders: list[str] = Field(
+        default_factory=list,
+        description="Folders commands may start in (and the folders inside them). Nothing runs until you add one.",
+    )
+    default_folder: str = Field(
+        "",
+        description="Where commands start when Sentient doesn't pick a folder. Empty uses the first allowed folder.",
+    )
+    allowed_commands: list[str] = Field(
+        default_factory=lambda: ["git status", "git diff", "git log", "ls", "dir", "pwd"],
+        description="Commands that never need asking. A command matches when it is exactly one of these or starts "
+        "with one followed by a space, and has no ; & | < > ` $ ( ) { } or line breaks.",
+    )
+    timeout_s: int = Field(180, ge=5, le=3600, description="A command is stopped after this long.")
+    max_output_chars: int = Field(
+        8_000,
+        ge=1_000,
+        le=1_000_000,
+        description="Output kept for the answer (each of output and errors). Longer output is saved to a file.",
+    )
+
+
 # ----------------------------------------------------------------------------- browser (owner: browser agent)
 class BrowserConfig(BaseModel):
     enabled: bool = Field(True, description="Let the assistant use a web browser for sites without an integration.")
@@ -762,6 +793,7 @@ class SentientConfig(BaseModel):
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     subagents: SubagentsConfig = Field(default_factory=SubagentsConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    terminal: TerminalConfig = Field(default_factory=TerminalConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     nodes: NodesConfig = Field(default_factory=NodesConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)

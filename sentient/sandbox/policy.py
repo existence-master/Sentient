@@ -4,8 +4,8 @@ Scripts run after the user (or approvals mode) allowed ``execute_code`` once; th
 to ask again. So from inside a script only calls that need no approval run: effective risk
 ``read`` and ``internal`` ``write`` tools. Anything else is refused with a message telling the
 model to make that call directly, where approvals can ask the user. Approvals mode ``off``
-allows everything except tools that would recurse (code, subagents, voice) and purchases,
-which always ask.
+allows everything except tools that would recurse (code, subagents, voice), commands on this
+computer (terminal, ADR 0019) and purchases, which always ask.
 
 Lasting rules (ADR 0016) only ever take away here: a "never" tool is not listed and is refused,
 and an "ask" tool is refused because a script cannot stop to ask. An "allow" rule changes nothing:
@@ -20,8 +20,8 @@ from dataclasses import dataclass, field
 from sentient.tools.base import Risk, Tool, ToolContext, effective_risk
 from sentient.tools.rules import SETTINGS_HINT, is_purchase, never_message, rule_for, rule_label
 
-BLOCKED_PLUGINS = frozenset({"code", "subagents", "voice"})
-BLOCKED_TOOLS = frozenset({"execute_code", "delegate_task", "delegate_tasks"})
+BLOCKED_PLUGINS = frozenset({"code", "subagents", "voice", "terminal"})
+BLOCKED_TOOLS = frozenset({"execute_code", "delegate_task", "delegate_tasks", "terminal_run"})
 
 
 class Refused(Exception):

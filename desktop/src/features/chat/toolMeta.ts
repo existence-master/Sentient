@@ -65,6 +65,7 @@ const KNOWN: Record<string, ToolMeta> = {
   web_search: { running: 'Searching the web', done: 'Searched the web', icon: IconWorld },
   // §10-13 code, helpers, browser and devices
   execute_code: { running: 'Running code', done: 'Ran code', icon: IconTerminal2 },
+  terminal_run: { running: 'Running a command', done: 'Ran a command', icon: IconTerminal2 },
   delegate_task: { running: 'Asking a helper', done: 'Asked a helper', icon: IconUserBolt },
   delegate_tasks: { running: 'Asking helpers', done: 'Asked helpers', icon: IconUsersGroup },
   browser_open: { running: 'Opening a page', done: 'Opened a page', icon: IconWorldWww },

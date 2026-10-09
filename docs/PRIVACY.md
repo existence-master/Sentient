@@ -24,12 +24,18 @@ service name `sentient`.
 | Link **WhatsApp** | Sentient becomes a linked device on your account, like WhatsApp Web. Messages in your "Message yourself" chat (and any chat you pair) pass through WhatsApp's servers, end-to-end encrypted as usual. The link's keys are kept in `~/.sentient/whatsapp`; Disconnect removes them and unlinks Sentient. This is not an official WhatsApp product, so WhatsApp could limit an account that uses it. |
 | Pair a **phone or glasses** | Traffic stays on your home network, encrypted. This is off until you turn it on. |
 | Create a **webhook** | Whoever has its secret link can start the tasks you attached to it. |
+| Turn on the **terminal** | Commands run on your computer as you, so a command you approve can reach the internet (for example `git push`) or change files outside the folders you allowed. Off until you turn it on. |
 
 ## Safety rails
 
 - Sentient asks before sending, deleting, buying or running code, and purchases always ask, even if you allowed an
   action for the rest of a chat.
 - Code that Sentient writes runs without your keys and can only read, not send.
+- Commands on your computer (Settings > Terminal) are off until you turn them on and add a folder. Each command
+  shows you the exact command and folder and waits for your yes, unless you listed it as never needing a question or
+  set an Allow rule. Your API keys, tokens and passwords are kept out of the command's environment. Some commands are
+  never run, whatever you set: formatting disks, shutting down, deleting from the registry or deleting a whole drive
+  or home folder. Work Sentient starts on its own, and code it writes, can never run commands.
 - Work Sentient starts on its own (suggestions, follow-up checks, the nightly memory tidy-up) can only look things up
   and change Sentient's own data, such as its memory and notes. Anything that would send, delete, buy, run code or
   change something outside Sentient is not done, whatever your approval settings say. Sentient may offer it to you

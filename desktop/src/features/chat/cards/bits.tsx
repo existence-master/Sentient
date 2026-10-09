@@ -24,9 +24,11 @@ export function refLabel(ref: unknown): string | null {
 
 /** What a tool call acts on, for "You declined: ..." (the approval's engine `target` wins). */
 export function actionTarget(tool: ToolCallView, approval?: { target?: string | null } | null): string | null {
-  if (approval?.target) return approval.target
   const a = (tool.arguments ?? {}) as Record<string, unknown>
   const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null)
+  // a command's approval target is its folder; the command itself says more
+  if (tool.name === 'terminal_run' && str(a.command)) return truncate(String(a.command), 80)
+  if (approval?.target) return approval.target
   switch (tool.name) {
     case 'browser_click':
       return refLabel(a.ref) ?? str(a.text)
