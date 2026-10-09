@@ -13,6 +13,7 @@ moves with new evidence:
   changed automatically; evidence against them only raises a question.
 - answering a question confirms, retires or rewrites the insight and stores a fact.
 - ``context_for(text)`` is the prompt hook: no model call, a few hundred characters.
+  ``context_with_sources(text)`` also returns the insights it used (memory sources).
 """
 
 from __future__ import annotations
@@ -759,27 +760,33 @@ class UserModelService(Service):
 
     async def context_for(self, text: str) -> str:
         """Short markdown block for the system prompt (no model call). Empty when disabled or unknown."""
+        return (await self.context_with_sources(text))[0]
+
+    async def context_with_sources(self, text: str) -> tuple[str, list[dict]]:
+        """``context_for`` plus the insights that made it into the block (public shape), for memory sources."""
         cfg = self.cfg
         if not cfg.enabled or cfg.context_max_chars <= 0:
-            return ""
+            return "", []
         try:
             confirmed, active = await self._ranked(text or "")
         except Exception as exc:
             log.debug("user model context unavailable: %s", exc)
-            return ""
+            return "", []
         if not confirmed and not active:
-            return ""
+            return "", []
         header = f"## What I have learned about {self.user_name or 'the user'}\n"
         budget = cfg.context_max_chars
         lines: list[str] = []
+        shown: list[dict] = []
         used = len(header)
         for ins in [*confirmed, *active]:
             line = f"- {ins['statement']}" + (" (likely)" if not protected(ins) and ins["confidence"] < 0.6 else "")
             if used + len(line) + 1 > budget:
                 continue
             lines.append(line)
+            shown.append(_public(ins))
             used += len(line) + 1
-        return header + "\n".join(lines) if lines else ""
+        return (header + "\n".join(lines), shown) if lines else ("", [])
 
     # ------------------------------------------------------------------ tool
     async def ask(self, question: str) -> dict:
