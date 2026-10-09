@@ -4,6 +4,7 @@ import {
   IconCreditCard,
   IconEdit,
   IconEye,
+  IconFolder,
   IconMailOpened,
   IconSend,
   IconShieldCheck,
@@ -36,6 +37,7 @@ interface EffectiveRisk {
  */
 export function effectiveRisk(approval: Pick<ApprovalView, 'risk' | 'reason' | 'name' | 'arguments'>): EffectiveRisk {
   const text = `${approval.reason ?? ''} ${JSON.stringify(approval.arguments ?? {})}`.toLowerCase()
+  if (approval.name === 'terminal_run') return { label: 'Runs a command', verb: 'run a command on this computer', icon: IconTerminal2, tone: 'danger' }
   if (approval.risk === 'exec') return { label: 'Runs code', verb: 'run code on your computer', icon: IconTerminal2, tone: 'danger' }
   if (approval.risk === 'send') {
     if (/(purchase|buy|order|checkout|pay\b|payment|card|subscribe|book(ing)? and pay)/.test(text))
@@ -107,9 +109,11 @@ export function ApprovalCard({
   const purpose = approval.name === 'execute_code' ? String((approval.arguments as { purpose?: string }).purpose ?? '') : ''
   const isBrowser = approval.name.startsWith('browser_')
   const args = approval.arguments ?? {}
-  // A purchase or a send asks for a single, deliberate "yes": no blanket "allow for this chat".
-  // After outside content came in, every send asks anyway, so the blanket answer would not help.
-  const allowSession = !(risk.label === 'Purchase' || risk.label === 'Deletes' || approval.untrusted)
+  const command = approval.name === 'terminal_run' ? String(args.command ?? '') : ''
+  // A purchase, a deletion or a command on this computer asks for a single, deliberate "yes" every time: no blanket
+  // "allow for this chat" (the engine ignores it for commands too, ADR 0019). After outside content came in, every
+  // send asks anyway, so the blanket answer would not help either.
+  const allowSession = !(risk.label === 'Purchase' || risk.label === 'Deletes' || approval.name === 'terminal_run' || approval.untrusted)
 
   return (
     <motion.div
@@ -130,13 +134,20 @@ export function ApprovalCard({
           </div>
           {action && <div className="mt-1 text-md font-medium text-fg">{action}</div>}
           <p className="mt-0.5 text-sm text-fg-muted">
-            {purpose ||
+            {(command && 'It runs on this computer with your permissions, in this folder:') ||
+              purpose ||
               approval.reason?.trim() || (
                 <>
                   {meta.done} using <span className="font-mono text-xs">{approval.name}</span>
                 </>
               )}
           </p>
+          {command && (
+            <div className="mt-1 flex items-center gap-1 text-xs text-fg-subtle">
+              <IconFolder size={12} className="shrink-0" />
+              <span className="selectable truncate font-mono">{approval.target || (typeof args.cwd === 'string' && args.cwd) || 'The default folder'}</span>
+            </div>
+          )}
           {approval.untrusted && (
             <div className="mt-1.5 flex items-start gap-1.5 text-xs text-fg-muted">
               <IconMailOpened size={13} className="mt-px shrink-0" /> {approval.untrusted}
@@ -149,7 +160,12 @@ export function ApprovalCard({
           )}
         </div>
       </div>
-      {code ? (
+      {command ? (
+        // plain text, never Markdown: the user must see exactly what will run
+        <pre className="selectable mx-4 mt-3 max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-border bg-surface px-3 py-2 font-mono text-[12px] leading-relaxed text-fg">
+          {command.replace(/\s+$/, '')}
+        </pre>
+      ) : code ? (
         <div className="mx-4 mt-3 max-h-56 overflow-auto [&_.md-code]:bg-surface">
           <Markdown>{'```python\n' + code.replace(/\s+$/, '') + '\n```'}</Markdown>
         </div>

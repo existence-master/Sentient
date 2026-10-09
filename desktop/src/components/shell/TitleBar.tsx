@@ -1,8 +1,10 @@
-import { IconLayoutSidebar, IconSearch } from '@tabler/icons-react'
+import { IconChevronDown, IconLayoutSidebar, IconSearch } from '@tabler/icons-react'
 import { useNavigate } from 'react-router'
 import { Logo } from '@/components/brand/Logo'
 import { IconButton, Kbd, StatusDot, Tooltip, type Tone } from '@/components/ui'
+import { ModelSwitcher } from '@/features/models/ModelSwitcher'
 import { useBootstrap } from '@/hooks/core'
+import { useModelPresets } from '@/hooks/models'
 import { getBridge } from '@/lib/bridge'
 import { modelShortName } from '@/lib/models'
 import { cn, modKey } from '@/lib/utils'
@@ -24,12 +26,16 @@ export function StatusPill({ className }: { className?: string }) {
   const backend = useConnection((s) => s.backend)
   const socket = useConnection((s) => s.socket)
   const { data } = useBootstrap()
+  const presets = useModelPresets()
   const navigate = useNavigate()
+  const primary = data?.models.primary
+  const preset = presets.data?.modified ? null : presets.data?.active
 
   let tone: Tone = 'success'
-  let label = modelShortName(data?.models.primary) || 'Ready'
-  let tip = `Engine ready · primary model ${data?.models.primary ?? 'unknown'}`
-  if (backend.state !== 'ready') {
+  let label = modelShortName(primary) || 'Ready'
+  let tip = `Engine ready${preset ? ` · ${preset}` : ''} · chatting with ${primary ?? 'unknown'}. Click to switch models.`
+  const ready = backend.state === 'ready'
+  if (!ready) {
     tone = backend.state === 'failed' ? 'danger' : 'warning'
     label = backend.state === 'failed' ? 'Engine stopped' : 'Restarting engine…'
     tip = backend.message ?? label
@@ -39,20 +45,33 @@ export function StatusPill({ className }: { className?: string }) {
     tip = 'Live connection to the engine dropped; reconnecting.'
   }
 
+  const pill = (
+    <button
+      type="button"
+      onClick={ready ? undefined : () => navigate('/settings/models')}
+      className={cn(
+        'no-drag flex h-6.5 max-w-64 items-center gap-2 rounded-full border border-border bg-surface/60 px-2.5 text-xs text-fg-muted transition-colors hover:border-border-strong hover:text-fg data-[state=open]:border-border-strong data-[state=open]:text-fg',
+        className
+      )}
+    >
+      <StatusDot tone={tone} pulse={tone === 'warning'} />
+      {ready && preset && <span className="shrink-0 text-fg-subtle">{preset}</span>}
+      <span className="truncate font-medium">{label}</span>
+      {ready && <IconChevronDown size={12} className="-ml-0.5 shrink-0 text-fg-subtle" />}
+    </button>
+  )
+
+  if (!ready) {
+    return (
+      <Tooltip content={tip} side="bottom">
+        {pill}
+      </Tooltip>
+    )
+  }
   return (
-    <Tooltip content={tip} side="bottom">
-      <button
-        type="button"
-        onClick={() => navigate('/settings/models')}
-        className={cn(
-          'no-drag flex h-6.5 max-w-56 items-center gap-2 rounded-full border border-border bg-surface/60 px-2.5 text-xs text-fg-muted transition-colors hover:border-border-strong hover:text-fg',
-          className
-        )}
-      >
-        <StatusDot tone={tone} pulse={tone === 'warning'} />
-        <span className="truncate font-medium">{label}</span>
-      </button>
-    </Tooltip>
+    <ModelSwitcher primary={primary} tip={tip}>
+      {pill}
+    </ModelSwitcher>
   )
 }
 

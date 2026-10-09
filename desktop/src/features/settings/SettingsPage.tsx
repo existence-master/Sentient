@@ -14,7 +14,7 @@ import { ModelsSection } from './sections/Models'
 import { PersonalitySection } from './sections/Personality'
 import { ApprovalsSection, EvolutionSection, MemorySection, ProactivitySection, TasksSection, VoiceSection } from './sections/SchemaSections'
 import { UsageSection } from './sections/Usage'
-import { BrowserSection, KnowingSection, SandboxSection, SubagentsSection } from './sections/AbilitySections'
+import { BrowserSection, KnowingSection, SandboxSection, SubagentsSection, TerminalSection } from './sections/AbilitySections'
 
 export interface SectionProps {
   query: string
@@ -33,6 +33,7 @@ const SECTION_COMPONENTS: Record<string, ComponentType<SectionProps>> = {
   usage: UsageSection,
   knowing: KnowingSection,
   sandbox: SandboxSection,
+  terminal: TerminalSection,
   browser: BrowserSection,
   subagents: SubagentsSection,
   advanced: AdvancedSection

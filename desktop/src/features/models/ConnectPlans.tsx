@@ -8,7 +8,8 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Card, IconButton, Input, SegmentedControl } from '@/components/ui'
 import { InstructionsGuide, openExternal } from '@/features/integrations/InstructionsGuide'
-import { useCheckKey, useDeleteSecret, useModelCatalog, useProviders, useSecretSaves, useSetRoles, useSetSecret, useSignInStatus } from '@/hooks/models'
+import { usePresetSwitch } from '@/features/models/usePresetSwitch'
+import { useCheckKey, useDeleteSecret, useModelCatalog, useModelPresets, useProviders, useSecretSaves, useSetRoles, useSetSecret, useSignInStatus } from '@/hooks/models'
 import { api, errorMessage } from '@/lib/api'
 import { looksLikeEmbedding } from '@/lib/models'
 import type { ProviderKeyCheck } from '@/lib/types'
@@ -168,7 +169,7 @@ export function ClaudePlanGuide({ onUseModels }: { onUseModels?: (primary: strin
       {keySet && works && primary && onUseModels && (
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="primary" onClick={() => onUseModels(primary, fast)}>
-            Use Claude for chat and background work
+            Use Claude for every job
           </Button>
           <span className="text-xs text-fg-subtle">You can still pick a model per job under Roles.</span>
         </div>
@@ -320,8 +321,14 @@ type Plan = 'claude' | 'openrouter' | 'nous'
 export function ConnectPlansSection() {
   const [plan, setPlan] = useState<Plan>('claude')
   const setRoles = useSetRoles()
+  const presets = useModelPresets()
+  const presetSwitch = usePresetSwitch()
+  // With a Claude key the built-in Cloud preset is Claude for every job, and switching to it can be undone.
+  const claudePreset = presets.data?.presets.find((p) => p.builtin && p.available && p.provider === 'anthropic')
   const applyClaude = (primary: string, fast: string) =>
-    setRoles.mutate(
+    claudePreset
+      ? presetSwitch.apply(claudePreset.name)
+      : setRoles.mutate(
       { primary, fast },
       {
         onSuccess: () =>

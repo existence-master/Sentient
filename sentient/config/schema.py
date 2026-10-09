@@ -58,8 +58,58 @@ class ModelRoles(BaseModel):
     )
 
 
+MODEL_ROLE_NAMES = ("primary", "fast", "planner", "executor", "embedding", "vision", "voice")
+REQUIRED_MODEL_ROLES = {"primary", "fast", "embedding"}
+
+# Built-in model presets (#212). Their roles are generated: "Local only" uses the ModelRoles defaults above;
+# "Cloud" and "Mixed" use the first provider below with a key set ("main" for chat and planning, "fast" for
+# quick jobs and voice).
+LOCAL_PRESET, CLOUD_PRESET, MIXED_PRESET = "Local only", "Cloud", "Mixed"
+PRESET_CLOUD_MODELS: dict[str, dict[str, str]] = {
+    "anthropic": {"main": "anthropic/claude-sonnet-5-5", "fast": "anthropic/claude-haiku-5-5"},
+    "openai": {"main": "openai/gpt-5", "fast": "openai/gpt-5-mini"},
+    "openrouter": {"main": "openrouter/anthropic/claude-sonnet-5.5", "fast": "openrouter/anthropic/claude-haiku-5.5"},
+}
+
+
+class ModelPreset(BaseModel):
+    """A saved model setup the user can switch to in one step. Fields left out keep their current value."""
+
+    roles: dict[str, str | None] = Field(
+        default_factory=dict,
+        description="Model per role, like models.roles. A role left out keeps its model; null uses the primary model.",
+    )
+    fallbacks: dict[str, list[str]] | None = Field(None, description="Replaces models.fallbacks when set.")
+    reasoning: dict[str, str] | None = Field(None, description="Replaces models.reasoning when set.")
+    context_length: int | None = Field(None, ge=2048, le=1_048_576, description="Replaces models.context_length.")
+    context_length_per_role: dict[str, Annotated[int, Field(ge=2048, le=1_048_576)]] | None = Field(
+        None, description="Replaces models.context_length_per_role when set."
+    )
+
+    @field_validator("roles")
+    @classmethod
+    def _check_roles(cls, value: dict[str, str | None]) -> dict[str, str | None]:
+        out: dict[str, str | None] = {}
+        for role, model in value.items():
+            if role not in MODEL_ROLE_NAMES:
+                raise ValueError(f"unknown role {role}")
+            model = (model or "").strip() or None
+            if model is None and role in REQUIRED_MODEL_ROLES:
+                raise ValueError(f"role {role} cannot be empty")
+            out[role] = model
+        return out
+
+
 class ModelsConfig(BaseModel):
     roles: ModelRoles = Field(default_factory=ModelRoles)
+    presets: dict[str, ModelPreset] = Field(
+        default_factory=dict,
+        description="Your own saved model setups, by name, switched from the model menu in the title bar or with "
+        "/model in a messaging app. The built-in Local only, Cloud and Mixed setups are not stored here.",
+    )
+    active_preset: str | None = Field(
+        None, description="The model setup chosen last, shown with a check in the model menu."
+    )
     fallbacks: dict[str, list[str]] = Field(
         default_factory=dict,
         description="Per-role ordered fallback models tried when the role's model fails.",
@@ -582,6 +632,37 @@ class SandboxConfig(BaseModel):
     )
 
 
+# ----------------------------------------------------------------------------- terminal (owner: terminal)
+class TerminalConfig(BaseModel):
+    """Commands on this computer (ADR 0019). Off until the user turns it on and adds a folder."""
+
+    enabled: bool = Field(
+        False,
+        description="Let Sentient run commands on this computer, like git or a build script. It asks first unless "
+        "the command is in the list below or you set an Allow rule.",
+    )
+    allowed_folders: list[str] = Field(
+        default_factory=list,
+        description="Folders commands may start in (and the folders inside them). Nothing runs until you add one.",
+    )
+    default_folder: str = Field(
+        "",
+        description="Where commands start when Sentient doesn't pick a folder. Empty uses the first allowed folder.",
+    )
+    allowed_commands: list[str] = Field(
+        default_factory=lambda: ["git status", "git diff", "git log", "ls", "dir", "pwd"],
+        description="Commands that never need asking. A command matches when it is exactly one of these or starts "
+        "with one followed by a space, and has no ; & | < > ` $ ( ) { } or line breaks.",
+    )
+    timeout_s: int = Field(180, ge=5, le=3600, description="A command is stopped after this long.")
+    max_output_chars: int = Field(
+        8_000,
+        ge=1_000,
+        le=1_000_000,
+        description="Output kept for the answer (each of output and errors). Longer output is saved to a file.",
+    )
+
+
 # ----------------------------------------------------------------------------- browser (owner: browser agent)
 class BrowserConfig(BaseModel):
     enabled: bool = Field(True, description="Let the assistant use a web browser for sites without an integration.")
@@ -762,6 +843,7 @@ class SentientConfig(BaseModel):
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     subagents: SubagentsConfig = Field(default_factory=SubagentsConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    terminal: TerminalConfig = Field(default_factory=TerminalConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     nodes: NodesConfig = Field(default_factory=NodesConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)

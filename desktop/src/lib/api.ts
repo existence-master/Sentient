@@ -29,6 +29,7 @@ import type {
   SandboxResult,
   SandboxStatus,
   Subagent,
+  TerminalStatus,
   ApprovalDecision,
   Bootstrap,
   StopResult,
@@ -61,6 +62,8 @@ import type {
   MemoryTopic,
   MemoryWriteResult,
   MessageSearchHit,
+  ModelPreset,
+  ModelPresetList,
   ModelRoles,
   ModelTestResult,
   CatalogModel,
@@ -69,6 +72,7 @@ import type {
   ProviderSignInStatus,
   NotificationList,
   OkResponse,
+  PresetApplyResult,
   OllamaPullProgress,
   OnboardingRequest,
   Persona,
@@ -460,7 +464,16 @@ export const api = {
     connectOpenRouter: () => http.post<ProviderSignIn>('/api/models/connect/openrouter'),
     signInStatus: (state: string) => http.get<ProviderSignInStatus>(`/api/models/connect/openrouter/${enc(state)}`),
     checkKey: (provider: string) => http.post<ProviderKeyCheck>(`/api/models/connect/${enc(provider)}/check`),
-    catalog: (provider: string) => http.get<CatalogModel[]>(`/api/models/catalog/${enc(provider)}`)
+    catalog: (provider: string) => http.get<CatalogModel[]>(`/api/models/catalog/${enc(provider)}`),
+    /** Model presets: switch every role at once, save your own, undo the last switch. */
+    presets: {
+      list: () => http.get<ModelPresetList>('/api/models/presets'),
+      apply: (name: string) => http.post<PresetApplyResult>(`/api/models/presets/${enc(name)}/apply`),
+      undo: () => http.post<PresetApplyResult>('/api/models/presets/undo'),
+      save: (name: string, overwrite = false) => http.post<ModelPreset>('/api/models/presets', { name, overwrite }),
+      rename: (name: string, to: string) => http.patch<ModelPreset>(`/api/models/presets/${enc(name)}`, { name: to }),
+      delete: (name: string) => http.delete<OkResponse>(`/api/models/presets/${enc(name)}`)
+    }
   },
 
   secrets: {
@@ -628,6 +641,13 @@ export const api = {
         () => ({ enabled: true, backend: 'process', docker_available: false, python_version: '3.12.7' })
       ),
     run: (code: string) => http.post<SandboxResult>('/api/sandbox/run', { code })
+  },
+
+  // §18 terminal ------------------------------------------------------------------------
+  terminal: {
+    status: () => http.get<TerminalStatus>('/api/terminal/status'),
+    /** Kills one running command; `id` is the tool call id. */
+    stop: (id: string) => http.post<{ stopped: boolean }>('/api/terminal/stop', { id })
   },
 
   // §12 browser -------------------------------------------------------------------------

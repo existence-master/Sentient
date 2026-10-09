@@ -7,6 +7,7 @@ the glasses) resolves it with ``allow``, ``allow_session`` or ``deny``.
 Decisions use the call's *effective* risk (``Tool.risk_fn``). "Allow for this chat"
 covers the tool up to the risk level that was approved: allowing ordinary browser
 clicks never covers a call whose ``risk_fn`` raised it to ``send`` or ``exec`` ("Place order" asks every time).
+A tool declared with ``allow_for_chat=False`` (commands on the host) is never covered by it.
 
 Lasting rules (``tools.approvals.rules``, ADR 0016) are checked first, in code, never by a model. A key is a tool
 name or a plugin id, and a tool's own rule beats its plugin's rule:
@@ -131,7 +132,8 @@ class ApprovalBroker:
             return False
         if mode == "off":
             return False
-        if self.config.remember_session and session_id:
+        # a tool with ``allow_for_chat=False`` (the terminal, ADR 0019) asks for every call
+        if self.config.remember_session and session_id and getattr(tool, "allow_for_chat", True):
             allowed = self._session_allow.get((session_id, tool.name))
             # a call the tool's risk_fn raised to send/exec (a click on "Place order") always asks again
             escalated = risk >= Risk.send and risk > tool.risk

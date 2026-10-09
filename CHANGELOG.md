@@ -6,9 +6,16 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Model presets:** switch every model between local and cloud in one click. Click the model name at the top of the
+  window to pick "Local only" (everything on this computer), "Cloud" (your Anthropic, OpenAI or OpenRouter key for
+  every job) or "Mixed" (cloud for chat and planning, this computer for background work and memory), go back to a
+  recent chat model, or undo the last switch. Save your own setup as a preset under Settings > Models. If a preset
+  needs something you don't have yet, the menu offers it right there: download the model with progress, or add the key.
+  In Telegram, Discord and WhatsApp, `/model` shows the current setup and switches with a tap or a number. Per-chat
+  and per-task model choices still win.
 - **Use the AI plans you already pay for** (Settings > Models and the first-run setup): step-by-step help to use the
-  monthly API credits included with Claude Max and Team plans (paste the key, test it, then use Claude for chat and
-  background work in one click), **Connect OpenRouter** with a browser sign-in instead of copying a key, and
+  monthly API credits included with Claude Max and Team plans (paste the key, test it, then switch every job to Claude
+  in one click with the Cloud preset, which you can undo), **Connect OpenRouter** with a browser sign-in instead of copying a key, and
   **Nous Portal** as a provider with an API key. OpenRouter's and Nous Portal's model lists show up in the model
   pickers, with free OpenRouter models marked. Keys stay in your system keychain and removing one disconnects. Pro
   plans don't include API credits, and apps aren't allowed to sign in with a Claude account, so the app says so.
@@ -44,6 +51,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
   title bar, the tray menu, the shortcut Ctrl+Alt+Shift+S, `/stopall` in paired Telegram and Discord chats, and on
   paired phones. Messages you queued before the stop are not sent. It never asks the model, so nothing can
   talk its way past it.
+- **Terminal:** Sentient can run commands on your computer, like git, builds, tests and scripts, in folders you
+  allow (PowerShell on Windows, your shell on macOS and Linux). It is off until you turn it on in Settings >
+  Terminal and add a folder. Each command shows you the exact command and folder and waits for your OK every time,
+  unless it is on your list of commands that never need asking (`git status` and friends) or you set an Allow rule.
+  Output shows live in the chat, with a Stop button; commands stop after 3 minutes by default, and Stop everything
+  ends them too.
+  Formatting disks, shutting down, deleting from the registry and deleting whole drives are never allowed. Your keys
+  and passwords are kept out of its commands, and work Sentient starts on its own can't run any.
 - **Daily Brief:** a few lines each weekday morning at 07:30 with today's meetings, emails that need you, tasks due
   or waiting for you and the weather, plus headlines on topics you pick. Turn it on in onboarding or with **Set up my
   Daily Brief** in Notifications. It is a normal task you can reschedule, pause or delete, it only reads (it never

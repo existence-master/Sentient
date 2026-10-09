@@ -19,6 +19,7 @@ export const qk = {
   localModels: ['models', 'local'] as const,
   catalog: (provider: string) => ['models', 'catalog', provider] as const,
   signIn: (state: string) => ['models', 'sign-in', state] as const,
+  modelPresets: ['models', 'presets'] as const,
   secrets: ['secrets'] as const,
   /** Mutation key for saving a secret (see `useSecretSaves`). */
   saveSecret: ['save-secret'] as const,
@@ -66,6 +67,7 @@ export const qk = {
 
   voiceStatus: ['voice', 'status'] as const,
   sandboxStatus: ['sandbox', 'status'] as const,
+  terminalStatus: ['terminal', 'status'] as const,
   usage: (days: number) => ['usage', days] as const,
   files: ['files'] as const,
   tools: ['tools'] as const

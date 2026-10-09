@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from sentient import secrets
 from sentient.app import SentientApp
 from sentient.gateway.app import create_app
-from sentient.llm import connect
+from sentient.llm import connect, presets
 from sentient.llm.provider import LiteLLMProvider, litellm_model, provider_config
 from tests.conftest import FakeProvider
 
@@ -169,8 +169,11 @@ async def test_openrouter_key_check_and_catalog_marks_free_models(config, keycha
     ]
 
 
-async def test_nous_portal_key_uses_its_openai_compatible_endpoint(config, keychain):
+async def test_nous_portal_key_uses_its_openai_compatible_endpoint(config, keychain, monkeypatch):
+    monkeypatch.delenv("NOUS_API_KEY", raising=False)
+    assert presets.key_set(config, "nous") is False
     keychain["nous"] = "sk-nous-test"
+    assert presets.key_set(config, "nous") is True
     with respx.mock() as router:
         route = router.get("https://inference-api.nousresearch.com/v1/models").mock(
             return_value=httpx.Response(200, json={"data": [{"id": "Hermes-4-70B"}]}))

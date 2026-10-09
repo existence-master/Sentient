@@ -23,6 +23,7 @@ proposing a change to one of them.
 | [0016](0016-lasting-approval-rules.md) | Let people set lasting Allow, Ask or Never rules per app and tool | Accepted | 2026-10-09 |
 | [0017](0017-unprompted-work-reads-only.md) | Work nobody asked for can only read | Accepted | 2026-10-09 |
 | [0018](0018-untrusted-content-gates-sending.md) | Ask before sending anything once untrusted content is in play | Accepted | 2026-10-09 |
+| [0019](0019-host-terminal.md) | Run commands on the host only when turned on, in allowed folders, with approval | Accepted | 2026-10-09 |
 | [0020](0020-whatsapp-web-bridge.md) | Link WhatsApp as a device with an in-process WhatsApp Web bridge | Accepted | 2026-10-09 |
 
 ## Adding a record

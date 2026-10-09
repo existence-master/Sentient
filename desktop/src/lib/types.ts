@@ -114,6 +114,9 @@ export interface ModelsConfig {
   context_length: number
   context_length_per_role: Record<string, number>
   providers: Record<string, ProviderConfig>
+  /** The user's own saved model setups (built-ins are not stored). */
+  presets: Record<string, Omit<ModelPreset, 'name' | 'builtin' | 'available' | 'reason' | 'provider' | 'description' | 'active'>>
+  active_preset: string | null
   max_tool_rounds: number
   request_timeout_s: number
 }
@@ -463,6 +466,53 @@ export interface ModelTestResult {
   supports_tools?: boolean
 }
 
+/** A model setup switched in one step (`GET /api/models/presets`, docs/API.md §3). */
+export interface ModelPreset {
+  name: string
+  builtin: boolean
+  /** False for Cloud and Mixed until a cloud key is set; `reason` says why. */
+  available: boolean
+  reason: string | null
+  /** The cloud provider a built-in uses. */
+  provider: string | null
+  description: string | null
+  /** Roles this preset sets; null = use the primary model. Roles left out keep their model. */
+  roles: Partial<Record<RoleName, string | null>>
+  fallbacks?: Record<string, string[]>
+  reasoning?: Record<string, string>
+  context_length?: number
+  context_length_per_role?: Record<string, number>
+  active: boolean
+}
+
+export interface ModelPresetList {
+  active: string | null
+  /** A role was changed by hand since the active preset was applied. */
+  modified: boolean
+  can_undo: boolean
+  undo_preset: string | null
+  presets: ModelPreset[]
+}
+
+export type PresetMissingAction = { kind: 'pull_model'; name: string; label: string } | { kind: 'add_key'; provider: string; label: string }
+
+export interface PresetMissing {
+  kind: 'pull_model' | 'add_key' | 'start_ollama'
+  roles: RoleName[]
+  model: string | null
+  provider?: string
+  detail: string
+  fix: string
+  action: PresetMissingAction | null
+}
+
+export interface PresetApplyResult {
+  preset: string | null
+  changed: { role: RoleName; from: string | null; to: string | null }[]
+  missing: PresetMissing[]
+  can_undo: boolean
+}
+
 /** `POST /api/models/checkup` (docs/API.md §3). */
 export type CheckupStatus = 'pass' | 'warn' | 'fail' | 'skip'
 
@@ -773,6 +823,36 @@ export interface SandboxStatus {
   backend: string
   docker_available: boolean
   python_version: string
+}
+
+// ============================================================================ §18 Terminal
+/** Result of `terminal_run` (§18). */
+export interface TerminalResult {
+  ok: boolean
+  command: string
+  cwd: string | null
+  shell: string | null
+  exit_code: number | null
+  stdout: string
+  stderr: string
+  timed_out: boolean
+  stopped: boolean
+  duration_ms: number
+  /** Full output under `files/` when it was too long to keep, e.g. `outputs/terminal-<id>.txt`. */
+  output_file: string | null
+  error: string | null
+}
+
+export interface TerminalStatus {
+  enabled: boolean
+  /** `pwsh`, `powershell`, `bash`, `zsh` or `sh`; null when no shell was found. */
+  shell: string | null
+  shell_path: string | null
+  allowed_folders: string[]
+  default_folder: string | null
+  /** Plain descriptions of what the built-in blocklist refuses. */
+  blocked: string[]
+  running: { id: string; command: string; cwd: string; started_at: string }[]
 }
 
 // ============================================================================ §12 Browser

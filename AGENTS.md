@@ -22,7 +22,7 @@ Area guides with deeper conventions: [`sentient/AGENTS.md`](sentient/AGENTS.md) 
 
 | Path | What it is |
 |---|---|
-| `sentient/` | The engine (`python -m sentient serve`). One package per area: `agent`, `llm`, `store`, `tools`, `gateway`, `tasks`, `memory`, `proactivity`, `evolution`, `skills`, `integrations`, `channels`, `nodes`, `browser`, `sandbox`, `voice` |
+| `sentient/` | The engine (`python -m sentient serve`). One package per area: `agent`, `llm`, `store`, `tools`, `gateway`, `tasks`, `memory`, `proactivity`, `evolution`, `skills`, `integrations`, `channels`, `nodes`, `browser`, `sandbox`, `terminal`, `voice` |
 | `desktop/` | Electron main and preload (`desktop/electron`) and the React renderer (`desktop/src`) |
 | `tests/` | pytest, `asyncio_mode=auto`. One folder per area; core tests are `tests/test_*.py` |
 | `docs/` | Architecture, API contract, ADRs, devices protocol, guides |

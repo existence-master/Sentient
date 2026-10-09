@@ -6,11 +6,11 @@ LLM provider and a temporary database.
 
 Start order (stop runs in reverse):
     store -> memory -> notifications -> integrations (registers plugins)
-    -> builtin tools -> skills -> agent -> subagents -> sandbox -> browser -> nodes
+    -> builtin tools -> skills -> agent -> subagents -> sandbox -> terminal -> browser -> nodes
     -> tasks -> proactivity -> evolution -> user_model -> dreaming -> voice -> channels
 
 Stop everything (``stop_all`` / ``resume``, docs/API.md section 17) is deterministic: it never
-asks the model. It cancels running chat replies, task runs, helpers, scripts and browser
+asks the model. It cancels running chat replies, task runs, helpers, scripts, commands and browser
 actions, and pauses scheduled and triggered tasks, proactivity, learning and dreaming until
 the user resumes. The stopped state is kept in the ``meta`` table, so it survives a restart.
 """
@@ -47,6 +47,7 @@ from sentient.services import Service
 from sentient.skills.loader import SkillLibrary
 from sentient.store.db import Store, now_iso
 from sentient.tasks import TaskService
+from sentient.terminal import TerminalService
 from sentient.tools.registry import ToolRegistry
 from sentient.voice import VoiceService
 
@@ -92,6 +93,7 @@ class SentientApp:
         self.voice = VoiceService(self)
         self.subagents = SubagentManager(self)
         self.sandbox = SandboxService(self)
+        self.terminal = TerminalService(self)
         self.browser = BrowserService(self)
         self.nodes = NodeService(self)
         self.channels = ChannelService(self)
@@ -109,7 +111,7 @@ class SentientApp:
     @property
     def services(self) -> list[Service]:
         return [
-            self.notifications, self.integrations, self.subagents, self.sandbox, self.browser, self.nodes,
+            self.notifications, self.integrations, self.subagents, self.sandbox, self.terminal, self.browser, self.nodes,
             self.tasks, self.proactivity, self.evolution, self.user_model, self.dreaming, self.voice, self.channels,
         ]
 

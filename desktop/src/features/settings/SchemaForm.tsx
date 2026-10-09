@@ -158,6 +158,24 @@ export const LABELS: Record<string, FieldLabel> = {
   'sandbox.docker_memory_mb': { label: 'Memory limit in Docker', unit: 'MB' },
   'sandbox.docker_cpus': { label: 'Processor limit in Docker', unit: ' CPUs' },
   'sandbox.allow_network_in_docker': { label: 'Let Docker scripts use the internet' },
+  // terminal
+  'terminal.enabled': {
+    label: 'Let Sentient run commands on this computer',
+    description: 'For git, builds, scripts and file chores. It asks you first, unless the command is in the list below or you set an Allow rule.'
+  },
+  'terminal.allowed_folders': {
+    label: 'Folders it may work in',
+    placeholder: 'Add a folder path and press Enter',
+    description: 'Commands start in one of these folders or a folder inside them. Nothing runs until you add one.'
+  },
+  'terminal.default_folder': { label: 'Start in', placeholder: 'The first folder above' },
+  'terminal.allowed_commands': {
+    label: 'Commands that never need asking',
+    placeholder: 'e.g. git status, then press Enter',
+    description: 'Only simple commands match: “git status --short” does, “git status && something else” does not.'
+  },
+  'terminal.timeout_s': { label: 'Stop a command after', unit: 's' },
+  'terminal.max_output_chars': { label: 'Longest output kept', unit: 'chars', description: 'Longer output is saved to a file Sentient can open.' },
   // browser
   'browser.enabled': { label: 'Let Sentient use a web browser', description: 'For websites without an integration. It never types passwords or card numbers.' },
   'browser.engine': { label: 'Browser', options: { auto: 'Automatic', msedge: 'Microsoft Edge', chrome: 'Google Chrome', chromium: 'Chromium' } },

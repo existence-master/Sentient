@@ -18,7 +18,8 @@ from pydantic import BaseModel
 
 from sentient import secrets
 from sentient.gateway.deps import AUTH, get_core
-from sentient.llm import connect
+from sentient.llm import connect, presets
+from sentient.llm.presets import PresetError
 from sentient.llm.provider import provider_config
 
 router = APIRouter(prefix="/api", tags=["models"], dependencies=AUTH)
@@ -234,6 +235,62 @@ async def set_fallbacks(request: Request, body: dict[str, list[str]]):
         cfg.models.fallbacks[role] = [m for m in chain if m]
     s.save_config(cfg)
     return {"ok": True, "fallbacks": cfg.models.fallbacks}
+
+
+# ----------------------------------------------------------------------------- presets (#212)
+class PresetBody(BaseModel):
+    name: str
+    overwrite: bool = False
+
+
+class RenameBody(BaseModel):
+    name: str
+
+
+def _preset_call(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except PresetError as exc:
+        raise HTTPException(exc.status, exc.message) from None
+
+
+async def _preset_await(coro):
+    try:
+        return await coro
+    except PresetError as exc:
+        raise HTTPException(exc.status, exc.message) from None
+
+
+@router.get("/models/presets")
+async def list_presets(request: Request):
+    return await presets.listing(get_core(request))
+
+
+@router.post("/models/presets")
+async def save_preset(request: Request, body: PresetBody):
+    """Save the current models as a preset of your own."""
+    return _preset_call(presets.save_current, get_core(request), body.name, overwrite=body.overwrite)
+
+
+@router.post("/models/presets/undo")
+async def undo_preset(request: Request):
+    return await _preset_await(presets.undo(get_core(request)))
+
+
+@router.post("/models/presets/{name}/apply")
+async def apply_preset(request: Request, name: str):
+    return await _preset_await(presets.apply(get_core(request), name))
+
+
+@router.patch("/models/presets/{name}")
+async def rename_preset(request: Request, name: str, body: RenameBody):
+    return _preset_call(presets.rename, get_core(request), name, body.name)
+
+
+@router.delete("/models/presets/{name}")
+async def delete_preset(request: Request, name: str):
+    _preset_call(presets.delete, get_core(request), name)
+    return {"ok": True}
 
 
 class PullBody(BaseModel):
