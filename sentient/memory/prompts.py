@@ -115,7 +115,7 @@ JSON Schema:
 {json.dumps(CUD_DECISION_FORMAT, indent=2)}
 
 Example:
-{{"action": "ADD", "fact_id": null, "content": "Sarthak's sister Riya lives in Pune.", "analysis": {{"topics": ["Relationships & Social Life"], "memory_type": "long-term", "duration": null}}}}
+{{"action": "ADD", "fact_id": null, "content": "Maya's sister Riya lives in Pune.", "analysis": {{"topics": ["Relationships & Social Life"], "memory_type": "long-term", "duration": null}}}}
 """
 CUD_DECISION_USER = (
     "New information: '{information}'\n\nHere are the most similar facts already in memory:\n{similar_facts}\n\n"

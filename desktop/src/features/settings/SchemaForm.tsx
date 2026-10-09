@@ -62,6 +62,7 @@ export const LABELS: Record<string, FieldLabel> = {
   },
   'tools.approvals.timeout_s': { label: 'Deny unanswered requests after', unit: 's' },
   'tools.disabled': { label: 'Disabled tools', hidden: true },
+  'tools.approvals.rules': { label: 'Rules for apps and tools', hidden: true },
   // evolution & skills
   'evolution.review_enabled': { label: 'Learn skills from finished work' },
   'evolution.review_idle_minutes': { label: 'Review a chat once idle for', unit: 'min' },

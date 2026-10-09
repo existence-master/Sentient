@@ -37,7 +37,7 @@ async def memory_recall(ctx: ToolContext, query: str, limit: int = 8) -> list[di
 
 @tool("memory_remember", risk=Risk.write, internal=True)
 async def memory_remember(ctx: ToolContext, fact: str) -> dict:
-    """Save one atomic fact about the user in third person (e.g. "Sarthak's sister lives in Pune").
+    """Save one atomic fact about the user in third person (e.g. "Maya's sister lives in Pune").
     Call this whenever you learn something lasting about the user. One fact per call.
     Existing facts on the same subject are updated instead of duplicated."""
     if ctx.memory is None:

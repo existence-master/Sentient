@@ -1,6 +1,8 @@
 """Seed a throwaway SENTIENT_HOME with demo data for the Integrations, Notifications and Voice UI.
 
-    .venv/Scripts/python.exe desktop/scripts/seed-integrations-notifications.py <SENTIENT_HOME> [--keep-db]
+    .venv/Scripts/python.exe desktop/scripts/seed-integrations-notifications.py [SENTIENT_HOME] [--keep-db]
+
+Without a folder it seeds the folder in the SENTIENT_HOME variable, like the other seed scripts.
 
 No LLM calls (a tiny fake provider is injected), no network, and nothing is written to the
 real OS keychain (keychain helpers are swapped for an in-memory dict while this runs).
@@ -27,20 +29,21 @@ import argparse
 import asyncio
 import json
 import os
-import tempfile
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-DEFAULT_HOME = str(Path(tempfile.gettempdir()) / "sentient-ui-integrations-home")
-
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("home", nargs="?", default=DEFAULT_HOME, help="SENTIENT_HOME folder to seed (created if missing)")
+    p.add_argument("home", nargs="?", default=os.environ.get("SENTIENT_HOME") or None,
+                   help="SENTIENT_HOME folder to seed (created if missing); defaults to the SENTIENT_HOME variable")
     p.add_argument("--keep-db", action="store_true",
                    help="keep the existing sentient.db and add to it instead of starting from an empty database")
-    return p.parse_args()
+    args = p.parse_args()
+    if not args.home:
+        p.error("pass a folder or set SENTIENT_HOME")
+    return args
 
 
 ARGS = _parse_args()

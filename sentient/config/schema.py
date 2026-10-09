@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ----------------------------------------------------------------------------- core (owner: core)
@@ -131,6 +131,26 @@ class ApprovalsConfig(BaseModel):
     )
     remember_session: bool = Field(True, description="'Allow for this chat' answers are honored.")
     timeout_s: int = Field(600, ge=10, description="Unanswered approvals are denied after this long.")
+    rules: dict[str, Literal["allow", "ask", "never"]] = Field(
+        default_factory=dict,
+        description="Lasting rules for apps and tools. The key is a tool name (gmail_send_email) or an app id "
+        "(gmail, meaning all of its tools); a tool's own rule beats its app's rule. allow: go ahead without asking "
+        "(purchases still ask). ask: always ask first, whatever the setting above says. never: Sentient can't use it.",
+    )
+
+    @field_validator("rules", mode="before")
+    @classmethod
+    def _clean_rules(cls, value: object) -> object:
+        """Trim keys, lower-case values and reject empty keys; the Literal checks the values."""
+        if not isinstance(value, dict):
+            return value
+        out: dict[str, object] = {}
+        for key, rule in value.items():
+            name = str(key).strip()
+            if not name:
+                raise ValueError("A rule needs a tool name or an app id.")
+            out[name] = rule.strip().lower() if isinstance(rule, str) else rule
+        return out
 
 
 class ToolsConfig(BaseModel):

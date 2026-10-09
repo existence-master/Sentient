@@ -192,7 +192,9 @@ keychain; file tools confined to `~/.sentient/files`; external links open in the
 system browser; strict renderer CSP with context isolation and sandboxing.
 
 Approvals use each call's effective risk: a browser click on "Place order" or a device photo is a `send`
-that asks every time, even after "allow for this chat". The browser never types into password, card or
+that asks every time, even after "allow for this chat". Lasting rules per app or tool (Allow, Ask, Never;
+[ADR 0016](adr/0016-lasting-approval-rules.md)) are applied in code before the mode, and purchases ask even under
+Allow. The browser never types into password, card or
 one-time-code fields. Scripts from `execute_code` get no API keys and may only call read and internal tools.
 Subagents cannot send, execute or spawn more subagents. Messaging bots answer paired chats only; device and
 hook secrets are stored as hashes; bot tokens live in the keychain and are scrubbed from logs.

@@ -114,10 +114,15 @@ export interface ChatConfig {
 
 export type ApprovalMode = 'off' | 'ask' | 'always'
 
+/** Lasting rule for a tool or a whole app (ADR 0016). No entry means the normal approvals setting. */
+export type ApprovalRule = 'allow' | 'ask' | 'never'
+
 export interface ApprovalsConfig {
   mode: ApprovalMode
   remember_session: boolean
   timeout_s: number
+  /** Key: a tool name (`gmail_send_email`) or an app id (`gmail`). A tool's own rule beats its app's rule. */
+  rules: Record<string, ApprovalRule>
 }
 
 export interface ToolsConfig {

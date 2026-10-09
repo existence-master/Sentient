@@ -11,6 +11,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
   replying to the question message there works too. A waiting task keeps waiting across restarts.
 - Proper documentation: getting started, privacy, architecture decision records, agent guides, verification report.
 - README screenshots and a new banner.
+- Lasting rules for apps and tools in Settings > Approvals & safety: **Allow** (go ahead without asking),
+  **Ask** (always ask first) or **Never** (Sentient can't use it). Purchases always ask.
 
 ## [3.0.0-alpha.0] - 2026-10-08
 

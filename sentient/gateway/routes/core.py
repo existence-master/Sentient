@@ -374,7 +374,8 @@ async def delete_file(request: Request, name: str):
 # ----------------------------------------------------------------------------- tools & usage
 @router.get("/api/tools", dependencies=_auth)
 async def tools(request: Request):
-    return get_core(request).registry.catalog()
+    # tools behind a "never" rule stay listed so Settings can show and change the rule
+    return get_core(request).registry.catalog(include_blocked=True)
 
 
 @router.get("/api/usage", dependencies=_auth)

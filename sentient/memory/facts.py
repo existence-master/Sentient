@@ -47,7 +47,7 @@ _REQUEST_RE = re.compile(
 )
 _NOISE_RE = re.compile(r"\b(today's date|the current (date|time)|current weather|the weather (is|was))\b", re.IGNORECASE)
 _USER_REF_RE = re.compile(r"\b(the user|USERNAME)\b", re.IGNORECASE)
-# self-evident facts small models like to emit ("Sarthak's name is Sarthak.")
+# self-evident facts small models like to emit ("Maya's name is Maya.")
 _TAUTOLOGY_RE = re.compile(r"^\s*(?P<n>[\w .'-]+?)['\u2019]s name is (?P=n)\s*\.?\s*$", re.IGNORECASE)
 
 MEMORY_COLUMNS = "id, content, source, topics, memory_type, created_at, updated_at, expires_at, previous_content"
@@ -172,8 +172,8 @@ TIME_WORDING_RE = re.compile(
 
 
 def fact_subjects(text: str, user_name: str = "") -> set[str]:
-    """Who a fact is about, as lowercase aliases: {"sarthak"}, {"sarthak's sister", "riya"} for
-    "Sarthak's sister Riya ...". "I", "my" and "the user" mean ``user_name``. Empty when unclear."""
+    """Who a fact is about, as lowercase aliases: {"maya"}, {"maya's sister", "riya"} for
+    "Maya's sister Riya ...". "I", "my" and "the user" mean ``user_name``. Empty when unclear."""
     user = user_name.strip().lower() or "user"
     text = (text or "").replace(_RSQUO, "'").strip()
     text = re.sub(r"^(the user's|my)\b", f"{user}'s", text, flags=re.IGNORECASE)

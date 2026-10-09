@@ -34,7 +34,7 @@ for the bot to answer.
 1. In Telegram, search for **@BotFather** (it has a blue check mark) and open the chat.
 2. Tap **Start**, then send `/newbot`.
 3. BotFather asks for a **name**. Type anything you like, for example `My Sentient`.
-4. Then it asks for a **username**. It must end in `bot`, for example `sarthak_sentient_bot`. If it is taken, try another.
+4. Then it asks for a **username**. It must end in `bot`, for example `maya_sentient_bot`. If it is taken, try another.
 5. BotFather replies with your **token**. It looks like `123456789:AAF...`. Tap and hold the message and copy the token.
 6. Paste the token above and click **Connect**. Sentient checks it and shows your bot's name.
 7. Click **Pair a chat**. Sentient shows a 6-digit code that works for 10 minutes.

@@ -538,12 +538,13 @@ class ProactiveEngine(Service):
         ]
 
     async def _read_tool_names(self) -> list[str]:
-        """Read-only tools of connected apps. ``registry.tools()`` already hides disconnected integrations."""
+        """Read-only tools of connected apps. ``registry.tools()`` already hides disconnected integrations and
+        "never" tools; tools with an "ask" rule are left out because nobody is there to ask."""
         if self.app.agent is None:
             return []
         return [
             t.name for t in self.app.registry.tools()
-            if t.risk == Risk.read and t.plugin not in CONTEXT_EXCLUDED_PLUGINS
+            if t.risk == Risk.read and t.plugin not in CONTEXT_EXCLUDED_PLUGINS and self.app.approvals.rule(t) != "ask"
         ]
 
     async def live_search(self, source: str, event_type: str, item: dict, queries: dict[str, str]) -> str | None:

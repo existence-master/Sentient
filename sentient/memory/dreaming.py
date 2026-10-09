@@ -6,7 +6,7 @@ Once a day at ``dreaming.time`` (local), when the user has not chatted for
 a. merge near-duplicate facts: embedding similarity AND word overlap, with no conflicting
    names/places/numbers; pure duplicates merge without a model call, others ask the model
    for one merged fact that must keep every detail (ids stay stable: the kept fact keeps its id).
-b. settle contradictions: facts are grouped by subject (name, "Sarthak's sister Riya", the user as
+b. settle contradictions: facts are grouped by subject (name, "Maya's sister Riya", the user as
    "I"/"the user") and paired when they share an attribute family (residence, job, relationship, diet,
    health, ownership, schedule) or differ in details/negation; the model confirms and names the
    current fact; the newer wins unless only the older has explicit recent wording. Cleared pairs are
@@ -421,7 +421,7 @@ class DreamingService(Service):
         """Candidate pairs ``(strength, similarity, i, j)``, strongest first.
 
         Facts are grouped by subject (the person or entity a fact is about, including possessive relations
-        and the user's own name), so "Sarthak moved to Bengaluru" meets "Sarthak lives in Pune" without sharing
+        and the user's own name), so "Maya moved to Bengaluru" meets "Maya lives in Pune" without sharing
         a leading word or a high embedding score. Pairs sharing only a broad attribute also need
         ``contradiction_similarity``."""
         user = self.app.config.assistant.user_name

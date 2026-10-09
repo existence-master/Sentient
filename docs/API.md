@@ -95,8 +95,30 @@ Saves config, writes USER.md, seeds memory facts (source `onboarding`) in the ba
 - `GET /api/config` → full config object (see `sentient/config/schema.py`).
 - `GET /api/config/schema` → JSON schema (every field has `description`; Settings forms are generated from it).
 - `PUT /api/config` body: full config → `{saved: true}`. Hot-applied.
-- `PATCH /api/config` body: partial nested object, deep-merged → `{saved: true, config}`. Inside free-form maps (`models.fallbacks`, `models.reasoning`, `models.temperature`, `models.providers`, `integrations.mcp_servers`) a `null` value removes that entry.
+- `PATCH /api/config` body: partial nested object, deep-merged → `{saved: true, config}`. Inside free-form maps (`models.fallbacks`, `models.reasoning`, `models.temperature`, `models.providers`, `integrations.mcp_servers`, `tools.approvals.rules`) a `null` value removes that entry.
 - Validation failures on PUT/PATCH return 422 with `detail: [{loc: string[], msg, type}]`.
+
+### Lasting approval rules (`tools.approvals.rules`, ADR 0016)
+`{"<key>": "allow" | "ask" | "never"}`, default `{}`. A key is a tool name (`gmail_send_email`, `execute_code`,
+`mcp_<server>_<tool>`) or a plugin id from `GET /api/tools` (`gmail`, `slack`, `mcp_<server>`) meaning every tool of
+that plugin; a tool's own rule beats its plugin's rule. Keys are trimmed and values lower-cased on save; anything else
+is a 422. Remove a rule with `PATCH /api/config {"tools": {"approvals": {"rules": {"<key>": null}}}}`. Rules are
+applied in code before every call and take effect at once:
+- `never`: the tool is not offered to the model (chat, voice, channels, tasks, subagents, proactivity, scripts) and is
+  left out of planners' tool lists. A call made anyway does not run; its `tool_result` is
+  `{error: "You've set Sentient to never use <name>. Change this in Settings > Approvals & safety."}` (`<name>` is the
+  app's display name for a plugin rule, e.g. `Slack`, else the tool's plain name and app, e.g. `"Post message" in Slack`).
+- `ask`: an `approval_request` every time, even with approvals mode `off`, after "Allow for this chat", and for `read`
+  tools. Where nobody can be asked the call does not run: a task run or swarm worker stops there and fails with
+  `"<name> is set to Ask, and tasks can't ask yet. Change it in Settings > Approvals & safety."` (the run's `error`,
+  and the usual `run_failed` notification; `LoopResult.stopped_by_rule` and `LoopResult.error` carry the same text).
+  Subagents and scripts refuse the call, and proactive look-ups leave the tool out.
+- `allow`: runs without asking in modes `ask` and `always`, except a purchase (effective risk `send` or higher whose
+  approval wording `risk_label` is "Purchase", such as a browser click on "Place order"), which asks every time unless
+  approvals mode is `off`. "Allow for this chat" never covers a purchase. `allow` does not widen what scripts may call
+  (section 11): they still only read.
+Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
+`await app.approvals.decide(tool, session_id, risk, arguments, ctx) -> bool`, pure helpers in `sentient.tools.rules`.
 
 ### Sessions (chats)
 - `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at}]` newest first
@@ -122,6 +144,7 @@ Saves config, writes USER.md, seeds memory facts (source `onboarding`) in the ba
 
 ### Tools
 - `GET /api/tools` → `[{id, display_name, description, category, icon, auth, selection_hint, tools: [{name, description, risk}]}]`
+  (connected apps and built-in tools; tools behind a `never` rule are still listed so Settings can show and change the rule)
 
 ### Usage (insights)
 - `GET /api/usage?days=30` → `{totals: {prompt_tokens, completion_tokens}, by_model: [{model, prompt_tokens, completion_tokens, calls}], by_source: [...], by_day: [{day, prompt_tokens, completion_tokens}]}`
@@ -520,6 +543,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   use the effective risk; `approval_request.risk` reports it. `internal` keeps its meaning: an internal tool whose
   effective risk is `write` does not ask in mode "ask"; `send`/`exec` always ask. "Allow for this chat" covers that tool
   up to the risk level that was approved, but never a call whose `risk_fn` raised it to `send`/`exec` (those ask every time).
+  Lasting rules (`tools.approvals.rules`, section 2) are checked before the mode: `ask` and `never` win over everything,
+  `allow` skips the question except for purchases.
   Outside `run_loop`, use `await app.approvals.requires_approval(tool, arguments, ctx) -> (bool, Risk)`;
   `needs_approval(tool, session_id, risk=None, *, arguments=None, ctx=None)` evaluates a synchronous `risk_fn` when
   given `arguments` (an async one counts as at least `send` there).
@@ -573,7 +598,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   dict with a truthy `error`, raises `ToolError` (both importable from `sentient_tools`; `ToolRefused` subclasses `ToolError`).
 - Tool calls from a script: effective risk `read` and internal `write` tools run; other `write`, `send` and `exec` tools
   are refused with a message telling the model to call that tool directly (where approvals can ask the user), unless
-  approvals mode is `off`. Subagent, voice and code tools are not available inside scripts. At most
+  approvals mode is `off`. Lasting rules apply (section 2): `never` tools are not listed and are refused, `ask` tools
+  are refused, and `allow` changes nothing here (scripts still only read). Subagent, voice and code tools are not available inside scripts. At most
   `sandbox.max_tool_calls` calls run per script; `tool_calls` counts calls that ran (refused ones are not counted).
 - Returns **SandboxResult** `{ok, backend: "process"|"docker", stdout, stderr, result, files_created: [name], tool_calls, duration_ms, error}`.
   stdout and stderr stream as `tool_progress` (`kind: "stdout"|"stderr"`, newlines normalized to `\n`) and are each capped at
