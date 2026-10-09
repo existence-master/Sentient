@@ -17,6 +17,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   in Gmail and IMAP email, and suggests a ready draft. Newsletters, no-reply senders and answered threads are skipped,
   and nothing is sent until you approve it. Settings under Proactivity.
 
+### Fixed
+- Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
+  and many tools are no longer cut off without warning. Change it with `models.context_length`, per role with
+  `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.
+
 ### Security
 - One-time codes, verification codes, magic sign-in links and password reset links in Gmail and IMAP email are
   replaced with a short placeholder before the AI reads them, in tool results, proactive suggestions and follow-ups.
