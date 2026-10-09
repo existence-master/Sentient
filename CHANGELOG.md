@@ -16,6 +16,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - **Follow-ups:** once a day Sentient notices emails waiting on your reply, and your own questions nobody answered,
   in Gmail and IMAP email, and suggests a ready draft. Newsletters, no-reply senders and answered threads are skipped,
   and nothing is sent until you approve it. Settings under Proactivity.
+- **Memory sources:** under a chat reply, "Used 3 memories" shows what Sentient had in mind when it answered: the
+  memories and things it has learned about you that were in front of it, and any it looked up. Each one has
+  **This is wrong** to fix or forget it on the spot, and a link to it on the Memory or About you page.
 
 ### Fixed
 - Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
