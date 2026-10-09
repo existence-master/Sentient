@@ -112,7 +112,8 @@ Ownership and the renderer contract are in `CLAUDE.md` and `docs/API.md`.
 `models.roles` maps jobs to `provider/model` strings: `primary` (chat),
 `fast` (background JSON work), `planner`, `executor`, `embedding`, `vision`, and
 `voice` (spoken turns, reasoning off by default).
-Each role has an optional fallback chain, reasoning effort and temperature. An
+Each role has an optional fallback chain, reasoning effort and temperature, and
+Ollama roles get an explicit context length (`num_ctx`). An
 explicit pick (per chat message, per task) is strict: no silent fallback.
 Settings → Models lists installed Ollama models, provider suggestions, key status
 and a one-click test that also reports tool-calling support. Keys go to the OS

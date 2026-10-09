@@ -21,6 +21,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   title bar, the tray menu, the shortcut Ctrl+Alt+Shift+S, `/stopall` in paired Telegram and Discord chats, and on
   paired phones. It never asks the model, so nothing can talk its way past it.
 
+### Fixed
+- Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
+  and many tools are no longer cut off without warning. Change it with `models.context_length`, per role with
+  `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.
+
 ### Security
 - Purchases now ask even when approvals are switched off, and code Sentient writes can never make one. A tool set
   to Never while a request waits for your yes, or while a script runs, is blocked right away.
