@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router'
 import { Alert, Button, Combobox, IconButton, Input, SegmentedControl, Select, Textarea } from '@/components/ui'
 import { useIntegrations } from '@/hooks/integrations'
 import { useHooks } from '@/hooks/automations'
-import type { RecurringSchedule, TaskSchedule, TriggeredSchedule, Weekday } from '@/lib/types'
+import type { OnceSchedule, RecurringSchedule, TaskSchedule, TriggeredSchedule, Weekday } from '@/lib/types'
 import { cn, listTimezones } from '@/lib/utils'
 import {
   FIELD_LABELS,
@@ -93,11 +93,35 @@ export function ScheduleEditor({ value, onChange, defaultTimezone }: { value: Ta
 
       {schedule.type === 'recurring' && <RecurringFields schedule={schedule} tz={tz} onChange={onChange} />}
       {schedule.type === 'triggered' && <TriggeredFields schedule={schedule} onChange={onChange} />}
+      {((schedule.type === 'once' && schedule.run_at) || (schedule.type === 'recurring' && !isIntervalSchedule(schedule))) && (
+        <MissedPicker schedule={schedule as OnceSchedule | RecurringSchedule} onChange={onChange} />
+      )}
 
       <div className="rounded-lg border border-border bg-sunken/50 px-3 py-2 text-sm text-fg-muted">
         <span className="text-fg-subtle">Summary: </span>
         {scheduleSentence(schedule)}
       </div>
+    </div>
+  )
+}
+
+const MISSED_OPTIONS = [
+  { value: 'auto', label: 'Run it if it isn’t too late' },
+  { value: 'run', label: 'Always run it once' },
+  { value: 'skip', label: 'Skip it and tell me' }
+]
+
+/** What to do when the computer was off or asleep at the scheduled time (§4 `schedule.catch_up`). */
+function MissedPicker({ schedule, onChange }: { schedule: OnceSchedule | RecurringSchedule; onChange: (s: TaskSchedule) => void }) {
+  const setPolicy = (v: string) => {
+    const { catch_up: _drop, ...rest } = schedule
+    void _drop
+    onChange((v === 'run' || v === 'skip' ? { ...rest, catch_up: v } : rest) as TaskSchedule)
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-sm text-fg-subtle">If the computer is off or asleep then</span>
+      <Select size="sm" className="w-56" aria-label="If the run is missed" value={schedule.catch_up ?? 'auto'} onValueChange={setPolicy} options={MISSED_OPTIONS} />
     </div>
   )
 }

@@ -7,6 +7,7 @@ A run that calls ``ask_user`` stops after that round and raises ``RunPaused``; t
 service parks it as ``waiting_for_user`` until the answer arrives (``tasks/ask.py``).
 A run that read outside content (a tool result, or the event that started it) and then tries
 to send something pauses the same way and asks first (ADR 0018).
+A run that gets stuck (``tasks/stuck.py``) pauses the same way with a plain reason.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from sentient.agent.loop import Budget, LoopResult, history_to_openai
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent
 from sentient.llm.provider import ToolCall
-from sentient.tasks import ask, limits
+from sentient.tasks import ask, limits, stuck
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
     CORE_HELPER_PLUGINS,
@@ -45,6 +46,8 @@ MAX_PROGRESS_RESULT_CHARS = 6000
 # A run's time limit is checked before each model call. A tool or model call still running this long after the
 # limit is cancelled (a hung call must not run forever) and the run asks whether to keep going, as at the limit.
 HARD_DEADLINE_GRACE_S = 120.0
+# While a run works, its ``last_activity_at`` is saved (and ``task.run_activity`` published) at most this often.
+HEARTBEAT_S = 10.0
 # Writing skills is the evolution reviewer's job; inside a run it only distracts small models.
 EXECUTOR_EXCLUDED_TOOLS = {"skill_save"}
 MAX_CONTINUE_NUDGES = 2
@@ -290,8 +293,25 @@ async def execute_single(
     asking: dict[str, Any] = {}
     # active time only (waiting for an answer is not counted), plus a grace so a slow call can finish first
     hard = asyncio.timeout(remaining_s + HARD_DEADLINE_GRACE_S)
+    cfg = app.config.tasks
+    watch = stuck.Watch(
+        app.registry, stall_s=float(cfg.stuck_after_minutes) * 60, error_limit=int(cfg.stuck_after_repeated_errors)
+    )
+    # no activity for stall_s cancels the call in flight and the run pauses as stuck; every streamed event resets it
+    stall = asyncio.timeout(watch.stall_s or None)
+    clock = asyncio.get_running_loop()
+    beat = {"at": time.monotonic()}
+
+    async def alive(event: Any) -> None:
+        watch.see(event)
+        if watch.stall_s:
+            stall.reschedule(clock.time() + watch.stall_s)
+        if time.monotonic() - beat["at"] >= HEARTBEAT_S:
+            beat["at"] = time.monotonic()
+            await svc.heartbeat(task_id, run_id)
+
     try:
-        async with hard:
+        async with hard, stall:
             plan = run.get("plan") or task.get("plan") or []
             requested = [str(s.get("tool", "")) for s in plan if isinstance(s, dict)]
             tool_names, tool_map, missing = select_tools(app.registry, requested)
@@ -336,9 +356,12 @@ async def execute_single(
                     max_rounds=rounds,
                     use_approvals=False,  # v2: approving the plan is the approval
                     source="task",
-                    stop=lambda: bool(asking.get("question")) or result.needs_ok is not None,
+                    stop=lambda: (
+                        bool(asking.get("question")) or result.needs_ok is not None or watch.reason is not None
+                    ),
                     budget=budget,
                 ):
+                    await alive(event)
                     await mapper.handle(event, messages)
                 await mapper.flush_thought()
                 if result.paused or result.stopped_by_budget:
@@ -357,11 +380,15 @@ async def execute_single(
                     "content": "The executor described its next step without doing it, so I asked it to carry on.",
                 })
     except TimeoutError:
-        if not hard.expired():
+        if stall.expired():
+            watch.stalled()
+            log.warning("task run %s made no progress for %ss; the call in flight was cancelled", run_id, watch.stall_s)
+        elif not hard.expired():
             raise
-        # a hung tool or model call was cancelled. The transcript keeps every finished step; a tool call left
-        # without its result is dropped when the run resumes (history_to_openai), so the model simply asks again.
-        log.warning("task run %s passed its hard time limit; the call in flight was cancelled", run_id)
+        else:
+            log.warning("task run %s passed its hard time limit; the call in flight was cancelled", run_id)
+        # The transcript keeps every finished step; a tool call left without its result is dropped when the run
+        # resumes (history_to_openai), so the model simply makes it again.
     except asyncio.CancelledError:
         # shutdown or Cancel: keep what this segment used so a resumed run still counts it. The write is shielded
         # and awaited, so it lands before the run's task ends even if it is cancelled again.
@@ -376,10 +403,15 @@ async def execute_single(
 
     if result.stopped_by_rule:  # an "ask" rule stopped the run; say which and how to change it (ADR 0016)
         raise RunFailed(result.stopped_by_rule)
-    if result.stopped_by_repeat:  # the loop breaker: the same call kept getting the same result
+    # the loop breaker: the same call kept getting the same result. A repeated error is stuck; anything else fails.
+    if result.stopped_by_repeat and not watch.repeated():
         raise RunFailed(f"{result.stopped_by_repeat} Edit the task to add what it needs, or retry it.")
+    # One question at a time, each with its own pending_question keys: ask_user's own question first, then a call
+    # held after outside content (its yes runs that exact call), then stuck (seen again later if it still is).
     if result.paused and result.needs_ok is not None and not asking.get("question"):
         raise RunPaused(ask.untrusted_pending(result.needs_ok))  # it read outside content: ask before sending
+    if watch.reason and not asking.get("question"):  # stuck: ask what to do (tasks/stuck.py)
+        raise RunPaused(stuck.pending(watch.kind or "stalled", watch.reason))
     if result.paused:
         raise RunPaused({
             "question": asking["question"],

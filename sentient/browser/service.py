@@ -726,9 +726,9 @@ class BrowserService(Service):
             page, loc, info = await self._locate(ref)
             kind = safety.sensitive_field(info) or safety.sensitive_field(info.get("live"))
             if kind:
-                return {"error": safety.sensitive_refusal(kind)}
+                return safety.needs_user(kind)
             if safety.looks_like_card_number(text):
-                return {"error": safety.sensitive_refusal("card number")}
+                return safety.needs_user("card number")
             live_risk = safety.type_risk(info, submit) if self.app.config.browser.confirm_purchases else Risk.write
             refusal = self._guard("type", info["ref"], live_risk)
             if refusal:
@@ -792,7 +792,7 @@ class BrowserService(Service):
                 self._focused = focused
                 kind = safety.sensitive_field(focused)
                 if kind and len(name) == 1:
-                    return {"error": safety.sensitive_refusal(kind)}
+                    return safety.needs_user(kind)
             live_risk = safety.press_risk(name, focused) if self.app.config.browser.confirm_purchases else Risk.write
             refusal = self._guard("press", str(key), live_risk)
             if refusal:

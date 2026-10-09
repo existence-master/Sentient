@@ -146,3 +146,37 @@ async def test_an_approved_call_cut_off_by_a_restart_is_never_repeated(make_app)
     held = next(m for m in messages if m.get("tool_call_id") == "call_web_pages_post_note")
     assert ask.APPROVED_KEY not in held and ask.INTERRUPTED_NOTE in held["content"]
     assert ask.take_approved(messages) is None  # nothing left to run on a later resume
+
+
+async def test_a_held_call_and_a_stuck_step_in_one_round_ask_one_at_a_time(make_app):
+    """Both pause through waiting_for_user; the held call asks first with its own keys and the stuck state stays out."""
+    log: list[str] = []
+
+    @tool("web_pages_sign_in", risk=Risk.read, untrusted_output=False)
+    async def web_pages_sign_in(ctx: ToolContext) -> dict:
+        """Open the sign-in page."""
+        log.append("sign_in")
+        return {"needs_user": "the site wants you to sign in yourself"}
+
+    plugin = _web(log)
+    plugin.tools = [*plugin.tools, web_pages_sign_in]
+    web_pages_sign_in.plugin = plugin.id
+    llm = FakeProvider(
+        replies=[FETCH, [tool_call("web_pages_sign_in"), *POST], "Told Sam about the prices."],
+        json_replies=[dict(RESULT)],
+    )
+    app = await make_app(llm)
+    app.registry.register(plugin)
+    task_id, run_id = await _run_task(app)
+
+    stored = await app.tasks.repo.get_run(run_id)
+    pending = stored["pending_question"]
+    assert pending["untrusted_call"] is True and "stuck" not in pending
+    assert pending["question"] == QUESTION and pending["options"] == [ask.GO_AHEAD, ask.DONT]
+    assert log == ["fetch:https://example.com/prices", "sign_in"]
+
+    await app.tasks.answer_question(task_id, run_id, "yes")
+    await app.tasks.drain()
+    task = await app.tasks.get(task_id)
+    assert task["runs"][-1]["status"] == "completed", task["runs"][-1]["error"]
+    assert log[-1] == "post:sam@example.com" and log.count("post:sam@example.com") == 1
