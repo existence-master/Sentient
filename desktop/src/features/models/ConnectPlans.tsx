@@ -8,7 +8,7 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Card, IconButton, Input, SegmentedControl } from '@/components/ui'
 import { InstructionsGuide, openExternal } from '@/features/integrations/InstructionsGuide'
-import { useCheckKey, useDeleteSecret, useModelCatalog, useProviders, useSetRoles, useSetSecret, useSignInStatus } from '@/hooks/models'
+import { useCheckKey, useDeleteSecret, useModelCatalog, useProviders, useSecretSaves, useSetRoles, useSetSecret, useSignInStatus } from '@/hooks/models'
 import { api, errorMessage } from '@/lib/api'
 import { looksLikeEmbedding } from '@/lib/models'
 import type { ProviderKeyCheck } from '@/lib/types'
@@ -156,9 +156,10 @@ export function ClaudePlanGuide({ onUseModels }: { onUseModels?: (primary: strin
   const fast = suggested.find((m) => /haiku/i.test(m)) ?? primary
 
   // A removed or replaced key needs a new test before Claude can be picked for the roles.
+  const saves = useSecretSaves('anthropic')
   useEffect(() => {
-    if (!keySet) setWorks(false)
-  }, [keySet])
+    setWorks(false)
+  }, [keySet, saves])
 
   return (
     <div className="space-y-4">

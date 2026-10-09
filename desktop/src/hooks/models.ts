@@ -1,5 +1,5 @@
 /** React Query hooks for §3 models & secrets. */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, errorMessage } from '@/lib/api'
 import { demo, isDemoMode } from '@/lib/demo'
@@ -67,6 +67,7 @@ export function useSetFallbacks() {
 export function useSetSecret() {
   const qc = useQueryClient()
   return useMutation({
+    mutationKey: qk.saveSecret,
     mutationFn: ({ name, value }: { name: string; value: string }) => api.secrets.set(name, value),
     onSuccess: (_res, { name }) => {
       void qc.invalidateQueries({ queryKey: qk.secrets })
@@ -74,6 +75,15 @@ export function useSetSecret() {
       void qc.invalidateQueries({ queryKey: qk.catalog(name) }) // a new key can mean a different account's models
     }
   })
+}
+
+/** How many times this secret was saved since the window opened. It changes when a key is replaced. */
+export function useSecretSaves(name: string) {
+  const saved = useMutationState({
+    filters: { mutationKey: qk.saveSecret, status: 'success' },
+    select: (m) => (m.state.variables as { name?: string } | undefined)?.name
+  })
+  return saved.filter((n) => n === name).length
 }
 
 export function useDeleteSecret() {

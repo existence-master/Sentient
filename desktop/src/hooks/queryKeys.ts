@@ -20,6 +20,8 @@ export const qk = {
   catalog: (provider: string) => ['models', 'catalog', provider] as const,
   signIn: (state: string) => ['models', 'sign-in', state] as const,
   secrets: ['secrets'] as const,
+  /** Mutation key for saving a secret (see `useSecretSaves`). */
+  saveSecret: ['save-secret'] as const,
 
   tasks: {
     all: ['tasks'] as const,
