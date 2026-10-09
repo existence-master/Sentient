@@ -177,6 +177,33 @@ Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
 - `GET /api/models/local` → `{ollama: {reachable, models: [{name, size, family, parameter_size, is_embedding, capabilities: string[]}]}, lm_studio: {reachable, models: [...]}}` (`capabilities` from Ollama, e.g. completion/tools/thinking/vision/embedding — a hint; `POST /api/models/test` is the authoritative tool-support check)
 - `POST /api/models/test` `{model, role?}` → `{ok, latency_ms, reply?, error?, supports_tools?}`
 - `POST /api/models/test-embedding` `{model}` → `{ok, dim?, error?}`
+- `POST /api/models/checkup` `{roles?: {role: model | null}}` → streams NDJSON while it checks each role's model,
+  one role at a time (local models are never loaded side by side). Without `roles` it checks every role in the saved
+  config; with `roles` it checks only those, with those models (onboarding checks its picks before saving). It is
+  informational only and never changes config. Each step has a short timeout (60 s). Roles with the same model
+  and the same settings the tests depend on (provider address, reasoning effort, context length, temperature) run
+  each model test (`reply`, `tools`, `chain`, `json`) once; the later role reuses it with a detail starting
+  "Same as primary." (the first role's name). Lines:
+  - `{type: "start", roles: [{role, model}]}` (`model` null = an optional role that uses the main model)
+  - `{type: "step", role, label}` progress, e.g. "Trying a tool call"
+  - `{type: "role", role, model, provider, local, inherits, status, checks: [Check]}` when a role is finished.
+    `inherits: "primary"` with `status: "skip"` and no checks for an optional role with no model of its own.
+  - `{type: "done", status, roles: [role results]}` (`status` = the worst role)
+
+  `Check` = `{id, label, status: "pass"|"warn"|"fail"|"skip", detail, fix?, action?}`. `detail` and `fix` are
+  plain sentences for the UI. Checks, in order, skipping those that do not apply:
+  `connection` (Ollama running and model downloaded, or a cloud key set; a failure stops the rest), `reply` (one
+  short answer), `tools` (one scripted `find_city` call; roles that use tools: primary, fast, executor, vision,
+  voice), `chain` (a second `get_weather` call using the first result; primary and executor), `json` (a JSON reply;
+  fast and planner), `thinking` (Ollama models that can think: thinking matches the role's reasoning setting),
+  `context` (tokens in use vs the model's maximum from `/api/show`), `gpu` (from Ollama `/api/ps`: `size_vram` vs
+  `size`, warns when part of the model runs on the processor), `embedding` (embedding role only). Cloud and
+  LM Studio models get no Ollama checks. `action` is an optional one-click fix the window may offer:
+  `{kind: "use_model", role, model, label}` (`PUT /api/models/roles`), `{kind: "pull_model", name, label}`
+  (`POST /api/models/ollama/pull`), `{kind: "set_reasoning", role, value, label}` (`models.reasoning`),
+  `{kind: "set_context_length", value, role: string|null, label}` (`models.context_length`, or
+  `models.context_length_per_role[role]` when `role` is set). Unknown role → 400. `sentient doctor --models` prints
+  the same check-up as a table.
 - `PUT /api/models/roles` `{primary?, fast?, planner?, executor?, embedding?, vision?, voice?}` → updated roles (null = use primary). The `voice` role is used for `channel` voice/glasses turns and defaults to reasoning `none`.
 - `PUT /api/models/fallbacks` `{role: [model, ...]}` → `{ok}`
 - `POST /api/models/ollama/pull` `{name}` → streams NDJSON `{status, completed?, total?}`

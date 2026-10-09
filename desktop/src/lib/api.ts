@@ -35,6 +35,7 @@ import type {
   StopState,
   ChatRequest,
   AgentEvent,
+  CheckupEvent,
   ClarificationAnswer,
   ConfigPatchResponse,
   ConnectResponse,
@@ -441,7 +442,10 @@ export const api = {
     setFallbacks: (fallbacks: Partial<Record<RoleName, string[]>>) =>
       http.put<FallbacksResponse>('/api/models/fallbacks', fallbacks),
     pullOllama: (name: string, signal?: AbortSignal) =>
-      streamNdjson<OllamaPullProgress>('POST', '/api/models/ollama/pull', { body: { name }, signal })
+      streamNdjson<OllamaPullProgress>('POST', '/api/models/ollama/pull', { body: { name }, signal }),
+    /** Check each role's model (or only `roles`); never changes config. */
+    checkup: (roles?: Partial<Record<RoleName, string | null>>, signal?: AbortSignal) =>
+      streamNdjson<CheckupEvent>('POST', '/api/models/checkup', { body: roles ? { roles } : {}, signal })
   },
 
   secrets: {
