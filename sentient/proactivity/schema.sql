@@ -43,7 +43,9 @@ INSERT OR IGNORE INTO proactive_suggestion_types(type_name, description, builtin
     ('draft_meeting_confirmation_email', 'Drafts an email to confirm a meeting, check availability, or ask for an agenda.', 1, '2026-09-15T00:00:00+00:00'),
     ('schedule_calendar_event', 'Creates a new event on the user''s calendar based on details from a message.', 1, '2026-09-15T00:00:00+00:00'),
     ('create_follow_up_task', 'Creates a new task in the user''s task list to follow up on a specific item or conversation.', 1, '2026-09-15T00:00:00+00:00'),
-    ('summarize_document_or_thread', 'Summarizes a long document, email thread, or message chain for the user.', 1, '2026-09-15T00:00:00+00:00');
+    ('summarize_document_or_thread', 'Summarizes a long document, email thread, or message chain for the user.', 1, '2026-09-15T00:00:00+00:00'),
+    ('follow_up_reply', 'Drafts a reply to an email that has been waiting on the user for days.', 1, '2026-10-09T00:00:00+00:00'),
+    ('follow_up_nudge', 'Drafts a polite nudge when someone has not answered the user''s question for days.', 1, '2026-10-09T00:00:00+00:00');
 
 -- Every suggestion produced (delivered, deferred by quiet hours, approved, dismissed).
 CREATE TABLE IF NOT EXISTS proactive_suggestions (

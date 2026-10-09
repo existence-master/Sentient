@@ -206,3 +206,17 @@ async def test_button_interaction_resolves_approval(dc, llm):
     assert "**Allowed**" in patch["content"] and patch["components"] == []
     assert api.screen()[-1] == "It is noon."
     assert API.endswith("/v10")
+
+
+async def test_reply_reference_is_parsed(dc):
+    _app, ch, _api = dc
+    seen: list = []
+
+    async def capture(msg) -> None:
+        seen.append(msg)
+
+    ch.handle_incoming = capture
+    ch.on_message(dm(1, "The early one", message_reference={"message_id": "q77", "channel_id": "dm1"})["d"])
+    ch.on_message(dm(2, "Just chatting")["d"])
+    await ch.wait_idle()
+    assert [m.reply_to for m in seen] == ["q77", None]

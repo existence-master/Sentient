@@ -439,7 +439,7 @@ def build_executor_prompt(
         "4.  **Be Resourceful & Fill Gaps:** The plan is a guideline. If a step is missing information (e.g. an email address for a manager, a document name), first use `memory_recall` (or another suitable tool) to find it. Do not proceed with incomplete information when a tool could find it.\n"
         "5.  **Remember New Information:** If you discover a new, permanent fact about the user during execution (e.g. their manager's email is 'boss@example.com'), save it with `memory_remember`.\n"
         "6.  **Handle Failures:** If a tool fails, analyze the error, think about an alternative approach, and try again. Do not give up easily.\n"
-        "7.  **Nobody is watching live:** This runs in the background. Never stop to ask the user a question; make a sensible assumption, continue, and mention the assumption in your final answer.\n"
+        "7.  **Nobody is watching live:** This runs in the background. Prefer a sensible assumption: continue and mention it in your final answer. Only when you truly cannot continue without the user's choice, call `ask_user` with one short question (and `options` when there are clear choices); the task pauses until they answer. Never ask to confirm risky actions; the app handles that.\n"
         "8.  **Files:** `file_write` saves into the user's Sentient files folder. Use the exact file names the task asks for.\n"
         "9.  **Scope:** Only do this occurrence of the task. Never create new tasks, reminders or schedules; the scheduler handles recurrence.\n"
         "10. **Provide a Final, Detailed Answer:** ONLY after all steps are completed, reply with a final message (not a tool call) that tells the user what you did and the outcome, including any file names or links you created.\n"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import mimetypes
 import re
@@ -33,7 +34,7 @@ for the bot to answer.
 1. In Telegram, search for **@BotFather** (it has a blue check mark) and open the chat.
 2. Tap **Start**, then send `/newbot`.
 3. BotFather asks for a **name**. Type anything you like, for example `My Sentient`.
-4. Then it asks for a **username**. It must end in `bot`, for example `sarthak_sentient_bot`. If it is taken, try another.
+4. Then it asks for a **username**. It must end in `bot`, for example `maya_sentient_bot`. If it is taken, try another.
 5. BotFather replies with your **token**. It looks like `123456789:AAF...`. Tap and hold the message and copy the token.
 6. Paste the token above and click **Connect**. Sentient checks it and shows your bot's name.
 7. Click **Pair a chat**. Sentient shows a 6-digit code that works for 10 minutes.
@@ -58,6 +59,31 @@ class TelegramError(Exception):
 
 def _chat(chat_id: str) -> int | str:
     return int(chat_id) if re.fullmatch(r"-?\d+", str(chat_id)) else str(chat_id)
+
+
+def _wav_to_ogg_opus(data: bytes) -> bytes:
+    """Convert WAV bytes to a mono 48 kHz OGG/Opus voice note. Raises on failure."""
+    import av
+
+    with av.open(io.BytesIO(data)) as src:
+        buf = io.BytesIO()
+        with av.open(buf, mode="w", format="ogg") as dst:
+            stream = dst.add_stream("libopus", rate=48000)
+            stream.layout = "mono"
+            resampler = av.audio.resampler.AudioResampler(format="s16", layout="mono", rate=48000)
+            for frame in src.decode(audio=0):
+                for resampled in resampler.resample(frame):
+                    for packet in stream.encode(resampled):
+                        dst.mux(packet)
+            for resampled in resampler.resample(None):
+                for packet in stream.encode(resampled):
+                    dst.mux(packet)
+            for packet in stream.encode(None):
+                dst.mux(packet)
+        ogg = buf.getvalue()
+    if not ogg.startswith(b"OggS"):
+        raise ValueError("voice conversion did not produce Ogg")
+    return ogg
 
 
 class TelegramChannel(Channel):
@@ -257,6 +283,7 @@ class TelegramChannel(Channel):
         if sender.get("username"):
             label = f"{label} (@{sender['username']})".strip()
         text = m.get("text") or m.get("caption") or ""
+        reply = m.get("reply_to_message")
         audio: FileFetcher | None = None
         files: list[FileFetcher] = []
         voice = m.get("voice") or m.get("audio")
@@ -281,6 +308,7 @@ class TelegramChannel(Channel):
             audio=audio,
             files=files,
             unsupported=not (text or audio or files),
+            reply_to=str(reply["message_id"]) if isinstance(reply, dict) and reply.get("message_id") is not None else None,
         )
 
     def _fetcher(self, obj: dict, name: str) -> FileFetcher:
@@ -374,7 +402,13 @@ class TelegramChannel(Channel):
         await self.call("sendChatAction", chat_id=_chat(chat_id), action="typing")
 
     async def send_audio(self, chat_id: str, data: bytes, filename: str) -> None:
-        await self.call("sendAudio", chat_id=_chat(chat_id), files={"audio": (filename, data, "audio/wav")})
+        try:
+            ogg = await asyncio.to_thread(_wav_to_ogg_opus, data)
+        except Exception as exc:
+            log.info("%s: voice note conversion failed: %s", self.id, exc)
+            await self.call("sendAudio", chat_id=_chat(chat_id), files={"audio": (filename, data, "audio/wav")})
+            return
+        await self.call("sendVoice", chat_id=_chat(chat_id), files={"voice": ("reply.ogg", ogg, "audio/ogg")})
 
     def pairing_instructions(self, code: str, account_label: str | None) -> str:
         bot = account_label or "your bot"

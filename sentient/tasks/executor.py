@@ -3,6 +3,8 @@
 Uses ``Agent.run_loop`` (the shared tool-calling engine) with the ``executor`` role
 and maps its typed events to v2 ProgressUpdates. The transcript is checkpointed to
 ``task_runs.messages`` after every tool result so a run can resume after a restart.
+A run that calls ``ask_user`` stops after that round and raises ``RunPaused``; the
+service parks it as ``waiting_for_user`` until the answer arrives (``tasks/ask.py``).
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from sentient.agent.loop import LoopResult, history_to_openai
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent
+from sentient.tasks import ask
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
     CORE_HELPER_PLUGINS,
@@ -25,6 +28,7 @@ from sentient.tasks.prompts import (
 )
 from sentient.tasks.schedule import get_tz
 from sentient.tools.base import Risk
+from sentient.tools.rules import never_message
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.tasks.service import TaskService
@@ -62,6 +66,14 @@ def announces_unfinished_work(text: str) -> bool:
 
 class RunFailed(RuntimeError):
     """A run ended without a usable final answer."""
+
+
+class RunPaused(Exception):
+    """The run asked the user a question (``ask_user``) and waits for the answer."""
+
+    def __init__(self, question: dict):
+        super().__init__(question.get("question") or "")
+        self.question = question
 
 
 def is_first_retry_attempt(run: dict) -> bool:
@@ -107,20 +119,18 @@ def select_tools(
             continue
         wanted.append(pid)
     tool_map: dict[str, list[str]] = {}
+
+    def usable(t) -> bool:  # registered, not excluded and not behind a "never" rule (ADR 0016)
+        return registry.get(t.name) is not None and t.name not in EXECUTOR_EXCLUDED_TOOLS and not registry.is_blocked(t)
+
     for pid in wanted:
-        names = [
-            t.name for t in plugins[pid].tools
-            if registry.get(t.name) is not None and t.name not in EXECUTOR_EXCLUDED_TOOLS
-        ]
+        names = [t.name for t in plugins[pid].tools if usable(t)]
         if names:
             tool_map[pid] = names
     if include_core:
         for pid in CORE_HELPER_PLUGINS:
             if pid in plugins and pid not in tool_map:
-                names = [
-                    t.name for t in plugins[pid].tools
-                    if registry.get(t.name) is not None and t.risk <= Risk.write and t.name not in EXECUTOR_EXCLUDED_TOOLS
-                ]
+                names = [t.name for t in plugins[pid].tools if usable(t) and t.risk <= Risk.write]
                 if names:
                     tool_map[pid] = names
     tool_names = [n for names in tool_map.values() for n in names]
@@ -204,7 +214,11 @@ async def _executor_system_prompt(
     )
 
 
-async def execute_single(svc: TaskService, task: dict, run: dict, *, resume: bool = False) -> LoopResult:
+async def execute_single(
+    svc: TaskService, task: dict, run: dict, *, resume: bool = False, answered: bool = False
+) -> LoopResult:
+    """Run (or continue) one task run. ``answered``: the checkpoint already holds the user's answer to
+    ``ask_user``, so it continues without the restart note. Raises ``RunPaused`` when the run asks a question."""
     app = svc.app
     assert app.agent is not None
     max_rounds = app.config.tasks.max_tool_rounds
@@ -221,7 +235,7 @@ async def execute_single(svc: TaskService, task: dict, run: dict, *, resume: boo
     checkpoint = run.get("messages") if resume else None
     if isinstance(checkpoint, list) and checkpoint:
         messages = history_to_openai(checkpoint)
-        if not is_first_retry_attempt(run):  # a retry's checkpoint already ends with the retry note
+        if not answered and not is_first_retry_attempt(run):  # a retry's checkpoint already ends with the retry note
             messages.append({"role": "user", "content": RESUME_NOTE})
     else:
         system = await _executor_system_prompt(svc, task, run, plan, tool_map)
@@ -229,7 +243,10 @@ async def execute_single(svc: TaskService, task: dict, run: dict, *, resume: boo
         await svc.repo.update_run(run_id, {"messages": messages})
 
     ctx = app.agent.tool_context(None, "task")
-    ctx.extra.update({"task_id": task_id, "run_id": run_id})
+    asking: dict[str, Any] = {"asked": ask.count_questions(messages)}
+    ctx.extra.update({"task_id": task_id, "run_id": run_id, ask.STATE_KEY: asking})
+    if app.registry.get(ask.ASK_TOOL) is not None:
+        tool_names = [*tool_names, ask.ASK_TOOL]
     result = LoopResult()
     mapper = ProgressMapper(svc, task_id, run_id)
     rounds = max_rounds
@@ -244,9 +261,12 @@ async def execute_single(svc: TaskService, task: dict, run: dict, *, resume: boo
             max_rounds=rounds,
             use_approvals=False,  # v2: approving the plan is the approval
             source="task",
+            stop=lambda: bool(asking.get("question")),
         ):
             await mapper.handle(event, messages)
         await mapper.flush_thought()
+        if result.paused:
+            break
         announced = (result.text or "").strip()
         if attempt >= MAX_CONTINUE_NUDGES or result.error or result.hit_step_limit or not announces_unfinished_work(announced):
             break
@@ -260,6 +280,14 @@ async def execute_single(svc: TaskService, task: dict, run: dict, *, resume: boo
         rounds = max(4, max_rounds // 2)
     await svc.repo.update_run(run_id, {"messages": messages})
 
+    if result.stopped_by_rule:  # an "ask" rule stopped the run; say which and how to change it (ADR 0016)
+        raise RunFailed(result.stopped_by_rule)
+    if result.paused:
+        raise RunPaused({
+            "question": asking["question"],
+            "options": asking.get("options") or [],
+            "tool_call_id": asking.get("tool_call_id") or ask.last_call_id(messages),
+        })
     if result.error:
         raise RunFailed(f"Executor agent failed: {result.error}")
     final = (result.text or "").strip()
@@ -272,6 +300,47 @@ async def execute_single(svc: TaskService, task: dict, run: dict, *, resume: boo
         raise RunFailed(f"The executor used all {max_rounds} tool rounds (tasks.max_tool_rounds) before finishing.")
     await svc.progress(task_id, run_id, {"type": "final_answer", "content": final})
     return result
+
+
+def fixed_call_of(task: dict) -> dict | None:
+    """``original_context.fixed_call`` of a task the user approved as one exact tool call, else None."""
+    call = (task.get("original_context") or {}).get("fixed_call")
+    return call if isinstance(call, dict) and call.get("tool") else None
+
+
+async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume: bool = False) -> LoopResult:
+    """Run the one tool call the user approved, with exactly the stored arguments: no planner, no executor model,
+    so nothing can change them. Lasting "never" rules still apply (ADR 0016): the run fails with the rule's
+    message instead of calling the tool. A run interrupted mid-call is never repeated on resume."""
+    app = svc.app
+    call = fixed_call_of(task) or {}
+    name = str(call.get("tool") or "")
+    arguments = dict(call.get("arguments") or {})
+    task_id, run_id = task["id"], run["id"]
+    if resume and any((e.get("message") or {}).get("type") == "tool_call" for e in await svc.repo.events(run_id)):
+        raise RunFailed("Sentient restarted while doing this, so it did not do it again. Check whether it went through.")
+    tool = app.registry.get(name)
+    if tool is None:
+        raise RunFailed(f"The tool {name} is not available, so nothing was done.")
+    if app.approvals.rule(tool) == "never":
+        raise RunFailed(never_message(app.approvals.label(tool, app.registry)))
+    await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": name, "parameters": arguments})
+    ctx = app.agent.tool_context(None, "task") if app.agent is not None else None
+    if ctx is not None:
+        ctx.extra.update({"task_id": task_id, "run_id": run_id})
+    try:
+        result = await tool.call(ctx, arguments)
+    except Exception as exc:
+        result = {"error": f"{type(exc).__name__}: {exc}"}
+    is_error = isinstance(result, dict) and bool(result.get("error"))
+    await svc.progress(
+        task_id, run_id, {"type": "tool_result", "tool_name": name, "result": truncate(result), "is_error": is_error}
+    )
+    if is_error:
+        raise RunFailed(str(result["error"]))
+    final = str(call.get("done_text") or "Done.")
+    await svc.progress(task_id, run_id, {"type": "final_answer", "content": final})
+    return LoopResult(text=final, tool_calls=1, tools_used=[tool.plugin])
 
 
 # ---------------------------------------------------------------------------- results
@@ -379,9 +448,9 @@ async def generate_result(
 
     # ground truth from the transcript beats what a small model remembers
     plugin_ids = {p.id for p in app.registry.plugins()}
-    tools_used = [t for t in result["tools_used"] if t in plugin_ids]
+    tools_used = [t for t in result["tools_used"] if t in plugin_ids and t != ask.PLUGIN_ID]
     for pid in (loop_result.tools_used if loop_result else []):
-        if pid not in tools_used:
+        if pid not in tools_used and pid != ask.PLUGIN_ID:
             tools_used.append(pid)
     result["tools_used"] = tools_used
     known = {f["filename"] for f in result["files_created"]}

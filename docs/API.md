@@ -52,7 +52,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `task.deleted` | `{task_id}` |
 | `task.run_progress` | `{task_id, run_id, update: ProgressUpdate}` |
 | `notification.new` | **Notification** (§6) |
-| `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"|"declined"`) |
+| `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"\|"declined"`; a task question (`payload.event = "question"`) gains `payload.status = "answered"` with `payload.answer`, or `"cancelled"`) |
 | `notification.read` / `notification.deleted` | `{id}` (`null` = all) |
 | `integration.updated` | **Integration** (§5) |
 | `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?}`; bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count` |
@@ -95,8 +95,33 @@ Saves config, writes USER.md, seeds memory facts (source `onboarding`) in the ba
 - `GET /api/config` → full config object (see `sentient/config/schema.py`).
 - `GET /api/config/schema` → JSON schema (every field has `description`; Settings forms are generated from it).
 - `PUT /api/config` body: full config → `{saved: true}`. Hot-applied.
-- `PATCH /api/config` body: partial nested object, deep-merged → `{saved: true, config}`. Inside free-form maps (`models.fallbacks`, `models.reasoning`, `models.temperature`, `models.providers`, `integrations.mcp_servers`) a `null` value removes that entry.
+- `PATCH /api/config` body: partial nested object, deep-merged → `{saved: true, config}`. Inside free-form maps (`models.fallbacks`, `models.reasoning`, `models.temperature`, `models.providers`, `integrations.mcp_servers`, `tools.approvals.rules`) a `null` value removes that entry.
 - Validation failures on PUT/PATCH return 422 with `detail: [{loc: string[], msg, type}]`.
+
+### Lasting approval rules (`tools.approvals.rules`, ADR 0016)
+`{"<key>": "allow" | "ask" | "never"}`, default `{}`. A key is a tool name (`gmail_send_email`, `execute_code`,
+`mcp_<server>_<tool>`) or a plugin id from `GET /api/tools` (`gmail`, `slack`, `mcp_<server>`) meaning every tool of
+that plugin; a tool's own rule beats its plugin's rule. Keys are trimmed and values lower-cased on save; anything else
+is a 422. Remove a rule with `PATCH /api/config {"tools": {"approvals": {"rules": {"<key>": null}}}}`. Rules are
+applied in code before every call and take effect at once:
+- `never`: the tool is not offered to the model (chat, voice, channels, tasks, subagents, proactivity, scripts) and is
+  left out of planners' tool lists. A call made anyway does not run; its `tool_result` is
+  `{error: "You've set Sentient to never use <name>. Change this in Settings > Approvals & safety."}` (`<name>` is the
+  app's display name for a plugin rule, e.g. `Slack`, else the tool's plain name and app, e.g. `"Post message" in Slack`).
+- `ask`: an `approval_request` every time, even with approvals mode `off`, after "Allow for this chat", and for `read`
+  tools. Where nobody can be asked the call does not run: a task run or swarm worker stops there and fails with
+  `"<name> is set to Ask, and tasks can't ask yet. Change it in Settings > Approvals & safety."` (the run's `error`,
+  and the usual `run_failed` notification; `LoopResult.stopped_by_rule` and `LoopResult.error` carry the same text).
+  Subagents and scripts refuse the call, and proactive look-ups leave the tool out.
+- `allow`: runs without asking in modes `ask` and `always`, except a purchase (effective risk `send` or higher whose
+  approval wording `risk_label` is "Purchase", such as a browser click on "Place order"), which asks every time.
+  "Allow for this chat" never covers a purchase. `allow` does not widen what scripts may call
+  (section 11): they still only read.
+- Purchases ask in every approvals mode, `off` included (only `browser.confirm_purchases: false` turns that off),
+  and scripts refuse them in every mode. Rules are read again right before a tool runs and on every script tool call,
+  so a rule changed while a call waits for approval, or while a script runs, applies to it.
+Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
+`await app.approvals.decide(tool, session_id, risk, arguments, ctx) -> bool`, pure helpers in `sentient.tools.rules`.
 
 ### Sessions (chats)
 - `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at}]` newest first
@@ -122,6 +147,7 @@ Saves config, writes USER.md, seeds memory facts (source `onboarding`) in the ba
 
 ### Tools
 - `GET /api/tools` → `[{id, display_name, description, category, icon, auth, selection_hint, tools: [{name, description, risk}]}]`
+  (connected apps and built-in tools; tools behind a `never` rule are still listed so Settings can show and change the rule)
 
 ### Usage (insights)
 - `GET /api/usage?days=30` → `{totals: {prompt_tokens, completion_tokens}, by_model: [{model, prompt_tokens, completion_tokens, calls}], by_source: [...], by_day: [{day, prompt_tokens, completion_tokens}]}`
@@ -153,7 +179,7 @@ Saves config, writes USER.md, seeds memory facts (source `onboarding`) in the ba
 ```json
 {
   "task_id": "hex", "name": "Weekly inbox digest", "description": "...",
-  "status": "planning|clarification_pending|approval_pending|pending|active|processing|completed|completed_with_errors|error|declined|cancelled|archived",
+  "status": "planning|clarification_pending|approval_pending|pending|active|processing|waiting_for_user|completed|completed_with_errors|error|declined|cancelled|archived",
   "priority": 0, "assignee": "ai", "task_type": "single|swarm|script",
   "schedule": {"type": "once", "run_at": "2026-09-16T09:00|null", "timezone": "Asia/Kolkata"}
             | {"type": "recurring", "frequency": "daily|weekly", "days": ["Monday"], "time": "09:00", "timezone": "..."}
@@ -179,11 +205,20 @@ task-creation prompt still only produces daily/weekly (v2), the planner uses `in
 
 **Run**
 ```json
-{"run_id": "hex", "status": "processing|completed|completed_with_errors|error|cancelled", "created_at": "...", "execution_start_time": "...", "finished_at": "...",
+{"run_id": "hex", "status": "processing|waiting_for_user|completed|completed_with_errors|error|cancelled", "created_at": "...", "execution_start_time": "...", "finished_at": "...",
  "plan": [...], "trigger_event_data": {}|null, "progress_updates": [ProgressUpdate],
  "result": {"summary": "markdown", "links_created": [{"url": "", "description": ""}], "links_found": [...], "files_created": [{"filename": "", "description": ""}], "tools_used": ["gmail"]},
- "error": null, "retry_of": "run id this run retries|null"}
+ "error": null, "retry_of": "run id this run retries|null",
+ "pending_question": {"question": "Which flight should I book?", "options": ["IndiGo 07:10", "Air India 09:40"], "asked_at": "..."} | null}
 ```
+`pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question" below).
+Already approved one-call tasks (a follow-up's Send, section 6) carry `original_context.fixed_call = {tool, arguments,
+done_text}` and a one-step `plan`. They are created `pending`, start a run at once with no planner and no executor model,
+and the run makes exactly that call with exactly those arguments (`tool_call`, `tool_result`, `final_answer` updates). A
+lasting Never rule on the tool or its app fails the run with the rule's message; a tool error fails it with that error. A
+run interrupted by a restart after the call started is not repeated: it fails and asks the user to check. Backend API:
+`await app.tasks.create_approved_call(name, tool, arguments, *, step, description=None, source, original_context, done_text)`
+→ Task.
 **ProgressUpdate** `{"timestamp": "...", "message": {"type": "info|thought|tool_call|tool_result|final_answer|error", "content": "...", "tool_name": "...", "parameters": {}, "result": "...", "is_error": false}}`
 
 ### Endpoints
@@ -203,7 +238,11 @@ task-creation prompt still only produces daily/weekly (v2), the planner uses `in
 - `POST /api/tasks/{id}/archive` → `Task`
 - `POST /api/tasks/{id}/chat` `{message}` → `Task` (change request → replanning)
 - `POST /api/tasks/{id}/clarifications` `{answers: [{question_id, answer_text}]}` → `Task`
-- `POST /api/tasks/{id}/runs/{run_id}/cancel` → `Task`
+- `POST /api/tasks/{id}/runs/{run_id}/cancel` → `Task` (a `processing` or `waiting_for_user` run; cancelling a waiting run
+  withdraws its question)
+- `POST /api/tasks/{id}/runs/{run_id}/answer` `{answer}` → `Task` (answers the question of a `waiting_for_user` run; the run
+  goes back to `processing` and continues from where it stopped, with the answer as the result of its `ask_user` call.
+  400 empty answer, 404 unknown task/run, 409 the run is not waiting, for example already answered or cancelled)
 - `POST /api/tasks/{id}/runs/{run_id}/retry` → `Task` (failed or cancelled run of a non-swarm task: a new run with `retry_of`
   continues from the old run's transcript, telling the model what went wrong, so finished steps are not repeated; without a
   transcript it starts fresh with the same plan and trigger data. 409 for other statuses, swarm tasks, or a one-off task that is already running)
@@ -213,7 +252,8 @@ task-creation prompt still only produces daily/weekly (v2), the planner uses `in
 - `GET /api/tasks/{id}/runs/{run_id}/events` → `[ProgressUpdate]` (full log, for long runs)
 
 Errors: `404` unknown task/run, `409` not allowed in the current state (approve without a plan,
-chat while processing, cancel a finished run, clarifications on a task without questions),
+chat while processing or waiting for an answer, cancel a finished run, clarifications on a task without questions,
+answer a run that is not waiting),
 `400` invalid input (empty prompt, unknown status), `503` model unavailable (preview), `502` model returned the wrong shape.
 
 Behaviour notes:
@@ -225,13 +265,34 @@ Behaviour notes:
   most once, whichever path delivers it. For `source: "webhook"` the `filter` can name fields of the JSON body directly
   (`{"status": "failed"}`) as well as item fields (`name`, `body.status`).
 - Task notification `payload.event` values: `approval_needed`, `clarification_needed`, `planning_failed`, `run_completed`,
-  `run_failed` (with `run_id`), `disabled`, `script_alert` (with `result`), `script_failed`, `script_recovered`.
+  `run_failed` (with `run_id`), `disabled`, `script_alert` (with `result`), `script_failed`, `script_recovered`,
+  `question` (with `run_id`, `question`, `options`; later `status: "answered"|"cancelled"` and `answer`).
 - Chat tools (plugin `tasks`): `create_task_from_prompt`, `search_tasks`, `get_task_status` (results include `script`),
   `update_task(task_id, name?, description?, enabled?, schedule?, script_code?, script_condition?, script_then?)` (write,
   internal; changed script code goes back to `approval_pending` when `tasks.require_plan_approval`), and
   `request_task_change(task_id, message)` (write, internal; same as `POST /chat`).
 - On restart, runs left `processing` resume from their transcript checkpoint (`tasks.resume_interrupted_runs`), else they end with error `Interrupted by restart`.
+  Runs `waiting_for_user` are left alone: they keep waiting, with their question, until answered or cancelled.
 - Disconnecting an integration sets `enabled: false` on tasks whose plan or trigger uses it (instead of v2's delete) and sends a notification.
+
+### Tasks that ask you a question
+- Inside a task run (never in chat, subagents, swarm workers or the planner) the executor can call
+  `ask_user(question: str, options: list[str] | None = None)` (plugin `task_questions`, risk `write`, internal). It is meant
+  only for choices the run cannot make on its own; confirming risky actions stays with approvals. `options` are cleaned
+  to at most 6 short, distinct choices. One question per round (a second call in the same round gets an error) and at
+  most 5 per run.
+- The loop stops after that round without another model call. The run's transcript and
+  `{question, options, tool_call_id, asked_at}` are stored on the run in SQLite and the run becomes `waiting_for_user`.
+  The task becomes `waiting_for_user` too, unless another run of it is still `processing` (it switches once that run
+  ends). The progress log gets `Waiting for your answer: ...`; `task.updated` carries the run's `pending_question`.
+- A notification is created: `kind: "task"`, title `"<task name> needs your answer"`, `message` = the question,
+  `payload: {task_id, event: "question", run_id, question, options}`.
+- Answering (`POST .../answer`, a button, or a reply to the question message in a paired chat) puts the answer in place of the `ask_user` tool
+  result, logs `You answered: ...`, sets the notification's `payload.status = "answered"` (and marks it read), moves run and
+  task back to `processing` and continues the run without the restart note.
+- While a task waits: `approve`, `chat`, `run-now` and `retry` on a one-off task return 409; recurring tasks are not
+  started by the scheduler until the answer arrives; triggered tasks keep accepting events (each in its own run) and
+  return to `waiting_for_user` when those runs end.
 
 ---
 
@@ -294,6 +355,19 @@ Backend-only API used by tasks/proactivity (not HTTP):
   keeping the source current, so timer polling can skip it. False when not connected, feeds are off, or after 3 failed syncs in a row.
 - `await app.integrations.feed_status()` → the list returned by `GET /api/integrations/feeds`.
 - `await app.integrations.emit_items(source, origin, items, event=None)` → published items (shared seen record, privacy filters).
+- `await app.integrations.recent_threads("gmail"|"email_imap", newer_than_days=, idle_days=, limit=40)` → `{addresses, threads, note?}`
+  for follow-ups (section 6). `threads`: `[{source, thread_id, url, messages: [...]}]`, conversations active in the last
+  `newer_than_days` days whose newest message is at least `idle_days` old. Messages use the gmail item shape plus `cc`,
+  `message_id`, `headers` (only `list-unsubscribe`, `list-id`, `precedence`, `auto-submitted`, `content-type`) and
+  `from_me`; IMAP messages also carry `mailbox` and only the newest message has its text. `addresses` are the user's own
+  addresses seen (account address and senders of sent mail). A thread is dropped whole when the privacy filters hide any
+  of its messages or people. IMAP finds the Sent mailbox by SPECIAL-USE `\Sent`, else the names `Sent`, `Sent Items`,
+  `[Gmail]/Sent Mail`, `Sent Messages`, `Sent Mail`, `INBOX.Sent`; without one it returns no threads and
+  `note: "no_sent_mailbox"`. Read-only; raises `IntegrationError` when the service call fails.
+  Gmail pages through the thread listing (at most 5 pages of 50) and drops threads whose newest message is newer than
+  the idle cutoff before they count toward `limit`, so busy threads can't crowd out quiet ones. IMAP runs two capped
+  searches per mailbox (INBOX and Sent): quiet messages from the max age up to the idle cutoff (newest 150) and recent
+  messages after it (newest 400, to see which conversations are still active), and reads the headers of both.
 
 Item shapes. gmail: `{id, thread_id, from, sender_email, to, subject, snippet, body, date, labels, url}`;
 email_imap: the gmail shape plus `message_id` (`id` is the IMAP UID, `url` is null, `labels` are `INBOX` plus `UNREAD`/`STARRED`);
@@ -323,12 +397,48 @@ suggestions as soon as the event starts): `payload.status` becomes `expired` (`n
 The heartbeat (`heartbeat_minutes > 0`) looks at upcoming calendar events, tasks needing attention, expiring short-term
 memories, the time of day and `app.user_model.context_for`; the model answers `NO_REPLY` unless one nudge is worth it.
 It does not run during quiet hours and makes at most `proactivity.heartbeat_daily_cap` suggestions per day.
+
+**Follow-ups** (`proactivity.followups`, on unless proactivity is off) notice dropped email threads in the email accounts
+listed in `followups.sources` (default `["gmail", "email_imap"]`; only accounts that are both listed and connected are read,
+independent of `proactivity.sources`) through `app.integrations.recent_threads` (section 5). The check runs once a day from 08:00 in the user's timezone,
+and in the background after `POST /api/proactivity/poll-now`. Two kinds:
+- `waiting_on_you`: the newest message is from someone else, has you in `To` (not only Cc/Bcc), and has had no answer for
+  `waiting_on_you_days` (3).
+- `waiting_on_them`: your own newest message asked something or asked for something and has had no answer for
+  `waiting_on_them_days` (4).
+
+Deterministic filters run first and skip: no-reply and notification senders, mailing lists and bulk mail (`List-Unsubscribe`,
+`List-Id`, `Precedence: bulk|list|junk`, `Auto-Submitted`, Gmail Promotions/Social/Updates/Forums), calendar invites and
+auto-replies, mail from your own addresses, notes to yourself, short thank-you notes, threads quiet for more than
+`max_age_days` (21), and any thread already suggested, dismissed or judged by the model in the same state (dedupe on thread id
+plus newest message id, so a new message makes it eligible again). At most 10 threads per check reach the `fast` model, which
+answers `{needs_follow_up, about, draft, confidence}` (parsed loosely; an unusable answer, or a draft with a placeholder
+such as `[day]`, `{name}`, `<date>`, `XX`, `TBD` or `(your name)`, is dropped and retried at the next check, because the
+draft is sent exactly as written);
+at most `max_suggestions` (3) suggestions per check, and the learned per-type threshold applies. Nothing is ever sent by the
+check itself.
+
+Follow-up suggestion: `suggestion_type` `follow_up_reply` or `follow_up_nudge`, `source_event.event_type: "follow_up"`,
+`source_event.item_id` is `<thread id>:<newest message id>`, `description` is a plain title
+(`"Priya is waiting for your reply about the invoice"`, `"No reply from Rohan about Saturday yet"`), the notification
+`message` is the description followed by the draft as a quote, and the suggestion carries
+```json
+"follow_up": {"kind": "waiting_on_you|waiting_on_them", "person": "Priya Shah", "person_email": "priya@acme.example",
+  "to": "priya@acme.example", "subject": "Re: Invoice for September", "draft": "Hi Priya, ...", "days_waiting": 4,
+  "thread_id": "...", "message_id": "<gmail id or IMAP uid>", "mailbox": "INBOX (IMAP only)"}
+```
+Approving it (the card's **Send reply** / **Send nudge**, which shows the exact draft) is the approval of that one send:
+it creates an already approved task (`app.tasks.create_approved_call`, section 4) that runs right away, whatever
+`tasks.require_plan_approval` says, and makes exactly one call with the draft unchanged: `gmail_reply {message_id, body}` in
+the same thread, or `email_imap_send {to, subject, body, reply_to_message_id?}`. No model is involved in the send. A lasting
+Never rule on that tool or its app (`tools.approvals.rules`) still applies: the run fails with the rule's message and
+nothing is sent.
 - `GET /api/notifications?limit=&unread_only=` → `{notifications: [Notification], unread}`
 - `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all`
 - `DELETE /api/notifications/{id}`, `DELETE /api/notifications`
-- `POST /api/proactivity/suggestions/{notification_id}` `{action: "approve"|"dismiss"}` → `{ok, task_id?}` (approve creates a task from `action_details` with `original_context.source = "proactive"`; both update the learned per-type threshold, mark the notification read and set `payload.status`/`payload.task_id`). Errors: 400 bad action, 404 not a suggestion, 409 already actioned or expired, 503 tasks unavailable. v2 spellings `approved`/`dismissed` are accepted.
-- `GET /api/proactivity/status` → `{enabled, last_poll_at: {gmail, gcalendar}, sources: [{source, connected, last_poll_at, last_error, feed_active}], suggestions_today, quiet_now, heartbeat_minutes}`. `sources[].last_error` is the message the integrations package recorded when `poll_source` raised `IntegrationError` (other sources keep polling); `null` after the next successful poll. `feed_active: true` means a change feed delivers that source's items, so it is not timer-polled.
-- `POST /api/proactivity/poll-now` → `{ok, events}` (`events` = new items seen; polls every connected source, including ones with an active change feed. Triggered tasks are fired by the tasks package from `source.items`, section 16)
+- `POST /api/proactivity/suggestions/{notification_id}` `{action: "approve"|"dismiss"}` → `{ok, task_id?}` (approve creates a task from `action_details` with `original_context.source = "proactive"`; for a follow-up it creates the already approved send task described above; both update the learned per-type threshold, mark the notification read and set `payload.status`/`payload.task_id`). Errors: 400 bad action, 404 not a suggestion, 409 already actioned or expired, 503 tasks unavailable. v2 spellings `approved`/`dismissed` are accepted.
+- `GET /api/proactivity/status` → `{enabled, last_poll_at: {gmail, gcalendar}, sources: [{source, connected, last_poll_at, last_error, feed_active}], suggestions_today, quiet_now, heartbeat_minutes, followups: {enabled, last_run_at}}`. `sources[].last_error` is the message the integrations package recorded when `poll_source` raised `IntegrationError` (other sources keep polling); `null` after the next successful poll. `feed_active: true` means a change feed delivers that source's items, so it is not timer-polled.
+- `POST /api/proactivity/poll-now` → `{ok, events}` (`events` = new items seen; polls every connected source, including ones with an active change feed, then starts a follow-up check in the background when follow-ups are on. Triggered tasks are fired by the tasks package from `source.items`, section 16)
 - `GET /api/proactivity/preferences` → `[{suggestion_type, score, threshold, approvals, dismissals}]`
 - `DELETE /api/proactivity/preferences/{suggestion_type}` → `{ok}` (`ok: false` when there was nothing to reset)
 
@@ -492,6 +602,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   use the effective risk; `approval_request.risk` reports it. `internal` keeps its meaning: an internal tool whose
   effective risk is `write` does not ask in mode "ask"; `send`/`exec` always ask. "Allow for this chat" covers that tool
   up to the risk level that was approved, but never a call whose `risk_fn` raised it to `send`/`exec` (those ask every time).
+  Lasting rules (`tools.approvals.rules`, section 2) are checked before the mode: `ask` and `never` win over everything,
+  `allow` skips the question except for purchases.
   Outside `run_loop`, use `await app.approvals.requires_approval(tool, arguments, ctx) -> (bool, Risk)`;
   `needs_approval(tool, session_id, risk=None, *, arguments=None, ctx=None)` evaluates a synchronous `risk_fn` when
   given `arguments` (an async one counts as at least `send` there).
@@ -529,6 +641,10 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - The system prompt includes `await app.user_model.context_for(user_text)` (a short markdown block, may be empty).
 - `chat.turn_completed` data: `{session_id, turn_id, tool_calls, tool_errors, skills_viewed: [name], user_text, reply}`.
   Task runs publish `task.run_finished` `{task_id, run_id, status, tool_errors, skills_viewed}`.
+- `Agent.run_loop(..., stop=fn)`: `fn()` is checked after each round of tool results; when it returns True the loop ends
+  without another model call and sets `LoopResult.paused` (task runs use it for `ask_user`).
+- A `ToolPlugin` with `scoped = True` is never offered by default: `registry.tools()`, `registry.catalog()` and
+  `registry.openai_schemas()` leave it out, and `openai_schemas(names)` includes its tools only when named.
 
 ## 11. Code execution (owner: sandbox)
 
@@ -541,7 +657,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   dict with a truthy `error`, raises `ToolError` (both importable from `sentient_tools`; `ToolRefused` subclasses `ToolError`).
 - Tool calls from a script: effective risk `read` and internal `write` tools run; other `write`, `send` and `exec` tools
   are refused with a message telling the model to call that tool directly (where approvals can ask the user), unless
-  approvals mode is `off`. Subagent, voice and code tools are not available inside scripts. At most
+  approvals mode is `off`. Lasting rules apply (section 2): `never` tools are not listed and are refused, `ask` tools
+  are refused, and `allow` changes nothing here (scripts still only read). Subagent, voice and code tools are not available inside scripts. At most
   `sandbox.max_tool_calls` calls run per script; `tool_calls` counts calls that ran (refused ones are not counted).
 - Returns **SandboxResult** `{ok, backend: "process"|"docker", stdout, stderr, result, files_created: [name], tool_calls, duration_ms, error}`.
   stdout and stderr stream as `tool_progress` (`kind: "stdout"|"stderr"`, newlines normalized to `\n`) and are each capped at
@@ -700,12 +817,24 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `app.approvals`); the message is edited to show the answer, also when it was answered on the desktop.
 - Delivery (chats with `deliver: true`, from `notification.new`): task results and failures (`payload.event` in
   `run_completed`, `run_failed`, `planning_failed`, `clarification_needed`, `disabled`; a completed run adds its result
-  summary), plans awaiting approval (**Approve plan** / **Decline** → `app.tasks.approve/decline`), pending proactive
+  summary), questions from running tasks (`payload.event = "question"`, with `channels.deliver_task_results`; each
+  option is a quick-reply button, callback `tq:<option index>:<run_id>`, that answers through
+  `app.tasks.answer_question`), plans awaiting approval (**Approve plan** / **Decline** → `app.tasks.approve/decline`), pending proactive
   suggestions (**Approve** / **Dismiss** → same as `POST /api/proactivity/suggestions/{id}`), and notifications with
   `payload.subagent_id`. Text is a short, link-free summary. Buttons are replaced by the outcome when pressed, or when
   `notification.updated` shows the plan/suggestion was handled elsewhere. A background subagent (`subagent.updated`,
   `background: true`, `completed`/`error`) whose session belongs to a paired chat sends its summary to that chat once.
   Toggles: `channels.deliver_task_results`, `deliver_plans`, `deliver_suggestions`, `deliver_subagents`.
+- Answering a task's question by replying: the delivered question ends with "Tap an option, or reply to this message
+  with your answer." (without options: "Reply to this message with your answer."). The ids of the messages that carried
+  the question are stored per chat in SQLite (`channel_questions`, kept 90 days), so this survives restarts. A text
+  message or voice note (its transcript) without attachments that replies to one of them (Telegram
+  `reply_to_message.message_id`, Discord `message_reference.message_id`) is the answer to that question: it goes to
+  `app.tasks.answer_question`, the chat gets "Thanks! I passed your answer to '<task>'. It's carrying on now." and no chat
+  turn starts. A reply to a question that was already answered or cancelled gets "That question has already been
+  handled, so I didn't pass this on." Every other message, including replies to other messages, is normal chat, however
+  many questions are waiting. Question buttons settle to "Answered: <answer>" or "Cancelled" when the question is
+  handled anywhere. `Incoming.reply_to` carries the replied-to message id for every channel.
 - Domain events `channel.updated` → `Channel` (connect, disconnect, status changes, pairing, deliver changes);
   `channel.message` `{channel, chat_id, session_id, direction: "in"|"out", text}`: `in` is the user's text (the transcript
   for voice notes); `out` is the final reply text, or a delivered notification with `session_id: null`.

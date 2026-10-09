@@ -51,13 +51,14 @@ import type { Task, TaskSchedule } from '@/lib/types'
 import { cn, copyText, formatDateTime, relativeTime } from '@/lib/utils'
 import { taskHeadline } from '../ListView'
 import { useMissingIntegrations, useNow, useUserTimezone, type MissingIntegration } from '../hooks'
-import { KIND_META, PRIORITY_META, SOURCE_META, displayName, isScriptJob, latestRun, processingRun, scriptOf, taskKind, taskSource } from '../meta'
+import { KIND_META, PRIORITY_META, SOURCE_META, displayName, isScriptJob, latestRun, processingRun, scriptOf, taskKind, taskSource, waitingRun } from '../meta'
 import { KindTile, TaskStatusBadge } from '../parts'
 import { describeSchedule, filterRules, nextRunDate, upcomingPhrase } from '../schedule'
 import { useTaskOps } from '../useTaskOps'
 import { HookName } from '@/features/automations/HookLabel'
 import { ScriptJobSection } from './ScriptJob'
 import { Clarifications } from './Clarifications'
+import { RunQuestion } from './RunQuestion'
 import { PlanSection } from './PlanSection'
 import { RunHistory, RunResult } from './RunHistory'
 import { FilterRulesView, ScheduleEditor } from './ScheduleEditor'
@@ -100,7 +101,7 @@ export function TaskDetail({ taskId, layout, onClose }: { taskId: string; layout
 }
 
 function defaultTab(task: Task): Tab {
-  if (task.status === 'clarification_pending' || task.status === 'approval_pending' || task.status === 'planning') return 'overview'
+  if (task.status === 'clarification_pending' || task.status === 'approval_pending' || task.status === 'planning' || task.status === 'waiting_for_user') return 'overview'
   if (task.status === 'processing') return 'runs'
   if (['completed', 'completed_with_errors', 'error', 'cancelled'].includes(task.status) && task.runs.length && task.task_type !== 'swarm') return 'runs'
   return 'overview'
@@ -280,8 +281,9 @@ function ActionBar({ task, ops, missing, layout, onClose, onShowRuns }: { task: 
   const id = task.task_id
   const kind = taskKind(task)
   const run = processingRun(task)
+  const waiting = waitingRun(task)
   const schedulable = kind === 'recurring' || kind === 'triggered' || kind === 'script' || task.status === 'pending'
-  const canRunNow = !['planning', 'clarification_pending', 'archived', 'declined'].includes(task.status) && (task.plan.length > 0 || task.task_type === 'swarm' || isScriptJob(task)) && !(task.task_type === 'swarm' && task.status === 'processing') && !(task.status === 'processing' && !schedulable)
+  const canRunNow = !['planning', 'clarification_pending', 'archived', 'declined'].includes(task.status) && (task.plan.length > 0 || task.task_type === 'swarm' || isScriptJob(task)) && !(task.task_type === 'swarm' && task.status === 'processing') && !((task.status === 'processing' || task.status === 'waiting_for_user') && !schedulable)
 
   const rerun = async () => {
     const copy = await ops.rerun(id)
@@ -320,6 +322,14 @@ function ActionBar({ task, ops, missing, layout, onClose, onShowRuns }: { task: 
       if (run)
         buttons.push(
           <Button key="cancel" size="sm" variant="danger" leftIcon={<IconPlayerStop size={15} />} loading={ops.isBusy('cancelRun', id)} onClick={() => void ops.cancelRun(id, run.run_id)}>
+            Cancel run
+          </Button>
+        )
+      break
+    case 'waiting_for_user':
+      if (waiting)
+        buttons.push(
+          <Button key="cancel" size="sm" variant="ghost" leftIcon={<IconPlayerStop size={15} />} loading={ops.isBusy('cancelRun', id)} onClick={() => void ops.cancelRun(id, waiting.run_id)}>
             Cancel run
           </Button>
         )
@@ -434,9 +444,12 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
   const id = task.task_id
   const last = latestRun(task)
   const kind = taskKind(task)
+  const waiting = waitingRun(task)
 
   return (
     <>
+      {waiting && <RunQuestion task={task} run={waiting} />}
+
       {task.status === 'planning' && (
         <div className="flex items-center gap-3 rounded-xl border border-info/20 bg-info/5 px-4 py-3">
           <span className="relative flex size-8 shrink-0 items-center justify-center rounded-lg bg-info/12 text-info">
@@ -516,7 +529,7 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
         />
       )}
 
-      {last && task.status !== 'processing' && (
+      {last && task.status !== 'processing' && last.status !== 'waiting_for_user' && (
         <section className="space-y-2.5">
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold text-fg">Latest result</h3>

@@ -95,6 +95,7 @@ class Incoming:
     audio: FileFetcher | None = None
     files: list[FileFetcher] = field(default_factory=list)
     unsupported: bool = False
+    reply_to: str | None = None  # id of the message this one replies to (Telegram reply, Discord reference)
 
 
 @dataclass
@@ -476,6 +477,8 @@ class Channel:
             text = f"{transcript}\n\n{text}".strip() if text else transcript
         if not text and not attachments:
             return
+        if msg.reply_to and text and not attachments and await self.service.answer_reply(self, chat, msg.reply_to, text):
+            return  # a reply to a task's question message: it is the answer, not a chat message
 
         session_id = await self.ensure_session(chat)
         if rt.running:
@@ -559,7 +562,8 @@ class Channel:
             "/help - show this message",
         ]
         if chat and chat.get("deliver"):
-            lines += ["", "Task results, plans to approve and suggestions are also sent here. "
+            lines += ["", "Task results, plans to approve, questions from your tasks and suggestions are also sent here. "
+                          "To answer a task's question, tap an option or reply to its message. "
                           "You can turn that off in Sentient under Channels."]
         return "\n".join(lines)
 
@@ -755,4 +759,6 @@ class Channel:
             return await self.service.act_on_plan(self, chat_id, message_id, ref, approve=code == "a")
         if kind == "sg":
             return await self.service.act_on_suggestion(self, chat_id, message_id, ref, approve=code == "a")
+        if kind == "tq":
+            return await self.service.act_on_question(self, chat_id, message_id, ref, code)
         return "Unknown button."

@@ -4,15 +4,21 @@ Scripts run after the user (or approvals mode) allowed ``execute_code`` once; th
 to ask again. So from inside a script only calls that need no approval run: effective risk
 ``read`` and ``internal`` ``write`` tools. Anything else is refused with a message telling the
 model to make that call directly, where approvals can ask the user. Approvals mode ``off``
-allows everything except tools that would recurse (code, subagents, voice).
+allows everything except tools that would recurse (code, subagents, voice) and purchases,
+which always ask.
+
+Lasting rules (ADR 0016) only ever take away here: a "never" tool is not listed and is refused,
+and an "ask" tool is refused because a script cannot stop to ask. An "allow" rule changes nothing:
+scripts still only read (ADR 0012, docs/PRIVACY.md).
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 
 from sentient.tools.base import Risk, Tool, ToolContext, effective_risk
+from sentient.tools.rules import SETTINGS_HINT, is_purchase, never_message, rule_for, rule_label
 
 BLOCKED_PLUGINS = frozenset({"code", "subagents", "voice"})
 BLOCKED_TOOLS = frozenset({"execute_code", "delegate_task", "delegate_tasks"})
@@ -28,6 +34,9 @@ class BridgePolicy:
     allowed_tools: frozenset[str] | None = None  # tool names or plugin ids; None = every tool
     read_only: bool = False                      # POST /api/sandbox/run: only risk read
     max_tool_calls: int = 200
+    rules: Mapping[str, str] = field(default_factory=dict)  # tools.approvals.rules
+    # read the owner's rules on every call, so a rule changed while a script runs applies at once
+    rules_source: Callable[[], Mapping[str, str] | None] | None = None
 
     @classmethod
     def build(
@@ -37,17 +46,28 @@ class BridgePolicy:
         allowed_tools: Iterable[str] | None,
         read_only: bool,
         max_tool_calls: int,
+        rules: Mapping[str, str] | None = None,
+        rules_source: Callable[[], Mapping[str, str] | None] | None = None,
     ) -> BridgePolicy:
         return cls(
             approvals_mode=approvals_mode,
             allowed_tools=None if allowed_tools is None else frozenset(allowed_tools),
             read_only=read_only,
             max_tool_calls=max_tool_calls,
+            rules=dict(rules or {}),
+            rules_source=rules_source,
         )
+
+    def current_rules(self) -> Mapping[str, str]:
+        if self.rules_source is not None:
+            return self.rules_source() or {}
+        return self.rules
 
     def is_available(self, tool: Tool) -> bool:
         """Tools a script can see at all (listed in the generated sentient_tools module)."""
         if tool.plugin in BLOCKED_PLUGINS or tool.name in BLOCKED_TOOLS:
+            return False
+        if rule_for(self.current_rules(), tool) == "never":
             return False
         return self.allowed_tools is None or tool.name in self.allowed_tools or tool.plugin in self.allowed_tools
 
@@ -57,6 +77,16 @@ class BridgePolicy:
             raise Refused(f"There is no tool named '{name}'. Use tools.available() to list the tools you can call.")
         if tool.plugin in BLOCKED_PLUGINS or tool.name in BLOCKED_TOOLS:
             raise Refused(f"'{name}' is not available inside scripts. Call it directly as a normal tool call instead.")
+        rules = self.current_rules()
+        rule = rule_for(rules, tool)
+        label = rule_label(tool, rules, (getattr(ctx, "extra", None) or {}).get("registry"))
+        if rule == "never":
+            raise Refused(never_message(label))
+        if rule == "ask":
+            raise Refused(
+                f"You've set Sentient to always ask before using {label}, and a script cannot stop to ask. "
+                f"Call '{name}' directly as a normal tool call instead. {SETTINGS_HINT}"
+            )
         if not self.is_available(tool):
             raise Refused(f"'{name}' is not one of the tools this script may use.")
         if calls_so_far >= self.max_tool_calls:
@@ -71,6 +101,11 @@ class BridgePolicy:
                     f"'{name}' can change things (risk {risk.name}); scripts run from here may only look things up."
                 )
             return risk
+        if await is_purchase(tool, arguments, ctx, risk):
+            raise Refused(
+                f"'{name}' would spend money, which always needs the user's yes. Call '{name}' directly as a "
+                "normal tool call instead."
+            )
         if self.approvals_mode == "off":
             return risk
         if risk == Risk.read or (risk == Risk.write and tool.internal):

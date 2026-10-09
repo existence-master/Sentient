@@ -138,6 +138,9 @@ export function ProactivityStatusCard() {
               <span className="min-w-0 flex-1 text-xs text-fg-subtle">
                 <span className="font-semibold text-fg">{data.suggestions_today}</span> suggestion{data.suggestions_today === 1 ? '' : 's'} today
                 {data.heartbeat_minutes ? ` · check-in every ${data.heartbeat_minutes} min` : ''}
+                {data.followups?.enabled
+                  ? ` · unanswered emails ${data.followups.last_run_at ? `checked ${relativeTime(data.followups.last_run_at)}` : 'checked daily'}`
+                  : ''}
               </span>
               <Button size="sm" variant="secondary" leftIcon={<IconRefresh size={14} />} loading={poll.pending} disabled={!data.enabled} onClick={poll.run}>
                 Check now

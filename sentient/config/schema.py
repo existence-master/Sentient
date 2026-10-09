@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ----------------------------------------------------------------------------- core (owner: core)
@@ -131,6 +131,26 @@ class ApprovalsConfig(BaseModel):
     )
     remember_session: bool = Field(True, description="'Allow for this chat' answers are honored.")
     timeout_s: int = Field(600, ge=10, description="Unanswered approvals are denied after this long.")
+    rules: dict[str, Literal["allow", "ask", "never"]] = Field(
+        default_factory=dict,
+        description="Lasting rules for apps and tools. The key is a tool name (gmail_send_email) or an app id "
+        "(gmail, meaning all of its tools); a tool's own rule beats its app's rule. allow: go ahead without asking "
+        "(purchases still ask). ask: always ask first, whatever the setting above says. never: Sentient can't use it.",
+    )
+
+    @field_validator("rules", mode="before")
+    @classmethod
+    def _clean_rules(cls, value: object) -> object:
+        """Trim keys, lower-case values and reject empty keys; the Literal checks the values."""
+        if not isinstance(value, dict):
+            return value
+        out: dict[str, object] = {}
+        for key, rule in value.items():
+            name = str(key).strip()
+            if not name:
+                raise ValueError("A rule needs a tool name or an app id.")
+            out[name] = rule.strip().lower() if isinstance(rule, str) else rule
+        return out
 
 
 class ToolsConfig(BaseModel):
@@ -261,6 +281,31 @@ class IntegrationsConfig(BaseModel):
 
 
 # ----------------------------------------------------------------------------- proactivity (owner: memory/proactivity agent)
+class FollowUpsConfig(BaseModel):
+    """Once a day, Sentient looks for emails still waiting on a reply, from you or from someone else."""
+
+    enabled: bool = Field(
+        True,
+        description="Once a day, find emails still waiting on a reply and offer a ready draft. Nothing is sent "
+        "without your approval.",
+    )
+    sources: list[str] = Field(
+        default_factory=lambda: ["gmail", "email_imap"],
+        description="Which connected email accounts follow-ups check (gmail, email_imap).",
+    )
+    waiting_on_you_days: int = Field(
+        3, ge=1, le=60, description="Suggest a reply when an email sent to you has had no answer for this many days."
+    )
+    waiting_on_them_days: int = Field(
+        4, ge=1, le=60,
+        description="Suggest a nudge when your own question has had no answer for this many days.",
+    )
+    max_age_days: int = Field(
+        21, ge=2, le=180, description="Leave conversations alone once they have been quiet for longer than this."
+    )
+    max_suggestions: int = Field(3, ge=1, le=20, description="At most this many follow-up suggestions per check.")
+
+
 class ProactivityConfig(BaseModel):
     enabled: bool = Field(True, description="Let Sentient watch connected apps and suggest actions.")
     poll_interval_minutes: int = Field(10, ge=1, description="How often Gmail/Calendar are checked.")
@@ -294,6 +339,10 @@ class ProactivityConfig(BaseModel):
     )
     webhook_suggestions: bool = Field(
         True, description="Also suggest actions for webhook calls that no triggered task handles."
+    )
+    followups: FollowUpsConfig = Field(
+        default_factory=FollowUpsConfig,
+        description="Notice emails waiting on a reply (from you or to you) and offer a draft. Gmail and IMAP email.",
     )
 
 

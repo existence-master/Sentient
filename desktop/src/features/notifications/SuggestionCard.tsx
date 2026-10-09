@@ -1,4 +1,4 @@
-import { IconArrowRight, IconCheck, IconChevronDown, IconExternalLink, IconX } from '@tabler/icons-react'
+import { IconArrowRight, IconCheck, IconChevronDown, IconExternalLink, IconMail, IconSend, IconX } from '@tabler/icons-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import { useState } from 'react'
@@ -56,6 +56,8 @@ export function SuggestionCard({ n, onNavigate }: { n: Notification; onNavigate?
   const taskId = n.payload.task_id ?? null
   const source = s.source_event?.source ?? 'sentient'
   const busy = respondToSuggestion.isPending
+  const followUp = s.follow_up?.draft ? s.follow_up : null
+  const isReply = followUp?.kind === 'waiting_on_you'
 
   const act = (action: 'approve' | 'dismiss') => {
     const previous = { status: n.payload.status ?? 'pending', task_id: n.payload.task_id ?? null } as Partial<SuggestionPayload>
@@ -66,8 +68,8 @@ export function SuggestionCard({ n, onNavigate }: { n: Notification; onNavigate?
         onSuccess: (res) => {
           if (action === 'approve') {
             patchPayload(qc, n.id, { status: 'approved', task_id: res.task_id ?? null })
-            toast.success('On it', {
-              description: 'Sentient created a task for this suggestion.',
+            toast.success(followUp ? 'Sending' : 'On it', {
+              description: followUp ? `Sending your ${isReply ? 'reply' : 'nudge'} to ${followUp.person} now.` : 'Sentient created a task for this suggestion.',
               action: res.task_id
                 ? {
                     label: 'View task',
@@ -79,7 +81,9 @@ export function SuggestionCard({ n, onNavigate }: { n: Notification; onNavigate?
                 : undefined
             })
           } else {
-            toast('Dismissed', { description: `Sentient will suggest “${humanize(s.suggestion_type)}” less often.` })
+            toast('Dismissed', {
+              description: followUp ? 'Sentient will not bring this email up again.' : `Sentient will suggest “${humanize(s.suggestion_type)}” less often.`
+            })
           }
         },
         onError: (e) => {
@@ -98,6 +102,18 @@ export function SuggestionCard({ n, onNavigate }: { n: Notification; onNavigate?
   return (
     <div className="space-y-2.5">
       <p className="text-md font-medium leading-snug text-fg">{s.description}</p>
+
+      {followUp && (
+        <div className="rounded-lg border border-border bg-elevated px-3 py-2.5">
+          <div className="mb-1.5 flex items-center gap-1.5 text-2xs font-medium text-fg-subtle">
+            <IconMail size={12} />
+            <span className="min-w-0 truncate">
+              {isReply ? 'Draft reply' : 'Draft nudge'} to {followUp.person}
+            </span>
+          </div>
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-fg-muted">{followUp.draft}</p>
+        </div>
+      )}
 
       {s.source_event?.summary && (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-sunken/50 py-1.5 pl-2 pr-1.5">
@@ -148,9 +164,17 @@ export function SuggestionCard({ n, onNavigate }: { n: Notification; onNavigate?
       <div className="flex flex-wrap items-center gap-2 pt-0.5">
         {status === 'pending' ? (
           <>
-            <Button size="sm" variant="primary" leftIcon={<IconCheck size={14} />} disabled={busy} onClick={() => act('approve')}>
-              Do it
-            </Button>
+            {followUp ? (
+              <Tooltip content="Sends exactly this draft now. You can follow it in Tasks.">
+                <Button size="sm" variant="primary" leftIcon={<IconSend size={14} />} disabled={busy} onClick={() => act('approve')}>
+                  {isReply ? 'Send reply' : 'Send nudge'}
+                </Button>
+              </Tooltip>
+            ) : (
+              <Button size="sm" variant="primary" leftIcon={<IconCheck size={14} />} disabled={busy} onClick={() => act('approve')}>
+                Do it
+              </Button>
+            )}
             <Button size="sm" variant="ghost" leftIcon={<IconX size={14} />} disabled={busy} onClick={() => act('dismiss')}>
               Dismiss
             </Button>

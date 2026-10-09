@@ -6,8 +6,20 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Tasks can pause to ask you a question ("Which of these two flights?") and carry on with your answer. The question
+  shows on the task, as a notification with quick answers, and in paired Telegram or Discord chats with buttons;
+  replying to the question message there works too. A waiting task keeps waiting across restarts.
 - Proper documentation: getting started, privacy, architecture decision records, agent guides, verification report.
 - README screenshots and a new banner.
+- Lasting rules for apps and tools in Settings > Approvals & safety: **Allow** (go ahead without asking),
+  **Ask** (always ask first) or **Never** (Sentient can't use it). Purchases always ask.
+- **Follow-ups:** once a day Sentient notices emails waiting on your reply, and your own questions nobody answered,
+  in Gmail and IMAP email, and suggests a ready draft. Newsletters, no-reply senders and answered threads are skipped,
+  and nothing is sent until you approve it. Settings under Proactivity.
+
+### Security
+- Purchases now ask even when approvals are switched off, and code Sentient writes can never make one. A tool set
+  to Never while a request waits for your yes, or while a script runs, is blocked right away.
 
 ## [3.0.0-alpha.0] - 2026-10-08
 

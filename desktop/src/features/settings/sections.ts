@@ -79,7 +79,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'Proactivity',
     description: 'Suggestions from your connected apps.',
     icon: IconBolt,
-    keywords: ['suggestions', 'quiet hours', 'poll', 'confidence', 'heartbeat'],
+    keywords: ['suggestions', 'quiet hours', 'poll', 'confidence', 'heartbeat', 'unanswered emails', 'follow-ups', 'nudge'],
     schemaSections: ['proactivity']
   },
   {
@@ -94,7 +94,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'Approvals & safety',
     description: 'When Sentient asks before acting.',
     icon: IconShieldCheck,
-    keywords: ['permissions', 'confirm', 'risk', 'tools', 'disabled', 'ask'],
+    keywords: ['permissions', 'confirm', 'risk', 'tools', 'disabled', 'ask', 'allow', 'never', 'rules', 'apps', 'always ask'],
     schemaSections: ['tools']
   },
   {

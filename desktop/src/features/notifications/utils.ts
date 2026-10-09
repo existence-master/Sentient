@@ -12,7 +12,7 @@ export const FILTERS: Array<{ id: FeedFilter; label: string }> = [
   { id: 'skills', label: 'Skills' }
 ]
 
-export const SOURCE_LABEL: Record<string, string> = { gmail: 'Gmail', gcalendar: 'Calendar', heartbeat: 'Check-in' }
+export const SOURCE_LABEL: Record<string, string> = { gmail: 'Gmail', gcalendar: 'Calendar', email_imap: 'Email', heartbeat: 'Check-in' }
 
 export function isApprovalLike(n: Notification): boolean {
   return n.kind === 'approval' || (n.kind === 'task' && n.payload?.event === 'approval_needed')
@@ -39,6 +39,7 @@ export function matchesFilter(n: Notification, f: FeedFilter): boolean {
 export function needsAction(n: Notification): boolean {
   if (n.kind === 'proactive') return (n.payload?.status ?? 'pending') === 'pending'
   if (n.kind === 'approval') return !n.payload?.status
+  if (n.kind === 'task' && n.payload?.event === 'question') return !n.payload?.status
   return false
 }
 

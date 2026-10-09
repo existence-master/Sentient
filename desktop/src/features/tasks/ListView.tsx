@@ -5,7 +5,7 @@ import { useMemo, useState } from 'react'
 import { Button, EmptyState, ProgressBar } from '@/components/ui'
 import type { Task } from '@/lib/types'
 import { cn, relativeTime, truncate } from '@/lib/utils'
-import { GROUPS, displayName, isScriptJob, latestRun, processingRun, scriptOf, sortTasks, taskGroup, type GroupId } from './meta'
+import { GROUPS, displayName, isScriptJob, latestRun, processingRun, scriptOf, sortTasks, taskGroup, waitingRun, type GroupId } from './meta'
 import { KindTile, PriorityFlag, ScriptBadge, TaskStatusBadge } from './parts'
 import { describeSchedule, nextRunDate, upcomingPhrase } from './schedule'
 import { ToolStack, toolIdentity } from './tools'
@@ -133,6 +133,10 @@ export function taskHeadline(task: Task): string {
       const open = task.clarifying_questions.filter((q) => !q.answer).length
       return `${open} question${open === 1 ? '' : 's'} before Sentient can plan this`
     }
+    case 'waiting_for_user': {
+      const q = waitingRun(task)?.pending_question?.question
+      return q ? truncate(`Asks: ${q}`, 140) : 'Waiting for your answer'
+    }
     case 'error':
       return truncate(task.error || latestRun(task)?.error || 'The last run failed', 140)
     case 'processing': {
@@ -167,6 +171,8 @@ export function taskTiming(task: Task, tz: string, now: Date): string {
     const run = processingRun(task)
     return run ? `Started ${relativeTime(run.execution_start_time ?? run.created_at, now.getTime())}` : 'Running'
   }
+  const asked = waitingRun(task)?.pending_question?.asked_at
+  if (task.status === 'waiting_for_user' && asked) return `Asked ${relativeTime(asked, now.getTime())}`
   if (task.last_execution_at) return `Ran ${relativeTime(task.last_execution_at, now.getTime())}`
   return `Created ${relativeTime(task.created_at, now.getTime())}`
 }

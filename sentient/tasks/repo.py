@@ -18,10 +18,10 @@ TASK_COLUMNS = {
     "source", "enabled", "assignee", "model", "chat_history", "clarifying_questions", "swarm_details",
     "original_context", "script", "error", "next_execution_at", "last_execution_at", "created_at", "updated_at",
 }
-RUN_JSON_FIELDS = {"plan", "trigger_data", "messages", "result"}
+RUN_JSON_FIELDS = {"plan", "trigger_data", "messages", "result", "pending_question"}
 RUN_COLUMNS = {
     "status", "plan", "trigger_data", "messages", "result", "error", "resume_count", "retry_of",
-    "started_at", "finished_at", "created_at",
+    "pending_question", "started_at", "finished_at", "created_at",
 }
 # Columns added after the first stub schema; ensured on start for older databases.
 _ADDED_TASK_COLUMNS = {
@@ -36,7 +36,9 @@ _ADDED_TASK_COLUMNS = {
     "last_execution_at": "TEXT",
     "script": "TEXT",
 }
-_ADDED_RUN_COLUMNS = {"plan": "TEXT", "resume_count": "INTEGER NOT NULL DEFAULT 0", "retry_of": "TEXT"}
+_ADDED_RUN_COLUMNS = {
+    "plan": "TEXT", "resume_count": "INTEGER NOT NULL DEFAULT 0", "retry_of": "TEXT", "pending_question": "TEXT",
+}
 
 # Progress updates embedded in each run of a serialized Task; the full log is at
 # GET /api/tasks/{id}/runs/{run_id}/events.
@@ -54,6 +56,17 @@ def _loads(value: Any) -> Any:
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return value
+
+
+def _question_to_api(question: Any) -> dict | None:
+    if not isinstance(question, dict) or not question.get("question"):
+        return None
+    options = question.get("options")
+    return {
+        "question": str(question["question"]),
+        "options": [str(o) for o in options] if isinstance(options, list) else [],
+        "asked_at": question.get("asked_at"),
+    }
 
 
 class TaskRepo:
@@ -205,13 +218,43 @@ class TaskRepo:
         sets = ", ".join(f"{k} = ?" for k in data)
         await self.store.execute(f"UPDATE task_runs SET {sets} WHERE id = ?", (*data.values(), run_id))
 
-    async def finish_run(self, run_id: str, status: str, *, error: str | None, now: str) -> bool:
-        """Compare-and-set a processing run to a final status. False if it already finished."""
+    async def finish_run(
+        self, run_id: str, status: str, *, error: str | None, now: str, from_statuses: tuple[str, ...] = ("processing",)
+    ) -> bool:
+        """Compare-and-set a processing (or ``from_statuses``) run to a final status. False if it already finished."""
+        marks = ", ".join("?" for _ in from_statuses)
         cur = await self.store.execute(
-            "UPDATE task_runs SET status = ?, error = ?, finished_at = ? WHERE id = ? AND status = 'processing'",
-            (status, error, now, run_id),
+            "UPDATE task_runs SET status = ?, error = ?, finished_at = ?, pending_question = NULL"
+            f" WHERE id = ? AND status IN ({marks})",
+            (status, error, now, run_id, *from_statuses),
         )
         return (cur.rowcount or 0) > 0
+
+    async def pause_run(self, run_id: str, question: dict) -> bool:
+        """Compare-and-set a processing run to ``waiting_for_user`` with its question. False if it changed meanwhile."""
+        cur = await self.store.execute(
+            "UPDATE task_runs SET status = 'waiting_for_user', pending_question = ? WHERE id = ? AND status = 'processing'",
+            (_dumps(question), run_id),
+        )
+        return (cur.rowcount or 0) > 0
+
+    async def resume_run(self, run_id: str, messages: list[dict]) -> bool:
+        """Compare-and-set a waiting run back to processing with the answered transcript. False if not waiting."""
+        cur = await self.store.execute(
+            "UPDATE task_runs SET status = 'processing', pending_question = NULL, messages = ?"
+            " WHERE id = ? AND status = 'waiting_for_user'",
+            (_dumps(messages), run_id),
+        )
+        return (cur.rowcount or 0) > 0
+
+    async def waiting_runs(self, task_id: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM task_runs WHERE status = 'waiting_for_user'"
+        params: tuple = ()
+        if task_id:
+            sql += " AND task_id = ?"
+            params = (task_id,)
+        rows = await self.store.fetchall(sql + " ORDER BY created_at, rowid", params)
+        return [self._decode_run(r) for r in rows]
 
     async def processing_runs(self, task_id: str | None = None) -> list[dict]:
         if task_id:
@@ -272,6 +315,7 @@ class TaskRepo:
             "result": run.get("result"),
             "error": run.get("error"),
             "retry_of": run.get("retry_of"),
+            "pending_question": _question_to_api(run.get("pending_question")) if run["status"] == "waiting_for_user" else None,
         }
 
     @staticmethod
