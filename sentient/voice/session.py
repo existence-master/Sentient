@@ -466,6 +466,16 @@ class VoiceSession:
                 await turn
         self._turn = None
 
+    async def stop_turn(self) -> bool:
+        """Stop everything: cancel the reply being heard or spoken and go back to listening."""
+        active = (self._turn is not None and not self._turn.done()) or self.state in {"transcribing", "thinking", "speaking"}
+        await self._cancel_turn()
+        if self._speaker is not None and not self._speaker.done():
+            self._speaker.cancel()
+        if active:
+            await self.set_state("listening")
+        return active
+
     async def interrupt(self, reason: str = "client") -> None:
         """Stop speaking now. Text generation (if any) continues silently."""
         active = self._turn is not None and not self._turn.done()

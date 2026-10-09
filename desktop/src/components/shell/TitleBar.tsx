@@ -8,6 +8,7 @@ import { modelShortName } from '@/lib/models'
 import { cn, modKey } from '@/lib/utils'
 import { useConnection } from '@/stores/connection'
 import { useUI } from '@/stores/ui'
+import { StopButton } from './StopControls'
 
 /** Height matches the native title bar overlay (electron/main/window.ts). */
 export const TITLEBAR_HEIGHT = 40
@@ -99,7 +100,12 @@ export function TitleBar({ minimal = false }: { minimal?: boolean }) {
       )}
 
       <div className="flex-1" />
-      {!minimal && <StatusPill className="relative" />}
+      {!minimal && (
+        <div className="relative flex items-center gap-2">
+          <StopButton />
+          <StatusPill />
+        </div>
+      )}
     </div>
   )
 }

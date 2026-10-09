@@ -510,6 +510,7 @@ class NodeService(Service):
             "server_version": __version__,
             "keepalive_s": max(15, idle // 3),
             "idle_timeout_s": idle,
+            "stopped": self.app.stopped,
         }
         if new_token:
             welcome["token"] = new_token
@@ -565,6 +566,12 @@ class NodeService(Service):
                         self.app.bus.publish("node.updated", node)
                 self._refresh_tools()
                 log.info("device disconnected: %s", conn.name)
+
+    async def send_stop_state(self) -> None:
+        """Tell every connected device that Stop everything was turned on or off (``stop_state``)."""
+        message = {"type": "stop_state", **self.app.stop_state}
+        for conn in list(self._conns.values()):
+            await self._safe_send(conn, message)
 
     async def _safe_send(self, conn: NodeConnection, obj: dict) -> None:
         with contextlib.suppress(Exception):
@@ -631,6 +638,15 @@ class NodeService(Service):
             state = msg.get("data") if isinstance(msg.get("data"), dict) else msg
             if self._apply_state(conn, state):
                 await self._publish_conn(conn)
+        elif kind in {"stop_all", "resume"}:
+            # Stop everything from a paired device (docs/API.md section 17): deterministic, never the model
+            was = self.app.stopped
+            if kind == "stop_all":
+                await self.app.stop_all(source="device")
+            else:
+                await self.app.resume(source="device")
+            if self.app.stopped == was:  # nothing changed, so no broadcast went out: answer this device
+                await self._safe_send(conn, {"type": "stop_state", **self.app.stop_state})
         elif kind == "hello":
             caps = _clean_caps(msg.get("capabilities"))
             if caps != conn.capabilities:

@@ -16,6 +16,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - **Follow-ups:** once a day Sentient notices emails waiting on your reply, and your own questions nobody answered,
   in Gmail and IMAP email, and suggests a ready draft. Newsletters, no-reply senders and answered threads are skipped,
   and nothing is sent until you approve it. Settings under Proactivity.
+- **Stop everything:** one control that stops every running reply, task, helper, script and browser action at once
+  and pauses scheduled tasks, triggers and suggestions until you press Resume, even after a restart. It is in the
+  title bar, the tray menu, the shortcut Ctrl+Alt+Shift+S, `/stopall` in paired Telegram and Discord chats, and on
+  paired phones. It never asks the model, so nothing can talk its way past it.
 
 ### Security
 - Purchases now ask even when approvals are switched off, and code Sentient writes can never make one. A tool set

@@ -55,6 +55,18 @@ export interface UIConfig {
   minimize_to_tray: boolean
 }
 
+/** §17 Stop everything. `source`: desktop | tray | hotkey | telegram | discord | device. */
+export interface StopState {
+  stopped: boolean
+  stopped_at: ISODate | null
+  source: string | null
+}
+
+export interface StopResult extends StopState {
+  /** How many running jobs were cancelled. */
+  cancelled: number
+}
+
 export interface Bootstrap {
   version: string
   home: string
@@ -64,6 +76,8 @@ export interface Bootstrap {
   unread_notifications: number
   ui: UIConfig
   features: { voice: boolean; proactivity: boolean; [feature: string]: boolean }
+  /** §17; missing on older engines */
+  stop?: StopState
 }
 
 export type PersonaId = 'friendly' | 'professional' | 'concise' | 'coach' | 'custom'
@@ -587,6 +601,8 @@ export interface DomainEventMap {
   'user_model.updated': UserModelUpdatedData
   'dream.updated': Dream
   'source.items': SourceItemsData
+  // §17
+  'stop.updated': StopState
 }
 
 export type DomainEventType = keyof DomainEventMap

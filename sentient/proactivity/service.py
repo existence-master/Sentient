@@ -59,7 +59,7 @@ from sentient.proactivity.prefilter import (
     extract_query_text,
     in_quiet_hours,
 )
-from sentient.services import Service
+from sentient.services import Service, cancel_tasks
 from sentient.store.db import new_id
 from sentient.tools.base import Risk
 from sentient.tools.builtin.time_tool import resolve_tz
@@ -151,6 +151,7 @@ def part_of_day(local: datetime) -> str:
 
 class ProactiveEngine(Service):
     name = "proactivity"
+    pause_on_stop = True  # Stop everything pauses polls, heartbeats and follow-ups until resume
 
     def __init__(self, app):
         super().__init__(app)
@@ -176,6 +177,9 @@ class ProactiveEngine(Service):
             t.cancel()
         await super().stop()
 
+    async def halt(self) -> int:
+        return await super().halt() + await cancel_tasks(self._background)
+
     async def _listen(self) -> None:
         async with self.app.bus.subscribe() as q:
             while True:
@@ -183,7 +187,7 @@ class ProactiveEngine(Service):
                 data = event.get("data")
                 if event.get("type") != "source.items" or not isinstance(data, dict):
                     continue
-                if str(data.get("origin") or "").lower() not in PUSH_ORIGINS:
+                if str(data.get("origin") or "").lower() not in PUSH_ORIGINS or self.app.stopped:
                     continue
                 task = asyncio.create_task(self.on_source_items(data), name="proactivity:items")
                 self._background.add(task)
@@ -366,7 +370,7 @@ class ProactiveEngine(Service):
 
     async def handle_item(self, source: str, item: dict, *, event_type: str | None = None) -> dict | None:
         """Run the suggestion pipeline for one new item (triggered tasks are the tasks package's job)."""
-        if not self.cfg.enabled:
+        if not self.cfg.enabled or self.app.stopped:
             return None
         event_type = event_type or SOURCE_EVENTS.get(source, "new_item")
         try:
@@ -380,8 +384,10 @@ class ProactiveEngine(Service):
 
     async def poll_now(self) -> dict:
         """The "Check now" button: poll every source, and start a follow-up check in the background."""
+        if self.app.stopped:
+            return {"ok": True, "events": 0}  # Stop everything: nothing is checked until resume
         events = await self.poll_all(force=True)
-        if self.cfg.enabled and self.cfg.followups.enabled and not self._followup_lock.locked():
+        if self.cfg.enabled and self.cfg.followups.enabled and not self._followup_lock.locked() and not self.app.stopped:
             task = asyncio.create_task(self.run_followups(), name="proactivity:followups")
             self._background.add(task)
             task.add_done_callback(self._background.discard)

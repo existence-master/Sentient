@@ -31,6 +31,8 @@ import type {
   Subagent,
   ApprovalDecision,
   Bootstrap,
+  StopResult,
+  StopState,
   ChatRequest,
   AgentEvent,
   ClarificationAnswer,
@@ -374,6 +376,13 @@ export const api = {
   health: () => http.get<Health>('/api/health'),
   bootstrap: () => http.get<Bootstrap>('/api/bootstrap'),
   onboarding: (body: OnboardingRequest) => http.post<OkResponse>('/api/onboarding', body),
+
+  // §17 stop everything
+  stop: {
+    get: () => http.get<StopState>('/api/stop'),
+    all: (source = 'desktop') => http.post<StopResult>('/api/stop-all', { source }),
+    resume: (source = 'desktop') => http.post<StopState>('/api/resume', { source })
+  },
 
   config: {
     get: () => http.get<SentientConfig>('/api/config'),

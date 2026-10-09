@@ -28,7 +28,7 @@ from typing import Any
 from sentient import paths
 from sentient.agent.loop import LoopResult
 from sentient.llm.events import Error, TextDelta, ToolCallEvent, ToolResultEvent
-from sentient.services import Service
+from sentient.services import Service, cancel_tasks
 from sentient.store.db import new_id, now_iso
 from sentient.tools.base import Risk, Tool
 
@@ -132,6 +132,10 @@ class SubagentManager(Service):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         await super().stop()
+
+    async def halt(self) -> int:
+        """Stop everything: cancel every running helper (they end as ``cancelled``)."""
+        return await cancel_tasks(self._tasks.values(), timeout=10)
 
     # ------------------------------------------------------------------ queries
     async def get(self, subagent_id: str, *, events: bool = True) -> dict | None:

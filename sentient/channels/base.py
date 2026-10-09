@@ -443,6 +443,19 @@ class Channel:
             await self.service.publish_channel(self.id)
             await self.reply(chat_id, "Started a fresh chat. What's next?")
             return
+        if cmd == "stopall" or (cmd == "stop" and arg.lower() == "all"):
+            result = await self.app.stop_all(source=self.id)
+            jobs = int(result.get("cancelled") or 0)
+            done = f"Stopped everything ({jobs} running job{'s' if jobs != 1 else ''} cancelled)." if jobs else "Stopped everything."
+            await self.reply(chat_id, f"{done} Nothing new will start until you resume. Send /resume or press Resume in Sentient.")
+            return
+        if cmd == "resume":
+            if not self.app.stopped:
+                await self.reply(chat_id, "Sentient isn't stopped. Everything is running as usual.")
+                return
+            await self.app.resume(source=self.id)
+            await self.reply(chat_id, "Resumed. Scheduled tasks and suggestions are back on.")
+            return
         if cmd == "stop":
             rt.queued.clear()
             if await self.cancel_turn(chat_id):
@@ -533,6 +546,15 @@ class Channel:
         chat["session_id"] = sid
         return sid
 
+    async def stop_all_turns(self) -> int:
+        """Stop everything: stop the reply in every chat and drop messages queued behind it."""
+        stopped = 0
+        for chat_id, rt in list(self._chats.items()):
+            rt.queued.clear()
+            if await self.cancel_turn(chat_id):
+                stopped += 1
+        return stopped
+
     async def cancel_turn(self, chat_id: str) -> bool:
         rt = self.runtime(chat_id)
         if not rt.running:
@@ -559,6 +581,8 @@ class Channel:
             "",
             "/new - start a fresh chat",
             "/stop - stop the reply in progress",
+            "/stopall - stop everything Sentient is doing, on every device",
+            "/resume - start scheduled tasks and suggestions again after /stopall",
             "/help - show this message",
         ]
         if chat and chat.get("deliver"):

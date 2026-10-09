@@ -199,6 +199,10 @@ one-time-code fields. Scripts from `execute_code` get no API keys and may only c
 Subagents cannot send, execute or spawn more subagents. Messaging bots answer paired chats only; device and
 hook secrets are stored as hashes; bot tokens live in the keychain and are scrubbed from logs.
 
+**Stop everything** (`app.stop_all`, API section 17) is code, never a model call: it saves a stopped flag, cancels
+every running reply, task run, helper and background job (each service's `halt()`), and pauses schedules,
+triggers, feeds, webhooks, proactivity and dreaming (`Service.pause_on_stop`) until Resume, across restarts.
+
 ## On disk
 
 ```

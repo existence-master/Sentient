@@ -63,7 +63,8 @@ Your computer must be on with Sentient running for the bot to answer.
    the code, for example `/pair 123456`.
 
 Now send the bot a direct message to talk to Sentient: text, voice messages, images and files all work.
-Commands: `/new` starts a fresh chat, `/stop` stops a reply, `/help` shows help.
+Commands: `/new` starts a fresh chat, `/stop` stops a reply, `/stopall` stops everything Sentient is doing
+(`/resume` starts it again), `/help` shows help.
 
 **Keep the token private.** If it leaks, click **Reset Token** again and connect with the new one.
 """

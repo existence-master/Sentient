@@ -1,11 +1,39 @@
 /** React Query hooks for §2 core resources. */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import type { OnboardingRequest, Session } from '@/lib/types'
+import type { OnboardingRequest, Session, StopState } from '@/lib/types'
 import { qk } from './queryKeys'
 
 export function useBootstrap() {
   return useQuery({ queryKey: qk.bootstrap, queryFn: api.bootstrap, staleTime: 60_000 })
+}
+
+// ---------------------------------------------------------------------------- §17 stop everything
+const NOT_STOPPED: StopState = { stopped: false, stopped_at: null, source: null }
+
+/** Live from `stop.updated` (lib/events.ts); an engine without §17 reads as not stopped. */
+export function useStopState() {
+  return useQuery({
+    queryKey: qk.stop,
+    queryFn: () => api.stop.get().catch(() => NOT_STOPPED),
+    staleTime: Infinity
+  })
+}
+
+export function useStopAll() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.stop.all('desktop'),
+    onSuccess: (state) => qc.setQueryData<StopState>(qk.stop, { stopped: state.stopped, stopped_at: state.stopped_at, source: state.source })
+  })
+}
+
+export function useResume() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.stop.resume('desktop'),
+    onSuccess: (state) => qc.setQueryData<StopState>(qk.stop, state)
+  })
 }
 
 export function useConfig() {

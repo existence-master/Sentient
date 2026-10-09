@@ -323,6 +323,7 @@
         $("device-label").textContent = saved.name || "";
         setStatus("Connected", "ok");
         showScreen("home");
+        setStopped(!!msg.stopped);
         clearInterval(this.pingTimer);
         this.pingTimer = setInterval(() => this.send({ type: "ping" }), (msg.keepalive_s || 60) * 1000);
         this.sendBattery();
@@ -330,6 +331,8 @@
         this.onError(msg);
       } else if (msg.type === "invoke") {
         this.onInvoke(msg);
+      } else if (msg.type === "stop_state") {
+        setStopped(!!msg.stopped);
       }
     },
 
@@ -699,6 +702,15 @@
     return true;
   }
 
+  // Stop everything (docs/NODES.md §4.5): one button that stops all of Sentient's work, then offers Resume.
+  let stopped = false;
+  function setStopped(value) {
+    stopped = value;
+    $("stopped-note").hidden = !value;
+    $("stop-all").textContent = value ? "Resume" : "Stop everything";
+    $("stop-all").classList.toggle("resume", value);
+  }
+
   function boot() {
     if (!window.isSecureContext) $("insecure").hidden = false;
     const saved = store.load();
@@ -718,6 +730,10 @@
       e.target.value = e.target.value.replace(/\D/g, "").slice(0, 6);
     });
     $("display-close").addEventListener("click", () => { $("display").hidden = true; });
+    $("stop-all").addEventListener("click", () => {
+      if (!node.ws || node.ws.readyState !== 1) { toast("Sentient", "Not connected right now. Try again in a moment."); return; }
+      node.send({ type: stopped ? "resume" : "stop_all" });
+    });
     $("approve").addEventListener("click", () => answerApproval("allow"));
     $("deny").addEventListener("click", () => answerApproval("deny"));
     $("type-form").addEventListener("submit", async (e) => {

@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sentient.llm.provider import ProviderError
-from sentient.services import Service
+from sentient.services import Service, cancel_tasks
 from sentient.tasks import ask, executor, scripts, swarm
 from sentient.tasks.executor import RunFailed, RunPaused
 from sentient.tasks.jsonio import complete_json_object
@@ -68,6 +68,7 @@ SANDBOX_RESULT = {
 PROVIDER_DOWN = "Sorry, the AI model is unavailable right now. Check Settings > Models and try again."
 MAX_RESUMES = 2
 BUSY = ("processing", "waiting_for_user")
+STOPPED_NOTE = "Run stopped by Stop everything."
 WAITING_CONFLICT = "This task is waiting for your answer. Answer the question or cancel the run first."
 _KEEP: Any = object()
 
@@ -165,7 +166,8 @@ class TaskService(Service):
         self._loops.append(asyncio.create_task(self._watch_bus(bus_queue), name="tasks:bus"))
         self._loops.append(asyncio.create_task(self._consume_items(), name="tasks:source-items"))
         if self.app.enable_background:
-            await self.recover_interrupted()
+            if not self.app.stopped:  # stopped: interrupted work is picked up on resume (app.resume)
+                await self.recover_interrupted()
             self.run_every(cfg.tick_seconds, self._tick_job, name="scheduler", initial_delay=min(5, cfg.tick_seconds))
 
     async def stop(self) -> None:
@@ -189,6 +191,27 @@ class TaskService(Service):
                 if not pending:
                     return
                 await asyncio.gather(*pending, return_exceptions=True)
+
+    async def halt(self) -> int:
+        """Stop everything: cancel running runs (waiting questions keep waiting), planning and checks.
+
+        Cancelled runs can be retried from where they stopped; tasks left planning are planned again on resume."""
+        runs = [t for t in self._runs.values() if not t.done()]
+        cancelled = 0
+        for run in await self.repo.processing_runs():
+            try:
+                await self.cancel_run(run["task_id"], run["id"], note=STOPPED_NOTE)
+                cancelled += 1
+            except (TaskNotFound, TaskConflict):
+                continue  # finished or cancelled meanwhile
+        if runs:
+            await asyncio.wait(runs, timeout=5)
+        return cancelled + await cancel_tasks(self._background)
+
+    def _job_running(self, kind: str, task_id: str) -> bool:
+        """True while a background job (``plan``, ``swarm``, ``script``) runs for this task."""
+        name = f"tasks:{kind}:{task_id}"
+        return any(t.get_name() == name and not t.done() for t in self._background)
 
     # ------------------------------------------------------------------ small helpers
     def now(self) -> datetime:
@@ -606,7 +629,7 @@ class TaskService(Service):
             self._spawn(self._plan_job(task_id), f"plan:{task_id}")
         return data
 
-    async def cancel_run(self, task_id: str, run_id: str) -> dict:
+    async def cancel_run(self, task_id: str, run_id: str, *, note: str = "Run cancelled by user.") -> dict:
         await self._require(task_id)
         run = await self.repo.get_run(run_id)
         if run is None or run["task_id"] != task_id:
@@ -624,7 +647,7 @@ class TaskService(Service):
                 messages = ask.fill_result(run.get("messages") or [], call_id, ask.cancelled_content())
                 await self.repo.update_run(run_id, {"messages": messages})
                 await self._resolve_question_notifications(run_id, "cancelled")
-            await self.progress(task_id, run_id, {"type": "info", "content": "Run cancelled by user."})
+            await self.progress(task_id, run_id, {"type": "info", "content": note})
             await self._after_run(task_id, "cancelled", None)
             await self._publish_run_finished(task_id, run_id, "cancelled")
         return await self.get_and_publish(task_id)
@@ -719,7 +742,9 @@ class TaskService(Service):
 
         Idempotent per (task, item id): a task handles an item at most once, whichever path
         (change feed, poll, webhook, a direct call) delivers it. Script jobs start a check
-        instead of a run and add no run id."""
+        instead of a run and add no run id. Nothing starts while Sentient is stopped (Stop everything)."""
+        if self.app.stopped:
+            return []
         source = (source or "").strip().lower()
         event_data = event_data if isinstance(event_data, dict) else {}
         if event_id is None and event_data.get("id") is not None:
@@ -826,8 +851,12 @@ class TaskService(Service):
 
     # ------------------------------------------------------------------ scheduler
     async def tick(self) -> list[str]:
-        """Claim due tasks atomically and start their runs. Returns the new run ids."""
+        """Claim due tasks atomically and start their runs. Returns the new run ids.
+
+        While Sentient is stopped nothing is claimed; due tasks start on the first tick after resume."""
         run_ids: list[str] = []
+        if self.app.stopped:
+            return run_ids
         for task_id in await self.repo.claim_due(self.now_iso()):
             task = await self.repo.get_task(task_id)
             if task is None:
@@ -889,7 +918,7 @@ class TaskService(Service):
         # tasks left 'processing' with no live run: claimed right before a crash (no run row), or
         # stopped after the run finished but before the task was settled
         for task in await self.repo.list_tasks("status = 'processing'"):
-            if await self.repo.processing_runs(task["id"]):
+            if self._job_running("script", task["id"]) or await self.repo.processing_runs(task["id"]):
                 continue
             last = await self.repo.latest_run(task["id"])
             if last is not None and last["status"] in {"completed", "completed_with_errors", "error", "cancelled"}:
@@ -904,6 +933,8 @@ class TaskService(Service):
             await self.publish(task["id"])
         await self._resolve_stale_plan_notifications()
         for task in await self.repo.list_tasks("status = 'planning'"):
+            if self._job_running("plan", task["id"]) or self._job_running("swarm", task["id"]):
+                continue  # being planned right now (resume after Stop everything)
             if task.get("task_type") == "swarm":
                 self._spawn(self._orchestrate_swarm(task["id"]), f"swarm:{task['id']}")
             elif task.get("schedule") or task.get("chat_history") or task.get("clarifying_questions"):
@@ -1365,6 +1396,11 @@ class TaskService(Service):
         try:
             async with self._lock(task_id):
                 await self._script_check(task_id, trigger_data)
+        except asyncio.CancelledError:
+            if self.app.stopped:  # Stop everything: settle the task now (a shutdown leaves it to recovery)
+                await self._after_run(task_id, "cancelled", None)
+                await self.publish(task_id)
+            raise
         except Exception:
             log.exception("script job %s crashed", task_id)
             await self._after_run(task_id, "error", "The check script could not be run.")

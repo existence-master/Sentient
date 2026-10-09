@@ -104,6 +104,8 @@ async def call_hook(request: Request, hook_id: str):
     given = request.headers.get(SECRET_HEADER) or request.query_params.get("secret")
     if not hooks.secret_ok(hook, given):
         raise HTTPException(401, "Wrong or missing webhook secret.")
+    if core.stopped:  # Stop everything: callers retry later instead of losing the call
+        raise HTTPException(503, "Sentient is stopped right now. Try again after it is resumed.", headers={"Retry-After": "60"})
     # After the secret check, so callers without the secret can't use up a real caller's budget.
     wait = hooks.rate_limited(hook["id"], core.config.integrations.webhook_rate_limit_per_minute)
     if wait is not None:

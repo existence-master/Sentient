@@ -8,10 +8,17 @@ Start order (stop runs in reverse):
     store -> memory -> notifications -> integrations (registers plugins)
     -> builtin tools -> skills -> agent -> subagents -> sandbox -> browser -> nodes
     -> tasks -> proactivity -> evolution -> user_model -> dreaming -> voice -> channels
+
+Stop everything (``stop_all`` / ``resume``, docs/API.md section 17) is deterministic: it never
+asks the model. It cancels running chat replies, task runs, helpers, scripts and browser
+actions, and pauses scheduled and triggered tasks, proactivity, learning and dreaming until
+the user resumes. The stopped state is kept in the ``meta`` table, so it survives a restart.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -37,7 +44,7 @@ from sentient.proactivity import ProactiveEngine
 from sentient.sandbox import SandboxService
 from sentient.services import Service
 from sentient.skills.loader import SkillLibrary
-from sentient.store.db import Store
+from sentient.store.db import Store, now_iso
 from sentient.tasks import TaskService
 from sentient.tools.registry import ToolRegistry
 from sentient.voice import VoiceService
@@ -46,6 +53,7 @@ log = logging.getLogger(__name__)
 
 # Background work gets this long to finish when Sentient shuts down; then it is cancelled.
 SHUTDOWN_GRACE_S = 15.0
+STOP_META_KEY = "stop.state"  # {"stopped", "stopped_at", "source"} while Stop everything is on
 
 
 class SentientApp:
@@ -87,6 +95,8 @@ class SentientApp:
         self.user_model = UserModelService(self)
         self.dreaming = DreamingService(self)
         self._started = False
+        self.stop_state: dict[str, Any] = {"stopped": False, "stopped_at": None, "source": None}
+        self._stop_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ helpers for services
     @property
@@ -112,6 +122,61 @@ class SentientApp:
         self.registry.set_hidden("subagents", not self.config.subagents.enabled)
         self.bus.publish("config.updated", {"sections": list(self.config.model_dump().keys())})
 
+    # ------------------------------------------------------------------ stop everything
+    @property
+    def stopped(self) -> bool:
+        """True after Stop everything until Resume: nothing scheduled, triggered or proactive starts."""
+        return bool(self.stop_state["stopped"])
+
+    async def _load_stop_state(self) -> None:
+        try:
+            raw = json.loads(await self.store.get_meta(STOP_META_KEY) or "null")
+        except ValueError:
+            raw = None
+        if isinstance(raw, dict) and raw.get("stopped"):
+            self.stop_state = {"stopped": True, "stopped_at": raw.get("stopped_at"), "source": raw.get("source")}
+
+    async def _set_stop_state(self, state: dict[str, Any]) -> None:
+        self.stop_state = state
+        await self.store.set_meta(STOP_META_KEY, json.dumps(state))
+        self.bus.publish("stop.updated", dict(state))
+        try:
+            await self.nodes.send_stop_state()
+        except Exception:
+            log.exception("could not tell devices about the stop state")
+
+    async def stop_all(self, source: str = "desktop") -> dict[str, Any]:
+        """Stop everything now, without the model: pause first so nothing new starts, then cancel what runs.
+
+        Safe to call again while stopped (it cancels anything started since). Returns the stop state
+        plus ``cancelled``, the number of running jobs that were cancelled."""
+        async with self._stop_lock:
+            if not self.stopped:
+                await self._set_stop_state({"stopped": True, "stopped_at": now_iso(), "source": source})
+                log.warning("stop everything (from %s)", source)
+            cancelled = 0
+            if self.agent is not None:
+                cancelled += await self.agent.halt()
+            for svc in self.services:
+                try:
+                    cancelled += await svc.halt()
+                except Exception:
+                    log.exception("service %s failed to halt", svc.name)
+            return {**self.stop_state, "cancelled": cancelled}
+
+    async def resume(self, source: str = "desktop") -> dict[str, Any]:
+        """Undo Stop everything: schedules, triggers and proactivity run again; interrupted work is picked up."""
+        async with self._stop_lock:
+            if self.stopped:
+                await self._set_stop_state({"stopped": False, "stopped_at": None, "source": source})
+                log.warning("resumed (from %s)", source)
+                if self._started and self.enable_background:
+                    try:
+                        await self.tasks.recover_interrupted()
+                    except Exception:
+                        log.exception("resuming interrupted tasks failed")
+            return dict(self.stop_state)
+
     def tool_extra(self) -> dict[str, Any]:
         return {"app": self, "skills": self.skills, "workspace": self.workspace, "registry": self.registry}
 
@@ -121,6 +186,7 @@ class SentientApp:
             return self
         paths.ensure_layout()
         await self.store.open()
+        await self._load_stop_state()  # before services start: a stopped Sentient starts paused
         self.workspace.ensure_defaults(
             self.config.assistant.name, self.config.assistant.user_name, self.config.assistant.timezone
         )
