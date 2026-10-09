@@ -180,6 +180,13 @@ def looks_like_card_number(text: str) -> bool:
     return False
 
 
+def needs_user(kind: str) -> dict:
+    """The tool result for a field only the user may fill: the refusal, plus ``needs_user`` so a task run stops and
+    tells the user why it is stuck (tasks/stuck.py)."""
+    thing = "card details" if kind.startswith("card") else kind
+    return {"error": sensitive_refusal(kind), "needs_user": f"the page asks for your {thing}, which only you should enter"}
+
+
 def sensitive_refusal(kind: str) -> str:
     return (
         f"This looks like a {kind} field. For the user's safety you never type {kind}s or other secrets. "

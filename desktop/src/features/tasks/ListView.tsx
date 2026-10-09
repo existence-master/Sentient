@@ -134,7 +134,9 @@ export function taskHeadline(task: Task): string {
       return `${open} question${open === 1 ? '' : 's'} before Sentient can plan this`
     }
     case 'waiting_for_user': {
-      const q = waitingRun(task)?.pending_question?.question
+      const pending = waitingRun(task)?.pending_question
+      if (pending?.kind === 'stuck' && pending.reason) return truncate(`Stuck: ${pending.reason}`, 140)
+      const q = pending?.question
       return q ? truncate(`Asks: ${q}`, 140) : 'Waiting for your answer'
     }
     case 'error':
