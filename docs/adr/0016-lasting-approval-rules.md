@@ -26,8 +26,8 @@ the sandbox bridge apply rules in code before a call runs; no model sees or deci
   subagents and scripts refuse the call; proactive look-ups leave the tool out. Making tasks pause and ask instead
   is a planned follow-up.
 - **Allow**: run without asking, whatever the mode. A purchase (effective risk `send` or higher whose approval
-  wording is "Purchase", such as a browser click on "Place order") still asks whenever approvals are on, and
-  "Allow for this chat" never covers it. With approvals off nothing asks, as before. Allow never widens what
+  wording is "Purchase", such as a browser click on "Place order") still asks, even with approvals mode off,
+  and "Allow for this chat" never covers it; `browser.confirm_purchases` is the only switch for that. Allow never widens what
   scripts from code execution may call: they keep [ADR 0012](0012-code-execution-sandbox.md)'s read-only rule,
   as docs/PRIVACY.md promises.
 
@@ -49,3 +49,10 @@ follow-up. Letting Allow open scripts to sending tools: convenient for bulk work
 that code Sentient writes can only read. Letting the model pick rules from chat ("stop asking me about Gmail"): convenient, but it would
 let prompt injection loosen safety. Treating every `send` as un-allowable: safe, but then "always send my Gmail
 drafts without asking" could not be expressed.
+
+## Amendment (2026-10-09)
+
+Review found three gaps, now closed: purchases asked only while approvals were on (they now always ask, and
+scripts refuse them in every mode); a "never" rule set while a call waited for approval did not stop that call
+(the rule is now checked again right before any tool runs); and a running script kept the rules it started with
+(scripts now read the current rules on every call).
