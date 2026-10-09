@@ -7,6 +7,13 @@ the glasses) resolves it with ``allow``, ``allow_session`` or ``deny``.
 Decisions use the call's *effective* risk (``Tool.risk_fn``). "Allow for this chat"
 covers the tool up to the risk level that was approved: allowing ordinary browser
 clicks never covers a call whose ``risk_fn`` raised it to ``send`` or ``exec`` ("Place order" asks every time).
+
+Lasting rules (``tools.approvals.rules``, ADR 0016) are checked first, in code, never by a model. A key is a tool
+name or a plugin id, and a tool's own rule beats its plugin's rule:
+
+- ``never``: the tool is not offered to the model, and a call is refused without running.
+- ``ask``: always ask, even in mode "off", after "Allow for this chat" and for read-only tools.
+- ``allow``: run without asking, except purchases, which still ask whenever approvals are on.
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ from typing import Any
 
 from sentient.config.schema import ApprovalsConfig
 from sentient.tools.base import Risk, Tool, ToolContext, effective_risk
+from sentient.tools.rules import is_purchase, rule_for, rule_label
 
 Decision = str  # "allow" | "allow_session" | "deny"
 
@@ -50,13 +58,31 @@ class ApprovalBroker:
     # (session_id, tool name) -> highest risk the user allowed for this chat
     _session_allow: dict[tuple[str, str], Risk] = field(default_factory=dict)
 
+    # ------------------------------------------------------------------ lasting rules
+    def rule(self, tool: Tool) -> str | None:
+        """The lasting rule for ``tool`` ("allow", "ask", "never") or None (see ``sentient.tools.rules``)."""
+        return rule_for(getattr(self.config, "rules", None), tool)
+
+    def is_never(self, tool: Tool) -> bool:
+        """True when a lasting rule says Sentient must never use ``tool`` (the registry hides it)."""
+        return self.rule(tool) == "never"
+
+    def label(self, tool: Tool, registry: Any = None) -> str:
+        return rule_label(tool, getattr(self.config, "rules", None), registry)
+
     async def requires_approval(
         self, tool: Tool, arguments: dict, ctx: ToolContext, session_id: str | None = None
     ) -> tuple[bool, Risk]:
         """Evaluate ``tool.risk_fn`` (sync or async) and decide. Returns ``(needs_approval, effective_risk)``."""
         risk = await effective_risk(tool, arguments, ctx)
         sid = session_id if session_id is not None else getattr(ctx, "session_id", None)
-        return self.needs_approval(tool, sid, risk), risk
+        return await self.decide(tool, sid, risk, arguments, ctx), risk
+
+    async def decide(self, tool: Tool, session_id: str | None, risk: Risk, arguments: dict, ctx: Any) -> bool:
+        """``needs_approval`` for a call whose effective risk is known. Under an "allow" rule it also
+        checks whether the call is a purchase, which still asks."""
+        purchase = self.rule(tool) == "allow" and await is_purchase(tool, arguments, ctx, risk)
+        return self.needs_approval(tool, session_id, risk, purchase=purchase)
 
     def needs_approval(
         self,
@@ -66,14 +92,21 @@ class ApprovalBroker:
         *,
         arguments: dict | None = None,
         ctx: ToolContext | None = None,
+        purchase: bool = False,
     ) -> bool:
         """``risk`` is the call's effective risk. Without it, pass ``arguments`` (and ``ctx``) so a synchronous
         ``tool.risk_fn`` is evaluated here; an async ``risk_fn`` cannot be awaited in this sync method and is
-        treated as at least ``send`` (use ``await requires_approval(...)`` instead)."""
+        treated as at least ``send`` (use ``await requires_approval(...)`` instead). ``purchase`` marks a call
+        that spends money; only an "allow" rule looks at it (``decide`` works it out)."""
         if risk is None and arguments is not None and getattr(tool, "risk_fn", None) is not None:
             risk = _sync_effective_risk(tool, arguments, ctx)
         risk = tool.risk if risk is None else Risk(risk)
         mode = self.config.mode
+        rule = self.rule(tool)
+        if rule in {"ask", "never"}:  # "never" is refused before this; asking is the safe answer anyway
+            return True
+        if rule == "allow":
+            return purchase and mode != "off"
         if mode == "off":
             return False
         if self.config.remember_session and session_id:

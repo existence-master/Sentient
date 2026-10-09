@@ -61,6 +61,7 @@ from sentient.skills.loader import SkillLibrary
 from sentient.store.db import Store, new_id
 from sentient.tools.base import Risk, Tool, ToolContext, bind_call, describe_call, effective_risk
 from sentient.tools.registry import ToolRegistry
+from sentient.tools.rules import never_message, unattended_ask_message
 
 log = logging.getLogger(__name__)
 
@@ -505,6 +506,11 @@ class Agent:
         policy: PolicyFn | None,
     ) -> _CallPlan:
         tool = self.registry.get(tc.name)
+        rule = self.approvals.rule(tool) if tool is not None else None
+        if tool is not None and rule == "never":
+            # lasting rule (ADR 0016): the tool is not offered, and a call made anyway is refused without running
+            refusal = never_message(self.approvals.label(tool, self.registry))
+            return _CallPlan(tc=tc, tool=None, preset=({"error": refusal}, True, 0))
         if tool is None or not (tool_names is None or tc.name in tool_names):
             return _CallPlan(tc=tc, tool=None, preset=({"error": f"unknown tool {tc.name}"}, True, 0))
         plan = _CallPlan(tc=tc, tool=tool, risk=tool.risk)
@@ -519,7 +525,10 @@ class Agent:
             if refusal:
                 plan.preset = ({"error": str(refusal)}, True, 0)
                 return plan
-        plan.needs_approval = use_approvals and self.approvals.needs_approval(tool, ctx.session_id, plan.risk)
+        if use_approvals:
+            plan.needs_approval = await self.approvals.decide(tool, ctx.session_id, plan.risk, tc.arguments, ctx)
+        elif rule == "ask":  # task runs and other unattended loops cannot stop to ask
+            plan.preset = ({"error": unattended_ask_message(self.approvals.label(tool, self.registry))}, True, 0)
         return plan
 
     def _groups(self, plans: list[_CallPlan]) -> list[list[_CallPlan]]:
