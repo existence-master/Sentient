@@ -232,6 +232,9 @@ def normalize_schedule(schedule: Any, tz_name: str, *, override_timezone: bool =
         else:
             kind = "once"
     out["type"] = kind
+    catch_up = str(out.pop("catch_up", None) or "").strip().lower()
+    if kind != "triggered" and catch_up in {"run", "skip"}:  # missed while asleep (tasks/catchup.py); default auto
+        out["catch_up"] = catch_up
     if kind == "once":
         run_at = out.get("run_at")
         if not isinstance(run_at, str) or run_at.strip().lower() in {"", "null", "none", "now"}:

@@ -603,6 +603,7 @@ export interface DomainEventMap {
   'task.updated': Task
   'task.deleted': { task_id: string }
   'task.run_progress': { task_id: string; run_id: string; update: ProgressUpdate }
+  'task.run_activity': { task_id: string; run_id: string; last_activity_at: ISODate }
   'notification.new': Notification
   'notification.updated': Notification
   'notification.read': { id: string | null }
@@ -855,10 +856,14 @@ export type TaskStatus =
 
 export type Weekday = 'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday' | 'Saturday' | 'Sunday'
 
+/** What happens to a run missed while the computer was off or asleep (§4). Absent: run once if it isn't too late. */
+export type CatchUpPolicy = 'run' | 'skip'
+
 export interface OnceSchedule {
   type: 'once'
   run_at: string | null
   timezone?: string
+  catch_up?: CatchUpPolicy
 }
 export interface RecurringSchedule {
   type: 'recurring'
@@ -868,6 +873,7 @@ export interface RecurringSchedule {
   time: string
   interval_minutes?: number
   timezone?: string
+  catch_up?: CatchUpPolicy
 }
 
 // §16 script jobs
@@ -930,6 +936,9 @@ export interface RunQuestion {
   /** Suggested answers (0 to 6). A free-text answer is always allowed. */
   options: string[]
   asked_at: ISODate | null
+  /** `stuck`: the run stopped getting anywhere and asks what to do (`reason` says why); `limit`: it reached a limit. */
+  kind?: 'question' | 'limit' | 'stuck'
+  reason?: string | null
 }
 
 export interface Run {
@@ -947,6 +956,8 @@ export interface Run {
   retry_of?: string | null
   /** Set while `status` is `waiting_for_user`, otherwise `null`. */
   pending_question?: RunQuestion | null
+  /** When the run last showed any sign of work (a step, a model reply). */
+  last_activity_at?: ISODate | null
 }
 
 export interface TaskChatMessage {

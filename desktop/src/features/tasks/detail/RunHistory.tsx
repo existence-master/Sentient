@@ -91,6 +91,22 @@ function triggerSummary(task: Task, run: Run): { icon: typeof IconBolt; text: st
   return { icon: IconHandFinger, text: task.schedule?.type === 'once' && task.schedule.run_at ? 'Scheduled run' : 'Started on approval' }
 }
 
+/** When the run last did something: its heartbeat, or its newest progress update. */
+function lastActivity(run: Run): string | null {
+  const latest = run.progress_updates.length ? run.progress_updates[run.progress_updates.length - 1].timestamp : null
+  const beat = run.last_activity_at ?? null
+  if (!beat || !latest) return beat || latest
+  return (parseDate(beat)?.getTime() ?? 0) >= (parseDate(latest)?.getTime() ?? 0) ? beat : latest
+}
+
+function activityAgo(iso: string | null, now: number): string {
+  const d = parseDate(iso)
+  if (!d) return ''
+  const s = Math.max(0, Math.round((now - d.getTime()) / 1000))
+  if (s < 60) return `${s} second${s === 1 ? '' : 's'} ago`
+  return relativeTime(iso, now)
+}
+
 function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: { task: Task; run: Run; number: number; tz: string; defaultOpen: boolean; onCancel: () => void; cancelling: boolean }) {
   const [open, setOpen] = useState(defaultOpen)
   const live = run.status === 'processing'
@@ -168,6 +184,7 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
                 <div className="flex items-center gap-2 rounded-lg border border-info/20 bg-info/6 px-3 py-2 text-sm">
                   <span className="min-w-0 flex-1 text-fg-muted">
                     Started {relativeTime(run.execution_start_time ?? run.created_at, now.getTime())}. Updates stream in as Sentient works.
+                    {lastActivity(run) && <span className="tabular-nums"> Last activity {activityAgo(lastActivity(run), now.getTime())}.</span>}
                   </span>
                   <Button size="xs" variant="danger" leftIcon={<IconPlayerStop size={12} />} loading={cancelling} onClick={onCancel}>
                     Cancel run
