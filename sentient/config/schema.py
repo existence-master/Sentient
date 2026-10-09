@@ -13,7 +13,7 @@ class below and may add fields to it. Do not edit another package's section.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -71,6 +71,22 @@ class ModelsConfig(BaseModel):
     )
     temperature: dict[str, float] = Field(
         default_factory=dict, description="Optional per-role sampling temperature."
+    )
+    context_length: int = Field(
+        8192,
+        ge=2048,
+        le=1_048_576,
+        description="How much text (in tokens) a local Ollama model reads at once: instructions, the conversation "
+        "and tool results. Ollama's own default is only 4096 on most computers, which quietly cuts off long tasks. "
+        "Bigger values let the model see more but need more graphics memory: 8192 keeps qwen3:8b fully on an "
+        "8 GB graphics card, while 16384 or more can push part of it onto the processor and make replies much "
+        "slower. Never goes above the model's own maximum. Cloud models ignore this.",
+    )
+    context_length_per_role: dict[str, Annotated[int, Field(ge=2048, le=1_048_576)]] = Field(
+        default_factory=dict,
+        description="Optional per-role context length for local Ollama models, replacing the value above for that "
+        "role, e.g. {\"executor\": 16384}. Best used when the roles run different models: one model given different "
+        "lengths in different roles is reloaded by Ollama each time the role changes.",
     )
     providers: dict[str, ProviderConfig] = Field(
         default_factory=lambda: {

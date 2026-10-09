@@ -95,7 +95,7 @@ Saves config, writes USER.md, seeds memory facts (source `onboarding`) in the ba
 - `GET /api/config` → full config object (see `sentient/config/schema.py`).
 - `GET /api/config/schema` → JSON schema (every field has `description`; Settings forms are generated from it).
 - `PUT /api/config` body: full config → `{saved: true}`. Hot-applied.
-- `PATCH /api/config` body: partial nested object, deep-merged → `{saved: true, config}`. Inside free-form maps (`models.fallbacks`, `models.reasoning`, `models.temperature`, `models.providers`, `integrations.mcp_servers`, `tools.approvals.rules`) a `null` value removes that entry.
+- `PATCH /api/config` body: partial nested object, deep-merged → `{saved: true, config}`. Inside free-form maps (`models.fallbacks`, `models.reasoning`, `models.temperature`, `models.context_length_per_role`, `models.providers`, `integrations.mcp_servers`, `tools.approvals.rules`) a `null` value removes that entry.
 - Validation failures on PUT/PATCH return 422 with `detail: [{loc: string[], msg, type}]`.
 
 ### Lasting approval rules (`tools.approvals.rules`, ADR 0016)

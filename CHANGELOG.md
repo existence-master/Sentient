@@ -24,6 +24,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   or stop here?" Keep going raises that limit for this run; Stop here ends it with a plain message. Time spent waiting
   for your answer doesn't count. Helpers have their own token and spending limits too (1,000,000 tokens and about $2).
 
+### Fixed
+- Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
+  and many tools are no longer cut off without warning. Change it with `models.context_length`, per role with
+  `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.
+
 ### Security
 - Purchases now ask even when approvals are switched off, and code Sentient writes can never make one. A tool set
   to Never while a request waits for your yes, or while a script runs, is blocked right away.
