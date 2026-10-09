@@ -332,12 +332,16 @@ class TaskService(Service):
         source: str = "user",
         original_context: dict | None = None,
         done_text: str = "Done.",
+        schedule: dict | None = None,
+        quiet: bool = False,
     ) -> dict:
-        """A one-off task the user has already approved as one exact tool call (a follow-up's "Send reply").
+        """A task the user has already approved as one exact tool call (a follow-up's "Send reply").
 
         No planner and no executor model: the run calls ``tool`` with exactly ``arguments`` right away, whatever
         ``tasks.require_plan_approval`` says, because the user approved this exact call. Lasting "never" rules
-        still stop it (the run fails with the rule's message)."""
+        still stop it (the run fails with the rule's message). With a recurring ``schedule`` the task is active
+        and runs at its times instead of now (the Daily Brief). ``quiet`` skips the "Task completed" notification
+        for a tool that sends its own."""
         prompt = (prompt or "").strip()
         t = self.app.registry.get(tool)
         if not prompt or t is None:
@@ -345,11 +349,17 @@ class TaskService(Service):
         context = dict(original_context or {})
         context.setdefault("source", source)
         context["fixed_call"] = {"tool": tool, "arguments": dict(arguments), "done_text": done_text}
+        if quiet:
+            context["fixed_call"]["quiet"] = True
+        recurring = normalize_schedule(schedule, self.tz_name(), override_timezone=False) if schedule else None
+        if recurring is not None and recurring["type"] != "recurring":
+            raise ValueError("Only a recurring schedule can be given here.")
         now = self.now_iso()
         task_id = await self.repo.insert_task({
             "name": _title(prompt),
             "description": (description or prompt).strip(),
-            "status": "pending",
+            "status": "active" if recurring else "pending",
+            "next_execution_at": iso(calculate_next_run(recurring, self.now())) if recurring else None,
             "priority": 1,
             "assignee": "ai",
             "original_prompt": prompt,
@@ -361,12 +371,12 @@ class TaskService(Service):
             "chat_history": [],
             "clarifying_questions": [],
             "task_type": "single",
-            "schedule": None,
+            "schedule": recurring,
             "created_at": now,
             "updated_at": now,
         })
-        task = await self._require(task_id)
-        await self._start_run(task)
+        if recurring is None:
+            await self._start_run(await self._require(task_id))
         data = await self.publish(task_id)
         assert data is not None
         return data
@@ -1318,6 +1328,8 @@ class TaskService(Service):
         if is_swarm and status in {"completed", "completed_with_errors"}:
             await self._notify(task, f"Swarm task '{name}' has completed.", "Swarm task completed", "run_completed")
         elif status in {"completed", "completed_with_errors"}:
+            if (executor.fixed_call_of(task) or {}).get("quiet"):
+                return  # the tool delivered its own notification (the Daily Brief)
             await self._notify(task, f"Task '{name}' has finished with status: {status}.", "Task completed", "run_completed")
         elif status == "error":
             detail = f"\n\n{error}" if error else ""

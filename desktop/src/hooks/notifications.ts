@@ -1,7 +1,7 @@
 /** React Query hooks for §6 notifications & proactivity. */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import type { NotificationList } from '@/lib/types'
+import type { BriefFeedback, BriefSectionId, BriefSetup, BriefState, NotificationList } from '@/lib/types'
 import { useNotificationStore } from '@/stores/notifications'
 import { qk } from './queryKeys'
 
@@ -83,6 +83,35 @@ export function useProactivityActions() {
     resetPreference: useMutation({
       mutationFn: (type: string) => api.proactivity.resetPreference(type),
       onSuccess: () => void qc.invalidateQueries({ queryKey: qk.proactivity.preferences })
+    })
+  }
+}
+
+/** Daily Brief state: the task, its schedule and sections, and today's brief (null when none is showing). */
+export function useBrief() {
+  return useQuery({ queryKey: qk.proactivity.brief, queryFn: api.proactivity.brief.get, retry: false })
+}
+
+export function useBriefActions() {
+  const qc = useQueryClient()
+  const setState = (s: BriefState) => qc.setQueryData(qk.proactivity.brief, s)
+  return {
+    setup: useMutation({
+      mutationFn: (body: BriefSetup) => api.proactivity.brief.setup(body),
+      onSuccess: (s) => {
+        setState(s)
+        void qc.invalidateQueries({ queryKey: qk.tasks.all })
+        void qc.invalidateQueries({ queryKey: qk.config })
+      }
+    }),
+    runNow: useMutation({ mutationFn: () => api.proactivity.brief.runNow() }),
+    feedback: useMutation({
+      mutationFn: (body: { brief_id: string; value: BriefFeedback; item_id?: string; section?: BriefSectionId }) =>
+        api.proactivity.brief.feedback(body),
+      onSuccess: (brief) => {
+        qc.setQueryData<BriefState>(qk.proactivity.brief, (old) => (old ? { ...old, today: brief } : old))
+        void qc.invalidateQueries({ queryKey: qk.proactivity.preferences })
+      }
     })
   }
 }

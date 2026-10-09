@@ -90,6 +90,8 @@ export interface OnboardingRequest {
   professional_context?: string
   personal_context?: string
   persona?: PersonaId | string
+  /** Set up the Daily Brief (a recurring task) as part of onboarding. */
+  daily_brief?: boolean
 }
 
 export interface OkResponse {
@@ -1141,7 +1143,66 @@ export interface McpTestResult {
 }
 
 // ============================================================================ §6 Notifications & proactivity
-export type NotificationKind = 'info' | 'task' | 'approval' | 'proactive' | 'skill' | 'error'
+export type NotificationKind = 'info' | 'task' | 'approval' | 'proactive' | 'skill' | 'error' | 'brief'
+
+/** Daily Brief (docs/API.md section 6). */
+export type BriefSectionId = 'calendar' | 'email' | 'tasks' | 'weather' | 'news'
+export type BriefFeedback = 'up' | 'down'
+
+export interface BriefItem {
+  id: string
+  section: BriefSectionId
+  /** One line. */
+  text: string
+  /** `https://...` opens the source; `/tasks/<id>` opens a task in the app; null when there is nothing to open. */
+  link: string | null
+  /** Why am I seeing this. */
+  why: string
+  feedback: BriefFeedback | null
+  /** Email items that came from a suggestion card. */
+  notification_id?: string
+}
+
+export interface Brief {
+  /** The notification id. */
+  id: string
+  day: string
+  title: string
+  status: 'active' | 'expired'
+  task_id: string | null
+  created_at: ISODate
+  expires_at: ISODate
+  sections: Array<{ id: BriefSectionId; label: string; feedback: BriefFeedback | null }>
+  items: BriefItem[]
+  /** Sections that found nothing, with a plain reason ("Connect Google Calendar to see today's events."). */
+  skipped: Array<{ section: BriefSectionId; label: string; reason: string }>
+}
+
+export interface BriefState {
+  set_up: boolean
+  task_id: string | null
+  /** False while the task is paused. */
+  enabled: boolean
+  /** 'HH:MM' local time. */
+  time: string | null
+  days: string[] | null
+  next_at: ISODate | null
+  sections: BriefSectionId[]
+  news_topics: string[]
+  max_items: number
+  available: Record<BriefSectionId, boolean>
+  today: Brief | null
+}
+
+export interface BriefSetup {
+  /** 'HH:MM' or a word: early, morning, midday, afternoon, evening. */
+  time?: string
+  /** Day names, 'weekdays' or 'daily'. */
+  days?: string[] | string
+  sections?: BriefSectionId[]
+  news_topics?: string[]
+  max_items?: number
+}
 
 export interface ProactiveSuggestion {
   suggestion_type: string

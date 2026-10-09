@@ -8,6 +8,7 @@ import {
   IconShieldCheck,
   IconShieldQuestion,
   IconSparkles,
+  IconSunrise,
   IconTrash,
   IconX,
   type Icon
@@ -35,7 +36,8 @@ const KIND: Record<NotificationKind, { icon: Icon; tone: string }> = {
   approval: { icon: IconShieldQuestion, tone: 'text-warning' },
   proactive: { icon: IconBolt, tone: 'text-accent-text' },
   skill: { icon: IconSparkles, tone: 'text-accent-text' },
-  error: { icon: IconAlertTriangle, tone: 'text-danger' }
+  error: { icon: IconAlertTriangle, tone: 'text-danger' },
+  brief: { icon: IconSunrise, tone: 'text-accent-text' }
 }
 
 /** Ids already marked read by "mark read on view", shared by the panel and the page. */

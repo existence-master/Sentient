@@ -357,6 +357,24 @@ class FollowUpsConfig(BaseModel):
     max_suggestions: int = Field(3, ge=1, le=20, description="At most this many follow-up suggestions per check.")
 
 
+class DailyBriefConfig(BaseModel):
+    """A short morning digest. It is an ordinary recurring task you can edit, pause or delete in Tasks."""
+
+    sections: list[str] = Field(
+        default_factory=lambda: ["calendar", "email", "tasks", "weather"],
+        description="What the brief includes: calendar, email, tasks, weather, news. Leave one out to turn it off.",
+    )
+    max_items: int = Field(7, ge=1, le=20, description="At most this many lines in one brief.")
+    news_topics: list[str] = Field(
+        default_factory=list,
+        description="Topics for the news section, for example 'climate' or 'cricket'. No topics means no news.",
+    )
+    summarize_emails: bool = Field(
+        True,
+        description="Let the fast model write one short line for each unread email. Off: show the sender and subject.",
+    )
+
+
 class ProactivityConfig(BaseModel):
     enabled: bool = Field(True, description="Let Sentient watch connected apps and suggest actions.")
     poll_interval_minutes: int = Field(10, ge=1, description="How often Gmail/Calendar are checked.")
@@ -394,6 +412,10 @@ class ProactivityConfig(BaseModel):
     followups: FollowUpsConfig = Field(
         default_factory=FollowUpsConfig,
         description="Notice emails waiting on a reply (from you or to you) and offer a draft. Gmail and IMAP email.",
+    )
+    brief: DailyBriefConfig = Field(
+        default_factory=DailyBriefConfig,
+        description="Your Daily Brief: today's calendar, emails that need you, tasks and the weather in a few lines.",
     )
 
 
@@ -631,6 +653,7 @@ class ChannelsConfig(BaseModel):
     deliver_plans: bool = Field(True, description="Send task plans that wait for approval, with Approve buttons.")
     deliver_suggestions: bool = Field(True, description="Send proactive suggestions, with Approve and Dismiss buttons.")
     deliver_subagents: bool = Field(True, description="Send summaries when background work finishes.")
+    deliver_briefs: bool = Field(True, description="Send your Daily Brief to delivery chats.")
 
 
 # ----------------------------------------------------------------------------- know you (owner: memory agent)

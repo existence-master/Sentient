@@ -21,6 +21,7 @@ Creates:
 - notifications of every kind, including 4 proactive suggestions (approved, pending gmail, pending gcalendar,
   pending follow-up with a draft reply)
 - proactive preference rows, proactive source poll state and suggestion rows
+- the Daily Brief task (weekdays at 07:30) and today's brief
 - assistant.onboarding_complete = true
 """
 
@@ -188,6 +189,7 @@ async def seed() -> None:
         await seed_integrations(app)
         await seed_notifications(app)
         await seed_proactivity(app)
+        await seed_brief(app)
     finally:
         await app.stop()
     print(f"seeded {HOME}" + (" (kept existing database)" if KEEP_DB else ""))
@@ -367,6 +369,43 @@ async def seed_proactivity(app: SentientApp) -> None:
         " VALUES(?,?,?,?,?,?,?)",
         ("gcalendar", 1, ago(minutes=4), ago(minutes=4), None, 57, ago(minutes=4)),
     )
+
+
+def _brief_item(section: str, n: int, text: str, why: str, link: str | None = None, feedback: str | None = None) -> dict:
+    return {"id": f"{section}-demo{n}", "section": section, "text": text, "link": link, "why": why, "feedback": feedback}
+
+
+async def seed_brief(app: SentientApp) -> None:
+    """The Daily Brief task (a normal recurring task) and the brief it delivered this morning."""
+    state = await app.proactivity.brief.setup({})
+    items = [
+        _brief_item("calendar", 1, "09:30 Design critique with the Paperkite team", "On your calendar today",
+                    "https://calendar.google.com/calendar/r/day"),
+        _brief_item("calendar", 2, "13:00 Lunch with Ishaan (Indiranagar)", "On your calendar today",
+                    "https://calendar.google.com/calendar/r/day"),
+        _brief_item("calendar", 3, "16:00 Client review: Northwind onboarding flow", "On your calendar today",
+                    "https://calendar.google.com/calendar/r/day"),
+        _brief_item("email", 1, "Leela Menon is waiting for your reply about the revised quote", "No reply for 4 days",
+                    "https://mail.google.com/mail/u/0/#inbox", "up"),
+        _brief_item("email", 2, "Rohan Das asks for the final icon set by Thursday", "Unread and marked important in Gmail",
+                    "https://mail.google.com/mail/u/0/#inbox"),
+        _brief_item("tasks", 1, "Book a venue for the team offsite: plan waiting for your approval",
+                    "Waiting for you in Tasks", "/tasks"),
+        _brief_item("weather", 1, "Bengaluru: partly cloudy, 24°C now, high 29°C, 40% chance of rain",
+                    "Weather for Bengaluru, India, your city in Settings"),
+    ]
+    labels = {"calendar": "Calendar", "email": "Email", "tasks": "Tasks", "weather": "Weather"}
+    brief = {
+        "day": NOW.astimezone().date().isoformat(), "title": f"Your Daily Brief for {NOW.astimezone().strftime('%A')}",
+        "sections": [{"id": k, "label": v, "feedback": None} for k, v in labels.items()],
+        "items": items, "skipped": [], "expires_at": app.proactivity.brief._expires_at(NOW),
+    }
+    rows = await app.store.fetchall("SELECT id FROM notifications WHERE kind = 'brief'")
+    for row in rows:  # a re-run replaces this script's brief
+        await app.store.execute("DELETE FROM notifications WHERE id = ?", (row["id"],))
+    note = await app.notifications.create("brief", app.proactivity.brief.as_text(brief), title=brief["title"],
+                                          payload={"brief": brief, "status": "active", "task_id": state["task_id"]})
+    await backdate(app, note, ago(minutes=50))
 
 
 if __name__ == "__main__":
