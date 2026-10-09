@@ -234,6 +234,7 @@ class Budget:
     max_cost_usd: float = 0.0
     tokens: int = 0
     cost_usd: float = 0.0
+    steps: int = 0  # model calls made under this budget (task runs carry it across loops and pauses)
 
     def add(self, model: str, usage: dict, cost: float | None) -> None:
         if is_local_model(model or ""):
@@ -242,14 +243,23 @@ class Budget:
         if cost:
             self.cost_usd += cost
 
+    def over(self) -> str | None:
+        """Which limit is reached: ``"tokens"``, ``"cost_usd"`` or None."""
+        if self.max_tokens and self.tokens >= self.max_tokens:
+            return "tokens"
+        if self.max_cost_usd and self.cost_usd >= self.max_cost_usd:
+            return "cost_usd"
+        return None
+
     def exceeded(self) -> str | None:
         """Plain words for the user when a limit is reached, else None."""
-        if self.max_tokens and self.tokens >= self.max_tokens:
+        kind = self.over()
+        if kind == "tokens":
             return (
                 f"Stopped after using {self.tokens:,} tokens without finishing. "
                 f"The limit for one run is {self.max_tokens:,}."
             )
-        if self.max_cost_usd and self.cost_usd >= self.max_cost_usd:
+        if kind == "cost_usd":
             return (
                 f"Stopped after spending about ${self.cost_usd:.2f} on the model without finishing. "
                 f"The limit for one run is ${self.max_cost_usd:.2f}."
@@ -448,6 +458,8 @@ class Agent:
                 result.text = text_acc
                 result.messages = messages
                 return
+            if budget is not None:
+                budget.steps += 1
             if steer is not None:
                 for text in steer.take():
                     async for e in self._interject(text, messages, persist, result, ev):

@@ -9,14 +9,16 @@ service parks it as ``waiting_for_user`` until the answer arrives (``tasks/ask.p
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 from typing import TYPE_CHECKING, Any
 
 from sentient.agent.loop import Budget, LoopResult, history_to_openai
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent
-from sentient.tasks import ask
+from sentient.tasks import ask, limits
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
     CORE_HELPER_PLUGINS,
@@ -36,9 +38,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 log = logging.getLogger(__name__)
 
-# Literal fallback text Agent.run_loop leaves when it runs out of rounds.
-STEP_LIMIT_TEXT = "I reached the step limit before finishing. Tell me how to continue."
-LIMITS_HINT = "The limits for one run are in Settings > Tasks."
 MAX_PROGRESS_RESULT_CHARS = 6000
 # Writing skills is the evolution reviewer's job; inside a run it only distracts small models.
 EXECUTOR_EXCLUDED_TOOLS = {"skill_save"}
@@ -70,7 +69,7 @@ class RunFailed(RuntimeError):
 
 
 def run_budget(config: Any) -> Budget:
-    """The token and cost limits of one task run (``tasks.max_tokens_per_run``, ``tasks.max_cost_per_run_usd``)."""
+    """The token and cost limits of one swarm run (``tasks.max_tokens_per_run``, ``tasks.max_cost_per_run_usd``)."""
     return Budget(max_tokens=config.tasks.max_tokens_per_run, max_cost_usd=config.tasks.max_cost_per_run_usd)
 
 
@@ -224,11 +223,13 @@ async def execute_single(
     svc: TaskService, task: dict, run: dict, *, resume: bool = False, answered: bool = False
 ) -> LoopResult:
     """Run (or continue) one task run. ``answered``: the checkpoint already holds the user's answer to
-    ``ask_user``, so it continues without the restart note. Raises ``RunPaused`` when the run asks a question."""
+    ``ask_user`` (or to a limit question), so it continues without the restart note. Raises ``RunPaused``
+    when the run asks a question or reaches one of its limits (``tasks/limits.py``)."""
     app = svc.app
     assert app.agent is not None
-    max_rounds = app.config.tasks.max_tool_rounds
     task_id, run_id = task["id"], run["id"]
+    state = limits.load(run, app.config)
+    started = time.monotonic()
     plan = run.get("plan") or task.get("plan") or []
     requested = [str(s.get("tool", "")) for s in plan if isinstance(s, dict)]
     tool_names, tool_map, missing = select_tools(app.registry, requested)
@@ -254,52 +255,79 @@ async def execute_single(
     if app.registry.get(ask.ASK_TOOL) is not None:
         tool_names = [*tool_names, ask.ASK_TOOL]
     result = LoopResult()
-    budget = run_budget(app.config)  # shared by the continue nudges below: one run, one limit
+    used, limit = state["used"], state["max"]
+    # one budget for the whole run (continue nudges included), carried across pauses in ``state``
+    budget = Budget(
+        max_tokens=int(limit["tokens"]), max_cost_usd=float(limit["cost_usd"]),
+        tokens=int(used["tokens"]), cost_usd=float(used["cost_usd"]), steps=int(used["steps"]),
+    )
     mapper = ProgressMapper(svc, task_id, run_id)
-    rounds = max_rounds
-    for attempt in range(MAX_CONTINUE_NUDGES + 1):
-        async for event in app.agent.run_loop(
-            messages,
-            ctx,
-            result=result,
-            role="executor",
-            model=task.get("model") or None,
-            tool_names=tool_names,
-            max_rounds=rounds,
-            use_approvals=False,  # v2: approving the plan is the approval
-            source="task",
-            stop=lambda: bool(asking.get("question")),
-            budget=budget,
-        ):
-            await mapper.handle(event, messages)
-        await mapper.flush_thought()
-        if result.paused:
-            break
-        announced = (result.text or "").strip()
-        if attempt >= MAX_CONTINUE_NUDGES or result.error or result.hit_step_limit or not announces_unfinished_work(announced):
-            break
-        # small local models sometimes stop after announcing the next step: ask once more to actually do it
-        messages.append({"role": "assistant", "content": announced})
-        messages.append({"role": "user", "content": CONTINUE_NUDGE})
-        await svc.progress(task_id, run_id, {
-            "type": "info",
-            "content": "The executor described its next step without doing it, so I asked it to carry on.",
-        })
-        rounds = max(4, max_rounds // 2)
-    await svc.repo.update_run(run_id, {"messages": messages})
+    remaining_s = limit["seconds"] - used["seconds"]
+    timer = asyncio.timeout(max(remaining_s, 0))  # active time only: waiting for an answer is not counted
+    try:
+        async with timer:
+            for attempt in range(MAX_CONTINUE_NUDGES + 1):
+                rounds = int(limit["steps"]) - budget.steps
+                if rounds <= 0:  # every step of this run is used
+                    result.hit_step_limit = True
+                    break
+                async for event in app.agent.run_loop(
+                    messages,
+                    ctx,
+                    result=result,
+                    role="executor",
+                    model=task.get("model") or None,
+                    tool_names=tool_names,
+                    max_rounds=rounds,
+                    use_approvals=False,  # v2: approving the plan is the approval
+                    source="task",
+                    stop=lambda: bool(asking.get("question")),
+                    budget=budget,
+                ):
+                    await mapper.handle(event, messages)
+                await mapper.flush_thought()
+                if result.paused:
+                    break
+                announced = (result.text or "").strip()
+                if (
+                    attempt >= MAX_CONTINUE_NUDGES or result.error or result.hit_step_limit
+                    or not announces_unfinished_work(announced)
+                ):
+                    break
+                # small local models sometimes stop after announcing the next step: ask once more to actually do it
+                messages.append({"role": "assistant", "content": announced})
+                messages.append({"role": "user", "content": CONTINUE_NUDGE})
+                await svc.progress(task_id, run_id, {
+                    "type": "info",
+                    "content": "The executor described its next step without doing it, so I asked it to carry on.",
+                })
+    except TimeoutError:
+        if not timer.expired():
+            raise
+    used.update(
+        steps=budget.steps, tokens=budget.tokens, cost_usd=budget.cost_usd,
+        seconds=used["seconds"] + (time.monotonic() - started),
+    )
+    await svc.repo.update_run(run_id, {"messages": messages, "limits": state})
 
     if result.stopped_by_rule:  # an "ask" rule stopped the run; say which and how to change it (ADR 0016)
         raise RunFailed(result.stopped_by_rule)
     if result.stopped_by_repeat:  # the loop breaker: the same call kept getting the same result
         raise RunFailed(f"{result.stopped_by_repeat} Edit the task to add what it needs, or retry it.")
-    if result.stopped_by_budget:
-        raise RunFailed(f"{result.stopped_by_budget} {LIMITS_HINT}")
     if result.paused:
         raise RunPaused({
             "question": asking["question"],
             "options": asking.get("options") or [],
             "tool_call_id": asking.get("tool_call_id") or ask.last_call_id(messages),
         })
+    reached = (
+        "seconds" if timer.expired()
+        else budget.over() if result.stopped_by_budget
+        else "steps" if result.hit_step_limit
+        else None
+    )
+    if reached:  # a limit: ask whether to keep going (tasks/limits.py)
+        raise RunPaused(limits.pending(state, reached))
     if result.error:
         raise RunFailed(f"Executor agent failed: {result.error}")
     final = (result.text or "").strip()
@@ -308,8 +336,6 @@ async def execute_single(
             "Agent finished execution without providing a final answer as required by its instructions. "
             "The task may be incomplete."
         )
-    if final == STEP_LIMIT_TEXT:
-        raise RunFailed(f"Stopped after {max_rounds} steps without finishing. {LIMITS_HINT}")
     await svc.progress(task_id, run_id, {"type": "final_answer", "content": final})
     return result
 

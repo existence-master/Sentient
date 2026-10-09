@@ -235,15 +235,20 @@ class MemoryConfig(BaseModel):
 class TasksConfig(BaseModel):
     tick_seconds: int = Field(30, ge=5, description="Scheduler poll interval.")
     max_concurrent_runs: int = Field(2, ge=1, le=16, description="Task runs allowed at the same time.")
-    run_timeout_minutes: int = Field(30, ge=1, description="A single run is stopped after this long.")
-    max_tool_rounds: int = Field(40, ge=1, le=200, description="Max tool-call rounds per task run.")
+    run_timeout_minutes: int = Field(
+        30, ge=1, description="Minutes of work after which a run asks whether to keep going (time spent waiting for "
+        "your answer doesn't count). A swarm is stopped instead.",
+    )
+    max_tool_rounds: int = Field(
+        40, ge=1, le=200, description="Steps after which a run asks whether to keep going (a swarm worker stops)."
+    )
     max_tokens_per_run: int = Field(
-        2_000_000, ge=0, description="A run is stopped after using this many tokens on a cloud model "
-        "(local models are not counted). A swarm shares one limit. 0 means no limit.",
+        2_000_000, ge=0, description="Tokens on a cloud model after which a run asks whether to keep going "
+        "(local models are not counted). A swarm shares one limit and stops. 0 means no limit.",
     )
     max_cost_per_run_usd: float = Field(
-        5.0, ge=0, description="A run is stopped after spending about this many US dollars on a cloud model, "
-        "when the model's price is known. A swarm shares one limit. 0 means no limit.",
+        5.0, ge=0, description="US dollars spent on a cloud model after which a run asks whether to keep going, "
+        "when the model's price is known. A swarm shares one limit and stops. 0 means no limit.",
     )
     require_plan_approval: bool = Field(True, description="Plans wait for your approval before running.")
     swarm_max_agents: int = Field(5, ge=1, le=50, description="Parallel sub-agents per swarm task.")

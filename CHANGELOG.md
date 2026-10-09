@@ -19,9 +19,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Sentient stops when it keeps repeating itself: the same tool with the same details giving the same result three
   times. In chat it is first asked to try something else, then it tells you it stopped; a task fails with a clear
   reason and the usual "Task failed" notification. Settings > Approvals & safety.
-- Task runs and helpers now have token and spending limits on cloud models (2,000,000 tokens and about $5 per run,
-  1,000,000 tokens and about $2 per helper by default), alongside the step and time limits. Reaching any limit fails
-  the run with a plain message such as "Stopped after 40 steps without finishing."
+- When a task reaches one of its limits (40 steps, 30 minutes of work, and on cloud models 2,000,000 tokens or about
+  $5 by default) it pauses and asks: "This task has used 40 steps and isn't finished yet. Keep going for another 40,
+  or stop here?" Keep going raises that limit for this run; Stop here ends it with a plain message. Time spent waiting
+  for your answer doesn't count. Helpers have their own token and spending limits too (1,000,000 tokens and about $2).
 
 ### Security
 - Purchases now ask even when approvals are switched off, and code Sentient writes can never make one. A tool set

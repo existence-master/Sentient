@@ -211,7 +211,7 @@ task-creation prompt still only produces daily/weekly (v2), the planner uses `in
  "error": null, "retry_of": "run id this run retries|null",
  "pending_question": {"question": "Which flight should I book?", "options": ["IndiGo 07:10", "Air India 09:40"], "asked_at": "..."} | null}
 ```
-`pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question" below).
+`pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question" and "Limits on a run" below).
 Already approved one-call tasks (a follow-up's Send, section 6) carry `original_context.fixed_call = {tool, arguments,
 done_text}` and a one-step `plan`. They are created `pending`, start a run at once with no planner and no executor model,
 and the run makes exactly that call with exactly those arguments (`tool_call`, `tool_result`, `final_answer` updates). A
@@ -295,24 +295,36 @@ Behaviour notes:
   return to `waiting_for_user` when those runs end.
 
 ### Limits on a run
-Every task run has limits, checked deterministically (no model decides). When one is reached the run ends with
-status `error`, a plain `error` on the run, an `error` progress update and the usual `Task failed` notification
-(`payload.event: "run_failed"`). Retry continues from the checkpoint as for any failed run.
+Every task run has limits, checked deterministically (no model decides). A single run that reaches its step, time,
+token or cost limit **pauses and asks**, using the same `waiting_for_user` machinery as `ask_user` above: the run's
+`pending_question` is the question below with `options: ["Keep going", "Stop here"]`, and the same
+`"<task name> needs your answer"` notification (`payload.event: "question"`) is sent. The run's transcript is kept.
 
-| Limit | Config (`tasks.*`) | Default | Error |
-|---|---|---|---|
-| Steps (tool rounds) | `max_tool_rounds` | 40 | `Stopped after 40 steps without finishing. The limits for one run are in Settings > Tasks.` |
-| Wall time | `run_timeout_minutes` | 30 | `Stopped after 30 minutes without finishing. The limits for one run are in Settings > Tasks.` |
-| Tokens on cloud models | `max_tokens_per_run` | 2000000 | `Stopped after using 2,000,400 tokens without finishing. The limit for one run is 2,000,000. ...` |
-| Spend on cloud models | `max_cost_per_run_usd` | 5.0 | `Stopped after spending about $5.03 on the model without finishing. The limit for one run is $5.00. ...` |
-| Repeated calls | `tools.repeated_call_limit` | 3 | `Stopped because the same step kept repeating: file_read ran 3 times with the same details and got the same result each time. Edit the task to add what it needs, or retry it.` |
+| Limit | Config (`tasks.*`) | Default | Question | Error after "Stop here" |
+|---|---|---|---|---|
+| Steps (model rounds) | `max_tool_rounds` | 40 | `This task has used 40 steps and isn't finished yet. Keep going for another 40 steps, or stop here?` | `Stopped after 40 steps without finishing. The limits for one run are in Settings > Tasks.` |
+| Active time | `run_timeout_minutes` | 30 | `This task has been working for 30 minutes and isn't finished yet. Keep going for another 30 minutes, or stop here?` | `Stopped after 30 minutes without finishing. ...` |
+| Tokens on cloud models | `max_tokens_per_run` | 2000000 | `This task has used 2,000,400 tokens of your 2,000,000 token limit and isn't finished yet. Keep going for another 2,000,000 tokens, or stop here?` | `Stopped after using 2,000,400 tokens without finishing. The limit for one run is 2,000,000 tokens. ...` |
+| Spend on cloud models | `max_cost_per_run_usd` | 5.0 | `This task has used $5.02 of your $5.00 limit and isn't finished yet. Keep going for another $5.00, or stop here?` | `Stopped after spending about $5.02 on the model without finishing. The limit for one run is $5.00. ...` |
 
-- Tokens and cost are checked before each model call, so a run stops at most one call past its limit. Models with a
-  local prefix (`ollama`, `ollama_chat`, `lm_studio`, `llamafile`, `vllm`, `hosted_vllm`) are not counted. Cost uses
-  LiteLLM's price list and only adds up for models whose price it knows. `0` turns a token or cost limit off.
-- All workers of one swarm run share one token and cost limit; a worker that hits it (or loops) ends with an error and
-  the swarm finishes `completed_with_errors`.
-- The counts start again when a run continues after an answer or a restart.
+- Answering `Keep going` (any case, surrounding spaces and a final `.`/`!` ignored) raises that limit by its original
+  amount for this run only and continues from the transcript (no restart note). Any other answer, including
+  `Stop here`, fails the run: status `error` with the message above, an `error` progress update and the usual
+  `Task failed` notification (`payload.event: "run_failed"`). Cancel works as for any waiting run.
+- The run keeps `limits: {base, max, used}` (each `{steps, seconds, tokens, cost_usd}`) in `task_runs.limits`, saved
+  whenever the run pauses or ends and when a limit is raised, so used amounts and raised limits carry across questions and restarts.
+  `pending_question` also stores `limit` (`steps`|`seconds`|`tokens`|`cost_usd`) and `stop_error`; the API shows only
+  `{question, options, asked_at}`.
+- Time counts only while the run is working, never while it waits for an answer. Steps include the executor's
+  "carry on" nudges. Tokens and cost are checked before each model call, so a run goes at most one call past its
+  limit. Models with a local prefix (`ollama`, `ollama_chat`, `lm_studio`, `llamafile`, `vllm`, `hosted_vllm`) are not
+  counted. Cost uses LiteLLM's price list and only adds up for models whose price it knows. `0` turns a token or cost
+  limit off. A retry starts with fresh limits.
+- Repeated calls (`tools.repeated_call_limit`, default 3) never ask: the run fails at once with
+  `Stopped because the same step kept repeating: file_read ran 3 times with the same details and got the same result each time. Edit the task to add what it needs, or retry it.`
+- Swarm runs and fixed-call runs do not ask. A swarm's workers share one token and cost limit and stop with an error
+  when it runs out (the swarm finishes `completed_with_errors`); `run_timeout_minutes` stops the whole swarm or
+  fixed call with `Stopped after 30 minutes without finishing. ...`.
 
 ---
 
