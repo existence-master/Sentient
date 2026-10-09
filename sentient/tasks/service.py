@@ -12,6 +12,7 @@ Status flow (single tasks)::
     active|pending --scheduler/trigger/run-now--> processing
     processing -> recurring/triggered: active (next run computed)
                -> once: completed | error | cancelled
+    processing --ask_user--> waiting_for_user --answer--> processing   (the run pauses; survives restarts)
     decline -> declined, archive -> archived
 
 Swarm tasks skip approval (v2): planning -> processing -> completed | completed_with_errors | error.
@@ -28,8 +29,8 @@ from typing import Any
 
 from sentient.llm.provider import ProviderError
 from sentient.services import Service
-from sentient.tasks import executor, scripts, swarm
-from sentient.tasks.executor import RunFailed
+from sentient.tasks import ask, executor, scripts, swarm
+from sentient.tasks.executor import RunFailed, RunPaused
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
     EXCLUDED_PLUGINS,
@@ -54,7 +55,7 @@ from sentient.tools.base import Risk
 log = logging.getLogger(__name__)
 
 STATUSES = {
-    "planning", "clarification_pending", "approval_pending", "pending", "active", "processing",
+    "planning", "clarification_pending", "approval_pending", "pending", "active", "processing", "waiting_for_user",
     "completed", "completed_with_errors", "error", "declined", "cancelled", "archived",
 }
 UPDATABLE_FIELDS = {
@@ -66,6 +67,8 @@ SANDBOX_RESULT = {
 }
 PROVIDER_DOWN = "Sorry, the AI model is unavailable right now. Check Settings > Models and try again."
 MAX_RESUMES = 2
+BUSY = ("processing", "waiting_for_user")
+WAITING_CONFLICT = "This task is waiting for your answer. Answer the question or cancel the run first."
 _KEEP: Any = object()
 
 
@@ -153,6 +156,8 @@ class TaskService(Service):
 
         if not any(p.id == TasksPlugin.id for p in self.app.registry.plugins()):
             self.app.registry.register(TasksPlugin())
+        if not any(p.id == ask.PLUGIN_ID for p in self.app.registry.plugins()):
+            self.app.registry.register(ask.TaskQuestionsPlugin())
         # source.items is event-driven (feeds, polls, webhooks), so it is consumed even without timers.
         # Subscribe synchronously here so an event published right after start() is never missed.
         self._bus_subscription = self.app.bus.subscribe()
@@ -338,7 +343,7 @@ class TaskService(Service):
                 changes.update(task_type="script", script=script)
                 code_changed = (previous or {}).get("code") != script["code"]
                 if reapprove_script and code_changed and self.app.config.tasks.require_plan_approval:
-                    if task["status"] == "processing":
+                    if task["status"] in BUSY:
                         raise TaskConflict("This task is running right now. Try again when the run has finished.")
                     if task["status"] not in {"planning", "clarification_pending", "declined", "archived"}:
                         changes.update(status="approval_pending", next_execution_at=None)
@@ -410,6 +415,8 @@ class TaskService(Service):
         task = await self._require(task_id)
         if task.get("task_type") == "swarm":
             raise TaskConflict("Swarm tasks start automatically and do not need approval.")
+        if task["status"] == "waiting_for_user":
+            raise TaskConflict(WAITING_CONFLICT)
         if task["status"] == "processing":
             raise TaskConflict("This task is already running.")
         is_script = task.get("task_type") == "script"
@@ -497,8 +504,11 @@ class TaskService(Service):
             return await self.get_and_publish(task_id)
         if not task.get("plan"):
             raise TaskConflict("Task has no plan to run.")
-        if kind not in {"recurring", "triggered"} and await self.repo.processing_runs(task_id):
-            raise TaskConflict("This task is already running.")
+        if kind not in {"recurring", "triggered"}:
+            if await self.repo.waiting_runs(task_id):
+                raise TaskConflict(WAITING_CONFLICT)
+            if await self.repo.processing_runs(task_id):
+                raise TaskConflict("This task is already running.")
         await self._start_run(task, next_execution_at=_KEEP if kind == "recurring" else None)
         return await self.get_and_publish(task_id)
 
@@ -508,6 +518,8 @@ class TaskService(Service):
         if not message:
             raise ValueError("A message is required.")
         task = await self._require(task_id)
+        if task["status"] == "waiting_for_user":
+            raise TaskConflict(WAITING_CONFLICT)
         if task["status"] == "processing":
             raise TaskConflict("This task is running right now. Cancel the run before requesting changes.")
         if task.get("task_type") == "swarm":
@@ -549,13 +561,19 @@ class TaskService(Service):
         run = await self.repo.get_run(run_id)
         if run is None or run["task_id"] != task_id:
             raise TaskNotFound(run_id)
-        if run["status"] != "processing":
+        if run["status"] not in BUSY:
             raise TaskConflict("This run is not in progress.")
         t = self._runs.get(run_id)
         if t is not None and not t.done():
             self._cancel_requested.add(run_id)
             t.cancel()
-        if await self.repo.finish_run(run_id, "cancelled", error=None, now=self.now_iso()):
+        if await self.repo.finish_run(run_id, "cancelled", error=None, now=self.now_iso(), from_statuses=BUSY):
+            if run["status"] == "waiting_for_user":
+                # the question is withdrawn; a retry sees that the user cancelled instead of answering
+                call_id = (run.get("pending_question") or {}).get("tool_call_id")
+                messages = ask.fill_result(run.get("messages") or [], call_id, ask.cancelled_content())
+                await self.repo.update_run(run_id, {"messages": messages})
+                await self._resolve_question_notifications(run_id, "cancelled")
             await self.progress(task_id, run_id, {"type": "info", "content": "Run cancelled by user."})
             await self._after_run(task_id, "cancelled", None)
             await self._publish_run_finished(task_id, run_id, "cancelled")
@@ -578,8 +596,11 @@ class TaskService(Service):
         if task["status"] in {"planning", "clarification_pending"}:
             raise TaskConflict("This task is still being planned.")
         kind = (task.get("schedule") or {}).get("type")
-        if kind not in {"recurring", "triggered"} and await self.repo.processing_runs(task_id):
-            raise TaskConflict("This task is already running.")
+        if kind not in {"recurring", "triggered"}:
+            if await self.repo.waiting_runs(task_id):
+                raise TaskConflict(WAITING_CONFLICT)
+            if await self.repo.processing_runs(task_id):
+                raise TaskConflict("This task is already running.")
         now = self.now_iso()
         new_run_id = await self.repo.insert_run(
             task_id, now=now, plan=run.get("plan") or task.get("plan") or [], trigger_data=run.get("trigger_data")
@@ -593,6 +614,47 @@ class TaskService(Service):
         await self._set(task_id, {"status": "processing", "last_execution_at": now, "error": None})
         self._dispatch(task_id, new_run_id, resume=bool(checkpoint))
         return await self.get_and_publish(task_id)
+
+    async def answer_question(self, task_id: str, run_id: str, answer: str) -> dict:
+        """Resume a run that is ``waiting_for_user``: the answer becomes the result of its ``ask_user`` call."""
+        text = str(answer or "").strip()[: ask.MAX_ANSWER_CHARS]
+        if not text:
+            raise ValueError("An answer is required.")
+        await self._require(task_id)
+        run = await self.repo.get_run(run_id)
+        if run is None or run["task_id"] != task_id:
+            raise TaskNotFound(run_id)
+        if run["status"] != "waiting_for_user":
+            raise TaskConflict("This run is not waiting for an answer.")
+        call_id = (run.get("pending_question") or {}).get("tool_call_id")
+        messages = ask.fill_result(run.get("messages") or [], call_id, ask.answer_content(text))
+        if not await self.repo.resume_run(run_id, messages):
+            raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
+        await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
+        await self._set(task_id, {"status": "processing", "error": None})
+        await self._resolve_question_notifications(run_id, "answered", answer=text)
+        self._dispatch(task_id, run_id, resume=True, answered=True)
+        return await self.get_and_publish(task_id)
+
+    async def waiting_questions(self) -> list[dict]:
+        """Every question a run is waiting on, oldest first: ``[{task_id, task_name, run_id, question, options, asked_at}]``."""
+        out: list[dict] = []
+        for run in await self.repo.waiting_runs():
+            question = run.get("pending_question") or {}
+            if not question.get("question"):
+                continue
+            task = await self.repo.get_task(run["task_id"])
+            if task is None:
+                continue
+            out.append({
+                "task_id": task["id"],
+                "task_name": task.get("name") or "Untitled task",
+                "run_id": run["id"],
+                "question": question["question"],
+                "options": list(question.get("options") or []),
+                "asked_at": question.get("asked_at"),
+            })
+        return out
 
     async def run_events(self, task_id: str, run_id: str) -> list[dict]:
         run = await self.repo.get_run(run_id)
@@ -616,7 +678,7 @@ class TaskService(Service):
         if source == "webhook" and isinstance(event_data.get("body"), dict):
             match_data = {**event_data["body"], **event_data}  # filters may name body fields directly
         run_ids: list[str] = []
-        for task in await self.repo.list_tasks("enabled = 1 AND status IN ('active', 'processing')"):
+        for task in await self.repo.list_tasks("enabled = 1 AND status IN ('active', 'processing', 'waiting_for_user')"):
             schedule = task.get("schedule") or {}
             if schedule.get("type") != "triggered" or str(schedule.get("source") or "").lower() != source:
                 continue
@@ -1056,17 +1118,19 @@ class TaskService(Service):
         self._dispatch(task["id"], run_id)
         return run_id
 
-    def _dispatch(self, task_id: str, run_id: str, *, resume: bool = False) -> None:
-        t = asyncio.create_task(self._execute(task_id, run_id, resume=resume), name=f"tasks:run:{run_id}")
+    def _dispatch(self, task_id: str, run_id: str, *, resume: bool = False, answered: bool = False) -> None:
+        t = asyncio.create_task(
+            self._execute(task_id, run_id, resume=resume, answered=answered), name=f"tasks:run:{run_id}"
+        )
         self._runs[run_id] = t
         t.add_done_callback(lambda _t, rid=run_id: self._runs.pop(rid, None))
 
-    async def _execute(self, task_id: str, run_id: str, *, resume: bool = False) -> None:
+    async def _execute(self, task_id: str, run_id: str, *, resume: bool = False, answered: bool = False) -> None:
         if self._sem is None:
             self._sem = asyncio.Semaphore(self.app.config.tasks.max_concurrent_runs)
         try:
             async with self._sem:
-                await self._execute_locked(task_id, run_id, resume=resume)
+                await self._execute_locked(task_id, run_id, resume=resume, answered=answered)
         except asyncio.CancelledError:
             if run_id not in self._cancel_requested:
                 raise  # shutdown: leave the run 'processing' so it resumes on next start
@@ -1081,7 +1145,7 @@ class TaskService(Service):
         except Exception:
             log.exception("task run %s crashed", run_id)
 
-    async def _execute_locked(self, task_id: str, run_id: str, *, resume: bool) -> None:
+    async def _execute_locked(self, task_id: str, run_id: str, *, resume: bool, answered: bool = False) -> None:
         run = await self.repo.get_run(run_id)
         task = await self.repo.get_task(task_id)
         if run is None or task is None or run["status"] != "processing":
@@ -1093,6 +1157,8 @@ class TaskService(Service):
                 "Retrying the failed run, continuing from where it stopped." if resume
                 else "Retrying the failed run from the beginning."
             )
+        if answered:
+            opening = "Got your answer. Carrying on with the task."
         await self.progress(task_id, run_id, {"type": "info", "content": opening})
         await self.publish(task_id)
         status, error = "completed", None
@@ -1103,7 +1169,10 @@ class TaskService(Service):
                 if task.get("task_type") == "swarm":
                     status, aggregated = await swarm.execute_swarm(self, task, run)
                 else:
-                    loop_result = await executor.execute_single(self, task, run, resume=resume)
+                    loop_result = await executor.execute_single(self, task, run, resume=resume, answered=answered)
+        except RunPaused as paused:
+            await self._pause_run(task_id, run_id, paused.question)
+            return
         except TimeoutError:
             status, error = "error", f"The run was stopped after {cfg.run_timeout_minutes} minutes (tasks.run_timeout_minutes)."
         except RunFailed as exc:
@@ -1151,6 +1220,43 @@ class TaskService(Service):
                 task, f"Task '{name}' has finished with status: error.{detail}", "Task failed", "run_failed",
                 {"run_id": run_id},
             )
+
+    async def _pause_run(self, task_id: str, run_id: str, question: dict) -> None:
+        """Park a run that called ``ask_user``: store the question, flag the task, tell the user."""
+        asked = {**question, "asked_at": self.now_iso()}
+        if not await self.repo.pause_run(run_id, asked):
+            return  # cancelled while the last round was running
+        text = str(question.get("question") or "")
+        await self.progress(task_id, run_id, {"type": "info", "content": f"Waiting for your answer: {text}"})
+        await self._after_run(task_id, "waiting_for_user", None)
+        task = await self.repo.get_task(task_id)
+        await self.publish(task_id)
+        if task is None:
+            return
+        name = task.get("name") or "Untitled task"
+        short = name[:60] + ("..." if len(name) > 60 else "")
+        await self._notify(
+            task, text, f"{short} needs your answer", "question",
+            {"run_id": run_id, "question": text, "options": list(question.get("options") or [])},
+        )
+
+    async def _resolve_question_notifications(self, run_id: str, status: str, *, answer: str | None = None) -> None:
+        """Mark the 'needs your answer' notification of a run as answered or cancelled (channels settle their buttons)."""
+        try:
+            for note in await self.app.notifications.list(limit=1000):
+                payload = note.get("payload") or {}
+                if (
+                    note.get("kind") == "task"
+                    and payload.get("event") == "question"
+                    and payload.get("run_id") == run_id
+                    and not payload.get("status")
+                ):
+                    extra = {"answer": answer} if answer is not None else {}
+                    await self.app.notifications.update_payload(note["id"], {**payload, "status": status, **extra})
+                    if not note.get("read"):
+                        await self.app.notifications.mark_read(note["id"])
+        except Exception:
+            log.exception("could not resolve question notifications for run %s", run_id)
 
     async def _publish_run_finished(self, task_id: str, run_id: str, status: str) -> None:
         """``task.run_finished`` for the self-improvement reviewer (docs/API.md section 10)."""
@@ -1325,9 +1431,13 @@ class TaskService(Service):
     async def _after_run(self, task_id: str, run_status: str, error: str | None) -> None:
         """Move the task out of 'processing' once no runs remain (v2 executor rescheduling)."""
         task = await self.repo.get_task(task_id)
-        if task is None or task["status"] != "processing":
+        if task is None or task["status"] not in BUSY:
             return
         if await self.repo.processing_runs(task_id):
+            return
+        if await self.repo.waiting_runs(task_id):  # a run still waits for the user's answer
+            if task["status"] != "waiting_for_user":
+                await self._set(task_id, {"status": "waiting_for_user"})
             return
         schedule = task.get("schedule") or {}
         kind = schedule.get("type")

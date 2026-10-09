@@ -202,6 +202,7 @@ class LoopResult:
     tool_errors: list[dict] = field(default_factory=list)   # [{name, error}] (declined approvals excluded)
     skills_viewed: list[str] = field(default_factory=list)  # names passed to skill_view
     interjections: list[str] = field(default_factory=list)  # steer messages the model received
+    paused: bool = False  # ``stop`` ended the loop after a round of tool results (a task run asked the user)
     # set when an "ask" rule stopped an unattended run (also copied to ``error``); plain words for the user
     stopped_by_rule: str | None = None
 
@@ -359,13 +360,16 @@ class Agent:
         ev: dict | None = None,
         steer: SteerQueue | None = None,
         policy: PolicyFn | None = None,
+        stop: Callable[[], bool] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Stream a tool-calling conversation. Mutates ``messages`` and fills ``result``.
 
         ``persist(role, content, **fields)`` is called for intermediate assistant
         tool-call messages, tool results and steer messages (not for the final answer).
         ``steer`` feeds user messages in at round boundaries. ``policy`` may refuse a call
-        before it runs (subagents use it). Yields everything except ``Done``.
+        before it runs (subagents use it). ``stop()`` is checked after each round of tool
+        results; when it returns True the loop ends without another model call and sets
+        ``result.paused`` (task runs use it to wait for the user's answer). Yields everything except ``Done``.
         """
         ev = ev or {}
         tools = self.registry.openai_schemas(tool_names) or None
@@ -486,11 +490,16 @@ class Agent:
                 for p in group:
                     async for e in self._record(p, messages, persist, result, ev):
                         yield e
-            stop = next((p for p in plans if p.rule_stop), None)
-            if stop is not None:  # an "ask" rule and nobody to ask: end the run and say why
-                assert stop.preset is not None
-                result.stopped_by_rule = result.error = _error_text(stop.preset[0])
+            ruled = next((p for p in plans if p.rule_stop), None)
+            if ruled is not None:  # an "ask" rule and nobody to ask: end the run and say why
+                assert ruled.preset is not None
+                result.stopped_by_rule = result.error = _error_text(ruled.preset[0])
                 result.text = text_acc
+                result.messages = messages
+                return
+            if stop is not None and stop():
+                result.paused = True
+                result.text = ""
                 result.messages = messages
                 return
 

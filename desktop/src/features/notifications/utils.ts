@@ -39,6 +39,7 @@ export function matchesFilter(n: Notification, f: FeedFilter): boolean {
 export function needsAction(n: Notification): boolean {
   if (n.kind === 'proactive') return (n.payload?.status ?? 'pending') === 'pending'
   if (n.kind === 'approval') return !n.payload?.status
+  if (n.kind === 'task' && n.payload?.event === 'question') return !n.payload?.status
   return false
 }
 

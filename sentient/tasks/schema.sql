@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     id                    TEXT PRIMARY KEY,
     name                  TEXT NOT NULL,
     description           TEXT,
-    status                TEXT NOT NULL,              -- planning | clarification_pending | approval_pending | pending | active | processing | completed | completed_with_errors | error | declined | cancelled | archived
+    status                TEXT NOT NULL,              -- planning | clarification_pending | approval_pending | pending | active | processing | waiting_for_user | completed | completed_with_errors | error | declined | cancelled | archived
     priority              INTEGER NOT NULL DEFAULT 1, -- 0 high, 1 medium, 2 low
     task_type             TEXT NOT NULL DEFAULT 'single',   -- single | swarm | script
     schedule              TEXT,                       -- JSON: {type: once|recurring|triggered, ...}
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS task_runs (
     id            TEXT PRIMARY KEY,
     task_id       TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    status        TEXT NOT NULL,                  -- processing | completed | completed_with_errors | error | cancelled
+    status        TEXT NOT NULL,                  -- processing | waiting_for_user | completed | completed_with_errors | error | cancelled
     plan          TEXT,                           -- JSON plan snapshot (swarm: worker configurations)
     trigger_data  TEXT,                           -- JSON event that started this run (triggered tasks)
     messages      TEXT,                           -- JSON checkpoint of the agent transcript (resumable)
@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     error         TEXT,
     resume_count  INTEGER NOT NULL DEFAULT 0,
     retry_of      TEXT,                           -- run id this run retries (continues from its transcript)
+    pending_question TEXT,                        -- JSON {question, options, tool_call_id, asked_at} while waiting_for_user
     started_at    TEXT,
     finished_at   TEXT,
     created_at    TEXT NOT NULL

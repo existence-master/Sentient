@@ -457,6 +457,9 @@ export const api = {
     answerClarifications: (id: string, answers: ClarificationAnswer[]) =>
       http.post<Task>(`/api/tasks/${enc(id)}/clarifications`, { answers }),
     cancelRun: (id: string, runId: string) => http.post<Task>(`/api/tasks/${enc(id)}/runs/${enc(runId)}/cancel`),
+    /** Answer the question a `waiting_for_user` run asked; the run carries on. 409 when it is not waiting, 400 when empty. */
+    answerQuestion: (id: string, runId: string, answer: string) =>
+      http.post<Task>(`/api/tasks/${enc(id)}/runs/${enc(runId)}/answer`, { answer }),
     runEvents: (id: string, runId: string) =>
       http.get<ProgressUpdate[]>(`/api/tasks/${enc(id)}/runs/${enc(runId)}/events`),
     /** Failed or cancelled run of a non-swarm task: a new run with `retry_of`. 409 otherwise. */

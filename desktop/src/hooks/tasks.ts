@@ -59,6 +59,10 @@ export function useTaskActions() {
       onSuccess
     }),
     cancelRun: useMutation({ mutationFn: ({ id, runId }: { id: string; runId: string }) => api.tasks.cancelRun(id, runId), onSuccess }),
+    answerQuestion: useMutation({
+      mutationFn: ({ id, runId, answer }: { id: string; runId: string; answer: string }) => api.tasks.answerQuestion(id, runId, answer),
+      onSuccess
+    }),
     remove: useMutation({ mutationFn: (id: string) => api.tasks.delete(id), onSuccess: (_r, id) => removeTask(qc, id) })
   }
 }

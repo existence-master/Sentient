@@ -330,6 +330,8 @@ class DiscordChannel(Channel):
             else:
                 files.append(fetch)
         text = str(d.get("content") or "")
+        ref = d.get("message_reference") if isinstance(d.get("message_reference"), dict) else {}
+        reply_to = ref.get("message_id") or (d.get("referenced_message") or {}).get("id")
         self.spawn(self.handle_incoming(Incoming(
             chat_id=chat_id,
             label=str(author.get("global_name") or author.get("username") or chat_id),
@@ -337,6 +339,7 @@ class DiscordChannel(Channel):
             audio=audio,
             files=files,
             unsupported=not (text or audio or files),
+            reply_to=str(reply_to) if reply_to else None,
         )))
 
     def _fetcher(self, att: dict) -> FileFetcher:
