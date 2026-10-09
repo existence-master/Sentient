@@ -382,6 +382,19 @@ Item shapes. gmail: `{id, thread_id, from, sender_email, to, subject, snippet, b
 email_imap: the gmail shape plus `message_id` (`id` is the IMAP UID, `url` is null, `labels` are `INBOX` plus `UNREAD`/`STARRED`);
 gcalendar: `{id, summary, description, start, end, all_day, location, attendees, organizer_email, url, status, created, updated, meet_link}`.
 
+One-time codes and sign-in links in email. While `integrations.hide_one_time_codes` is on (the default), every gmail
+and email_imap item (tool results, polls, change feeds, IMAP push, follow-up threads) has one-time codes, verification
+and 2FA codes, magic sign-in links and password reset links in its `subject`, `snippet` and `body` replaced with
+`[one-time code hidden]`, `[sign-in link hidden]` or `[password reset link hidden]` before it leaves the plugin
+(`sentient/integrations/redact.py`). Detection is deterministic: a code needs a sign-in or verification cue nearby
+(one-time or OTP, verification, security, sign-in or login, 2FA, two-factor, authentication, passcode, "use this code
+to", "enter this code", "is your ... code", or a code alone on the line after such a cue) or a sign-in or reset subject
+or sender; a link must carry a token-like value and look like sign-in or reset (its path, the words before it, or the
+email's subject). Booking, order, ticket, reservation, PNR and reference codes are always kept, even when numeric, and
+an email whose subject is a booking or order (with no sign-in cue) keeps all its codes. Order numbers, dates, prices,
+phone numbers and ordinary links are left alone. The proactive pipeline and follow-ups
+run the same masking again before their prompts. The original stays in the user's mail app (`url` for Gmail).
+
 ---
 
 ## 6. Notifications & proactivity

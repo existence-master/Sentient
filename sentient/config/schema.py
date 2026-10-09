@@ -284,6 +284,13 @@ class IntegrationsConfig(BaseModel):
             "IMAP email is checked when the server has no push (IDLE). Uses no model calls. 0 turns change feeds off."
         ),
     )
+    hide_one_time_codes: bool = Field(
+        True,
+        description=(
+            "Hide one-time codes, sign-in links and password reset links in your email before the AI reads it, so a "
+            "tricky email can't get them out of Sentient. You still see them when you open the email in your mail app."
+        ),
+    )
     webhook_max_body_kb: int = Field(
         256, ge=1, le=10240, description="Largest request body (in KB) an inbound webhook accepts."
     )

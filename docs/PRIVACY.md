@@ -33,6 +33,9 @@ service name `sentient`.
   Anything that would send, delete, buy or run code becomes a suggestion you approve, whatever your approval
   settings say.
 - Photos and screenshots from your devices ask first.
+- One-time codes, sign-in links and password reset links in your email are hidden from the AI, so a tricky email
+  can't get them out of Sentient. You still see them when you open the email in your mail app. You can turn this off
+  in Settings (Integrations, "Hide one-time codes in email").
 - Only chats you paired with a code can talk to Sentient on Telegram or Discord.
 
 Found a problem? Please report it privately: see [SECURITY.md](../SECURITY.md).
