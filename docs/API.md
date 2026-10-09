@@ -377,11 +377,30 @@ token or cost limit **pauses and asks**, using the same `waiting_for_user` machi
 - `POST /api/integrations/{id}/test` → `{ok, detail}`
 - `GET /api/integrations/{id}/privacy-filters` → `{keywords: [], emails: [], labels: []}`
 - `PUT /api/integrations/{id}/privacy-filters` same shape → `{ok}`
-- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, enabled, status: "connecting|connected|error|disconnected|disabled", tools: [{name, mcp_name, description, risk}], error}]`
-  (`name` is the Sentient tool name `mcp_<server>_<tool>`; `env` values are kept in the keychain, only `env_keys` are returned)
-- `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, enabled?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input)
-- `DELETE /api/integrations/mcp/{name}` → `{ok}`
+- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, auth: "none|headers|oauth", header_keys, signed_in, signing_in, enabled, status: "connecting|connected|needs_sign_in|error|disconnected|disabled", tools: [{name, mcp_name, description, risk}], error}]`
+  (`name` is the Sentient tool name `mcp_<server>_<tool>`; `env` and header values are kept in the keychain, only `env_keys` and `header_keys` are returned)
+  - `auth` (remote servers only): `none`, `headers` (static headers such as `Authorization: Bearer ...` sent on every request) or `oauth` (sign-in with the MCP authorization spec). Header values are sent in every mode when `header_keys` is not empty.
+  - `signed_in`: an OAuth sign-in is stored (only with `auth: "oauth"`). `signing_in`: a browser sign-in is waiting for the user.
+  - `status: "needs_sign_in"`: the server answered 401, or `auth` is `oauth` with no stored sign-in, or the stored sign-in expired and could not be refreshed. `error` says what to do: `"This server asks you to sign in."` (none), `"The server didn't accept the saved headers. Check them and add the server again."` (headers), `"Sign in to use this server."` (oauth). The engine retries a server in this state every 5 minutes, and at once after a sign-in or a test.
+- `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, headers?, auth?, enabled?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input)
+  - `headers`: `{name: value}`; values go to the keychain. `auth` defaults to `headers` when headers are given, else `none`. 400 when `auth` is `headers` without headers, a header name or value is invalid, or a stdio server has headers or `auth` other than `none`.
+  - Replacing a server with a different URL drops its stored sign-in. Headers not given are deleted.
+- `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain)
 - `POST /api/integrations/mcp/{name}/test` → `{ok, tools: [mcp tool names], error?}`
+- `POST /api/integrations/mcp/{name}/sign-in` → `{auth_url, state}`; the desktop opens `auth_url` in the system browser. The engine
+  discovers the server's protected resource metadata and authorization server metadata (RFC 9728, RFC 8414), registers
+  a client when needed (RFC 7591, `client_name: "Sentient"`, public client), and uses PKCE (S256) with the `resource`
+  parameter (RFC 8707). The provider redirects to the shared loopback listener `http://127.0.0.1:<port>/oauth/callback`
+  (`integrations.oauth_redirect_port`, 0 = a free port; the client is registered again when the port changes), which
+  exchanges the code and shows a "You're connected" or "Connection failed" page. On success the server's `auth` becomes
+  `oauth` and it reconnects; poll `GET /api/integrations/mcp` while `signing_in` is true. A sign-in waits at most 15
+  minutes. 404 unknown server; 400 for stdio servers, a server that doesn't support sign-in (no metadata or
+  registration), a server that didn't ask for one, or no answer within 30 s.
+- `POST /api/integrations/mcp/{name}/sign-out` → server object; deletes the stored tokens (the client registration is kept)
+  and cancels a pending sign-in. A server with `auth: "oauth"` then shows `needs_sign_in`.
+- Tokens are refreshed with the refresh token before they expire (60 s early) and once after a 401 before asking for a
+  new sign-in. Keychain entries: `mcp:<name>` (env), `mcp:<name>:headers`, `mcp:<name>:oauth` (tokens),
+  `mcp:<name>:client` (registration); values too long for one entry continue in `<entry>:1`, `<entry>:2`...
 - `PUT /api/integrations/{id}/privacy-filters` → 400 when the integration has `privacy_filters.supported: false`
 
 - `GET /api/integrations/feeds` → `[{source, display_name, kind: "gmail_history"|"calendar_sync_token"|"imap_idle", connected, active,

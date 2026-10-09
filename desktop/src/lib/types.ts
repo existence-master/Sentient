@@ -174,6 +174,8 @@ export interface McpServerConfig {
   args?: string[]
   url?: string
   env?: Record<string, string>
+  auth?: McpAuth
+  header_keys?: string[]
   enabled?: boolean
 }
 
@@ -1107,7 +1109,10 @@ export interface McpToolInfo {
   risk: Risk
 }
 
-export type McpServerStatus = 'connecting' | 'connected' | 'error' | 'disconnected' | 'disabled'
+export type McpServerStatus = 'connecting' | 'connected' | 'needs_sign_in' | 'error' | 'disconnected' | 'disabled'
+
+/** How a remote server is signed in to: nothing, static headers, or the MCP OAuth sign-in. */
+export type McpAuth = 'none' | 'headers' | 'oauth'
 
 export interface McpServer {
   name: string
@@ -1117,6 +1122,13 @@ export interface McpServer {
   url: string | null
   /** Env values live in the keychain and are never returned. */
   env_keys: string[]
+  auth: McpAuth
+  /** Header values live in the keychain and are never returned. */
+  header_keys: string[]
+  /** An OAuth sign-in is stored. */
+  signed_in: boolean
+  /** A browser sign-in is waiting for the user. */
+  signing_in: boolean
   enabled: boolean
   status: McpServerStatus | string
   tools: McpToolInfo[]
@@ -1130,7 +1142,15 @@ export interface McpServerCreate {
   args?: string[]
   url?: string
   env?: Record<string, string>
+  headers?: Record<string, string>
+  auth?: McpAuth
   enabled?: boolean
+}
+
+/** `POST /api/integrations/mcp/{name}/sign-in`: open `auth_url` in the browser. */
+export interface McpSignInStart {
+  auth_url: string
+  state: string
 }
 
 export interface McpTestResult {

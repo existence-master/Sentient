@@ -289,7 +289,10 @@ class IntegrationsConfig(BaseModel):
     )
     mcp_servers: dict[str, dict] = Field(
         default_factory=dict,
-        description="External MCP servers: {name: {transport: stdio|http, command, args, url, env, enabled}}.",
+        description=(
+            "External MCP servers: {name: {transport: stdio|http, command, args, url, env, enabled, "
+            "auth: none|headers|oauth, header_keys}}. Header values and sign-ins live in the keychain."
+        ),
     )
     hide_disconnected_tools: bool = Field(
         True,
