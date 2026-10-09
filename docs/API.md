@@ -495,7 +495,7 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   - Replacing a server with a different URL drops its stored sign-in. Headers not given are deleted.
 - `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain)
 - `POST /api/integrations/mcp/{name}/test` → `{ok, tools: [mcp tool names], error?}`
-- `POST /api/integrations/mcp/{name}/enabled` `{enabled: bool}` → server object (turns a server on or off and nothing else; 404 if missing)
+- `POST /api/integrations/mcp/{name}/enabled` `{enabled: bool}` → server object (turns a server on or off and nothing else; `enabled` must be a boolean, 422 otherwise; 404 if missing)
 - `POST /api/integrations/mcp/{name}/sign-in` → `{auth_url, state}`; the desktop opens `auth_url` in the system browser. The engine
   discovers the server's protected resource metadata and authorization server metadata (RFC 9728, RFC 8414), registers
   a client when needed (RFC 7591, `client_name: "Sentient"`, public client), and uses PKCE (S256) with the `resource`
@@ -1503,7 +1503,7 @@ databases are never read, skill folders are copied without dotfiles or symlinks,
   more often than every 5 minutes) is skipped with the expression in `note`. A job with `script` or `monitor_script`
   becomes a script task (condition `changed`; `then: run` when it also has a prompt, else `notify`) only when the
   script is a Python file inside `scripts/` that compiles; otherwise it is skipped with the reason. A job's Hermes
-  skills are named in the task's description. `deliver: "whatsapp:..."` (or telegram, discord, or `origin` with the
+  skills are named in the task's description. A job already brought over (same Hermes id) is skipped. `deliver: "whatsapp:..."` (or telegram, discord, or `origin` with the
   job's `origin.platform`) maps to that channel when it has a paired chat (task results reach every paired chat with delivery on, section 14), else to this computer.
 - **MCP servers** are added turned off (`POST /api/integrations/mcp/{name}/enabled` turns one on), keeping the URL or
   command and arguments, `auth: oauth` (sign in again) and only the names of headers and environment settings; their

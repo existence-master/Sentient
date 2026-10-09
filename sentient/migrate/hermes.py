@@ -527,6 +527,11 @@ async def _delivery(app: Any, deliver: Any, origin: Any = None) -> tuple[str, st
 async def _plan_jobs(app: Any, home: Path) -> list[dict]:
     items: list[dict] = []
     tz = app.tasks.tz_name()
+    done = {
+        str((t.get("original_context") or {}).get("hermes_job"))
+        for t in await app.tasks.repo.list_tasks()
+        if (t.get("original_context") or {}).get("imported_from") == "hermes"
+    }
     for n, job in enumerate(_jobs(home)):
         key = f"job:{job.get('id') or n}"
         prompt = str(job.get("prompt") or "").strip()
@@ -534,6 +539,9 @@ async def _plan_jobs(app: Any, home: Path) -> list[dict]:
         name = str(job.get("name") or "").strip() or (prompt or (skills[0] if skills else "Hermes job"))[:50]
         schedule, shown, reason = _job_schedule(job.get("schedule"))
         info: dict[str, Any] = {"name": name, "prompt": prompt, "schedule_text": shown, "skills": skills, "script": None}
+        if key.split(":", 1)[1] in done:
+            items.append(_item(key, "skip", "Already brought over.", schedule=None, kind="task", delivery="desktop", **info))
+            continue
         if schedule is None:
             items.append(_item(key, "skip", reason, schedule=None, kind="task", delivery="desktop", **info))
             continue
@@ -751,19 +759,25 @@ async def apply(app: Any, path: str | None, parts: list[str] | None, skip: list[
 
     if "jobs" in chosen:
         created: list[dict] = []
+        failed = []
         for item in _picked(plan["jobs"], left_out):
-            task = await app.tasks.create_imported(
-                name=item["name"],
-                prompt=_job_prompt(item),
-                schedule=item["schedule"],
-                script=({"code": item["script"]["code"], "condition": "changed", "then": item["then"]}
-                        if item["kind"] == "script" else None),
-                context={"source": SOURCE, "imported_from": "hermes", "hermes_job": item["key"].split(":", 1)[1],
-                         "hermes_schedule": item["schedule_text"], "deliver": item["delivery"],
-                         **({"script_path": item["script"]["path"]} if item["script"] else {})},
-            )
+            try:
+                task = await app.tasks.create_imported(
+                    name=item["name"],
+                    prompt=_job_prompt(item),
+                    schedule=item["schedule"],
+                    script=({"code": item["script"]["code"], "condition": "changed", "then": item["then"]}
+                            if item["kind"] == "script" else None),
+                    context={"source": SOURCE, "imported_from": "hermes", "hermes_job": item["key"].split(":", 1)[1],
+                             "hermes_schedule": item["schedule_text"], "deliver": item["delivery"],
+                             **({"script_path": item["script"]["path"]} if item["script"] else {})},
+                )
+            except Exception as exc:
+                log.warning("could not import Hermes job %s: %s", item["key"], exc)
+                failed.append({"key": item["key"], "name": item["name"], "note": "Couldn't add it."})
+                continue
             created.append({"task_id": task["task_id"], "name": task["name"]})
-        result["jobs"] = {"created": created, "skipped": _skipped(plan["jobs"], left_out)}
+        result["jobs"] = {"created": created, "skipped": _skipped(plan["jobs"], left_out) + failed}
 
     if "mcp" in chosen:
         added: list[str] = []

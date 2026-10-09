@@ -162,6 +162,10 @@ async def test_jobs_become_paused_tasks_with_schedules(app, hermes_home):
     assert watch["script"]["then"] == "notify" and watch["script"]["condition"] == "changed"
     # nothing runs on its own
     assert await app.tasks.tick() == []
+    # importing again does not add the same jobs twice
+    again = await hermes.preview(app, str(hermes_home))
+    assert again["counts"]["jobs"] == 0
+    assert by_key(again["jobs"])["job:a1b2c3d4e5f6"]["note"] == "Already brought over."
 
 
 async def test_whatsapp_delivery_when_paired(app, hermes_home):
@@ -183,8 +187,8 @@ async def test_resuming_an_imported_task_plans_it_for_approval(app, hermes_home)
         "name": "Morning brief", "description": "Calendar and weather for today",
         "plan": [{"tool": "time", "description": "Get today's date"}], "clarifying_questions": [],
     })
-    out = await app.tasks.update(brief["task_id"], {"enabled": True})
-    assert out["status"] == "planning"
+    out = await app.tasks.update(brief["task_id"], {"enabled": True, "plan": [{"tool": "files", "description": "x"}]})
+    assert out["status"] == "planning"  # a plan sent with the resume can't skip planning and approval
     for _ in range(100):
         task = await app.tasks.get(brief["task_id"])
         if task["status"] != "planning":
@@ -292,6 +296,7 @@ def test_routes(app, hermes_home, monkeypatch):
         assert [j["name"] for j in out["jobs"]["created"]] == ["Weekday standup notes", "Watch prices"]
         assert {"key": "job:a1b2c3d4e5f6", "name": "Morning brief", "note": "You left it out."} in out["jobs"]["skipped"]
         assert sorted(out["mcp"]["added"]) == ["github", "notes"]
+        assert c.post("/api/integrations/mcp/notes/enabled", json={"enabled": "false"}).status_code == 422
         on = c.post("/api/integrations/mcp/notes/enabled", json={"enabled": False})
         assert on.status_code == 200 and on.json()["status"] == "disabled"
         assert c.delete("/api/import/hermes/memories").json() == {"facts": 0, "insights": 0}

@@ -71,11 +71,12 @@ export function HermesImportDialog({ open, onOpenChange }: { open: boolean; onOp
     if (info.data && !path) setPath(info.data.path)
   }, [info.data, path])
 
-  const preview = useMutation({
-    mutationFn: (p: string) => api.imports.hermes.preview(p),
-    // persona is never picked for the user: replacing the personality needs an explicit yes
-    onSuccess: (plan) => setPicked(new Set(PARTS.filter((p) => p.id !== 'persona' && plan.counts[p.id] > 0).map((p) => p.id)))
-  })
+  const preview = useMutation({ mutationFn: (p: string) => api.imports.hermes.preview(p) })
+  const look = (p: string) =>
+    preview.mutate(p, {
+      // persona is never picked for the user: replacing the personality needs an explicit yes
+      onSuccess: (plan) => setPicked(new Set(PARTS.filter((x) => x.id !== 'persona' && plan.counts[x.id] > 0).map((x) => x.id)))
+    })
   const apply = useMutation({
     mutationFn: () => api.imports.hermes.apply({ path: preview.data?.path, parts: [...picked] }),
     onSuccess: (r) => {
@@ -131,7 +132,7 @@ export function HermesImportDialog({ open, onOpenChange }: { open: boolean; onOp
       </Button>
     </>
   ) : (
-    <Button variant="primary" rightIcon={<IconArrowRight size={15} />} disabled={!path.trim()} loading={preview.isPending} onClick={() => preview.mutate(path.trim())}>
+    <Button variant="primary" rightIcon={<IconArrowRight size={15} />} disabled={!path.trim()} loading={preview.isPending} onClick={() => look(path.trim())}>
       Look inside
     </Button>
   )

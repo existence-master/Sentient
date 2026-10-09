@@ -538,8 +538,8 @@ class TaskService(Service):
             changes["schedule"] = schedule
         status = changes.get("status", task["status"])
         enabled = changes.get("enabled", task["enabled"])
-        if enabled and not task["enabled"] and status in {"active", "pending"} and self._unplanned_import(task) \
-                and "plan" not in changes:
+        if enabled and not task["enabled"] and status in {"active", "pending"} and self._unplanned_import(task):
+            changes.pop("plan", None)  # an imported task's plan only comes from the planner or its own script
             return await self._start_imported(task, changes)
         reschedule = "schedule" in changes or "status" in changes or (enabled and not task["enabled"])
         if reschedule and status in {"active", "pending"}:
