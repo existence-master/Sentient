@@ -236,7 +236,8 @@ def _trigger_source(app: Any, task: dict, run: dict) -> str:
 
 async def _run_approved_call(svc: TaskService, task_id: str, run_id: str, ctx: Any, checkpoint: list[dict]) -> list[dict]:
     """Run the held call the user said yes to (ADR 0018), once: the mark is saved away before the call starts, so a
-    restart in the middle never repeats it. Its result replaces the placeholder in the transcript."""
+    restart in the middle never repeats it, and the saved placeholder then says the outcome is unknown
+    (``ask.INTERRUPTED_NOTE``). The call's result replaces that placeholder."""
     taken = ask.take_approved(checkpoint)
     if taken is None:
         return checkpoint

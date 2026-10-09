@@ -21,14 +21,18 @@ Tools carry two tags next to their `Risk` ([ADR 0008](0008-effective-risk-and-ap
   services (`weather`, `charts`). Browser tools, code runs, MCP server tools, subagent results, device photos and
   screenshots are marked explicitly. Writes and sends return confirmations, so they do not count.
 - `exfiltrates`: the call can move data out even below `send`: typing into a web page, editing a GitHub issue, any
-  change on an MCP server.
+  change on an MCP server, a calendar event with other people on it. It can be decided per call.
+- `url_fn`: the web address a call loads (`web_fetch`, `browser_open`, a link `browser_click` follows).
 
 A run is marked (`ToolContext.untrusted`, the app's name) when a tool with untrusted output actually ran. The
 event that started a triggered task (an email, a webhook body) marks its run from the start, and a resumed task run
 is marked again from its transcript. From then on every call whose effective risk is `send` or `exec`, or that
 `exfiltrates`, asks the user, even under an Allow rule, with approvals mode "off" and after "Allow for this chat".
-Calls the model chose in the same round as the read are not affected: they were decided before the content
-arrived. The approval card says why ("Sentient read content from Gmail in this chat, so it checks with you before
+A web address on a site the run or chat has not loaded yet asks too when it could carry data: a query string,
+a path over 100 characters or a long fragment. Short clean addresses and sites already visited stay free, so
+browsing keeps working. Calls the model chose in the same round as the read are not affected: they were decided
+before the content arrived. Results of tools that are no longer installed count as outside content, and chats from
+before this change are classified once from their history. The approval card says why ("Sentient read content from Gmail in this chat, so it checks with you before
 sending anything.") and offers no "Allow for this chat". "Never" rules and the unprompted-work limit
 ([ADR 0017](0017-unprompted-work-reads-only.md)) still come first.
 
@@ -57,6 +61,7 @@ result is outside content and whether it can move data out; new apps get the saf
 
 Letting the model judge whether content looks malicious: unreliable and itself open to injection. Clearing the mark
 at the end of each chat turn: simpler, but the email is still in the conversation the next turn reads. Gating every
-outward request, including plain page loads whose address could carry data: closes more channels but would ask on
-nearly every browse; left out for now. Failing task runs instead of asking: safe, but it breaks useful triggered
+page load after outside content: closes more channels but would ask on nearly every browse; data-carrying addresses
+to new sites are the middle ground. A site already visited can still receive data in its address (an injected page
+on that same site), which this accepts to keep browsing usable. Failing task runs instead of asking: safe, but it breaks useful triggered
 tasks such as "reply to new mail from my team".

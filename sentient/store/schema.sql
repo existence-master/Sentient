@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     archived    INTEGER NOT NULL DEFAULT 0,
     context_summary TEXT,                         -- running summary of turns older than the history window
     context_upto    TEXT,                         -- created_at of the last message folded into the summary
-    untrusted       TEXT                          -- app whose content this chat read ("Gmail"); sends then ask (ADR 0018)
+    untrusted       TEXT,                         -- app whose content this chat read ("Gmail"); sends then ask (ADR 0018)
+    visited_hosts   TEXT                          -- JSON list of web hosts this chat loaded (ADR 0018)
 );
 
 CREATE TABLE IF NOT EXISTS messages (

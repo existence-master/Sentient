@@ -129,3 +129,20 @@ async def test_run_started_by_an_outside_event_asks_before_sending(make_app):
     run = task["runs"][-1]
     assert run["status"] == "waiting_for_user" and log == []
     assert run["pending_question"]["question"].startswith("This task read content from Webhooks")
+
+
+async def test_an_approved_call_cut_off_by_a_restart_is_never_repeated(make_app):
+    """The mark is cleared before the call starts; if Sentient stops in the middle the run reads that the outcome
+    is unknown, never a placeholder that looks like success, and the call does not run again."""
+    log: list[str] = []
+    llm = FakeProvider(replies=[FETCH, POST])
+    app = await make_app(llm)
+    app.registry.register(_web(log))
+    _, run_id = await _run_task(app)
+    run = await app.tasks.repo.get_run(run_id)
+    approved = ask.approve_call(run["messages"], "call_web_pages_post_note")
+    messages, call = ask.take_approved(approved)
+    assert call["name"] == "web_pages_post_note" and call["arguments"]["to"] == "sam@example.com"
+    held = next(m for m in messages if m.get("tool_call_id") == "call_web_pages_post_note")
+    assert ask.APPROVED_KEY not in held and ask.INTERRUPTED_NOTE in held["content"]
+    assert ask.take_approved(messages) is None  # nothing left to run on a later resume

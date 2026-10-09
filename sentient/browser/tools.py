@@ -33,6 +33,21 @@ def _describe(kind: str, arguments: dict | None, ctx: Any) -> dict:
         return {}
 
 
+def _opened(arguments: dict | None, ctx: Any) -> str:
+    return str((arguments or {}).get("url") or "")
+
+
+def _link(arguments: dict | None, ctx: Any) -> str:
+    try:
+        return service_from(ctx).link_for(arguments or {})
+    except Exception:
+        return ""
+
+
+# the web address a call loads, so an address that could carry data to a new site asks first (ADR 0018)
+_ADDRESS = {"browser_open": _opened, "browser_click": _link}
+
+
 def btool(name: str, *, risk: Risk, risk_kind: str | None = None):
     def wrap(fn):
         @functools.wraps(fn)
@@ -47,7 +62,9 @@ def btool(name: str, *, risk: Risk, risk_kind: str | None = None):
                 raise
 
         # every browser result shows a page someone else wrote; typing puts text into that page (ADR 0018)
-        t: Tool = tool(name, risk=risk, untrusted_output=True, exfiltrates=name == "browser_type")(safe)
+        t: Tool = tool(
+            name, risk=risk, untrusted_output=True, exfiltrates=name == "browser_type", url_fn=_ADDRESS.get(name)
+        )(safe)
         if risk_kind:
             t.risk_fn = functools.partial(_risk, risk_kind)  # type: ignore[attr-defined]
             t.describe_fn = functools.partial(_describe, risk_kind)  # type: ignore[attr-defined]

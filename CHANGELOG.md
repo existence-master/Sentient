@@ -39,7 +39,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ### Security
 - Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before
-  sending, posting, typing into a web page or running code, even for apps set to Allow and with approvals off. The
+  sending, posting, inviting people to an event, typing into a web page, running code or opening an address that
+  could carry your data to a new site, even for apps set to Allow and with approvals off. The
   approval says why ("Sentient read content from Gmail in this chat, ..."). A chat stays this way until you start a
   new one. A task that read outside content pauses and asks "OK to ...?" instead, then carries on after your yes or
   stops after a no.

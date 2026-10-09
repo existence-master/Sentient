@@ -35,7 +35,11 @@ GO_AHEAD = "Yes, go ahead"
 DONT = "No, stop the task"
 DECLINED_STOP = "You said no, so the task stopped without doing that step."
 APPROVED_KEY = "approved_by_user"  # set on the held call's tool message by the engine only, never by a model or tool
-RUNNING_NOTE = "The user said yes. Sentient is doing this now."
+# what the held call's result says while it runs: if Sentient stops in the middle, this is what the run sees later
+INTERRUPTED_NOTE = (
+    "The user said yes, but Sentient stopped while doing this, so it is not known whether it went through. "
+    "Don't do it again; tell the user to check."
+)
 
 
 def clean_options(raw: Any) -> list[str]:
@@ -123,7 +127,7 @@ def approve_call(messages: list[dict], call_id: str | None) -> list[dict]:
     out: list[dict] = []
     for m in messages or []:
         if call_id and m.get("role") == "tool" and m.get("tool_call_id") == call_id:
-            m = {**m, "content": json.dumps({"note": RUNNING_NOTE}), APPROVED_KEY: True}
+            m = {**m, "content": json.dumps({"error": INTERRUPTED_NOTE}), APPROVED_KEY: True}
         out.append(m)
     return out
 

@@ -136,7 +136,15 @@ async def gcal_list_events(ctx: ToolContext, time_min: str | None = None, time_m
     return out
 
 
-@itool(PID, "gcal_create_event", risk=Risk.write)
+def invites_others(arguments: dict, ctx: Any) -> bool:
+    """True when the call puts people other than the calendar's owner on the event (or emails its guests):
+    they see its details, so after outside content it asks first (ADR 0018)."""
+    owner = str(arguments.get("calendar_id") or "").strip().lower()
+    guests = [str(a or "").strip().lower() for a in arguments.get("attendees") or []]
+    return any(g and g != owner for g in guests) or bool(arguments.get("send_updates"))
+
+
+@itool(PID, "gcal_create_event", risk=Risk.write, exfiltrates=invites_others)
 async def gcal_create_event(ctx: ToolContext, summary: str, start: str, end: str | None = None,
                             duration_minutes: int = 60, description: str | None = None, location: str | None = None,
                             attendees: list[str] | None = None, all_day: bool = False, add_meet_link: bool = False,
@@ -160,7 +168,7 @@ async def gcal_create_event(ctx: ToolContext, summary: str, start: str, end: str
     return {"created": True, "event": normalize_event(res)}
 
 
-@itool(PID, "gcal_update_event", risk=Risk.write)
+@itool(PID, "gcal_update_event", risk=Risk.write, exfiltrates=invites_others)
 async def gcal_update_event(ctx: ToolContext, event_id: str, summary: str | None = None, start: str | None = None,
                             end: str | None = None, description: str | None = None, location: str | None = None,
                             attendees: list[str] | None = None, send_updates: bool = False,

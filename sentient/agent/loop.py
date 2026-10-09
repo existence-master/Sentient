@@ -75,11 +75,16 @@ from sentient.tools.base import (
 )
 from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import (
+    address_carries_data,
+    address_host,
     brings_untrusted,
+    call_address,
     never_message,
     sends_out,
     unattended_ask_message,
+    untrusted_address_reason,
     untrusted_hold_message,
+    untrusted_in,
     untrusted_question,
     untrusted_reason,
     untrusted_source,
@@ -242,6 +247,15 @@ class LoopResult:
     needs_ok: dict | None = None
 
 
+def _hosts(raw: Any) -> set[str]:
+    """``sessions.visited_hosts`` (a JSON list) as a set; anything unreadable is an empty set."""
+    try:
+        data = json.loads(raw) if isinstance(raw, str) and raw else []
+    except ValueError:
+        return set()
+    return {str(h) for h in data if isinstance(h, str) and h} if isinstance(data, list) else set()
+
+
 def repeat_message(name: str, times: int) -> str:
     return (
         f"Stopped because the same step kept repeating: {name} ran {times} times with the same details "
@@ -338,6 +352,7 @@ class _CallPlan:
     held: bool = False  # refused because nobody asked for this work (ADR 0017)
     untrusted: str = ""  # why this call asks: the run read outside content (ADR 0018)
     wants_ok: bool = False  # held for the user's OK in a run nobody can be asked in (ADR 0018)
+    host: str = ""  # the web host this call loads, if any; remembered as visited once it ran
 
 
 class Agent:
@@ -712,6 +727,8 @@ class Agent:
             plan.preset = self._raw_arguments_error(tool, tc)
             return plan
         plan.risk = await effective_risk(tool, tc.arguments, ctx)
+        address = call_address(tool, tc.arguments, ctx)
+        plan.host = address_host(address)
         if unprompted:  # work nobody asked for: look-ups and Sentient-internal changes only, before any rule
             refusal = self.approvals.unprompted_refusal(tool, plan.risk, self.registry)
             if refusal:
@@ -725,12 +742,17 @@ class Agent:
             if refusal:
                 plan.preset = ({"error": str(refusal)}, True, 0)
                 return plan
-        if ctx.untrusted and sends_out(tool, plan.risk):
+        reason = ""
+        if ctx.untrusted and sends_out(tool, plan.risk, tc.arguments, ctx):
+            reason = untrusted_reason(ctx.untrusted)
+        elif ctx.untrusted and plan.host and plan.host not in ctx.visited and address_carries_data(address):
+            reason = untrusted_address_reason(ctx.untrusted, plan.host)  # the address itself could carry data out
+        if reason:
             # the run read outside content: anything that can send data out needs the user's own yes, whatever the
             # mode, Allow rules or "Allow for this chat" say (ADR 0018). Nothing a model says can clear it.
             if use_approvals:
                 plan.needs_approval = True
-                plan.untrusted = untrusted_reason(ctx.untrusted)
+                plan.untrusted = reason
             else:  # nobody to ask in this loop: hold the call; a task run then pauses and asks (LoopResult.needs_ok)
                 label = self.approvals.label(tool, self.registry)
                 plan.preset = ({"error": untrusted_hold_message(label, ctx.untrusted)}, True, 0)
@@ -836,7 +858,10 @@ class Agent:
         if p.tool is not None and p.tool.plugin not in result.tools_used:
             result.tools_used.append(p.tool.plugin)
         declined = isinstance(res, dict) and bool(res.get("declined"))
-        if p.tool is not None and p.preset is None and not declined and not ctx.untrusted and brings_untrusted(p.tool):
+        ran = p.tool is not None and p.preset is None and not declined
+        if ran and p.host:
+            ctx.visited.add(p.host)
+        if ran and p.tool is not None and not ctx.untrusted and brings_untrusted(p.tool):
             ctx.untrusted = untrusted_source(p.tool, self.registry)
         err = _error_text(res)
         if (is_error or err) and err != DECLINED:
@@ -973,8 +998,10 @@ class Agent:
             messages: list[dict] = [{"role": "system", "content": system}, *convo]
             ctx = self.tool_context(session_id, channel)
             # outside content read earlier in this chat still counts until a new chat starts (ADR 0018)
-            ctx.untrusted = str((session or {}).get("untrusted") or "")
+            ctx.untrusted = await self._chat_untrusted(session_id, session)
             marked = bool(ctx.untrusted)
+            ctx.visited = _hosts((session or {}).get("visited_hosts"))
+            seen_hosts = len(ctx.visited)
             recent_plugins: set[str] = set()
             for row in history[-12:]:
                 for tc in row.get("tool_calls") or []:
@@ -1006,6 +1033,12 @@ class Agent:
                         marked = True
                         await self.store.execute(
                             "UPDATE sessions SET untrusted = ? WHERE id = ?", (ctx.untrusted, session_id)
+                        )
+                    if len(ctx.visited) != seen_hosts:  # sites this chat loaded never ask for carrying data
+                        seen_hosts = len(ctx.visited)
+                        await self.store.execute(
+                            "UPDATE sessions SET visited_hosts = ? WHERE id = ?",
+                            (json.dumps(sorted(ctx.visited)), session_id),
                         )
                 yield event
         except (asyncio.CancelledError, GeneratorExit):
@@ -1050,6 +1083,20 @@ class Agent:
             # steer messages that arrived after the final round start a new turn
             async for event in self.run_turn(session_id, "\n\n".join(leftover), channel=channel, model=model):
                 yield event
+
+    async def _chat_untrusted(self, session_id: str, session: dict | None) -> str:
+        """The chat's outside-content mark (ADR 0018). A chat never checked yet (``NULL``, e.g. one from before this
+        mark existed) is classified once from its stored tool results and saved, "" meaning clean."""
+        stored = (session or {}).get("untrusted")
+        if stored is not None:
+            return str(stored)
+        rows = await self.store.fetchall(
+            "SELECT role, name, content FROM messages WHERE session_id = ? AND role = 'tool' ORDER BY created_at",
+            (session_id,),
+        )
+        source = untrusted_in([dict(r) for r in rows], self.registry)
+        await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
+        return source
 
     async def _persist_stopped(self, session_id: str, partial: str, sources: MemorySources) -> None:
         content = (partial.rstrip() + "\n\n_(stopped)_").strip()

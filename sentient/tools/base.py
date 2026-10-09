@@ -19,8 +19,10 @@ approvals layer and ``approval_request.risk`` use the *effective* risk.
 Two more tags guard against outside content steering Sentient (ADR 0018):
 ``untrusted_output`` marks a tool whose result brings in content someone else wrote
 (an email, a web page, a message); ``None`` picks the default in
-``sentient.tools.rules.brings_untrusted``. ``exfiltrates`` marks a tool that can move
-data out of Sentient even below ``send`` (typing into a web page, inviting people).
+``sentient.tools.rules.brings_untrusted``. ``exfiltrates`` (a bool, or ``fn(arguments, ctx) -> bool``)
+marks a call that can move data out of Sentient even below ``send`` (typing into a web page,
+inviting people). ``url_fn(arguments, ctx) -> str | None`` names the web address a call loads,
+so an address that could carry data to a new site asks first.
 
 Long-running tools stream output with ``ctx.progress({"kind": ..., "text": ...})``
 (docs/API.md section 10). Inside an agent loop that becomes a ``tool_progress``
@@ -109,6 +111,8 @@ class ToolContext:
     # where outside content came into this run ("Gmail"), or "" while it has none (ADR 0018). Set in code, never
     # cleared during the run; once set, anything that can send data out asks the user first.
     untrusted: str = ""
+    # web hosts this run (or chat) already loaded; an address on one of them never asks for carrying data (ADR 0018)
+    visited: set[str] = field(default_factory=set)
 
     @property
     def call_id(self) -> str | None:
@@ -134,6 +138,8 @@ class ToolContext:
 ToolFn = Callable[..., Awaitable[Any]]
 RiskFn = Callable[[dict, ToolContext], "Risk | Awaitable[Risk | None] | None"]
 DescribeFn = Callable[[dict, ToolContext], "dict | Awaitable[dict | None] | None"]
+ExfilFn = Callable[[dict, ToolContext], bool]
+UrlFn = Callable[[dict, ToolContext], "str | None"]
 
 # Default wording for approval prompts, by effective risk.
 RISK_LABELS = {
@@ -161,8 +167,11 @@ class Tool:
     describe_fn: DescribeFn | None = None
     # True when the result brings in content someone else wrote; None uses the default (``rules.brings_untrusted``).
     untrusted_output: bool | None = None
-    # True when the tool can move data out of Sentient below ``send`` (typing into a page, inviting people).
-    exfiltrates: bool = False
+    # True (or ``fn(arguments, ctx) -> True`` for a call) when it can move data out below ``send`` (typing into a
+    # page, inviting people). Checked with ``rules.sends_out``.
+    exfiltrates: bool | ExfilFn = False
+    # The web address a call loads (``url_fn(arguments, ctx) -> str | None``), for ``rules.address_carries_data``.
+    url_fn: UrlFn | None = None
 
     def openai_schema(self) -> dict:
         schema = self.params_model.model_json_schema()
@@ -262,7 +271,8 @@ def tool(
     risk_fn: RiskFn | None = None,
     describe_fn: DescribeFn | None = None,
     untrusted_output: bool | None = None,
-    exfiltrates: bool = False,
+    exfiltrates: bool | ExfilFn = False,
+    url_fn: UrlFn | None = None,
 ):
     """Decorator turning ``async def fn(ctx, arg: type = default)`` into a Tool."""
 
@@ -273,6 +283,7 @@ def tool(
         return Tool(
             name=tool_name, description=desc, fn=fn, params_model=model, risk=risk, internal=internal,
             risk_fn=risk_fn, describe_fn=describe_fn, untrusted_output=untrusted_output, exfiltrates=exfiltrates,
+            url_fn=url_fn,
         )
 
     return wrap

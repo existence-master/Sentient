@@ -63,6 +63,7 @@ class Store:
         await self.ensure_column("sessions", "context_summary", "TEXT")
         await self.ensure_column("sessions", "context_upto", "TEXT")
         await self.ensure_column("sessions", "untrusted", "TEXT")
+        await self.ensure_column("sessions", "visited_hosts", "TEXT")
         await self.ensure_column("messages", "attachments", "TEXT")
         await self.ensure_column("messages", "interjection", "INTEGER NOT NULL DEFAULT 0")
         await self.ensure_column("messages", "memory_sources", "TEXT")

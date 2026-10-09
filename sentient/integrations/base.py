@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from pydantic import BaseModel
 
-from sentient.tools.base import Risk, Tool, ToolContext, ToolPlugin, tool
+from sentient.tools.base import ExfilFn, Risk, Tool, ToolContext, ToolPlugin, UrlFn, tool
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.integrations.service import IntegrationManager
@@ -170,12 +170,14 @@ def _http_error_message(exc: httpx.HTTPStatusError) -> str:
 
 def itool(
     plugin_id: str, name: str, *, risk: Risk = Risk.read, description: str | None = None, internal: bool = False,
-    exfiltrates: bool = False,
+    exfiltrates: bool | ExfilFn = False, url_fn: UrlFn | None = None,
 ):
     """Like ``@tool`` but errors become friendly ``{"error": ...}`` results."""
 
     def wrap(fn: Callable[..., Awaitable[Any]]) -> Tool:
-        t = tool(name, risk=risk, description=description, internal=internal, exfiltrates=exfiltrates)(fn)
+        t = tool(
+            name, risk=risk, description=description, internal=internal, exfiltrates=exfiltrates, url_fn=url_fn
+        )(fn)
 
         @functools.wraps(fn)
         async def safe(ctx: ToolContext, **kwargs: Any) -> Any:
