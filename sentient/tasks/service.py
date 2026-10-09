@@ -638,7 +638,10 @@ class TaskService(Service):
 
     async def rename_browser_profile(self, old: str, new: str) -> None:
         """Keep tasks on a renamed browser profile (called by the browser service)."""
+        rows = await self.repo.store.fetchall("SELECT id FROM tasks WHERE browser_profile = ?", (old,))
         await self.repo.store.execute("UPDATE tasks SET browser_profile = ? WHERE browser_profile = ?", (new, old))
+        for row in rows:
+            await self.publish(row["id"])
 
     async def archive(self, task_id: str) -> dict:
         await self._require(task_id)

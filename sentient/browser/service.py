@@ -418,19 +418,28 @@ class BrowserService(Service):
         async with self._lock:
             if restart and self._context is not None and self._profile == name:
                 await self._shutdown()
-            if target != name and prof.kind == "launch":
-                old, new = profile_dir(name), profile_dir(target)
-                if old.exists():
-                    try:
-                        old.rename(new)
-                    except OSError as exc:
-                        raise BrowserError(
-                            "Couldn't rename the profile's folder. Close any browser window using it and try again."
-                        ) from exc
-            self._save_profiles({
-                (target if k == name else k): (updated if k == name else v)
-                for k, v in self.app.config.browser.profiles.items()
-            })
+            old, new, moved = profile_dir(name), profile_dir(target), False
+            if target != name and prof.kind == "launch" and old.exists():
+                if new.exists():
+                    raise BrowserError(f"A browser folder named '{target}' is already there. Pick another name.")
+                try:
+                    old.rename(new)
+                    moved = True
+                except OSError as exc:
+                    raise BrowserError(
+                        "Couldn't rename the profile's folder. Close any browser window using it and try again."
+                    ) from exc
+            previous = self.app.config.browser.profiles
+            try:
+                self._save_profiles({
+                    (target if k == name else k): (updated if k == name else v) for k, v in previous.items()
+                })
+            except Exception as exc:  # keep the folder and the settings in step
+                self.app.config.browser.profiles = previous
+                if moved:
+                    with contextlib.suppress(OSError):
+                        new.rename(old)
+                raise BrowserError("Couldn't save the profile change, so nothing was changed.") from exc
             if target != name:
                 rename = getattr(getattr(self.app, "tasks", None), "rename_browser_profile", None)
                 if callable(rename):

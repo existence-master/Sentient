@@ -242,8 +242,14 @@ async def test_task_default_profile_reaches_the_tools(config, isolated_home):
         updated = await app.tasks.update(task_id, {"browser_profile": "default"})
         assert updated["browser_profile"] is None
         await app.tasks.update(task_id, {"browser_profile": "work"})
-        await app.browser.update_profile("work", new_name="office")
+        async with app.bus.subscribe() as q:
+            await app.browser.update_profile("work", new_name="office")
+            events = []
+            while not q.empty():
+                events.append(q.get_nowait())
         assert (await app.tasks.get(task_id))["browser_profile"] == "office"
+        assert any(e["type"] == "task.updated" and e["data"]["task_id"] == task_id
+                   and e["data"]["browser_profile"] == "office" for e in events)
     finally:
         await app.stop()
 
@@ -284,3 +290,23 @@ async def test_no_switch_while_the_user_signs_in():
         await svc._ensure(ctx)
     assert svc._context is not None and svc._profile == "default"
     assert await svc._ensure(make_ctx(app)) is svc._context  # the open profile keeps working
+
+
+async def test_rename_keeps_folder_and_settings_in_step(monkeypatch):
+    cfg = SentientConfig()
+    cfg.browser.profiles["work"] = BrowserProfileConfig()
+    app = make_app(cfg)
+    svc = BrowserService(app)
+    (profile_dir("work") / "Default").mkdir(parents=True)
+    profile_dir("taken").mkdir(parents=True)
+    with pytest.raises(BrowserError, match="already there"):
+        await svc.update_profile("work", new_name="taken")
+
+    def broken_save():
+        raise OSError("disk full")
+
+    app.save_config = broken_save
+    with pytest.raises(BrowserError, match="nothing was changed"):
+        await svc.update_profile("work", new_name="office")
+    assert (profile_dir("work") / "Default").is_dir() and not profile_dir("office").exists()
+    assert "work" in app.config.browser.profiles and "office" not in app.config.browser.profiles
