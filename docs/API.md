@@ -179,7 +179,10 @@ Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
 - `POST /api/models/checkup` `{roles?: {role: model | null}}` → streams NDJSON while it checks each role's model,
   one role at a time (local models are never loaded side by side). Without `roles` it checks every role in the saved
   config; with `roles` it checks only those, with those models (onboarding checks its picks before saving). It is
-  informational only and never changes config. Each step has a short timeout (60 s). Lines:
+  informational only and never changes config. Each step has a short timeout (60 s). Roles with the same model
+  and the same settings the tests depend on (provider address, reasoning effort, context length, temperature) run
+  each model test (`reply`, `tools`, `chain`, `json`) once; the later role reuses it with a detail starting
+  "Same as primary." (the first role's name). Lines:
   - `{type: "start", roles: [{role, model}]}` (`model` null = an optional role that uses the main model)
   - `{type: "step", role, label}` progress, e.g. "Trying a tool call"
   - `{type: "role", role, model, provider, local, inherits, status, checks: [Check]}` when a role is finished.

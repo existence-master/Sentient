@@ -190,6 +190,9 @@ def test_checkup_route_streams_ndjson_and_never_changes_config(client):
     assert lines[-1]["roles"][0]["status"] == "pass"
     assert client.get("/api/config").json() == before
     assert client.post("/api/models/checkup", json={"roles": {"boss": "fake/x"}}).status_code == 400
+    # an empty selection checks nothing (it is not "every role")
+    empty = [json.loads(line) for line in client.post("/api/models/checkup", json={"roles": {}}).text.splitlines()]
+    assert empty[0] == {"type": "start", "roles": []} and empty[-1]["roles"] == []
 
 
 async def test_doctor_models_table(config):
@@ -208,3 +211,41 @@ async def test_doctor_models_table(config):
     out.print(table)
     text = out.export_text()
     assert "Tool call" in text and "fail" in text and "Fix:" in text and "Uses the primary model." in text
+
+
+async def test_roles_with_the_same_model_and_settings_share_results(config):
+    config.models.reasoning["fast"] = "none"
+    config.models.reasoning["primary"] = "none"
+    llm = FakeProvider(replies=["ready", *GOOD_TOOLS], json_replies=[{"ok": True}])
+    with respx.mock(assert_all_called=False) as mock:
+        ollama(mock)
+        done = await checkup(config, llm, {"primary": "ollama_chat/qwen3:8b", "fast": "ollama_chat/qwen3:8b"})
+    primary, fast = (by_id(r) for r in done["roles"])
+    # one reply, one tool call and one second step in total; fast only adds its own JSON check
+    assert sum(1 for c in llm.calls if not c.get("json")) == 3 and sum(1 for c in llm.calls if c.get("json")) == 1
+    assert fast["reply"]["detail"].startswith("Same as primary. Answered in")
+    assert fast["tools"]["detail"] == "Same as primary. Called the test tool correctly."
+    assert "chain" not in fast and fast["json"]["detail"] == "Returned clean JSON."
+    assert not primary["reply"]["detail"].startswith("Same as")
+
+    # a different reasoning setting is a different test: everything runs again
+    config.models.reasoning["fast"] = "low"
+    llm = FakeProvider(replies=["ready", *GOOD_TOOLS, "ready", GOOD_TOOLS[0]], json_replies=[{"ok": True}])
+    with respx.mock(assert_all_called=False) as mock:
+        ollama(mock)
+        done = await checkup(config, llm, {"primary": "ollama_chat/qwen3:8b", "fast": "ollama_chat/qwen3:8b"})
+    fast = by_id(done["roles"][1])
+    assert sum(1 for c in llm.calls if not c.get("json")) == 5
+    assert not fast["reply"]["detail"].startswith("Same as")
+
+
+async def test_shared_tool_failure_points_its_fix_at_each_role(config):
+    config.models.reasoning["executor"] = "none"
+    config.models.reasoning["voice"] = "none"
+    llm = FakeProvider(replies=["ready", "It is sunny."])
+    with respx.mock(assert_all_called=False) as mock:
+        ollama(mock, tags=("qwen3:4b", "qwen3:8b"))
+        done = await checkup(config, llm, {"executor": "ollama_chat/qwen3:4b", "voice": "ollama_chat/qwen3:4b"})
+    executor, voice = (by_id(r)["tools"] for r in done["roles"])
+    assert executor["action"]["role"] == "executor" and voice["action"]["role"] == "voice"
+    assert voice["detail"].startswith("Same as executor.") and len(llm.calls) == 2

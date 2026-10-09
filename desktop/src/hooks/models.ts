@@ -151,13 +151,19 @@ function exampleCheckup(): CheckupState {
 
 /** `POST /api/models/checkup` with live progress. `roles` limits the check to these models (onboarding). */
 export function useModelCheckup() {
-  const [state, setState] = useState<CheckupState>(() => (isDemoMode() ? exampleCheckup() : noCheckup))
+  const [state, setRunState] = useState<CheckupState>(() => (isDemoMode() ? exampleCheckup() : noCheckup))
   const abort = useRef<AbortController | null>(null)
+  const current = useRef(0)
 
   const run = useCallback(async (roles?: Partial<Record<RoleName, string | null>>) => {
     abort.current?.abort()
     const ctrl = new AbortController()
     abort.current = ctrl
+    // A stopped run settles later; only the latest run may touch the state.
+    const id = ++current.current
+    const setState = (next: CheckupState | ((s: CheckupState) => CheckupState)) => {
+      if (current.current === id) setRunState(next)
+    }
     setState({ ...noCheckup, running: true })
     const patchRow = (role: RoleName, p: Partial<CheckupRow>) =>
       setState((s) => ({ ...s, rows: s.rows.map((r) => (r.role === role ? { ...r, ...p } : r)) }))

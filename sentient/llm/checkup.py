@@ -20,6 +20,7 @@ import httpx
 
 from sentient import secrets
 from sentient.config.schema import ModelRoles, SentientConfig
+from sentient.llm.provider import ToolCall
 
 ROLES = ("primary", "fast", "planner", "executor", "vision", "voice", "embedding")
 TOOL_ROLES = {"primary", "fast", "executor", "vision", "voice"}  # roles that run the agent loop with tools
@@ -55,6 +56,10 @@ GET_WEATHER = {
     },
 }
 CITY_ID = "c-42"
+TOOL_PROMPT = (
+    {"role": "user",
+     "content": "What is the weather in Paris right now? Use the tools: find the city first, then get its weather."},
+)
 
 
 def _check(cid: str, label: str, status: str, detail: str, fix: str | None = None, action: dict | None = None) -> dict:
@@ -140,6 +145,7 @@ class _RoleCheck:
         self.checks: list[dict] = []
         self.thinking_seen = False
         self.show: dict | None = None
+        self.first_call: ToolCall | None = None
 
     # ------------------------------------------------------------------ helpers
     def add(self, *args, **kwargs) -> dict:
@@ -194,6 +200,38 @@ class _RoleCheck:
                           "label": f"Use {SUGGESTED_LOCAL}"}
         return text, {"kind": "pull_model", "name": SUGGESTED_LOCAL, "label": f"Download {SUGGESTED_LOCAL}"}
 
+    def _status(self, cid: str) -> str | None:
+        return next((c["status"] for c in self.checks if c["id"] == cid), None)
+
+    def _settings_key(self) -> tuple:
+        """Everything a model test depends on. Roles with the same key get the same answers, so they share results."""
+        models = self.run.config.models
+        pc = models.providers.get(self.prefix)
+        base = self._base() if self.ollama else (pc.api_base if pc else None)
+        ctx = (models.context_length_per_role.get(self.role) or models.context_length) if self.ollama else None
+        return (self.model, base, models.reasoning.get(self.role), ctx, models.temperature.get(self.role))
+
+    async def _shared(self, group: str, check) -> None:
+        """Run a model test once per model and settings; another role with the same settings reuses the result."""
+        entry = self.run.shared.setdefault(self._settings_key(), {})
+        if group in entry:
+            source, checks, thinking = entry[group]
+            self.checks += [self._reused(c, source) for c in checks]
+            self.thinking_seen |= thinking
+            return
+        start, thought = len(self.checks), self.thinking_seen
+        self.thinking_seen = False
+        await check()
+        entry[group] = (self.role, [dict(c) for c in self.checks[start:]], self.thinking_seen)
+        self.thinking_seen |= thought
+
+    def _reused(self, check: dict, source: str) -> dict:
+        out = {**check, "detail": f"Same as {source}. {check['detail']}"}
+        action = check.get("action")
+        if action and action.get("role") and action["kind"] != "set_context_length":
+            out["action"] = {**action, "role": self.role}  # the fix applies to this role
+        return out
+
     # ------------------------------------------------------------------ checks
     async def connection(self) -> bool:
         """Can the model be reached at all? False stops the remaining checks."""
@@ -220,7 +258,7 @@ class _RoleCheck:
             self.add("connection", "Connection", "pass", f"{self.label} key is set.")
         return True
 
-    async def reply(self) -> bool:
+    async def reply(self) -> None:
         self.run.step(self.role, "Asking for a short reply")
         started = time.perf_counter()
         try:
@@ -228,23 +266,18 @@ class _RoleCheck:
         except Exception as exc:
             self.add("reply", "Reply", "fail", _short(exc) if not isinstance(exc, TimeoutError) else "No reply.",
                      self._failure_fix(exc))
-            return False
+            return
         ms = int((time.perf_counter() - started) * 1000)
         if not text.strip():
             self.add("reply", "Reply", "warn", f"Answered in {ms / 1000:.1f} s but the reply was empty.",
                      "The model may be spending its whole reply thinking. Try turning Reasoning down for this role.")
         else:
             self.add("reply", "Reply", "pass", f"Answered in {ms / 1000:.1f} s.")
-        return True
 
     async def tools(self) -> None:
         self.run.step(self.role, "Trying a tool call")
-        messages: list[dict] = [{
-            "role": "user",
-            "content": "What is the weather in Paris right now? Use the tools: find the city first, then get its weather.",
-        }]
         try:
-            _, calls = await self._collect(messages, [FIND_CITY, GET_WEATHER])
+            _, calls = await self._collect(list(TOOL_PROMPT), [FIND_CITY, GET_WEATHER])
         except Exception as exc:
             self.add("tools", "Tool call", "fail", _short(exc) if not isinstance(exc, TimeoutError) else "No reply.",
                      self._failure_fix(exc))
@@ -256,11 +289,16 @@ class _RoleCheck:
                       else f"It called {first.name} with the wrong details.")
             self.add("tools", "Tool call", "fail", detail + " Tools and tasks won't work well.", fix, action)
             return
+        self.first_call = first
         self.add("tools", "Tool call", "pass", "Called the test tool correctly.")
-        if self.role not in CHAIN_ROLES:
-            return
+
+    async def chain(self) -> None:
+        """Second tool step: feed the first call's result back and expect a call that uses it."""
         self.run.step(self.role, "Trying a second tool step")
-        messages += [
+        # the role whose first step passed may be another role with the same settings: then use a canonical call
+        first = self.first_call or ToolCall(id="call_find_city", name="find_city", arguments={"name": "Paris"})
+        messages = [
+            *TOOL_PROMPT,
             {"role": "assistant", "content": "", "tool_calls": [first.to_openai()]},
             {"role": "tool", "tool_call_id": first.id, "content": json.dumps({"city_id": CITY_ID, "name": "Paris"})},
         ]
@@ -382,11 +420,14 @@ class _RoleCheck:
             if self.role == "embedding":
                 await self.embedding()
             else:
-                ok = await self.reply()
+                await self._shared("reply", self.reply)
+                ok = self._status("reply") != "fail"
                 if ok and self.role in TOOL_ROLES:
-                    await self.tools()
+                    await self._shared("tools", self.tools)
+                    if self.role in CHAIN_ROLES and self._status("tools") == "pass":
+                        await self._shared("chain", self.chain)
                 if ok and self.role in JSON_ROLES:
-                    await self.json_reply()
+                    await self._shared("json", self.json_reply)
                 if self.ollama:
                     if ok:
                         self.thinking()
@@ -401,6 +442,7 @@ class CheckupRun:
         self.ollama = _Ollama(client)
         self.timeout_s = timeout_s
         self.events: asyncio.Queue[dict] = asyncio.Queue()
+        self.shared: dict[tuple, dict[str, tuple[str, list[dict], bool]]] = {}  # settings key -> group -> result
 
     def ollama_base(self, prefix: str) -> str:
         providers = self.config.models.providers
@@ -414,10 +456,11 @@ class CheckupRun:
 def plan(config: SentientConfig, roles: dict[str, str | None] | None = None) -> list[tuple[str, str | None]]:
     """``[(role, model)]`` to check, in display order. ``model`` is None for an optional role that uses the main model.
 
-    ``roles`` checks only these roles with these models (onboarding checks its picks before they are saved).
+    ``roles`` checks only these roles with these models (onboarding checks its picks before they are saved); an
+    empty mapping checks nothing. ``None`` checks every role in the saved config.
     """
     configured = config.models.roles
-    if roles:
+    if roles is not None:
         return [(r, roles[r] or None) for r in ROLES if r in roles]
     return [(r, getattr(configured, r, None) or None) for r in ROLES]
 
