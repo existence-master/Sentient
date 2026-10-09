@@ -37,6 +37,8 @@ export interface LiveSession {
   abort?: AbortController
   /** Messages sent with `chat.steer` that the model hasn't picked up yet. */
   steers: Array<{ id: string; text: string }>
+  /** Queued messages the engine dropped when the reply was stopped (never sent). */
+  unsent?: Array<{ id: string; text: string }>
   /** Items of the previous live turn, kept visible when a late steer started a new turn. */
   carry?: TimelineItem[]
 }
@@ -81,6 +83,7 @@ async function finishTurn(key: string, sessionId: string | null) {
   // (or an app restart).
   const persistedReply = rows.length > l.baseCount && rows[rows.length - 1]?.role !== 'user'
   if (!persistedReply && (l.turn.status === 'cancelled' || l.turn.status === 'error')) return
+  if (l.unsent?.length || l.user.notSent) return // keep "your queued message wasn't sent" visible until the next send
   store.dropLive(key)
 }
 
@@ -247,6 +250,29 @@ export const useChat = create<ChatState>((set, get) => ({
         return
       }
       default: {
+        // §17 a queued message dropped by Stop everything: settle the entry that sent it (matched by client_id),
+        // never whatever turn is newest in that chat.
+        if ((ev.type === 'done' && ev.dropped) || (ev.type === 'error' && ev.dropped)) {
+          if (ev.type === 'error') return // the done that follows carries the text
+          const owner = Object.values(state.live).find((l) => ev.client_id && l.clientId === ev.client_id)
+          if (owner) {
+            set(patchLive(state, owner.key, (l) => ({
+              ...l,
+              streaming: false,
+              user: { ...l.user, pending: false, notSent: true },
+              turn: { ...l.turn, status: 'cancelled' }
+            })))
+            return
+          }
+          const sidKey = ev.session_id && state.live[ev.session_id] ? ev.session_id : null
+          if (sidKey) {
+            // its entry was already replaced: show the text as not sent without touching the current turn
+            set(patchLive(state, sidKey, (l) => ({ ...l, unsent: [...(l.unsent ?? []), ...(ev.dropped ?? []).map((text) => ({ id: uid(), text }))] })))
+          } else {
+            toast("Stopped. Your queued message wasn't sent.", { description: (ev.dropped ?? []).join(' / ').slice(0, 200) })
+          }
+          return
+        }
         const sid = ev.session_id
         const key = sid && state.live[sid] ? sid : null
         if (!key) {
@@ -263,11 +289,15 @@ export const useChat = create<ChatState>((set, get) => ({
         }
         // "A reply is already in progress." arrives without a turn: settle the optimistic entry.
         const orphanError = ev.type === 'error' && !ev.turn_id && !state.live[key].turn.segments.length
+        // A stopped reply drops what was queued behind it (steers, §17 dropped turns): show them as not sent.
+        const stopped = ev.type === 'done' && ev.cancelled
         set(patchLive(state, key, (l) => ({
           ...l,
           turn: orphanError ? { ...next, status: 'error' } : next,
           streaming: finished || orphanError ? false : l.streaming,
-          user: { ...l.user, pending: false }
+          user: { ...l.user, pending: false },
+          steers: stopped ? [] : l.steers,
+          unsent: stopped ? [...(l.unsent ?? []), ...l.steers] : l.unsent
         })))
         if (finished) void finishTurn(key, get().live[key]?.sessionId ?? null)
       }

@@ -171,7 +171,7 @@ function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPro
           <Timeline items={items} streaming={streaming} loading={loadingHistory}>
             {items.map((item, i) =>
               item.kind === 'user' ? (
-                <UserMessage key={item.id} message={item} />
+                <UserMessage key={item.id} message={item} onRestore={(text) => setInject({ text, nonce: Date.now() })} />
               ) : (
                 <AssistantTurn
                   key={item.id}
@@ -182,6 +182,8 @@ function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPro
                   onRetry={onRetry}
                   onApprove={onApprove}
                   steers={liveSession && item.id === liveSession.turn.id ? liveSession.steers : undefined}
+                  unsent={liveSession && item.id === liveSession.turn.id ? liveSession.unsent : undefined}
+                  onRestore={(text) => setInject({ text, nonce: Date.now() })}
                 />
               )
             )}

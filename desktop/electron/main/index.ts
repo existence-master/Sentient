@@ -25,7 +25,7 @@ import { DesktopNode } from './node'
 import { homePaths, sentientHome } from './paths'
 import { shellState, THEME_BG } from './prefs'
 import { SmokeRunner, smokeConfig } from './smoke'
-import { AppTray } from './tray'
+import { AppTray, STOP_ACCELERATOR } from './tray'
 import { createMainWindow } from './window'
 
 const smoke = smokeConfig()
@@ -42,6 +42,7 @@ let win: BrowserWindow | null = null
 let tray: AppTray | null = null
 let quitting = false
 let smokeRunner: SmokeRunner | null = null
+let engineStopped: boolean | undefined // §17 Stop everything, as the engine last reported it
 const liveNotifications = new Set<Notification>()
 
 function showWindow(): void {
@@ -106,6 +107,11 @@ interface ConfigSubset {
 
 async function syncFromBackend(): Promise<void> {
   try {
+    engineStopped = (await api<{ stopped: boolean }>('/api/stop')).stopped
+  } catch {
+    /* an older engine without Stop everything */
+  }
+  try {
     const cfg = await api<ConfigSubset>('/api/config')
     shellState.setPrefs({
       minimizeToTray: cfg.ui?.minimize_to_tray ?? true,
@@ -129,6 +135,29 @@ async function toggleProactivity(): Promise<void> {
   tray?.refresh()
 }
 
+// ------------------------------------------------------------------ stop everything (§17)
+/** Stop or resume from the tray or the global shortcut. Works with the window hidden; never asks the model. */
+async function setStopped(stop: boolean, source: 'tray' | 'hotkey'): Promise<void> {
+  try {
+    const state = await api<{ stopped: boolean; cancelled?: number }>(stop ? '/api/stop-all' : '/api/resume', {
+      method: 'POST',
+      body: JSON.stringify({ source })
+    })
+    engineStopped = state.stopped
+    if (Notification.isSupported() && (!win || !win.isVisible() || !win.isFocused())) {
+      new Notification({
+        title: stop ? 'Sentient stopped everything' : 'Sentient resumed',
+        body: stop ? 'Nothing new will start until you resume from the tray or the app.' : 'Scheduled tasks and suggestions are back on.',
+        silent: true,
+        icon: notificationIcon
+      }).show()
+    }
+  } catch (err) {
+    dialog.showErrorBox('Sentient', `Couldn't ${stop ? 'stop' : 'resume'} Sentient: ${String(err)}`)
+  }
+  tray?.refresh()
+}
+
 // ------------------------------------------------------------------ this computer as a device (§13)
 const CAPTURE_TEXT: Record<CaptureNotice['kind'], { tray: string; title: string; body: string }> = {
   screen: { tray: 'looked at your screen', title: 'Sentient looked at your screen', body: 'A single screenshot was taken because you asked.' },
@@ -143,6 +172,10 @@ const desktopNode = new DesktopNode({
   icon: notificationIcon,
   onState: (state) => {
     if (win && !win.isDestroyed()) win.webContents.send(CH.desktopNodeState, state)
+  },
+  onStopState: (stopped) => {
+    engineStopped = stopped
+    tray?.refresh()
   },
   notice: (kind) => {
     const text = CAPTURE_TEXT[kind]
@@ -368,11 +401,19 @@ function boot(): void {
       proactivityEnabled: () => shellState.prefs().proactivityEnabled,
       backendReady: () => backend.status.state === 'ready',
       alwaysListening: () => shellState.prefs().alwaysListening === true,
-      toggleAlwaysListening: () => setAlwaysListening(shellState.prefs().alwaysListening !== true, true)
+      toggleAlwaysListening: () => setAlwaysListening(shellState.prefs().alwaysListening !== true, true),
+      stopped: () => engineStopped,
+      toggleStopped: () => void setStopped(engineStopped !== true, 'tray')
     })
 
     if (!globalShortcut.register(GLOBAL_SHORTCUT, () => sendCommand({ type: 'new-chat' }))) {
       console.warn(`[shell] global shortcut ${GLOBAL_SHORTCUT} is taken by another app`)
+    }
+    // Stop only: resuming is always a deliberate click.
+    if (!globalShortcut.register(STOP_ACCELERATOR, () => {
+      if (backend.status.state === 'ready') void setStopped(true, 'hotkey')
+    })) {
+      console.warn(`[shell] global shortcut ${STOP_ACCELERATOR} is taken by another app`)
     }
   })
 

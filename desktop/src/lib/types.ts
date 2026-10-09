@@ -55,6 +55,18 @@ export interface UIConfig {
   minimize_to_tray: boolean
 }
 
+/** §17 Stop everything. `source`: desktop | tray | hotkey | telegram | discord | device. */
+export interface StopState {
+  stopped: boolean
+  stopped_at: ISODate | null
+  source: string | null
+}
+
+export interface StopResult extends StopState {
+  /** How many running jobs were cancelled. */
+  cancelled: number
+}
+
 export interface Bootstrap {
   version: string
   home: string
@@ -64,6 +76,8 @@ export interface Bootstrap {
   unread_notifications: number
   ui: UIConfig
   features: { voice: boolean; proactivity: boolean; [feature: string]: boolean }
+  /** §17; missing on older engines */
+  stop?: StopState
 }
 
 export type PersonaId = 'friendly' | 'professional' | 'concise' | 'coach' | 'custom'
@@ -506,6 +520,9 @@ export interface ErrorEvent extends TurnScoped {
   type: 'error'
   message: string
   recoverable?: boolean
+  /** §17: a queued message was dropped by Stop everything (echoes the `client_id` it was sent with). */
+  dropped?: boolean
+  client_id?: string | null
 }
 export interface DoneEvent extends TurnScoped {
   type: 'done'
@@ -513,6 +530,9 @@ export interface DoneEvent extends TurnScoped {
   message_id: string | null
   cancelled?: boolean
   memory_sources?: MemorySource[]
+  /** §17: a queued message dropped by Stop everything (its text; never sent). Comes with the `client_id` it was sent with. */
+  dropped?: string[]
+  client_id?: string | null
 }
 export interface ApprovalAckEvent {
   type: 'approval.ack'
@@ -606,6 +626,8 @@ export interface DomainEventMap {
   'user_model.updated': UserModelUpdatedData
   'dream.updated': Dream
   'source.items': SourceItemsData
+  // §17
+  'stop.updated': StopState
 }
 
 export type DomainEventType = keyof DomainEventMap

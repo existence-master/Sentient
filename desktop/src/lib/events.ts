@@ -22,6 +22,7 @@
  *   user_model.updated    -> refetch ['user-model']
  *   dream.updated         -> upsert into ['memories', 'dreams'] (and refetch the user model when one completes)
  *   source.items          -> webhook calls refresh ['hooks'] (last called / call count)
+ *   stop.updated          -> ['stop'] (Stop everything banner and title bar button)
  */
 import type { QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -231,12 +232,15 @@ export function installDomainEvents(qc: QueryClient): () => void {
     })
   )
 
+  // §17 stop everything
+  offs.push(live.onDomain('stop.updated', (e) => qc.setQueryData(qk.stop, e.data)))
+
   // After a reconnect we may have missed events: refresh lists (not transcripts).
   let prev: SocketState = live.state
   offs.push(
     live.onState((s) => {
       if (s === 'open' && prev === 'reconnecting') {
-        for (const key of [qk.sessions, qk.notifications, qk.tasks.all, qk.integrations.all, qk.bootstrap, deviceKeys.all, channelKeys.all, browserKeys.status]) {
+        for (const key of [qk.sessions, qk.notifications, qk.tasks.all, qk.integrations.all, qk.bootstrap, qk.stop, deviceKeys.all, channelKeys.all, browserKeys.status]) {
           void qc.invalidateQueries({ queryKey: key })
         }
       }

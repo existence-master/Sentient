@@ -12,7 +12,12 @@ export interface TrayHandlers {
   backendReady(): boolean
   alwaysListening(): boolean
   toggleAlwaysListening(): void
+  /** §17 Stop everything: undefined until the engine said. */
+  stopped(): boolean | undefined
+  toggleStopped(): void
 }
+
+export const STOP_ACCELERATOR = 'CommandOrControl+Alt+Shift+S'
 
 const WAKE_LABEL = "Listen for 'Hey Sentient'"
 
@@ -39,6 +44,7 @@ export class AppTray {
     const pro = this.h.proactivityEnabled()
     const ready = this.h.backendReady()
     const listening = this.h.alwaysListening()
+    const stopped = this.h.stopped() === true
     if (!this.flashTimer) this.tray.setToolTip(this.baseTooltip())
     if (process.platform === 'darwin') this.tray.setTitle(listening ? ' ●' : '')
     this.tray.setContextMenu(
@@ -48,6 +54,12 @@ export class AppTray {
         { label: 'Voice mode', click: () => this.h.voiceMode() },
         { label: WAKE_LABEL, type: 'checkbox', checked: listening, click: () => this.h.toggleAlwaysListening() },
         { type: 'separator' },
+        {
+          label: stopped ? 'Resume Sentient' : 'Stop everything',
+          accelerator: stopped ? undefined : STOP_ACCELERATOR,
+          enabled: ready,
+          click: () => this.h.toggleStopped()
+        },
         {
           label: pro === false ? 'Resume proactivity' : 'Pause proactivity',
           enabled: ready && pro !== undefined,
