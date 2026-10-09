@@ -377,6 +377,32 @@ class UserModelService(Service):
         await self._touch(changed=1)
         return _public(ins)
 
+    async def import_insight(self, statement: str, *, source: str, dimension: str = "context") -> dict | None:
+        """An insight brought over from another assistant (``source`` like ``import:hermes``): active with medium
+        confidence, so new evidence can still change it. None when the same statement is already there."""
+        statement = _clean_statement(statement, self.user_name)
+        if not statement:
+            return None
+        await ensure_memory_schema(self.app.store)
+        if await self.app.store.fetchone(
+            "SELECT id FROM user_insights WHERE statement = ? COLLATE NOCASE AND status != 'retired'", (statement,)
+        ):
+            return None
+        ins = await self._insert(
+            statement, normalize_dimension(dimension), confidence=0.6, status="active", source=source,
+            evidence=[{"kind": "import", "ref": source, "quote": statement[:160], "at": now_iso()}],
+        )
+        await self._touch(changed=1)
+        return _public(ins)
+
+    async def delete_by_source(self, source: str) -> int:
+        """Delete every insight with this ``source`` (undo an import)."""
+        await ensure_memory_schema(self.app.store)
+        rows = await self.app.store.fetchall("SELECT id FROM user_insights WHERE source = ?", (source,))
+        for r in rows:
+            await self.delete_insight(r["id"])
+        return len(rows)
+
     async def update_insight(self, insight_id: str, *, statement: str | None = None, status: str | None = None) -> dict:
         ins = await self._get(insight_id)
         if ins is None:

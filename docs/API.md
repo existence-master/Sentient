@@ -269,6 +269,13 @@ schedule=None, quiet=False)` → Task. With a recurring `schedule` the task is c
 and makes the same call at each run (the Daily Brief, section 6); with `quiet` (`fixed_call.quiet: true`) a finished run
 sends no "Task completed" notification because the tool sends its own (failures still notify), and its result is the done
 text with no model call.
+
+Imported tasks (section 18) carry `original_context.imported_from` (`"hermes"`), `source: "import"`, `enabled: false`
+and an empty `plan`, so they never run as they are. The first Resume (`PATCH {enabled: true}`) of such a task plans it:
+it goes to `planning` and then `approval_pending` like a new task, keeping its schedule. A script task whose script only
+notifies skips the planner and goes straight to `approval_pending` with a one-step plan describing the script (or to
+`active` when `tasks.require_plan_approval` is off). `POST /run-now` on it returns 409 until it has a plan. Backend API:
+`await app.tasks.create_imported(*, name, prompt, schedule, script=None, context=None)` → Task.
 **ProgressUpdate** `{"timestamp": "...", "message": {"type": "info|thought|tool_call|tool_result|final_answer|error", "content": "...", "tool_name": "...", "parameters": {}, "result": "...", "is_error": false}}`
 
 ### Endpoints
@@ -488,6 +495,7 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   - Replacing a server with a different URL drops its stored sign-in. Headers not given are deleted.
 - `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain)
 - `POST /api/integrations/mcp/{name}/test` → `{ok, tools: [mcp tool names], error?}`
+- `POST /api/integrations/mcp/{name}/enabled` `{enabled: bool}` → server object (turns a server on or off and nothing else; 404 if missing)
 - `POST /api/integrations/mcp/{name}/sign-in` → `{auth_url, state}`; the desktop opens `auth_url` in the system browser. The engine
   discovers the server's protected resource metadata and authorization server metadata (RFC 9728, RFC 8414), registers
   a client when needed (RFC 7591, `client_name: "Sentient"`, public client), and uses PKCE (S256) with the `resource`
@@ -1226,7 +1234,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 ## 15. Knowing the user (owner: memory)
 
 ### User model
-- **Insight** `{id, dimension: "preferences"|"communication"|"goals"|"routines"|"relationships"|"values"|"work_style"|"dislikes"|"context", statement, confidence, status: "active"|"confirmed"|"disputed"|"retired", source: "inferred"|"user", evidence: [{kind: "fact"|"message"|"summary"|"feedback", ref, quote, at}], created_at, updated_at}`
+- **Insight** `{id, dimension: "preferences"|"communication"|"goals"|"routines"|"relationships"|"values"|"work_style"|"dislikes"|"context", statement, confidence, status: "active"|"confirmed"|"disputed"|"retired", source: "inferred"|"user"|"import:hermes", evidence: [{kind: "fact"|"message"|"summary"|"feedback"|"import", ref, quote, at}], created_at, updated_at}`
 - `GET /api/user-model` → `{summary, updated_at, insights: [Insight], questions: [{id, question, insight_id, created_at}]}`
   (`summary` is a markdown portrait of at most 180 words, `""` until the first refresh; `updated_at` is `null` until
   something changes; insights of every status, ordered confirmed, active, disputed, retired, then by confidence;
@@ -1437,3 +1445,81 @@ can ignore it.
 - Surfaces: the desktop title bar button and banner, the tray menu, the global shortcut `Ctrl+Alt+Shift+S`
   (`Cmd+Alt+Shift+S` on macOS; stop only), `/stopall` and `/resume` in paired Telegram and Discord chats, and the
   `stop_all` / `resume` device messages (the web device app has a button).
+
+## 18. Moving from Hermes (owner: core)
+
+Brings a Hermes Agent home folder (default `~/.hermes`) into Sentient in one step: preview first, then apply the parts
+the user picks. Code: `sentient/migrate/hermes.py`; the Hermes file formats it relies on are listed in its docstring.
+
+Only these are opened: `config.yaml`, `SOUL.md`, `memories/MEMORY.md`, `memories/USER.md` (else `USER.md`),
+`skills/**`, `cron/jobs.json` and a job's script under `scripts/`. `auth.json`, `.env`, sessions, logs and state
+databases are never read, skill folders are copied without dotfiles or symlinks, and no secret value is imported.
+
+- `GET /api/import/hermes` → `{path, exists}` (the default folder and whether it is there)
+- `POST /api/import/hermes/preview` `{path?}` → **HermesPreview** (400 with a plain `detail` when the folder is missing
+  or doesn't look like a Hermes home)
+- `POST /api/import/hermes/apply` `{path?, parts: ["skills"|"memory"|"persona"|"jobs"|"mcp"], skip?: [item key]}` →
+  **HermesResult**. The plan is worked out again from the folder, so only items a preview shows as `import` are
+  imported; `skip` leaves items out. The persona is replaced only when `persona` is in `parts` (the user confirmed the
+  diff). 400 when `parts` is empty.
+- `DELETE /api/import/hermes/memories` → `{facts, insights}` (deletes every fact and insight with source
+  `import:hermes`)
+
+**HermesPreview**
+```json
+{"path": "C:/Users/me/.hermes",
+ "counts": {"skills": 2, "memory": 5, "persona": 1, "jobs": 3, "mcp": 3},
+ "skills": [{"key": "skill:productivity/weekly-review", "action": "import|skip", "note": "Goes to Skills to review...",
+             "name": "weekly-review", "folder": "productivity/weekly-review", "description": "...",
+             "target": "weekly-review", "changed_builtin": false}],
+ "memory": [{"key": "fact:0", "action": "import", "note": "...", "kind": "fact|insight", "text": "..."}],
+ "persona": {"key": "persona", "action": "import|skip", "note": "...", "current": "...", "proposed": "..."},
+ "jobs": [{"key": "job:<hermes id>", "action": "import|skip", "note": "...", "name": "...", "prompt": "...",
+           "schedule_text": "0 8 * * *", "schedule": {"type": "recurring", "frequency": "daily", "time": "08:00"},
+           "kind": "task|script", "script": {"path": "scripts/check.py", "code": "..."}, "then": "notify|run",
+           "delivery": "desktop|whatsapp|telegram|discord", "skills": ["..."]}],
+ "mcp": [{"key": "mcp:<name>", "action": "import|skip", "note": "...", "name": "...", "transport": "stdio|http",
+          "url": null, "command": "npx", "args": [], "auth": "none|headers|oauth", "header_keys": [], "env_keys": []}],
+ "suggestions": {"wake_word": "hey hermes", "tts_provider": "edge", "tts_voice": "en-US-AriaNeural"},
+ "never_read": [".env", "auth.json"]}
+```
+`note` says in plain words what will happen, or why an item is skipped. `persona` is `null` without a SOUL.md; a job's
+`schedule` is `null` and `script` is `null` when it has none; `then` is only on script jobs; each suggestion may be
+`null`.
+
+- **Skills** are copied to `~/.sentient/skills/pending/<target>/` (never active; approve them under Skills). A skill
+  listed in `skills/.bundled_manifest` whose folder still has Hermes' hash is skipped; one the user changed is
+  imported with `changed_builtin: true`. Hidden folders (`.archive`, `.hub`, `.curator_*`) are ignored. `target` is
+  made unique (`<name>-hermes`, `<name>-hermes-2`...) when Sentient already has that name; a skill whose body Sentient
+  already has is skipped. The copied SKILL.md gets `name: <target>` and `tags` from `metadata.hermes.tags`.
+- **Memory**: `MEMORY.md` entries (separated by a line holding only `§`) become facts, `USER.md` entries become
+  user-model insights (`active`, confidence 0.6), both with source `import:hermes`; "User" becomes the user's name.
+  Facts are stored without model calls (embeddings only); duplicates are skipped. The memory review inbox (#137) does
+  not exist yet, so they are added directly and can be removed with `DELETE /api/import/hermes/memories`.
+- **Persona**: `SOUL.md` replaces Sentient's SOUL.md (`current` and `proposed` let the window show a diff).
+- **Scheduled jobs** become paused tasks (section 4, "Imported tasks"). Schedules: cron `M H * * *` → daily,
+  `M H * * <days>` → weekly, `*/N * * * *` → every N minutes, `M * * * *` → hourly, `M */H * * *` → every H hours,
+  `interval` → every N minutes, a future `once` → one time. Anything else (days of the month, several times a day,
+  more often than every 5 minutes) is skipped with the expression in `note`. A job with `script` or `monitor_script`
+  becomes a script task (condition `changed`; `then: run` when it also has a prompt, else `notify`) only when the
+  script is a Python file inside `scripts/` that compiles; otherwise it is skipped with the reason. A job's Hermes
+  skills are named in the task's description. `deliver: "whatsapp:..."` (or telegram, discord, or `origin` with the
+  job's `origin.platform`) maps to that channel when it has a paired chat (task results reach every paired chat with delivery on, section 14), else to this computer.
+- **MCP servers** are added turned off (`POST /api/integrations/mcp/{name}/enabled` turns one on), keeping the URL or
+  command and arguments, `auth: oauth` (sign in again) and only the names of headers and environment settings; their
+  values are never copied. A name Sentient already has is skipped, and so is a server whose URL or arguments seem to
+  carry a key (`--api-key abc`, `--token=abc`, `ghp_...`, `?api_key=...`; `${VAR}` references are fine), so that
+  key never lands in config.yaml.
+- **Suggestions** (wake phrase and voice) are only shown; nothing changes.
+
+**HermesResult** (only the parts that were applied)
+```json
+{"path": "...",
+ "skills": {"imported": ["weekly-review"], "skipped": [{"key": "...", "name": "...", "note": "..."}]},
+ "memory": {"facts": 3, "insights": 2, "skipped": []},
+ "persona": {"updated": true},
+ "jobs": {"created": [{"task_id": "...", "name": "..."}], "skipped": []},
+ "mcp": {"added": ["github"], "skipped": []}}
+```
+Applying publishes the usual events: `skill.updated` (`state: "pending_review"`), `memory.updated`,
+`user_model.updated`, `task.updated` and `config.updated`.

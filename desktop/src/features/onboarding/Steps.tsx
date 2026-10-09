@@ -29,6 +29,7 @@ import { SUGGESTIONS } from '@/features/chat/EmptyChat'
 import { usePersonas } from '@/hooks/memory'
 import { cn, listTimezones } from '@/lib/utils'
 import { useOnboardingDraft } from './draft'
+import { HermesImportCard } from './HermesImport'
 
 export function StepHeader({ title, subtitle, eyebrow }: { title: ReactNode; subtitle?: ReactNode; eyebrow?: ReactNode }) {
   return (
@@ -298,6 +299,7 @@ export function DoneStep() {
           </button>
         ))}
       </div>
+      <HermesImportCard className="mt-6 max-w-md" />
       <Button autoFocus variant="primary" size="lg" className="mt-8 px-7" rightIcon={<IconArrowRight size={16} />} onClick={() => start()}>
         Start chatting
       </Button>

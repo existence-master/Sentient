@@ -10,6 +10,7 @@ import {
   IconMessageChatbot,
   IconMessages,
   IconSparkles,
+  IconTransfer,
   IconTarget,
   IconThumbUp,
   IconUsers,
@@ -65,7 +66,8 @@ export const EVIDENCE_META: Record<string, { label: string; icon: Icon }> = {
   message: { label: 'Something you said', icon: IconMessage },
   fact: { label: 'Something I remember', icon: IconBrain },
   summary: { label: 'From a past conversation', icon: IconMessages },
-  feedback: { label: 'Your feedback', icon: IconThumbUp }
+  feedback: { label: 'Your feedback', icon: IconThumbUp },
+  import: { label: 'Brought over from Hermes', icon: IconTransfer }
 }
 
 export const evidenceMeta = (kind: string) => EVIDENCE_META[kind] ?? { label: humanize(kind), icon: IconSparkles }

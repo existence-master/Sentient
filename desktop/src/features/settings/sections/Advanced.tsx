@@ -7,6 +7,7 @@ import { getBridge } from '@/lib/bridge'
 import { copyText } from '@/lib/utils'
 import { useConnection } from '@/stores/connection'
 import type { OpenPathTarget, VersionInfo } from '@/types/bridge'
+import { HermesImportCard } from '@/features/onboarding/HermesImport'
 import { SchemaForm } from '../SchemaForm'
 import type { SectionProps } from '../SettingsPage'
 
@@ -35,6 +36,9 @@ export function AdvancedSection({ query }: SectionProps) {
 
   return (
     <div className="space-y-8">
+      <FormSection title="Move from another assistant">
+        <HermesImportCard />
+      </FormSection>
       <FormSection title="Folders" description={bootstrap.data ? <span className="font-mono">{bootstrap.data.home}</span> : undefined}>
         {FOLDERS.map((f) => (
           <FormRow key={f.target} label={f.label} description={f.description}>

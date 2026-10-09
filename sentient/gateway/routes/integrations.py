@@ -77,6 +77,14 @@ async def test_mcp(request: Request, name: str):
         raise HTTPException(404, f"no MCP server named {name}") from exc
 
 
+@router.post("/mcp/{name}/enabled")
+async def enable_mcp(request: Request, name: str, body: dict):
+    try:
+        return await _mgr(request).mcp.set_enabled(name, bool(body.get("enabled", True)))
+    except KeyError as exc:
+        raise HTTPException(404, f"no MCP server named {name}") from exc
+
+
 @router.post("/mcp/{name}/sign-in")
 async def sign_in_mcp(request: Request, name: str):
     try:

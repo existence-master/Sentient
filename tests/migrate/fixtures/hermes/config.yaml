@@ -1,0 +1,30 @@
+# A made-up Hermes home for tests. No real keys anywhere.
+model:
+  default: anthropic/claude-sonnet
+  provider: openrouter
+mcp_servers:
+  github:
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${env:GITHUB_TOKEN}"
+    enabled: true
+  linear:
+    url: https://mcp.linear.app/mcp
+    auth: oauth
+  notes:
+    url: https://notes.example.com/mcp
+    headers:
+      Authorization: "Bearer fixture-header-value"
+  empty:
+    enabled: false
+  inline:
+    command: uvx
+    args: ["some-mcp", "--api-key", "fixture-not-a-key"]
+wake_word:
+  enabled: true
+  phrase: hey jarvis
+tts:
+  provider: edge
+  edge:
+    voice: en-GB-SoniaNeural

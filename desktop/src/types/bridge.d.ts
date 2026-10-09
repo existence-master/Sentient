@@ -126,8 +126,9 @@ export interface SentientBridge {
   getVersion(): Promise<VersionInfo>
   /** Smoke-test hook: the current route has rendered and its data has loaded. */
   readyForScreenshot(): void
-  /** Native open dialog. Returns absolute paths (drag and drop is the primary path). */
-  pickFiles(options?: { multiple?: boolean }): Promise<string[]>
+  /** Native open dialog. Returns absolute paths (drag and drop is the primary path). `directory` picks a folder
+   *  (hidden folders such as ~/.hermes are shown). */
+  pickFiles(options?: { multiple?: boolean; directory?: boolean }): Promise<string[]>
   /** Whether the window currently has OS focus. */
   isFocused(): Promise<boolean>
   /** Open a file from Sentient's files folder (`outputs/chart.png`) with the default app. */

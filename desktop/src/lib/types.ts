@@ -1676,7 +1676,7 @@ export interface Insight {
   /** 0..1 */
   confidence: number
   status: InsightStatus
-  source: 'inferred' | 'user'
+  source: 'inferred' | 'user' | 'import:hermes' | string
   evidence: InsightEvidence[]
   created_at: ISODate
   updated_at: ISODate
@@ -1767,4 +1767,75 @@ export interface FeedStatus {
   failures: number
   next_attempt_at: ISODate | null
   emitted: number
+}
+
+// §18 moving from Hermes ------------------------------------------------------------------
+export type HermesPart = 'skills' | 'memory' | 'persona' | 'jobs' | 'mcp'
+
+/** One thing found in the Hermes folder, with what will happen to it (`note`, plain words). */
+export interface HermesItem {
+  key: string
+  action: 'import' | 'skip'
+  note: string
+}
+export interface HermesSkillItem extends HermesItem {
+  name: string
+  folder: string
+  description?: string
+  /** The name it gets in Sentient (made unique). */
+  target?: string
+  changed_builtin?: boolean
+}
+export interface HermesMemoryItem extends HermesItem {
+  kind: 'fact' | 'insight'
+  text: string
+}
+export interface HermesPersona extends HermesItem {
+  current: string
+  proposed: string
+}
+export interface HermesJobItem extends HermesItem {
+  name: string
+  prompt: string
+  schedule_text: string
+  schedule: TaskSchedule | null
+  kind: 'task' | 'script'
+  script: { path: string; code: string } | null
+  then?: ScriptThen
+  delivery: 'desktop' | 'whatsapp' | 'telegram' | 'discord' | string
+  skills: string[]
+}
+export interface HermesMcpItem extends HermesItem {
+  name: string
+  transport: 'stdio' | 'http'
+  url: string | null
+  command: string | null
+  args: string[]
+  auth: McpAuth
+  header_keys: string[]
+  env_keys: string[]
+}
+export interface HermesPreview {
+  path: string
+  counts: Record<HermesPart, number>
+  skills: HermesSkillItem[]
+  memory: HermesMemoryItem[]
+  persona: HermesPersona | null
+  jobs: HermesJobItem[]
+  mcp: HermesMcpItem[]
+  suggestions: { wake_word: string | null; tts_provider: string | null; tts_voice: string | null }
+  never_read: string[]
+}
+export interface HermesSkipped {
+  key: string
+  name: string
+  note: string
+}
+export interface HermesResult {
+  path: string
+  skills?: { imported: string[]; skipped: HermesSkipped[] }
+  memory?: { facts: number; insights: number; skipped: HermesSkipped[] }
+  persona?: { updated: boolean }
+  jobs?: { created: Array<{ task_id: string; name: string }>; skipped: HermesSkipped[] }
+  mcp?: { added: string[]; skipped: HermesSkipped[] }
 }

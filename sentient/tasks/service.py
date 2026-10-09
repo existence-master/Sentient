@@ -395,6 +395,71 @@ class TaskService(Service):
         assert data is not None
         return data
 
+    async def create_imported(
+        self, *, name: str, prompt: str, schedule: dict, script: dict | None = None, context: dict | None = None
+    ) -> dict:
+        """A paused task brought over from another assistant (Hermes' scheduled jobs, ``sentient/migrate``).
+
+        It has a schedule but no plan, so it never runs as it is: resuming it plans it and asks for approval like
+        any new task (``_start_imported``). ``script`` makes it a script task (code checked, not yet approved)."""
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise ValueError("A prompt is required.")
+        sched = normalize_schedule(schedule, self.tz_name(), override_timezone=False)
+        now = self.now_iso()
+        fields: dict[str, Any] = {
+            "name": (name or "").strip()[:200] or _title(prompt),
+            "description": prompt,
+            "status": "active" if sched["type"] == "recurring" else "pending",
+            "priority": 1,
+            "assignee": "ai",
+            "original_prompt": prompt,
+            "source": "import",
+            "enabled": False,
+            "model": None,
+            "original_context": {**(context or {}), "imported_from": (context or {}).get("imported_from") or "import"},
+            "plan": [],
+            "chat_history": [],
+            "clarifying_questions": [],
+            "task_type": "script" if script else "single",
+            "script": normalize_script(script) if script else None,
+            "schedule": sched,
+            "next_execution_at": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        task_id = await self.repo.insert_task(fields)
+        data = await self.publish(task_id)
+        assert data is not None
+        return data
+
+    @staticmethod
+    def _unplanned_import(task: dict) -> bool:
+        return bool((task.get("original_context") or {}).get("imported_from")) and not task.get("plan")
+
+    async def _start_imported(self, task: dict, changes: dict) -> dict:
+        """First Resume of an imported task: a script that only notifies goes straight to approval (its code is the
+        plan); anything else is planned now and then waits for approval, like a new task."""
+        task_id = task["id"]
+        script = task.get("script") if task.get("task_type") == "script" else None
+        base = {**changes, "enabled": True, "next_execution_at": None, "error": None}
+        if script and script.get("then") == "notify":
+            plan = [{"tool": "", "description": scripts.describe_for_approval(script)}]
+            if not self.app.config.tasks.require_plan_approval:
+                await self._set(task_id, {**base, "plan": plan})
+                return await self.approve(task_id)
+            await self._set(task_id, {**base, "plan": plan, "status": "approval_pending"})
+            await self.publish(task_id)
+            await self._notify(
+                task, f"Check the script for '{task.get('name')}' and approve it to turn the job on.",
+                "Plan ready for approval", "approval_needed",
+            )
+            return await self.get(task_id)
+        await self._set(task_id, {**base, "status": "planning"})
+        await self.publish(task_id)
+        self._spawn(self._plan_job(task_id), f"plan:{task_id}")
+        return await self.get(task_id)
+
     async def preview(self, prompt: str) -> dict:
         """v2 generate-plan: ``{name, description, priority, schedule}`` without creating a task."""
         prompt = (prompt or "").strip()
@@ -473,6 +538,9 @@ class TaskService(Service):
             changes["schedule"] = schedule
         status = changes.get("status", task["status"])
         enabled = changes.get("enabled", task["enabled"])
+        if enabled and not task["enabled"] and status in {"active", "pending"} and self._unplanned_import(task) \
+                and "plan" not in changes:
+            return await self._start_imported(task, changes)
         reschedule = "schedule" in changes or "status" in changes or (enabled and not task["enabled"])
         if reschedule and status in {"active", "pending"}:
             kind = (schedule or {}).get("type")
@@ -587,6 +655,8 @@ class TaskService(Service):
         task = await self._require(task_id)
         if task["status"] in {"planning", "clarification_pending"}:
             raise TaskConflict("This task is still being planned.")
+        if self._unplanned_import(task):
+            raise TaskConflict("Resume this task first, so Sentient can plan it and you can approve the plan.")
         kind = (task.get("schedule") or {}).get("type")
         if task.get("task_type") == "swarm":
             if task["status"] == "processing":
