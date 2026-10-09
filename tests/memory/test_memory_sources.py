@@ -29,18 +29,18 @@ async def _assistant_rows(app, sid: str) -> list[dict]:
 
 async def test_prompt_facts_and_insights_are_recorded_on_the_reply(app):
     app.config.memory.min_similarity = 0.0
-    fid = await add_fact(app.memory, "Sarthak lives in Pune", source="manual")
-    ins = await app.user_model.add_insight("Sarthak prefers morning meetings", "preferences")
+    fid = await add_fact(app.memory, "Maya lives in Pune", source="manual")
+    ins = await app.user_model.add_insight("Maya prefers morning meetings", "preferences")
     app.fake.replies.append("Morning works, in Pune.")
     sid = await app.store.create_session(channel="cli")
 
     done = _done(await _turn(app, sid, "where do I live and when should we meet"))
 
     system = app.fake.calls[-1]["messages"][0]["content"]
-    assert "Sarthak lives in Pune" in system and "morning meetings" in system
+    assert "Maya lives in Pune" in system and "morning meetings" in system
     expected = [
-        {"kind": "fact", "id": fid, "text": "Sarthak lives in Pune", "source": "manual", "via": "prompt"},
-        {"kind": "insight", "id": ins["id"], "text": "Sarthak prefers morning meetings", "source": "user", "via": "prompt"},
+        {"kind": "fact", "id": fid, "text": "Maya lives in Pune", "source": "manual", "via": "prompt"},
+        {"kind": "insight", "id": ins["id"], "text": "Maya prefers morning meetings", "source": "user", "via": "prompt"},
     ]
     assert done.memory_sources == expected
     [row] = await _assistant_rows(app, sid)
@@ -50,19 +50,39 @@ async def test_prompt_facts_and_insights_are_recorded_on_the_reply(app):
 async def test_memory_recall_results_are_recorded_with_their_source(app):
     app.config.memory.facts_top_k = 0  # nothing pushed into the prompt: only the tool finds it
     app.config.user_model.enabled = False
-    fid = await add_fact(app.memory, "Sarthak's sister Aditi lives in Mumbai", source="file:family.md")
+    fid = await add_fact(app.memory, "Maya's sister Aditi lives in Mumbai", source="file:family.md")
     app.fake.replies.extend([[tool_call("memory_recall", query="sister Aditi Mumbai")], "Aditi lives in Mumbai."])
     sid = await app.store.create_session(channel="cli")
 
     done = _done(await _turn(app, sid, "where does my sister live"))
 
     assert done.memory_sources == [
-        {"kind": "fact", "id": fid, "text": "Sarthak's sister Aditi lives in Mumbai", "source": "file:family.md",
+        {"kind": "fact", "id": fid, "text": "Maya's sister Aditi lives in Mumbai", "source": "file:family.md",
          "via": "tool"},
     ]
     rows = await _assistant_rows(app, sid)
     assert rows[0]["tool_calls"] and rows[0]["memory_sources"] == []  # the tool-call step carries none
     assert rows[-1]["memory_sources"] == done.memory_sources
+
+
+async def test_facts_cut_from_a_long_result_are_not_attributed(app):
+    """A long tool result is cut before the model reads it; facts from the cut part are not listed."""
+    app.config.memory.facts_top_k = 0
+    app.config.user_model.enabled = False
+    await add_fact(app.memory, "Maya's sister Aditi lives in Mumbai", source="manual")
+    for i in range(30):
+        await add_fact(app.memory, f"Maya noted detail number {i} about the Mumbai trip plans", source="manual")
+    app.config.chat.tool_result_max_chars = 400
+    app.fake.replies.extend([[tool_call("memory_recall", query="Mumbai", limit=20)], "Noted."])
+    sid = await app.store.create_session(channel="cli")
+
+    done = _done(await _turn(app, sid, "what do you know about Mumbai"))
+
+    ids = [s["id"] for s in done.memory_sources]
+    assert 0 < len(ids) < 20  # only the rows inside the 400 characters the model read
+    tool_msg = next(m for m in app.fake.calls[-1]["messages"] if m["role"] == "tool")
+    for s in done.memory_sources:
+        assert s["text"] in tool_msg["content"]
 
 
 async def test_no_memories_means_no_sources(app):
@@ -96,7 +116,7 @@ async def test_collector_dedups_and_ignores_other_tools():
 async def test_context_with_sources_matches_the_block(app):
     um = app.user_model
     assert await um.context_with_sources("anything") == ("", [])
-    mine = await um.add_insight("Sarthak is vegetarian", "preferences")
+    mine = await um.add_insight("Maya is vegetarian", "preferences")
     block, used = await um.context_with_sources("dinner ideas")
     assert "vegetarian" in block and [i["id"] for i in used] == [mine["id"]]
     assert block == await um.context_for("dinner ideas")
@@ -108,12 +128,12 @@ def test_messages_api_and_stream_carry_sources(config, isolated_home, monkeypatc
     app = create_app(SentientApp(config, llm=llm, db_path=isolated_home / "src.db", enable_background=False))
     with TestClient(app) as c:
         c.headers.update({"Authorization": "Bearer test-token"})
-        ins = c.post("/api/user-model/insights", json={"statement": "Sarthak prefers morning meetings",
+        ins = c.post("/api/user-model/insights", json={"statement": "Maya prefers morning meetings",
                                                         "dimension": "preferences"}).json()
         lines = [json.loads(x) for x in c.post("/api/chat", json={"text": "book a call with Aditi"}).text.splitlines()]
         sid = lines[0]["session_id"]
         [done] = [x for x in lines if x.get("type") == "done"]
-        source = {"kind": "insight", "id": ins["id"], "text": "Sarthak prefers morning meetings", "source": "user",
+        source = {"kind": "insight", "id": ins["id"], "text": "Maya prefers morning meetings", "source": "user",
                   "via": "prompt"}
         assert done["memory_sources"] == [source]
         rows = c.get(f"/api/sessions/{sid}/messages").json()

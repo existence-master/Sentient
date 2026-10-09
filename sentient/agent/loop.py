@@ -651,6 +651,17 @@ class Agent:
             await persist("tool", content, tool_call_id=tc.id, name=tc.name)
         yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
 
+    def _delivered_rows(self, res: Any) -> Any:
+        """The rows of a list result the model actually read: ``_tool_content`` cuts long results, and a
+        memory from the cut part must not be shown as one Sentient had in mind."""
+        limit = self.config.chat.tool_result_max_chars
+        if not limit or not isinstance(res, list) or len(_json_safe(res)) <= limit:
+            return res
+        keep = 0
+        while keep < len(res) and len(_json_safe(res[: keep + 1])) <= limit:
+            keep += 1
+        return res[:keep]
+
     async def _tool_content(self, res: Any, call_id: str) -> str:
         """The tool message the model reads. Long results are cut; the full text goes to files/outputs/."""
         content = _json_safe(res)
@@ -777,7 +788,7 @@ class Agent:
                 elif isinstance(event, ToolResultEvent | UserInterjection):
                     partial = ""  # text before a tool call or a steer was already persisted
                     if isinstance(event, ToolResultEvent) and not event.is_error:
-                        sources.add_tool_result(event.name, event.result)
+                        sources.add_tool_result(event.name, self._delivered_rows(event.result))
                 yield event
         except (asyncio.CancelledError, GeneratorExit):
             release()
