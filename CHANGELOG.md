@@ -26,6 +26,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
   `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.
 
 ### Security
+- One-time codes, verification codes, magic sign-in links and password reset links in Gmail and IMAP email are
+  replaced with a short placeholder before the AI reads them, in tool results, proactive suggestions and follow-ups.
+  Booking, order, ticket and reference codes, dates, prices and ordinary links are left alone, and the email itself
+  is unchanged in your mail app.
 - Purchases now ask even when approvals are switched off, and code Sentient writes can never make one. A tool set
   to Never while a request waits for your yes, or while a script runs, is blocked right away.
 

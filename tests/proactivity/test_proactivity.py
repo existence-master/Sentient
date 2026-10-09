@@ -233,3 +233,18 @@ async def test_reasoner_retries_when_model_echoes_the_scratchpad(app):
     reasoner_calls = [c for c in llm.calls if c.get("json")][-2:]
     assert "Decide now" in reasoner_calls[0]["messages"][1]["content"]
     assert reasoner_calls[1]["messages"][-1]["content"].startswith("That was not the decision")
+
+
+async def test_codes_and_reset_links_never_reach_the_proactive_prompts(app):
+    """#128: even an item that skipped the mail plugins is masked before any prompt."""
+    llm = app.fake
+    script_pipeline(llm, {"actionable": False})
+    item = {**MEETING_EMAIL, "id": "msg-otp",
+            "snippet": "The login code for the shared account is 482913",
+            "body": "Hi Sarthak, the login code for the shared account is 482913. If it fails, reset it at "
+                    "https://acme.example/reset?token=abcDEF1234567890xyz and update the launch plan. Jane"}
+    await app.proactivity.process_event("gmail", "new_email", item)
+    prompts_seen = " ".join(str(m["content"]) for c in llm.calls for m in c["messages"])
+    assert "Project Phoenix" in prompts_seen or "launch plan" in prompts_seen
+    assert "482913" not in prompts_seen and "abcDEF1234567890xyz" not in prompts_seen
+    assert "[one-time code hidden]" in prompts_seen
