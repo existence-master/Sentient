@@ -106,6 +106,7 @@ def apply_prompt_cache(model: str, messages: list[dict], tools: list[dict] | Non
 class LiteLLMProvider:
     def __init__(self, config: SentientConfig):
         self.config = config
+        self._max_context: dict[str, int | None] = {}
 
     # ------------------------------------------------------------------ resolution
     def model_for(self, role: str) -> str:
@@ -137,6 +138,10 @@ class LiteLLMProvider:
             # Ollama maps this to its `think` flag (none -> off). Cloud models already answer without
             # extended thinking by default, and some reject "none", so it is only sent to local models.
             kwargs["reasoning_effort"] = effort
+        if local and role:
+            # Without num_ctx Ollama reads only 4096 tokens on most machines and silently drops the rest.
+            models = self.config.models
+            kwargs["num_ctx"] = models.context_length_per_role.get(role) or models.context_length
         if pc:
             if pc.api_base:
                 kwargs["api_base"] = pc.api_base
@@ -144,6 +149,40 @@ class LiteLLMProvider:
             if key:
                 kwargs["api_key"] = key
         return kwargs
+
+    async def _call_kwargs(self, model: str, role: str) -> dict:
+        """``_kwargs_for`` with Ollama's ``num_ctx`` capped at the model's own maximum."""
+        kwargs = self._kwargs_for(model, role)
+        if "num_ctx" in kwargs:
+            limit = await self._model_max_context(model, kwargs.get("api_base"))
+            if limit:
+                kwargs["num_ctx"] = min(kwargs["num_ctx"], limit)
+        return kwargs
+
+    async def _model_max_context(self, model: str, api_base: str | None) -> int | None:
+        """The model's maximum context from Ollama's /api/show, remembered per model. None when unknown."""
+        import httpx
+
+        base = (api_base or "http://localhost:11434").rstrip("/")
+        key = f"{base}|{model}"
+        if key in self._max_context:
+            return self._max_context[key]
+        try:
+            async with httpx.AsyncClient(timeout=3) as client:
+                r = await client.post(f"{base}/api/show", json={"model": model.split("/", 1)[1]})
+                r.raise_for_status()
+                info = r.json().get("model_info") or {}
+        except Exception:
+            return None  # not remembered: Ollama may simply not be up yet
+        limit = next(
+            (v for k, v in info.items() if k.endswith(".context_length") and isinstance(v, int) and v > 0), None
+        )
+        self._max_context[key] = limit
+        return limit
+
+    async def context_length(self, role: str) -> int | None:
+        """The context length sent with this role's calls, or None when its model is not an Ollama model."""
+        return (await self._call_kwargs(self.model_for(role), role)).get("num_ctx")
 
     # ------------------------------------------------------------------ streaming chat
     async def stream(
@@ -157,7 +196,7 @@ class LiteLLMProvider:
         override = model
         for model in self._chain(role, override):
             try:
-                kwargs = self._kwargs_for(model, role)
+                kwargs = await self._call_kwargs(model, role)
                 sent_messages, sent_tools = apply_prompt_cache(model, messages, tools)
                 if sent_tools:
                     kwargs["tools"] = sent_tools
@@ -230,7 +269,7 @@ class LiteLLMProvider:
         override = model
         for model in self._chain(role, override):
             try:
-                kwargs = self._kwargs_for(model, role)
+                kwargs = await self._call_kwargs(model, role)
                 sent, _ = apply_prompt_cache(model, messages)
                 resp = await litellm.acompletion(model=model, messages=sent, **kwargs)
                 text = resp.choices[0].message.content or ""
@@ -248,7 +287,7 @@ class LiteLLMProvider:
         override = model
         for model in self._chain(role, override):
             try:
-                kwargs = self._kwargs_for(model, role)
+                kwargs = await self._call_kwargs(model, role)
                 # Ollama's JSON mode corrupts qwen3 output ({"{"name": ...); ask for plain text and parse loosely
                 if _provider_prefix(model) not in {"ollama", "ollama_chat"}:
                     kwargs["response_format"] = {"type": "json_object"}
