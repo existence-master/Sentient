@@ -110,7 +110,7 @@ class FeedEngine:
         await asyncio.sleep(INITIAL_DELAY_S)
         while True:
             seconds = self.app.config.integrations.fast_sync_seconds
-            if seconds > 0:
+            if seconds > 0 and not self.app.stopped:  # Stop everything: cursors wait, items arrive after resume
                 try:
                     await self.sync_all()
                 except asyncio.CancelledError:
@@ -294,9 +294,13 @@ class FeedEngine:
         return fresh
 
     async def emit(self, source: str, origin: str, items: list[dict], *, event: str | None = None) -> list[dict]:
-        """Claim, privacy-filter and publish new items. Returns the items that were published (in order)."""
+        """Claim, privacy-filter and publish new items. Returns the items that were published (in order).
+
+        While Sentient is stopped (Stop everything) nothing is claimed or published."""
         if origin not in ORIGINS:
             raise ValueError(f"unknown origin {origin}")
+        if self.app.stopped:
+            return []
         candidates: list[tuple[str, dict]] = []
         for item in items or []:
             if not isinstance(item, dict):

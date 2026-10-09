@@ -1,7 +1,7 @@
 """Core REST routes. OWNER: core. Contract: docs/API.md sections 2 and 3.
 
-health, bootstrap, onboarding, config, sessions, chat (NDJSON), approvals,
-files, tools catalog, usage.
+health, bootstrap, stop everything, onboarding, config, sessions, chat (NDJSON),
+approvals, files, tools catalog, usage.
 """
 
 from __future__ import annotations
@@ -50,7 +50,32 @@ async def bootstrap(request: Request):
         "unread_notifications": await s.notifications.unread_count(),
         "ui": cfg.ui.model_dump(),
         "features": {"voice": True, "proactivity": cfg.proactivity.enabled},
+        "stop": dict(s.stop_state),
     }
+
+
+# ----------------------------------------------------------------------------- stop everything (section 17)
+class StopBody(BaseModel):
+    source: str = "desktop"
+
+
+def _source(body: StopBody | None) -> str:
+    return re.sub(r"[^a-z0-9_.-]", "", (body.source if body else "desktop").lower())[:30] or "desktop"
+
+
+@router.get("/api/stop", dependencies=_auth)
+async def stop_state(request: Request):
+    return dict(get_core(request).stop_state)
+
+
+@router.post("/api/stop-all", dependencies=_auth)
+async def stop_all(request: Request, body: StopBody | None = None):
+    return await get_core(request).stop_all(source=_source(body))
+
+
+@router.post("/api/resume", dependencies=_auth)
+async def resume(request: Request, body: StopBody | None = None):
+    return await get_core(request).resume(source=_source(body))
 
 
 class OnboardingBody(BaseModel):

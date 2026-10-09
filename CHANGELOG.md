@@ -19,6 +19,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - **Memory sources:** under a chat reply, "Used 3 memories" shows what Sentient had in mind when it answered: the
   memories and things it has learned about you that were in front of it, and any it looked up. Each one has
   **This is wrong** to fix or forget it on the spot, and a link to it on the Memory or About you page.
+- **Stop everything:** one control that stops every running reply, task, helper, script and browser action at once
+  and pauses scheduled tasks, triggers and suggestions until you press Resume, even after a restart. It is in the
+  title bar, the tray menu, the shortcut Ctrl+Alt+Shift+S, `/stopall` in paired Telegram and Discord chats, and on
+  paired phones. Messages you queued before the stop are not sent. It never asks the model, so nothing can
+  talk its way past it.
 
 ### Fixed
 - Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes

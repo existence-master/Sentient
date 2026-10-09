@@ -6,6 +6,7 @@ import type { MemoryQuery } from '@/lib/types'
 
 export const qk = {
   bootstrap: ['bootstrap'] as const,
+  stop: ['stop'] as const,
   config: ['config'] as const,
   configSchema: ['config-schema'] as const,
 

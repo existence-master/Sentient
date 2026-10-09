@@ -42,7 +42,8 @@ for the bot to answer.
    `/pair` followed by the code, for example `/pair 123456`.
 
 Now just message your bot to talk to Sentient. You can send text, voice notes, photos and files.
-Commands: `/new` starts a fresh chat, `/stop` stops a reply, `/help` shows help.
+Commands: `/new` starts a fresh chat, `/stop` stops a reply, `/stopall` stops everything Sentient is doing
+(`/resume` starts it again), `/help` shows help.
 
 **Keep the token private.** Anyone who has it can use your bot. If it leaks, send `/revoke` to BotFather,
 then connect again here with the new token.

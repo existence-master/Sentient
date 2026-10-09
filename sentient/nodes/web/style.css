@@ -165,6 +165,8 @@ button.primary {
 }
 button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 button.primary:disabled { opacity: 0.55; cursor: default; }
+button.stop-all { display: block; width: 100%; margin: 4px 0 12px; color: var(--danger); border-color: color-mix(in oklab, var(--danger) 40%, transparent); }
+button.stop-all.resume { color: var(--fg); border-color: var(--border-strong); }
 button.link { background: none; border: none; color: var(--fg-muted); text-decoration: underline; padding: 6px; }
 button.link:hover { color: var(--fg); background: none; }
 #pair-btn { width: 100%; margin-top: 18px; padding: 14px; }

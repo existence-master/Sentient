@@ -50,6 +50,8 @@ export interface DesktopNodeHost {
   /** Show that the screen, camera or clipboard was just used. */
   notice(kind: Privacy | 'clipboard'): void
   onState(state: DesktopNodeState): void
+  /** §17: the engine's Stop everything state (welcome and `stop_state`). */
+  onStopState?(stopped: boolean): void
   icon: string
 }
 
@@ -162,8 +164,12 @@ export class DesktopNode {
           const keepalive = Number(msg.keepalive_s)
           if (keepalive > 0) this.startPing(Math.max(5_000, keepalive * 1000))
           this.setState('online')
+          if (typeof msg.stopped === 'boolean') this.host.onStopState?.(msg.stopped)
           break
         }
+        case 'stop_state':
+          if (typeof msg.stopped === 'boolean') this.host.onStopState?.(msg.stopped)
+          break
         case 'error':
           console.warn(`[desktop-device] engine refused the connection: ${String(msg.code)} ${String(msg.message ?? '')}`)
           if (msg.code === 'disabled') this.failuresWithoutWelcome = 99

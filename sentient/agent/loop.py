@@ -28,6 +28,7 @@ import logging
 import mimetypes
 import re
 import time
+import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -59,6 +60,7 @@ from sentient.llm.provider import LLMProvider, ProviderError, ToolCall
 from sentient.memory.facts import FactMemory
 from sentient.memory.sources import MemorySources
 from sentient.memory.workspace import Workspace
+from sentient.services import cancel_tasks
 from sentient.skills.loader import SkillLibrary
 from sentient.store.db import Store, new_id
 from sentient.tools.base import Risk, Tool, ToolContext, bind_call, describe_call, effective_risk
@@ -286,6 +288,7 @@ class Agent:
         self.tool_selector = ToolSelector(self)
         self._background: set[asyncio.Task] = set()
         self._steers: dict[str, SteerQueue] = {}
+        self._turn_tasks: weakref.WeakSet[asyncio.Task] = weakref.WeakSet()  # tasks running a chat reply
 
     # ------------------------------------------------------------------ steering
     def is_running(self, session_id: str) -> bool:
@@ -765,7 +768,13 @@ class Agent:
             steer = SteerQueue()
             self._steers[session_id] = steer
 
+        turn_task = asyncio.current_task()  # Stop everything cancels this task (halt)
+        if turn_task is not None:
+            self._turn_tasks.add(turn_task)
+
         def release() -> list[str]:
+            if turn_task is not None:
+                self._turn_tasks.discard(turn_task)
             if steer is None:
                 return []
             left = steer.close()
@@ -1014,6 +1023,22 @@ class Agent:
             )
         except Exception as exc:
             log.debug("context compression skipped: %s", exc)
+
+    def drop_queued(self) -> dict[str, list[str]]:
+        """Stop everything: take the messages waiting for running replies (steers) so they are never sent.
+        Returns ``{session_id: [text]}``. A message sent after this starts a new turn as usual."""
+        dropped: dict[str, list[str]] = {}
+        for session_id, queue in list(self._steers.items()):
+            if items := queue.close():
+                dropped[session_id] = items
+        return dropped
+
+    async def halt(self) -> int:
+        """Stop everything: cancel every running chat reply (the caller's own task excepted) and background
+        job (memory notes, titles). Returns how many replies were cancelled."""
+        replies = await cancel_tasks(self._turn_tasks)
+        await cancel_tasks(self._background)
+        return replies
 
     async def drain(self, timeout: float | None = None) -> None:
         """Wait for background work (fact extraction, titles, compression).

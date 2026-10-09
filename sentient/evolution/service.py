@@ -32,7 +32,7 @@ from sentient.evolution import prompts
 from sentient.evolution.log import log_event
 from sentient.memory.topics import TOPIC_NAMES
 from sentient.memory.vectors import cosine
-from sentient.services import Service
+from sentient.services import Service, cancel_tasks
 from sentient.skills.loader import slugify, valid_name
 from sentient.store.db import now_iso
 
@@ -127,6 +127,7 @@ def looks_like_correction(text: str) -> bool:
 
 class EvolutionService(Service):
     name = "evolution"
+    pause_on_stop = True  # Stop everything pauses reviews, the curator and profile updates until resume
 
     def __init__(self, app):
         super().__init__(app)
@@ -156,6 +157,9 @@ class EvolutionService(Service):
             t.cancel()
         await super().stop()
 
+    async def halt(self) -> int:
+        return await super().halt() + await cancel_tasks(self._background)
+
     async def _listen(self) -> None:
         async with self.app.bus.subscribe() as q:
             while True:
@@ -164,7 +168,7 @@ class EvolutionService(Service):
                     self.on_event(event)
                 except Exception:
                     log.exception("evolution failed to handle %s", event.get("type"))
-                if event.get("type") in {"chat.turn_completed", "task.run_finished"}:
+                if event.get("type") in {"chat.turn_completed", "task.run_finished"} and not self.app.stopped:
                     # model calls must not hold up the bus queue; the repair lock keeps them in order
                     task = asyncio.create_task(self.handle_repair_event(event), name="evolution:repair")
                     self._background.add(task)

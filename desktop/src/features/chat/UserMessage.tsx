@@ -1,6 +1,6 @@
-import { IconCheck, IconCopy, IconFile, IconPhoto } from '@tabler/icons-react'
+import { IconCheck, IconCopy, IconFile, IconPhoto, IconPlayerStop } from '@tabler/icons-react'
 import { memo, useState } from 'react'
-import { IconButton } from '@/components/ui'
+import { Button, IconButton } from '@/components/ui'
 import { api } from '@/lib/api'
 import type { AttachmentView, UserMessageView } from '@/lib/chatFold'
 import { cn, copyText, formatBytes } from '@/lib/utils'
@@ -35,7 +35,7 @@ export function AttachmentChip({ a, className }: { a: AttachmentView; className?
   )
 }
 
-export const UserMessage = memo(function UserMessage({ message }: { message: UserMessageView }) {
+export const UserMessage = memo(function UserMessage({ message, onRestore }: { message: UserMessageView; onRestore?: (text: string) => void }) {
   const [copied, setCopied] = useState(false)
   return (
     <div className={cn('group/user flex flex-col items-end gap-1.5', message.pending && 'opacity-80')}>
@@ -46,10 +46,26 @@ export const UserMessage = memo(function UserMessage({ message }: { message: Use
           ))}
         </div>
       )}
+      {message.notSent && (
+        <div className="flex items-center gap-1 text-2xs text-fg-subtle">
+          <IconPlayerStop size={11} />
+          Stopped. Your queued message wasn't sent.
+        </div>
+      )}
       {message.text.trim() && (
-        <div className="selectable max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md border border-border bg-elevated px-4 py-2.5 text-md leading-relaxed text-fg shadow-soft">
+        <div
+          className={cn(
+            'selectable max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md border px-4 py-2.5 text-md leading-relaxed',
+            message.notSent ? 'border-dashed border-border-strong text-fg-subtle' : 'border-border bg-elevated text-fg shadow-soft'
+          )}
+        >
           {message.text}
         </div>
+      )}
+      {message.notSent && onRestore && message.text.trim() && (
+        <Button size="xs" variant="ghost" onClick={() => onRestore(message.text)}>
+          Put it back in the message box
+        </Button>
       )}
       <div className="flex h-6 items-center opacity-0 transition-opacity group-hover/user:opacity-100">
         <IconButton

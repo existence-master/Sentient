@@ -40,7 +40,7 @@ All carry `session_id` and `turn_id`.
 | `steer_ack` | `session_id`, `queued`, `client_id` (echo; no `turn_id`) |
 | `usage` | `model`, `prompt_tokens`, `completion_tokens` |
 | `error` | `message`, `recoverable` |
-| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none) |
+| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent) |
 | `approval.ack` | `approval_id`, `resolved` |
 
 ### Server → client: domain events (dotted `type`, payload in `data`)
@@ -60,6 +60,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `session.updated` | `{session_id, title}` |
 | `config.updated` | `{sections: string[]}` |
 | `voice.state` | `{state, session_id}` (mirrors voice socket for other windows) |
+| `stop.updated` | **StopState** (section 17): Stop everything was turned on or off |
 
 ---
 
@@ -78,9 +79,11 @@ Everything the renderer needs on launch.
   "memory_enabled": true,
   "unread_notifications": 3,
   "ui": {"theme": "dark", "accent": "sentient", "launch_at_login": false, "minimize_to_tray": true},
-  "features": {"voice": true, "proactivity": true}
+  "features": {"voice": true, "proactivity": true},
+  "stop": {"stopped": false, "stopped_at": null, "source": null}
 }
 ```
+`stop` is the **StopState** of section 17.
 
 ### Onboarding
 `POST /api/onboarding`
@@ -776,7 +779,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   announced over mDNS as `_sentient._tcp.local.` (TXT `version`, `protocol`, `fingerprint`, `port`, `path`, `tls`) when `nodes.mdns_enabled`.
 - node → server `hello` `{protocol: 1, name, kind: "phone"|"glasses"|"desktop"|"watch"|"custom", platform, app_version, capabilities: [string], token?, pair_code?, state?}`;
   server → node `welcome` `{protocol: 1, node_id, name, assistant, server_version, keepalive_s, idle_timeout_s, token?}` (`token` only on first
-  pairing; the node stores it) or `error` `{code, message}` then close. Codes (close code): `pairing_required`, `bad_token`, `bad_code`,
+  pairing; the node stores it; `stopped` is true while Stop everything is on, section 17) or `error` `{code, message}` then close. Codes (close code): `pairing_required`, `bad_token`, `bad_code`,
   `revoked` (4401), `rate_limited` (4429, 5 wrong codes per minute per address), `disabled` (4403), `protocol` (4400), `replaced` (4409, the
   same node connected again). Later non-fatal errors: `protocol`, `unknown_type`.
 - Capabilities: `camera.photo`, `screen.capture`, `location.get`, `notify.show`, `display.text`, `display.card`,
@@ -790,6 +793,9 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   (`Authorization: Bearer <node token>`, raw body or multipart `file`, max 20 MB → `{upload_id, mime, size}`); the engine converts both to `base64`.
 - node → server `event` `{event: "button"|"wake"|"gesture"|"battery"|"presence"|"notification_action", data}`;
   `state` `{battery?, charging?, worn?}`; `ping` → `pong`. The engine never pings devices; a device silent for `nodes.idle_timeout_s` is disconnected.
+- node → server `stop_all` and `resume` (no fields): Stop everything and Resume from a paired device (section 17).
+  server → node `stop_state` `{stopped, stopped_at, source}` goes to every connected device whenever the state changes
+  (and to the sender when it did not change). Devices that do not show it can ignore it.
 - Voice from a device: `WS /ws/voice?node_token=<token>` with `start` `{channel: "glasses"|"phone", sample_rate, audio_format?: "wav"|"pcm16"}`.
   On the LAN listener the node token is verified before the voice socket runs.
 - Pairing: `POST /api/nodes/pairing` → `{code, expires_at, lan_enabled, urls: [string], web_url, fingerprint, qr: "sentient://pair?url=...&code=...&fp=...", qr_svg}`
@@ -840,8 +846,9 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   one polite refusal (once per chat, remembered across restarts) and are otherwise ignored. Telegram: private chats only
   (groups are ignored). Discord: direct messages only (server messages are ignored).
 - A paired chat is a normal Sentient chat (`channel` = channel id, so the desktop shows a badge). Commands: `/new` starts a
-  fresh chat (new session), `/stop` cancels the reply (the partial text is kept with "(stopped)"), `/help`; other `/commands`
-  get a hint. Replies stream by editing the message at most once per `channels.<id>.edit_interval_s` (1 s) when
+  fresh chat (new session), `/stop` cancels the reply (the partial text is kept with "(stopped)"), `/stopall` (or
+  `/stop all`) is Stop everything and `/resume` undoes it (section 17; source `telegram` or `discord`), `/help`; other
+  `/commands` get a hint. Unpaired chats cannot use any command except `/pair`. Replies stream by editing the message at most once per `channels.<id>.edit_interval_s` (1 s) when
   `stream_edits` is on; long replies are split (Telegram 4096, Discord 2000 characters, code blocks kept balanced).
   Telegram replies use HTML parse mode (bold, italics, strikethrough, code, code blocks, links, lists, quotes; everything
   else escaped; plain text fallback). While tools run, a short status message ("Searching the web...") is shown and deleted
@@ -986,7 +993,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `integrations.webhook_rate_limit_per_minute` calls a minute (default 30, a token bucket per hook; 0 turns it off).
   Errors: 404 unknown hook, 401 wrong or missing secret, 429 too many calls (header `Retry-After` in whole seconds;
   checked after the secret, so wrong-secret calls never use up a hook's budget, and a refused call is not published
-  or counted), 413 body too large, 400 invalid JSON with a JSON content type. It publishes `source.items`
+  or counted), 413 body too large, 400 invalid JSON with a JSON content type, 503 while Stop everything is on (header
+  `Retry-After: 60`; the call is not published or counted, so the caller can send it again after Resume). It publishes `source.items`
   `{source: "webhook", event: <hook id>, origin: "webhook", items: [{id, name, body, received_at, content_type, query}]}`
   (`query` excludes `secret`; multipart files appear as `{filename, content_type, size}`).
   Triggered tasks use `schedule: {type: "triggered", source: "webhook", event: <hook id>, filter}`; the `webhook`
@@ -1048,3 +1056,44 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 | `dream.updated` | Dream |
 | `source.items` | see section 16 |
 | `task.run_finished` | see section 10 |
+| `stop.updated` | see section 17 |
+
+## 17. Stop everything (owner: core)
+
+One deterministic control that stops all of Sentient's work at once. It never goes through the model, so no prompt
+can ignore it.
+
+- **StopState** `{stopped: bool, stopped_at: ISODate | null, source: string | null}`. `source` says where it was last
+  turned on or off: `desktop`, `tray`, `hotkey`, `telegram`, `discord` or `device`.
+- `GET /api/stop` → StopState.
+- `POST /api/stop-all` `{source?}` (body optional, default `desktop`) → StopState plus `cancelled` (how many running
+  jobs were cancelled). Calling it again while stopped keeps `stopped_at` and `source` and cancels anything started since.
+- `POST /api/resume` `{source?}` → StopState (`stopped: false`, `stopped_at: null`).
+- Every change publishes domain event `stop.updated` (StopState) and `stop_state` to connected devices (section 13).
+  Devices hear about a stop after the work is cancelled; each device gets at most 2 s, side by side, so a slow
+  device never holds up the stop, the resume or the other devices.
+  `GET /api/bootstrap` includes it as `stop`.
+- Stop everything, in this order: the flag is set and saved (so nothing new starts), then every running chat reply
+  (desktop, channels, voice; the partial reply is kept with "(stopped)"), task run (status `cancelled`, progress
+  "Run stopped by Stop everything.", retryable from its checkpoint), task planning and check scripts, helper
+  (subagent, status `cancelled`), running dream (status `error`, "Stopped by Stop everything.") and background job
+  (memory notes, reviews, suggestions) is cancelled. Code runs and browser actions stop with the reply or run they
+  belong to. Runs waiting for the user's answer keep waiting.
+- Messages queued before the stop are dropped, never sent: steer messages the running reply had not picked up yet,
+  `chat.send` turns waiting behind it on `/ws` (they end with `error` `{message: "Stopped. Your queued message wasn't
+  sent.", dropped: true, client_id}` and `done` `{cancelled: true, dropped: [text], client_id}`, echoing the
+  `client_id` the message was sent with so the window can mark that message, not the newest turn), and messages queued in Telegram or Discord chats (the chat gets the
+  same note). The window shows steers of a cancelled reply as not sent. Messages sent after the stop work as usual.
+- While stopped: the scheduler claims nothing (due tasks start on the first tick after Resume), triggered tasks
+  do not fire, change feeds, polls, push watchers and webhooks publish nothing (`source.items`), and proactivity,
+  heartbeats, follow-ups, self-improvement reviews, the user model and dreaming do not run. Things the user starts
+  directly still work: chat, Run now, answering a task's question, Dream now.
+- The state is stored in the database (`meta` key `stop.state`), so a restart keeps Sentient stopped; interrupted runs
+  are not resumed until Resume.
+- Resume clears the flag, then resumes work a restart would resume (runs left processing, tasks left planning).
+- Engine API: `await app.stop_all(source) -> dict`, `await app.resume(source) -> dict`, `app.stopped -> bool`,
+  `app.stop_state`. Services implement `async halt() -> int` (cancel in-flight work) and set `pause_on_stop = True`
+  so their `run_every` jobs are skipped while stopped.
+- Surfaces: the desktop title bar button and banner, the tray menu, the global shortcut `Ctrl+Alt+Shift+S`
+  (`Cmd+Alt+Shift+S` on macOS; stop only), `/stopall` and `/resume` in paired Telegram and Discord chats, and the
+  `stop_all` / `resume` device messages (the web device app has a button).

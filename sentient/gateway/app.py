@@ -32,6 +32,8 @@ from sentient.gateway.routes import ROUTERS
 
 log = logging.getLogger(__name__)
 
+DROPPED_NOTE = "Stopped. Your queued message wasn't sent."
+
 # When present, the built desktop renderer is also served over HTTP so the UI
 # can be opened in a normal browser during development.
 UI_DIST = Path(__file__).resolve().parents[2] / "desktop" / "out" / "renderer"
@@ -78,11 +80,20 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                 with contextlib.suppress(Exception):
                     await ws.send_text(json.dumps(obj, ensure_ascii=False, default=str))
 
-        async def run_chat(session_id: str, msg: dict, previous: asyncio.Task | None) -> None:
+        async def run_chat(session_id: str, msg: dict, previous: asyncio.Task | None, generation: int) -> None:
             me = asyncio.current_task()
             try:
                 if previous is not None and not previous.done():
                     await asyncio.wait({previous})
+                if s.stop_generation != generation:
+                    # queued behind a reply when Stop everything was pressed: never sent (docs/API.md section 17)
+                    # client_id lets the window match these to the message it queued, not the latest turn
+                    client_id = msg.get("client_id")
+                    await send({"type": "error", "message": DROPPED_NOTE, "session_id": session_id, "recoverable": True,
+                                "dropped": True, "client_id": client_id})
+                    await send({"type": "done", "content": "", "session_id": session_id, "cancelled": True,
+                                "dropped": [str(msg.get("text", ""))], "client_id": client_id})
+                    return
                 async for event in s.agent.run_turn(
                     session_id,
                     str(msg.get("text", "")),
@@ -143,7 +154,7 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                     await send({"type": "session", "session_id": session_id, "client_id": msg.get("client_id")})
                     chain = turns.setdefault(session_id, [])
                     previous = chain[-1] if chain else None
-                    chain.append(asyncio.create_task(run_chat(session_id, msg, previous)))
+                    chain.append(asyncio.create_task(run_chat(session_id, msg, previous, s.stop_generation)))
                 elif kind == "chat.cancel":
                     for t in list(turns.get(str(msg.get("session_id"))) or []):
                         t.cancel()

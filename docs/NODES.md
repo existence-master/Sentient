@@ -87,8 +87,10 @@ The first message after connecting, within 15 seconds.
 ```json
 {"type": "welcome", "protocol": 1, "node_id": "9c1e0f3a2b4d6e71", "name": "Sarthak's glasses",
  "assistant": "Sentient", "server_version": "3.0.0a0", "keepalive_s": 60, "idle_timeout_s": 180,
- "token": "only-on-first-pairing"}
+ "stopped": false, "token": "only-on-first-pairing"}
 ```
+
+`stopped` is true while the user has pressed **Stop everything** (§4.5).
 
 The desktop app itself connects on the loopback gateway with `?token=<gateway token>`; it becomes node `desktop`
 without pairing. The gateway token is refused on the LAN listener.
@@ -139,6 +141,18 @@ WebSocket frames up to 32 MB are accepted on the LAN listener.
 The engine sends payloads the same way: an `invoke` whose `params` contain `"binary": true` and `"bytes": <length>` is
 followed by exactly one binary frame with that payload. This is how `audio.pcm` delivers speech (§5), so a
 microcontroller never has to hold a base64 string of a whole sentence in RAM.
+
+### 4.5 Stop everything
+A paired device can stop all of Sentient's work at once, and resume it. The engine handles this itself, never
+through the model.
+
+```json
+{"type": "stop_all"}                   → {"type": "stop_state", "stopped": true, "stopped_at": "2026-10-09T10:00:00+00:00", "source": "device"}
+{"type": "resume"}                     → {"type": "stop_state", "stopped": false, "stopped_at": null, "source": "device"}
+```
+
+`stop_state` is also sent to every connected device when the user stops or resumes anywhere else (desktop, tray,
+Telegram, Discord). A phone app can show a Stop or Resume button from it; other devices may ignore it.
 
 ## 5. Capabilities
 
