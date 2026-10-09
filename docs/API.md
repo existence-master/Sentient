@@ -52,7 +52,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `task.deleted` | `{task_id}` |
 | `task.run_progress` | `{task_id, run_id, update: ProgressUpdate}` |
 | `notification.new` | **Notification** (§6) |
-| `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"|"declined"`) |
+| `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"|"declined"`; a task question (`payload.event = "question"`) gains `payload.status = "answered"` with `payload.answer`, or `"cancelled"`) |
 | `notification.read` / `notification.deleted` | `{id}` (`null` = all) |
 | `integration.updated` | **Integration** (§5) |
 | `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?}`; bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count` |
@@ -176,7 +176,7 @@ Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
 ```json
 {
   "task_id": "hex", "name": "Weekly inbox digest", "description": "...",
-  "status": "planning|clarification_pending|approval_pending|pending|active|processing|completed|completed_with_errors|error|declined|cancelled|archived",
+  "status": "planning|clarification_pending|approval_pending|pending|active|processing|waiting_for_user|completed|completed_with_errors|error|declined|cancelled|archived",
   "priority": 0, "assignee": "ai", "task_type": "single|swarm|script",
   "schedule": {"type": "once", "run_at": "2026-09-16T09:00|null", "timezone": "Asia/Kolkata"}
             | {"type": "recurring", "frequency": "daily|weekly", "days": ["Monday"], "time": "09:00", "timezone": "..."}
@@ -202,11 +202,13 @@ task-creation prompt still only produces daily/weekly (v2), the planner uses `in
 
 **Run**
 ```json
-{"run_id": "hex", "status": "processing|completed|completed_with_errors|error|cancelled", "created_at": "...", "execution_start_time": "...", "finished_at": "...",
+{"run_id": "hex", "status": "processing|waiting_for_user|completed|completed_with_errors|error|cancelled", "created_at": "...", "execution_start_time": "...", "finished_at": "...",
  "plan": [...], "trigger_event_data": {}|null, "progress_updates": [ProgressUpdate],
  "result": {"summary": "markdown", "links_created": [{"url": "", "description": ""}], "links_found": [...], "files_created": [{"filename": "", "description": ""}], "tools_used": ["gmail"]},
- "error": null, "retry_of": "run id this run retries|null"}
+ "error": null, "retry_of": "run id this run retries|null",
+ "pending_question": {"question": "Which flight should I book?", "options": ["IndiGo 07:10", "Air India 09:40"], "asked_at": "..."} | null}
 ```
+`pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question" below).
 **ProgressUpdate** `{"timestamp": "...", "message": {"type": "info|thought|tool_call|tool_result|final_answer|error", "content": "...", "tool_name": "...", "parameters": {}, "result": "...", "is_error": false}}`
 
 ### Endpoints
@@ -226,7 +228,11 @@ task-creation prompt still only produces daily/weekly (v2), the planner uses `in
 - `POST /api/tasks/{id}/archive` → `Task`
 - `POST /api/tasks/{id}/chat` `{message}` → `Task` (change request → replanning)
 - `POST /api/tasks/{id}/clarifications` `{answers: [{question_id, answer_text}]}` → `Task`
-- `POST /api/tasks/{id}/runs/{run_id}/cancel` → `Task`
+- `POST /api/tasks/{id}/runs/{run_id}/cancel` → `Task` (a `processing` or `waiting_for_user` run; cancelling a waiting run
+  withdraws its question)
+- `POST /api/tasks/{id}/runs/{run_id}/answer` `{answer}` → `Task` (answers the question of a `waiting_for_user` run; the run
+  goes back to `processing` and continues from where it stopped, with the answer as the result of its `ask_user` call.
+  400 empty answer, 404 unknown task/run, 409 the run is not waiting, for example already answered or cancelled)
 - `POST /api/tasks/{id}/runs/{run_id}/retry` → `Task` (failed or cancelled run of a non-swarm task: a new run with `retry_of`
   continues from the old run's transcript, telling the model what went wrong, so finished steps are not repeated; without a
   transcript it starts fresh with the same plan and trigger data. 409 for other statuses, swarm tasks, or a one-off task that is already running)
@@ -236,7 +242,8 @@ task-creation prompt still only produces daily/weekly (v2), the planner uses `in
 - `GET /api/tasks/{id}/runs/{run_id}/events` → `[ProgressUpdate]` (full log, for long runs)
 
 Errors: `404` unknown task/run, `409` not allowed in the current state (approve without a plan,
-chat while processing, cancel a finished run, clarifications on a task without questions),
+chat while processing or waiting for an answer, cancel a finished run, clarifications on a task without questions,
+answer a run that is not waiting),
 `400` invalid input (empty prompt, unknown status), `503` model unavailable (preview), `502` model returned the wrong shape.
 
 Behaviour notes:
@@ -248,13 +255,34 @@ Behaviour notes:
   most once, whichever path delivers it. For `source: "webhook"` the `filter` can name fields of the JSON body directly
   (`{"status": "failed"}`) as well as item fields (`name`, `body.status`).
 - Task notification `payload.event` values: `approval_needed`, `clarification_needed`, `planning_failed`, `run_completed`,
-  `run_failed` (with `run_id`), `disabled`, `script_alert` (with `result`), `script_failed`, `script_recovered`.
+  `run_failed` (with `run_id`), `disabled`, `script_alert` (with `result`), `script_failed`, `script_recovered`,
+  `question` (with `run_id`, `question`, `options`; later `status: "answered"|"cancelled"` and `answer`).
 - Chat tools (plugin `tasks`): `create_task_from_prompt`, `search_tasks`, `get_task_status` (results include `script`),
   `update_task(task_id, name?, description?, enabled?, schedule?, script_code?, script_condition?, script_then?)` (write,
   internal; changed script code goes back to `approval_pending` when `tasks.require_plan_approval`), and
   `request_task_change(task_id, message)` (write, internal; same as `POST /chat`).
 - On restart, runs left `processing` resume from their transcript checkpoint (`tasks.resume_interrupted_runs`), else they end with error `Interrupted by restart`.
+  Runs `waiting_for_user` are left alone: they keep waiting, with their question, until answered or cancelled.
 - Disconnecting an integration sets `enabled: false` on tasks whose plan or trigger uses it (instead of v2's delete) and sends a notification.
+
+### Tasks that ask you a question
+- Inside a task run (never in chat, subagents, swarm workers or the planner) the executor can call
+  `ask_user(question: str, options: list[str] | None = None)` (plugin `task_questions`, risk `write`, internal). It is meant
+  only for choices the run cannot make on its own; confirming risky actions stays with approvals. `options` are cleaned
+  to at most 6 short, distinct choices. One question per round (a second call in the same round gets an error) and at
+  most 5 per run.
+- The loop stops after that round without another model call. The run's transcript and
+  `{question, options, tool_call_id, asked_at}` are stored on the run in SQLite and the run becomes `waiting_for_user`.
+  The task becomes `waiting_for_user` too, unless another run of it is still `processing` (it switches once that run
+  ends). The progress log gets `Waiting for your answer: ...`; `task.updated` carries the run's `pending_question`.
+- A notification is created: `kind: "task"`, title `"<task name> needs your answer"`, `message` = the question,
+  `payload: {task_id, event: "question", run_id, question, options}`.
+- Answering (`POST .../answer`, a button, or a reply to the question message in a paired chat) puts the answer in place of the `ask_user` tool
+  result, logs `You answered: ...`, sets the notification's `payload.status = "answered"` (and marks it read), moves run and
+  task back to `processing` and continues the run without the restart note.
+- While a task waits: `approve`, `chat`, `run-now` and `retry` on a one-off task return 409; recurring tasks are not
+  started by the scheduler until the answer arrives; triggered tasks keep accepting events (each in its own run) and
+  return to `waiting_for_user` when those runs end.
 
 ---
 
@@ -554,6 +582,10 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - The system prompt includes `await app.user_model.context_for(user_text)` (a short markdown block, may be empty).
 - `chat.turn_completed` data: `{session_id, turn_id, tool_calls, tool_errors, skills_viewed: [name], user_text, reply}`.
   Task runs publish `task.run_finished` `{task_id, run_id, status, tool_errors, skills_viewed}`.
+- `Agent.run_loop(..., stop=fn)`: `fn()` is checked after each round of tool results; when it returns True the loop ends
+  without another model call and sets `LoopResult.paused` (task runs use it for `ask_user`).
+- A `ToolPlugin` with `scoped = True` is never offered by default: `registry.tools()`, `registry.catalog()` and
+  `registry.openai_schemas()` leave it out, and `openai_schemas(names)` includes its tools only when named.
 
 ## 11. Code execution (owner: sandbox)
 
@@ -726,12 +758,24 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `app.approvals`); the message is edited to show the answer, also when it was answered on the desktop.
 - Delivery (chats with `deliver: true`, from `notification.new`): task results and failures (`payload.event` in
   `run_completed`, `run_failed`, `planning_failed`, `clarification_needed`, `disabled`; a completed run adds its result
-  summary), plans awaiting approval (**Approve plan** / **Decline** → `app.tasks.approve/decline`), pending proactive
+  summary), questions from running tasks (`payload.event = "question"`, with `channels.deliver_task_results`; each
+  option is a quick-reply button, callback `tq:<option index>:<run_id>`, that answers through
+  `app.tasks.answer_question`), plans awaiting approval (**Approve plan** / **Decline** → `app.tasks.approve/decline`), pending proactive
   suggestions (**Approve** / **Dismiss** → same as `POST /api/proactivity/suggestions/{id}`), and notifications with
   `payload.subagent_id`. Text is a short, link-free summary. Buttons are replaced by the outcome when pressed, or when
   `notification.updated` shows the plan/suggestion was handled elsewhere. A background subagent (`subagent.updated`,
   `background: true`, `completed`/`error`) whose session belongs to a paired chat sends its summary to that chat once.
   Toggles: `channels.deliver_task_results`, `deliver_plans`, `deliver_suggestions`, `deliver_subagents`.
+- Answering a task's question by replying: the delivered question ends with "Tap an option, or reply to this message
+  with your answer." (without options: "Reply to this message with your answer."). The ids of the messages that carried
+  the question are stored per chat in SQLite (`channel_questions`, kept 90 days), so this survives restarts. A text
+  message or voice note (its transcript) without attachments that replies to one of them (Telegram
+  `reply_to_message.message_id`, Discord `message_reference.message_id`) is the answer to that question: it goes to
+  `app.tasks.answer_question`, the chat gets "Thanks! I passed your answer to '<task>'. It's carrying on now." and no chat
+  turn starts. A reply to a question that was already answered or cancelled gets "That question has already been
+  handled, so I didn't pass this on." Every other message, including replies to other messages, is normal chat, however
+  many questions are waiting. Question buttons settle to "Answered: <answer>" or "Cancelled" when the question is
+  handled anywhere. `Incoming.reply_to` carries the replied-to message id for every channel.
 - Domain events `channel.updated` → `Channel` (connect, disconnect, status changes, pairing, deliver changes);
   `channel.message` `{channel, chat_id, session_id, direction: "in"|"out", text}`: `in` is the user's text (the transcript
   for voice notes); `out` is the final reply text, or a delivered notification with `session_id: null`.

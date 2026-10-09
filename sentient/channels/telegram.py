@@ -283,6 +283,7 @@ class TelegramChannel(Channel):
         if sender.get("username"):
             label = f"{label} (@{sender['username']})".strip()
         text = m.get("text") or m.get("caption") or ""
+        reply = m.get("reply_to_message")
         audio: FileFetcher | None = None
         files: list[FileFetcher] = []
         voice = m.get("voice") or m.get("audio")
@@ -307,6 +308,7 @@ class TelegramChannel(Channel):
             audio=audio,
             files=files,
             unsupported=not (text or audio or files),
+            reply_to=str(reply["message_id"]) if isinstance(reply, dict) and reply.get("message_id") is not None else None,
         )
 
     def _fetcher(self, obj: dict, name: str) -> FileFetcher:

@@ -157,7 +157,7 @@ async def add_run(
     for offset_s, message in events:
         await repo.add_event(run_id, message, iso(started + timedelta(seconds=offset_s)))
     fields: dict[str, Any] = {"status": status, "error": error}
-    if status != "processing":
+    if status not in {"processing", "waiting_for_user"}:
         last = max((o for o, _ in events), default=0)
         fields["finished_at"] = iso(started + timedelta(seconds=duration_s or last + 4))
     if result is not None:
@@ -314,6 +314,40 @@ async def seed(app: SentientApp) -> dict[str, str]:
         original_context={"source": "proactive", "suggestion_type": "plan_event"},
         created_at=ts(timedelta(minutes=-42)),
     )
+
+    # 3b. waiting_for_user: a running task paused to ask a question (ask_user) --
+    train_plan = [
+        {"tool": "internet_search", "description": "Find Saturday morning trains from Bengaluru to Mysuru with seats left"},
+        {"tool": "files", "description": "Save the chosen train and timings to a trip note"},
+    ]
+    train_question = "Two morning trains still have seats on Saturday. Which one should I note down for you?"
+    train_options = ["Shatabdi at 11:00 (2h, ₹745)", "Chamundi Express at 06:15 (3h, ₹180)"]
+    ids["waiting"] = await add_task(
+        repo, "demo-waiting",
+        name="Plan Saturday's train to Mysuru",
+        description="Find a good morning train from Bengaluru to Mysuru this Saturday and save the timings to my trip note.",
+        status="waiting_for_user", priority=0, schedule={"type": "once", "run_at": None, "timezone": tz},
+        plan=train_plan, created_at=ts(timedelta(minutes=-25)), last_execution_at=ts(timedelta(minutes=-12)),
+    )
+    waiting_run = await add_run(
+        repo, ids["waiting"], started=NOW - timedelta(minutes=12), status="waiting_for_user", plan=train_plan,
+        events=[
+            (0, info("Executor has picked up the task and is starting execution.")),
+            (4, call("web_search", query="Bengaluru to Mysuru trains Saturday morning seats")),
+            (9, result_msg("web_search", [
+                {"title": "12007 Shatabdi Express", "departs": "11:00", "arrives": "13:00", "fare": "₹745"},
+                {"title": "16216 Chamundi Express", "departs": "06:15", "arrives": "09:15", "fare": "₹180"},
+            ])),
+            (12, thought("Both trains fit a morning trip. The choice depends on what Maya prefers, so I'll ask her.")),
+            (14, call("ask_user", question=train_question, options=train_options)),
+            (15, result_msg("ask_user", {"status": "waiting_for_user"})),
+            (15, info(f"Waiting for your answer: {train_question}")),
+        ],
+    )
+    await repo.update_run(waiting_run, {"pending_question": {
+        "question": train_question, "options": train_options, "tool_call_id": "call_demo_ask",
+        "asked_at": iso(NOW - timedelta(minutes=12) + timedelta(seconds=15)),
+    }})
 
     # 4. daily recurring digest with 3 past runs -------------------------------
     daily = {"type": "recurring", "frequency": "daily", "time": "08:00", "timezone": tz}
@@ -678,6 +712,11 @@ async def seed(app: SentientApp) -> dict[str, str]:
                      title="Plan ready for approval", payload={"task_id": ids["approval"], "event": "approval_needed"})
     await app.notify("task", "I need a bit more information to plan 'Book a table for Rohan's farewell dinner'. Please answer the questions in the task.",
                      title="Clarification needed", payload={"task_id": ids["clarify"], "event": "clarification_needed"})
+    waiting = (await repo.waiting_runs(ids["waiting"]))[0]
+    question = waiting["pending_question"]
+    await app.notify("task", question["question"], title="Plan Saturday's train to Mysuru needs your answer",
+                     payload={"task_id": ids["waiting"], "event": "question", "run_id": waiting["id"],
+                              "question": question["question"], "options": question["options"]})
     await app.notify("task", f"Task 'Post the weekly design update to #studio' has finished with status: error.\n\n{slack_error}",
                      title="Task failed", payload={"task_id": ids["error"], "event": "run_failed"})
     return ids
