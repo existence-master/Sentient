@@ -64,6 +64,7 @@ CLOSE_TIMEOUT_S = 20.0
 STORAGE_FLAG = "--enable-aggressive-domstorage-flushing"
 STORAGE_FLUSH_S = 1.5
 PAGE_CLOSE_TIMEOUT_S = 5.0
+DOWNLOAD_APPEAR_GRACE_S = 0.3
 # models often pass the whole snapshot line ("[e4] button \"Place order\"") instead of just "e4"
 _REF_RE = re.compile(r"\b(e\d+)\b", re.IGNORECASE)
 
@@ -226,6 +227,8 @@ class BrowserService(Service):
         self._site_seen = False  # a tab of the open browser showed a website (its storage may need writing out)
         self._last_tabs_sig: Any = None
         self.idle_check_s = 30.0
+        self._download_tasks: set[asyncio.Task[str]] = set()
+        self._download_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -538,6 +541,7 @@ class BrowserService(Service):
             kwargs: dict[str, Any] = {
                 "user_data_dir": str(folder),
                 "headless": headless,
+                "accept_downloads": True,
                 "timeout": 45_000,
                 "args": ["--no-first-run", "--no-default-browser-check", "--hide-crash-restore-bubble", STORAGE_FLAG],
             }
@@ -727,6 +731,7 @@ class BrowserService(Service):
         page.on("dialog", self._on_dialog)
         page.on("popup", lambda popup: self._on_popup(page, popup))
         page.on("framenavigated", lambda frame: self._on_navigated(page, frame))
+        page.on("download", self._on_download)
 
     def _on_navigated(self, page: Any, frame: Any) -> None:
         # any website shown, by the assistant or by the user in a visible window
@@ -761,6 +766,54 @@ class BrowserService(Service):
                 await dialog.accept()
             else:
                 await dialog.dismiss()
+
+    def _on_download(self, download: Any) -> None:
+        task = asyncio.create_task(self._save_download(download), name="browser:download")
+        task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
+        self._download_tasks.add(task)
+
+    async def _save_download(self, download: Any) -> str:
+        raw_name = str(download.suggested_filename or "download")
+        name = raw_name.replace("\\", "/").rsplit("/", 1)[-1]
+        name = re.sub(r"[^\w.\- ()]+", "_", name).strip(" .")[:160] or "download"
+
+        async with self._download_lock:
+            folder = paths.files_dir() / "downloads"
+            folder.mkdir(parents=True, exist_ok=True)
+            target = folder / name
+            stem  = target.stem
+            suffix = target.suffix
+            index = 1
+            while target.exists():
+                target = folder / f"{stem}({index}){suffix}"
+                index += 1
+            try:
+                await download.save_as(str(target))
+            except Exception as exc:
+                raise BrowserError(f"Couldn't save downloaded file '{name}'") from exc
+        return target.relative_to(paths.files_dir()).as_posix()
+
+    async def _include_downloads(self, result: dict, before: set[asyncio.Task[str]]) -> dict:
+        # Finished tasks from earlier actions (already in `before`) were never reported; drop them.
+        for task in before:
+            if task.done():
+                self._download_tasks.discard(task)
+
+        deadline = time.monotonic() + DOWNLOAD_APPEAR_GRACE_S
+        while time.monotonic() < deadline:
+            if self._download_tasks - before:
+                break
+            await asyncio.sleep(0.05)
+
+        tasks = self._download_tasks - before
+        if not tasks:
+            return result
+        try:
+            names = await asyncio.gather(*tasks)
+        finally:
+            self._download_tasks.difference_update(tasks)
+        result["downloads"] = list(names)
+        return result
 
     async def _idle_watch(self) -> None:
         while self._context is not None:
@@ -979,6 +1032,7 @@ class BrowserService(Service):
             raise BrowserError(problem)
         self.use_profile(ctx, profile)
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page = await self._page(ctx)
             await page.goto(target, wait_until="domcontentloaded")
             await self._settle(page)
@@ -986,6 +1040,7 @@ class BrowserService(Service):
             result = await self._snapshot_locked(page)
             result["profile"] = self._profile
             await self._after_action(ctx, page)
+            result = await self._include_downloads(result, downloads_before)
             return self._take_dialogs(result)
 
     async def snapshot(self, ctx: Any) -> dict:
@@ -1013,6 +1068,7 @@ class BrowserService(Service):
 
     async def click(self, ctx: Any, ref: str) -> dict:
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page, loc, info = await self._locate(ctx, ref)
             if info.get("disabled"):
                 raise BrowserError(f"{format_element(info)} is disabled. Something else on the page may need to be done first.")
@@ -1048,10 +1104,12 @@ class BrowserService(Service):
                 out["new_tab"] = True
                 out["message"] = "Clicked; it opened a new tab, which is now active. Call browser_snapshot to see it."
             await self._after_action(ctx, active)
+            out = await self._include_downloads(out, downloads_before)
             return self._take_dialogs(out)
 
     async def type(self, ctx: Any, ref: str, text: str, submit: bool = False) -> dict:
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page, loc, info = await self._locate(ctx, ref)
             kind = safety.sensitive_field(info) or safety.sensitive_field(info.get("live"))
             if kind:
@@ -1082,10 +1140,12 @@ class BrowserService(Service):
             described = format_element({k: v for k, v in info.items() if k != "value"})
             out = {"ok": True, "typed_into": described, "submitted": bool(submit), "url": active.url}
             await self._after_action(ctx, active)
+            out = await self._include_downloads(out, downloads_before)
             return self._take_dialogs(out)
 
     async def select(self, ctx: Any, ref: str, option: str) -> dict:
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page, loc, info = await self._locate(ctx, ref)
             if str(info.get("tag", "")).lower() != "select":
                 raise BrowserError(
@@ -1108,11 +1168,13 @@ class BrowserService(Service):
             await self._settle(page, 1_000)
             out = {"ok": True, "selected": option, "in": format_element(info), "url": page.url}
             await self._after_action(ctx, page)
+            out = await self._include_downloads(out, downloads_before)
             return self._take_dialogs(out)
 
     async def press(self, ctx: Any, key: str) -> dict:
         name = normalize_key(key)
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page = await self._page(ctx)
             focused = None
             with contextlib.suppress(Exception):
@@ -1135,6 +1197,7 @@ class BrowserService(Service):
             await self._enforce_domains(active)
             out = {"ok": True, "pressed": name, "url": active.url}
             await self._after_action(ctx, active)
+            out = await self._include_downloads(out, downloads_before)
             return self._take_dialogs(out)
 
     async def scroll(self, ctx: Any, direction: str = "down") -> dict:
@@ -1163,6 +1226,7 @@ class BrowserService(Service):
 
     async def back(self, ctx: Any) -> dict:
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page = await self._page(ctx)
             resp = await page.go_back(wait_until="domcontentloaded")
             if resp is None and page.url in {"about:blank", ""}:
@@ -1174,6 +1238,7 @@ class BrowserService(Service):
                 title = await page.title()
             out = {"ok": True, "url": page.url, "title": title}
             await self._after_action(ctx, page)
+            out = await self._include_downloads(out, downloads_before)
             return out
 
     async def tabs(self, ctx: Any, profile: str = "") -> dict:

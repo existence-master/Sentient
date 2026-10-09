@@ -57,6 +57,18 @@ async def test_open_type_click_extract_screenshot(browser, site):
     assert jpeg and jpeg[:2] == b"\xff\xd8"
 
 
+async def test_download_is_saved_and_reported(browser, site):
+    ctx = make_ctx(browser.app)
+    snap = await bt.browser_open.call(ctx, {"url": f"{site}/download.html"})
+    link = ref_of(snap["text"], r'link "Download report"')
+    result = await bt.browser_click.call(ctx, {"ref": link})
+    assert result["downloads"] == ["downloads/report.txt"]
+    saved = paths.files_dir() / result["downloads"][0]
+    print(saved)
+    print(saved.exists())
+    assert saved.read_text(encoding="utf-8") == "Sentient browser download test.\n"
+
+
 async def test_safety_in_real_pages(browser, site):
     app = browser.app
     app.config.tools.approvals.mode = "ask"

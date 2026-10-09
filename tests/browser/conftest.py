@@ -47,6 +47,8 @@ PAGES = {
     "index.html": INDEX,
     "search.html": "<!doctype html><title>Results</title><main><h1>Results page</h1><p>Search results here.</p></main>",
     "help.html": "<!doctype html><title>Help</title><main><h1>Help center</h1></main>",
+    "download.html": '<!doctype html><title>Downloads</title><a href="/report.txt" download>Download report</a>',
+    "report.txt": "Sentient browser download test.\n",
 }
 
 
