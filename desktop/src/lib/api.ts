@@ -70,6 +70,7 @@ import type {
   ProactivityPreference,
   Brief,
   BriefFeedback,
+  BriefKind,
   BriefSectionId,
   BriefSetup,
   BriefState,
@@ -535,7 +536,7 @@ export const api = {
       get: () => http.get<BriefState>('/api/proactivity/brief'),
       /** Set it up (creates the task once) or change time, days, sections and topics. */
       setup: (body: BriefSetup = {}) => http.post<BriefState>('/api/proactivity/brief', body),
-      runNow: () => http.post<{ ok: boolean; task_id: string }>('/api/proactivity/brief/run'),
+      runNow: (kind: BriefKind = 'morning') => http.post<{ ok: boolean; task_id: string }>('/api/proactivity/brief/run', { kind }),
       feedback: (body: { brief_id: string; value: BriefFeedback; item_id?: string; section?: BriefSectionId }) =>
         http.post<Brief>('/api/proactivity/brief/feedback', body)
     }

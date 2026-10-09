@@ -1,7 +1,7 @@
 /** React Query hooks for §6 notifications & proactivity. */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import type { BriefFeedback, BriefSectionId, BriefSetup, BriefState, NotificationList } from '@/lib/types'
+import type { BriefFeedback, BriefKind, BriefSectionId, BriefSetup, BriefState, NotificationList } from '@/lib/types'
 import { useNotificationStore } from '@/stores/notifications'
 import { qk } from './queryKeys'
 
@@ -104,7 +104,7 @@ export function useBriefActions() {
         void qc.invalidateQueries({ queryKey: qk.config })
       }
     }),
-    runNow: useMutation({ mutationFn: () => api.proactivity.brief.runNow() }),
+    runNow: useMutation({ mutationFn: (kind: BriefKind = 'morning') => api.proactivity.brief.runNow(kind) }),
     feedback: useMutation({
       mutationFn: (body: { brief_id: string; value: BriefFeedback; item_id?: string; section?: BriefSectionId }) =>
         api.proactivity.brief.feedback(body),

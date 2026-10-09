@@ -961,6 +961,14 @@ class ProactiveEngine(Service):
             (suggestion_type, 1 if positive else -1, int(positive), int(not positive), _iso(datetime.now(UTC))),
         )
 
+    async def undo_feedback(self, suggestion_type: str, positive: bool) -> None:
+        """Take back one earlier ``record_feedback`` (a Daily Brief rating the user changed)."""
+        await self.app.store.execute(
+            "UPDATE proactive_preferences SET score = score - ?, approvals = MAX(0, approvals - ?),"
+            " dismissals = MAX(0, dismissals - ?), updated_at = ? WHERE suggestion_type = ?",
+            (1 if positive else -1, int(positive), int(not positive), _iso(datetime.now(UTC)), suggestion_type),
+        )
+
     async def preferences(self) -> list[dict]:
         rows = await self.app.store.fetchall(
             "SELECT suggestion_type, score, approvals, dismissals FROM proactive_preferences ORDER BY suggestion_type"

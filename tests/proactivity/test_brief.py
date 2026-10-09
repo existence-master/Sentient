@@ -199,9 +199,16 @@ async def test_feedback_is_recorded_and_changes_later_briefs(app):
     scores = await app.proactivity.preference_scores()
     assert scores["daily_brief_tasks"] == 3 and scores["daily_brief_weather"] == -1
 
-    with pytest.raises(BriefError) as dup:
-        await b.feedback(second["id"], "down", section="tasks")
-    assert dup.value.status == 409
+    # changing a rating replaces it (latest wins); the same rating again changes nothing
+    changed = await b.feedback(second["id"], "down", section="tasks")
+    assert next(s for s in changed["sections"] if s["id"] == "tasks")["feedback"] == "down"
+    assert (await app.proactivity.preference_scores())["daily_brief_tasks"] == 1
+    await b.feedback(second["id"], "down", section="tasks")
+    assert (await app.proactivity.preference_scores())["daily_brief_tasks"] == 1
+    await b.feedback(second["id"], "up", section="tasks")
+    assert (await app.proactivity.preference_scores())["daily_brief_tasks"] == 3
+    prefs = {p["suggestion_type"]: p for p in await app.proactivity.preferences()}
+    assert prefs["daily_brief_tasks"]["approvals"] == 3 and prefs["daily_brief_tasks"]["dismissals"] == 0
     with pytest.raises(BriefError) as missing:
         await b.feedback(second["id"], "up", item="nope")
     assert missing.value.status == 404
@@ -236,7 +243,7 @@ async def test_setup_creates_one_editable_recurring_task(app):
     task = await app.tasks.get(state["task_id"])
     assert task["name"] == "Daily Brief" and task["status"] == "active" and task["enabled"]
     assert task["schedule"]["time"] == "07:30" and task["schedule"]["days"] == brief_mod.DEFAULT_DAYS
-    assert task["original_context"]["fixed_call"] == {"tool": "daily_brief_build", "arguments": {},
+    assert task["original_context"]["fixed_call"] == {"tool": "daily_brief_build", "arguments": {"kind": "morning"},
                                                       "done_text": "Your Daily Brief is ready.", "quiet": True}
     assert task["next_execution_at"]
     assert state["days"] == brief_mod.DEFAULT_DAYS and state["time"] == "07:30"
@@ -272,6 +279,8 @@ async def test_scheduled_run_delivers_the_brief_without_a_task_completed_note(ap
     assert not [n for n in notes if n["kind"] == "task"]  # quiet: the brief is the notification
     after = await app.tasks.get(task["task_id"])
     assert after["status"] == "active" and after["runs"][-1]["status"] == "completed"
+    assert after["runs"][-1]["result"]["summary"] == "Your Daily Brief is ready."
+    assert not [c for c in app.fake.calls if c.get("json")]  # no model call writes a report for a quiet run
     assert after["next_execution_at"] > task["next_execution_at"]
 
 
@@ -320,6 +329,10 @@ def test_brief_routes(config, isolated_home, monkeypatch):
         state = c.post("/api/proactivity/brief", json={"time": "07:00", "sections": ["calendar"]}).json()
         assert state["set_up"] and state["time"] == "07:00" and state["sections"] == ["calendar"]
         assert c.post("/api/proactivity/brief", json={"max_items": "lots"}).status_code == 400
+        assert c.post("/api/proactivity/brief/run", json={"kind": "evening"}).status_code == 409  # not set up yet
+        assert c.post("/api/proactivity/brief", json={"kind": "afternoon"}).status_code == 400
+        assert c.post("/api/proactivity/brief", json={"kind": "evening"}).json()["evening"]["time"] == "21:00"
+        assert c.post("/api/proactivity/brief/run", json={"kind": "evening"}).json()["ok"] is True
         assert c.post("/api/proactivity/brief/feedback", json={"brief_id": "x", "value": "up", "section": "calendar"}).status_code == 404
 
 
@@ -338,3 +351,105 @@ def test_schedule_words_and_bad_times():
     assert schedule_for(None, ["Saturday"])["days"] == ["Saturday"]
     with pytest.raises(ValueError):
         schedule_for("25:99")
+
+
+# ---------------------------------------------------------------------------- the evening brief
+EVENING = datetime.now(UTC).replace(hour=20, minute=0, second=0, microsecond=0)  # today, so file times line up
+
+
+async def add_day_of_work(app) -> None:
+    """Runs that finished today: one done with a file, one failed, an approved follow-up reply, a task that emailed."""
+    repo = app.tasks.repo
+    base = {"description": "", "priority": 1, "assignee": "ai", "enabled": True, "task_type": "single",
+            "plan": [{"tool": "files", "description": "x"}], "created_at": EVENING.isoformat(),
+            "updated_at": EVENING.isoformat()}
+    earlier = (EVENING - timedelta(hours=3)).isoformat()
+
+    async def ran(name: str, status: str, task_status: str, *, result=None, context=None, sent_by_tool=False):
+        tid = await repo.insert_task({**base, "name": name, "status": task_status,
+                                      "original_context": context or {"source": "manual_creation"}})
+        rid = await repo.insert_run(tid, now=earlier)
+        if sent_by_tool:
+            await repo.add_event(rid, {"type": "tool_call", "tool_name": "gmail_send", "parameters": {}}, earlier)
+        await repo.finish_run(rid, status, error="It broke" if status == "error" else None, now=earlier)
+        if result:
+            await repo.update_run(rid, {"result": result})
+
+    await ran("Compare offsite venues", "completed", "completed",
+              result={"summary": "ok", "files_created": [{"filename": "venues.pdf", "description": ""}]})
+    await ran("Renew the domain", "error", "error")
+    await ran("Send reply to Priya Shah: Invoice for September", "completed", "completed",
+              context={"source": "proactive", "fixed_call": {"tool": "gmail_reply", "arguments": {}}})
+    await ran("Email the caterer the headcount", "completed", "completed", sent_by_tool=True)
+    await repo.insert_task({**base, "name": "Book the plumber", "status": "approval_pending"})
+
+
+def save_file(rel: str, when: datetime) -> None:
+    import os
+
+    from sentient import paths
+
+    p = paths.files_dir() / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("x")
+    os.utime(p, (when.timestamp(), when.timestamp()))
+
+
+async def test_evening_brief_wraps_up_the_day(app):
+    await add_day_of_work(app)
+    await add_follow_up(app)
+    save_file("outputs/report.pdf", EVENING - timedelta(hours=1))
+    save_file("uploads/receipt.jpg", EVENING - timedelta(hours=1))  # the user's own upload
+    save_file("outputs/tool-abc.txt", EVENING - timedelta(hours=1))  # a long tool result kept on disk
+    save_file("old-notes.txt", EVENING - timedelta(days=2))
+    app.config.proactivity.brief.max_items = 20
+    brief = await app.proactivity.brief.build(EVENING, "evening")
+    assert brief["kind"] == "evening" and brief["title"].startswith("Your Evening Brief for")
+    by = {s: [i["text"] for i in brief["items"] if i["section"] == s] for s in ("done", "sent", "files", "waiting", "tomorrow")}
+    assert by["done"] == ["Renew the domain: failed", "Compare offsite venues: done"]
+    assert sorted(by["sent"]) == ["Email the caterer the headcount: email sent", "Sent reply to Priya Shah: Invoice for September"]
+    assert by["files"] == ["venues.pdf", "outputs/report.pdf"]
+    assert by["waiting"] == ["Book the plumber: plan waiting for your approval",
+                             "Priya is waiting for your reply about the invoice"]
+    assert by["tomorrow"] == ["05:00 Early gym", "09:30 Design review (Room 4)", "12:30 Lunch with Kavya"]
+    assert [s["label"] for s in brief["sections"]] == ["Done today", "Sent today", "New files", "Still waiting for you", "Tomorrow"]
+    assert all(i["why"] for i in brief["items"])
+    assert app.fakes.calls == ["gcal_list_events"] and app.fake.text_calls == []  # read-only, no model
+
+    app.config.proactivity.brief.max_items = 7
+    capped = await app.proactivity.brief.build(EVENING, "evening")
+    assert len(capped["items"]) == 7 and {i["section"] for i in capped["items"]} == set(by)
+    app.config.proactivity.brief.evening_sections = ["sent"]
+    assert {i["section"] for i in (await app.proactivity.brief.build(EVENING, "evening"))["items"]} == {"sent"}
+
+
+async def test_evening_brief_is_its_own_task_and_replaces_the_morning_card(app):
+    b = app.proactivity.brief
+    state = await b.setup({"kind": "evening", "sections": ["done", "tomorrow", "calendar"]})
+    assert state["set_up"] is False and state["evening"]["set_up"] is True  # the morning brief is separate
+    task = await app.tasks.get(state["evening"]["task_id"])
+    assert task["name"] == "Evening Brief" and task["status"] == "active"
+    assert task["schedule"]["frequency"] == "daily" and task["schedule"]["time"] == "21:00"
+    assert task["original_context"]["fixed_call"]["arguments"] == {"kind": "evening"}
+    assert state["evening"]["sections"] == ["done", "tomorrow"] and app.config.proactivity.brief.sections[0] == "calendar"
+    state = await b.setup({"kind": "evening", "time": "night", "days": "weekdays"})
+    task = await app.tasks.get(state["evening"]["task_id"])
+    assert task["schedule"]["time"] == "21:00" and task["schedule"]["days"] == brief_mod.DEFAULT_DAYS
+    with pytest.raises(BriefError) as bad:
+        await b.setup({"kind": "noon"})
+    assert bad.value.status == 400
+
+    morning = await b.deliver(NOW)
+    evening = await b.deliver(NOW, "evening")
+    assert (await b.today(NOW))["id"] == evening["id"] and evening["task_id"] == task["task_id"]
+    assert (await app.notifications.get(morning["id"]))["payload"]["status"] == "expired"
+    assert (await b.text_for_today(NOW, "morning"))["kind"] == "morning"  # read out fresh, not delivered
+    assert len([n for n in await app.notifications.list() if n["kind"] == "brief"]) == 2
+
+    due = datetime.fromisoformat(task["next_execution_at"])
+    app.tasks.clock = lambda: due + timedelta(seconds=1)
+    assert await app.tasks.tick()
+    await app.tasks.drain()
+    latest = (await app.notifications.list())[0]
+    assert latest["kind"] == "brief" and latest["payload"]["brief"]["kind"] == "evening"
+    assert not [n for n in await app.notifications.list() if n["kind"] == "task"]

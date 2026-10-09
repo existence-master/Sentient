@@ -1,11 +1,14 @@
-"""The Daily Brief (docs/API.md section 6): a short, capped morning digest built from read-only look-ups.
+"""The Daily Brief (docs/API.md section 6): a short, capped morning digest built from read-only look-ups, and an
+optional Evening Brief that wraps up the day.
 
-It is an ordinary recurring task the user can see, edit, pause or delete: setting it up creates an already approved
+Each is an ordinary recurring task the user can see, edit, pause or delete: setting one up creates an already approved
 task whose run is one fixed call to ``daily_brief_build`` (``app.tasks.create_approved_call`` with a recurring
 schedule). Each run:
 
-    1. reads today's calendar, emails that need you (pending email suggestions and follow-ups, then unread important
-       Gmail), tasks due today or waiting for you, the weather at the user's location and news on chosen topics.
+    1. reads, for the morning: today's calendar, emails that need you (pending email suggestions and follow-ups, then
+       unread important Gmail), tasks due today or waiting for you, the weather at the user's location and news on
+       chosen topics; for the evening: tasks finished or failed today, emails sent today, files made today, what is
+       still waiting for you and tomorrow's first events.
        Only ``read`` tools are called, never ones behind an Ask or Never rule; nothing is sent or changed.
     2. ranks sections by the learned per-type scores (``daily_brief_<section>``) and caps the brief at
        ``proactivity.brief.max_items`` lines, taking one line from each section in turn.
@@ -36,23 +39,40 @@ if TYPE_CHECKING:  # pragma: no cover
 
 log = logging.getLogger(__name__)
 
+MORNING, EVENING = "morning", "evening"
+KINDS = (MORNING, EVENING)
 SECTIONS = ("calendar", "email", "tasks", "weather", "news")
-SECTION_LABELS = {"calendar": "Calendar", "email": "Email", "tasks": "Tasks", "weather": "Weather", "news": "News"}
-BASE_LIMITS = {"calendar": 3, "email": 3, "tasks": 3, "weather": 1, "news": 2}
+EVENING_SECTIONS = ("done", "sent", "files", "waiting", "tomorrow")
+KIND_SECTIONS = {MORNING: SECTIONS, EVENING: EVENING_SECTIONS}
+SECTION_LABELS = {"calendar": "Calendar", "email": "Email", "tasks": "Tasks", "weather": "Weather", "news": "News",
+                  "done": "Done today", "sent": "Sent today", "files": "New files", "waiting": "Still waiting for you",
+                  "tomorrow": "Tomorrow"}
+BASE_LIMITS = {"calendar": 3, "email": 3, "tasks": 3, "weather": 1, "news": 2,
+               "done": 3, "sent": 2, "files": 2, "waiting": 3, "tomorrow": 3}
 TYPE_PREFIX = "daily_brief_"  # learned preference type per section: daily_brief_calendar, ...
 BUILD_TOOL = "daily_brief_build"
 READ_TOOL = "daily_brief_today"
-TASK_META = "brief.task_id"
-TASK_NAME = "Daily Brief"
-TASK_DESCRIPTION = (
-    "Gathers today's calendar, emails that need you, tasks due or waiting for you and the weather into one short "
-    "brief. It only reads: it never sends or changes anything."
-)
-DEFAULT_TIME = "07:30"
+TASK_META = {MORNING: "brief.task_id", EVENING: "brief.evening_task_id"}
+TASK_NAMES = {MORNING: "Daily Brief", EVENING: "Evening Brief"}
+TASK_DESCRIPTIONS = {
+    MORNING: "Gathers today's calendar, emails that need you, tasks due or waiting for you and the weather into one "
+             "short brief. It only reads: it never sends or changes anything.",
+    EVENING: "Wraps up your day: tasks finished or failed, emails sent, files made, what is still waiting for you and "
+             "tomorrow's first events. It only reads: it never sends or changes anything.",
+}
+TITLES = {MORNING: "Your Daily Brief for {day}", EVENING: "Your Evening Brief for {day}"}
+EMPTY_TEXT = {MORNING: "Nothing needs you this morning. Enjoy your day.",
+              EVENING: "A quiet day. Nothing is waiting for you tonight."}
 DEFAULT_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 ALL_DAYS = [*DEFAULT_DAYS, "Saturday", "Sunday"]
+DEFAULT_SCHEDULES: dict[str, tuple[str, Any]] = {MORNING: ("07:30", DEFAULT_DAYS), EVENING: ("21:00", "daily")}
+DEFAULT_TIME = DEFAULT_SCHEDULES[MORNING][0]
 TIME_WORDS = {"early": "06:30", "morning": "07:30", "midday": "12:00", "noon": "12:00", "afternoon": "14:00",
-              "evening": "18:00"}
+              "evening": "18:00", "night": "21:00"}
+SEND_TOOLS = {"gmail_send", "gmail_reply", "email_imap_send"}
+FINISHED_OK = {"completed", "completed_with_errors"}
+TOMORROW_EVENTS = 3
+FILES_SCAN_LIMIT = 500
 WAITING_LABELS = {  # most urgent first
     "waiting_for_user": "asked you a question",
     "approval_pending": "plan waiting for your approval",
@@ -94,10 +114,17 @@ def section_limit(section: str, score: int) -> int:
     return base
 
 
-def order_sections(sections: list[str], scores: dict[str, int]) -> list[str]:
-    """Wanted sections, best liked first; ties keep the usual order."""
-    wanted = [s for s in SECTIONS if s in {str(x).strip().lower() for x in sections}]
-    return sorted(wanted, key=lambda s: (-scores.get(preference_type(s), 0), SECTIONS.index(s)))
+def order_sections(sections: list[str], scores: dict[str, int], known: tuple[str, ...] = SECTIONS) -> list[str]:
+    """Wanted sections out of ``known``, best liked first; ties keep the usual order."""
+    wanted = [s for s in known if s in {str(x).strip().lower() for x in sections}]
+    return sorted(wanted, key=lambda s: (-scores.get(preference_type(s), 0), known.index(s)))
+
+
+def check_kind(kind: Any) -> str:
+    value = str(kind or MORNING).strip().lower()
+    if value not in KINDS:
+        raise BriefError(400, "kind must be morning or evening")
+    return value
 
 
 def cap_items(found: dict[str, list[dict]], order: list[str], scores: dict[str, int], max_items: int) -> list[dict]:
@@ -159,19 +186,22 @@ def parse_dt(value: Any) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
-def schedule_for(time_value: Any = None, days: Any = None, tz_name: str | None = None) -> dict:
+def schedule_for(time_value: Any = None, days: Any = None, tz_name: str | None = None, kind: str = MORNING) -> dict:
     """A recurring task schedule. ``time_value`` is 'HH:MM' or a word like 'morning'; ``days`` a list of day names,
-    'weekdays' or 'daily'."""
-    when = str(time_value or DEFAULT_TIME).strip().lower()
+    'weekdays' or 'daily'. Left out, they default to the brief kind's (weekdays at 07:30, or daily at 21:00)."""
+    default_time, default_days = DEFAULT_SCHEDULES[kind]
+    when = str(time_value or default_time).strip().lower()
     when = TIME_WORDS.get(when, when)
     if not _CLOCK.match(when):
-        raise ValueError("Pick a time like 07:30, or a word: early, morning, midday, afternoon or evening.")
+        raise ValueError("Pick a time like 07:30, or a word: early, morning, midday, afternoon, evening or night.")
     if days is None or days == []:
+        days = default_days
+    if isinstance(days, str) and days.strip().lower() in {"weekday", "weekdays"}:
         day_list: Any = list(DEFAULT_DAYS)
     elif isinstance(days, str) and days.strip().lower() in {"daily", "every day", "everyday"}:
         day_list = None
     else:
-        day_list = days
+        day_list = list(days) if isinstance(days, list) else days
     out: dict[str, Any] = {"type": "recurring", "time": when}
     if day_list is None:
         out["frequency"] = "daily"
@@ -197,42 +227,50 @@ class DailyBrief:
         return resolve_tz(self.app.config.assistant.timezone) or UTC
 
     # ------------------------------------------------------------------ the task
-    async def task(self) -> dict | None:
-        """The Daily Brief task, or None when it was never set up or was deleted."""
+    async def task(self, kind: str = MORNING) -> dict | None:
+        """The brief's task (morning or evening), or None when it was never set up or was deleted."""
         tasks = self.app.tasks
-        task_id = await self.app.store.get_meta(TASK_META)
+        task_id = await self.app.store.get_meta(TASK_META[kind])
         if task_id and hasattr(tasks, "get"):
             with contextlib.suppress(Exception):
                 return await tasks.get(task_id)
         return None
 
+    async def _brief_task_ids(self) -> set[str]:
+        return {t for t in [await self.app.store.get_meta(TASK_META[k]) for k in KINDS] if t}
+
     async def setup(self, body: dict | None = None) -> dict:
-        """Create the task (once) or change it: ``{time, days, sections, news_topics, max_items}``, all optional."""
+        """Create a brief's task (once) or change it: ``{kind, time, days, sections, news_topics, max_items}``, all
+        optional; ``kind`` is morning (default) or evening."""
         body = dict(body or {})
-        self._apply_config(body)
+        kind = check_kind(body.get("kind"))
+        self._apply_config(body, kind)
         tasks = self.app.tasks
-        existing = await self.task()
+        existing = await self.task(kind)
         if existing is None:
             if not hasattr(tasks, "create_approved_call"):
                 raise BriefError(503, "Tasks are not available yet.")
+            step = ("Build today's brief from your calendar, email, tasks and weather" if kind == MORNING
+                    else "Wrap up today: finished tasks, sent emails, new files, what is waiting and tomorrow's events")
             created = await tasks.create_approved_call(
-                TASK_NAME, BUILD_TOOL, {}, step="Build today's brief from your calendar, email, tasks and weather",
-                description=TASK_DESCRIPTION, source="brief", original_context={"source": "brief", "brief": True},
-                done_text="Your Daily Brief is ready.",
-                schedule=schedule_for(body.get("time"), body.get("days")), quiet=True,
+                TASK_NAMES[kind], BUILD_TOOL, {"kind": kind}, step=step,
+                description=TASK_DESCRIPTIONS[kind], source="brief",
+                original_context={"source": "brief", "brief": kind},
+                done_text=f"Your {TASK_NAMES[kind]} is ready.",
+                schedule=schedule_for(body.get("time"), body.get("days"), kind=kind), quiet=True,
             )
-            await self.app.store.set_meta(TASK_META, created["task_id"])
+            await self.app.store.set_meta(TASK_META[kind], created["task_id"])
         elif "time" in body or "days" in body:
             old = existing.get("schedule") or {}
             schedule = schedule_for(
                 body.get("time") or old.get("time"),
                 body.get("days") if "days" in body else ("daily" if old.get("frequency") == "daily" else old.get("days")),
-                old.get("timezone"),
+                old.get("timezone"), kind=kind,
             )
             await tasks.update(existing["task_id"], {"schedule": schedule})
         return await self.state()
 
-    def _apply_config(self, body: dict) -> None:
+    def _apply_config(self, body: dict, kind: str = MORNING) -> None:
         keys = ("sections", "news_topics", "max_items")
         if not any(k in body for k in keys):
             return
@@ -240,7 +278,11 @@ class DailyBrief:
         brief = cfg.proactivity.brief
         if "sections" in body:
             raw = body["sections"] if isinstance(body["sections"], list) else []
-            brief.sections = [s for s in SECTIONS if s in {str(x).strip().lower() for x in raw}]
+            picked = [s for s in KIND_SECTIONS[kind] if s in {str(x).strip().lower() for x in raw}]
+            if kind == EVENING:
+                brief.evening_sections = picked
+            else:
+                brief.sections = picked
         if "news_topics" in body:
             raw = body["news_topics"] if isinstance(body["news_topics"], list) else []
             brief.news_topics = [one_line(t, 60) for t in raw if str(t).strip()][:5]
@@ -251,18 +293,22 @@ class DailyBrief:
                 raise BriefError(400, "max_items must be a number from 1 to 20.") from exc
         self.app.save_config(cfg)
 
-    async def run_now(self) -> dict:
-        task = await self.task()
+    def _sections(self, kind: str) -> list[str]:
+        return list(self.cfg.evening_sections if kind == EVENING else self.cfg.sections)
+
+    async def run_now(self, kind: str = MORNING) -> dict:
+        kind = check_kind(kind)
+        task = await self.task(kind)
         if task is None:
-            raise BriefError(409, "Set up your Daily Brief first.")
+            raise BriefError(409, f"Set up your {TASK_NAMES[kind]} first.")
         try:
             await self.app.tasks.run_now(task["task_id"])
         except ValueError as exc:  # TaskConflict: the task can't run right now
             raise BriefError(409, str(exc)) from exc
         return {"ok": True, "task_id": task["task_id"]}
 
-    async def state(self, now: datetime | None = None) -> dict:
-        task = await self.task()
+    async def _kind_state(self, kind: str) -> dict:
+        task = await self.task(kind)
         schedule = (task or {}).get("schedule") or {}
         return {
             "set_up": task is not None,
@@ -271,21 +317,34 @@ class DailyBrief:
             "time": schedule.get("time"),
             "days": ALL_DAYS if schedule.get("frequency") == "daily" else schedule.get("days"),
             "next_at": (task or {}).get("next_execution_at"),
-            "sections": list(self.cfg.sections),
+            "sections": self._sections(kind),
+        }
+
+    async def state(self, now: datetime | None = None) -> dict:
+        """The morning brief's fields at the top level, the evening brief's under ``evening``."""
+        return {
+            **await self._kind_state(MORNING),
             "news_topics": list(self.cfg.news_topics),
             "max_items": self.cfg.max_items,
             "available": await self.available(),
             "today": await self.today(now),
+            "evening": await self._kind_state(EVENING),
         }
 
     async def available(self) -> dict[str, bool]:
         """Which sections can find anything right now (an app connected, a city or topics set)."""
+        calendar = await self._connected("gcalendar")
         return {
-            "calendar": await self._connected("gcalendar"),
+            "calendar": calendar,
             "email": any([await self._connected(s) for s in EMAIL_SOURCES]),
             "tasks": True,
             "weather": bool(self.app.config.assistant.location.strip()),
             "news": bool(self.cfg.news_topics),
+            "done": True,
+            "sent": True,
+            "files": True,
+            "waiting": True,
+            "tomorrow": calendar,
         }
 
     # ------------------------------------------------------------------ reading (read tools only)
@@ -317,10 +376,12 @@ class DailyBrief:
             return None
         return out
 
-    async def _calendar(self, local: datetime) -> tuple[list[dict], str | None]:
+    async def _events(self, local: datetime, section: str, *, tomorrow: bool = False) -> tuple[list[dict], str | None]:
+        """Today's events that are not over yet, or tomorrow's (``section`` names the brief section)."""
+        when_word = "tomorrow's first" if tomorrow else "today's"
         if not await self._connected("gcalendar"):
-            return [], "Connect Google Calendar to see today's events."
-        day = local.date().isoformat()
+            return [], f"Connect Google Calendar to see {when_word} events."
+        day = (local.date() + timedelta(days=1 if tomorrow else 0)).isoformat()
         out = await self.read("gcal_list_events", {"time_min": day, "time_max": day, "max_results": 20})
         if out is None:
             return [], "Couldn't read your calendar this time."
@@ -329,17 +390,24 @@ class DailyBrief:
             if not isinstance(ev, dict) or str(ev.get("status") or "").lower() == "cancelled":
                 continue
             start, end = parse_dt(ev.get("start")), parse_dt(ev.get("end"))
-            if not ev.get("all_day") and end is not None and end <= local:
+            if not tomorrow and not ev.get("all_day") and end is not None and end <= local:
                 continue  # already over
             when = "All day" if ev.get("all_day") or start is None else start.astimezone(local.tzinfo).strftime("%H:%M")
             text = f"{when} {one_line(ev.get('summary') or 'Untitled event', 100)}"
             if ev.get("location") and len(str(ev["location"])) <= 40:
                 text += f" ({one_line(ev['location'], 40)})"
             items.append({
-                "id": item_id("calendar", str(ev.get("id") or text)), "section": "calendar", "text": text,
-                "link": ev.get("url") or ev.get("meet_link"), "why": "On your calendar today",
+                "id": item_id(section, str(ev.get("id") or text)), "section": section, "text": text,
+                "link": ev.get("url") or ev.get("meet_link"),
+                "why": "First on your calendar tomorrow" if tomorrow else "On your calendar today",
             })
-        return items, None
+        return (items[:TOMORROW_EVENTS] if tomorrow else items), None
+
+    async def _calendar(self, local: datetime) -> tuple[list[dict], str | None]:
+        return await self._events(local, "calendar")
+
+    async def _tomorrow(self, local: datetime) -> tuple[list[dict], str | None]:
+        return await self._events(local, "tomorrow", tomorrow=True)
 
     async def _pending_email_suggestions(self, now: datetime) -> list[dict]:
         rows = await self.app.store.fetchall(
@@ -385,40 +453,165 @@ class DailyBrief:
                 })
         return items, None
 
-    async def _tasks(self, local: datetime) -> tuple[list[dict], str | None]:
+    async def _task_list(self) -> list[dict] | None:
+        """Every task except the briefs' own, or None when tasks can't be read."""
         lister = getattr(self.app.tasks, "list", None)
         if not callable(lister):
-            return [], None
+            return []
         try:
             tasks = await lister()
         except Exception as exc:
             log.warning("brief: listing tasks failed: %s", exc)
+            return None
+        own = await self._brief_task_ids()
+        return [t for t in tasks or [] if isinstance(t, dict) and t.get("task_id") not in own]
+
+    @staticmethod
+    def _waiting_tasks(tasks: list[dict], section: str) -> list[dict]:
+        """Tasks waiting for the user, most urgent first."""
+        urgency = list(WAITING_LABELS)
+        waiting = [t for t in tasks if t.get("status") in WAITING_LABELS]
+        waiting.sort(key=lambda t: urgency.index(t["status"]))
+        return [
+            {"id": item_id(section, f"w:{t.get('task_id')}:{t['status']}"), "section": section,
+             "text": f"{one_line(t.get('name') or 'Untitled task', 90)}: {WAITING_LABELS[t['status']]}",
+             "link": f"/tasks/{t.get('task_id')}", "why": "Waiting for you in Tasks"}
+            for t in waiting
+        ]
+
+    async def _tasks(self, local: datetime) -> tuple[list[dict], str | None]:
+        tasks = await self._task_list()
+        if tasks is None:
             return [], "Couldn't read your tasks this time."
-        brief_task = await self.app.store.get_meta(TASK_META)
         end_of_day = datetime.combine(local.date() + timedelta(days=1), time.min, local.tzinfo)
-        waiting, due = [], []
-        for t in tasks or []:
-            if not isinstance(t, dict) or t.get("task_id") == brief_task:
-                continue
-            name = one_line(t.get("name") or "Untitled task", 90)
-            link = f"/tasks/{t.get('task_id')}"
-            status = t.get("status")
-            if status in WAITING_LABELS:
-                waiting.append({"id": item_id("tasks", f"w:{t.get('task_id')}:{status}"), "section": "tasks",
-                                "text": f"{name}: {WAITING_LABELS[status]}", "link": link, "why": "Waiting for you in Tasks",
-                                "_status": status})
-                continue
+        due = []
+        for t in tasks:
             nxt = parse_dt(t.get("next_execution_at"))
-            if t.get("enabled") and status in DUE_STATUSES and nxt is not None and local <= nxt < end_of_day:
+            if t.get("enabled") and t.get("status") in DUE_STATUSES and nxt is not None and local <= nxt < end_of_day:
+                name = one_line(t.get("name") or "Untitled task", 90)
                 due.append((nxt, {"id": item_id("tasks", f"d:{t.get('task_id')}"), "section": "tasks",
                                   "text": f"{name} runs at {nxt.astimezone(local.tzinfo).strftime('%H:%M')}",
-                                  "link": link, "why": "Due today"}))
+                                  "link": f"/tasks/{t.get('task_id')}", "why": "Due today"}))
         due.sort(key=lambda x: x[0])
-        urgency = list(WAITING_LABELS)
-        waiting.sort(key=lambda i: urgency.index(i["_status"]))
-        for i in waiting:
-            i.pop("_status")
-        return waiting + [d for _, d in due], None
+        return self._waiting_tasks(tasks, "tasks") + [d for _, d in due], None
+
+    # ------------------------------------------------------------------ evening sections
+    @staticmethod
+    def _runs_today(task: dict, local: datetime) -> list[dict]:
+        """The task's runs that finished today (user's day), newest first."""
+        out = []
+        for run in task.get("runs") or []:
+            done = parse_dt(run.get("finished_at"))
+            if done is not None and done.astimezone(local.tzinfo).date() == local.date():
+                out.append(run)
+        return sorted(out, key=lambda r: str(r.get("finished_at") or ""), reverse=True)
+
+    @staticmethod
+    def _sends(task: dict, run: dict) -> bool:
+        """True when the run sent an email (an approved follow-up, or a send tool it called)."""
+        fixed = (task.get("original_context") or {}).get("fixed_call") or {}
+        if fixed.get("tool") in SEND_TOOLS:
+            return True
+        return any(
+            (u.get("message") or {}).get("type") == "tool_call" and (u.get("message") or {}).get("tool_name") in SEND_TOOLS
+            for u in run.get("progress_updates") or [] if isinstance(u, dict)
+        )
+
+    async def _done(self, local: datetime) -> tuple[list[dict], str | None]:
+        tasks = await self._task_list()
+        if tasks is None:
+            return [], "Couldn't read your tasks this time."
+        failed, finished = [], []
+        for t in tasks:
+            runs = self._runs_today(t, local)
+            if not runs or (runs[0].get("status") in FINISHED_OK and self._sends(t, runs[0])):
+                continue  # nothing today, or it is a sent email (the "sent" section)
+            name = one_line(t.get("name") or "Untitled task", 100)
+            run, link = runs[0], f"/tasks/{t.get('task_id')}"
+            if run.get("status") == "error":
+                failed.append({"id": item_id("done", f"f:{run.get('run_id')}"), "section": "done",
+                               "text": f"{name}: failed", "link": link, "why": "Failed today. Open it to retry."})
+            elif run.get("status") in FINISHED_OK:
+                finished.append({"id": item_id("done", f"d:{run.get('run_id')}"), "section": "done",
+                                 "text": f"{name}: done", "link": link, "why": "Finished today"})
+        return failed + finished, None
+
+    async def _sent(self, local: datetime) -> tuple[list[dict], str | None]:
+        tasks = await self._task_list()
+        if tasks is None:
+            return [], "Couldn't read your tasks this time."
+        items = []
+        for t in tasks:
+            for run in self._runs_today(t, local):
+                if run.get("status") not in FINISHED_OK or not self._sends(t, run):
+                    continue
+                name = one_line(t.get("name") or "an email", 110)
+                text = f"Sent {name[5:]}" if name.lower().startswith("send ") else f"{name}: email sent"
+                fixed = (t.get("original_context") or {}).get("fixed_call") or {}
+                why = "Sent today after you approved it" if fixed.get("tool") in SEND_TOOLS else "Sent by a task today"
+                items.append({"id": item_id("sent", str(run.get("run_id"))), "section": "sent", "text": text,
+                              "link": f"/tasks/{t.get('task_id')}", "why": why})
+        return items, None
+
+    def _saved_files(self, local: datetime) -> list[tuple[float, str]]:
+        """Files changed today in Sentient's files folder, newest first (your uploads and tool dumps left out)."""
+        from sentient import paths
+
+        root = paths.files_dir()
+        if not root.is_dir():
+            return []
+        found: list[tuple[float, str]] = []
+        seen = 0
+        for p in root.rglob("*"):
+            seen += 1
+            if seen > FILES_SCAN_LIMIT:
+                break
+            rel = p.relative_to(root).as_posix()
+            if not p.is_file() or rel.startswith("uploads/") or (rel.startswith("outputs/") and p.name.startswith("tool-")):
+                continue
+            mtime = p.stat().st_mtime
+            if datetime.fromtimestamp(mtime, local.tzinfo).date() == local.date():
+                found.append((mtime, rel))
+        return sorted(found, reverse=True)
+
+    async def _files(self, local: datetime) -> tuple[list[dict], str | None]:
+        items, names = [], set()
+        for t in await self._task_list() or []:
+            for run in self._runs_today(t, local):
+                for f in ((run.get("result") or {}).get("files_created") or []):
+                    name = str((f or {}).get("filename") or "").strip()
+                    if not name or name.lower() in names:
+                        continue
+                    names.add(name.lower())
+                    items.append({"id": item_id("files", f"{run.get('run_id')}:{name}"), "section": "files",
+                                  "text": one_line(name, 100), "link": f"/tasks/{t.get('task_id')}",
+                                  "why": f"Made by '{one_line(t.get('name') or 'a task', 50)}' today"})
+        for _mtime, rel in self._saved_files(local):
+            base = rel.rsplit("/", 1)[-1]
+            if base.lower() in names or rel.lower() in names:
+                continue
+            names.add(base.lower())
+            items.append({"id": item_id("files", f"saved:{rel}"), "section": "files", "text": one_line(rel, 100),
+                          "link": None, "why": "Saved in your Sentient files today"})
+        return items, None
+
+    async def _waiting(self, local: datetime) -> tuple[list[dict], str | None]:
+        tasks = [  # a task that failed today is already under "Done today"
+            t for t in await self._task_list() or [] if not (t.get("status") == "error" and self._runs_today(t, local))
+        ]
+        items = self._waiting_tasks(tasks, "waiting")
+        rows = await self.app.store.fetchall(
+            "SELECT notification_id, payload FROM proactive_suggestions WHERE status = 'pending'"
+            " ORDER BY created_at DESC LIMIT 10"
+        )
+        for r in rows:
+            with contextlib.suppress(Exception):
+                s = json.loads(r["payload"])["suggestion"]
+                items.append({"id": item_id("waiting", f"s:{r['notification_id']}"), "section": "waiting",
+                              "text": one_line(s.get("description")),
+                              "link": (s.get("source_event") or {}).get("url") or "/notifications",
+                              "why": "A suggestion waiting for your answer", "notification_id": r["notification_id"]})
+        return items, None
 
     async def _weather(self, local: datetime) -> tuple[list[dict], str | None]:
         place = self.app.config.assistant.location.strip()
@@ -486,14 +679,15 @@ class DailyBrief:
             m["text"] = one_line(line if first and first in line.lower() else f"{name}: {line}")
 
     # ------------------------------------------------------------------ building and delivering
-    async def build(self, now: datetime | None = None) -> dict:
-        """Today's brief, not delivered: ``{day, title, sections, items, skipped}``."""
+    async def build(self, now: datetime | None = None, kind: str = MORNING) -> dict:
+        """Today's brief of ``kind``, not delivered: ``{kind, day, title, sections, items, skipped}``."""
         now = now or datetime.now(UTC)
         local = now.astimezone(self._tz())
         scores = await self.engine.preference_scores()
-        order = order_sections(list(self.cfg.sections), scores)
+        order = order_sections(self._sections(kind), scores, KIND_SECTIONS[kind])
         readers = {"calendar": self._calendar, "email": self._email, "tasks": self._tasks,
-                   "weather": self._weather, "news": self._news}
+                   "weather": self._weather, "news": self._news, "done": self._done, "sent": self._sent,
+                   "files": self._files, "waiting": self._waiting, "tomorrow": self._tomorrow}
         found: dict[str, list[dict]] = {}
         skipped: list[dict] = []
         for s in order:
@@ -513,8 +707,9 @@ class DailyBrief:
             i["feedback"] = None
         shown = [s for s in order if any(i["section"] == s for i in items)]
         return {
+            "kind": kind,
             "day": local.date().isoformat(),
-            "title": f"Your Daily Brief for {local.strftime('%A')}",
+            "title": TITLES[kind].format(day=local.strftime("%A")),
             "sections": [{"id": s, "label": SECTION_LABELS[s], "feedback": None} for s in shown],
             "items": items,
             "skipped": skipped,
@@ -524,7 +719,7 @@ class DailyBrief:
     def as_text(brief: dict, *, links: bool = False) -> str:
         """The brief as short lines (notification message, chats, voice)."""
         if not brief.get("items"):
-            return "Nothing needs you this morning. Enjoy your day."
+            return EMPTY_TEXT.get(str(brief.get("kind") or MORNING), EMPTY_TEXT[MORNING])
         lines = []
         for s in brief.get("sections") or []:
             lines.append(f"**{s['label']}**")
@@ -543,12 +738,13 @@ class DailyBrief:
         end = datetime.combine(local.date() + timedelta(days=1), time.min, local.tzinfo)
         return end.astimezone(UTC).isoformat()
 
-    async def deliver(self, now: datetime | None = None) -> dict:
-        """Build today's brief and post it as a ``brief`` notification; earlier briefs still showing expire."""
+    async def deliver(self, now: datetime | None = None, kind: str = MORNING) -> dict:
+        """Build today's brief of ``kind`` and post it as a ``brief`` notification. One brief shows at a time, so
+        earlier briefs still showing (of either kind) expire."""
         now = now or datetime.now(UTC)
-        brief = await self.build(now)
+        brief = await self.build(now, kind)
         brief["expires_at"] = self._expires_at(now)
-        task = await self.task()
+        task = await self.task(kind)
         task_id = (task or {}).get("task_id")
         await self.expire(now, everything=True)
         payload = {"brief": brief, "status": "active", "task_id": task_id}
@@ -558,7 +754,7 @@ class DailyBrief:
     @staticmethod
     def _public(note: dict) -> dict:
         p = note.get("payload") or {}
-        return {**(p.get("brief") or {}), "id": note["id"], "status": p.get("status") or "active",
+        return {"kind": MORNING, **(p.get("brief") or {}), "id": note["id"], "status": p.get("status") or "active",
                 "task_id": p.get("task_id"), "created_at": note.get("created_at")}
 
     async def _notes(self, limit: int = 50) -> list[dict]:
@@ -572,11 +768,13 @@ class DailyBrief:
                 out.append(note)
         return out
 
-    async def today(self, now: datetime | None = None) -> dict | None:
-        """The brief still showing (delivered today and not expired), or None."""
+    async def today(self, now: datetime | None = None, kind: str | None = None) -> dict | None:
+        """The brief still showing (delivered today and not expired; of ``kind`` when given), or None."""
         now = now or datetime.now(UTC)
         for note in await self._notes(5):
             p = note["payload"]
+            if kind and str(p["brief"].get("kind") or MORNING) != kind:
+                continue
             if p.get("status") == "active" and str(p["brief"].get("expires_at") or "") > now.astimezone(UTC).isoformat():
                 return self._public(note)
         return None
@@ -598,7 +796,8 @@ class DailyBrief:
         return count
 
     async def feedback(self, brief_id: str, value: str, *, item: str | None = None, section: str | None = None) -> dict:
-        """Thumbs up or down on one item or one section. Each counts once and moves that section's learned score."""
+        """Thumbs up or down on one item or one section; it moves that section's learned score. Changing a rating
+        replaces it (the latest wins: the earlier one is taken back first); the same rating again changes nothing."""
         value = str(value or "").strip().lower()
         if value not in {"up", "down"}:
             raise BriefError(400, "value must be up or down")
@@ -619,22 +818,26 @@ class DailyBrief:
             match = next((s for s in targets if s.get("id") == section), None)
         if match is None:
             raise BriefError(404, "That line isn't in this brief.")
-        if match.get("feedback"):
-            raise BriefError(409, "You already rated this.")
+        previous = match.get("feedback")
+        if previous == value:
+            return self._public(note)
         match["feedback"] = value
         stype = preference_type(match.get("section") or match.get("id"))
+        if previous in {"up", "down"}:
+            await self.engine.undo_feedback(stype, previous == "up")
         await self.engine.record_feedback(stype, value == "up")
         await self.app.notifications.update_payload(brief_id, {**payload, "brief": brief})
         updated = await self.app.notifications.get(brief_id)
         return self._public(updated or note)
 
-    async def text_for_today(self, now: datetime | None = None) -> dict:
-        """The brief for reading out: today's when there is one, else a fresh one that is not delivered."""
-        brief = await self.today(now)
+    async def text_for_today(self, now: datetime | None = None, kind: str | None = None) -> dict:
+        """The brief for reading out: the one showing (of ``kind`` when given), else a fresh one that is not
+        delivered (the morning one unless ``kind`` says evening)."""
+        brief = await self.today(now, kind)
         if brief is None:
-            brief = await self.build(now)
-        return {"day": brief["day"], "title": brief["title"], "text": self.as_text(brief).replace("**", ""),
-                "items": len(brief.get("items") or [])}
+            brief = await self.build(now, kind or MORNING)
+        return {"kind": brief.get("kind") or MORNING, "day": brief["day"], "title": brief["title"],
+                "text": self.as_text(brief).replace("**", ""), "items": len(brief.get("items") or [])}
 
 
 # ---------------------------------------------------------------------------- tools
@@ -644,24 +847,33 @@ def _brief(ctx: ToolContext) -> DailyBrief | None:
 
 
 @tool(BUILD_TOOL, risk=Risk.write, internal=True)
-async def daily_brief_build(ctx: ToolContext) -> dict:
-    """Make the user's Daily Brief now and show it in Notifications (and paired chats). It only reads calendar,
-    email, tasks, weather and news; it never sends or changes anything."""
+async def daily_brief_build(ctx: ToolContext, kind: str = MORNING) -> dict:
+    """Make the user's Daily Brief now and show it in Notifications (and paired chats). `kind` is "morning" (the
+    day ahead) or "evening" (a wrap-up of the day). It only reads; it never sends or changes anything."""
     brief = _brief(ctx)
     if brief is None:
         return {"error": "The Daily Brief is not available."}
-    out = await brief.deliver()
+    try:
+        kind = check_kind(kind)
+    except BriefError as exc:
+        return {"error": exc.detail}
+    out = await brief.deliver(kind=kind)
     return {"ok": True, "brief_id": out["id"], "items": len(out.get("items") or []), "text": DailyBrief.as_text(out)}
 
 
 @tool(READ_TOOL)
-async def daily_brief_today(ctx: ToolContext) -> dict:
-    """Read the user's Daily Brief for today ("read my brief", "what's on today?"): today's meetings, emails that
-    need them, tasks and the weather as short lines. Read them out as they are."""
+async def daily_brief_today(ctx: ToolContext, kind: str = "") -> dict:
+    """Read the user's brief ("read my brief", "what's on today?", "how did today go?") as short lines: the morning
+    one has today's meetings, emails that need them, tasks and the weather; the evening one wraps up the day.
+    Leave `kind` empty for the one showing now, or say "morning" or "evening". Read the lines out as they are."""
     brief = _brief(ctx)
     if brief is None:
         return {"error": "The Daily Brief is not available."}
-    return await brief.text_for_today()
+    try:
+        wanted = check_kind(kind) if str(kind or "").strip() else None
+    except BriefError as exc:
+        return {"error": exc.detail}
+    return await brief.text_for_today(kind=wanted)
 
 
 class BriefPlugin(ToolPlugin):
@@ -670,5 +882,5 @@ class BriefPlugin(ToolPlugin):
     description = "Your Daily Brief: today's calendar, emails that need you, tasks and the weather in a few lines."
     category = "core"
     icon = "IconSunrise"
-    selection_hint = "Use for the user's daily brief, morning summary or 'what's on today'."
+    selection_hint = "Use for the user's daily or evening brief, morning summary, day wrap-up or 'what's on today'."
     tools = [daily_brief_build, daily_brief_today]

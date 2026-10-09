@@ -1320,15 +1320,22 @@ class TaskService(Service):
         await self._after_run(task_id, status, error)
         await self.publish(task_id)
         await self._publish_run_finished(task_id, run_id, status)
+        quiet = bool((executor.fixed_call_of(task) or {}).get("quiet"))
         if succeeded:
-            result = await executor.generate_result(self, task, run_id, loop_result=loop_result, aggregated=aggregated)
+            if quiet:  # the tool reported for itself (the Daily Brief): no model call for a report
+                result = executor.normalize_result(
+                    {"tools_used": loop_result.tools_used if loop_result else []},
+                    (loop_result.text if loop_result else "") or "Done.",
+                )
+            else:
+                result = await executor.generate_result(self, task, run_id, loop_result=loop_result, aggregated=aggregated)
             await self.repo.update_run(run_id, {"result": result})
             await self.publish(task_id)
         name = task.get("name") or "Untitled task"
         if is_swarm and status in {"completed", "completed_with_errors"}:
             await self._notify(task, f"Swarm task '{name}' has completed.", "Swarm task completed", "run_completed")
         elif status in {"completed", "completed_with_errors"}:
-            if (executor.fixed_call_of(task) or {}).get("quiet"):
+            if quiet:
                 return  # the tool delivered its own notification (the Daily Brief)
             await self._notify(task, f"Task '{name}' has finished with status: {status}.", "Task completed", "run_completed")
         elif status == "error":

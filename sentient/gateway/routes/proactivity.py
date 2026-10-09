@@ -57,9 +57,9 @@ async def brief_setup(request: Request, body: dict | None = None):
 
 
 @router.post("/brief/run")
-async def brief_run(request: Request):
+async def brief_run(request: Request, body: dict | None = None):
     try:
-        return await get_core(request).proactivity.brief.run_now()
+        return await get_core(request).proactivity.brief.run_now((body or {}).get("kind") or "morning")
     except BriefError as exc:
         raise HTTPException(exc.status, exc.detail) from exc
 

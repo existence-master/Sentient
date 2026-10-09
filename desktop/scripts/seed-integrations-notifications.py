@@ -21,7 +21,7 @@ Creates:
 - notifications of every kind, including 4 proactive suggestions (approved, pending gmail, pending gcalendar,
   pending follow-up with a draft reply)
 - proactive preference rows, proactive source poll state and suggestion rows
-- the Daily Brief task (weekdays at 07:30) and today's brief
+- the Daily Brief task (weekdays at 07:30), the Evening Brief task (daily at 21:00) and today's morning brief
 - assistant.onboarding_complete = true
 """
 
@@ -376,8 +376,9 @@ def _brief_item(section: str, n: int, text: str, why: str, link: str | None = No
 
 
 async def seed_brief(app: SentientApp) -> None:
-    """The Daily Brief task (a normal recurring task) and the brief it delivered this morning."""
+    """The Daily Brief and Evening Brief tasks (normal recurring tasks) and the brief delivered this morning."""
     state = await app.proactivity.brief.setup({})
+    await app.proactivity.brief.setup({"kind": "evening"})
     items = [
         _brief_item("calendar", 1, "09:30 Design critique with the Paperkite team", "On your calendar today",
                     "https://calendar.google.com/calendar/r/day"),
@@ -396,7 +397,7 @@ async def seed_brief(app: SentientApp) -> None:
     ]
     labels = {"calendar": "Calendar", "email": "Email", "tasks": "Tasks", "weather": "Weather"}
     brief = {
-        "day": NOW.astimezone().date().isoformat(), "title": f"Your Daily Brief for {NOW.astimezone().strftime('%A')}",
+        "kind": "morning", "day": NOW.astimezone().date().isoformat(), "title": f"Your Daily Brief for {NOW.astimezone().strftime('%A')}",
         "sections": [{"id": k, "label": v, "feedback": None} for k, v in labels.items()],
         "items": items, "skipped": [], "expires_at": app.proactivity.brief._expires_at(NOW),
     }

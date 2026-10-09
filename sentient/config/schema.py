@@ -364,6 +364,11 @@ class DailyBriefConfig(BaseModel):
         default_factory=lambda: ["calendar", "email", "tasks", "weather"],
         description="What the brief includes: calendar, email, tasks, weather, news. Leave one out to turn it off.",
     )
+    evening_sections: list[str] = Field(
+        default_factory=lambda: ["done", "sent", "files", "waiting", "tomorrow"],
+        description="What the Evening Brief includes: done (tasks finished or failed today), sent (emails sent today), "
+        "files (files made today), waiting (still waiting for you), tomorrow (tomorrow's first events).",
+    )
     max_items: int = Field(7, ge=1, le=20, description="At most this many lines in one brief.")
     news_topics: list[str] = Field(
         default_factory=list,

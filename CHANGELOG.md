@@ -35,8 +35,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
   or waiting for you and the weather, plus headlines on topics you pick. Turn it on in onboarding or with **Set up my
   Daily Brief** in Notifications. It is a normal task you can reschedule, pause or delete, it only reads (it never
   sends or changes anything), and it shows at most 7 lines, each with a link and a "why am I seeing this". Thumbs up
-  or down on a line or a section shapes the next briefs, any section can be turned off, and the brief expires at the
-  end of the day. It also arrives in paired Telegram and Discord chats, and "read my brief" works in chat and by voice.
+  or down on a line or a section shapes the next briefs (change your mind and the latest rating counts), any section
+  can be turned off, and the brief expires at the end of the day. It also arrives in paired Telegram and Discord chats,
+  and "read my brief" works in chat and by voice.
+- **Evening Brief:** an optional wrap-up at 21:00 every day, set up from the same card: tasks finished or failed today,
+  replies and emails sent, files made, what is still waiting for you and tomorrow's first events. Its own task, the
+  same 7-line cap, links, read-only rule and end-of-day expiry.
 
 ### Fixed
 - Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
