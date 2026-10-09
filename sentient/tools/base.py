@@ -16,6 +16,12 @@ A tool may also declare ``risk_fn(arguments, ctx) -> Risk | None`` to raise or
 lower the risk per call (a browser click on "Place order" is ``send``). The
 approvals layer and ``approval_request.risk`` use the *effective* risk.
 
+Two more tags guard against outside content steering Sentient (ADR 0018):
+``untrusted_output`` marks a tool whose result brings in content someone else wrote
+(an email, a web page, a message); ``None`` picks the default in
+``sentient.tools.rules.brings_untrusted``. ``exfiltrates`` marks a tool that can move
+data out of Sentient even below ``send`` (typing into a web page, inviting people).
+
 Long-running tools stream output with ``ctx.progress({"kind": ..., "text": ...})``
 (docs/API.md section 10). Inside an agent loop that becomes a ``tool_progress``
 chat event; anywhere else it is a no-op.
@@ -100,6 +106,9 @@ class ToolContext:
     extra: dict[str, Any] = field(default_factory=dict)
     # "user", or an ``UNPROMPTED_ORIGINS`` name when nobody asked for this work (then only reads may run)
     origin: str = "user"
+    # where outside content came into this run ("Gmail"), or "" while it has none (ADR 0018). Set in code, never
+    # cleared during the run; once set, anything that can send data out asks the user first.
+    untrusted: str = ""
 
     @property
     def call_id(self) -> str | None:
@@ -150,6 +159,10 @@ class Tool:
     risk_fn: RiskFn | None = None
     # Optional approval wording: ``describe_fn(arguments, ctx) -> {risk_label?, target?}`` (sync or async).
     describe_fn: DescribeFn | None = None
+    # True when the result brings in content someone else wrote; None uses the default (``rules.brings_untrusted``).
+    untrusted_output: bool | None = None
+    # True when the tool can move data out of Sentient below ``send`` (typing into a page, inviting people).
+    exfiltrates: bool = False
 
     def openai_schema(self) -> dict:
         schema = self.params_model.model_json_schema()
@@ -248,6 +261,8 @@ def tool(
     internal: bool = False,
     risk_fn: RiskFn | None = None,
     describe_fn: DescribeFn | None = None,
+    untrusted_output: bool | None = None,
+    exfiltrates: bool = False,
 ):
     """Decorator turning ``async def fn(ctx, arg: type = default)`` into a Tool."""
 
@@ -257,7 +272,7 @@ def tool(
         model = _params_model_from_signature(fn, tool_name)
         return Tool(
             name=tool_name, description=desc, fn=fn, params_model=model, risk=risk, internal=internal,
-            risk_fn=risk_fn, describe_fn=describe_fn,
+            risk_fn=risk_fn, describe_fn=describe_fn, untrusted_output=untrusted_output, exfiltrates=exfiltrates,
         )
 
     return wrap

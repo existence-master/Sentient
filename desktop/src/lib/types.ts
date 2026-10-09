@@ -509,6 +509,8 @@ export interface ApprovalRequestEvent extends TurnScoped {
   risk_label?: string | null
   /** Short label of what is acted on, e.g. "Place order". */
   target?: string | null
+  /** Why this asks although rules would let it run: the chat read outside content (ADR 0018). */
+  untrusted?: string | null
 }
 export interface UsageEvent extends TurnScoped {
   type: 'usage'

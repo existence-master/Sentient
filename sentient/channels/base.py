@@ -756,11 +756,12 @@ class Channel:
             f"**Approval needed**\n{self.app.config.assistant.name} wants to use **{humanize_tool(event.name)}** "
             f"(risk: {event.risk}).\n```json\n{args}\n```"
         )
-        buttons = [
-            [Button("Allow", f"ap:a:{event.approval_id}", "success"),
-             Button("Allow for this chat", f"ap:s:{event.approval_id}", "primary")],
-            [Button("Deny", f"ap:d:{event.approval_id}", "danger")],
-        ]
+        first = [Button("Allow", f"ap:a:{event.approval_id}", "success")]
+        if event.untrusted:  # it read outside content: say why; "for this chat" would not cover the next one anyway
+            md += f"\n{event.untrusted}"
+        else:
+            first.append(Button("Allow for this chat", f"ap:s:{event.approval_id}", "primary"))
+        buttons = [first, [Button("Deny", f"ap:d:{event.approval_id}", "danger")]]
         try:
             ids = await self.send_markdown(chat_id, md, buttons)
             return ids[-1] if ids else None

@@ -168,11 +168,14 @@ def _http_error_message(exc: httpx.HTTPStatusError) -> str:
     return f"HTTP {resp.status_code}{': ' + str(detail) if detail else ''}"
 
 
-def itool(plugin_id: str, name: str, *, risk: Risk = Risk.read, description: str | None = None, internal: bool = False):
+def itool(
+    plugin_id: str, name: str, *, risk: Risk = Risk.read, description: str | None = None, internal: bool = False,
+    exfiltrates: bool = False,
+):
     """Like ``@tool`` but errors become friendly ``{"error": ...}`` results."""
 
     def wrap(fn: Callable[..., Awaitable[Any]]) -> Tool:
-        t = tool(name, risk=risk, description=description, internal=internal)(fn)
+        t = tool(name, risk=risk, description=description, internal=internal, exfiltrates=exfiltrates)(fn)
 
         @functools.wraps(fn)
         async def safe(ctx: ToolContext, **kwargs: Any) -> Any:

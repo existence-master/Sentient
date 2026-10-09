@@ -74,7 +74,16 @@ from sentient.tools.base import (
     is_unprompted,
 )
 from sentient.tools.registry import ToolRegistry
-from sentient.tools.rules import never_message, unattended_ask_message
+from sentient.tools.rules import (
+    brings_untrusted,
+    never_message,
+    sends_out,
+    unattended_ask_message,
+    untrusted_hold_message,
+    untrusted_question,
+    untrusted_reason,
+    untrusted_source,
+)
 
 log = logging.getLogger(__name__)
 
@@ -228,6 +237,9 @@ class LoopResult:
     stopped_by_budget: str | None = None  # a token or cost ``Budget`` ran out (also copied to ``error``)
     # calls refused because nobody asked for this work (ADR 0017): [{tool, arguments}], for a suggestion instead
     held: list[dict] = field(default_factory=list)
+    # the first call held because this run read outside content and nobody could be asked (ADR 0018):
+    # {tool, arguments, call_id, question}. A task run stops after that round and asks the question.
+    needs_ok: dict | None = None
 
 
 def repeat_message(name: str, times: int) -> str:
@@ -324,6 +336,8 @@ class _CallPlan:
     rule_stop: bool = False  # an "ask" rule refused this call in a run nobody can answer
     seen: str = ""  # the result as JSON; the loop breaker compares it
     held: bool = False  # refused because nobody asked for this work (ADR 0017)
+    untrusted: str = ""  # why this call asks: the run read outside content (ADR 0018)
+    wants_ok: bool = False  # held for the user's OK in a run nobody can be asked in (ADR 0018)
 
 
 class Agent:
@@ -472,9 +486,11 @@ class Agent:
         ``steer`` feeds user messages in at round boundaries. ``policy`` may refuse a call
         before it runs (subagents use it). When ``ctx.origin`` or ``source`` names work nobody asked
         for (ADR 0017), only look-ups and Sentient-internal changes run, whatever the approval mode or rules
-        say; refused calls are listed in ``result.held``. ``stop()`` is checked after each round of tool
-        results; when it returns True the loop ends without another model call and sets
-        ``result.paused`` (task runs use it to wait for the user's answer). ``budget`` is checked
+        say; refused calls are listed in ``result.held``. Once a tool result brings in outside content
+        (``ctx.untrusted``, ADR 0018), a call that can send data out asks with ``use_approvals`` whatever the mode
+        or rules say; without it the call is held and the first one is described in ``result.needs_ok``.
+        ``stop()`` is checked after each round of tool results; when it returns True the loop ends without
+        another model call and sets ``result.paused`` (task runs use it to wait for the user's answer). ``budget`` is checked
         before each model call; when it has run out the loop ends with ``result.stopped_by_budget``.
 
         Loop breaker (``tools.repeated_call_limit``): when the same tool with the same arguments gets
@@ -588,6 +604,16 @@ class Agent:
             plans = [await self._plan_call(tc, ctx, tool_names, use_approvals, policy, unprompted) for tc in tool_calls]
             result.tool_calls += len(plans)
             result.held.extend({"tool": p.tc.name, "arguments": p.tc.arguments} for p in plans if p.held)
+            waiting = next((p for p in plans if p.wants_ok), None)
+            if waiting is not None and waiting.tool is not None and result.needs_ok is None:
+                wording = await describe_call(waiting.tool, waiting.tc.arguments, ctx, waiting.risk)
+                result.needs_ok = {
+                    "tool": waiting.tc.name, "arguments": waiting.tc.arguments, "call_id": waiting.tc.id,
+                    "question": untrusted_question(
+                        self.approvals.label(waiting.tool, self.registry), ctx.untrusted, waiting.tc.arguments,
+                        wording["target"],
+                    ),
+                }
             for group in self._groups(plans):
                 for p in group:
                     yield ToolCallEvent(call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments, **ev)
@@ -603,7 +629,8 @@ class Agent:
                         yield ApprovalRequest(
                             approval_id=approval_id, call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments,
                             risk=p.risk.name, reason=f"{p.tool.plugin}: {p.tool.description[:160]}",
-                            risk_label=wording["risk_label"], target=wording["target"], **ev,
+                            risk_label=wording["risk_label"], target=wording["target"],
+                            untrusted=p.untrusted or None, **ev,
                         )
                         decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)
                         if decision in {"allow", "allow_session"}:
@@ -616,7 +643,7 @@ class Agent:
                     async for progress in self._execute(runnable, ctx, ev):
                         yield progress
                 for p in group:
-                    async for e in self._record(p, messages, persist, result, ev):
+                    async for e in self._record(p, messages, persist, result, ev, ctx):
                         yield e
             ruled = next((p for p in plans if p.rule_stop), None)
             if ruled is not None:  # an "ask" rule and nobody to ask: end the run and say why
@@ -698,6 +725,17 @@ class Agent:
             if refusal:
                 plan.preset = ({"error": str(refusal)}, True, 0)
                 return plan
+        if ctx.untrusted and sends_out(tool, plan.risk):
+            # the run read outside content: anything that can send data out needs the user's own yes, whatever the
+            # mode, Allow rules or "Allow for this chat" say (ADR 0018). Nothing a model says can clear it.
+            if use_approvals:
+                plan.needs_approval = True
+                plan.untrusted = untrusted_reason(ctx.untrusted)
+            else:  # nobody to ask in this loop: hold the call; a task run then pauses and asks (LoopResult.needs_ok)
+                label = self.approvals.label(tool, self.registry)
+                plan.preset = ({"error": untrusted_hold_message(label, ctx.untrusted)}, True, 0)
+                plan.wants_ok = True
+            return plan
         if use_approvals:
             plan.needs_approval = await self.approvals.decide(tool, ctx.session_id, plan.risk, tc.arguments, ctx)
         elif rule == "ask":  # task runs and other unattended loops cannot stop to ask: the run stops here
@@ -788,12 +826,18 @@ class Agent:
                 p.outcome = ({"error": f"tool did not finish: {exc}"}, True, 0)
 
     async def _record(
-        self, p: _CallPlan, messages: list[dict], persist: PersistFn | None, result: LoopResult, ev: dict
+        self, p: _CallPlan, messages: list[dict], persist: PersistFn | None, result: LoopResult, ev: dict,
+        ctx: ToolContext,
     ) -> AsyncIterator[AgentEvent]:
+        """Add a call's result to the transcript. A call that ran a tool bringing in outside content marks the run
+        (``ctx.untrusted``, ADR 0018); calls the model already chose in the same round are not affected."""
         tc = p.tc
         res, is_error, ms = p.outcome or ({"error": "tool did not run"}, True, 0)
         if p.tool is not None and p.tool.plugin not in result.tools_used:
             result.tools_used.append(p.tool.plugin)
+        declined = isinstance(res, dict) and bool(res.get("declined"))
+        if p.tool is not None and p.preset is None and not declined and not ctx.untrusted and brings_untrusted(p.tool):
+            ctx.untrusted = untrusted_source(p.tool, self.registry)
         err = _error_text(res)
         if (is_error or err) and err != DECLINED:
             result.tool_errors.append({"name": tc.name, "error": err or str(res)[:500]})
@@ -928,6 +972,9 @@ class Agent:
                 role = "vision"
             messages: list[dict] = [{"role": "system", "content": system}, *convo]
             ctx = self.tool_context(session_id, channel)
+            # outside content read earlier in this chat still counts until a new chat starts (ADR 0018)
+            ctx.untrusted = str((session or {}).get("untrusted") or "")
+            marked = bool(ctx.untrusted)
             recent_plugins: set[str] = set()
             for row in history[-12:]:
                 for tc in row.get("tool_calls") or []:
@@ -955,6 +1002,11 @@ class Agent:
                     partial = ""  # text before a tool call or a steer was already persisted
                     if isinstance(event, ToolResultEvent) and not event.is_error:
                         sources.add_tool_result(event.name, self._delivered_rows(event.result))
+                    if ctx.untrusted and not marked:  # remember it for the rest of this chat, also after a restart
+                        marked = True
+                        await self.store.execute(
+                            "UPDATE sessions SET untrusted = ? WHERE id = ?", (ctx.untrusted, session_id)
+                        )
                 yield event
         except (asyncio.CancelledError, GeneratorExit):
             release()
@@ -1047,6 +1099,12 @@ class Agent:
         except Exception as exc:
             log.exception("tool %s failed", tc.name)
             return {"error": f"{type(exc).__name__}: {exc}"}, True, int((time.perf_counter() - started) * 1000)
+
+    async def run_tool(self, call: ToolCall, ctx: ToolContext) -> tuple[Any, bool, str]:
+        """Run one call the user approved outside the loop (a task's held call, ADR 0018); lasting rules still apply.
+        Returns ``(result, is_error, content)``, where ``content`` is the tool message the model reads."""
+        res, is_error, _ = await self._run_tool(call, ctx)
+        return res, is_error, await self._tool_content(res, call.id)
 
     # ------------------------------------------------------------------ background
     def _spawn(self, coro) -> None:

@@ -4,6 +4,7 @@ import {
   IconCreditCard,
   IconEdit,
   IconEye,
+  IconMailOpened,
   IconSend,
   IconShieldCheck,
   IconShieldQuestion,
@@ -107,7 +108,8 @@ export function ApprovalCard({
   const isBrowser = approval.name.startsWith('browser_')
   const args = approval.arguments ?? {}
   // A purchase or a send asks for a single, deliberate "yes": no blanket "allow for this chat".
-  const allowSession = !(risk.label === 'Purchase' || risk.label === 'Deletes')
+  // After outside content came in, every send asks anyway, so the blanket answer would not help.
+  const allowSession = !(risk.label === 'Purchase' || risk.label === 'Deletes' || approval.untrusted)
 
   return (
     <motion.div
@@ -135,6 +137,11 @@ export function ApprovalCard({
                 </>
               )}
           </p>
+          {approval.untrusted && (
+            <div className="mt-1.5 flex items-start gap-1.5 text-xs text-fg-muted">
+              <IconMailOpened size={13} className="mt-px shrink-0" /> {approval.untrusted}
+            </div>
+          )}
           {isBrowser && typeof args.url === 'string' && (
             <div className="mt-1 flex items-center gap-1 text-xs text-fg-subtle">
               <IconWorldWww size={12} /> {hostOf(args.url)}

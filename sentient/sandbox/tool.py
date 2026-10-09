@@ -20,7 +20,7 @@ DESCRIPTION = (
 )
 
 
-@tool("execute_code", risk=Risk.exec, description=DESCRIPTION)
+@tool("execute_code", risk=Risk.exec, description=DESCRIPTION, untrusted_output=True)  # output may hold fetched pages
 async def execute_code(ctx: ToolContext, code: str, purpose: str) -> dict:
     app = (ctx.extra or {}).get("app")
     sandbox = getattr(app, "sandbox", None)

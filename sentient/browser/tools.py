@@ -46,7 +46,8 @@ def btool(name: str, *, risk: Risk, risk_kind: str | None = None):
                     return {"error": _friendly_playwright_error(exc)}
                 raise
 
-        t: Tool = tool(name, risk=risk)(safe)
+        # every browser result shows a page someone else wrote; typing puts text into that page (ADR 0018)
+        t: Tool = tool(name, risk=risk, untrusted_output=True, exfiltrates=name == "browser_type")(safe)
         if risk_kind:
             t.risk_fn = functools.partial(_risk, risk_kind)  # type: ignore[attr-defined]
             t.describe_fn = functools.partial(_describe, risk_kind)  # type: ignore[attr-defined]

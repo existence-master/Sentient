@@ -38,6 +38,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.
 
 ### Security
+- Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before
+  sending, posting, typing into a web page or running code, even for apps set to Allow and with approvals off. The
+  approval says why ("Sentient read content from Gmail in this chat, ..."). A chat stays this way until you start a
+  new one. A task that read outside content pauses and asks "OK to ...?" instead, then carries on after your yes or
+  stops after a no.
 - Work Sentient does on its own (proactive checks, the heartbeat, follow-up scans, dreaming and any subagent they
   start) can only look things up and change Sentient's own things. Sending, deleting, buying, running code, changing
   anything outside Sentient or creating tasks is refused in code, even with an Allow rule. Sentient may offer the
