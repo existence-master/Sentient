@@ -453,3 +453,32 @@ async def test_evening_brief_is_its_own_task_and_replaces_the_morning_card(app):
     latest = (await app.notifications.list())[0]
     assert latest["kind"] == "brief" and latest["payload"]["brief"]["kind"] == "evening"
     assert not [n for n in await app.notifications.list() if n["kind"] == "task"]
+
+
+async def test_a_missed_brief_catches_up_once_on_its_day_and_quietly(app):
+    """After sleep: a morning brief missed by a little runs once; an evening brief whose day is over is skipped.
+    Neither shows up in the "Caught up" notice, because a brief is its own notification."""
+    clock = {"now": datetime(2026, 10, 12, 6, 0, tzinfo=UTC)}  # Monday, before both
+    app.tasks.clock = lambda: clock["now"]
+    b = app.proactivity.brief
+    await b.setup({"sections": ["calendar"]})
+    state = await b.setup({"kind": "evening", "sections": ["tomorrow"]})
+    morning_id, evening_id = state["task_id"], state["evening"]["task_id"]
+    assert (await app.tasks.get(evening_id))["next_execution_at"] == "2026-10-12T21:00:00+00:00"
+
+    clock["now"] = datetime(2026, 10, 12, 9, 30, tzinfo=UTC)  # woke two hours after the 07:30 brief
+    assert len(await app.tasks.tick()) == 1
+    await app.tasks.drain()
+    morning = await app.tasks.get(morning_id)
+    assert [r["status"] for r in morning["runs"]] == ["completed"]
+    assert morning["next_execution_at"] == "2026-10-13T07:30:00+00:00"
+    assert [n["payload"]["brief"]["kind"] for n in await app.notifications.list() if n["kind"] == "brief"] == ["morning"]
+
+    clock["now"] = datetime(2026, 10, 13, 1, 0, tzinfo=UTC)  # 4 hours after the 21:00 brief, but a new day
+    assert await app.tasks.tick() == []
+    evening = await app.tasks.get(evening_id)
+    assert evening["runs"] == [] and evening["status"] == "active"
+    assert evening["next_execution_at"] == "2026-10-13T21:00:00+00:00"
+    notes = await app.notifications.list()
+    assert not [n for n in notes if n["payload"].get("event") == "caught_up"]
+    assert len([n for n in notes if n["kind"] == "brief"]) == 1

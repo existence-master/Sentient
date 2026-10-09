@@ -13,6 +13,9 @@ Status flow (single tasks)::
     processing -> recurring/triggered: active (next run computed)
                -> once: completed | error | cancelled
     processing --ask_user--> waiting_for_user --answer--> processing   (the run pauses; survives restarts)
+    processing --stuck--> waiting_for_user   (no progress, the same error again and again, or a step only the user
+               can do: Try again / Skip this step / Cancel, tasks/stuck.py)
+    active|pending, missed while the computer was off or asleep --> run once now or skipped (tasks/catchup.py)
     decline -> declined, archive -> archived
 
 Swarm tasks skip approval (v2): planning -> processing -> completed | completed_with_errors | error.
@@ -24,12 +27,12 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable, Coroutine
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sentient.llm.provider import ProviderError
 from sentient.services import Service, cancel_tasks
-from sentient.tasks import ask, executor, limits, scripts, swarm
+from sentient.tasks import ask, catchup, executor, limits, scripts, stuck, swarm
 from sentient.tasks.executor import RunFailed, RunPaused
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
@@ -45,6 +48,7 @@ from sentient.tasks.schedule import (
     get_tz,
     iso,
     normalize_schedule,
+    parse_iso,
     parse_run_at,
     user_timezone_name,
 )
@@ -147,6 +151,8 @@ class TaskService(Service):
         self._sem: asyncio.Semaphore | None = None
         self._bus_subscription: Any = None
         self._items: asyncio.Queue[dict] = asyncio.Queue()
+        self._last_tick: datetime | None = None  # wall clock of the last scheduler tick (a big jump means sleep)
+        self._catch_up_reason: str | None = "start"  # what the next catch-up notice says it caught up after
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -196,6 +202,7 @@ class TaskService(Service):
         """Stop everything: cancel running runs (waiting questions keep waiting), planning and checks.
 
         Cancelled runs can be retried from where they stopped; tasks left planning are planned again on resume."""
+        self._catch_up_reason = "resume"
         runs = [t for t in self._runs.values() if not t.done()]
         cancelled = 0
         for run in await self.repo.processing_runs():
@@ -254,8 +261,15 @@ class TaskService(Service):
     async def progress(self, task_id: str, run_id: str, message: dict) -> dict:
         clean = {k: v for k, v in message.items() if v is not None}
         update = await self.repo.add_event(run_id, clean, self.now_iso())
+        await self.repo.update_run(run_id, {"last_activity_at": update["timestamp"]})
         self.app.bus.publish("task.run_progress", {"task_id": task_id, "run_id": run_id, "update": update})
         return update
+
+    async def heartbeat(self, task_id: str, run_id: str) -> None:
+        """A working run is alive (the model is writing): save and publish ``last_activity_at``."""
+        now = self.now_iso()
+        await self.repo.update_run(run_id, {"last_activity_at": now})
+        self.app.bus.publish("task.run_activity", {"task_id": task_id, "run_id": run_id, "last_activity_at": now})
 
     @staticmethod
     def _runnable(task: dict) -> bool:
@@ -712,6 +726,8 @@ class TaskService(Service):
         pending = run.get("pending_question") or {}
         if pending.get("limit") in limits.KINDS:
             return await self._answer_limit(task_id, run, pending, text)
+        if pending.get("stuck"):
+            return await self._answer_stuck(task_id, run, pending, text)
         call_id = pending.get("tool_call_id")
         messages = ask.fill_result(run.get("messages") or [], call_id, ask.answer_content(text))
         if not await self.repo.resume_run(run_id, messages):
@@ -734,6 +750,22 @@ class TaskService(Service):
         state = limits.raise_limit(limits.load(run, self.app.config), pending["limit"])
         # one guarded write: a run cancelled meanwhile keeps its limits; the raised one survives a restart
         if not await self.repo.resume_run(run_id, run.get("messages") or [], limits=state):
+            raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
+        await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
+        await self._set(task_id, {"status": "processing", "error": None})
+        await self._resolve_question_notifications(run_id, "answered", answer=text)
+        self._dispatch(task_id, run_id, resume=True, answered=True)
+        return await self.get_and_publish(task_id)
+
+    async def _answer_stuck(self, task_id: str, run: dict, pending: dict, text: str) -> dict:
+        """A stuck run: "Cancel" cancels it; "Try again", "Skip this step" or the user's own words carry it on."""
+        run_id = run["id"]
+        if stuck.choice(text) == "cancel":
+            await self._resolve_question_notifications(run_id, "answered", answer=text)
+            return await self.cancel_run(task_id, run_id, note="Cancelled after getting stuck.")
+        reason = str(pending.get("reason") or "something went wrong")
+        messages = [*(run.get("messages") or []), {"role": "user", "content": stuck.note(reason, text)}]
+        if not await self.repo.resume_run(run_id, messages):
             raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
         await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
         await self._set(task_id, {"status": "processing", "error": None})
@@ -888,7 +920,9 @@ class TaskService(Service):
         While Sentient is stopped nothing is claimed; due tasks start on the first tick after resume."""
         run_ids: list[str] = []
         if self.app.stopped:
+            self._catch_up_reason = "resume"  # missed runs are caught up on the first tick after Resume
             return run_ids
+        await self._catch_up()
         for task_id in await self.repo.claim_due(self.now_iso()):
             task = await self.repo.get_task(task_id)
             if task is None:
@@ -917,6 +951,61 @@ class TaskService(Service):
 
     async def _tick_job(self) -> None:
         await self.tick()
+
+    async def _catch_up(self) -> dict[str, list[dict]]:
+        """Handle scheduled runs missed while the computer was off or asleep (tasks/catchup.py).
+
+        Runs every tick, so it covers startup, waking from sleep (a big jump of the wall clock between ticks) and
+        Resume. A missed task either stays due, so this tick's claim starts it once, or moves on without running."""
+        cfg = self.app.config.tasks
+        now = self.now()
+        reason = self._catch_up_reason
+        gap = (now - self._last_tick).total_seconds() if self._last_tick is not None else 0.0
+        if reason is None and gap > cfg.tick_seconds + catchup.WAKE_GAP_S:
+            reason = "sleep"
+        self._last_tick, self._catch_up_reason = now, None
+        report: dict[str, list[dict]] = {"ran": [], "skipped": []}
+        cutoff = now - timedelta(seconds=catchup.grace_seconds(cfg.tick_seconds))
+        for task in await self.repo.missed(iso(cutoff) or ""):
+            schedule = task.get("schedule") or {}
+            due = parse_iso(task.get("next_execution_at")) or now
+            action = catchup.decide(schedule, (now - due).total_seconds(), cfg.catch_up_window_hours)
+            if action == "quiet":
+                continue  # an interval check: this tick's claim runs it once
+            # a brief (quiet fixed call) reports for itself and is about its own day: never in the notice, and
+            # a missed one from an earlier day is skipped
+            silent = bool((executor.fixed_call_of(task) or {}).get("quiet"))
+            if silent and action == "run" and catchup.day_over(due, now, get_tz(schedule.get("timezone") or self.tz_name())):
+                action = "skip"
+            entry = catchup.item(task, task.get("next_execution_at"))
+            if action == "run":
+                if not silent:
+                    report["ran"].append(entry)
+                continue
+            if schedule.get("type") == "recurring":
+                fields: dict[str, Any] = {"next_execution_at": iso(calculate_next_run(schedule, now))}
+            else:
+                local = due.astimezone(get_tz(schedule.get("timezone") or self.tz_name())).strftime("%b %d, %H:%M")
+                fields = {
+                    "status": "error", "next_execution_at": None,
+                    "error": f"Skipped: it was due {local}, while the computer was off or asleep. "
+                    "Choose Run now if you still want it.",
+                }
+            if await self.repo.update_task_if_status(task["id"], {"active", "pending"}, {**fields, "updated_at": self.now_iso()}):
+                if not silent:
+                    report["skipped"].append(entry)
+                await self.publish(task["id"])
+        if report["ran"] or report["skipped"]:
+            title, message = catchup.summary(reason or "start", report["ran"], report["skipped"])
+            items = [*report["ran"], *report["skipped"]]
+            payload: dict[str, Any] = {"event": "caught_up", "reason": reason or "start", **report}
+            if len(items) == 1:
+                payload["task_id"] = items[0]["task_id"]
+            try:
+                await self.app.notify("task", message, title=title, payload=payload)
+            except Exception:
+                log.exception("catch-up notification failed")
+        return report
 
     async def recover_interrupted(self) -> dict:
         """Resume runs left 'processing' by a crash or restart (or fail them), and restart planning."""
@@ -1257,6 +1346,12 @@ class TaskService(Service):
                 await self.publish(task_id)
         except Exception:
             log.exception("task run %s crashed", run_id)
+            try:  # never fail silently: end the run with a message and the usual notification
+                await self._finish_run(
+                    task_id, run_id, "error", error="Something went wrong inside Sentient while running this task."
+                )
+            except Exception:
+                log.exception("could not record the crash of task run %s", run_id)
 
     async def _execute_locked(self, task_id: str, run_id: str, *, resume: bool, answered: bool = False) -> None:
         run = await self.repo.get_run(run_id)
@@ -1353,6 +1448,7 @@ class TaskService(Service):
         if not await self.repo.pause_run(run_id, asked):
             return  # cancelled while the last round was running
         text = str(question.get("question") or "")
+        reason = str(question.get("reason") or "") if question.get("stuck") else ""
         await self.progress(task_id, run_id, {"type": "info", "content": f"Waiting for your answer: {text}"})
         await self._after_run(task_id, "waiting_for_user", None)
         task = await self.repo.get_task(task_id)
@@ -1361,10 +1457,12 @@ class TaskService(Service):
             return
         name = task.get("name") or "Untitled task"
         short = name[:60] + ("..." if len(name) > 60 else "")
-        await self._notify(
-            task, text, f"{short} needs your answer", "question",
-            {"run_id": run_id, "question": text, "options": list(question.get("options") or [])},
-        )
+        extra: dict[str, Any] = {"run_id": run_id, "question": text, "options": list(question.get("options") or [])}
+        if reason:  # stuck (tasks/stuck.py): the same answerable question, with the reason up front
+            extra.update(stuck=True, reason=reason)
+            await self._notify(task, stuck.notice(name, reason), f"{short} is stuck", "question", extra)
+            return
+        await self._notify(task, text, f"{short} needs your answer", "question", extra)
 
     async def _resolve_question_notifications(self, run_id: str, status: str, *, answer: str | None = None) -> None:
         """Mark the 'needs your answer' notification of a run as answered or cancelled (channels settle their buttons)."""
