@@ -210,8 +210,9 @@ class Convo:
     def user(self, text: str) -> None:
         self.rows.append({"role": "user", "content": text})
 
-    def assistant(self, text: str, *, thinking: str | None = None) -> None:
-        self.rows.append({"role": "assistant", "content": text, "thinking": thinking})
+    def assistant(self, text: str, *, thinking: str | None = None, memories: list[str] | None = None) -> None:
+        """``memories``: fact texts from seed-memory-skills.py this reply had in mind (shown as "Used N memories")."""
+        self.rows.append({"role": "assistant", "content": text, "thinking": thinking, "memories": memories or []})
 
     def tool(self, name: str, args: dict, result: dict, *, text: str = "", thinking: str | None = None) -> str:
         self.calls += 1
@@ -272,7 +273,9 @@ def build_conversations() -> tuple[list[Convo], dict[str, Any]]:
     main.tool("browser_snapshot", {}, {"url": LISTING_URL, "title": LISTING_TITLE, "text": SNAPSHOT_TEXT})
     main.tool("browser_click", {"ref": "e14"},
               {"ok": True, "url": BOOK_URL, "title": "Book a table - The Flour Works"})
-    main.assistant(MAIN_FINAL)
+    main.assistant(MAIN_FINAL, memories=[
+        "Maya lives in Bengaluru, India", "Maya is vegetarian", "Maya's monthly budget for eating out is 3000 rupees",
+    ])
 
     # 2. background subagent ---------------------------------------------------------
     bg = Convo("demo-chat-background", "desktop", "Research standing desks", timedelta(days=1, hours=3, minutes=12))
@@ -568,6 +571,19 @@ async def columns(store, table: str) -> list[str]:
     return [r["name"] for r in await store.fetchall(f"PRAGMA table_info({table})")]
 
 
+async def memory_sources(store, texts: list[str]) -> list[dict]:
+    """Memory sources (docs/API.md section 2) for facts seed-memory-skills.py stored; facts not found are left out."""
+    if not texts or "facts" not in {r["name"] for r in await store.fetchall("SELECT name FROM sqlite_master")}:
+        return []
+    out = []
+    for text in texts:
+        row = await store.fetchone("SELECT id, content, source FROM facts WHERE content = ?", (text,))
+        if row:
+            out.append({"kind": "fact", "id": int(row["id"]), "text": row["content"], "source": row["source"],
+                        "via": "prompt"})
+    return out
+
+
 async def insert_matching(store, table: str, records: list[dict]) -> int:
     cols = await columns(store, table)
     n = 0
@@ -714,6 +730,7 @@ async def seed(home: Path, theme: str, add: bool = False) -> None:
         await store.execute(f"DELETE FROM messages WHERE session_id IN ({marks})", ids)
         await store.execute(f"DELETE FROM sessions WHERE id IN ({marks})", ids)
         total = 0
+        has_sources = "memory_sources" in await columns(store, "messages")
         for c in convos:
             await store.execute(
                 "INSERT INTO sessions(id, title, channel, created_at, updated_at) VALUES(?,?,?,?,?)",
@@ -730,6 +747,11 @@ async def seed(home: Path, theme: str, add: bool = False) -> None:
                     ),
                 )
                 total += 1
+                sources = await memory_sources(store, row.get("memories") or []) if has_sources else []
+                if sources:
+                    await store.execute(
+                        "UPDATE messages SET memory_sources = ? WHERE id = ?", (json.dumps(sources), row["id"])
+                    )
         inserted, skipped = await seed_engine_tables(store, convos, refs)
         for key in ("memory.purge_last_run", "memory.summaries_last_run", "evolution.curator_last_run",
                     "evolution.profile_last_run", "proactivity.poll_last_run"):

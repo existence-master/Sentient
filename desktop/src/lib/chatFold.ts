@@ -5,7 +5,7 @@
  *   assistant rows (with tool_calls) + their tool rows becomes ONE assistant turn.
  * - `applyAgentEvent` reduces live events into the same `AssistantTurnView`.
  */
-import type { AgentEvent, ApprovalDecision, Risk, TranscriptMessage } from './types'
+import type { AgentEvent, ApprovalDecision, MemorySource, Risk, TranscriptMessage } from './types'
 import { safeJsonParse } from './utils'
 
 export type ToolStatus = 'running' | 'awaiting_approval' | 'done' | 'error' | 'denied'
@@ -66,6 +66,8 @@ export interface AssistantTurnView {
   error?: { message: string; recoverable: boolean }
   messageId?: string | null
   usage?: { model: string; prompt_tokens: number; completion_tokens: number }
+  /** Memories the reply had in mind (from `done` live, from the final assistant row in history). */
+  memorySources?: MemorySource[]
   createdAt: string
   /** True while the turn lives in the chat store (not yet reloaded from history). */
   live?: boolean
@@ -175,6 +177,7 @@ export function foldTranscript(rows: TranscriptMessage[]): TimelineItem[] {
         }
       }
       if (!row.tool_calls?.length) turn.messageId = row.id
+      if (row.memory_sources?.length) turn.memorySources = row.memory_sources
     } else if (row.role === 'tool') {
       const callId = row.tool_call_id ?? ''
       const target = turn?.tools[callId]
@@ -306,16 +309,17 @@ export function applyAgentEvent(turn: AssistantTurnView, ev: AgentEvent): Assist
     case 'error':
       return { ...turn, error: { message: ev.message, recoverable: ev.recoverable ?? true }, status: turn.status === 'streaming' ? 'error' : turn.status }
     case 'done': {
+      const memorySources = ev.memory_sources?.length ? ev.memory_sources : turn.memorySources
       if (ev.cancelled) {
         const error = turn.error?.message === 'Stopped.' ? undefined : turn.error
-        return { ...turn, status: 'cancelled', error, messageId: ev.message_id }
+        return { ...turn, status: 'cancelled', error, messageId: ev.message_id, memorySources }
       }
       const hasText = turn.segments.some((s) => s.kind === 'text' && s.text.trim())
       const segments = !hasText && ev.content?.trim() ? [...turn.segments, { kind: 'text' as const, text: ev.content }] : turn.segments
       const tools = Object.fromEntries(
         Object.entries(turn.tools).map(([k, t]) => [k, t.status === 'running' || t.status === 'awaiting_approval' ? { ...t, status: 'done' as const } : t])
       )
-      return { ...turn, segments, tools, status: turn.error && !hasText && !ev.content ? 'error' : 'done', messageId: ev.message_id }
+      return { ...turn, segments, tools, status: turn.error && !hasText && !ev.content ? 'error' : 'done', messageId: ev.message_id, memorySources }
     }
     default:
       return turn

@@ -40,7 +40,7 @@ All carry `session_id` and `turn_id`.
 | `steer_ack` | `session_id`, `queued`, `client_id` (echo; no `turn_id`) |
 | `usage` | `model`, `prompt_tokens`, `completion_tokens` |
 | `error` | `message`, `recoverable` |
-| `done` | `content` (final text), `message_id`, `cancelled?` |
+| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none) |
 | `approval.ack` | `approval_id`, `resolved` |
 
 ### Server → client: domain events (dotted `type`, payload in `data`)
@@ -132,9 +132,18 @@ Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
   ```json
   {"id": "...", "role": "user|assistant|tool", "content": "...", "thinking": "...|null",
    "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "memory_recall", "arguments": "{\"query\":\"sister\"}"}}],
-   "tool_call_id": "call_1", "name": "memory_recall", "attachments": ["report.pdf"], "interjection": false, "created_at": "..."}
+   "tool_call_id": "call_1", "name": "memory_recall", "attachments": ["report.pdf"], "interjection": false,
+   "memory_sources": [], "created_at": "..."}
   ```
   The UI folds each `assistant` message with `tool_calls` plus its following `tool` messages into one assistant turn.
+- **Memory sources.** The final assistant message of a chat turn (also a stopped one) carries `memory_sources`, the
+  memories that reply had in mind, also sent on its `done` event. Every other row has `[]`. A **MemorySource** is
+  `{kind: "fact"|"insight", id, text, source, via: "prompt"|"tool"}`: `id` is the Memory id (int, section 7) or the
+  Insight id (string, section 15); `text` is the memory as it was during that turn; `source` is the fact's source
+  (`conversation`, `manual`, `file:<name>`...) or the insight's (`user` | `inferred`); `via: "prompt"` means it was in
+  the system prompt (recalled facts, user-model insights), `"tool"` that `memory_recall` or `memory_search_by_source`
+  returned it during the turn. Recorded deterministically (the model is never asked which it used); deduplicated,
+  first mention wins, at most 40.
 - `GET /api/sessions/search?q=` → `[{session_id, message_id, role, snippet, created_at}]`
 - `POST /api/chat` NDJSON fallback of the WebSocket turn: body `{text, session_id?, attachments?, model?}`; lines are the chat events above, first line `{type: "session", session_id}`.
 - `POST /api/approvals` `{approval_id, decision}` → `{resolved}`
@@ -406,6 +415,19 @@ Backend-only API used by tasks/proactivity (not HTTP):
 Item shapes. gmail: `{id, thread_id, from, sender_email, to, subject, snippet, body, date, labels, url}`;
 email_imap: the gmail shape plus `message_id` (`id` is the IMAP UID, `url` is null, `labels` are `INBOX` plus `UNREAD`/`STARRED`);
 gcalendar: `{id, summary, description, start, end, all_day, location, attendees, organizer_email, url, status, created, updated, meet_link}`.
+
+One-time codes and sign-in links in email. While `integrations.hide_one_time_codes` is on (the default), every gmail
+and email_imap item (tool results, polls, change feeds, IMAP push, follow-up threads) has one-time codes, verification
+and 2FA codes, magic sign-in links and password reset links in its `subject`, `snippet` and `body` replaced with
+`[one-time code hidden]`, `[sign-in link hidden]` or `[password reset link hidden]` before it leaves the plugin
+(`sentient/integrations/redact.py`). Detection is deterministic: a code needs a sign-in or verification cue nearby
+(one-time or OTP, verification, security, sign-in or login, 2FA, two-factor, authentication, passcode, "use this code
+to", "enter this code", "is your ... code", or a code alone on the line after such a cue) or a sign-in or reset subject
+or sender; a link must carry a token-like value and look like sign-in or reset (its path, the words before it, or the
+email's subject). Booking, order, ticket, reservation, PNR and reference codes are always kept, even when numeric, and
+an email whose subject is a booking or order (with no sign-in cue) keeps all its codes. Order numbers, dates, prices,
+phone numbers and ordinary links are left alone. The proactive pipeline and follow-ups
+run the same masking again before their prompts. The original stays in the user's mail app (`url` for Gmail).
 
 ---
 
@@ -910,7 +932,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 - Engine: `await app.user_model.context_for(text) -> str` (no model call; ≤ `user_model.context_max_chars`, default 600;
   `## What I have learned about <name>` then confirmed insights, then active insights relevant to `text` by embedding
   similarity ≥ `context_min_similarity`, then active insights with confidence ≥ 0.6; low-confidence lines end in
-  "(likely)"; `""` when disabled or empty). Tool `user_model_ask(question)` (risk read, plugin `memory`) →
+  "(likely)"; `""` when disabled or empty). `await app.user_model.context_with_sources(text) -> (block, [Insight])` is
+  the same plus the insights in the block (chat turns use it for memory sources, section 2). Tool `user_model_ask(question)` (risk read, plugin `memory`) →
   `{answer, insights: [statement], facts: [content]}` from one model call.
 - Domain event `user_model.updated` `{summary_changed: bool, insights: int (insights changed), questions: int (open questions now)}`.
 

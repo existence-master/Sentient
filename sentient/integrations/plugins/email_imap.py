@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 import aioimaplib
 
+from sentient.integrations import redact
 from sentient.integrations.base import (
     IntegrationError,
     IntegrationPlugin,
@@ -251,9 +252,15 @@ def attachments(msg: EmailMessage) -> list[dict]:
 
 
 def normalize_raw(uid: int, raw: bytes, flags: list[str], *, mailbox: str = "INBOX",
-                  body_chars: int | None = LIST_BODY_CHARS) -> dict:
+                  body_chars: int | None = LIST_BODY_CHARS, hide_codes: bool = True) -> dict:
+    """The gmail item shape plus ``message_id``. ``hide_codes`` masks one-time codes and sign-in or reset links."""
     msg = parse_message(raw)
+    frm = _header(msg, "From")
+    subject = _header(msg, "Subject")
     body = _body_text(msg)
+    if hide_codes:
+        body = redact.hide_secrets(body, subject=subject, sender=email_of(frm))
+        subject = redact.hide_secrets(subject, subject=subject, sender=email_of(frm))
     snippet = " ".join(body.split())[:200]
     if body_chars:
         body, _ = truncate(body, body_chars)
@@ -264,7 +271,6 @@ def normalize_raw(uid: int, raw: bytes, flags: list[str], *, mailbox: str = "INB
     message_id = _header(msg, "Message-ID").strip()
     refs = _header(msg, "References").split()
     thread_id = refs[0] if refs else (_header(msg, "In-Reply-To").strip() or message_id or str(uid))
-    frm = _header(msg, "From")
     labels = [mailbox.upper() if mailbox.upper() == "INBOX" else mailbox]
     lowered = {f.lower() for f in flags}
     if "\\seen" not in lowered:
@@ -273,7 +279,7 @@ def normalize_raw(uid: int, raw: bytes, flags: list[str], *, mailbox: str = "INB
         labels.append("STARRED")
     return {
         "id": str(uid), "thread_id": thread_id, "from": frm, "sender_email": email_of(frm), "to": _header(msg, "To"),
-        "subject": _header(msg, "Subject"), "snippet": snippet, "body": body, "date": date, "labels": labels,
+        "subject": subject, "snippet": snippet, "body": body, "date": date, "labels": labels,
         "url": None, "message_id": message_id or None,
     }
 
@@ -478,7 +484,8 @@ async def email_imap_search(ctx: ToolContext, text: str = "", from_address: str 
         uids = (await s.uid_search(*criteria))[-n:]
         rows = await s.fetch(uids)
     rows.sort(key=lambda r: r["uid"], reverse=True)
-    items = [normalize_raw(r["uid"], r["raw"], r["flags"], mailbox=mailbox) for r in rows]
+    hide = redact.enabled(mgr)
+    items = [normalize_raw(r["uid"], r["raw"], r["flags"], mailbox=mailbox, hide_codes=hide) for r in rows]
     kept = await mgr.filter_items(PID, items, "email")
     out: dict[str, Any] = {"mailbox": mailbox, "count": len(kept), "messages": kept}
     if len(kept) < len(items):
@@ -504,7 +511,8 @@ async def email_imap_read(ctx: ToolContext, message_id: str, mailbox: str = "INB
     c = await creds(ctx, PID)
     mgr = manager_from(ctx)
     row = await _fetch_one(c, message_id, mailbox)
-    item = normalize_raw(row["uid"], row["raw"], row["flags"], mailbox=mailbox, body_chars=READ_BODY_CHARS)
+    item = normalize_raw(row["uid"], row["raw"], row["flags"], mailbox=mailbox, body_chars=READ_BODY_CHARS,
+                         hide_codes=redact.enabled(mgr))
     if email_blocked(item, await mgr.get_privacy_filters(PID)):
         return {"error": "This email is hidden by your privacy filters."}
     msg = parse_message(row["raw"])
@@ -552,9 +560,9 @@ THREAD_RECENT_SCAN = 400  # newest recent messages (after the idle cutoff) per m
 THREAD_HEADERS = ("list-unsubscribe", "list-id", "precedence", "auto-submitted", "content-type")
 
 
-def _thread_message(row: dict, mailbox: str, *, body: bool) -> dict:
+def _thread_message(row: dict, mailbox: str, *, body: bool, hide_codes: bool = True) -> dict:
     item = normalize_raw(row["uid"], row["raw"], row["flags"], mailbox=mailbox,
-                         body_chars=4000 if body else LIST_BODY_CHARS)
+                         body_chars=4000 if body else LIST_BODY_CHARS, hide_codes=hide_codes)
     msg = parse_message(row["raw"])
     item["mailbox"] = mailbox
     item["cc"] = _header(msg, "Cc") or None
@@ -602,6 +610,7 @@ async def imap_recent_threads(mgr: IntegrationManager, *, newer_than_days: int, 
     if not c:
         return {"addresses": [], "threads": []}
     me = {str(c.get("username") or "").strip().lower()} - {""}
+    hide = redact.enabled(mgr)
     now = datetime.now(UTC)
     since = imap_date(now - timedelta(days=max(1, int(newer_than_days))))
     idle_at = now - timedelta(days=max(0, int(idle_days)))
@@ -622,10 +631,10 @@ async def imap_recent_threads(mgr: IntegrationManager, *, newer_than_days: int, 
         inbox_rows = await scan(s)
         await s.select(sent_box)
         sent_rows = await scan(s)
-        sent = [_thread_message(r, sent_box, body=False) for r in sent_rows]
+        sent = [_thread_message(r, sent_box, body=False, hide_codes=hide) for r in sent_rows]
         me.update(m["sender_email"] for m in sent if m["sender_email"])
         by_id: dict[str, dict] = {}
-        for m in sent + [_thread_message(r, "INBOX", body=False) for r in inbox_rows]:
+        for m in sent + [_thread_message(r, "INBOX", body=False, hide_codes=hide) for r in inbox_rows]:
             # a message in both mailboxes (mail to yourself) keeps its Sent copy
             by_id.setdefault(m.get("message_id") or f"{m['mailbox']}:{m['id']}", m)
         groups = []
@@ -644,7 +653,7 @@ async def imap_recent_threads(mgr: IntegrationManager, *, newer_than_days: int, 
             if box != s.mailbox:
                 await s.select(box)
             for r in await s.fetch(wanted[box]):
-                full[(box, r["uid"])] = _thread_message(r, box, body=True)
+                full[(box, r["uid"])] = _thread_message(r, box, body=True, hide_codes=hide)
     threads = []
     for g in groups:
         last = g[-1]
@@ -743,7 +752,7 @@ class EmailImapPlugin(IntegrationPlugin):
             rows = await session.fetch(new[-WATCH_MAX_NEW:])
             items = []
             for r in sorted(rows, key=lambda r: r["uid"]):
-                item = normalize_raw(r["uid"], r["raw"], r["flags"])
+                item = normalize_raw(r["uid"], r["raw"], r["flags"], hide_codes=redact.enabled(mgr))
                 item["_key"] = item.get("message_id") or f"{validity}:{r['uid']}"
                 items.append(item)
             kept = await mgr.emit_items(PID, "feed", items, event="new_email")

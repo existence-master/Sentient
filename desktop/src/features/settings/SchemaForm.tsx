@@ -185,6 +185,7 @@ export const LABELS: Record<string, FieldLabel> = {
   },
   'integrations.searxng_url': { label: 'SearXNG address', placeholder: 'https://search.example.com' },
   'integrations.weather_provider': { label: 'Weather', options: { open_meteo: 'Open-Meteo', accuweather: 'AccuWeather' } },
+  'integrations.hide_one_time_codes': { label: 'Hide one-time codes in email' },
   'integrations.mcp_servers': { hidden: true }
 }
 
