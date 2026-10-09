@@ -139,7 +139,7 @@ function PaletteBody({ close }: { close: () => void }) {
           <Item icon={IconDevices} onSelect={() => go('/devices')} keywords={['phone', 'glasses', 'watch', 'pair']}>
             Devices
           </Item>
-          <Item icon={IconMessages} onSelect={() => go('/devices/messaging')} keywords={['telegram', 'discord', 'bot', 'channels']}>
+          <Item icon={IconMessages} onSelect={() => go('/devices/messaging')} keywords={['telegram', 'discord', 'whatsapp', 'bot', 'channels']}>
             Messaging apps
           </Item>
           <Item icon={IconSparkles} onSelect={() => go('/skills')}>

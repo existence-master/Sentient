@@ -34,7 +34,7 @@ jobs:
         run: |
           uv venv .venv --python 3.12
           if [ "$RUNNER_OS" = "Windows" ]; then PY=.venv/Scripts/python.exe; else PY=.venv/bin/python; fi
-          uv pip install --python "$PY" -e ".[dev]"
+          uv pip install --python "$PY" -e ".[dev,whatsapp]"
       - name: Build installer
         working-directory: desktop
         env:

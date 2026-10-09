@@ -21,6 +21,7 @@ service name `sentient`.
 | Use **web search, weather, maps or news** | Your query goes to that service. Web search uses DuckDuckGo by default. |
 | Let Sentient **use the browser** | It visits the sites the task needs, in a separate browser profile. You sign in yourself; Sentient never types passwords or card numbers. |
 | Pair **Telegram or Discord** | Messages in paired chats pass through Telegram's or Discord's servers. |
+| Link **WhatsApp** | Sentient becomes a linked device on your account, like WhatsApp Web. Messages in your "Message yourself" chat (and any chat you pair) pass through WhatsApp's servers, end-to-end encrypted as usual. The link's keys are kept in `~/.sentient/whatsapp`; Disconnect removes them and unlinks Sentient. This is not an official WhatsApp product, so WhatsApp could limit an account that uses it. |
 | Pair a **phone or glasses** | Traffic stays on your home network, encrypted. This is off until you turn it on. |
 | Create a **webhook** | Whoever has its secret link can start the tasks you attached to it. |
 
@@ -44,6 +45,7 @@ service name `sentient`.
 - One-time codes, sign-in links and password reset links in your email are hidden from the AI, so a tricky email
   can't get them out of Sentient. You still see them when you open the email in your mail app. You can turn this off
   in Settings (Integrations, "Hide one-time codes in email").
-- Only chats you paired with a code can talk to Sentient on Telegram or Discord.
+- Only chats you paired with a code can talk to Sentient on Telegram or Discord. On WhatsApp only your own
+  "Message yourself" chat (and chats you pair with a code) can; Sentient never reads or answers your other chats.
 
 Found a problem? Please report it privately: see [SECURITY.md](../SECURITY.md).

@@ -4,6 +4,8 @@
   tag set (b, i, s, u, code, pre, a, blockquote). Everything that is not a recognised construct is escaped,
   and the output is checked for balanced tags (callers fall back to plain text otherwise).
 - ``split_markdown``: cuts long replies on paragraph and line boundaries, keeping code fences balanced.
+- ``markdown_to_whatsapp``: WhatsApp's own markup (*bold*, _italic_, ~strike~, ```code```); links become
+  "label (url)" because WhatsApp has no link syntax.
 - ``summary_text``: short, link-free text for delivered notifications.
 """
 
@@ -14,6 +16,7 @@ import re
 
 TELEGRAM_LIMIT = 4096
 DISCORD_LIMIT = 2000
+WHATSAPP_LIMIT = 4000  # WhatsApp allows far more, but long messages are hard to read on a phone
 
 _ALLOWED_TAGS = {"b", "i", "s", "u", "code", "pre", "a", "blockquote"}
 _SAFE_SCHEMES = ("http://", "https://", "mailto:", "tg://")
@@ -224,3 +227,53 @@ def summary_text(md: str, max_chars: int = 700) -> str:
 
 def escape_discord(text: str) -> str:
     return re.sub(r"([\\*_~`|>])", r"\\\1", text or "")
+
+
+def _whatsapp_inline(text: str) -> str:
+    holders: list[str] = []
+
+    def hold(fragment: str) -> str:
+        holders.append(fragment)
+        return f"\x00{len(holders) - 1}\x00"
+
+    text = text.replace("\x00", "").replace("\x01", "")
+    text = _CODE_SPAN_RE.sub(lambda m: hold(f"`{m.group(2).strip() or m.group(2)}`"), text)
+
+    def link(m: re.Match) -> str:
+        label, url = m.group(1).strip(), m.group(2)
+        return hold(url if label == url else f"{label} ({url})")
+
+    text = _LINK_RE.sub(link, text)
+    text = _AUTOLINK_RE.sub(lambda m: hold(m.group(1)), text)
+    text = _BOLD_STAR_RE.sub(lambda m: f"\x01{m.group(1)}\x01", text)  # bold is *one* star in WhatsApp
+    text = _BOLD_UNDER_RE.sub(lambda m: f"\x01{m.group(1)}\x01", text)
+    text = _ITALIC_STAR_RE.sub(lambda m: f"_{m.group(1)}_", text)
+    text = _STRIKE_RE.sub(lambda m: f"~{m.group(1)}~", text)
+    text = text.replace("\x01", "*")
+    return _PLACEHOLDER_RE.sub(lambda m: holders[int(m.group(1))], text)
+
+
+def markdown_to_whatsapp(md: str) -> str:
+    out: list[str] = []
+    in_fence = False
+    for line in (md or "").replace("\r\n", "\n").split("\n"):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            out.append("```")  # WhatsApp would show a language tag as text: drop it
+            continue
+        if in_fence:
+            out.append(line)
+        elif heading := _HEADING_RE.match(line):
+            out.append(f"*{_whatsapp_inline(heading.group(1))}*")
+        elif _HR_RE.match(line):
+            out.append("──────────")
+        elif bullet := _BULLET_RE.match(line):
+            out.append(f"{bullet.group(1)}- {_whatsapp_inline(bullet.group(2))}")
+        else:
+            out.append(_whatsapp_inline(line))
+    return "\n".join(out).strip()
+
+
+def render_whatsapp_chunks(md: str, limit: int = WHATSAPP_LIMIT) -> list[str]:
+    """Markdown to one or more WhatsApp messages (links grow a little, so split with some room)."""
+    return [c for c in (markdown_to_whatsapp(p) for p in split_markdown(md, limit - 300)) if c]

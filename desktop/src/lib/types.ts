@@ -844,8 +844,9 @@ export interface DeviceInvokeResult {
 }
 
 // ============================================================================ §14 Messaging channels
-export type ChannelId = 'telegram' | 'discord'
-export type ChannelStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+export type ChannelId = 'telegram' | 'discord' | 'whatsapp'
+/** `linking`: WhatsApp is waiting for its QR code (`qr`) to be scanned. */
+export type ChannelStatus = 'disconnected' | 'connecting' | 'linking' | 'connected' | 'error'
 
 export interface PairedChat {
   chat_id: string
@@ -861,6 +862,8 @@ export interface Channel {
   status: ChannelStatus
   account_label: string | null
   error: string | null
+  /** WhatsApp while linking: the text to show as a QR code. Changes every 20 seconds or so. */
+  qr?: string | null
   paired: PairedChat[]
   setup: { fields: IntegrationSetupField[]; instructions_md: string }
 }

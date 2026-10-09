@@ -641,7 +641,7 @@ class NodesConfig(BaseModel):
 
 # ----------------------------------------------------------------------------- channels (owner: channels agent)
 class ChannelAppConfig(BaseModel):
-    """Settings for one messaging app (Telegram, Discord)."""
+    """Settings for one messaging app (Telegram, Discord, WhatsApp)."""
 
     enabled: bool = Field(True, description="Allow this messaging app to be connected and used.")
     deliver_default: bool = Field(
@@ -665,6 +665,10 @@ class ChannelsConfig(BaseModel):
     enabled: bool = Field(True, description="Let paired messaging apps talk to Sentient.")
     telegram: ChannelAppConfig = Field(default_factory=ChannelAppConfig, description="Telegram bot settings.")
     discord: ChannelAppConfig = Field(default_factory=ChannelAppConfig, description="Discord bot (direct messages).")
+    whatsapp: ChannelAppConfig = Field(
+        default_factory=lambda: ChannelAppConfig(edit_interval_s=2.0),
+        description="WhatsApp, linked to your own account (your 'Message yourself' chat).",
+    )
     pairing_code_minutes: int = Field(
         10, ge=1, le=60, description="How long a pairing code stays valid after it is shown."
     )
