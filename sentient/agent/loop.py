@@ -61,7 +61,16 @@ from sentient.memory.sources import MemorySources
 from sentient.memory.workspace import Workspace
 from sentient.skills.loader import SkillLibrary
 from sentient.store.db import Store, new_id
-from sentient.tools.base import Risk, Tool, ToolContext, bind_call, describe_call, effective_risk
+from sentient.tools.base import (
+    UNPROMPTED_ORIGINS,
+    Risk,
+    Tool,
+    ToolContext,
+    bind_call,
+    describe_call,
+    effective_risk,
+    is_unprompted,
+)
 from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import never_message, unattended_ask_message
 
@@ -215,6 +224,8 @@ class LoopResult:
     # set when the loop breaker ended the loop (unattended runs also copy it to ``error``); plain words
     stopped_by_repeat: str | None = None
     stopped_by_budget: str | None = None  # a token or cost ``Budget`` ran out (also copied to ``error``)
+    # calls refused because nobody asked for this work (ADR 0017): [{tool, arguments}], for a suggestion instead
+    held: list[dict] = field(default_factory=list)
 
 
 def repeat_message(name: str, times: int) -> str:
@@ -310,6 +321,7 @@ class _CallPlan:
     outcome: tuple[Any, bool, int] | None = None
     rule_stop: bool = False  # an "ask" rule refused this call in a run nobody can answer
     seen: str = ""  # the result as JSON; the loop breaker compares it
+    held: bool = False  # refused because nobody asked for this work (ADR 0017)
 
 
 class Agent:
@@ -355,8 +367,12 @@ class Agent:
         return q.put(text)
 
     # ------------------------------------------------------------------ context
-    def tool_context(self, session_id: str | None, channel: str) -> ToolContext:
+    def tool_context(self, session_id: str | None, channel: str, *, origin: str | None = None) -> ToolContext:
+        """``origin`` defaults to the channel when that names work nobody asked for ("proactive"), else "user"."""
+        if origin is None:
+            origin = channel if channel in UNPROMPTED_ORIGINS else "user"
         return ToolContext(
+            origin=origin,
             store=self.store,
             config=self.config,
             llm=self.llm,
@@ -451,7 +467,9 @@ class Agent:
         ``persist(role, content, **fields)`` is called for intermediate assistant
         tool-call messages, tool results and steer messages (not for the final answer).
         ``steer`` feeds user messages in at round boundaries. ``policy`` may refuse a call
-        before it runs (subagents use it). ``stop()`` is checked after each round of tool
+        before it runs (subagents use it). When ``ctx.origin`` or ``source`` names work nobody asked
+        for (ADR 0017), only look-ups and Sentient-internal changes run, whatever the approval mode or rules
+        say; refused calls are listed in ``result.held``. ``stop()`` is checked after each round of tool
         results; when it returns True the loop ends without another model call and sets
         ``result.paused`` (task runs use it to wait for the user's answer). ``budget`` is checked
         before each model call; when it has run out the loop ends with ``result.stopped_by_budget``.
@@ -462,6 +480,9 @@ class Agent:
         the turn with a plain reply instead of an error. Yields everything except ``Done``.
         """
         ev = ev or {}
+        unprompted = is_unprompted(getattr(ctx, "origin", None)) or is_unprompted(source)
+        if unprompted and not is_unprompted(getattr(ctx, "origin", None)):
+            ctx.origin = str(source).strip().lower()  # tools this run starts (a subagent) must see it as unprompted too
         tools = self.registry.openai_schemas(tool_names) or None
         rounds = max_rounds or self.config.models.max_tool_rounds
         repeat_limit = self.config.tools.repeated_call_limit
@@ -561,8 +582,9 @@ class Agent:
             if persist:
                 await persist("assistant", text_acc or None, tool_calls=assistant_msg["tool_calls"], thinking=think_acc or None)
 
-            plans = [await self._plan_call(tc, ctx, tool_names, use_approvals, policy) for tc in tool_calls]
+            plans = [await self._plan_call(tc, ctx, tool_names, use_approvals, policy, unprompted) for tc in tool_calls]
             result.tool_calls += len(plans)
+            result.held.extend({"tool": p.tc.name, "arguments": p.tc.arguments} for p in plans if p.held)
             for group in self._groups(plans):
                 for p in group:
                     yield ToolCallEvent(call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments, **ev)
@@ -645,6 +667,7 @@ class Agent:
         tool_names: list[str] | None,
         use_approvals: bool,
         policy: PolicyFn | None,
+        unprompted: bool = False,
     ) -> _CallPlan:
         tool = self.registry.get(tc.name)
         rule = self.approvals.rule(tool) if tool is not None else None
@@ -659,6 +682,12 @@ class Agent:
             plan.preset = self._raw_arguments_error(tool, tc)
             return plan
         plan.risk = await effective_risk(tool, tc.arguments, ctx)
+        if unprompted:  # work nobody asked for: look-ups and Sentient-internal changes only, before any rule
+            refusal = self.approvals.unprompted_refusal(tool, plan.risk, self.registry)
+            if refusal:
+                plan.preset = ({"error": refusal}, True, 0)
+                plan.held = True
+                return plan
         if policy is not None:
             refusal = policy(tool, plan.risk, tc.arguments)
             if inspect.isawaitable(refusal):

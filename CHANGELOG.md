@@ -33,6 +33,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
   `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.
 
 ### Security
+- Work Sentient does on its own (proactive checks, the heartbeat, follow-up scans, dreaming and any subagent they
+  start) can only look things up and change Sentient's own things. Sending, deleting, buying, running code, changing
+  anything outside Sentient or creating tasks is refused in code, even with an Allow rule. Sentient may offer the
+  refused action to you as a suggestion to approve. Chats, your tasks and suggestions you approve work as before.
 - One-time codes, verification codes, magic sign-in links and password reset links in Gmail and IMAP email are
   replaced with a short placeholder before the AI reads them, in tool results, proactive suggestions and follow-ups.
   Booking, order, ticket and reference codes, dates, prices and ordinary links are left alone, and the email itself
