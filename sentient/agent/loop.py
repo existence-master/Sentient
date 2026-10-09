@@ -11,7 +11,7 @@ Two layers:
   look-up tools requested together run concurrently; results keep their order.
 - ``Agent.run_turn`` is a chat turn: persists the user message (with
   attachments), builds the system prompt (persona, profile, recalled memory,
-  user model, skills, clock, running conversation summary), runs the loop,
+  user model, skills, running conversation summary), runs the loop,
   persists the transcript, then kicks off background work (fact extraction,
   auto title, context compression). Messages the user sends while a reply runs
   (``Agent.steer``) are fed to the model at the next round.
@@ -30,6 +30,7 @@ import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from pydantic import ValidationError
@@ -60,6 +61,7 @@ from sentient.memory.workspace import Workspace
 from sentient.skills.loader import SkillLibrary
 from sentient.store.db import Store, new_id
 from sentient.tools.base import Risk, Tool, ToolContext, bind_call, describe_call, effective_risk
+from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -696,9 +698,23 @@ class Agent:
             system = await self.system_prompt(user_text, channel, session)
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
             convo = history_to_openai(history)
-            # replace the just-stored user message with the rich version (attachments inlined)
+
+            # Replace the just-stored user message with the rich version (attachments inlined).
+            # Keep the stored user message unchanged. Add the current time to the
+            # model-facing user message so it doesn't invalidate the system prompt cache.
             if convo and convo[-1]["role"] == "user":
-                convo[-1] = {"role": "user", "content": await self._user_content(user_text, attachments)}
+                content = await self._user_content(user_text, attachments)
+                tz = resolve_tz(self.config.assistant.timezone)
+                now = datetime.now(tz)
+                time_note = f"[Current time: {now.strftime('%A %Y-%m-%d %H:%M')} ({now.tzinfo})]"
+
+                if isinstance(content, str):
+                    content = f"{time_note}\n\n{content}"
+                else:
+                    content = [{"type": "text", "text": time_note}, *content]
+
+                convo[-1] = {"role": "user", "content": content}
+
             # spoken channels use the voice role: its own model and reasoning effort (default: thinking off)
             role = "voice" if channel in SPOKEN_CHANNELS else "primary"
             if attachments and any(is_image(paths.files_dir() / a) for a in attachments) and self.config.models.roles.vision:

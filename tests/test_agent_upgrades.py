@@ -306,6 +306,59 @@ async def test_large_tool_result_is_cut_and_saved(config, isolated_home):
 
 
 # ---------------------------------------------------------------------------- prompt caching
+async def test_current_time_is_in_user_message_not_system_prompt(config, isolated_home):
+    llm = FakeProvider(replies=["First answer.", "Second answer."])
+    s = await start(config, isolated_home, llm, "current-time")
+    try:
+        sid = await s.store.create_session(channel="cli")
+
+        async for _ in s.agent.run_turn(sid, "What time is it?", channel="cli"):
+            pass
+
+        first_messages = llm.calls[0]["messages"]
+        first_system = first_messages[0]["content"]
+        first_user = first_messages[-1]["content"]
+
+        assert "[Current time:" not in first_system
+        assert "[Current time:" in first_user
+        assert "What time is it?" in first_user
+
+        async for _ in s.agent.run_turn(sid, "And now?", channel="cli"):
+            pass
+
+        second_messages = llm.calls[1]["messages"]
+        second_system = second_messages[0]["content"]
+        second_user = second_messages[-1]["content"]
+
+        assert second_system == first_system
+        assert "[Current time:" in second_user
+        assert "And now?" in second_user
+
+        rows = await s.store.recent_messages(sid, 20)
+        assert rows[0]["content"] == "What time is it?"
+        assert rows[2]["content"] == "And now?"
+    finally:
+        await s.stop()
+
+
+def test_system_prompt_does_not_depend_on_current_time():
+    from sentient.agent.prompt import build_system_prompt
+
+    kwargs = {
+        "snapshot": {},
+        "facts": [],
+        "skills_index": "",
+        "assistant_name": "Sentient",
+        "user_name": "Sarthak",
+        "timezone": "UTC",
+        "channel": "desktop",
+    }
+
+    prompt = build_system_prompt(**kwargs)
+
+    assert "- Now:" not in prompt
+    assert "[Current time:" not in prompt
+
 def test_prompt_cache_only_for_anthropic():
     messages = [{"role": "system", "content": "persona"}, {"role": "user", "content": "hi"}]
     tools = [{"type": "function", "function": {"name": "a"}}, {"type": "function", "function": {"name": "b"}}]
