@@ -84,40 +84,93 @@ async def test_answered_in_the_app_settles_the_buttons(tg):
     await tg.app.tasks.drain()
 
 
-async def test_free_text_answers_the_single_waiting_question(tg, llm):
+async def _question_message(tg, question: str) -> dict:
+    """The sendMessage call that delivered ``question`` (waits for delivery)."""
+    def find():
+        return next((p for p in tg.api.sent("sendMessage") if question in p["text"]), None)
+
+    await until(lambda: find() is not None)
+    return find()
+
+
+def _reply(message: dict) -> dict:
+    return {"reply_to_message": {"message_id": message["_id"]}}
+
+
+async def test_question_text_tells_how_to_answer(tg, llm):
     await tg.pair(42)
-    task_id, _ = await _waiting_task(tg.app, "Book a flight to Goa")
-    await until(lambda: bool(tg.api.button_messages()))
-    executor_calls = len(llm.calls)
-
-    await tg.say(42, "The early one please")
-    await tg.app.tasks.drain()
-    assert any("passed your answer to" in t and "Book a flight to Goa" in t for t in tg.api.screen())
-    task = await tg.app.tasks.get(task_id)
-    assert task["status"] == "completed"
-    assert _executor_answer(llm, 1) == "The early one please"
-    # no chat turn was started for that message: only the resumed executor called the model
-    assert {c["role"] for c in llm.calls[executor_calls:] if not c.get("json")} == {"executor"}
-
-
-async def test_free_text_with_two_waiting_questions_asks_to_use_the_app(tg, llm):
-    llm.replies[:] = [ASK_FLIGHT, ASK_HOTEL]
-    await tg.pair(42)
-    await _waiting_task(tg.app, "Book a flight to Goa")
+    llm.replies[:] = [ASK_HOTEL]
     await _waiting_task(tg.app, "Find a hotel in Goa")
+    msg = await _question_message(tg, "Which hotel area do you prefer?")
+    assert "reply_markup" not in msg and msg["text"].endswith("<i>Reply to this message with your answer.</i>")
+
+
+async def test_reply_to_the_question_answers_it(tg, llm):
+    await tg.pair(42)
+    task_id, run_id = await _waiting_task(tg.app, "Book a flight to Goa")
+    msg = await _question_message(tg, "Which flight should I book?")
+    assert msg["text"].endswith("<i>Tap an option, or reply to this message with your answer.</i>")
+    # remembered in SQLite, so a reply still matches after a restart
+    assert await tg.app.channels.store.question_for("telegram", "42", str(msg["_id"])) == {"task_id": task_id, "run_id": run_id}
     calls = len(llm.calls)
 
-    await tg.say(42, "Yes")
-    reply = tg.api.screen()[-1]
-    assert "2 tasks are waiting for your answer" in reply and "Sentient app" in reply
-    assert len(llm.calls) == calls  # nothing answered, no chat turn
-    assert len(await tg.app.tasks.waiting_questions()) == 2
+    await tg.say(42, "The early one please", **_reply(msg))
+    await tg.app.tasks.drain()
+    assert any("passed your answer to" in t and "Book a flight to Goa" in t for t in tg.api.screen())
+    assert (await tg.app.tasks.get(task_id))["status"] == "completed"
+    assert _executor_answer(llm, 1) == "The early one please"
+    # no chat turn was started for that message: only the resumed executor called the model
+    assert {c["role"] for c in llm.calls[calls:] if not c.get("json")} == {"executor"}
 
 
-async def test_chat_without_delivery_is_a_normal_chat(tg, llm):
+async def test_a_message_that_is_not_a_reply_is_normal_chat(tg, llm):
+    llm.replies[:] = [ASK_FLIGHT, "It looks sunny in Bengaluru today."]
     await tg.pair(42)
-    await tg.app.channels.set_deliver("telegram", "42", False)
     task_id, _ = await _waiting_task(tg.app, "Book a flight to Goa")
-    await tg.say(42, "Hello there")
-    assert (await tg.app.tasks.get(task_id))["status"] == "waiting_for_user"
+    other = await _question_message(tg, "Which flight should I book?")
+
+    await tg.say(42, "What's the weather like?")
     assert any(c.get("role") == "primary" for c in llm.calls)
+    assert "sunny" in tg.api.screen()[-1]
+    assert (await tg.app.tasks.get(task_id))["status"] == "waiting_for_user"
+    # a reply to some other message (not a question) is normal chat too
+    llm.replies[:] = ["Glad to help."]
+    paired = next(p for p in tg.api.sent("sendMessage") if "Paired!" in p["text"])
+    assert paired["_id"] != other["_id"]
+    await tg.say(42, "Thanks", **_reply(paired))
+    assert "Glad to help." in tg.api.screen()[-1]
+    assert (await tg.app.tasks.get(task_id))["status"] == "waiting_for_user"
+
+
+async def test_two_waiting_questions_each_reply_answers_its_own(tg, llm):
+    llm.replies[:] = [ASK_FLIGHT, ASK_HOTEL, "Hotel noted.", "Flight booked."]
+    llm.json_replies[:] = [dict(RESULT), dict(RESULT)]
+    await tg.pair(42)
+    flight_id, _ = await _waiting_task(tg.app, "Book a flight to Goa")
+    hotel_id, _ = await _waiting_task(tg.app, "Find a hotel in Goa")
+    flight_msg = await _question_message(tg, "Which flight should I book?")
+    hotel_msg = await _question_message(tg, "Which hotel area do you prefer?")
+
+    await tg.say(42, "Near the beach", **_reply(hotel_msg))
+    await tg.app.tasks.drain()
+    assert (await tg.app.tasks.get(hotel_id))["status"] == "completed"
+    assert (await tg.app.tasks.get(flight_id))["status"] == "waiting_for_user"
+    assert _executor_answer(llm, 2) == "Near the beach"
+
+    await tg.say(42, "The IndiGo one", **_reply(flight_msg))
+    await tg.app.tasks.drain()
+    assert (await tg.app.tasks.get(flight_id))["status"] == "completed"
+    assert _executor_answer(llm, 3) == "The IndiGo one"
+
+
+async def test_reply_to_an_already_answered_question(tg, llm):
+    await tg.pair(42)
+    task_id, run_id = await _waiting_task(tg.app, "Book a flight to Goa")
+    msg = await _question_message(tg, "Which flight should I book?")
+    await tg.app.tasks.answer_question(task_id, run_id, FLIGHTS[0])
+    await tg.app.tasks.drain()
+    calls = len(llm.calls)
+
+    await tg.say(42, "Actually the later one", **_reply(msg))
+    assert "already been handled" in tg.api.screen()[-1]
+    assert len(llm.calls) == calls  # neither an answer nor a chat turn

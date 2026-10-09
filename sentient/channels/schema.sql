@@ -29,6 +29,17 @@ CREATE TABLE IF NOT EXISTS channel_pairing_codes (
     created_at TEXT NOT NULL
 );
 
+-- Messages that delivered a task's question (ask_user): a reply to one of them is the answer.
+CREATE TABLE IF NOT EXISTS channel_questions (
+    channel    TEXT NOT NULL,
+    chat_id    TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    task_id    TEXT NOT NULL,
+    run_id     TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (channel, chat_id, message_id)
+);
+
 CREATE TABLE IF NOT EXISTS channel_refusals (
     channel    TEXT NOT NULL,
     chat_id    TEXT NOT NULL,

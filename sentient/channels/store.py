@@ -1,4 +1,4 @@
-"""SQLite persistence for channels: connection state, paired chats, pairing codes, refusals."""
+"""SQLite persistence for channels: connection state, paired chats, pairing codes, refusals, delivered task questions."""
 
 from __future__ import annotations
 
@@ -107,6 +107,27 @@ class ChannelStore:
     async def chat_for_session(self, session_id: str) -> tuple[str, dict] | None:
         row = await self.store.fetchone("SELECT * FROM channel_chats WHERE session_id = ?", (session_id,))
         return (row["channel"], self._chat(row)) if row else None
+
+    # ------------------------------------------------------------------ task questions
+    async def add_question(self, channel: str, chat_id: str, message_ids: list[str], *, task_id: str, run_id: str) -> None:
+        """Remember the messages that delivered a task's question, so a reply to one of them answers it."""
+        now = now_iso()
+        for mid in message_ids:
+            await self.store.execute(
+                "INSERT OR REPLACE INTO channel_questions(channel, chat_id, message_id, task_id, run_id, created_at)"
+                " VALUES(?,?,?,?,?,?)",
+                (channel, str(chat_id), str(mid), task_id, run_id, now),
+            )
+        # bounded: questions older than 90 days are no longer worth matching
+        cutoff = (datetime.now(UTC) - timedelta(days=90)).isoformat()
+        await self.store.execute("DELETE FROM channel_questions WHERE created_at < ?", (cutoff,))
+
+    async def question_for(self, channel: str, chat_id: str, message_id: str) -> dict | None:
+        row = await self.store.fetchone(
+            "SELECT task_id, run_id FROM channel_questions WHERE channel = ? AND chat_id = ? AND message_id = ?",
+            (channel, str(chat_id), str(message_id)),
+        )
+        return {"task_id": row["task_id"], "run_id": row["run_id"]} if row else None
 
     # ------------------------------------------------------------------ refusals
     async def refuse_once(self, channel: str, chat_id: str) -> bool:

@@ -4,7 +4,7 @@
 - A paired chat is a normal Sentient chat whose session has ``channel`` = the channel id.
 - Delivery: ``notification.new`` events (task results, plans awaiting approval, questions from running
   tasks, proactive suggestions, subagent completions) are forwarded to paired chats with ``deliver`` on,
-  with action buttons. A plain text reply answers a task's question when exactly one is waiting.
+  with action buttons. A reply to a delivered task question message is the answer to that question.
 """
 
 from __future__ import annotations
@@ -301,7 +301,7 @@ class ChannelService(Service):
             return None
         title = (note.get("title") or "").strip() or "A task needs your answer"
         options = [str(o) for o in payload.get("options") or [] if str(o).strip()]
-        hint = "Tap an answer or reply here with your own." if options else "Reply here with your answer."
+        hint = "Tap an option, or reply to this message with your answer." if options else "Reply to this message with your answer."
         md = f"**{title}**\n{summary_text(question, 900)}\n\n_{hint}_"
         if not options:
             return md, None
@@ -328,6 +328,15 @@ class ChannelService(Service):
                 continue
             sent += 1
             ch.publish_message(chat["chat_id"], None, "out", md)
+            payload = note.get("payload") or {}
+            if note.get("kind") == "task" and payload.get("event") == "question" and ids:
+                try:  # persisted, so a reply still answers the question after a restart
+                    await self.store.add_question(
+                        ch.id, chat["chat_id"], [str(i) for i in ids],
+                        task_id=str(payload.get("task_id") or note.get("task_id") or ""), run_id=str(payload.get("run_id")),
+                    )
+                except Exception:
+                    log.exception("could not remember the delivered question")
             if buttons and ids and note.get("id"):
                 self._delivered.setdefault(str(note["id"]), []).append((ch.id, chat["chat_id"], ids[-1]))
         return sent
@@ -444,37 +453,24 @@ class ChannelService(Service):
                     return q
         return None
 
-    async def answer_from_chat(self, ch: Channel, chat: dict, text: str) -> bool:
-        """A plain message from a delivery chat answers a task's question when exactly one is waiting.
+    async def answer_reply(self, ch: Channel, chat: dict, reply_to: str, text: str) -> bool:
+        """A message that replies to a delivered task question is the answer to that question.
 
-        Returns True when the message was used (answered, or the chat was asked to pick in the app
-        because several questions are waiting); False to treat it as a normal chat message.
+        Returns True when ``reply_to`` is one of this chat's question messages (answered now, or already
+        handled); False for a reply to anything else, which is then normal chat.
         """
-        if not chat.get("deliver") or not self.app.config.channels.deliver_task_results:
-            return False
-        fn = getattr(self.app.tasks, "waiting_questions", None)
-        if fn is None:
-            return False
-        try:
-            waiting = await fn()
-        except Exception:
-            log.exception("could not list waiting task questions")
-            return False
-        if not waiting:
-            return False
         chat_id = str(chat["chat_id"])
+        found = await self.store.question_for(ch.id, chat_id, str(reply_to))
+        if found is None:
+            return False
         ch.publish_message(chat_id, chat.get("session_id"), "in", text)
-        if len(waiting) > 1:
-            names = ", ".join(f"'{summary_text(q['task_name'], 60)}'" for q in waiting[:3])
-            reply = (
-                f"{len(waiting)} tasks are waiting for your answer ({names}), so I can't tell which one this is for. "
-                "Tap a button under the question, or answer in the Sentient app under Tasks."
-            )
+        waiting = await self._waiting_question(found["run_id"])
+        if waiting is None:
+            reply = "That question has already been handled, so I didn't pass this on."
         else:
-            q = waiting[0]
             try:
-                await self.app.tasks.answer_question(q["task_id"], q["run_id"], text)
-                reply = f"Thanks! I passed your answer to '{summary_text(q['task_name'], 80)}'. It's carrying on now."
+                await self.app.tasks.answer_question(waiting["task_id"], waiting["run_id"], text)
+                reply = f"Thanks! I passed your answer to '{summary_text(waiting['task_name'], 80)}'. It's carrying on now."
             except Exception as exc:
                 reply = f"I couldn't pass that on: {str(exc)[:200] or 'something went wrong'}"
         await ch.reply(chat_id, reply)

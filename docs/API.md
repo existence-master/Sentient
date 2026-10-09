@@ -254,7 +254,7 @@ Behaviour notes:
   ends). The progress log gets `Waiting for your answer: ...`; `task.updated` carries the run's `pending_question`.
 - A notification is created: `kind: "task"`, title `"<task name> needs your answer"`, `message` = the question,
   `payload: {task_id, event: "question", run_id, question, options}`.
-- Answering (`POST .../answer`, a button or a reply in a paired chat) puts the answer in place of the `ask_user` tool
+- Answering (`POST .../answer`, a button, or a reply to the question message in a paired chat) puts the answer in place of the `ask_user` tool
   result, logs `You answered: ...`, sets the notification's `payload.status = "answered"` (and marks it read), moves run and
   task back to `processing` and continues the run without the restart note.
 - While a task waits: `approve`, `chat`, `run-now` and `retry` on a one-off task return 409; recurring tasks are not
@@ -740,12 +740,16 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `notification.updated` shows the plan/suggestion was handled elsewhere. A background subagent (`subagent.updated`,
   `background: true`, `completed`/`error`) whose session belongs to a paired chat sends its summary to that chat once.
   Toggles: `channels.deliver_task_results`, `deliver_plans`, `deliver_suggestions`, `deliver_subagents`.
-- Answering a task's question with a plain message: in a chat with `deliver: true` (and `deliver_task_results` on), a text
-  message (or voice note transcript) without attachments answers the question when exactly one run in Sentient is
-  `waiting_for_user`; the chat gets "Thanks! I passed your answer to '<task>'" and no chat turn starts. When several runs
-  are waiting, the message is not used as an answer or a chat message; the reply asks to tap a button or answer in the
-  app. With no waiting runs, or in chats without delivery, messages are normal chat. Commands still work. Question
-  buttons settle to "Answered: <answer>" or "Cancelled" when the question is handled anywhere.
+- Answering a task's question by replying: the delivered question ends with "Tap an option, or reply to this message
+  with your answer." (without options: "Reply to this message with your answer."). The ids of the messages that carried
+  the question are stored per chat in SQLite (`channel_questions`, kept 90 days), so this survives restarts. A text
+  message or voice note (its transcript) without attachments that replies to one of them (Telegram
+  `reply_to_message.message_id`, Discord `message_reference.message_id`) is the answer to that question: it goes to
+  `app.tasks.answer_question`, the chat gets "Thanks! I passed your answer to '<task>'. It's carrying on now." and no chat
+  turn starts. A reply to a question that was already answered or cancelled gets "That question has already been
+  handled, so I didn't pass this on." Every other message, including replies to other messages, is normal chat, however
+  many questions are waiting. Question buttons settle to "Answered: <answer>" or "Cancelled" when the question is
+  handled anywhere. `Incoming.reply_to` carries the replied-to message id for every channel.
 - Domain events `channel.updated` → `Channel` (connect, disconnect, status changes, pairing, deliver changes);
   `channel.message` `{channel, chat_id, session_id, direction: "in"|"out", text}`: `in` is the user's text (the transcript
   for voice notes); `out` is the final reply text, or a delivered notification with `session_id: null`.
