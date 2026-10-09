@@ -15,7 +15,7 @@ TASK_KEYS = {
 }
 RUN_KEYS = {
     "run_id", "status", "created_at", "execution_start_time", "finished_at", "plan", "trigger_event_data",
-    "progress_updates", "result", "error", "retry_of", "pending_question",
+    "progress_updates", "result", "error", "retry_of", "pending_question", "last_activity_at",
 }
 
 

@@ -37,6 +37,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
   role gets a pass, warning or failure with a plain fix ("qwen3:4b can't call tools reliably; try qwen3:8b") and,
   where the fix is obvious, a button that does it. Nothing changes unless you press it. `sentient doctor --models`
   runs the same check in a terminal.
+- **Stuck tasks tell you.** A task that makes no progress for 10 minutes, keeps hitting the same error, or reaches a
+  step only you can do (a password, a CAPTCHA) pauses and says why: "Sentient is stuck on 'Book the table': the page
+  asks for your password. Open it to help or cancel." Choose Try again, Skip this step or Cancel, or tell it what to
+  do. A running task shows when it last did something. Settings > Tasks.
+- **Catching up after sleep.** Scheduled tasks missed while the computer was off or asleep run once when Sentient is
+  back if they are less than 12 hours late, and are skipped otherwise; never a pile of old runs. One notification
+  says what happened ("Caught up after sleep: ran 1, skipped 2"). Each task can choose to always run once or always
+  skip. Nothing catches up while Stop everything is on; it happens when you resume.
+
+### Changed
+- A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
 - Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
