@@ -41,6 +41,8 @@ its public REST and WebSocket interface, and the desktop screens were captured f
 | The same 12 flows on cloud models: Claude Sonnet 5 for chat, Claude Haiku 4.5 for background work | Pass, and much faster: most flows finish in 5 to 15 s |
 | Smart glasses over the home network: mDNS discovery, TLS with certificate pinning, pairing code, text and notification shown on the device | Pass with the reference device program |
 | "What can you see?" through a device camera, using a real webcam frame and a local vision model | Pass with `ollama_chat/qwen2.5vl:3b` |
+| A task that has to ask, on `qwen3:8b`: "write a dinner note, ask me Toit or Truffles". The run paused with that question and both options, sent a "needs your answer" notification, and after the answer wrote the right file | Pass |
+| Follow-ups deciding and drafting on `qwen3:8b`, with three made-up threads: a client question waiting 4 days, a "sounds good" reply, and your own unanswered request | Pass: replied, skipped, nudged; no placeholders in drafts (3 to 18 s each) |
 | Telegram with a real bot and a real phone, on `qwen3:8b`: pairing code, chat, approval buttons before running code (then the Docker sandbox), weather, `/help`, and two voice notes understood by faster-whisper | Pass. Replies to voice notes are text unless `channels.telegram.voice_replies` is on |
 
 The automated suite (522 engine tests, desktop typecheck and build) passes.
