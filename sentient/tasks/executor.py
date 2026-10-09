@@ -222,6 +222,16 @@ async def _executor_system_prompt(
     )
 
 
+def _spent(state: dict, budget: Budget, started: float) -> dict:
+    """Add this segment's steps, tokens, cost and active seconds to the run's stored limits."""
+    used = state["used"]
+    used.update(
+        steps=budget.steps, tokens=budget.tokens, cost_usd=budget.cost_usd,
+        seconds=used["seconds"] + (time.monotonic() - started),
+    )
+    return state
+
+
 async def execute_single(
     svc: TaskService, task: dict, run: dict, *, resume: bool = False, answered: bool = False
 ) -> LoopResult:
@@ -316,10 +326,16 @@ async def execute_single(
         # a hung tool or model call was cancelled. The transcript keeps every finished step; a tool call left
         # without its result is dropped when the run resumes (history_to_openai), so the model simply asks again.
         log.warning("task run %s passed its hard time limit; the call in flight was cancelled", run_id)
-    used.update(
-        steps=budget.steps, tokens=budget.tokens, cost_usd=budget.cost_usd,
-        seconds=used["seconds"] + (time.monotonic() - started),
-    )
+    except asyncio.CancelledError:
+        # shutdown or Cancel: keep what this segment used so a resumed run still counts it. The write is shielded
+        # and awaited, so it lands before the run's task ends even if it is cancelled again.
+        save = asyncio.ensure_future(svc.repo.update_run(run_id, {"limits": _spent(state, budget, started)}))
+        try:
+            await asyncio.shield(save)
+        except asyncio.CancelledError:
+            await save
+        raise
+    _spent(state, budget, started)
     await svc.repo.update_run(run_id, {"limits": state, **({"messages": messages} if messages else {})})
 
     if result.stopped_by_rule:  # an "ask" rule stopped the run; say which and how to change it (ADR 0016)

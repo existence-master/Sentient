@@ -152,7 +152,7 @@ async def waiting_question(app, task_id: str) -> tuple[str, str]:
 
 async def test_hung_tool_hits_the_hard_deadline_and_the_run_resumes(make_app, config, monkeypatch):
     monkeypatch.setattr(executor, "HARD_DEADLINE_GRACE_S", 0.3)
-    config.tasks.run_timeout_minutes = 0.02  # 1.2 s of work, then 0.3 s of grace for the call in flight
+    config.tasks.run_timeout_minutes = 0.05  # 3 s of work, then 0.3 s of grace for the call in flight
     llm = FakeProvider(
         replies=[[{"id": "c1", "name": "slow_lookup", "arguments": {}}], "Looked it up."], json_replies=[dict(RESULT)]
     )
@@ -161,16 +161,18 @@ async def test_hung_tool_hits_the_hard_deadline_and_the_run_resumes(make_app, co
     task_id = await start_task(app, plan_tool="slow")
     run_id, question = await waiting_question(app, task_id)
     assert question.startswith("This task has been working for ")
-    assert question.endswith("Keep going for another 0.02 minutes, or stop here?")
+    assert question.endswith("Keep going for another 0.05 minutes, or stop here?")
     run = await app.tasks.repo.get_run(run_id)
-    assert 1.4 < run["limits"]["used"]["seconds"] < 2.4  # the hung call was cancelled at limit + grace
+    paused_at = run["limits"]["used"]["seconds"]
+    assert 3.2 < paused_at < 5.5  # the hung call was cancelled at limit + grace (well under the raised 6 s)
     assert len(stream_calls(llm)) == 1
 
     await asyncio.sleep(3.0)  # waiting for the answer is longer than the whole limit, and is not counted
     task = await answer(app, task_id, run_id, KEEP_GOING)
     assert task["status"] == "completed", task["runs"][-1]["error"]
     run = await app.tasks.repo.get_run(run_id)
-    assert run["limits"]["max"]["seconds"] == pytest.approx(2.4)
+    assert run["limits"]["max"]["seconds"] == pytest.approx(6.0)
+    assert run["limits"]["used"]["seconds"] - paused_at < 2.5  # the 3 s spent waiting were not counted
     # resumed from the saved transcript: the cancelled call (no result) was dropped, nothing else was lost
     resumed = stream_calls(llm)[1]["messages"]
     assert resumed[0]["role"] == "system" and not any(m.get("tool_calls") for m in resumed)
@@ -180,7 +182,7 @@ async def test_time_limit_lets_the_call_in_flight_finish_then_asks(make_app, con
     @tool("steady_lookup", risk=Risk.read)
     async def steady_lookup(ctx: ToolContext) -> str:
         """Look something up, taking a moment."""
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(2.0)
         return "found it"
 
     class Steady(ToolPlugin):
@@ -188,7 +190,7 @@ async def test_time_limit_lets_the_call_in_flight_finish_then_asks(make_app, con
         display_name = "Steady"
         tools = [steady_lookup]
 
-    config.tasks.run_timeout_minutes = 0.01  # 0.6 s: passed while the lookup runs
+    config.tasks.run_timeout_minutes = 0.02  # 1.2 s: passed while the lookup runs
     llm = FakeProvider(
         replies=[[{"id": "c1", "name": "steady_lookup", "arguments": {}}], "Done."], json_replies=[dict(RESULT)]
     )
@@ -248,13 +250,29 @@ async def test_raised_limit_survives_a_restart(make_app, config):
 
     llm2 = FakeProvider(replies=reads(10, 4), json_replies=[dict(RESULT)])
     app2 = await make_app(llm2, db_name="limits-restart.db")
+    stored = (await app2.tasks.repo.get_run(run_id))["limits"]
+    # the raised limit was saved with the answer; the quit saved what the interrupted segment used (its call counts)
+    assert stored["max"]["steps"] == 4 and stored["used"]["steps"] == 3 and stored["used"]["seconds"] > 0
     report = await app2.tasks.recover_interrupted()
     await app2.tasks.drain()
     assert run_id in report["resumed"]
-    assert len(stream_calls(llm2)) == 2  # 2 steps used before, limit raised to 4
+    assert len(stream_calls(llm2)) == 1  # 3 of 4 steps used before the restart
     await assert_waiting(
         app2, task_id, "This task has used 4 steps and isn't finished yet. Keep going for another 2 steps, or stop here?"
     )
+
+
+async def test_keep_going_on_a_run_that_is_no_longer_waiting_changes_nothing(make_app, config):
+    config.tasks.max_tool_rounds = 2
+    app = await make_app(FakeProvider(replies=reads(0, 2), json_replies=[dict(RESULT)]))
+    task_id = await start_task(app)
+    run = (await app.tasks.get(task_id))["runs"][-1]
+    before = (await app.tasks.repo.get_run(run["run_id"]))["limits"]
+    await app.tasks.cancel_run(task_id, run["run_id"])
+    raised = {**before, "max": {**before["max"], "steps": 99}}
+    assert not await app.tasks.repo.resume_run(run["run_id"], [], limits=raised)  # guarded: one write or none
+    after = await app.tasks.repo.get_run(run["run_id"])
+    assert after["status"] == "cancelled" and after["limits"] == before
 
 
 # ---------------------------------------------------------------------- loops fail at once; defaults leave runs alone

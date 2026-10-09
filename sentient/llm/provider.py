@@ -209,6 +209,9 @@ class LiteLLMProvider:
         for model in self._chain(role, override):
             try:
                 kwargs = await self._call_kwargs(model, role)
+                if _provider_prefix(model) not in {"ollama", "ollama_chat"}:
+                    # OpenAI-style streams leave out token usage unless asked; budgets and prices need it
+                    kwargs["stream_options"] = {"include_usage": True}
                 sent_messages, sent_tools = apply_prompt_cache(model, messages, tools)
                 if sent_tools:
                     kwargs["tools"] = sent_tools

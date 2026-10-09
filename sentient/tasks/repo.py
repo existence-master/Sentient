@@ -239,12 +239,13 @@ class TaskRepo:
         )
         return (cur.rowcount or 0) > 0
 
-    async def resume_run(self, run_id: str, messages: list[dict]) -> bool:
-        """Compare-and-set a waiting run back to processing with the answered transcript. False if not waiting."""
+    async def resume_run(self, run_id: str, messages: list[dict], *, limits: dict | None = None) -> bool:
+        """Compare-and-set a waiting run back to processing with the answered transcript (and, for "Keep going",
+        its raised ``limits``, in the same write). False if not waiting."""
         cur = await self.store.execute(
-            "UPDATE task_runs SET status = 'processing', pending_question = NULL, messages = ?"
-            " WHERE id = ? AND status = 'waiting_for_user'",
-            (_dumps(messages), run_id),
+            "UPDATE task_runs SET status = 'processing', pending_question = NULL, messages = ?,"
+            " limits = COALESCE(?, limits) WHERE id = ? AND status = 'waiting_for_user'",
+            (_dumps(messages), _dumps(limits), run_id),
         )
         return (cur.rowcount or 0) > 0
 

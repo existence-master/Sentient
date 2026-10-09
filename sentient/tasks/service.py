@@ -699,8 +699,8 @@ class TaskService(Service):
             await self._finish_run(task_id, run_id, "error", error=error, from_statuses=("waiting_for_user",))
             return await self.get_and_publish(task_id)
         state = limits.raise_limit(limits.load(run, self.app.config), pending["limit"])
-        await self.repo.update_run(run_id, {"limits": state})  # kept with the run, so it survives a restart
-        if not await self.repo.resume_run(run_id, run.get("messages") or []):
+        # one guarded write: a run cancelled meanwhile keeps its limits; the raised one survives a restart
+        if not await self.repo.resume_run(run_id, run.get("messages") or [], limits=state):
             raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
         await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
         await self._set(task_id, {"status": "processing", "error": None})
