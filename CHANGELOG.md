@@ -6,6 +6,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **WhatsApp:** link Sentient to your WhatsApp by scanning a QR code (Channels > Messaging apps), then talk to it in
+  your own "Message yourself" chat: text, voice notes, photos and files, replies as they are written, task results and
+  suggestions. When Sentient needs a yes or no it lists numbered options; reply with the number. `/stop`, `/stopall`,
+  `/resume`, `/new` and `/help` work there too. Your other chats are never read or answered. This uses the same linking
+  as WhatsApp Web through an unofficial app, so WhatsApp could limit an account that uses it; the connect screen says so.
 - Tasks can pause to ask you a question ("Which of these two flights?") and carry on with your answer. The question
   shows on the task, as a notification with quick answers, and in paired Telegram or Discord chats with buttons;
   replying to the question message there works too. A waiting task keeps waiting across restarts.

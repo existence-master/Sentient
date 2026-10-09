@@ -872,18 +872,22 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 
 ## 14. Messaging channels (owner: channels)
 
-- **Channel** `{id: "telegram"|"discord", display_name, status: "disconnected"|"connecting"|"connected"|"error", account_label, error, paired: [PairedChat], setup: {fields, instructions_md}}`
+- **Channel** `{id: "telegram"|"discord"|"whatsapp", display_name, status: "disconnected"|"connecting"|"linking"|"connected"|"error", account_label, error, qr, paired: [PairedChat], setup: {fields, instructions_md}}`
   - `setup.fields`: `[{key: "bot_token", label, secret: true, required: true, help, placeholder}]`; `instructions_md` is a
     step-by-step guide for non-technical people (@BotFather for Telegram, the Developer Portal for Discord).
-  - `account_label`: `@botname` (Telegram) or the bot's username (Discord). `status` is `connecting` while Sentient
-    reconnects at startup, `error` (with a friendly `error`) after 3 failed polls in a row or when the token was revoked.
+  - `account_label`: `@botname` (Telegram), the bot's username (Discord) or the linked phone number `+<digits>`
+    (WhatsApp). `status` is `connecting` while Sentient reconnects at startup, `error` (with a friendly `error`) after 3
+    failed polls in a row or when the token was revoked.
+  - `qr`: WhatsApp only, while `status` is `linking`: the text to render as a QR code (it changes about every 20 s and
+    arrives through `channel.updated`); `null` otherwise.
 - **PairedChat** `{chat_id, label, paired_at, deliver: bool, session_id}` (`deliver` defaults to `channels.<id>.deliver_default`).
-- `GET /api/channels` → `[Channel]` (always both ids).
+- `GET /api/channels` → `[Channel]` (always all three ids).
 - `POST /api/channels/{id}/connect` `{fields: {bot_token}}` → `Channel`. The token is checked with the service (Telegram
   `getMe`, Discord `GET /users/@me`), stored in the OS keychain as `channel_<id>_token` (never in config, the database or
   logs) and polling starts. 400 invalid token or channel turned off in Settings; 404 unknown channel; 500 keychain unavailable.
 - `POST /api/channels/{id}/disconnect` → `Channel` (stops receiving, deletes the token, cancels the pairing code;
-  paired chats are kept so reconnecting the same bot needs no re-pairing; remove them with DELETE).
+  paired chats are kept so reconnecting the same bot needs no re-pairing; remove them with DELETE). WhatsApp: logs out
+  (Sentient leaves Linked devices on the phone) and deletes the saved session.
 - `POST /api/channels/{id}/pairing` → `{code, expires_at, instructions}`. 6 digits, valid `channels.pairing_code_minutes`
   (10), single use, one active code per channel (a new code replaces the old one). 409 when the channel is not connected.
 - `PATCH /api/channels/{id}/paired/{chat_id}` `{deliver: bool}` → `Channel` (400 when `deliver` is not a boolean, 404 unknown chat).
@@ -929,6 +933,33 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   handled, so I didn't pass this on." Every other message, including replies to other messages, is normal chat, however
   many questions are waiting. Question buttons settle to "Answered: <answer>" or "Cancelled" when the question is
   handled anywhere. `Incoming.reply_to` carries the replied-to message id for every channel.
+- **WhatsApp** (ADR 0020): Sentient is a linked device on the user's own account, through a WhatsApp Web bridge in
+  the engine (neonize, the optional `whatsapp` extra, included in installers). There is no token and no setup field.
+  - `POST /api/channels/whatsapp/connect` `{fields: {}}` → `Channel` with `status: "linking"` (or `connecting` when a
+    session is already linked); then `channel.updated` carries each `qr` until the phone scans it, then `connected`. 400
+    when the extra is not installed or WhatsApp is turned off in Settings. A code that is never scanned ends in `error`
+    ("The code expired before it was scanned...") and is not retried on its own.
+  - The session (keys, not messages) is whatsmeow's SQLite file in `~/.sentient/whatsapp`, never in config or the
+    database. At startup a linked session reconnects; if it is gone, `status` is `error` ("needs to be linked again").
+    Logged out on the phone → `error` "WhatsApp unlinked Sentient...", the session is deleted and `account_label` cleared.
+    Another copy using the link, or a temporary ban, ends in `error` with a plain sentence. Dropped connections retry
+    with backoff (1 s doubling to 60 s; `error` after 3 failures in a row).
+  - Who can talk to it: after linking, the "Message yourself" chat (`chat_id` `<number>@s.whatsapp.net`, label
+    "Message yourself", also matched when WhatsApp addresses it by LID) is paired automatically and greeted once. Other
+    chats can be paired with `/pair <code>` (instructions "From the other WhatsApp chat, send this to +<number>: /pair
+    <code>"). Every other chat gets no answer at all (no refusal), and so do groups, status updates, channels, the user's
+    own messages to other people and Sentient's own messages.
+  - Options instead of buttons: a message with options ends with "Reply with a number:" (approvals) or "Reply to this
+    message with a number:" followed by `*1* Allow`, `*2* Allow for this chat`... Replying to it with a number runs that
+    option (the same callbacks as buttons: `ap`, `tp`, `sg`, `tq`) and the chat gets the outcome ("_Allowed._"); the
+    message is edited to show it. A bare number (no reply) only answers a waiting approval. Out of range: "Reply with a
+    number from 1 to N." A delivered question says "Reply with an option's number, or reply to this message with your
+    answer." Replying to a delivered question with a number picks that option even after a restart (for every channel).
+  - Replies use WhatsApp markup (`*bold*`, `_italic_`, `~strike~`, code blocks; links as "label (url)"), 4000
+    characters per message, edited at most every `channels.whatsapp.edit_interval_s` (2 s). No temporary status lines
+    (a deleted message would leave "This message was deleted"). Voice replies are OGG/Opus voice notes when PyAV is
+    present, otherwise the audio is sent as a file. Commands and everything else are as above; `/stopall` has source
+    `whatsapp`.
 - Domain events `channel.updated` → `Channel` (connect, disconnect, status changes, pairing, deliver changes);
   `channel.message` `{channel, chat_id, session_id, direction: "in"|"out", text}`: `in` is the user's text (the transcript
   for voice notes); `out` is the final reply text, or a delivered notification with `session_id: null`.

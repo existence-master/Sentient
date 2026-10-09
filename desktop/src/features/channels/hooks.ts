@@ -35,7 +35,7 @@ export function useChannelActions() {
       mutationFn: ({ id, fields }: { id: string; fields: Record<string, string> }) =>
         previewOr(
           () => api.channels.connect(id, fields),
-          () => ({ ...current(qc, id), status: 'connected' as const, account_label: '@sentient_demo_bot', error: null })
+          () => ({ ...current(qc, id), status: 'connected' as const, account_label: id === 'whatsapp' ? '+15550100123' : '@sentient_demo_bot', error: null })
         ),
       onSuccess
     }),

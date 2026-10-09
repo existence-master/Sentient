@@ -1,5 +1,5 @@
 import { IconDeviceMobile, IconEyeglass2, IconMicrophone, IconMessageCircle, type Icon } from '@tabler/icons-react'
-import { siDiscord, siTelegram, type SimpleIcon } from 'simple-icons'
+import { siDiscord, siTelegram, siWhatsapp, type SimpleIcon } from 'simple-icons'
 import { Tooltip } from '@/components/ui'
 import { cn } from '@/lib/utils'
 
@@ -15,6 +15,7 @@ interface ChannelInfo {
 export const CHANNEL_INFO: Record<string, ChannelInfo> = {
   telegram: { label: 'Telegram', from: 'From Telegram', mark: { kind: 'si', icon: siTelegram } },
   discord: { label: 'Discord', from: 'From Discord', mark: { kind: 'si', icon: siDiscord } },
+  whatsapp: { label: 'WhatsApp', from: 'From WhatsApp', mark: { kind: 'si', icon: siWhatsapp } },
   voice: { label: 'Voice', from: 'A voice conversation', mark: { kind: 'tabler', icon: IconMicrophone } },
   glasses: { label: 'Glasses', from: 'From your glasses', mark: { kind: 'tabler', icon: IconEyeglass2 } },
   phone: { label: 'Phone', from: 'From your phone', mark: { kind: 'tabler', icon: IconDeviceMobile } }

@@ -44,7 +44,7 @@ jobs:
           enable-cache: true
           activate-environment: true
       - name: Install
-        run: uv pip install -e ".[dev,voice,node]" keyrings.alt
+        run: uv pip install -e ".[dev,voice,node,whatsapp]" keyrings.alt
       - name: Test
         run: python -m pytest -q -p no:warnings --timeout=300
 

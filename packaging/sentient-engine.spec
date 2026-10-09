@@ -15,6 +15,7 @@ What a naive freeze misses, and is therefore listed explicitly below:
   * ``sentient/**/schema.sql`` and ``sentient/nodes/web/*`` - read with ``Path(__file__)``
   * litellm + tiktoken data files, certifi's CA bundle, the tzdata database
   * keyring's Windows backend, which is only ever found dynamically
+  * neonize's whatsmeow library (WhatsApp), loaded with ctypes by path, when the ``whatsapp`` extra is installed
   * every ``sentient.*`` submodule, because tools and integration plugins are
     imported by name at runtime (``pkgutil.iter_modules`` / ``importlib``)
 
@@ -88,6 +89,9 @@ for name in (
     "pyttsx3",          # system TTS drivers, chosen by name
     "certifi",
     "tzdata",
+    "neonize",          # WhatsApp: whatsmeow shared library + generated protobuf modules (optional extra)
+    "magic",            # neonize's file-type detection (libmagic data on Windows)
+    "phonenumbers",     # neonize: per-region metadata modules loaded by name
 ):
     add_all(name)
 
