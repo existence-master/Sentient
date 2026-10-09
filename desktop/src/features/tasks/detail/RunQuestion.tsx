@@ -1,5 +1,5 @@
-/** A question a running task asked (`ask_user`): pick an option or type an answer, and the run carries on. */
-import { IconMessageQuestion, IconSend } from '@tabler/icons-react'
+/** A question a running task asked (`ask_user`, a limit, or being stuck): pick an option or type an answer. */
+import { IconAlertTriangle, IconMessageQuestion, IconSend } from '@tabler/icons-react'
 import { useState } from 'react'
 import { Button, Textarea } from '@/components/ui'
 import type { Run, Task } from '@/lib/types'
@@ -13,6 +13,7 @@ export function RunQuestion({ task, run, className }: { task: Task; run: Run; cl
   const q = run.pending_question
   if (!q?.question) return null
   const id = task.task_id
+  const stuck = q.kind === 'stuck'
   const sending = ops.isBusy('answerQuestion', id)
   const send = (answer: string) => {
     const a = answer.trim()
@@ -34,12 +35,13 @@ export function RunQuestion({ task, run, className }: { task: Task; run: Run; cl
     >
       <div className="flex items-start gap-3 border-b border-warning/20 px-4 py-3">
         <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-warning/15 text-warning">
-          <IconMessageQuestion size={17} />
+          {stuck ? <IconAlertTriangle size={17} /> : <IconMessageQuestion size={17} />}
         </span>
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-fg">Sentient needs your answer to carry on</div>
+          <div className="text-sm font-semibold text-fg">{stuck ? 'Sentient is stuck' : 'Sentient needs your answer to carry on'}</div>
           <div className="text-xs text-fg-muted">
-            The task is paused{q.asked_at ? ` since ${relativeTime(q.asked_at)}` : ''}. Your answer picks it up right where it stopped.
+            The task is paused{q.asked_at ? ` since ${relativeTime(q.asked_at)}` : ''}.{' '}
+            {stuck ? 'Try again once you have helped, skip this step, cancel, or tell it what to do.' : 'Your answer picks it up right where it stopped.'}
           </div>
         </div>
       </div>

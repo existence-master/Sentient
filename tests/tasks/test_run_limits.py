@@ -3,7 +3,8 @@
 A run that reaches its step, time, token or cost limit pauses and asks "Keep going" or "Stop here" through the
 ``waiting_for_user`` machinery. Keep going raises that limit by its original amount for this run (kept on the run,
 so it survives a restart); any other answer fails the run with a plain message and the usual "Task failed"
-notification. Time counts only while the run works. A run that repeats the same call fails at once.
+notification. Time counts only while the run works. A run that repeats the same working call fails at once; one that
+keeps getting the same error is stuck and asks (tasks/stuck.py).
 """
 
 from __future__ import annotations
@@ -275,10 +276,24 @@ async def test_keep_going_on_a_run_that_is_no_longer_waiting_changes_nothing(mak
     assert after["status"] == "cancelled" and after["limits"] == before
 
 
-# ---------------------------------------------------------------------- loops fail at once; defaults leave runs alone
-async def test_identical_calls_fail_the_run_without_asking(make_app):
+# ---------------------------------------------------------------------- a repeated error is stuck, other loops fail
+async def test_identical_failing_calls_ask_what_to_do(make_app):
     llm = FakeProvider(replies=[read("notes.txt", i) for i in range(6)], json_replies=[dict(RESULT)])
     app = await make_app(llm)
+    task_id = await start_task(app)
+    task = await app.tasks.get(task_id)
+    question = task["runs"][-1]["pending_question"]
+    assert task["status"] == "waiting_for_user" and question["kind"] == "stuck"
+    assert question["reason"] == "Files keeps failing with the same error: not found"
+    assert len(stream_calls(llm)) == 3 and not await notes(app, "run_failed")
+
+
+async def test_identical_calls_that_work_fail_the_run_without_asking(make_app):
+    from sentient import paths
+
+    llm = FakeProvider(replies=[read("notes.txt", i) for i in range(6)], json_replies=[dict(RESULT)])
+    app = await make_app(llm)
+    (paths.files_dir() / "notes.txt").write_text("Buy milk.", encoding="utf-8")
     task_id = await start_task(app)
     await assert_failed(
         app, await app.tasks.get(task_id),
