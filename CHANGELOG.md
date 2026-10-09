@@ -16,8 +16,20 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - **Follow-ups:** once a day Sentient notices emails waiting on your reply, and your own questions nobody answered,
   in Gmail and IMAP email, and suggests a ready draft. Newsletters, no-reply senders and answered threads are skipped,
   and nothing is sent until you approve it. Settings under Proactivity.
+- **Memory sources:** under a chat reply, "Used 3 memories" shows what Sentient had in mind when it answered: the
+  memories and things it has learned about you that were in front of it, and any it looked up. Each one has
+  **This is wrong** to fix or forget it on the spot, and a link to it on the Memory or About you page.
+
+### Fixed
+- Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
+  and many tools are no longer cut off without warning. Change it with `models.context_length`, per role with
+  `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.
 
 ### Security
+- One-time codes, verification codes, magic sign-in links and password reset links in Gmail and IMAP email are
+  replaced with a short placeholder before the AI reads them, in tool results, proactive suggestions and follow-ups.
+  Booking, order, ticket and reference codes, dates, prices and ordinary links are left alone, and the email itself
+  is unchanged in your mail app.
 - Purchases now ask even when approvals are switched off, and code Sentient writes can never make one. A tool set
   to Never while a request waits for your yes, or while a script runs, is blocked right away.
 

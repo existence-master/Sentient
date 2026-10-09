@@ -64,6 +64,7 @@ class Store:
         await self.ensure_column("sessions", "context_upto", "TEXT")
         await self.ensure_column("messages", "attachments", "TEXT")
         await self.ensure_column("messages", "interjection", "INTEGER NOT NULL DEFAULT 0")
+        await self.ensure_column("messages", "memory_sources", "TEXT")
         for pkg in PACKAGE_SCHEMAS:
             extra = _PKG_ROOT / pkg / "schema.sql"
             if extra.exists():
@@ -149,11 +150,12 @@ class Store:
         thinking: str | None = None,
         attachments: list[str] | None = None,
         interjection: bool = False,
+        memory_sources: list[dict] | None = None,
     ) -> str:
         mid = new_id()
         await self.execute(
             "INSERT INTO messages(id, session_id, role, content, tool_calls, tool_call_id, name, thinking, attachments,"
-            " interjection, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            " interjection, memory_sources, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 mid,
                 session_id,
@@ -165,6 +167,7 @@ class Store:
                 thinking,
                 json.dumps(attachments) if attachments else None,
                 int(bool(interjection)),
+                json.dumps(memory_sources, ensure_ascii=False) if memory_sources else None,
                 now_iso(),
             ),
         )
@@ -182,6 +185,7 @@ class Store:
             d["tool_calls"] = json.loads(d["tool_calls"]) if d["tool_calls"] else None
             d["attachments"] = json.loads(d["attachments"]) if d.get("attachments") else []
             d["interjection"] = bool(d.get("interjection"))
+            d["memory_sources"] = json.loads(d["memory_sources"]) if d.get("memory_sources") else []
             out.append(d)
         return out
 

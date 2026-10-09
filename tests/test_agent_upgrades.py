@@ -423,23 +423,23 @@ async def test_user_model_context_in_prompt_with_timeout(config, isolated_home, 
     try:
         seen: list[str] = []
 
-        async def context_for(text: str) -> str:
+        async def context_with_sources(text: str) -> tuple[str, list[dict]]:
             seen.append(text)
-            return "- Prefers metric units"
+            return "- Prefers metric units", []
 
-        s.user_model.context_for = context_for
+        s.user_model.context_with_sources = context_with_sources
         sid = await s.store.create_session(channel="cli")
         async for _ in s.agent.run_turn(sid, "how far is Mumbai", channel="cli"):
             pass
         system = llm.calls[-1]["messages"][0]["content"]
         assert seen == ["how far is Mumbai"] and "Prefers metric units" in system
 
-        async def slow(text: str) -> str:
+        async def slow(text: str) -> tuple[str, list[dict]]:
             await asyncio.sleep(5)
-            return "- never shown"
+            return "- never shown", []
 
         monkeypatch.setattr("sentient.agent.loop.USER_MODEL_TIMEOUT_S", 0.05)
-        s.user_model.context_for = slow
+        s.user_model.context_with_sources = slow
         async for _ in s.agent.run_turn(sid, "again", channel="cli"):
             pass
         assert "never shown" not in llm.calls[-1]["messages"][0]["content"]

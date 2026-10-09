@@ -95,6 +95,8 @@ export interface ModelsConfig {
   fallbacks: Record<string, string[]>
   reasoning: Record<string, ReasoningEffort | string>
   temperature: Record<string, number>
+  context_length: number
+  context_length_per_role: Record<string, number>
   providers: Record<string, ProviderConfig>
   max_tool_rounds: number
   request_timeout_s: number
@@ -297,7 +299,23 @@ export interface TranscriptMessage {
   tool_call_id?: string | null
   name?: string | null
   attachments?: string[]
+  /** Memories the final reply had in mind; `[]` on every other row. */
+  memory_sources?: MemorySource[]
   created_at: ISODate
+}
+
+/**
+ * A memory a reply had in mind (§2 "Memory sources"): a fact (`id` = Memory id) or a user-model
+ * insight (`id` = Insight id). `text` is how it read during that reply.
+ */
+export interface MemorySource {
+  kind: 'fact' | 'insight'
+  id: number | string
+  text: string
+  /** Fact source (`conversation`, `manual`, `file:<name>`...) or insight source (`user` | `inferred`). */
+  source: string
+  /** `prompt`: it was in front of the model; `tool`: a memory look-up returned it during the reply. */
+  via: 'prompt' | 'tool'
 }
 
 export interface MessageSearchHit {
@@ -494,6 +512,7 @@ export interface DoneEvent extends TurnScoped {
   content: string
   message_id: string | null
   cancelled?: boolean
+  memory_sources?: MemorySource[]
 }
 export interface ApprovalAckEvent {
   type: 'approval.ack'

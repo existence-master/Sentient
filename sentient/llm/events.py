@@ -93,6 +93,8 @@ class Done(_Event):
     content: str = ""
     message_id: str | None = None
     cancelled: bool = False
+    # memories this reply had in mind (sentient.memory.sources): what was in its prompt or returned by memory tools
+    memory_sources: list[dict[str, Any]] = Field(default_factory=list)
 
 
 AgentEvent = (
