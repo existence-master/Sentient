@@ -790,6 +790,9 @@ async def apply(app: Any, path: str | None, parts: list[str] | None, skip: list[
                 added.append(item["name"])
             except ValueError as exc:
                 failed.append({"key": item["key"], "name": item["name"], "note": str(exc)})
+            except Exception as exc:
+                log.warning("could not import Hermes MCP server %s: %s", item["name"], exc)
+                failed.append({"key": item["key"], "name": item["name"], "note": "Couldn't add it."})
         result["mcp"] = {"added": added, "skipped": _skipped(plan["mcp"], left_out) + failed}
     return result
 
