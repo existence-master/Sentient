@@ -32,10 +32,6 @@ function toolLabel(plugin: ToolPlugin, tool: ToolInfo): string {
   return humanize(tool.name.startsWith(prefix) ? tool.name.slice(prefix.length) : tool.name)
 }
 
-/** First line of a tool's description; the row truncates it to fit. */
-function firstLine(text: string): string {
-  return (text || '').split('\n')[0].trim()
-}
 
 export function ApprovalRulesSection({ query }: { query: string }) {
   const tools = useTools()
@@ -116,7 +112,7 @@ export function ApprovalRulesSection({ query }: { query: string }) {
           <span>Purchases always ask, whatever you choose here. Never hides that app or tool from Sentient completely.</span>
         </div>
         {nothing && <div className="px-4 py-6 text-center text-sm text-fg-subtle">{q ? 'No apps or tools match your search.' : 'No apps or tools to set rules for yet.'}</div>}
-        {plugins.apps.length > 0 && <GroupHeading>Your apps</GroupHeading>}
+        {plugins.apps.length > 0 && <GroupHeading>Apps and services</GroupHeading>}
         {plugins.apps.map((p) => (
           <PluginRows key={p.id} plugin={p} rules={rules} open={isOpen(p)} onToggle={() => toggle(p)} onChange={setRule} />
         ))}
@@ -209,9 +205,10 @@ function PluginRows({
               <div key={t.name} className="flex flex-col gap-2 py-2.5 pl-14 pr-4 sm:flex-row sm:items-center sm:gap-4">
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm text-fg">{toolLabel(plugin, t)}</div>
-                  <div className="truncate text-xs text-fg-subtle">
-                    {!own && appRule ? `Follows ${plugin.display_name}: ${RULE_WORDS[appRule]}.` : firstLine(t.description)}
-                  </div>
+                  {/* tool descriptions are written for the model, so rows show only the plain name */}
+                  {!own && appRule && (
+                    <div className="truncate text-xs text-fg-subtle">{`Follows ${plugin.display_name}: ${RULE_WORDS[appRule]}.`}</div>
+                  )}
                 </div>
                 <SegmentedControl
                   size="sm"

@@ -258,6 +258,8 @@ async def execute_single(svc: TaskService, task: dict, run: dict, *, resume: boo
         rounds = max(4, max_rounds // 2)
     await svc.repo.update_run(run_id, {"messages": messages})
 
+    if result.stopped_by_rule:  # an "ask" rule stopped the run; say which and how to change it (ADR 0016)
+        raise RunFailed(result.stopped_by_rule)
     if result.error:
         raise RunFailed(f"Executor agent failed: {result.error}")
     final = (result.text or "").strip()

@@ -202,6 +202,8 @@ class LoopResult:
     tool_errors: list[dict] = field(default_factory=list)   # [{name, error}] (declined approvals excluded)
     skills_viewed: list[str] = field(default_factory=list)  # names passed to skill_view
     interjections: list[str] = field(default_factory=list)  # steer messages the model received
+    # set when an "ask" rule stopped an unattended run (also copied to ``error``); plain words for the user
+    stopped_by_rule: str | None = None
 
 
 class SteerQueue:
@@ -238,6 +240,7 @@ class _CallPlan:
     needs_approval: bool = False
     concurrent: bool = False  # may run at the same time as neighbouring look-ups
     outcome: tuple[Any, bool, int] | None = None
+    rule_stop: bool = False  # an "ask" rule refused this call in a run nobody can answer
 
 
 class Agent:
@@ -483,6 +486,13 @@ class Agent:
                 for p in group:
                     async for e in self._record(p, messages, persist, result, ev):
                         yield e
+            stop = next((p for p in plans if p.rule_stop), None)
+            if stop is not None:  # an "ask" rule and nobody to ask: end the run and say why
+                assert stop.preset is not None
+                result.stopped_by_rule = result.error = _error_text(stop.preset[0])
+                result.text = text_acc
+                result.messages = messages
+                return
 
         result.hit_step_limit = True
         result.text = text_acc or "I reached the step limit before finishing. Tell me how to continue."
@@ -527,8 +537,9 @@ class Agent:
                 return plan
         if use_approvals:
             plan.needs_approval = await self.approvals.decide(tool, ctx.session_id, plan.risk, tc.arguments, ctx)
-        elif rule == "ask":  # task runs and other unattended loops cannot stop to ask
+        elif rule == "ask":  # task runs and other unattended loops cannot stop to ask: the run stops here
             plan.preset = ({"error": unattended_ask_message(self.approvals.label(tool, self.registry))}, True, 0)
+            plan.rule_stop = True
         return plan
 
     def _groups(self, plans: list[_CallPlan]) -> list[list[_CallPlan]]:

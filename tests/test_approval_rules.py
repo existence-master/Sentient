@@ -196,8 +196,10 @@ async def test_ask_in_unattended_runs_is_refused(config, isolated_home):
         events = [e async for e in s.agent.run_loop(messages, ctx, result=result, use_approvals=False, source="task")]
         assert not any(isinstance(e, ApprovalRequest) for e in events)
         res = next(e for e in events if isinstance(e, ToolResultEvent))
-        assert res.is_error and "always ask before using Postcards" in res.result["error"]
-        assert log == []
+        stopped = "Postcards is set to Ask, and tasks can't ask yet. Change it in Settings > Approvals & safety."
+        assert res.is_error and res.result["error"] == stopped
+        assert result.stopped_by_rule == result.error == stopped  # the run ends at the refused call
+        assert len(llm.calls) == 1 and log == []
         # subagents refuse it too, instead of running it unasked
         refusal = s.subagents.policy("s1")(s.registry.get("find_postcard"), Risk.read, {})
         assert refusal and "approval" in refusal
@@ -220,7 +222,7 @@ async def test_never_hides_the_tool_and_refuses_a_call(config, isolated_home):
         res = next(e for e in events if isinstance(e, ToolResultEvent))
         assert res.is_error
         assert res.result["error"] == (
-            "You've set Sentient to never use send_postcard. Change this in Settings > Approvals & safety."
+            "You've set Sentient to never use \"Send postcard\" in Postcards. Change this in Settings > Approvals & safety."
         )
         # planners and task runs do not see it either; the Settings catalog still lists it
         assert "send_postcard" not in {t.name for t in s.registry.tools()}

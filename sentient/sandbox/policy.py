@@ -6,9 +6,9 @@ to ask again. So from inside a script only calls that need no approval run: effe
 model to make that call directly, where approvals can ask the user. Approvals mode ``off``
 allows everything except tools that would recurse (code, subagents, voice).
 
-Lasting rules (ADR 0016) apply here too: a "never" tool is not listed and is refused, an "ask"
-tool is refused because a script cannot stop to ask, and an "allow" tool runs like a look-up
-unless the call is a purchase.
+Lasting rules (ADR 0016) only ever take away here: a "never" tool is not listed and is refused,
+and an "ask" tool is refused because a script cannot stop to ask. An "allow" rule changes nothing:
+scripts still only read (ADR 0012, docs/PRIVACY.md).
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from sentient.tools.base import Risk, Tool, ToolContext, effective_risk
-from sentient.tools.rules import SETTINGS_HINT, is_purchase, never_message, rule_for, rule_label
+from sentient.tools.rules import SETTINGS_HINT, never_message, rule_for, rule_label
 
 BLOCKED_PLUGINS = frozenset({"code", "subagents", "voice"})
 BLOCKED_TOOLS = frozenset({"execute_code", "delegate_task", "delegate_tasks"})
@@ -93,8 +93,6 @@ class BridgePolicy:
         if self.approvals_mode == "off":
             return risk
         if risk == Risk.read or (risk == Risk.write and tool.internal):
-            return risk
-        if rule == "allow" and not await is_purchase(tool, arguments, ctx, risk):
             return risk
         raise Refused(
             f"'{name}' can {_verb(risk)} (risk {risk.name}), so it cannot run from inside a script where the user "

@@ -157,11 +157,12 @@ async def test_policy_unit_follows_lasting_rules():
     look, post, buy = make("kit_lookup", Risk.read), make("kit_post", Risk.send), make("kit_buy", Risk.send, label="Purchase")
     policy = BridgePolicy(approvals_mode="ask", rules={"kit_lookup": "never", "kit_post": "allow", "kit_buy": "allow"})
     assert not policy.is_available(look) and policy.is_available(post)
-    with pytest.raises(Refused, match="never use kit_lookup"):
+    with pytest.raises(Refused, match="never use \"Lookup\""):
         await policy.check(look, "kit_lookup", {}, ctx, 0)
-    assert await policy.check(post, "kit_post", {}, ctx, 0) == Risk.send  # allowed: needs no approval
-    with pytest.raises(Refused):  # purchases still need a person
-        await policy.check(buy, "kit_buy", {}, ctx, 0)
+    # "allow" never widens what scripts may do: they only read (ADR 0012), purchases included
+    for t in (post, buy):
+        with pytest.raises(Refused, match="cannot run from inside a script"):
+            await policy.check(t, t.name, {}, ctx, 0)
     ask = BridgePolicy(approvals_mode="off", rules={"kit": "ask"})
     with pytest.raises(Refused, match="always ask before using kit"):
         await ask.check(look, "kit_lookup", {}, ctx, 0)

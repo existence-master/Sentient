@@ -21,23 +21,31 @@ the sandbox bridge apply rules in code before a call runs; no model sees or deci
   subagents, proactivity, scripts) and planners do not list it. A call made anyway is refused with a plain sentence
   that points to Settings, and the tool does not run.
 - **Ask**: always ask, even when the global mode is off, after "Allow for this chat" and for look-ups. Where nobody
-  can be asked (task runs, subagents, proactive look-ups, scripts) the call is refused instead of run unasked.
+  can be asked the call never runs unasked: a task run stops and fails with a plain reason ("Slack is set to Ask, and
+  tasks can't ask yet. Change it in Settings > Approvals & safety.") and the usual "Task failed" notification;
+  subagents and scripts refuse the call; proactive look-ups leave the tool out. Making tasks pause and ask instead
+  is a planned follow-up.
 - **Allow**: run without asking, whatever the mode. A purchase (effective risk `send` or higher whose approval
   wording is "Purchase", such as a browser click on "Place order") still asks whenever approvals are on, and
-  "Allow for this chat" never covers it. With approvals off nothing asks, as before.
+  "Allow for this chat" never covers it. With approvals off nothing asks, as before. Allow never widens what
+  scripts from code execution may call: they keep [ADR 0012](0012-code-execution-sandbox.md)'s read-only rule,
+  as docs/PRIVACY.md promises.
 
-Rules only ever add questions, except for Allow, which the person sets for a named tool or app themselves.
+Rules only ever add questions or remove tools, except for Allow, which the person sets for a named tool or app
+themselves, and which still never reaches purchases or scripts.
 
 ## Consequences
 
 People can tune Sentient once instead of answering the same question in every chat. A "never" rule also shrinks the
 tool list, which helps small local models. Every new place that runs tools must go through `run_loop` or apply
 `sentient.tools.rules` itself, and every new money-moving tool must label its approval "Purchase" so Allow cannot
-skip it. A task whose plan needs an "ask" tool now fails that step with a clear message until the rule changes.
+skip it. A task run that reaches an "ask" tool now stops with a clear message until the rule changes or tasks
+learn to pause and ask.
 
 ## Alternatives considered
 
-Pausing background tasks until someone answers: more machinery than this change needs, and a recurring task would
-pile up questions. Letting the model pick rules from chat ("stop asking me about Gmail"): convenient, but it would
+Pausing background tasks until someone answers: more machinery than this change needs, so it is left for a
+follow-up. Letting Allow open scripts to sending tools: convenient for bulk work, but it would break the promise
+that code Sentient writes can only read. Letting the model pick rules from chat ("stop asking me about Gmail"): convenient, but it would
 let prompt injection loosen safety. Treating every `send` as un-allowable: safe, but then "always send my Gmail
 drafts without asking" could not be expressed.

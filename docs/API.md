@@ -107,14 +107,16 @@ applied in code before every call and take effect at once:
 - `never`: the tool is not offered to the model (chat, voice, channels, tasks, subagents, proactivity, scripts) and is
   left out of planners' tool lists. A call made anyway does not run; its `tool_result` is
   `{error: "You've set Sentient to never use <name>. Change this in Settings > Approvals & safety."}` (`<name>` is the
-  app's display name for a plugin rule, else the tool name).
+  app's display name for a plugin rule, e.g. `Slack`, else the tool's plain name and app, e.g. `"Post message" in Slack`).
 - `ask`: an `approval_request` every time, even with approvals mode `off`, after "Allow for this chat", and for `read`
-  tools. Where nobody can be asked (task runs, swarm workers, proactive look-ups, subagents, scripts) the call is
-  refused with a plain message instead, and proactive look-ups leave the tool out.
+  tools. Where nobody can be asked the call does not run: a task run or swarm worker stops there and fails with
+  `"<name> is set to Ask, and tasks can't ask yet. Change it in Settings > Approvals & safety."` (the run's `error`,
+  and the usual `run_failed` notification; `LoopResult.stopped_by_rule` and `LoopResult.error` carry the same text).
+  Subagents and scripts refuse the call, and proactive look-ups leave the tool out.
 - `allow`: runs without asking in modes `ask` and `always`, except a purchase (effective risk `send` or higher whose
   approval wording `risk_label` is "Purchase", such as a browser click on "Place order"), which asks every time unless
-  approvals mode is `off`. "Allow for this chat" never covers a purchase. Inside scripts an `allow` tool runs like a
-  look-up; a purchase is refused.
+  approvals mode is `off`. "Allow for this chat" never covers a purchase. `allow` does not widen what scripts may call
+  (section 11): they still only read.
 Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
 `await app.approvals.decide(tool, session_id, risk, arguments, ctx) -> bool`, pure helpers in `sentient.tools.rules`.
 
@@ -565,7 +567,7 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - Tool calls from a script: effective risk `read` and internal `write` tools run; other `write`, `send` and `exec` tools
   are refused with a message telling the model to call that tool directly (where approvals can ask the user), unless
   approvals mode is `off`. Lasting rules apply (section 2): `never` tools are not listed and are refused, `ask` tools
-  are refused, and `allow` tools run unless the call is a purchase. Subagent, voice and code tools are not available inside scripts. At most
+  are refused, and `allow` changes nothing here (scripts still only read). Subagent, voice and code tools are not available inside scripts. At most
   `sandbox.max_tool_calls` calls run per script; `tool_calls` counts calls that ran (refused ones are not counted).
 - Returns **SandboxResult** `{ok, backend: "process"|"docker", stdout, stderr, result, files_created: [name], tool_calls, duration_ms, error}`.
   stdout and stderr stream as `tool_progress` (`kind: "stdout"|"stderr"`, newlines normalized to `\n`) and are each capped at

@@ -34,12 +34,23 @@ def rule_for(rules: Mapping[str, str] | None, tool: Tool) -> str | None:
     return rule
 
 
+def tool_title(tool: Tool) -> str:
+    """A tool's plain name without its app prefix: ``slack_post_message`` -> "Post message"."""
+    prefix = f"{tool.plugin}_"
+    short = tool.name[len(prefix):] if tool.name.startswith(prefix) and len(tool.name) > len(prefix) else tool.name
+    words = " ".join(short.replace("-", "_").split("_")).strip() or tool.name
+    return words[:1].upper() + words[1:]
+
+
 def rule_label(tool: Tool, rules: Mapping[str, str] | None = None, registry: Any = None) -> str:
-    """Plain name for refusal messages: the app's name when the rule is the app's, else the tool's name."""
+    """Plain name for messages: the app's name ("Slack") when the rule is the app's, else the tool's
+    plain name and its app ('"Post message" in Slack')."""
+    plugin = registry.plugin(tool.plugin) if registry is not None else None
+    app = getattr(plugin, "display_name", None) or ""
     if rules and tool.name not in rules and tool.plugin in rules:
-        plugin = registry.plugin(tool.plugin) if registry is not None else None
-        return getattr(plugin, "display_name", None) or tool.plugin
-    return tool.name
+        return app or tool.plugin
+    title = f'"{tool_title(tool)}"'
+    return f"{title} in {app}" if app else title
 
 
 def never_message(label: str) -> str:
@@ -47,10 +58,8 @@ def never_message(label: str) -> str:
 
 
 def unattended_ask_message(label: str) -> str:
-    return (
-        f"You've set Sentient to always ask before using {label}, and there is no one to ask while this runs "
-        f"in the background, so it did not run. {SETTINGS_HINT}"
-    )
+    """Why a task run stopped: an "ask" rule, and nobody to ask (tasks cannot pause for approval yet)."""
+    return f"{label} is set to Ask, and tasks can't ask yet. Change it in Settings > Approvals & safety."
 
 
 async def is_purchase(tool: Tool, arguments: dict, ctx: Any, risk: Risk) -> bool:
