@@ -137,8 +137,8 @@ export function TerminalSection({ query }: SectionProps) {
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 text-sm font-medium text-fg">
-              <StatusDot tone={s.enabled && folder ? 'success' : 'neutral'} />
-              {!s.enabled ? 'Turned off' : folder ? 'Ready to run commands' : 'Add a folder to get started'}
+              <StatusDot tone={s.enabled && folder && s.shell ? 'success' : s.enabled && !s.shell ? 'warning' : 'neutral'} />
+              {!s.enabled ? 'Turned off' : !s.shell ? 'No command shell found' : folder ? 'Ready to run commands' : 'Add a folder to get started'}
             </div>
             <div className="truncate text-xs text-fg-subtle">
               {s.shell ? `Commands run in ${SHELL_NAMES[s.shell] ?? s.shell}` : 'No command shell was found on this computer'}

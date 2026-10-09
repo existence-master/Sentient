@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import subprocess
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -185,7 +186,8 @@ def blocked_reason(command: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------- allow-list
-_NOT_PLAIN = re.compile(r"[;&|<>`$(){}\n\r]|(?:^|\s)--?(?:output|exec)\b", re.IGNORECASE)
+# --ext-diff and --textconv make git run a program from its config
+_NOT_PLAIN = re.compile(r"[;&|<>`$(){}\n\r]|(?:^|\s)--?(?:output|exec|ext-diff|textconv)\b", re.IGNORECASE)
 
 
 def _norm(text: str) -> str:
@@ -195,7 +197,8 @@ def _norm(text: str) -> str:
 
 def is_allow_listed(command: str, prefixes: Iterable[str]) -> bool:
     """True when ``command`` is exactly one of ``prefixes`` or starts with one followed by a space, and is a plain
-    command (no chaining, redirection, substitution, ``--output`` or line breaks). Case-insensitive on Windows."""
+    command (no chaining, redirection, substitution, ``--output``, ``--ext-diff``, ``--textconv`` or line breaks).
+    Case-insensitive on Windows."""
     if not command or _NOT_PLAIN.search(command):
         return False
     cmd = _norm(command)
@@ -279,7 +282,7 @@ _KEEP = {"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GPG_AGENT_INFO", "XAUTHORITY"}
 
 def is_secret_name(name: str) -> bool:
     upper = name.upper()
-    if upper in _KEEP:
+    if upper in _KEEP or re.fullmatch(r"GIT_CONFIG_KEY_\d+", upper):  # git setting names, not keys
         return False
     if upper.startswith(("SENTIENT_", "LITELLM_")) or upper in _SECRET_NAMES:
         return True
@@ -288,13 +291,78 @@ def is_secret_name(name: str) -> bool:
     return any(part in _SECRET_PARTS for part in re.split(r"[_\-.]", upper))
 
 
-def command_env(extra_secret_names: Iterable[str] = ()) -> dict[str, str]:
+RUN_MARKER = "SENTIENT_TERMINAL_RUN"
+# For commands that run without asking: a repository's own config must not make git start a program. core.fsmonitor
+# is the one plain git status and git diff run; external diff and textconv need flags the list refuses (or a
+# diff.external that only someone who could already run commands can set).
+_GIT_SAFE_CONFIG = (("core.fsmonitor", "false"),)
+
+
+def command_env(extra_secret_names: Iterable[str] = (), *, run_id: str = "", listed: bool = False) -> dict[str, str]:
     """The engine's environment minus anything that looks like a key, token or password, Sentient's own
-    variables and the provider key variables named in the config. Keychain secrets are never added."""
+    variables and the provider key variables named in the config. Keychain secrets are never added. ``run_id``
+    marks every process of the run (so ``kill_marked`` finds the ones that left its process group); ``listed``
+    adds git settings that stop a repository's config from starting programs."""
     drop = {str(n).upper() for n in extra_secret_names if n}
     env = {k: v for k, v in os.environ.items() if not is_secret_name(k) and k.upper() not in drop}
     env["GIT_TERMINAL_PROMPT"] = "0"  # git asks for a password on a terminal nobody can type into: fail instead
+    if run_id:
+        env[RUN_MARKER] = run_id
+    if listed:
+        try:
+            count = int(env.get("GIT_CONFIG_COUNT") or 0)
+        except ValueError:
+            count = 0
+        for key, value in _GIT_SAFE_CONFIG:
+            env[f"GIT_CONFIG_KEY_{count}"] = key
+            env[f"GIT_CONFIG_VALUE_{count}"] = value
+            count += 1
+        env["GIT_CONFIG_COUNT"] = str(count)
     return env
+
+
+def _marked_pids(marker: str) -> list[int]:
+    """Processes of this user whose environment carries ``marker`` (Linux: /proc; macOS: ps -E)."""
+    needle = marker.encode()
+    pids: list[int] = []
+    me = os.getpid()
+    proc = Path("/proc")
+    if proc.is_dir():
+        for entry in proc.iterdir():
+            if not entry.name.isdigit() or int(entry.name) == me:
+                continue
+            try:
+                if needle in (entry / "environ").read_bytes().split(b"\0"):
+                    pids.append(int(entry.name))
+            except OSError:
+                continue
+        return pids
+    try:
+        out = subprocess.run(["ps", "-A", "-E", "-ww", "-o", "pid=,command="], capture_output=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return pids
+    for line in out.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2 and parts[0].isdigit() and int(parts[0]) != me and needle in parts[1].split():
+            pids.append(int(parts[0]))
+    return pids
+
+
+def kill_marked(run_id: str) -> int:
+    """Kill every process started by run ``run_id``, including ones that left its process group (``setsid``) or
+    were reparented. Windows needs nothing here: the Job Object holds the whole tree. Returns how many were killed."""
+    if IS_WINDOWS or not run_id:
+        return 0
+    import signal
+
+    killed = 0
+    for pid in _marked_pids(f"{RUN_MARKER}={run_id}"):
+        try:
+            os.kill(pid, signal.SIGKILL)
+            killed += 1
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+    return killed
 
 
 # ---------------------------------------------------------------------------- shell

@@ -20,10 +20,12 @@ Add a `terminal` package with one tool, `terminal_run(command, cwd?)`, risk `exe
   folder the user added. With no folders, nothing runs. The folder is where a command starts, not a jail: approval is
   what limits what the command does.
 - **Approval.** Every command asks, showing the exact command and folder, as any `exec` tool does
-  ([ADR 0008](0008-effective-risk-and-approvals.md)). Lasting rules work as usual
+  ([ADR 0008](0008-effective-risk-and-approvals.md)). "Allow for this chat" never covers a command: each one asks
+  again, so one yes can't turn into a string of commands nobody looked at. Lasting rules work as usual
   ([ADR 0016](0016-lasting-approval-rules.md)): Allow on `terminal` runs commands without asking, Never removes the
   tool. Commands the user lists as never needing a question (default `git status`, `git diff`, `git log`, `ls`, `dir`,
-  `pwd`) run without asking, but only as plain commands: no chaining, redirection, substitution or `--output`. Their
+  `pwd`) run without asking, but only as plain commands: no chaining, redirection, substitution, `--output` or flags
+  that make git run a configured program (`--ext-diff`, `--textconv`), and with git's `core.fsmonitor` turned off. Their
   effective risk is `read`. A call the terminal refuses anyway is also `read`, so nobody is asked to approve a refusal.
 - **Built-in blocklist.** Formatting or wiping disks, shutting down or restarting, deleting from the registry,
   deleting or re-owning a whole drive, system folder or home folder, deleting backups and changing boot settings are
@@ -39,7 +41,8 @@ Add a `terminal` package with one tool, `terminal_run(command, cwd?)`, risk `exe
   that looks like a key, token or password, Sentient's own variables and the provider key variables in the config;
   keychain secrets are never added. Output streams to the chat, is trimmed for the model, and is saved to a file when
   long. The timeout (default 180 s), the card's Stop button, cancelling the reply and Stop everything kill the whole
-  process tree, using the sandbox's process runner.
+  process tree, using the sandbox's process runner; on macOS and Linux every process carrying the run's marker is
+  killed too, so a child that left the process group can't outlive Stop.
 
 ## Consequences
 

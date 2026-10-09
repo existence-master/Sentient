@@ -150,6 +150,8 @@ class Tool:
     risk_fn: RiskFn | None = None
     # Optional approval wording: ``describe_fn(arguments, ctx) -> {risk_label?, target?}`` (sync or async).
     describe_fn: DescribeFn | None = None
+    # False when every call must ask again: "Allow for this chat" never covers this tool (commands on the host)
+    allow_for_chat: bool = True
 
     def openai_schema(self) -> dict:
         schema = self.params_model.model_json_schema()
@@ -248,6 +250,7 @@ def tool(
     internal: bool = False,
     risk_fn: RiskFn | None = None,
     describe_fn: DescribeFn | None = None,
+    allow_for_chat: bool = True,
 ):
     """Decorator turning ``async def fn(ctx, arg: type = default)`` into a Tool."""
 
@@ -257,7 +260,7 @@ def tool(
         model = _params_model_from_signature(fn, tool_name)
         return Tool(
             name=tool_name, description=desc, fn=fn, params_model=model, risk=risk, internal=internal,
-            risk_fn=risk_fn, describe_fn=describe_fn,
+            risk_fn=risk_fn, describe_fn=describe_fn, allow_for_chat=allow_for_chat,
         )
 
     return wrap

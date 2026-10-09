@@ -33,7 +33,8 @@ def _describe(arguments: dict, ctx: ToolContext) -> dict | None:
     return svc.describe(arguments or {}, ctx) if svc is not None else None
 
 
-@tool(TOOL_NAME, risk=Risk.exec, description=DESCRIPTION, risk_fn=_risk, describe_fn=_describe)
+# every command asks again: "Allow for this chat" never covers the terminal (ADR 0019)
+@tool(TOOL_NAME, risk=Risk.exec, description=DESCRIPTION, risk_fn=_risk, describe_fn=_describe, allow_for_chat=False)
 async def terminal_run(ctx: ToolContext, command: str, cwd: str | None = None) -> dict:
     svc = _service(ctx)
     if svc is None:

@@ -109,8 +109,9 @@ export function ApprovalCard({
   const isBrowser = approval.name.startsWith('browser_')
   const args = approval.arguments ?? {}
   const command = approval.name === 'terminal_run' ? String(args.command ?? '') : ''
-  // A purchase or a send asks for a single, deliberate "yes": no blanket "allow for this chat".
-  const allowSession = !(risk.label === 'Purchase' || risk.label === 'Deletes')
+  // A purchase, a deletion or a command on this computer asks for a single, deliberate "yes" every time:
+  // no blanket "allow for this chat" (the engine ignores it for commands too, ADR 0019).
+  const allowSession = !(risk.label === 'Purchase' || risk.label === 'Deletes' || approval.name === 'terminal_run')
 
   return (
     <motion.div
@@ -152,9 +153,14 @@ export function ApprovalCard({
           )}
         </div>
       </div>
-      {code || command ? (
+      {command ? (
+        // plain text, never Markdown: the user must see exactly what will run
+        <pre className="selectable mx-4 mt-3 max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-border bg-surface px-3 py-2 font-mono text-[12px] leading-relaxed text-fg">
+          {command.replace(/\s+$/, '')}
+        </pre>
+      ) : code ? (
         <div className="mx-4 mt-3 max-h-56 overflow-auto [&_.md-code]:bg-surface">
-          <Markdown>{(code ? '```python\n' : '```shell\n') + (code || command).replace(/\s+$/, '') + '\n```'}</Markdown>
+          <Markdown>{'```python\n' + code.replace(/\s+$/, '') + '\n```'}</Markdown>
         </div>
       ) : (
         !isBrowser &&

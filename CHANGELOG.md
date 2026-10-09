@@ -33,9 +33,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
   talk its way past it.
 - **Terminal:** Sentient can run commands on your computer, like git, builds, tests and scripts, in folders you
   allow (PowerShell on Windows, your shell on macOS and Linux). It is off until you turn it on in Settings >
-  Terminal and add a folder. Each command shows you the exact command and folder and waits for your OK, unless it is
-  on your list of commands that never need asking (`git status` and friends) or you set an Allow rule. Output shows
-  live in the chat, with a Stop button; commands stop after 3 minutes by default, and Stop everything ends them too.
+  Terminal and add a folder. Each command shows you the exact command and folder and waits for your OK every time,
+  unless it is on your list of commands that never need asking (`git status` and friends) or you set an Allow rule.
+  Output shows live in the chat, with a Stop button; commands stop after 3 minutes by default, and Stop everything
+  ends them too.
   Formatting disks, shutting down, deleting from the registry and deleting whole drives are never allowed. Your keys
   and passwords are kept out of its commands, and work Sentient starts on its own can't run any.
 - **Stuck tasks tell you.** A task that makes no progress for 10 minutes, keeps hitting the same error, or reaches a

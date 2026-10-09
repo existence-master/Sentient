@@ -4,9 +4,14 @@ blocklist, timeouts, Stop, Stop everything, unprompted work and long output."""
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import shutil
+import subprocess
+import sys
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from sentient import paths
@@ -17,7 +22,7 @@ from sentient.gateway.app import create_app
 from sentient.llm.events import ApprovalRequest, ToolProgress, ToolResultEvent
 from sentient.sandbox.policy import BridgePolicy
 from sentient.terminal.tool import terminal_run
-from sentient.tools.base import Risk, effective_risk
+from sentient.tools.base import Risk, bind_call, effective_risk
 from tests.conftest import FakeProvider, tool_call
 from tests.sandbox.conftest import pid_alive
 from tests.terminal.conftest import py
@@ -119,6 +124,18 @@ async def test_allow_listed_command_runs_without_asking(make, config):
     assert len(asked) == 1 and asked[0].arguments["command"] == "echo a; echo b"  # chained: not a plain command
     first = next(e.result for e in events if isinstance(e, ToolResultEvent))
     assert first["ok"] and "listed" in first["stdout"]
+
+
+async def test_allow_for_this_chat_never_covers_the_next_command(make):
+    app = await make([[tool_call(TOOL, command="echo 'one'")], [tool_call(TOOL, command="echo 'two'")], "done"])
+    sid = await app.store.create_session(channel="desktop")
+    asked: list[ApprovalRequest] = []
+    async for ev in app.agent.run_turn(sid, "two commands", channel="desktop"):
+        if isinstance(ev, ApprovalRequest):
+            asked.append(ev)
+            app.approvals.resolve(ev.approval_id, "allow_session")
+    assert [a.arguments["command"] for a in asked] == ["echo 'one'", "echo 'two'"]
+    assert app.approvals.needs_approval(app.registry.get(TOOL), sid, Risk.exec)
 
 
 async def test_allow_rule_skips_the_question(make, config):
@@ -304,3 +321,66 @@ def test_status_and_stop_routes(config, isolated_home, monkeypatch, project):
         assert body["blocked"] and isinstance(body["shell"], (str, type(None)))
         assert client.post("/api/terminal/stop", json={"id": "nope"}).json() == {"stopped": False}
         assert client.get("/api/terminal/status", headers={"Authorization": "Bearer wrong"}).status_code == 401
+
+
+# ---------------------------------------------------------------------------- review hardening
+async def test_a_child_that_leaves_the_process_group_is_killed_too(make, project):
+    app = await make()
+    app.config.terminal.timeout_s = 2
+    ctx = app.agent.tool_context("s", "desktop")
+    code = ("import subprocess, sys, time; c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], "
+            "start_new_session=True); print(c.pid, flush=True); time.sleep(60)")
+    res = await app.registry.get(TOOL).call(ctx, {"command": py(code)})
+    assert res["timed_out"] is True, res
+    match = re.search(r"(\d+)", res["stdout"])
+    assert match, res
+    assert await _gone(int(match.group(1)))
+
+
+async def test_calls_with_the_same_call_id_are_tracked_apart(make, project):
+    app = await make()
+    ctx = app.agent.tool_context("s", "desktop")
+    tool = app.registry.get(TOOL)
+    code = "import time; print('up', flush=True); time.sleep(60)"
+
+    async def call() -> dict:
+        bind_call(None, "same-id", TOOL)  # what a model that repeats call ids looks like (this task only)
+        return await tool.call(ctx, {"command": py(code)})
+
+    calls = [asyncio.create_task(call()) for _ in range(2)]
+    deadline = time.monotonic() + 20
+    while len(app.terminal.status()["running"]) < 2 and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    running = app.terminal.status()["running"]
+    assert len(running) == 2 and len({r["id"] for r in running}) == 2
+    assert {r["call_id"] for r in running} == {"same-id"}
+    assert app.terminal.stop_command(running[0]["id"]) is True  # one run by its own id
+    first = await asyncio.wait_for(asyncio.shield(asyncio.gather(*calls, return_exceptions=True)), 0.01) \
+        if False else None
+    assert first is None
+    assert len(app.terminal.status()["running"]) >= 1
+    assert app.terminal.stop_command("same-id") is True  # the card's Stop button stops what is left
+    results = await asyncio.wait_for(asyncio.gather(*calls), 20)
+    assert all(r["stopped"] for r in results)
+    assert app.terminal.status()["running"] == []
+
+
+async def test_listed_git_commands_never_start_the_repositorys_fsmonitor(make, project, config):
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git is not installed")
+    marker = project / "fsmonitor-ran.txt"
+    hook = f"\"{sys.executable}\" -c \"open(r'{marker}', 'w').write('x')\""
+    env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1"}
+    for args in (["init", "-q"], ["config", "core.fsmonitor", hook]):
+        subprocess.run([git, *args], cwd=project, env=env, check=True, capture_output=True)
+    (project / "notes.txt").write_text("hello")
+    subprocess.run([git, "status", "--short"], cwd=project, env=env, capture_output=True)
+    if not marker.exists():
+        pytest.skip("this git does not run core.fsmonitor here")
+    marker.unlink()
+    app = await make()
+    ctx = app.agent.tool_context("s", "desktop")
+    res = await app.registry.get(TOOL).call(ctx, {"command": "git status --short"})
+    assert res["ok"] and "notes.txt" in res["stdout"], res
+    assert not marker.exists()

@@ -717,7 +717,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   `risk` per call (a browser click on "Place order" becomes `send`). A `risk_fn` that raises counts as `exec`. Approvals
   use the effective risk; `approval_request.risk` reports it. `internal` keeps its meaning: an internal tool whose
   effective risk is `write` does not ask in mode "ask"; `send`/`exec` always ask. "Allow for this chat" covers that tool
-  up to the risk level that was approved, but never a call whose `risk_fn` raised it to `send`/`exec` (those ask every time).
+  up to the risk level that was approved, but never a call whose `risk_fn` raised it to `send`/`exec` (those ask every time),
+  and never a tool declared with `allow_for_chat=False` (`@tool(..., allow_for_chat=False)`; the terminal, section 18).
   Lasting rules (`tools.approvals.rules`, section 2) are checked before the mode: `ask` and `never` win over everything,
   `allow` skips the question except for purchases.
   Outside `run_loop`, use `await app.approvals.requires_approval(tool, arguments, ctx) -> (bool, Risk)`;
@@ -1228,9 +1229,10 @@ Off by default ([ADR 0019](adr/0019-host-terminal.md)). Settings > Terminal (con
 - Effective risk (`risk_fn`): `exec`, so it asks in modes `ask` and `always` unless an Allow rule says otherwise
   (section 2). A listed command is `read`: it runs without asking (mode `always` still asks). A command matches a
   listed prefix when it equals it or starts with it plus a space (case-insensitive on Windows), and contains none of
-  ``; & | < > ` $ ( ) { }``, line breaks, `--output` or `--exec`. A call that fails a check is also `read`, so the user
-  is not asked to approve a refusal; work nobody asked for stays `exec`. "Allow for this chat" covers further commands
-  in that chat.
+  ``; & | < > ` $ ( ) { }``, line breaks, `--output`, `--exec`, `--ext-diff` or `--textconv`. A call that fails a check is also `read`, so the user
+  is not asked to approve a refusal; work nobody asked for stays `exec`. "Allow for this chat" never
+  covers it (`Tool.allow_for_chat = False`): each command asks again unless a listed command or an Allow rule applies,
+  and the card offers no "Allow for this chat" button.
 - `approval_request` for it: `risk_label` "Runs a command", `target` the folder it will run in (its last 120
   characters when longer). The card shows the exact command and the folder.
 - Output streams as `tool_progress` (`kind: "stdout" | "stderr"`, newlines normalized) up to `max_output_chars` per
@@ -1238,19 +1240,24 @@ Off by default ([ADR 0019](adr/0019-host-terminal.md)). Settings > Terminal (con
   stderr, timed_out, stopped, duration_ms, output_file, error}`. `ok` is true when the exit code is 0. A non-zero exit
   code is not an `error`. `stdout` and `stderr` keep the start and the end of each stream within `max_output_chars`
   (`[... N characters cut here ...]` in between); when anything was cut the full output (up to 2,000,000 characters per
-  stream) is saved and `output_file` names it under the files folder (`outputs/terminal-<call_id>.txt`). `error` is a
+  stream) is saved and `output_file` names it under the files folder (`outputs/terminal-<run id>.txt`). `error` is a
   plain sentence for refusals, timeouts ("The command took longer than 180 seconds and was stopped. ..."), a stopped
   command ("The command was stopped before it finished.", `stopped: true`) and a shell that could not start.
 - The environment is the engine's own without secrets: variables whose names look like keys, tokens, passwords or
   credentials, Sentient's own `SENTIENT_*` and `LITELLM_*` variables and every `models.providers.*.api_key_env` are
-  removed; keychain secrets are never added. `SSH_AUTH_SOCK` is kept. `GIT_TERMINAL_PROMPT=0` is set.
+  removed; keychain secrets are never added. `SSH_AUTH_SOCK` is kept. `GIT_TERMINAL_PROMPT=0` is set, and
+  `SENTIENT_TERMINAL_RUN=<run id>` marks the run's processes. A listed command also gets `core.fsmonitor=false`
+  through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, so a repository's config can't make `git status`
+  or `git diff` start a program without a question.
 - Stopping: at `timeout_s`, from the card's Stop button and from Stop everything (section 17) the command's whole
-  process tree is killed (a Job Object on Windows, a process group elsewhere). Cancelling the chat reply also kills it.
+  process tree is killed: a Job Object on Windows; elsewhere its process group plus every process carrying its run
+  marker, so a child that left the group (`setsid`) dies too. The same sweep runs when a command ends, so nothing it
+  started keeps running. Cancelling the chat reply also kills it.
 - Scripts (section 11) can never call it, in any approvals mode.
 - `GET /api/terminal/status` → `{enabled, shell, shell_path, allowed_folders, default_folder, blocked: [string],
-  running: [{id, command, cwd, started_at}]}`. `shell` is `pwsh`, `powershell`, `bash`, `zsh`, `sh` or null.
+  running: [{id, call_id, command, cwd, started_at}]}` (`id` is unique per run). `shell` is `pwsh`, `powershell`, `bash`, `zsh`, `sh` or null.
   `default_folder` is where a command without `cwd` would start, or null when none can.
-- `POST /api/terminal/stop` `{id}` (the tool call id) → `{stopped: bool}`. The tool then returns what the command
+- `POST /api/terminal/stop` `{id}` (a run id or the tool call id) → `{stopped: bool}`. The tool then returns what the command
   printed so far with `stopped: true`.
 - Engine API: `await app.terminal.run(command, cwd, ctx) -> dict` (TerminalResult), `app.terminal.check(command, cwd,
   ctx)`, `app.terminal.stop_command(id) -> bool`, `app.terminal.status() -> dict`; pure checks in `sentient.terminal.guard`.

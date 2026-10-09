@@ -52,7 +52,8 @@ class Check:
 
 @dataclass
 class _Running:
-    id: str
+    id: str  # unique per run
+    call_id: str | None  # the model's tool call id (the Stop button sends it); may repeat
     command: str
     cwd: str
     started_at: str
@@ -228,15 +229,18 @@ class TerminalService(Service):
                     progress({"kind": "status", "text": "There is more output. All of it will be saved to a file."})
 
         provider_keys = [p.api_key_env for p in self.app.config.models.providers.values() if p.api_key_env]
-        run_id = ctx.call_id or new_id()
+        run_id = new_id()
+        env = guard.command_env(provider_keys, run_id=run_id, listed=chk.allow_listed)
         task = asyncio.create_task(
             backends.run_command(
-                guard.shell_argv(shell, chk.command), cwd=chk.folder, env=guard.command_env(provider_keys),
+                guard.shell_argv(shell, chk.command), cwd=chk.folder, env=env,
                 timeout_s=float(cfg.timeout_s), max_chars=FULL_OUTPUT_CHARS, on_chunk=on_chunk,
+                # also processes that left the command's process group (setsid) on POSIX
+                extra_kill=lambda: guard.kill_marked(run_id),
             ),
             name=f"terminal:{run_id}",
         )
-        self._running[run_id] = _Running(run_id, chk.command, str(chk.folder), now_iso(), task)
+        self._running[run_id] = _Running(run_id, ctx.call_id, chk.command, str(chk.folder), now_iso(), task)
         outcome: backends.Outcome | None = None
         try:
             outcome = await task
@@ -247,6 +251,8 @@ class TerminalService(Service):
             result["stopped"] = True  # the command's own Stop button
         finally:
             self._running.pop(run_id, None)
+            # nothing the command started outlives it, even outside its process group
+            await asyncio.shield(asyncio.to_thread(guard.kill_marked, run_id))
 
         stdout, stderr = streams["stdout"].text(), streams["stderr"].text()
         result["stdout"], cut_out = _trim(stdout, cfg.max_output_chars)
@@ -284,13 +290,13 @@ class TerminalService(Service):
         return rel
 
     # ------------------------------------------------------------------ control
-    def stop_command(self, run_id: str) -> bool:
-        """Kill one running command (its card's Stop button). The tool returns what it printed so far."""
-        running = self._running.get(run_id)
-        if running is None or running.task.done():
-            return False
-        running.task.cancel()
-        return True
+    def stop_command(self, ident: str) -> bool:
+        """Kill a running command by its run id or tool call id (its card's Stop button). The tool returns what
+        it printed so far. False when nothing with that id is running."""
+        hits = [r for r in self._running.values() if ident in (r.id, r.call_id) and not r.task.done()]
+        for running in hits:
+            running.task.cancel()
+        return bool(hits)
 
     def status(self) -> dict:
         cfg = self.app.config.terminal
@@ -303,7 +309,7 @@ class TerminalService(Service):
             "default_folder": str(guard.resolve_folder(None, cfg.allowed_folders, cfg.default_folder).path or "") or None,
             "blocked": list(BLOCKED_KINDS),
             "running": [
-                {"id": r.id, "command": r.command, "cwd": r.cwd, "started_at": r.started_at}
+                {"id": r.id, "call_id": r.call_id, "command": r.command, "cwd": r.cwd, "started_at": r.started_at}
                 for r in self._running.values() if not r.task.done()
             ],
         }

@@ -1,5 +1,6 @@
 import { IconAlertCircle, IconExternalLink, IconFolder, IconPlayerStopFilled, IconTerminal2 } from '@tabler/icons-react'
 import { useEffect, useRef } from 'react'
+import { toast } from 'sonner'
 import { Badge, Button } from '@/components/ui'
 import { useStopCommand } from '@/hooks/terminal'
 import { wasDenied, type ToolCallView } from '@/lib/chatFold'
@@ -23,6 +24,13 @@ export function TerminalCard({ tool }: { tool: ToolCallView }) {
   const folder = res?.cwd ?? args.cwd ?? null
   const stop = useStopCommand()
   const output = useRef<HTMLPreElement>(null)
+  const onStop = () =>
+    stop.mutate(tool.callId, {
+      onSuccess: (r) => {
+        if (!r.stopped) toast.info('That command already finished', { description: 'There was nothing left to stop.' })
+      },
+      onError: () => toast.error("Couldn't stop the command", { description: 'Try Stop everything in the title bar.' })
+    })
 
   useEffect(() => {
     if (running && output.current) output.current.scrollTop = output.current.scrollHeight
@@ -72,7 +80,7 @@ export function TerminalCard({ tool }: { tool: ToolCallView }) {
           </div>
         </div>
         {running && (
-          <Button size="sm" variant="ghost" leftIcon={<IconPlayerStopFilled size={12} />} loading={stop.isPending} onClick={() => stop.mutate(tool.callId)}>
+          <Button size="sm" variant="ghost" leftIcon={<IconPlayerStopFilled size={12} />} loading={stop.isPending} onClick={onStop}>
             Stop
           </Button>
         )}
