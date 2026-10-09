@@ -142,6 +142,32 @@ async def test_policy_unit_blocks_subagents_and_voice():
         await BridgePolicy(approvals_mode="off", max_tool_calls=3).check(broken, "b", {}, ctx, 3)
 
 
+async def test_policy_unit_follows_lasting_rules():
+    ctx = ToolContext(store=None, config=None, llm=None)
+
+    async def fn(ctx):
+        return None
+
+    def make(name: str, risk: Risk, plugin: str = "kit", label: str | None = None) -> Tool:
+        t = Tool(name=name, description="", fn=fn, params_model=None, risk=risk, plugin=plugin)  # type: ignore[arg-type]
+        if label:
+            t.describe_fn = lambda a, c: {"risk_label": label}  # type: ignore[assignment]
+        return t
+
+    look, post, buy = make("kit_lookup", Risk.read), make("kit_post", Risk.send), make("kit_buy", Risk.send, label="Purchase")
+    policy = BridgePolicy(approvals_mode="ask", rules={"kit_lookup": "never", "kit_post": "allow", "kit_buy": "allow"})
+    assert not policy.is_available(look) and policy.is_available(post)
+    with pytest.raises(Refused, match="never use \"Lookup\""):
+        await policy.check(look, "kit_lookup", {}, ctx, 0)
+    # "allow" never widens what scripts may do: they only read (ADR 0012), purchases included
+    for t in (post, buy):
+        with pytest.raises(Refused, match="cannot run from inside a script"):
+            await policy.check(t, t.name, {}, ctx, 0)
+    ask = BridgePolicy(approvals_mode="off", rules={"kit": "ask"})
+    with pytest.raises(Refused, match="always ask before using kit"):
+        await ask.check(look, "kit_lookup", {}, ctx, 0)
+
+
 async def test_syntax_error_is_friendly_and_nothing_runs(sandbox_app):
     res = await sandbox_app.sandbox.run("x = 1\nprint(x\ny = 2\n")
     assert res["ok"] is False

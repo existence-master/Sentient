@@ -107,20 +107,18 @@ def select_tools(
             continue
         wanted.append(pid)
     tool_map: dict[str, list[str]] = {}
+
+    def usable(t) -> bool:  # registered, not excluded and not behind a "never" rule (ADR 0016)
+        return registry.get(t.name) is not None and t.name not in EXECUTOR_EXCLUDED_TOOLS and not registry.is_blocked(t)
+
     for pid in wanted:
-        names = [
-            t.name for t in plugins[pid].tools
-            if registry.get(t.name) is not None and t.name not in EXECUTOR_EXCLUDED_TOOLS
-        ]
+        names = [t.name for t in plugins[pid].tools if usable(t)]
         if names:
             tool_map[pid] = names
     if include_core:
         for pid in CORE_HELPER_PLUGINS:
             if pid in plugins and pid not in tool_map:
-                names = [
-                    t.name for t in plugins[pid].tools
-                    if registry.get(t.name) is not None and t.risk <= Risk.write and t.name not in EXECUTOR_EXCLUDED_TOOLS
-                ]
+                names = [t.name for t in plugins[pid].tools if usable(t) and t.risk <= Risk.write]
                 if names:
                     tool_map[pid] = names
     tool_names = [n for names in tool_map.values() for n in names]
@@ -260,6 +258,8 @@ async def execute_single(svc: TaskService, task: dict, run: dict, *, resume: boo
         rounds = max(4, max_rounds // 2)
     await svc.repo.update_run(run_id, {"messages": messages})
 
+    if result.stopped_by_rule:  # an "ask" rule stopped the run; say which and how to change it (ADR 0016)
+        raise RunFailed(result.stopped_by_rule)
     if result.error:
         raise RunFailed(f"Executor agent failed: {result.error}")
     final = (result.text or "").strip()

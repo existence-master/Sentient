@@ -20,6 +20,7 @@ proposing a change to one of them.
 | [0013](0013-push-before-poll.md) | Prefer change feeds and scripts over model calls | Accepted | 2026-09-15 |
 | [0014](0014-github-flow-and-no-secrets-ci.md) | Use GitHub flow with CI that needs no secrets | Accepted | 2026-10-08 |
 | [0015](0015-archive-v2-on-a-branch.md) | Archive v2 on a branch instead of keeping it in main | Accepted | 2026-10-08 |
+| [0016](0016-lasting-approval-rules.md) | Let people set lasting Allow, Ask or Never rules per app and tool | Accepted | 2026-10-09 |
 
 ## Adding a record
 
