@@ -68,9 +68,10 @@ export function useSetSecret() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ name, value }: { name: string; value: string }) => api.secrets.set(name, value),
-    onSuccess: () => {
+    onSuccess: (_res, { name }) => {
       void qc.invalidateQueries({ queryKey: qk.secrets })
       void qc.invalidateQueries({ queryKey: qk.providers })
+      void qc.invalidateQueries({ queryKey: qk.catalog(name) }) // a new key can mean a different account's models
     }
   })
 }

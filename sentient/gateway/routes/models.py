@@ -319,6 +319,7 @@ async def put_secret(request: Request, name: str, body: SecretBody):
         raise HTTPException(400, "empty value")
     if not secrets.set_secret(name, body.value.strip()):
         raise HTTPException(500, "the OS keychain is unavailable")
+    get_core(request).connections.forget(name)  # a new key can mean a different account's models
     get_core(request).bus.publish("config.updated", {"sections": ["secrets"]})
     return {"ok": True}
 

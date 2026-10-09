@@ -149,15 +149,22 @@ function KeyStatus({
 export function ClaudePlanGuide({ onUseModels }: { onUseModels?: (primary: string, fast: string) => void }) {
   const providers = useProviders()
   const [works, setWorks] = useState(false)
-  const suggested = (providers.data?.find((p) => p.id === 'anthropic')?.suggested ?? []).filter((m) => !looksLikeEmbedding(m))
+  const anthropic = providers.data?.find((p) => p.id === 'anthropic')
+  const keySet = !!anthropic?.key_set
+  const suggested = (anthropic?.suggested ?? []).filter((m) => !looksLikeEmbedding(m))
   const primary = suggested[0]
   const fast = suggested.find((m) => /haiku/i.test(m)) ?? primary
+
+  // A removed or replaced key needs a new test before Claude can be picked for the roles.
+  useEffect(() => {
+    if (!keySet) setWorks(false)
+  }, [keySet])
 
   return (
     <div className="space-y-4">
       <InstructionsGuide markdown={CLAUDE_PLAN_STEPS} />
       <KeyStatus provider="anthropic" label="Claude" placeholder="sk-ant-…" onChecked={(r) => setWorks(r.ok)} />
-      {works && primary && onUseModels && (
+      {keySet && works && primary && onUseModels && (
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="primary" onClick={() => onUseModels(primary, fast)}>
             Use Claude for chat and background work

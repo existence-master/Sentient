@@ -239,7 +239,7 @@ Routes:
   info); it spends no credits. Other providers → 404.
 - `GET /api/models/catalog/{provider}` (`openrouter`, `nous`, `anthropic`) → `[{id, label, free, tools, context_length}]`,
   `id` a full model string such as `openrouter/meta-llama/llama-4-maverick:free`. OpenRouter's list is public;
-  the others need the key (502 with a plain `detail` without one). Cached for 10 minutes; removing the key clears it.
+  the others need the key (502 with a plain `detail` without one). Cached for 10 minutes; saving or removing the key clears it.
   The window only asks for a provider's list once that provider has a key.
 
 ---

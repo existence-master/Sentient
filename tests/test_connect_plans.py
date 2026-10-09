@@ -202,6 +202,17 @@ def test_connect_routes(client, keychain):
     assert client.post("/api/models/connect/anthropic/check").json()["ok"] is False
     assert client.get("/api/models/catalog/nous").status_code == 502  # no key yet
 
+    # a replaced Nous key lists the new account's models, not the cached ones
+    nous_models = "https://inference-api.nousresearch.com/v1/models"
+    with respx.mock() as router:
+        router.get(nous_models).mock(return_value=httpx.Response(200, json={"data": [{"id": "old"}]}))
+        client.put("/api/secrets/nous", json={"value": "sk-nous-a"})
+        assert client.get("/api/models/catalog/nous").json()[0]["id"] == "nous/old"
+    with respx.mock() as router:
+        router.get(nous_models).mock(return_value=httpx.Response(200, json={"data": [{"id": "new"}]}))
+        client.put("/api/secrets/nous", json={"value": "sk-nous-b"})
+        assert client.get("/api/models/catalog/nous").json()[0]["id"] == "nous/new"
+
     with respx.mock() as router:
         catalog = router.get(connect.OPENROUTER_MODELS_URL).mock(return_value=httpx.Response(
             200, json={"data": [{"id": "x/y:free", "name": "Y", "pricing": {"prompt": "0", "completion": "0"}}]}))
