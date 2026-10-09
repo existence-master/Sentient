@@ -1,7 +1,7 @@
 /**
- * Dev-only demo data for the About you, automation, script job and skill repair screens, used to design and
- * screenshot them without an engine that supports them. Enabled by `demo=1` in the hash route
- * (`#/about?demo=1`) and never in a packaged build.
+ * Dev-only demo data for the About you, automation, script job and skill repair screens and an example model
+ * check-up, used to design and screenshot them without an engine that supports them or real models. Enabled by
+ * `demo=1` in the hash route (`#/about?demo=1`) and never in a packaged build.
  *
  * - lib/api.ts answers from here when an endpoint is missing in demo mode (see `withDemoFallback`).
  * - installDemoData() also adds (never replaces) clearly-labelled demo rows with demo-only ids to the
@@ -12,6 +12,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { qk } from '@/hooks/queryKeys'
 import type {
+  CheckupRole,
   Dream,
   FeedStatus,
   Hook,
@@ -282,10 +283,60 @@ const demoNotes: Notification[] = [
   note('demo-n-repair', 'skill', 'A fix for invoice-filing', 'Filing an invoice failed because a Drive folder was missing. I drafted a fix to **invoice-filing**.', { skill: REPAIR_NAME, action: 'patch', origin: { repair: true, task_id: 'demo-trigger-mail' } }, 3 * H)
 ]
 
+// ---------------------------------------------------------------------------- model check-up (example result)
+const pass = (id: string, label: string, detail: string) => ({ id, label, status: 'pass' as const, detail })
+const checkupExample: CheckupRole[] = [
+  {
+    role: 'primary', model: 'ollama_chat/qwen3:14b', provider: 'ollama_chat', local: true, inherits: null, status: 'warn',
+    checks: [
+      pass('connection', 'Connection', 'Ollama is running and qwen3:14b is downloaded.'),
+      pass('reply', 'Reply', 'Answered in 3.8 s.'),
+      pass('tools', 'Tool call', 'Called the test tool correctly.'),
+      pass('chain', 'Two tool steps', "Used the first tool's answer in a second tool call."),
+      pass('thinking', 'Thinking', 'Thinking is on (medium), as set.'),
+      pass('context', 'Context length', 'Reads 16,384 tokens at a time (this model can do up to 40,960).'),
+      {
+        id: 'gpu', label: 'Graphics card', status: 'warn',
+        detail: 'Ollama is running 31% of this model on the processor (7.6 GB of 11.0 GB fits on the graphics card).',
+        fix: 'It will be slow. Pick a smaller model or a shorter context length.',
+        action: { kind: 'set_context_length', value: 8192, role: null, label: 'Use 8,192 tokens' }
+      }
+    ]
+  },
+  {
+    role: 'fast', model: 'ollama_chat/qwen3:4b', provider: 'ollama_chat', local: true, inherits: null, status: 'fail',
+    checks: [
+      pass('connection', 'Connection', 'Ollama is running and qwen3:4b is downloaded.'),
+      pass('reply', 'Reply', 'Answered in 0.9 s.'),
+      {
+        id: 'tools', label: 'Tool call', status: 'fail',
+        detail: "It answered in text instead of calling the test tool. Tools and tasks won't work well.",
+        fix: "qwen3:4b can't call tools reliably; try qwen3:8b.",
+        action: { kind: 'use_model', role: 'fast', model: 'ollama_chat/qwen3:8b', label: 'Use qwen3:8b' }
+      },
+      pass('json', 'JSON reply', 'Returned clean JSON.'),
+      pass('thinking', 'Thinking', 'Thinking is off, as set.'),
+      pass('context', 'Context length', 'Reads 8,192 tokens at a time (this model can do up to 40,960).'),
+      pass('gpu', 'Graphics card', 'Runs fully on the graphics card (3.9 GB).')
+    ]
+  },
+  ...(['planner', 'executor', 'vision', 'voice'] as const).map((role) => ({
+    role, model: null, provider: null, local: null, inherits: 'primary' as const, status: 'skip' as const, checks: []
+  })),
+  {
+    role: 'embedding', model: 'ollama/nomic-embed-text', provider: 'ollama', local: true, inherits: null, status: 'pass',
+    checks: [
+      pass('connection', 'Connection', 'Ollama is running and nomic-embed-text is downloaded.'),
+      pass('embedding', 'Embedding', 'Works (768 dimensions).')
+    ]
+  }
+]
+
 // ---------------------------------------------------------------------------- mutable demo API
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T
 
 export const demo = {
+  modelCheckup: (): CheckupRole[] => clone(checkupExample),
   userModel: (): UserModel => clone({ summary: SUMMARY, updated_at: ago(2 * H), insights, questions }),
   addInsight: (statement: string, dimension: string): Insight => {
     const i: Insight = { id: `i${Date.now()}`, dimension, statement, confidence: 1, status: 'confirmed', source: 'user', evidence: [], created_at: new Date().toISOString(), updated_at: new Date().toISOString() }

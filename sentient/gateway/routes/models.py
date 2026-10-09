@@ -183,6 +183,27 @@ async def test_embedding(request: Request, body: EmbedTestBody):
 ROLE_KEYS = {"primary", "fast", "planner", "executor", "embedding", "vision", "voice"}
 
 
+class CheckupBody(BaseModel):
+    roles: dict[str, str | None] | None = None
+
+
+@router.post("/models/checkup")
+async def model_checkup(request: Request, body: CheckupBody | None = None):
+    """Check every role's model (or only ``roles``) and stream NDJSON progress. Never changes config."""
+    from sentient.llm.checkup import run_checkup
+
+    s = get_core(request)
+    roles = body.roles if body else None
+    if roles and set(roles) - ROLE_KEYS:
+        raise HTTPException(400, f"unknown role {sorted(set(roles) - ROLE_KEYS)[0]}")
+
+    async def gen():
+        async for event in run_checkup(s.config, s.llm, roles):
+            yield json.dumps(event) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
 @router.put("/models/roles")
 async def set_roles(request: Request, body: dict):
     s = get_core(request)

@@ -431,6 +431,42 @@ export interface ModelTestResult {
   supports_tools?: boolean
 }
 
+/** `POST /api/models/checkup` (docs/API.md §3). */
+export type CheckupStatus = 'pass' | 'warn' | 'fail' | 'skip'
+
+export type CheckupAction =
+  | { kind: 'use_model'; role: RoleName; model: string; label: string }
+  | { kind: 'pull_model'; name: string; label: string }
+  | { kind: 'set_reasoning'; role: RoleName; value: string; label: string }
+  | { kind: 'set_context_length'; value: number; role: RoleName | null; label: string }
+
+export interface CheckupCheck {
+  id: string
+  label: string
+  status: CheckupStatus
+  detail: string
+  fix?: string
+  action?: CheckupAction
+}
+
+export interface CheckupRole {
+  role: RoleName
+  model: string | null
+  provider: string | null
+  local: boolean | null
+  /** Set for an optional role with no model of its own. */
+  inherits: RoleName | null
+  status: CheckupStatus
+  checks: CheckupCheck[]
+}
+
+/** One NDJSON line of `POST /api/models/checkup`. */
+export type CheckupEvent =
+  | { type: 'start'; roles: { role: RoleName; model: string | null }[] }
+  | { type: 'step'; role: RoleName; label: string }
+  | ({ type: 'role' } & CheckupRole)
+  | { type: 'done'; status: CheckupStatus; roles: CheckupRole[] }
+
 export interface EmbeddingTestResult {
   ok: boolean
   dim?: number
