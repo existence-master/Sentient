@@ -1,4 +1,4 @@
-"""Move from Hermes Agent in one step (issue #203, docs/API.md section 18).
+"""Move from Hermes Agent in one step (issue #203, docs/API.md section 19).
 
 ``preview(app, path)`` reads a Hermes home folder (default ``~/.hermes``) and says what would happen to each thing
 in it; ``apply(app, path, parts, skip)`` does it for the parts the user picked:

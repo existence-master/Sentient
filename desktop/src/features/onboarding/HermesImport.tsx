@@ -1,4 +1,4 @@
-/** "Coming from Hermes?": preview a Hermes home folder, pick what to bring over, import it (docs/API.md §18). */
+/** "Coming from Hermes?": preview a Hermes home folder, pick what to bring over, import it (docs/API.md §19). */
 import {
   IconAlertTriangle,
   IconArrowRight,

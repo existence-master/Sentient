@@ -32,6 +32,7 @@ import type {
   SandboxResult,
   SandboxStatus,
   Subagent,
+  TerminalStatus,
   ApprovalDecision,
   Bootstrap,
   StopResult,
@@ -64,10 +65,13 @@ import type {
   MemoryTopic,
   MemoryWriteResult,
   MessageSearchHit,
+  ModelPreset,
+  ModelPresetList,
   ModelRoles,
   ModelTestResult,
   NotificationList,
   OkResponse,
+  PresetApplyResult,
   OllamaPullProgress,
   OnboardingRequest,
   Persona,
@@ -454,7 +458,16 @@ export const api = {
       streamNdjson<OllamaPullProgress>('POST', '/api/models/ollama/pull', { body: { name }, signal }),
     /** Check each role's model (or only `roles`); never changes config. */
     checkup: (roles?: Partial<Record<RoleName, string | null>>, signal?: AbortSignal) =>
-      streamNdjson<CheckupEvent>('POST', '/api/models/checkup', { body: roles ? { roles } : {}, signal })
+      streamNdjson<CheckupEvent>('POST', '/api/models/checkup', { body: roles ? { roles } : {}, signal }),
+    /** Model presets: switch every role at once, save your own, undo the last switch. */
+    presets: {
+      list: () => http.get<ModelPresetList>('/api/models/presets'),
+      apply: (name: string) => http.post<PresetApplyResult>(`/api/models/presets/${enc(name)}/apply`),
+      undo: () => http.post<PresetApplyResult>('/api/models/presets/undo'),
+      save: (name: string, overwrite = false) => http.post<ModelPreset>('/api/models/presets', { name, overwrite }),
+      rename: (name: string, to: string) => http.patch<ModelPreset>(`/api/models/presets/${enc(name)}`, { name: to }),
+      delete: (name: string) => http.delete<OkResponse>(`/api/models/presets/${enc(name)}`)
+    }
   },
 
   secrets: {
@@ -625,6 +638,13 @@ export const api = {
     run: (code: string) => http.post<SandboxResult>('/api/sandbox/run', { code })
   },
 
+  // §18 terminal ------------------------------------------------------------------------
+  terminal: {
+    status: () => http.get<TerminalStatus>('/api/terminal/status'),
+    /** Kills one running command; `id` is the tool call id. */
+    stop: (id: string) => http.post<{ stopped: boolean }>('/api/terminal/stop', { id })
+  },
+
   // §12 browser -------------------------------------------------------------------------
   browser: {
     status: () => http.get<BrowserStatus>('/api/browser/status'),
@@ -675,7 +695,7 @@ export const api = {
       withDemoFallback(() => http.delete<{ ok: boolean }>(`/api/user-model/questions/${enc(id)}`), () => demo.dropQuestion(id))
   },
 
-  // §18 moving from Hermes ------------------------------------------------------------------
+  // §19 moving from Hermes ------------------------------------------------------------------
   imports: {
     hermes: {
       info: () => http.get<{ path: string; exists: boolean }>('/api/import/hermes'),

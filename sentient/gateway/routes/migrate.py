@@ -1,4 +1,4 @@
-"""REST routes for moving from another assistant (owner: core). Contract: docs/API.md section 18."""
+"""REST routes for moving from another assistant (owner: core). Contract: docs/API.md section 19."""
 
 from __future__ import annotations
 

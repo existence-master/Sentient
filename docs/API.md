@@ -210,6 +210,32 @@ Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
 - `PUT /api/models/roles` `{primary?, fast?, planner?, executor?, embedding?, vision?, voice?}` → updated roles (null = use primary). The `voice` role is used for `channel` voice/glasses turns and defaults to reasoning `none`.
 - `PUT /api/models/fallbacks` `{role: [model, ...]}` → `{ok}`
 - `POST /api/models/ollama/pull` `{name}` → streams NDJSON `{status, completed?, total?}`
+- **Model presets** (#212): named setups that switch every role in one step. Three built-ins are generated, never
+  stored: "Local only" (the `ModelRoles` defaults from `config/schema.py`; a local embedding model the user picked is
+  kept), "Cloud" and "Mixed" (the first of Anthropic, OpenAI, OpenRouter with a key set, models from
+  `PRESET_CLOUD_MODELS` in `config/schema.py`; Cloud leaves the embedding model alone because changing it re-indexes
+  memory; Mixed keeps `fast` and `embedding` local). Built-ins clear `models.fallbacks`. The user's own presets are in
+  `models.presets` (`{name: {roles, fallbacks?, reasoning?, context_length?, context_length_per_role?}}`; a role left
+  out keeps its model, a field left out keeps its value) and the last one applied is `models.active_preset`. Names are
+  1 to 40 characters, no slashes, matched without case; built-in names are reserved.
+  - **Preset** `{name, builtin, available, reason, provider, description, roles, fallbacks?, reasoning?, context_length?,
+    context_length_per_role?, active}`. `available: false` with a plain `reason` for Cloud and Mixed when no cloud key
+    is set. `provider` is the cloud provider a built-in uses.
+  - `GET /api/models/presets` → `{active, modified, can_undo, undo_preset, presets: [Preset]}` (built-ins first).
+    `modified` is true when a role was changed by hand after `active` was applied.
+  - `POST /api/models/presets/{name}/apply` → `{preset, changed: [{role, from, to}], missing: [Missing], can_undo}`.
+    Applied in one config save (`config.updated`); the setup it replaced is kept for undo. 404 unknown preset, 409
+    `available: false`. **Missing** `{kind: "pull_model"|"add_key"|"start_ollama", roles, model, provider?, detail,
+    fix, action}`: an Ollama model that is not downloaded (`action {kind: "pull_model", name, label}`, see the pull
+    route below), a cloud key that is not set (`action {kind: "add_key", provider, label}`, see `PUT /api/secrets`), or
+    Ollama not answering (`action: null`). Checked with Ollama `/api/tags` and the keychain; no model is called.
+  - `POST /api/models/presets/undo` → same shape: puts back the roles, fallbacks, reasoning, context lengths and active
+    preset from before the last switch. One step only: 409 when there is nothing to undo.
+  - `POST /api/models/presets` `{name, overwrite?}` → Preset: saves the current roles, fallbacks, reasoning and context
+    lengths and makes it active. 400 bad or built-in name, 409 name taken (unless `overwrite`).
+  - `PATCH /api/models/presets/{name}` `{name}` → Preset (rename; `active_preset` follows). 400 built-in, 404, 409.
+  - `DELETE /api/models/presets/{name}` → `{ok}`; models stay as they are. 400 built-in, 404.
+  - Per-chat (`model` on a chat message) and per-task model overrides still win over the roles a preset sets.
 - `GET /api/secrets` → `[{name, set: bool, source: "keychain"|"env"|null, kind: "provider"|"integration"}]` for every provider + integration secret name
 - `PUT /api/secrets/{name}` `{value}` → `{ok}` (stored in OS keychain; never echoed back)
 - `DELETE /api/secrets/{name}` → `{ok}`
@@ -270,7 +296,7 @@ and makes the same call at each run (the Daily Brief, section 6); with `quiet` (
 sends no "Task completed" notification because the tool sends its own (failures still notify), and its result is the done
 text with no model call.
 
-Imported tasks (section 18) carry `original_context.imported_from` (`"hermes"`), `source: "import"`, `enabled: false`
+Imported tasks (section 19) carry `original_context.imported_from` (`"hermes"`), `source: "import"`, `enabled: false`
 and an empty `plan`, so they never run as they are. The first Resume (`PATCH {enabled: true}`) of such a task plans it:
 it goes to `planning` and then `approval_pending` like a new task, keeping its schedule. A script task whose script only
 notifies skips the planner and goes straight to `approval_pending` with a one-step plan describing the script (or to
@@ -877,7 +903,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   `risk` per call (a browser click on "Place order" becomes `send`). A `risk_fn` that raises counts as `exec`. Approvals
   use the effective risk; `approval_request.risk` reports it. `internal` keeps its meaning: an internal tool whose
   effective risk is `write` does not ask in mode "ask"; `send`/`exec` always ask. "Allow for this chat" covers that tool
-  up to the risk level that was approved, but never a call whose `risk_fn` raised it to `send`/`exec` (those ask every time).
+  up to the risk level that was approved, but never a call whose `risk_fn` raised it to `send`/`exec` (those ask every time),
+  and never a tool declared with `allow_for_chat=False` (`@tool(..., allow_for_chat=False)`; the terminal, section 18).
   Lasting rules (`tools.approvals.rules`, section 2) are checked before the mode: `ask` and `never` win over everything,
   `allow` skips the question except for purchases.
   Outside `run_loop`, use `await app.approvals.requires_approval(tool, arguments, ctx) -> (bool, Risk)`;
@@ -1009,7 +1036,7 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - Tool calls from a script: effective risk `read` and internal `write` tools run; other `write`, `send` and `exec` tools
   are refused with a message telling the model to call that tool directly (where approvals can ask the user), unless
   approvals mode is `off`. Lasting rules apply (section 2): `never` tools are not listed and are refused, `ask` tools
-  are refused, and `allow` changes nothing here (scripts still only read). Subagent, voice and code tools are not available inside scripts. At most
+  are refused, and `allow` changes nothing here (scripts still only read). Subagent, voice, code and terminal tools are not available inside scripts, in any approvals mode. At most
   `sandbox.max_tool_calls` calls run per script; `tool_calls` counts calls that ran (refused ones are not counted).
 - Returns **SandboxResult** `{ok, backend: "process"|"docker", stdout, stderr, result, files_created: [name], tool_calls, duration_ms, error}`.
   stdout and stderr stream as `tool_progress` (`kind: "stdout"|"stderr"`, newlines normalized to `\n`) and are each capped at
@@ -1161,12 +1188,17 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   (groups are ignored). Discord: direct messages only (server messages are ignored).
 - A paired chat is a normal Sentient chat (`channel` = channel id, so the desktop shows a badge). Commands: `/new` starts a
   fresh chat (new session), `/stop` cancels the reply (the partial text is kept with "(stopped)"), `/stopall` (or
-  `/stop all`) is Stop everything and `/resume` undoes it (section 17; source `telegram` or `discord`), `/help`; other
+  `/stop all`) is Stop everything and `/resume` undoes it (section 17; source `telegram` or `discord`), `/model`, `/help`; other
   `/commands` get a hint. Unpaired chats cannot use any command except `/pair`. Replies stream by editing the message at most once per `channels.<id>.edit_interval_s` (1 s) when
   `stream_edits` is on; long replies are split (Telegram 4096, Discord 2000 characters, code blocks kept balanced).
   Telegram replies use HTML parse mode (bold, italics, strikethrough, code, code blocks, links, lists, quotes; everything
   else escaped; plain text fallback). While tools run, a short status message ("Searching the web...") is shown and deleted
   when the answer continues (`show_tool_activity`). A typing indicator is sent while the reply runs.
+- `/model` (model presets, section 3): shows the active preset and the chat model, lists presets that need a key with
+  the reason, and offers every usable preset as a button (callback `mp:a:<12 hex of sha1(name)>`; WhatsApp: numbered
+  options). Choosing one applies it, settles the message to "Switched to <name>" and sends anything still missing
+  ("Still needed: ..."). `/model <number or name>` applies directly (numbers count the usable presets in order),
+  `/model undo` undoes the last switch. Paired chats only, like every command.
 - A message sent while a reply runs calls `app.agent.steer(session_id, text)` (section 10); when that returns false (or the
   message has attachments) it is queued and answered as the next turn.
 - Voice notes and audio files are downloaded (20 MB max) and transcribed with `app.voice.transcribe_bytes`; the chat sees
@@ -1424,8 +1456,8 @@ can ignore it.
   (desktop, channels, voice; the partial reply is kept with "(stopped)"), task run (status `cancelled`, progress
   "Run stopped by Stop everything.", retryable from its checkpoint), task planning and check scripts, helper
   (subagent, status `cancelled`), running dream (status `error`, "Stopped by Stop everything.") and background job
-  (memory notes, reviews, suggestions) is cancelled. Code runs and browser actions stop with the reply or run they
-  belong to. Runs waiting for the user's answer keep waiting.
+  (memory notes, reviews, suggestions) is cancelled. Code runs, terminal commands (section 18) and browser actions stop
+  with the reply or run they belong to; a command's whole process tree is killed. Runs waiting for the user's answer keep waiting.
 - Messages queued before the stop are dropped, never sent: steer messages the running reply had not picked up yet,
   `chat.send` turns waiting behind it on `/ws` (they end with `error` `{message: "Stopped. Your queued message wasn't
   sent.", dropped: true, client_id}` and `done` `{cancelled: true, dropped: [text], client_id}`, echoing the
@@ -1446,7 +1478,70 @@ can ignore it.
   (`Cmd+Alt+Shift+S` on macOS; stop only), `/stopall` and `/resume` in paired Telegram and Discord chats, and the
   `stop_all` / `resume` device messages (the web device app has a button).
 
-## 18. Moving from Hermes (owner: core)
+## 18. Commands on this computer (owner: terminal)
+
+Off by default ([ADR 0019](adr/0019-host-terminal.md)). Settings > Terminal (config section `terminal`) turns it on.
+
+- Config `terminal`: `enabled` (default `false`), `allowed_folders: [path]` (default `[]`; nothing runs until one is
+  added), `default_folder` (default `""`: the first allowed folder), `allowed_commands: [prefix]` (default
+  `["git status", "git diff", "git log", "ls", "dir", "pwd"]`), `timeout_s` (default 180, 5 to 3600) and
+  `max_output_chars` (default 8000, per stream). While `enabled` is false the `terminal` plugin is hidden: the tool is
+  not offered or listed, and a call made anyway returns an error without running.
+- Tool `terminal_run(command: str, cwd: str | None = None)` (plugin `terminal`, risk `exec`). Runs `command` as a new
+  shell process: PowerShell on Windows (`pwsh` when installed, else `powershell.exe`, with `-NoProfile
+  -NonInteractive`), else the user's bash or zsh, else bash, zsh or sh (`-c`). Each call is a fresh process; nothing
+  carries over between calls, and anything the command leaves running is stopped when it ends. stdin is empty.
+- Checks, in code and in this order, before anything runs (a failed check returns `{ok: false, error}` and nothing runs):
+  1. turned on; 2. not work nobody asked for (ADR 0017: `ToolContext.origin` unprompted is refused even with an
+  Allow rule or a listed command); 3. a command of at most 8000 characters; 4. not on the built-in blocklist
+  (formatting or wiping disks, shutting down, restarting or signing out, deleting from the registry, deleting or
+  re-owning a whole drive, system folder or home folder, deleting backups, changing boot settings, fork bombs),
+  which no setting or rule overrides; 5. the folder: `cwd` absolute or relative to the default folder, resolved
+  with links followed, must exist and be inside an allowed folder; 6. in task runs, helpers and other runs nobody
+  can be asked in (channel `task`, `subagent` or `system`) only a listed command runs, unless `terminal` or
+  `terminal_run` has an Allow rule or approvals mode is `off`.
+- Effective risk (`risk_fn`): `exec`, so it asks in modes `ask` and `always` unless an Allow rule says otherwise
+  (section 2). A listed command is `read`: it runs without asking (mode `always` still asks). A command matches a
+  listed prefix when it equals it or starts with it plus a space (case-insensitive on Windows), and contains none of
+  ``; & | < > ` $ ( ) { }``, line breaks, `--output`, `--exec`, `--ext-diff` or `--textconv`. A call that fails a check is also `read`, so the user
+  is not asked to approve a refusal; work nobody asked for stays `exec`. "Allow for this chat" never
+  covers it (`Tool.allow_for_chat = False`): each command asks again unless a listed command or an Allow rule applies,
+  and the card offers no "Allow for this chat" button.
+- `approval_request` for it: `risk_label` "Runs a command", `target` the folder it will run in (its last 120
+  characters when longer). The card shows the exact command and the folder.
+- Output streams as `tool_progress` (`kind: "stdout" | "stderr"`, newlines normalized) up to `max_output_chars` per
+  stream, then one `kind: "status"` note. Returns **TerminalResult** `{ok, command, cwd, shell, exit_code, stdout,
+  stderr, timed_out, stopped, duration_ms, output_file, error}`. `ok` is true when the exit code is 0. A non-zero exit
+  code is not an `error`. `stdout` and `stderr` keep the start and the end of each stream within `max_output_chars`
+  (`[... N characters cut here ...]` in between); when anything was cut the full output (up to 2,000,000 characters per
+  stream) is saved and `output_file` names it under the files folder (`outputs/terminal-<run id>.txt`). `error` is a
+  plain sentence for refusals, timeouts ("The command took longer than 180 seconds and was stopped. ..."), a stopped
+  command ("The command was stopped before it finished.", `stopped: true`) and a shell that could not start.
+- The environment is the engine's own without secrets: variables whose names look like keys, tokens, passwords or
+  credentials, Sentient's own `SENTIENT_*` and `LITELLM_*` variables and every `models.providers.*.api_key_env` are
+  removed; keychain secrets are never added. `SSH_AUTH_SOCK` is kept. `GIT_TERMINAL_PROMPT=0` is set, and
+  `SENTIENT_TERMINAL_RUN=<run id>` marks the run's processes. A listed command also gets `core.fsmonitor=false`
+  through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, so a repository's config can't make `git status`
+  or `git diff` start a program without a question.
+- Stopping: at `timeout_s`, from the card's Stop button and from Stop everything (section 17) the command's whole
+  process tree is killed: a Job Object on Windows; elsewhere its process group plus every process carrying its run
+  marker, so a child that left the group (`setsid`) dies too. The same sweep runs when a command ends, so nothing it
+  started keeps running (a process that clears its own environment can still escape on macOS and Linux).
+  Cancelling the chat reply also kills it.
+- Outside content (ADR 0018): the tool is tagged `untrusted_output`, so its output marks the chat; a command that
+  isn't listed has effective risk `exec`, which counts as sending out, so after outside content it asks with the
+  `untrusted` reason on the card even with an Allow rule (and is held in runs nobody can be asked in). Listed commands
+  stay `read` and free.
+- Scripts (section 11) can never call it, in any approvals mode.
+- `GET /api/terminal/status` → `{enabled, shell, shell_path, allowed_folders, default_folder, blocked: [string],
+  running: [{id, call_id, command, cwd, started_at}]}` (`id` is unique per run). `shell` is `pwsh`, `powershell`, `bash`, `zsh`, `sh` or null.
+  `default_folder` is where a command without `cwd` would start, or null when none can.
+- `POST /api/terminal/stop` `{id}` (a run id or the tool call id) → `{stopped: bool}`. The tool then returns what the command
+  printed so far with `stopped: true`.
+- Engine API: `await app.terminal.run(command, cwd, ctx) -> dict` (TerminalResult), `app.terminal.check(command, cwd,
+  ctx)`, `app.terminal.stop_command(id) -> bool`, `app.terminal.status() -> dict`; pure checks in `sentient.terminal.guard`.
+
+## 19. Moving from Hermes (owner: core)
 
 Brings a Hermes Agent home folder (default `~/.hermes`) into Sentient in one step: preview first, then apply the parts
 the user picks. Code: `sentient/migrate/hermes.py`; the Hermes file formats it relies on are listed in its docstring.
