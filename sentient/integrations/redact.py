@@ -20,23 +20,38 @@ LINK_PLACEHOLDER = "[sign-in link hidden]"
 RESET_PLACEHOLDER = "[password reset link hidden]"
 
 # ---------------------------------------------------------------------------- codes
-# Words right before "code" that make it something else (an error, a postcode, a discount...).
+# Words right before "code" that make it something else (an error, a postcode, a discount, a booking...).
 _NOT_A_CODE = {
     "error", "status", "exit", "return", "response", "zip", "postal", "post", "area", "country", "promo", "promotion",
     "promotional", "discount", "coupon", "voucher", "gift", "referral", "invite", "tracking", "product", "item",
     "source", "dress", "qr", "bar", "reference", "booking", "tax", "hs", "sort", "swift", "ifsc", "airport", "pin",
     "colour", "color", "sic", "naics", "billing", "branch", "bank", "class", "course", "event", "order",
     "reservation", "flight", "ticket", "seat", "room", "door", "lock", "dial", "phone", "postcode", "ups",
+    "confirmation", "pnr", "record", "locator", "itinerary", "trip", "hotel", "membership", "customer",
 }
+# Only sign-in and verification cues make a nearby code secret. Booking, order, ticket and reference codes are
+# things people ask the assistant for, and they do not give access to an account.
 _STRONG_CUE = (
     r"one[- ]?time[- ](?:code|password|passcode|pin|key)|otp|verification[- ](?:code|number|pin)|verify[- ]code|"
     r"security[- ](?:code|key|pin)|(?:sign|log)[- ]?in[- ](?:code|pin)|login[- ](?:code|pin)|"
     r"authenticat(?:ion|or)[- ]code|auth[- ]code|(?:2fa|mfa|two[- ](?:factor|step))(?:[- ](?:code|verification))?|"
-    r"passcode|pass[- ]code|access[- ]code|activation[- ]code|recovery[- ]code|backup[- ]code|reset[- ]code|"
-    r"pin(?![- ]?codes?\b)"
+    r"passcode|pass[- ]code|recovery[- ]code|backup[- ]code|reset[- ]code"
 )
 _WEAK_CUE = r"code"
 _CUE_RE = re.compile(rf"\b(?:(?P<strong>{_STRONG_CUE})|(?P<weak>{_WEAK_CUE}))\b", re.IGNORECASE)
+_STRONG_RE = re.compile(rf"\b(?:{_STRONG_CUE})\b", re.IGNORECASE)
+# a bare "code" counts only as an instruction: "use this code to", "enter the code below"
+_USE_BEFORE_RE = re.compile(
+    r"\b(?:use|enter|type|input|paste)(?:[^\S\n]+(?:this|the|that|following|your))*[^\S\n]+$", re.IGNORECASE
+)
+_USE_CODE_RE = re.compile(
+    r"\b(?:use|enter|type|input|paste)(?:[^\S\n]+(?:this|the|that|following|your))*[^\S\n]+code\b", re.IGNORECASE
+)
+_BOOKING_RE = re.compile(
+    r"\b(?:booking|bookings|reservation|itinerary|e-?tickets?|tickets?|flight|boarding pass|check-?in|pnr|order|"
+    r"receipt|invoice|trip|hotel|confirmation number|reference)\b",
+    re.IGNORECASE,
+)
 # what may sit between the cue and the code: ":", "is", or a few short words ending in "is" or ":"
 _GAP_RE = re.compile(
     r"[^\S\n]*(?:"
@@ -62,7 +77,7 @@ _WEAK_TAIL_RE = re.compile(
 # "482913 is your verification code", "G-482913 is your Google code"
 _CODE_FIRST_RE = re.compile(
     rf"{_BEFORE}(?P<code>(?:G-)?(?:{_NUM}|{_ALNUM})){_AFTER}"
-    r"(?P<rest>[^\S\n]+is[^\S\n]+(?:your|the)\b[^.\n]{0,40}?\b(?:code|otp|pin|passcode|password)\b)",
+    r"(?P<rest>[^\S\n]+is[^\S\n]+(?:your|the)\b[^.\n]{0,40}?\b(?:code|otp|passcode|password)\b)",
 )
 _LINE_CODE_RE = re.compile(rf"(?P<code>(?:G-)?(?:{_NUM}|{_ALNUM}|{_SPACED}))[.!]?")
 
@@ -70,7 +85,7 @@ _LINE_CODE_RE = re.compile(rf"(?P<code>(?:G-)?(?:{_NUM}|{_ALNUM}|{_SPACED}))[.!]
 _AUTH_SUBJECT_RE = re.compile(
     r"\b(?:verification|verify|your code|one[- ]?time|otp|passcode|security code|sign[- ]?in|log[- ]?in|login|"
     r"2fa|two[- ](?:factor|step)|authenticat\w*|confirm your (?:email|account|identity|address)|password|"
-    r"magic link|access code|activation|activate your|reset)\b",
+    r"magic link|activate your|reset)\b",
     re.IGNORECASE,
 )
 _AUTH_SENDER_RE = re.compile(
@@ -155,8 +170,12 @@ def _hide_inline_codes(text: str, auth_email: bool) -> str:
     spans: list[tuple[int, int]] = []
     for cue in _CUE_RE.finditer(text):
         strong = cue.group("strong") is not None
-        if not strong and not _qualified(text, cue.start()):
-            continue
+        if not strong:
+            # a bare "code": only "use/enter this code" (or any code in a sign-in email), never a booking code
+            if not _qualified(text, cue.start()):
+                continue
+            if not (auth_email or _USE_BEFORE_RE.search(text[max(0, cue.start() - 40):cue.start()])):
+                continue
         gap = _GAP_RE.match(text, cue.end())
         token_re = _ANY_TOKEN_RE if (strong or auth_email) else _NUM_TOKEN_RE
         tok = token_re.match(text, gap.end()) if gap else None
@@ -166,12 +185,13 @@ def _hide_inline_codes(text: str, auth_email: bool) -> str:
             continue
         spans.append(tok.span())
     for m in _CODE_FIRST_RE.finditer(text):
-        spans.append(m.span("code"))
+        if not _BOOKING_RE.search(m.group("rest")):  # "482913 is your booking code" is not a sign-in code
+            spans.append(m.span("code"))
     return _apply(text, spans, CODE_PLACEHOLDER)
 
 
 def _hide_line_codes(text: str, auth_email: bool) -> str:
-    """A line that is only a code, right after a line that talks about a code (or anywhere in a sign-in email)."""
+    """A line that is only a code, right after a line with a sign-in cue (or anywhere in a sign-in email)."""
     lines = text.split("\n")
     recent: list[str] = []
     for i, line in enumerate(lines):
@@ -181,7 +201,7 @@ def _hide_line_codes(text: str, auth_email: bool) -> str:
         m = _LINE_CODE_RE.fullmatch(stripped)
         if m and not _looks_like_plain_number(m.group("code")):
             near = " ".join(recent[-3:])
-            if auth_email or _CUE_RE.search(near):
+            if auth_email or _STRONG_RE.search(near) or _USE_CODE_RE.search(near):
                 lines[i] = line.replace(m.group("code"), CODE_PLACEHOLDER, 1)
         recent.append(stripped)
     return "\n".join(lines)
@@ -207,9 +227,16 @@ def _apply(text: str, spans: list[tuple[int, int]], placeholder: str) -> str:
 
 
 def is_auth_email(subject: str = "", sender: str = "") -> bool:
-    """Subject or sender says this is a sign-in, verification or password email."""
+    """Subject or sender says this is a sign-in, verification or password email (a booking subject never is)."""
+    if is_booking_email(subject):
+        return False
     return bool(_AUTH_SUBJECT_RE.search(subject or "") or _AUTH_SENDER_RE.search((sender or "").split("@")[0])
                 or _AUTH_SENDER_RE.search(_sender_domain(sender)))
+
+
+def is_booking_email(subject: str = "") -> bool:
+    """A booking, order, ticket or reservation subject without a sign-in cue: its codes are kept."""
+    return bool(_BOOKING_RE.search(subject or "")) and not _STRONG_RE.search(subject or "")
 
 
 def _sender_domain(sender: str) -> str:
@@ -223,6 +250,8 @@ def hide_secrets(text: str, *, subject: str = "", sender: str = "") -> str:
         return text or ""
     auth = is_auth_email(subject, sender)
     text = _hide_links(text, auth)
+    if is_booking_email(subject):  # booking references and confirmation codes are what people ask for
+        return text
     text = _hide_inline_codes(text, auth)
     return _hide_line_codes(text, auth)
 

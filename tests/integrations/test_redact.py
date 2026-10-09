@@ -31,8 +31,8 @@ MAGIC_URL = "https://app.example.com/l/9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c"
     ("Use code 482913 to sign in.", "482913"),
     ("Enter the code below to sign in:\n\n482913\n\nIt expires in 10 minutes.", "482913"),
     ("Your security code: X7K9P2", "X7K9P2"),
-    ("Your Uber code: 1234", "1234"),
-    ("Your PIN is 4821.", "4821"),
+    ("Enter this code: 482913", "482913"),
+    ("Use this code to log in: 5521", "5521"),
     ("Your one-time password is 123 456", "123 456"),
     ("Two-factor code: 908172", "908172"),
 ])
@@ -61,6 +61,13 @@ def test_a_code_alone_on_a_line_is_hidden_in_a_sign_in_email():
     "Meeting on October 12, 2026 at 14:30 in room 4021.",
     "Invoice 2026-0042 for 12,500 INR, due 15/10/2026.",
     "Your flight confirmation code is ABC12D",
+    "Your booking confirmation code is 482913",
+    "Your reservation code is 482913.",
+    "Booking ref ABC123",
+    "Your PNR is X7K9P2. Booking reference: 4ZQ9TR",
+    "Ticket number 482913, order code 77812.",
+    "482913 is your booking code.",
+    "Your code is 4821 at the front desk.",
     "See you in 2026\n2026\n",
     "The budget is 250000 and the headcount is 12.",
     "Read the post https://blog.example.com/2026/10/how-we-build",
@@ -71,6 +78,24 @@ def test_a_code_alone_on_a_line_is_hidden_in_a_sign_in_email():
 ])
 def test_ordinary_numbers_and_links_are_left_alone(text):
     assert hide_secrets(text) == text
+
+
+def test_booking_emails_keep_their_codes():
+    """Booking, order and ticket codes are what people ask for and give no account access: always kept."""
+    body = "\n".join(["Your code is 482913.", "Enter this code at check-in: 482913", "", "ABC12D", ""])
+    for subject in ("Your booking confirmation", "Flight booking confirmed: Mumbai to Delhi", "Your e-ticket",
+                    "Order #77812 confirmed", "Reservation at Hotel Lumen"):
+        assert hide_secrets(body, subject=subject, sender="no-reply@accounts.airline.example") == body
+    pnr = "\n".join(["Confirmation code: X7K9P2", "Record locator", "X7K9P2"])
+    assert hide_secrets(pnr, subject="Your trip to Delhi") == pnr
+    # a sign-in cue in the subject still wins over a stray booking word
+    out = hide_secrets("Your code is 482913", subject="Your verification code for your booking")
+    assert "482913" not in out
+
+
+def test_verification_codes_are_still_hidden_next_to_bookings():
+    assert "482913" not in hide_secrets("Your verification code is 482913")
+    assert hide_secrets("Your booking confirmation code is 482913") == "Your booking confirmation code is 482913"
 
 
 def test_reset_and_magic_links_are_hidden():
