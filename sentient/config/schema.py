@@ -66,9 +66,9 @@ REQUIRED_MODEL_ROLES = {"primary", "fast", "embedding"}
 # quick jobs and voice).
 LOCAL_PRESET, CLOUD_PRESET, MIXED_PRESET = "Local only", "Cloud", "Mixed"
 PRESET_CLOUD_MODELS: dict[str, dict[str, str]] = {
-    "anthropic": {"main": "anthropic/claude-sonnet-5", "fast": "anthropic/claude-haiku-4-5"},
+    "anthropic": {"main": "anthropic/claude-sonnet-5-5", "fast": "anthropic/claude-haiku-5-5"},
     "openai": {"main": "openai/gpt-5", "fast": "openai/gpt-5-mini"},
-    "openrouter": {"main": "openrouter/anthropic/claude-sonnet-5", "fast": "openrouter/anthropic/claude-haiku-4.5"},
+    "openrouter": {"main": "openrouter/anthropic/claude-sonnet-5.5", "fast": "openrouter/anthropic/claude-haiku-5.5"},
 }
 
 
