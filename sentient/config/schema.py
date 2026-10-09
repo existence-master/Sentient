@@ -273,6 +273,19 @@ class TasksConfig(BaseModel):
         description="When Sentient restarts, continue runs that were in progress from their last checkpoint "
         "instead of marking them failed.",
     )
+    stuck_after_minutes: int = Field(
+        10, ge=0, description="A run that makes no progress for this many minutes (no reply from the AI model and no "
+        "finished step) stops and asks you what to do: try again, skip the step or cancel. 0 turns this off.",
+    )
+    stuck_after_repeated_errors: int = Field(
+        5, ge=0, le=50, description="A run whose step keeps failing with the same error this many times in a row "
+        "stops and asks you what to do. 0 turns this off.",
+    )
+    catch_up_window_hours: int = Field(
+        12, ge=0, le=168, description="When the computer was off or asleep at a task's scheduled time, run it once "
+        "when Sentient is back if it is less than this many hours late. Later ones are skipped and you're told. "
+        "A task never runs more than once to catch up. 0 always skips.",
+    )
 
 
 # ----------------------------------------------------------------------------- integrations (owner: integrations agent)
