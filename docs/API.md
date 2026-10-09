@@ -90,10 +90,11 @@ Everything the renderer needs on launch.
 `POST /api/onboarding`
 ```json
 {"user_name": "Sarthak", "assistant_name": "Sentient", "timezone": "Asia/Kolkata", "location": "Pune, India",
- "professional_context": "...", "personal_context": "...", "persona": "friendly|professional|concise|custom"}
+ "professional_context": "...", "personal_context": "...", "persona": "friendly|professional|concise|custom",
+ "daily_brief": false}
 ```
 Saves config, writes USER.md, seeds memory facts (source `onboarding`) in the background, sets
-`assistant.onboarding_complete = true`. → `{ok: true}`
+`assistant.onboarding_complete = true`. `daily_brief: true` sets up the Daily Brief with its defaults (section 6). → `{ok: true}`
 
 ### Config
 - `GET /api/config` → full config object (see `sentient/config/schema.py`).
@@ -261,8 +262,11 @@ done_text}` and a one-step `plan`. They are created `pending`, start a run at on
 and the run makes exactly that call with exactly those arguments (`tool_call`, `tool_result`, `final_answer` updates). A
 lasting Never rule on the tool or its app fails the run with the rule's message; a tool error fails it with that error. A
 run interrupted by a restart after the call started is not repeated: it fails and asks the user to check. Backend API:
-`await app.tasks.create_approved_call(name, tool, arguments, *, step, description=None, source, original_context, done_text)`
-→ Task.
+`await app.tasks.create_approved_call(name, tool, arguments, *, step, description=None, source, original_context, done_text,
+schedule=None, quiet=False)` → Task. With a recurring `schedule` the task is created `active` with its next run computed
+and makes the same call at each run (the Daily Brief, section 6); with `quiet` (`fixed_call.quiet: true`) a finished run
+sends no "Task completed" notification because the tool sends its own (failures still notify), and its result is the done
+text with no model call.
 **ProgressUpdate** `{"timestamp": "...", "message": {"type": "info|thought|tool_call|tool_result|final_answer|error", "content": "...", "tool_name": "...", "parameters": {}, "result": "...", "is_error": false}}`
 
 ### Endpoints
@@ -417,6 +421,10 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   `Skipped: it was due Sep 14, 18:30, while the computer was off or asleep. Choose Run now if you still want it.`
 - `interval` schedules (every N minutes) run once and are not reported, since their next check is due anyway; with
   `catch_up: "skip"` the missed check is skipped (and reported) instead.
+- Quiet fixed-call tasks (the Daily and Evening Brief, section 6) follow the same rules but only run while it is still
+  the local day they were due (a brief is about its day; an evening brief missed at 21:00 is skipped at 01:00), and are
+  never listed in the catch-up notification: the brief is its own notification, and a skipped one just moves to its
+  next time.
 - One notification per catch-up: `kind: "task"`, title `Caught up after sleep: ran 1, skipped 2` (or `after Sentient was
   off` on startup, `after resuming` after Stop everything), message `Ran once now: 'A'.` and/or `Skipped: 'B', 'C'. Open
   one and choose Run now if you still want it.`, `payload: {event: "caught_up", reason: "start"|"sleep"|"resume",
@@ -539,7 +547,7 @@ run the same masking again before their prompts. The original stays in the user'
 
 ## 6. Notifications & proactivity
 
-**Notification** `{id, kind: "info|task|approval|proactive|skill|error", title, message (markdown), payload: {}, task_id, read, created_at}`
+**Notification** `{id, kind: "info|task|approval|proactive|skill|error|brief", title, message (markdown), payload: {}, task_id, read, created_at}`
 
 Proactive suggestion payload:
 ```json
@@ -605,6 +613,93 @@ nothing is sent.
 - `DELETE /api/proactivity/preferences/{suggestion_type}` → `{ok}` (`ok: false` when there was nothing to reset)
 
 `threshold = clamp(base_confidence_threshold - 0.05 * score, 0.40, 0.95)` (v2).
+
+### Daily Brief and Evening Brief
+
+A short morning digest, and an optional evening wrap-up, each an ordinary recurring task the user can see, edit, pause or
+delete in Tasks. Setting one up (the "Set up my Daily Brief" button, the card's menu, or `daily_brief: true` at
+onboarding for the morning one) creates one already approved task through `app.tasks.create_approved_call` with a
+recurring schedule and `fixed_call = {tool: "daily_brief_build", arguments: {kind}, quiet: true}`
+(`original_context = {source: "brief", brief: kind}`):
+
+| kind | Task name | Default schedule | Task id in `meta` |
+|---|---|---|---|
+| `morning` | Daily Brief | weekdays at 07:30 local | `brief.task_id` |
+| `evening` | Evening Brief | every day at 21:00 local | `brief.evening_task_id` |
+
+The user set up that exact call, so it does not wait for plan approval. Deleting a task turns that brief off. Pausing
+(`enabled: false`) and changing the schedule work like any task (`PATCH /api/tasks/{id}`), and Stop everything pauses
+them like every scheduled task. A quiet run sends no "Task completed" notification and no model writes its report (the
+run's result summary is the done text, "Your Daily Brief is ready."). A brief missed while the computer was off or asleep
+runs once if it is less than `tasks.catch_up_window_hours` late and still the same day, otherwise it is skipped quietly
+(section 4, "Missed runs").
+
+Each run reads, using only `read` tools and never one behind an Ask or Never rule (`tools.approvals.rules`). Morning
+sections:
+- `calendar`: today's events from `gcal_list_events` that are not over yet (`HH:MM Title (place)`), when Google Calendar is connected.
+- `email`: pending proactive suggestions from `gmail`/`email_imap` (follow-ups included), then unread important Gmail from
+  the last two days that no suggestion covers. The `fast` model may shorten each unread email to one line
+  (`proactivity.brief.summarize_emails`, one call for all of them, numbered lines parsed loosely; the sender and subject
+  are kept when an answer is unusable). The model never adds or removes lines.
+- `tasks`: tasks waiting for the user (a question, a plan to approve, answers to give, a failure), most urgent first, then
+  tasks due later today. The briefs' own tasks are left out of every section.
+- `weather`: `weather_current` for `assistant.location` (skipped without a city).
+- `news`: one headline per topic in `proactivity.brief.news_topics` (up to 3) from `news_search`.
+
+Evening sections (no model call at all):
+- `done`: tasks whose latest run today failed (first, "Name: failed") or finished ("Name: done").
+- `sent`: runs that finished today and sent email: an approved follow-up (`fixed_call.tool` is `gmail_reply`, `gmail_send`
+  or `email_imap_send`; "Send reply to Priya: ..." becomes "Sent reply to Priya: ...") or a run that called one of those tools.
+- `files`: `files_created` of runs that finished today, then files changed today in the files folder (`files/uploads/`
+  and `files/outputs/tool-*.txt` left out).
+- `waiting`: tasks waiting for the user (except ones that failed today, already under `done`) and pending suggestions.
+- `tomorrow`: tomorrow's first 3 events from `gcal_list_events`.
+
+Sections come from `proactivity.brief.sections` (default `calendar, email, tasks, weather`; news needs topics) and
+`proactivity.brief.evening_sections` (default all five). They are ordered by their learned score
+(`daily_brief_<section>` in the proactivity preferences), best liked first. A section may show 3 lines (weather 1, news,
+sent and files 2), one more with a score of 3 or above and one fewer with -3 or below (never fewer than 1). The brief takes
+one line from every section first, then fills up in section order, up to `proactivity.brief.max_items` (7) lines.
+Delivery is a `brief` notification. One brief shows at a time: a new one (of either kind) expires the brief still showing.
+
+`brief` notification payload: `{"brief": Brief, "status": "active|expired", "task_id": "..."}`; `message` is the brief as
+markdown (a bold label per section, one `- line` per item); `title` is `"Your Daily Brief for Monday"` or
+`"Your Evening Brief for Monday"`.
+```json
+{"kind": "morning|evening", "day": "2026-10-12", "title": "Your Daily Brief for Monday",
+ "expires_at": "2026-10-13T00:00:00+00:00",
+ "sections": [{"id": "calendar", "label": "Calendar", "feedback": null}],
+ "items": [{"id": "calendar-3f2a9c01de", "section": "calendar", "text": "09:30 Design review (Room 4)",
+   "link": "https://calendar.google.com/...", "why": "On your calendar today", "feedback": "up|down|null",
+   "notification_id": "only on lines that came from a suggestion"}],
+ "skipped": [{"section": "weather", "label": "Weather", "reason": "Add your city in Settings to see the weather."}]}
+```
+`link` is a web address, an in-app route (`/tasks/<id>`, `/notifications`) or `null`. A brief expires at the end of the
+user's local day: `payload.status` becomes `expired` (`notification.updated`) and it is marked read. The desktop shows the
+brief as a card above the feed rather than as a feed row, and marks it read when the card shows it. Paired chats with
+`deliver` on receive it as text with links (`channels.deliver_briefs`, section 14). The `daily_brief_today` tool (read,
+optional `kind`) returns the brief showing as plain lines, or builds one without delivering it, so "read my brief" works
+in chat, by voice and in paired chats; `daily_brief_build` (internal write, `kind`) makes and delivers one now. Neither is
+offered to proactive look-ups.
+
+- `GET /api/proactivity/brief` → `{set_up, task_id, enabled, time: "07:30", days: ["Monday", ...], next_at, sections,
+  news_topics, max_items, available: {<section>: bool}, today: Brief + {id, status, task_id, created_at} | null,
+  evening: {set_up, task_id, enabled, time, days, next_at, sections}}` (the morning brief's fields at the top level;
+  `available` says whether a section can find anything now: an app connected, a city or topics set; `today` is the brief
+  showing, of either kind, and `today.id` is the notification id)
+- `POST /api/proactivity/brief` `{kind?: "morning"|"evening", time?, days?, sections?, news_topics?, max_items?}` → same
+  shape. Creates that brief's task the first time, otherwise changes it; `days` left out keeps the task's days. `time` is
+  `HH:MM` or one of `early` (06:30), `morning` (07:30), `midday`/`noon` (12:00), `afternoon` (14:00), `evening` (18:00),
+  `night` (21:00); `days` is a list of day names, `"weekdays"` or `"daily"`. `sections` (saved to `sections` or
+  `evening_sections`, unknown ids dropped), `news_topics` (up to 5) and `max_items` (1 to 20) are saved to
+  `proactivity.brief`. 400 on a bad value or kind.
+- `POST /api/proactivity/brief/run` `{kind?}` → `{ok, task_id}`: runs that brief's task now (409 when it is not set up or
+  cannot run now).
+- `POST /api/proactivity/brief/feedback` `{brief_id, value: "up"|"down", item_id? | section?}` → the updated brief. Records
+  `+1`/`-1` for `daily_brief_<section>` (the same scores as suggestions, so they show and reset in
+  `GET/DELETE /api/proactivity/preferences`). Changing a rating replaces it: the earlier one is taken back first, so the
+  latest wins; the same rating again changes nothing. 400 bad value or neither/both targets, 404 unknown brief or line,
+  409 expired.
 
 ---
 
@@ -1019,7 +1114,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `payload.subagent_id`. Text is a short, link-free summary. Buttons are replaced by the outcome when pressed, or when
   `notification.updated` shows the plan/suggestion was handled elsewhere. A background subagent (`subagent.updated`,
   `background: true`, `completed`/`error`) whose session belongs to a paired chat sends its summary to that chat once.
-  Toggles: `channels.deliver_task_results`, `deliver_plans`, `deliver_suggestions`, `deliver_subagents`.
+  The Daily Brief (`kind: "brief"`, `payload.status: "active"`) is sent as its sections and lines, with links.
+  Toggles: `channels.deliver_task_results`, `deliver_plans`, `deliver_suggestions`, `deliver_subagents`, `deliver_briefs`.
 - Answering a task's question by replying: the delivered question ends with "Tap an option, or reply to this message
   with your answer." (without options: "Reply to this message with your answer."). The ids of the messages that carried
   the question are stored per chat in SQLite (`channel_questions`, kept 90 days), so this survives restarts. A text

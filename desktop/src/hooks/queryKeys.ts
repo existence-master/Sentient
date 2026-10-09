@@ -37,7 +37,8 @@ export const qk = {
   notifications: ['notifications'] as const,
   proactivity: {
     status: ['proactivity', 'status'] as const,
-    preferences: ['proactivity', 'preferences'] as const
+    preferences: ['proactivity', 'preferences'] as const,
+    brief: ['proactivity', 'brief'] as const
   },
 
   memories: {

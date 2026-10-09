@@ -53,6 +53,7 @@ except ImportError:  # pragma: no cover
 from sentient.integrations import redact
 from sentient.llm.provider import parse_json_loose
 from sentient.proactivity import followups, prompts
+from sentient.proactivity.brief import BriefPlugin, DailyBrief
 from sentient.proactivity.prefilter import (
     event_pre_filter,
     event_start,
@@ -73,7 +74,7 @@ PUSH_ORIGINS = {"feed", "webhook"}
 SOURCE_LABELS = {"gmail": "Gmail", "gcalendar": "Calendar", "email_imap": "Email", "heartbeat": "Check-in", "webhook": "Webhook"}
 DEFAULT_TYPE = "custom_proactive_action"
 LIVE_SEARCH_MAX_CHARS = 4000  # longest look-up summary handed to the reasoner
-CONTEXT_EXCLUDED_PLUGINS = {"memory", "skills", "files", "core"}
+CONTEXT_EXCLUDED_PLUGINS = {"memory", "skills", "files", "core", BriefPlugin.id}
 ATTENTION_STATUSES = {"approval_pending", "clarification_pending", "waiting_for_user", "error", "completed_with_errors"}
 INACTIVE_TASK_STATUSES = {"archived", "cancelled", "declined", "completed"}
 OPEN_STATUSES = ("pending", "deferred")
@@ -161,6 +162,7 @@ class ProactiveEngine(Service):
         self._followup_lock = asyncio.Lock()
         self._acting: set[str] = set()  # suggestions being approved or dismissed right now
         self._background: set[asyncio.Task] = set()
+        self.brief = DailyBrief(self)
 
     @property
     def cfg(self):
@@ -168,6 +170,8 @@ class ProactiveEngine(Service):
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
+        if not any(p.id == BriefPlugin.id for p in self.app.registry.plugins()):
+            self.app.registry.register(BriefPlugin())
         if not self.app.enable_background:
             return
         self._loops.append(asyncio.create_task(self._listen(), name="proactivity:bus"))
@@ -210,6 +214,7 @@ class ProactiveEngine(Service):
         if self.cfg.enabled:
             await self.flush_deferred()
         await self.expire_stale(now)
+        await self.brief.expire(now)
 
     async def _due(self, key: str, every: timedelta, now: datetime) -> bool:
         raw = await self.app.store.get_meta(key)
@@ -954,6 +959,14 @@ class ProactiveEngine(Service):
             " approvals = approvals + excluded.approvals, dismissals = dismissals + excluded.dismissals,"
             " updated_at = excluded.updated_at",
             (suggestion_type, 1 if positive else -1, int(positive), int(not positive), _iso(datetime.now(UTC))),
+        )
+
+    async def undo_feedback(self, suggestion_type: str, positive: bool) -> None:
+        """Take back one earlier ``record_feedback`` (a Daily Brief rating the user changed)."""
+        await self.app.store.execute(
+            "UPDATE proactive_preferences SET score = score - ?, approvals = MAX(0, approvals - ?),"
+            " dismissals = MAX(0, dismissals - ?), updated_at = ? WHERE suggestion_type = ?",
+            (1 if positive else -1, int(positive), int(not positive), _iso(datetime.now(UTC)), suggestion_type),
         )
 
     async def preferences(self) -> list[dict]:

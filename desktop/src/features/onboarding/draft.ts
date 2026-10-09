@@ -15,6 +15,8 @@ export interface OnboardingDraft {
   fast: string
   embedding: string
   cloudProvider: string
+  /** Opt in to the Daily Brief (off until the user turns it on). */
+  daily_brief: boolean
 }
 
 interface DraftState extends OnboardingDraft {
@@ -34,7 +36,8 @@ const initial = (): OnboardingDraft => ({
   primary: '',
   fast: '',
   embedding: '',
-  cloudProvider: ''
+  cloudProvider: '',
+  daily_brief: false
 })
 
 /** Onboarding answers survive a reload (sessionStorage) until setup finishes. */

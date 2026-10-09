@@ -70,6 +70,12 @@ import type {
   Persona,
   PrivacyFilters,
   ProactivityPreference,
+  Brief,
+  BriefFeedback,
+  BriefKind,
+  BriefSectionId,
+  BriefSetup,
+  BriefState,
   ProactivityStatus,
   ProgressUpdate,
   Provider,
@@ -531,7 +537,16 @@ export const api = {
     pollNow: () => http.post<{ ok: boolean; events: number }>('/api/proactivity/poll-now'),
     preferences: () => http.get<ProactivityPreference[]>('/api/proactivity/preferences'),
     resetPreference: (suggestionType: string) =>
-      http.delete<OkResponse>(`/api/proactivity/preferences/${enc(suggestionType)}`)
+      http.delete<OkResponse>(`/api/proactivity/preferences/${enc(suggestionType)}`),
+    /** Daily Brief: a recurring task the user can edit, pause or delete in Tasks. */
+    brief: {
+      get: () => http.get<BriefState>('/api/proactivity/brief'),
+      /** Set it up (creates the task once) or change time, days, sections and topics. */
+      setup: (body: BriefSetup = {}) => http.post<BriefState>('/api/proactivity/brief', body),
+      runNow: (kind: BriefKind = 'morning') => http.post<{ ok: boolean; task_id: string }>('/api/proactivity/brief/run', { kind }),
+      feedback: (body: { brief_id: string; value: BriefFeedback; item_id?: string; section?: BriefSectionId }) =>
+        http.post<Brief>('/api/proactivity/brief/feedback', body)
+    }
   },
 
   // §7 memory ------------------------------------------------------------------
