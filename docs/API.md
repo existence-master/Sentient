@@ -52,7 +52,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `task.deleted` | `{task_id}` |
 | `task.run_progress` | `{task_id, run_id, update: ProgressUpdate}` |
 | `notification.new` | **Notification** (§6) |
-| `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"|"declined"`; a task question (`payload.event = "question"`) gains `payload.status = "answered"` with `payload.answer`, or `"cancelled"`) |
+| `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"\|"declined"`; a task question (`payload.event = "question"`) gains `payload.status = "answered"` with `payload.answer`, or `"cancelled"`) |
 | `notification.read` / `notification.deleted` | `{id}` (`null` = all) |
 | `integration.updated` | **Integration** (§5) |
 | `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?}`; bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count` |
@@ -114,9 +114,12 @@ applied in code before every call and take effect at once:
   and the usual `run_failed` notification; `LoopResult.stopped_by_rule` and `LoopResult.error` carry the same text).
   Subagents and scripts refuse the call, and proactive look-ups leave the tool out.
 - `allow`: runs without asking in modes `ask` and `always`, except a purchase (effective risk `send` or higher whose
-  approval wording `risk_label` is "Purchase", such as a browser click on "Place order"), which asks every time unless
-  approvals mode is `off`. "Allow for this chat" never covers a purchase. `allow` does not widen what scripts may call
+  approval wording `risk_label` is "Purchase", such as a browser click on "Place order"), which asks every time.
+  "Allow for this chat" never covers a purchase. `allow` does not widen what scripts may call
   (section 11): they still only read.
+- Purchases ask in every approvals mode, `off` included (only `browser.confirm_purchases: false` turns that off),
+  and scripts refuse them in every mode. Rules are read again right before a tool runs and on every script tool call,
+  so a rule changed while a call waits for approval, or while a script runs, applies to it.
 Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
 `await app.approvals.decide(tool, session_id, risk, arguments, ctx) -> bool`, pure helpers in `sentient.tools.rules`.
 

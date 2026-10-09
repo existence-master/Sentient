@@ -14,6 +14,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Lasting rules for apps and tools in Settings > Approvals & safety: **Allow** (go ahead without asking),
   **Ask** (always ask first) or **Never** (Sentient can't use it). Purchases always ask.
 
+### Security
+- Purchases now ask even when approvals are switched off, and code Sentient writes can never make one. A tool set
+  to Never while a request waits for your yes, or while a script runs, is blocked right away.
+
 ## [3.0.0-alpha.0] - 2026-10-08
 
 Sentient v3: a rewrite as a desktop app that runs on your own computer. No account, no servers, no `.env`.
