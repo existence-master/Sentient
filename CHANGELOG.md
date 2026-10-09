@@ -31,6 +31,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   title bar, the tray menu, the shortcut Ctrl+Alt+Shift+S, `/stopall` in paired Telegram and Discord chats, and on
   paired phones. Messages you queued before the stop are not sent. It never asks the model, so nothing can
   talk its way past it.
+- **Remote MCP servers that need sign-in:** hosted servers such as Notion's or Composio's can now be used. Add a
+  remote server and click **Sign in** to approve Sentient in your browser; Sentient refreshes the sign-in on its own and
+  **Sign out** forgets it. Servers that take an access token instead get headers (like `Authorization: Bearer ...`)
+  whose values are kept in your system keychain. A server that turns Sentient away now shows "Needs sign-in" instead
+  of a generic error.
 - **Check my models:** a check-up in Settings > Models and in onboarding tests each role's model the way Sentient
   uses it: a short reply, a tool call (and a second tool step for chat and tasks), a JSON reply for background jobs,
   thinking, context length, and whether Ollama runs the model on the graphics card or partly on the processor. Each

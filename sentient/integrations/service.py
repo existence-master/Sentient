@@ -408,6 +408,8 @@ class IntegrationManager(Service):
         return {"auth_url": auth_url, "state": state}
 
     async def _oauth_callback(self, params: dict[str, str]) -> tuple[bool, str]:
+        if self.mcp.owns_state(params.get("state", "")):
+            return await self.mcp.oauth_callback(params)
         flow = self._pending_oauth.pop(params.get("state", ""), None)
         if flow is None or time.time() - flow["created"] > OAUTH_FLOW_TTL_S:
             return False, "This sign-in link has expired."

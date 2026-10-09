@@ -4,6 +4,8 @@ import {
   IconEye,
   IconEyeOff,
   IconKey,
+  IconLogin2,
+  IconLogout,
   IconPlus,
   IconRefresh,
   IconServer2,
@@ -32,7 +34,7 @@ import {
 } from '@/components/ui'
 import { useMcpActions, useMcpServers } from '@/hooks/integrations'
 import { errorMessage, isNotImplemented } from '@/lib/api'
-import type { McpServer } from '@/lib/types'
+import type { McpAuth, McpServer } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { BrandIcon } from './BrandIcon'
 import { plainDescription, RISK_LABEL, riskOf, toolLabel } from './meta'
@@ -40,6 +42,7 @@ import { plainDescription, RISK_LABEL, riskOf, toolLabel } from './meta'
 const STATUS: Record<string, { tone: Tone; label: string }> = {
   connected: { tone: 'success', label: 'Connected' },
   connecting: { tone: 'warning', label: 'Connecting…' },
+  needs_sign_in: { tone: 'warning', label: 'Needs sign-in' },
   error: { tone: 'danger', label: 'Error' },
   disconnected: { tone: 'neutral', label: 'Disconnected' },
   disabled: { tone: 'neutral', label: 'Turned off' }
@@ -108,11 +111,17 @@ export function McpServersSection({ id }: { id?: string }) {
 }
 
 function McpServerRow({ server: s }: { server: McpServer }) {
-  const { test, remove } = useMcpActions()
+  const { test, remove, signIn, signOut } = useMcpActions()
   const [confirm, setConfirm] = useState(false)
   const [open, setOpen] = useState(false)
   const status = STATUS[s.status] ?? { tone: 'neutral' as Tone, label: s.status }
   const target = s.transport === 'http' ? s.url : [s.command, ...(s.args ?? [])].filter(Boolean).join(' ')
+  const canSignIn = s.transport === 'http' && (s.status === 'needs_sign_in' || (s.auth === 'oauth' && !s.signed_in))
+  const startSignIn = () =>
+    signIn.mutate(s.name, {
+      onSuccess: () => toast.info('Finish signing in with your browser', { description: `Sentient connects to ${s.name} once you approve it.` }),
+      onError: (e) => toast.error("Couldn't start the sign-in", { description: errorMessage(e) })
+    })
 
   return (
     <li className={cn('overflow-hidden rounded-xl border bg-surface', s.status === 'error' ? 'border-danger/30' : 'border-border')}>
@@ -133,6 +142,27 @@ function McpServerRow({ server: s }: { server: McpServer }) {
             {target}
           </div>
         </div>
+        {canSignIn && (
+          <Button size="sm" variant="primary" leftIcon={<IconLogin2 size={14} />} loading={signIn.isPending && signIn.variables === s.name} onClick={startSignIn}>
+            {s.signing_in ? 'Sign in again' : 'Sign in'}
+          </Button>
+        )}
+        {s.signed_in && !canSignIn && (
+          <Button
+            size="sm"
+            variant="ghost"
+            leftIcon={<IconLogout size={14} />}
+            loading={signOut.isPending && signOut.variables === s.name}
+            onClick={() =>
+              signOut.mutate(s.name, {
+                onSuccess: () => toast.success(`Signed out of ${s.name}`),
+                onError: (e) => toast.error("Couldn't sign out", { description: errorMessage(e) })
+              })
+            }
+          >
+            Sign out
+          </Button>
+        )}
         <Button
           size="sm"
           variant="ghost"
@@ -153,6 +183,23 @@ function McpServerRow({ server: s }: { server: McpServer }) {
         <IconButton size="sm" label="Remove server" icon={<IconTrash size={15} />} onClick={() => setConfirm(true)} />
       </div>
 
+      {s.signing_in ? (
+        <div className="px-4 pb-3">
+          <Alert tone="info" icon={<Spinner size={14} />} className="py-2.5">
+            Waiting for you to approve Sentient in your browser.
+          </Alert>
+        </div>
+      ) : (
+        s.status === 'needs_sign_in' &&
+        s.error && (
+          <div className="px-4 pb-3">
+            <Alert tone="warning" icon={<IconAlertTriangle />} className="py-2.5">
+              {s.error}
+            </Alert>
+          </div>
+        )
+      )}
+
       {s.status === 'error' && s.error && (
         <div className="px-4 pb-3">
           <Alert tone="danger" icon={<IconAlertTriangle />} className="py-2.5">
@@ -167,6 +214,16 @@ function McpServerRow({ server: s }: { server: McpServer }) {
             {k}
           </Badge>
         ))}
+        {s.header_keys.map((k) => (
+          <Badge key={`h-${k}`} size="xs" icon={<IconKey />}>
+            {k}
+          </Badge>
+        ))}
+        {s.signed_in && (
+          <Badge size="xs" tone="success" icon={<IconLogin2 />}>
+            Signed in
+          </Badge>
+        )}
         {s.tools.length ? (
           <button type="button" onClick={() => setOpen((o) => !o)} className="flex items-center gap-1 text-xs font-medium text-fg-muted hover:text-fg">
             <IconChevronDown size={13} className={cn('transition-transform', open && 'rotate-180')} />
@@ -202,7 +259,7 @@ function McpServerRow({ server: s }: { server: McpServer }) {
         open={confirm}
         onOpenChange={setConfirm}
         title={`Remove ${s.name}?`}
-        description="The server is stopped and its tools disappear from Sentient. Saved environment values are deleted from your keychain."
+        description="The server is stopped and its tools disappear from Sentient. Saved values and sign-ins are deleted from your keychain."
         confirmLabel="Remove"
         onConfirm={async () => {
           try {
@@ -217,21 +274,94 @@ function McpServerRow({ server: s }: { server: McpServer }) {
   )
 }
 
-interface EnvRow {
+interface SecretRow {
   id: number
   key: string
   value: string
   show: boolean
 }
 
+const AUTH_HELP: Record<McpAuth, string> = {
+  none: 'The server is open, or you will sign in later if it asks.',
+  headers: 'For servers that give you an access token or API key. Values go to your system keychain.',
+  oauth: 'Your browser opens so you can approve Sentient. Sentient keeps you signed in.'
+}
+
+function SecretRows({
+  title,
+  description,
+  rows,
+  setRows,
+  keyPlaceholder,
+  valuePlaceholder,
+  normalizeKey
+}: {
+  title: string
+  description: string
+  rows: SecretRow[]
+  setRows: (update: (rows: SecretRow[]) => SecretRow[]) => void
+  keyPlaceholder: string
+  valuePlaceholder: string
+  normalizeKey: (key: string) => string
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-sm font-medium text-fg">{title}</div>
+          <div className="text-xs text-fg-subtle">{description}</div>
+        </div>
+        <Button size="xs" variant="ghost" leftIcon={<IconPlus size={12} />} onClick={() => setRows((r) => [...r, { id: Date.now(), key: '', value: '', show: false }])}>
+          Add
+        </Button>
+      </div>
+      {rows.map((row) => (
+        <div key={row.id} className="flex items-center gap-2">
+          <Input
+            size="sm"
+            className="font-mono"
+            wrapperClassName="w-[40%]"
+            placeholder={keyPlaceholder}
+            value={row.key}
+            onChange={(e) => setRows((r) => r.map((x) => (x.id === row.id ? { ...x, key: normalizeKey(e.target.value) } : x)))}
+          />
+          <Input
+            size="sm"
+            className="font-mono"
+            type={row.show ? 'text' : 'password'}
+            placeholder={valuePlaceholder}
+            value={row.value}
+            onChange={(e) => setRows((r) => r.map((x) => (x.id === row.id ? { ...x, value: e.target.value } : x)))}
+            rightSlot={
+              <button
+                type="button"
+                aria-label={row.show ? 'Hide value' : 'Show value'}
+                onClick={() => setRows((r) => r.map((x) => (x.id === row.id ? { ...x, show: !x.show } : x)))}
+                className="flex size-5 items-center justify-center text-fg-subtle hover:text-fg"
+              >
+                {row.show ? <IconEyeOff size={13} /> : <IconEye size={13} />}
+              </button>
+            }
+          />
+          <IconButton size="sm" label="Remove" icon={<IconX size={14} />} onClick={() => setRows((r) => r.filter((x) => x.id !== row.id))} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+const toObject = (rows: SecretRow[]) => Object.fromEntries(rows.filter((r) => r.key.trim()).map((r) => [r.key.trim(), r.value]))
+
 function AddMcpDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const { add } = useMcpActions()
+  const { add, signIn } = useMcpActions()
   const [name, setName] = useState('')
   const [transport, setTransport] = useState<'stdio' | 'http'>('stdio')
   const [command, setCommand] = useState('')
   const [args, setArgs] = useState('')
   const [url, setUrl] = useState('')
-  const [env, setEnv] = useState<EnvRow[]>([])
+  const [auth, setAuth] = useState<McpAuth>('none')
+  const [env, setEnv] = useState<SecretRow[]>([])
+  const [headers, setHeaders] = useState<SecretRow[]>([])
   const [touched, setTouched] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -241,26 +371,34 @@ function AddMcpDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
     setCommand('')
     setArgs('')
     setUrl('')
+    setAuth('none')
     setEnv([])
+    setHeaders([])
     setTouched(false)
     setError(null)
   }
 
   const nameInvalid = !/^[A-Za-z0-9][A-Za-z0-9 _-]{0,40}$/.test(name.trim())
   const targetInvalid = transport === 'stdio' ? !command.trim() : !/^https?:\/\/\S+$/.test(url.trim())
+  const headersInvalid = transport === 'http' && auth === 'headers' && !headers.some((r) => r.key.trim() && r.value.trim())
 
   const submit = () => {
     setTouched(true)
-    if (nameInvalid || targetInvalid) return
+    if (nameInvalid || targetInvalid || headersInvalid) return
     setError(null)
-    const envObj = Object.fromEntries(env.filter((r) => r.key.trim()).map((r) => [r.key.trim(), r.value]))
     add.mutate(
       transport === 'stdio'
-        ? { name: name.trim(), transport, command: command.trim(), args: splitArgs(args), env: envObj }
-        : { name: name.trim(), transport, url: url.trim(), env: envObj },
+        ? { name: name.trim(), transport, command: command.trim(), args: splitArgs(args), env: toObject(env) }
+        : { name: name.trim(), transport, url: url.trim(), auth, headers: auth === 'headers' ? toObject(headers) : {} },
       {
         onSuccess: (srv) => {
-          if (srv.status === 'error') toast.warning(`${srv.name} was added but couldn't start`, { description: srv.error ?? undefined })
+          if (srv.auth === 'oauth' && !srv.signed_in) {
+            signIn.mutate(srv.name, {
+              onSuccess: () => toast.info(`${srv.name} was added`, { description: 'Finish signing in with your browser.' }),
+              onError: (e) => toast.warning(`${srv.name} was added but the sign-in didn't start`, { description: errorMessage(e) })
+            })
+          } else if (srv.status === 'needs_sign_in') toast.warning(`${srv.name} asks you to sign in`, { description: srv.error ?? 'Use Sign in on the server.' })
+          else if (srv.status === 'error') toast.warning(`${srv.name} was added but couldn't start`, { description: srv.error ?? undefined })
           else if (srv.status === 'connected') toast.success(`${srv.name} is connected`, { description: `${srv.tools.length} tools available` })
           else toast.success(`${srv.name} added`, { description: 'Still connecting in the background.' })
           reset()
@@ -324,62 +462,62 @@ function AddMcpDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
           ]}
         />
         {transport === 'stdio' ? (
-          <div className="grid gap-3 sm:grid-cols-[1fr_1.4fr]">
-            <Field label="Command" htmlFor="mcp-cmd" error={touched && targetInvalid ? 'Required' : undefined}>
-              <Input id="mcp-cmd" className="font-mono text-xs" value={command} placeholder="npx" invalid={touched && targetInvalid} onChange={(e) => setCommand(e.target.value)} />
-            </Field>
-            <Field label="Arguments" htmlFor="mcp-args" optional description='Separated by spaces. Quote values with spaces.'>
-              <Input id="mcp-args" className="font-mono text-xs" value={args} placeholder="-y @acme/mcp-server" onChange={(e) => setArgs(e.target.value)} />
-            </Field>
-          </div>
+          <>
+            <div className="grid gap-3 sm:grid-cols-[1fr_1.4fr]">
+              <Field label="Command" htmlFor="mcp-cmd" error={touched && targetInvalid ? 'Required' : undefined}>
+                <Input id="mcp-cmd" className="font-mono text-xs" value={command} placeholder="npx" invalid={touched && targetInvalid} onChange={(e) => setCommand(e.target.value)} />
+              </Field>
+              <Field label="Arguments" htmlFor="mcp-args" optional description='Separated by spaces. Quote values with spaces.'>
+                <Input id="mcp-args" className="font-mono text-xs" value={args} placeholder="-y @acme/mcp-server" onChange={(e) => setArgs(e.target.value)} />
+              </Field>
+            </div>
+            <SecretRows
+              title="Environment variables"
+              description="API keys and tokens the server needs. Values go to your system keychain."
+              rows={env}
+              setRows={setEnv}
+              keyPlaceholder="API_KEY"
+              valuePlaceholder="value"
+              normalizeKey={(k) => k.toUpperCase().replace(/\s+/g, '_')}
+            />
+          </>
         ) : (
-          <Field label="Server URL" htmlFor="mcp-url" error={touched && targetInvalid ? 'Enter an http(s) URL' : undefined}>
-            <Input id="mcp-url" className="font-mono text-xs" value={url} placeholder="https://mcp.example.com/mcp" invalid={touched && targetInvalid} onChange={(e) => setUrl(e.target.value)} />
-          </Field>
+          <>
+            <Field label="Server URL" htmlFor="mcp-url" error={touched && targetInvalid ? 'Enter an http(s) URL' : undefined}>
+              <Input id="mcp-url" className="font-mono text-xs" value={url} placeholder="https://mcp.example.com/mcp" invalid={touched && targetInvalid} onChange={(e) => setUrl(e.target.value)} />
+            </Field>
+            <Field label="Sign-in" description={AUTH_HELP[auth]}>
+              <SegmentedControl
+                fullWidth
+                size="sm"
+                value={auth}
+                onChange={(v) => {
+                  setAuth(v)
+                  if (v === 'headers' && !headers.length) setHeaders([{ id: Date.now(), key: 'Authorization', value: '', show: false }])
+                }}
+                options={[
+                  { value: 'none', label: 'None' },
+                  { value: 'oauth', label: 'Sign in with browser', icon: <IconLogin2 size={14} /> },
+                  { value: 'headers', label: 'Access token', icon: <IconKey size={14} /> }
+                ]}
+              />
+            </Field>
+            {auth === 'headers' && (
+              <>
+                <SecretRows
+                  title="Headers"
+                  description="Sent with every request, for example Authorization with the value Bearer and your token."
+                  rows={headers}
+                  setRows={setHeaders}
+                  keyPlaceholder="Authorization"
+                  valuePlaceholder="Bearer your-token"
+                  normalizeKey={(k) => k.replace(/\s+/g, '-')}
+                />
+                {touched && headersInvalid && <p className="text-xs text-danger">Add a header with a name and a value.</p>}
+              </>
+            )}
+          </>
         )}
-
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm font-medium text-fg">Environment variables</div>
-              <div className="text-xs text-fg-subtle">API keys and tokens the server needs. Values go to your system keychain.</div>
-            </div>
-            <Button size="xs" variant="ghost" leftIcon={<IconPlus size={12} />} onClick={() => setEnv((rows) => [...rows, { id: Date.now(), key: '', value: '', show: false }])}>
-              Add
-            </Button>
-          </div>
-          {env.map((row) => (
-            <div key={row.id} className="flex items-center gap-2">
-              <Input
-                size="sm"
-                className="font-mono"
-                wrapperClassName="w-[40%]"
-                placeholder="API_KEY"
-                value={row.key}
-                onChange={(e) => setEnv((rows) => rows.map((r) => (r.id === row.id ? { ...r, key: e.target.value.toUpperCase().replace(/\s+/g, '_') } : r)))}
-              />
-              <Input
-                size="sm"
-                className="font-mono"
-                type={row.show ? 'text' : 'password'}
-                placeholder="value"
-                value={row.value}
-                onChange={(e) => setEnv((rows) => rows.map((r) => (r.id === row.id ? { ...r, value: e.target.value } : r)))}
-                rightSlot={
-                  <button
-                    type="button"
-                    aria-label={row.show ? 'Hide value' : 'Show value'}
-                    onClick={() => setEnv((rows) => rows.map((r) => (r.id === row.id ? { ...r, show: !r.show } : r)))}
-                    className="flex size-5 items-center justify-center text-fg-subtle hover:text-fg"
-                  >
-                    {row.show ? <IconEyeOff size={13} /> : <IconEye size={13} />}
-                  </button>
-                }
-              />
-              <IconButton size="sm" label="Remove variable" icon={<IconX size={14} />} onClick={() => setEnv((rows) => rows.filter((r) => r.id !== row.id))} />
-            </div>
-          ))}
-        </div>
 
         {error && (
           <Alert tone="danger" icon={<IconAlertTriangle />} title="Couldn't add the server">

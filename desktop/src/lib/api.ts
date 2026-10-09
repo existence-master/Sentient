@@ -51,6 +51,7 @@ import type {
   LocalModels,
   McpServer,
   McpServerCreate,
+  McpSignInStart,
   McpTestResult,
   Memory,
   MemoryGraph,
@@ -502,7 +503,9 @@ export const api = {
       list: () => http.get<McpServer[]>('/api/integrations/mcp'),
       add: (body: McpServerCreate) => http.post<McpServer>('/api/integrations/mcp', body),
       remove: (name: string) => http.delete<OkResponse>(`/api/integrations/mcp/${enc(name)}`),
-      test: (name: string) => http.post<McpTestResult>(`/api/integrations/mcp/${enc(name)}/test`)
+      test: (name: string) => http.post<McpTestResult>(`/api/integrations/mcp/${enc(name)}/test`),
+      signIn: (name: string) => http.post<McpSignInStart>(`/api/integrations/mcp/${enc(name)}/sign-in`),
+      signOut: (name: string) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/sign-out`)
     },
     /** §16 change feeds (Gmail, Calendar) and IMAP push watchers. */
     feeds: {
