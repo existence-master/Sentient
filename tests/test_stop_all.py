@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -180,3 +181,62 @@ def test_routes_bootstrap_and_webhooks(config, isolated_home, monkeypatch):
         call = c.post(f"/hooks/{hook['id']}", json={"open": True}, headers={"X-Sentient-Secret": hook["secret"]})
         assert call.status_code == 200
         assert c.post("/api/stop-all", headers={"Authorization": "Bearer nope"}).status_code == 401
+
+
+def test_messages_queued_before_the_stop_are_dropped(config, isolated_home, monkeypatch):
+    monkeypatch.setenv("SENTIENT_GATEWAY_TOKEN", "test-token")
+    started = threading.Event()
+
+    @tool("slow_lookup", risk=Risk.read)
+    async def slow_lookup(ctx: ToolContext) -> dict:
+        """Slow lookup."""
+        started.set()
+        await asyncio.Event().wait()
+        return {"ok": True}
+
+    class Slow(ToolPlugin):
+        id = "slow"
+        display_name = "Slow"
+        tools = [slow_lookup]
+
+    llm = FakeProvider(replies=[[tool_call("slow_lookup")], "never", "after the stop"])
+    core = SentientApp(config, llm=llm, db_path=isolated_home / "queued.db", enable_background=False)
+    with TestClient(create_app(core)) as c:
+        core.registry.register(Slow())
+        c.headers.update({"Authorization": "Bearer test-token"})
+        with c.websocket_connect("/ws?token=test-token") as ws:
+            assert ws.receive_json()["type"] == "hello"
+            seen: list[dict] = []
+            ws.send_json({"type": "chat.send", "text": "look it up"})
+            sid = _until(ws, "session", seen)["session_id"]
+            assert started.wait(5)
+            ws.send_json({"type": "chat.send", "session_id": sid, "text": "and use metric units", "client_id": "k1"})
+            assert _until(ws, "steer_ack", seen)["queued"] is True  # waits for the next model round
+            # with an attachment it can't steer, so it queues as the next turn behind the running reply
+            ws.send_json({"type": "chat.send", "session_id": sid, "text": "then this", "attachments": ["a.txt"], "client_id": "k2"})
+            _until(ws, "session", seen)
+
+            assert c.post("/api/stop-all").json()["cancelled"] == 1
+            first = _until(ws, "done", seen)
+            assert first["cancelled"] is True and "dropped" not in first
+            second = _until(ws, "done", seen)
+            assert second == {"type": "done", "content": "", "session_id": sid, "cancelled": True, "dropped": ["then this"]}
+            assert {"type": "error", "message": "Stopped. Your queued message wasn't sent.", "session_id": sid,
+                    "recoverable": True} in seen
+            assert len(llm.calls) == 1  # neither queued message reached the model
+            assert core.stop_dropped == {sid: ["and use metric units"]}
+
+            # a message sent after the stop works as usual
+            seen = []
+            ws.send_json({"type": "chat.send", "session_id": sid, "text": "hello"})
+            assert _until(ws, "done", seen)["content"] == "never"
+        texts = [m["content"] for m in c.get(f"/api/sessions/{sid}/messages").json() if m["role"] == "user"]
+        assert "then this" not in texts and "and use metric units" not in texts
+
+
+def _until(ws, kind: str, seen: list[dict]) -> dict:
+    while True:
+        msg = ws.receive_json()
+        seen.append(msg)
+        if msg["type"] == kind:
+            return msg

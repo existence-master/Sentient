@@ -40,7 +40,7 @@ All carry `session_id` and `turn_id`.
 | `steer_ack` | `session_id`, `queued`, `client_id` (echo; no `turn_id`) |
 | `usage` | `model`, `prompt_tokens`, `completion_tokens` |
 | `error` | `message`, `recoverable` |
-| `done` | `content` (final text), `message_id`, `cancelled?` |
+| `done` | `content` (final text), `message_id`, `cancelled?`, `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent) |
 | `approval.ack` | `approval_id`, `resolved` |
 
 ### Server → client: domain events (dotted `type`, payload in `data`)
@@ -1038,6 +1038,10 @@ can ignore it.
   (subagent, status `cancelled`), running dream (status `error`, "Stopped by Stop everything.") and background job
   (memory notes, reviews, suggestions) is cancelled. Code runs and browser actions stop with the reply or run they
   belong to. Runs waiting for the user's answer keep waiting.
+- Messages queued before the stop are dropped, never sent: steer messages the running reply had not picked up yet,
+  `chat.send` turns waiting behind it on `/ws` (they end with `error` "Stopped. Your queued message wasn't sent." and
+  `done` `{cancelled: true, dropped: [text]}`), and messages queued in Telegram or Discord chats (the chat gets the
+  same note). The window shows steers of a cancelled reply as not sent. Messages sent after the stop work as usual.
 - While stopped: the scheduler claims nothing (due tasks start on the first tick after Resume), triggered tasks
   do not fire, change feeds, polls, push watchers and webhooks publish nothing (`source.items`), and proactivity,
   heartbeats, follow-ups, self-improvement reviews, the user model and dreaming do not run. Things the user starts

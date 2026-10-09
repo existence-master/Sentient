@@ -182,6 +182,8 @@ function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPro
                   onRetry={onRetry}
                   onApprove={onApprove}
                   steers={liveSession && item.id === liveSession.turn.id ? liveSession.steers : undefined}
+                  unsent={liveSession && item.id === liveSession.turn.id ? liveSession.unsent : undefined}
+                  onRestore={(text) => setInject({ text, nonce: Date.now() })}
                 />
               )
             )}

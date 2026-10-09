@@ -96,6 +96,10 @@ class SentientApp:
         self.dreaming = DreamingService(self)
         self._started = False
         self.stop_state: dict[str, Any] = {"stopped": False, "stopped_at": None, "source": None}
+        # bumped by every stop_all: work queued before it (e.g. a chat message waiting behind a reply) is dropped
+        self.stop_generation = 0
+        # messages dropped by the last stop_all, {session_id: [text]}; services read it in halt()
+        self.stop_dropped: dict[str, list[str]] = {}
         self._stop_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ helpers for services
@@ -154,6 +158,8 @@ class SentientApp:
             if not self.stopped:
                 await self._set_stop_state({"stopped": True, "stopped_at": now_iso(), "source": source})
                 log.warning("stop everything (from %s)", source)
+            self.stop_generation += 1
+            self.stop_dropped = self.agent.drop_queued() if self.agent is not None else {}
             cancelled = 0
             if self.agent is not None:
                 cancelled += await self.agent.halt()

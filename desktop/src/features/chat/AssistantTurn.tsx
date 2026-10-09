@@ -30,6 +30,10 @@ export interface AssistantTurnProps {
   onApprove?: (approvalId: string, decision: ApprovalDecision) => void
   /** Queued `chat.steer` messages (live turn only). */
   steers?: Array<{ id: string; text: string }>
+  /** Queued messages dropped when the reply was stopped (live turn only). */
+  unsent?: Array<{ id: string; text: string }>
+  /** Put an unsent message back in the message box. */
+  onRestore?: (text: string) => void
 }
 
 type Block =
@@ -84,7 +88,27 @@ export function Interjection({ text, pending }: { text: string; pending?: boolea
   )
 }
 
-export const AssistantTurn = memo(function AssistantTurn({ turn, assistantName, showThinking, isLast, onRetry, onApprove, steers }: AssistantTurnProps) {
+/** A queued message that was never sent because the reply was stopped. */
+function Unsent({ text, onRestore }: { text: string; onRestore?: (text: string) => void }) {
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex items-center gap-1 text-2xs text-fg-subtle">
+        <IconPlayerStop size={11} />
+        Stopped. Your queued message wasn't sent.
+      </div>
+      <div className="selectable max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md border border-dashed border-border-strong px-3.5 py-2 text-sm leading-relaxed text-fg-subtle">
+        {text}
+      </div>
+      {onRestore && (
+        <Button size="xs" variant="ghost" onClick={() => onRestore(text)}>
+          Put it back in the message box
+        </Button>
+      )}
+    </div>
+  )
+}
+
+export const AssistantTurn = memo(function AssistantTurn({ turn, assistantName, showThinking, isLast, onRetry, onApprove, steers, unsent, onRestore }: AssistantTurnProps) {
   const streaming = turn.status === 'streaming'
   const blocks = toBlocks(turn.segments)
   const lastBlock = blocks[blocks.length - 1]
@@ -143,6 +167,7 @@ export const AssistantTurn = memo(function AssistantTurn({ turn, assistantName, 
         })}
 
         {streaming && steers?.map((s) => <Interjection key={s.id} text={s.text} pending />)}
+        {!streaming && unsent?.map((s) => <Unsent key={s.id} text={s.text} onRestore={onRestore} />)}
 
         {waiting && <TypingIndicator label={thinkingNow ? 'Thinking' : 'Working on it'} />}
         {streaming && lastBlock?.kind === 'tools' && Object.values(turn.tools).every((t) => t.status !== 'running' && t.status !== 'awaiting_approval') && (

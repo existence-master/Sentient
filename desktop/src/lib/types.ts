@@ -510,6 +510,8 @@ export interface DoneEvent extends TurnScoped {
   content: string
   message_id: string | null
   cancelled?: boolean
+  /** §17: texts that were queued behind the reply when everything was stopped; they were never sent. */
+  dropped?: string[]
 }
 export interface ApprovalAckEvent {
   type: 'approval.ack'

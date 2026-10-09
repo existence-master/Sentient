@@ -944,6 +944,15 @@ class Agent:
         except Exception as exc:
             log.debug("context compression skipped: %s", exc)
 
+    def drop_queued(self) -> dict[str, list[str]]:
+        """Stop everything: take the messages waiting for running replies (steers) so they are never sent.
+        Returns ``{session_id: [text]}``. A message sent after this starts a new turn as usual."""
+        dropped: dict[str, list[str]] = {}
+        for session_id, queue in list(self._steers.items()):
+            if items := queue.close():
+                dropped[session_id] = items
+        return dropped
+
     async def halt(self) -> int:
         """Stop everything: cancel every running chat reply (the caller's own task excepted) and background
         job (memory notes, titles). Returns how many replies were cancelled."""

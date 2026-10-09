@@ -547,12 +547,20 @@ class Channel:
         return sid
 
     async def stop_all_turns(self) -> int:
-        """Stop everything: stop the reply in every chat and drop messages queued behind it."""
+        """Stop everything: stop the reply in every chat and drop messages queued behind it (and tell the chat)."""
         stopped = 0
+        dropped_steers = getattr(self.app, "stop_dropped", {}) or {}
         for chat_id, rt in list(self._chats.items()):
+            dropped = len(rt.queued)
             rt.queued.clear()
             if await self.cancel_turn(chat_id):
                 stopped += 1
+            chat = await self.service.store.chat(self.id, chat_id)
+            if chat is not None and chat.get("session_id") in dropped_steers:
+                dropped += len(dropped_steers[chat["session_id"]])
+            if dropped:
+                await self.reply(chat_id, "Stopped. Your queued message wasn't sent." if dropped == 1
+                                 else f"Stopped. Your {dropped} queued messages weren't sent.")
         return stopped
 
     async def cancel_turn(self, chat_id: str) -> bool:

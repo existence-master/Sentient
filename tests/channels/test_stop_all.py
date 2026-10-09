@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from tests.channels.conftest import GatedProvider, update
+from tests.channels.conftest import GatedProvider, until, update
 
 
 @pytest.fixture
@@ -51,3 +51,32 @@ async def test_help_lists_stopall(tg):
     await tg.pair(42)
     await tg.say(42, "/help")
     assert "/stopall" in tg.api.screen()[-1] and "/resume" in tg.api.screen()[-1]
+
+
+async def test_queued_channel_messages_are_dropped_and_the_chat_is_told(tg, gated, monkeypatch):
+    tg.app.agent.llm = gated
+    monkeypatch.setattr(tg.app.agent, "steer", None, raising=False)  # no steering: messages queue as the next turn
+    await tg.pair(42)
+    tg.ch.dispatch(update(42, "one"))
+    await asyncio.wait_for(gated.blocked.wait(), 5)
+    tg.ch.dispatch(update(42, "two"))
+    tg.ch.dispatch(update(42, "three"))
+    await until(lambda: len(tg.ch.runtime("42").queued) == 2)
+
+    await tg.app.stop_all()
+    await tg.ch.wait_idle()
+    assert "Stopped. Your 2 queued messages weren't sent." in tg.api.screen()
+    assert gated.stream_calls == 1 and not tg.ch.runtime("42").queued
+
+
+async def test_a_steer_waiting_for_the_reply_is_dropped_too(tg, gated):
+    tg.app.agent.llm = gated
+    await tg.pair(42)
+    tg.ch.dispatch(update(42, "one"))
+    await asyncio.wait_for(gated.blocked.wait(), 5)
+    await tg.say(42, "and make it short")  # steers the running reply
+    await tg.say(42, "/stopall")
+    screen = tg.api.screen()
+    assert "Stopped. Your queued message wasn't sent." in screen
+    assert screen[-1].startswith("Stopped everything")
+    assert gated.stream_calls == 1
