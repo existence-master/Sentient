@@ -55,7 +55,8 @@ your own **Message yourself** chat. Nobody else can talk to Sentient, and it nev
 
 You can send text, voice notes, photos and files. When Sentient needs a yes or no, it lists numbered
 options: reply with the number. Commands: `/new` starts a fresh chat, `/stop` stops a reply, `/stopall`
-stops everything Sentient is doing (`/resume` starts it again), `/help` shows help.
+stops everything Sentient is doing (`/resume` starts it again), `/model` switches between local and cloud
+models, `/help` shows help.
 
 **Good to know:** this uses the same linking as WhatsApp Web, through an unofficial app. WhatsApp does not
 officially support assistants on personal accounts and could limit or ban an account that uses one. That is

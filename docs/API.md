@@ -210,6 +210,32 @@ Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
 - `PUT /api/models/roles` `{primary?, fast?, planner?, executor?, embedding?, vision?, voice?}` → updated roles (null = use primary). The `voice` role is used for `channel` voice/glasses turns and defaults to reasoning `none`.
 - `PUT /api/models/fallbacks` `{role: [model, ...]}` → `{ok}`
 - `POST /api/models/ollama/pull` `{name}` → streams NDJSON `{status, completed?, total?}`
+- **Model presets** (#212): named setups that switch every role in one step. Three built-ins are generated, never
+  stored: "Local only" (the `ModelRoles` defaults from `config/schema.py`; a local embedding model the user picked is
+  kept), "Cloud" and "Mixed" (the first of Anthropic, OpenAI, OpenRouter with a key set, models from
+  `PRESET_CLOUD_MODELS` in `config/schema.py`; Cloud leaves the embedding model alone because changing it re-indexes
+  memory; Mixed keeps `fast` and `embedding` local). Built-ins clear `models.fallbacks`. The user's own presets are in
+  `models.presets` (`{name: {roles, fallbacks?, reasoning?, context_length?, context_length_per_role?}}`; a role left
+  out keeps its model, a field left out keeps its value) and the last one applied is `models.active_preset`. Names are
+  1 to 40 characters, no slashes, matched without case; built-in names are reserved.
+  - **Preset** `{name, builtin, available, reason, provider, description, roles, fallbacks?, reasoning?, context_length?,
+    context_length_per_role?, active}`. `available: false` with a plain `reason` for Cloud and Mixed when no cloud key
+    is set. `provider` is the cloud provider a built-in uses.
+  - `GET /api/models/presets` → `{active, modified, can_undo, undo_preset, presets: [Preset]}` (built-ins first).
+    `modified` is true when a role was changed by hand after `active` was applied.
+  - `POST /api/models/presets/{name}/apply` → `{preset, changed: [{role, from, to}], missing: [Missing], can_undo}`.
+    Applied in one config save (`config.updated`); the setup it replaced is kept for undo. 404 unknown preset, 409
+    `available: false`. **Missing** `{kind: "pull_model"|"add_key"|"start_ollama", roles, model, provider?, detail,
+    fix, action}`: an Ollama model that is not downloaded (`action {kind: "pull_model", name, label}`, see the pull
+    route below), a cloud key that is not set (`action {kind: "add_key", provider, label}`, see `PUT /api/secrets`), or
+    Ollama not answering (`action: null`). Checked with Ollama `/api/tags` and the keychain; no model is called.
+  - `POST /api/models/presets/undo` → same shape: puts back the roles, fallbacks, reasoning, context lengths and active
+    preset from before the last switch. One step only: 409 when there is nothing to undo.
+  - `POST /api/models/presets` `{name, overwrite?}` → Preset: saves the current roles, fallbacks, reasoning and context
+    lengths and makes it active. 400 bad or built-in name, 409 name taken (unless `overwrite`).
+  - `PATCH /api/models/presets/{name}` `{name}` → Preset (rename; `active_preset` follows). 400 built-in, 404, 409.
+  - `DELETE /api/models/presets/{name}` → `{ok}`; models stay as they are. 400 built-in, 404.
+  - Per-chat (`model` on a chat message) and per-task model overrides still win over the roles a preset sets.
 - `GET /api/secrets` → `[{name, set: bool, source: "keychain"|"env"|null, kind: "provider"|"integration"}]` for every provider + integration secret name
 - `PUT /api/secrets/{name}` `{value}` → `{ok}` (stored in OS keychain; never echoed back)
 - `DELETE /api/secrets/{name}` → `{ok}`
@@ -1153,12 +1179,17 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   (groups are ignored). Discord: direct messages only (server messages are ignored).
 - A paired chat is a normal Sentient chat (`channel` = channel id, so the desktop shows a badge). Commands: `/new` starts a
   fresh chat (new session), `/stop` cancels the reply (the partial text is kept with "(stopped)"), `/stopall` (or
-  `/stop all`) is Stop everything and `/resume` undoes it (section 17; source `telegram` or `discord`), `/help`; other
+  `/stop all`) is Stop everything and `/resume` undoes it (section 17; source `telegram` or `discord`), `/model`, `/help`; other
   `/commands` get a hint. Unpaired chats cannot use any command except `/pair`. Replies stream by editing the message at most once per `channels.<id>.edit_interval_s` (1 s) when
   `stream_edits` is on; long replies are split (Telegram 4096, Discord 2000 characters, code blocks kept balanced).
   Telegram replies use HTML parse mode (bold, italics, strikethrough, code, code blocks, links, lists, quotes; everything
   else escaped; plain text fallback). While tools run, a short status message ("Searching the web...") is shown and deleted
   when the answer continues (`show_tool_activity`). A typing indicator is sent while the reply runs.
+- `/model` (model presets, section 3): shows the active preset and the chat model, lists presets that need a key with
+  the reason, and offers every usable preset as a button (callback `mp:a:<12 hex of sha1(name)>`; WhatsApp: numbered
+  options). Choosing one applies it, settles the message to "Switched to <name>" and sends anything still missing
+  ("Still needed: ..."). `/model <number or name>` applies directly (numbers count the usable presets in order),
+  `/model undo` undoes the last switch. Paired chats only, like every command.
 - A message sent while a reply runs calls `app.agent.steer(session_id, text)` (section 10); when that returns false (or the
   message has attachments) it is queued and answered as the next turn.
 - Voice notes and audio files are downloaded (20 MB max) and transcribed with `app.voice.transcribe_bytes`; the chat sees

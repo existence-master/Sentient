@@ -58,8 +58,58 @@ class ModelRoles(BaseModel):
     )
 
 
+MODEL_ROLE_NAMES = ("primary", "fast", "planner", "executor", "embedding", "vision", "voice")
+REQUIRED_MODEL_ROLES = {"primary", "fast", "embedding"}
+
+# Built-in model presets (#212). Their roles are generated: "Local only" uses the ModelRoles defaults above;
+# "Cloud" and "Mixed" use the first provider below with a key set ("main" for chat and planning, "fast" for
+# quick jobs and voice).
+LOCAL_PRESET, CLOUD_PRESET, MIXED_PRESET = "Local only", "Cloud", "Mixed"
+PRESET_CLOUD_MODELS: dict[str, dict[str, str]] = {
+    "anthropic": {"main": "anthropic/claude-sonnet-5", "fast": "anthropic/claude-haiku-4-5"},
+    "openai": {"main": "openai/gpt-5", "fast": "openai/gpt-5-mini"},
+    "openrouter": {"main": "openrouter/anthropic/claude-sonnet-5", "fast": "openrouter/anthropic/claude-haiku-4.5"},
+}
+
+
+class ModelPreset(BaseModel):
+    """A saved model setup the user can switch to in one step. Fields left out keep their current value."""
+
+    roles: dict[str, str | None] = Field(
+        default_factory=dict,
+        description="Model per role, like models.roles. A role left out keeps its model; null uses the primary model.",
+    )
+    fallbacks: dict[str, list[str]] | None = Field(None, description="Replaces models.fallbacks when set.")
+    reasoning: dict[str, str] | None = Field(None, description="Replaces models.reasoning when set.")
+    context_length: int | None = Field(None, ge=2048, le=1_048_576, description="Replaces models.context_length.")
+    context_length_per_role: dict[str, Annotated[int, Field(ge=2048, le=1_048_576)]] | None = Field(
+        None, description="Replaces models.context_length_per_role when set."
+    )
+
+    @field_validator("roles")
+    @classmethod
+    def _check_roles(cls, value: dict[str, str | None]) -> dict[str, str | None]:
+        out: dict[str, str | None] = {}
+        for role, model in value.items():
+            if role not in MODEL_ROLE_NAMES:
+                raise ValueError(f"unknown role {role}")
+            model = (model or "").strip() or None
+            if model is None and role in REQUIRED_MODEL_ROLES:
+                raise ValueError(f"role {role} cannot be empty")
+            out[role] = model
+        return out
+
+
 class ModelsConfig(BaseModel):
     roles: ModelRoles = Field(default_factory=ModelRoles)
+    presets: dict[str, ModelPreset] = Field(
+        default_factory=dict,
+        description="Your own saved model setups, by name, switched from the model menu in the title bar or with "
+        "/model in a messaging app. The built-in Local only, Cloud and Mixed setups are not stored here.",
+    )
+    active_preset: str | None = Field(
+        None, description="The model setup chosen last, shown with a check in the model menu."
+    )
     fallbacks: dict[str, list[str]] = Field(
         default_factory=dict,
         description="Per-role ordered fallback models tried when the role's model fails.",
