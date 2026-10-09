@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from sentient.integrations import redact
 from sentient.integrations.base import FeedBatch, IntegrationError, itool, manager_from
 from sentient.integrations.common import email_blocked, email_of, truncate
 from sentient.integrations.google import gapi
@@ -75,9 +76,17 @@ def _headers(msg: dict) -> dict[str, str]:
     return {h["name"].lower(): h["value"] for h in (msg.get("payload") or {}).get("headers") or []}
 
 
-def normalize_message(msg: dict, body_chars: int | None = LIST_BODY_CHARS) -> dict:
+def normalize_message(msg: dict, body_chars: int | None = LIST_BODY_CHARS, *, hide_codes: bool = True) -> dict:
+    """The gmail item shape. ``hide_codes`` masks one-time codes and sign-in or reset links (``redact``)."""
     h = _headers(msg)
+    subject = h.get("subject") or ""
+    sender = email_of(h.get("from"))
     body = decode_body(msg.get("payload") or {})
+    snippet = msg.get("snippet") or ""
+    if hide_codes:
+        body = redact.hide_secrets(body, subject=subject, sender=sender)
+        snippet = redact.hide_secrets(snippet, subject=subject, sender=sender)
+        subject = redact.hide_secrets(subject, subject=subject, sender=sender)
     if body_chars:
         body, _ = truncate(body, body_chars)
     date = None
@@ -87,10 +96,10 @@ def normalize_message(msg: dict, body_chars: int | None = LIST_BODY_CHARS) -> di
         "id": msg.get("id"),
         "thread_id": msg.get("threadId"),
         "from": h.get("from"),
-        "sender_email": email_of(h.get("from")),
+        "sender_email": sender,
         "to": h.get("to"),
-        "subject": h.get("subject") or "",
-        "snippet": msg.get("snippet") or "",
+        "subject": subject,
+        "snippet": snippet,
         "body": body,
         "date": date or h.get("date"),
         "labels": list(msg.get("labelIds") or []),
@@ -124,7 +133,7 @@ async def _get_messages(ctx: ToolContext | None, ids: list[str], mgr: Integratio
             return await gapi(ctx, PID, "GET", f"{API}/messages/{mid}", params={"format": "full"}, mgr=mgr)
 
     raw = await asyncio.gather(*(one(i) for i in ids))
-    return [normalize_message(m, body_chars) for m in raw]
+    return [normalize_message(m, body_chars, hide_codes=redact.enabled(mgr)) for m in raw]
 
 
 async def _search(ctx: ToolContext | None, query: str, max_results: int, mgr: IntegrationManager) -> list[dict]:
@@ -199,7 +208,7 @@ async def gmail_read_message(ctx: ToolContext, message_id: str) -> dict:
     """Read one email in full (headers, plain-text body, attachment names) by its message id."""
     mgr = manager_from(ctx)
     msg = await gapi(ctx, PID, "GET", f"{API}/messages/{message_id}", params={"format": "full"})
-    item = normalize_message(msg, READ_BODY_CHARS)
+    item = normalize_message(msg, READ_BODY_CHARS, hide_codes=redact.enabled(mgr))
     if email_blocked(item, await mgr.get_privacy_filters(PID)):
         return {"error": "This email is hidden by your privacy filters."}
     h = _headers(msg)
@@ -212,7 +221,7 @@ async def gmail_read_thread(ctx: ToolContext, thread_id: str) -> dict:
     """Read a whole email conversation (every message in the thread, oldest first)."""
     mgr = manager_from(ctx)
     thread = await gapi(ctx, PID, "GET", f"{API}/threads/{thread_id}", params={"format": "full"})
-    items = [normalize_message(m, 6000) for m in thread.get("messages") or []]
+    items = [normalize_message(m, 6000, hide_codes=redact.enabled(mgr)) for m in thread.get("messages") or []]
     kept = await mgr.filter_items(PID, items, "email")
     out: dict[str, Any] = {"thread_id": thread_id, "messages": kept}
     if len(kept) < len(items):
@@ -380,7 +389,7 @@ async def gmail_change_feed(mgr: IntegrationManager, cursor: str | None) -> Feed
     ids = list(dict.fromkeys(ids))[-FEED_MAX_MESSAGES:]
     items: list[dict] = []
     for msg in await _get_existing(mgr, ids) if ids else []:
-        item = normalize_message(msg)
+        item = normalize_message(msg, hide_codes=redact.enabled(mgr))
         labels = set(item["labels"])
         if "INBOX" not in labels or labels & FEED_SKIP_LABELS:
             continue
@@ -398,9 +407,9 @@ THREAD_PAGE_SIZE = 50
 THREAD_PAGES = 5  # listing pages read per check at most
 
 
-def normalize_thread_message(msg: dict, body_chars: int = THREAD_BODY_CHARS) -> dict:
+def normalize_thread_message(msg: dict, body_chars: int = THREAD_BODY_CHARS, *, hide_codes: bool = True) -> dict:
     """``normalize_message`` plus ``cc``, ``message_id`` and the headers that mark bulk or automated mail."""
-    item = normalize_message(msg, body_chars)
+    item = normalize_message(msg, body_chars, hide_codes=hide_codes)
     h = _headers(msg)
     item["cc"] = h.get("cc")
     item["message_id"] = h.get("message-id")
@@ -449,7 +458,7 @@ async def gmail_recent_threads(mgr: IntegrationManager, *, newer_than_days: int,
 
     threads = []
     for raw in await asyncio.gather(*(one(i, "full") for i in eligible[:n])):
-        msgs = [normalize_thread_message(m) for m in raw.get("messages") or []
+        msgs = [normalize_thread_message(m, hide_codes=redact.enabled(mgr)) for m in raw.get("messages") or []
                 if not set(m.get("labelIds") or []) & THREAD_SKIP_LABELS]
         if not msgs:
             continue

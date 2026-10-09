@@ -232,3 +232,42 @@ def test_free_slots_within_working_hours():
         {"start": "2026-09-16T09:00:00+05:30", "end": "2026-09-16T10:00:00+05:30"},
         {"start": "2026-09-16T17:00:00+05:30", "end": "2026-09-16T18:00:00+05:30"},
     ]
+
+
+# ----------------------------------------------------------------------------- one-time codes (#128)
+OTP_BODY = ("Your verification code is 482913.\n\nForgot your password? Reset it here:\n"
+            "https://acme.example/reset?token=abcDEF1234567890xyz\n\nOrder #77812 shipped, total $1234.56.\n"
+            "Read more: https://blog.acme.example/2026/10/news")
+
+
+def mock_code_mail(router) -> None:
+    router.get(host=GMAIL, path=MSG_PATH).mock(return_value=httpx.Response(200, json={"messages": [{"id": "c1"}]}))
+    msg = gmail_message("c1", "Acme <no-reply@acme.example>", "482913 is your Acme code", body=OTP_BODY)
+    msg["snippet"] = "Your verification code is 482913."
+    router.get(host=GMAIL, path=f"{MSG_PATH}/c1").mock(return_value=httpx.Response(200, json=msg))
+
+
+async def test_gmail_hides_codes_and_reset_links_from_tools_and_polls(app, ctx, keychain):
+    await connect_google(app, keychain, "gmail")
+    with respx.mock() as router:
+        mock_code_mail(router)
+        found = (await app.registry.get("gmail_search").call(ctx, {"query": "acme"}))["messages"][0]
+        read = await app.registry.get("gmail_read_message").call(ctx, {"message_id": "c1"})
+        polled = (await app.integrations.poll_source("gmail", "2026-09-15T08:00:00+00:00"))[0]
+    for item in (found, read, polled):
+        text = f"{item['subject']} {item['snippet']} {item['body']}"
+        assert "482913" not in text and "abcDEF1234567890xyz" not in text
+        assert "[one-time code hidden]" in item["body"] and "[password reset link hidden]" in item["body"]
+        # ordinary numbers and links are untouched, and the email can still be opened in Gmail
+        assert "Order #77812" in item["body"] and "$1234.56" in item["body"]
+        assert "https://blog.acme.example/2026/10/news" in item["body"]
+        assert item["url"].endswith("#all/c1")
+
+
+async def test_gmail_codes_are_shown_when_the_switch_is_off(app, ctx, keychain):
+    app.config.integrations.hide_one_time_codes = False
+    await connect_google(app, keychain, "gmail")
+    with respx.mock(assert_all_called=False) as router:
+        mock_code_mail(router)
+        read = await app.registry.get("gmail_read_message").call(ctx, {"message_id": "c1"})
+    assert "482913" in read["body"] and "abcDEF1234567890xyz" in read["body"]

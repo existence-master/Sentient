@@ -18,6 +18,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   and nothing is sent until you approve it. Settings under Proactivity.
 
 ### Security
+- One-time codes, verification codes, magic sign-in links and password reset links in Gmail and IMAP email are
+  replaced with a short placeholder before the AI reads them, in tool results, proactive suggestions and follow-ups.
+  Order numbers, dates, prices and ordinary links are left alone, and the email itself is unchanged in your mail app.
 - Purchases now ask even when approvals are switched off, and code Sentient writes can never make one. A tool set
   to Never while a request waits for your yes, or while a script runs, is blocked right away.
 
