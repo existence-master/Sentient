@@ -211,7 +211,9 @@ export const previewBrowser = (): BrowserStatus => ({
     { index: 0, url: 'https://tablefinder.example/bengaluru/the-flour-works/book', title: 'Book a table - The Flour Works', active: true },
     { index: 1, url: 'https://maps.example/place/indiranagar-metro', title: 'Indiranagar metro - Maps', active: false }
   ],
-  error: null
+  error: null,
+  profile: 'default',
+  attached: false
 })
 
 export const previewFrame = (): BrowserFrame => ({

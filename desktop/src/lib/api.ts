@@ -12,6 +12,9 @@
  *   engine does not have them yet; whenever the engine answers, its data is used.
  */
 import type {
+  BrowserProfileCreate,
+  BrowserProfilePatch,
+  BrowserProfiles,
   BrowserStatus,
   Channel,
   ChannelPairing,
@@ -657,8 +660,12 @@ export const api = {
   // §12 browser -------------------------------------------------------------------------
   browser: {
     status: () => http.get<BrowserStatus>('/api/browser/status'),
-    /** Shows a visible window on Sentient's browser profile so the user can sign in themselves. */
-    open: (url?: string) => http.post<BrowserStatus>('/api/browser/open', url ? { url } : {}),
+    /** Shows a visible window on a browser profile so the user can sign in themselves (attach profiles: a new tab). */
+    open: (url?: string, profile?: string) => http.post<BrowserStatus>('/api/browser/open', { ...(url ? { url } : {}), ...(profile ? { profile } : {}) }),
+    profiles: () => http.get<BrowserProfiles>('/api/browser/profiles'),
+    createProfile: (body: BrowserProfileCreate) => http.post<BrowserProfiles>('/api/browser/profiles', body),
+    updateProfile: (name: string, patch: BrowserProfilePatch) => http.patch<BrowserProfiles>(`/api/browser/profiles/${enc(name)}`, patch),
+    deleteProfile: (name: string) => http.delete<BrowserProfiles>(`/api/browser/profiles/${enc(name)}`),
     close: () => http.post<BrowserStatus>('/api/browser/close'),
     screenshotUrl: (bust?: number) => authedUrl('/api/browser/screenshot', { t: bust })
   },

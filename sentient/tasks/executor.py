@@ -324,6 +324,8 @@ async def execute_single(
 
             ctx = app.agent.tool_context(None, "task")
             ctx.extra.update({"task_id": task_id, "run_id": run_id, ask.STATE_KEY: asking})
+            if task.get("browser_profile"):  # the browser tools use the task's profile (docs/API.md section 12)
+                ctx.extra["browser_profile"] = task["browser_profile"]
             checkpoint = run.get("messages") if resume else None
             if isinstance(checkpoint, list) and checkpoint:
                 checkpoint = await _run_approved_call(svc, task_id, run_id, ctx, checkpoint)
@@ -464,6 +466,8 @@ async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume:
     ctx = app.agent.tool_context(None, "task") if app.agent is not None else None
     if ctx is not None:
         ctx.extra.update({"task_id": task_id, "run_id": run_id})
+        if task.get("browser_profile"):
+            ctx.extra["browser_profile"] = task["browser_profile"]
     try:
         result = await tool.call(ctx, arguments)
     except Exception as exc:

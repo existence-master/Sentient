@@ -870,7 +870,39 @@ export interface BrowserStatus {
   headless: boolean
   tabs: BrowserTab[]
   error: string | null
+  /** The running profile, or `default` when closed. */
+  profile?: string
+  /** True while connected to a browser the user started (an `attach` profile). */
+  attached?: boolean
 }
+
+export type BrowserProfileKind = 'launch' | 'attach'
+
+export interface BrowserProfile {
+  name: string
+  kind: BrowserProfileKind
+  /** `''` uses the main Browser setting. */
+  engine: string
+  /** `attach` only: `http://127.0.0.1:<port>`. */
+  endpoint: string
+  notes: string
+  running: boolean
+}
+
+export interface BrowserProfiles {
+  active: string | null
+  profiles: BrowserProfile[]
+}
+
+export interface BrowserProfileCreate {
+  name: string
+  kind?: BrowserProfileKind
+  engine?: string
+  endpoint?: string
+  notes?: string
+}
+
+export type BrowserProfilePatch = Partial<Pick<BrowserProfile, 'name' | 'engine' | 'endpoint' | 'notes'>>
 
 export interface BrowserFrame {
   url: string
@@ -1161,6 +1193,8 @@ export interface Task {
   swarm_details: SwarmDetails | null
   enabled: boolean
   model: string | null
+  /** Named browser profile its browser steps use (§12); `null` is the default one. */
+  browser_profile?: string | null
   original_context: { source: 'manual_creation' | 'chat' | 'proactive' | 'trigger' | string; [k: string]: unknown }
   /** Last planning/run failure message (v2 `task.error`). */
   error: string | null
@@ -1175,6 +1209,7 @@ export interface TaskCreateRequest {
   is_swarm?: boolean
   assignee?: 'ai'
   model?: string
+  browser_profile?: string
 }
 
 export interface TaskPreview {
@@ -1195,7 +1230,7 @@ export interface IntervalSchedule {
   timezone?: string
 }
 
-export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model'>>
+export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile'>>
 
 export interface ClarificationAnswer {
   question_id: string
@@ -1599,6 +1634,8 @@ export interface Skill {
   patch_count: number
   last_used_at: ISODate | null
   created_by_review: boolean
+  /** Browser profile named in the skill's frontmatter (§12). */
+  browser_profile?: string | null
   /** Pending proposals only: why Sentient proposed it and where it came from. */
   reason?: string | null
   origin?: { session_id?: string; task_id?: string; run_id?: string; curator?: boolean; merged_from?: string } | null

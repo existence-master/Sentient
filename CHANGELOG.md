@@ -27,6 +27,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
   **Nous Portal** as a provider with an API key. OpenRouter's and Nous Portal's model lists show up in the model
   pickers, with free OpenRouter models marked. Keys stay in your system keychain and removing one disconnects. Pro
   plans don't include API credits, and apps aren't allowed to sign in with a Claude account, so the app says so.
+- **Browser profiles:** keep several browser profiles, each with its own sign-ins (for example one for posting on a
+  social account and one for shopping), in Settings > Browser: add, rename, delete, and "Open to sign in". A task can
+  use a profile (Details > Browser profile), a skill can name one (`browser_profile:` in its frontmatter), and the
+  assistant can pick one when it opens a page. Sentient can also **attach to a browser you started yourself** (Brave,
+  Chrome or Edge with `--remote-debugging-port`), only on this computer; disconnecting never closes it. Approvals,
+  purchase checks, password and code refusals and the allowed and blocked sites work the same in every profile.
+  Your existing browser sign-ins move to the "default" profile.
 - **WhatsApp:** link Sentient to your WhatsApp by scanning a QR code (Channels > Messaging apps), then talk to it in
   your own "Message yourself" chat: text, voice notes, photos and files, replies as they are written, task results and
   suggestions. When Sentient needs a yes or no it lists numbered options; reply with the number. `/stop`, `/stopall`,

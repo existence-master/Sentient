@@ -18,7 +18,7 @@
  *   config.updated        -> invalidate config/bootstrap/model presets (+ secrets/providers)
  *   voice.state           -> ['voice', 'state']
  *   subagent.updated      -> ['subagents', ...] (+ toast when a background helper finishes)
- *   browser.updated       -> ['browser', 'status']; browser.frame -> useBrowserView (live view)
+ *   browser.updated       -> ['browser', 'status'] (+ refetch ['browser', 'profiles']); browser.frame -> useBrowserView (live view)
  *   node.updated/deleted  -> ['nodes']; node.event battery -> node battery
  *   channel.updated       -> ['channels']; channel.message -> refresh sessions (+ that transcript)
  *   user_model.updated    -> refetch ['user-model']
@@ -205,7 +205,12 @@ export function installDomainEvents(qc: QueryClient): () => void {
   )
 
   // §12 browser
-  offs.push(live.onDomain('browser.updated', (e) => qc.setQueryData(browserKeys.status, e.data)))
+  offs.push(
+    live.onDomain('browser.updated', (e) => {
+      qc.setQueryData(browserKeys.status, e.data)
+      void qc.invalidateQueries({ queryKey: browserKeys.profiles })
+    })
+  )
   offs.push(live.onDomain('browser.frame', (e) => useBrowserView.getState().setFrame(e.data)))
 
   // §13 devices

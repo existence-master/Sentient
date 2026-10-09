@@ -1,10 +1,13 @@
 """Browser control for sites without an integration (docs/API.md section 12).
 
-One Playwright persistent context on ``~/.sentient/browser/profile`` driven through an
+One Playwright persistent context at a time, on a named profile (``browser.profiles``). A
+``launch`` profile has its own folder, ``~/.sentient/browser/profiles/<name>``, driven through an
 installed Edge or Chrome. It starts lazily on the first tool call, runs hidden (headless) by
 default, closes itself after ``browser.idle_minutes`` without use and can be reopened as a
 visible window (``open_for_user``) so the user signs in themselves; the cookies stay in the
-profile for the assistant to use afterwards.
+profile for the assistant to use afterwards. An ``attach`` profile connects over the DevTools
+protocol to a browser the user started on this computer; closing only disconnects from it.
+Switching profiles closes the current one first.
 
 Every acting tool call captures a small JPEG for the live view: ``ctx.progress`` gets it
 immediately and ``browser.frame`` is published on the bus at most once per second.
@@ -26,7 +29,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
+
+import httpx
 
 from sentient import paths
 from sentient.browser import safety
@@ -40,6 +45,7 @@ from sentient.browser.snapshot import (
     format_element,
     format_snapshot,
 )
+from sentient.config.schema import BrowserProfileConfig
 from sentient.services import Service
 from sentient.tools.base import Risk
 
@@ -55,12 +61,64 @@ CLOSE_TIMEOUT_S = 20.0
 # models often pass the whole snapshot line ("[e4] button \"Place order\"") instead of just "e4"
 _REF_RE = re.compile(r"\b(e\d+)\b", re.IGNORECASE)
 
+DEFAULT_PROFILE = "default"
+PROFILE_KEY = "browser_profile"  # ctx.extra: the profile this run uses (task default, skill, or a tool argument)
+_PROFILE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+
 # Set by BrowserService.start() so tools called without an app in ctx still find the service.
 _CURRENT: BrowserService | None = None
 
 
 class BrowserError(Exception):
     """A failure whose message is safe and useful to show the user and the model."""
+
+
+# ----------------------------------------------------------------------------- profiles
+def profile_name(raw: Any) -> str:
+    """A profile name from what the user typed: lowercase letters, numbers and dashes ("X growth" -> "x-growth")."""
+    name = re.sub(r"[^a-z0-9]+", "-", str(raw or "").strip().lower()).strip("-")[:40].strip("-")
+    if not _PROFILE_NAME_RE.match(name):
+        raise BrowserError("Give the profile a name made of letters, numbers or dashes.")
+    return name
+
+
+def profile_dir(name: str) -> Path:
+    """The browser folder of a launched profile. The first use of ``default`` moves the folder older versions used
+    (``~/.sentient/browser/profile``); if it can't be moved (a window still open), the old folder keeps working."""
+    if not _PROFILE_NAME_RE.match(name or ""):
+        raise BrowserError(f"'{name}' isn't a valid profile name.")
+    base = paths.home() / "browser"
+    folder = base / "profiles" / name
+    if name == DEFAULT_PROFILE:
+        old = base / "profile"
+        if old.is_dir() and not folder.exists():
+            try:
+                folder.parent.mkdir(parents=True, exist_ok=True)
+                old.rename(folder)
+            except OSError as exc:
+                log.warning("browser: could not move the old profile folder: %s", exc)
+                return old
+    return folder
+
+
+async def devtools_ws_url(endpoint: str) -> str:
+    """The browser's DevTools websocket address behind ``endpoint`` (checked to be on this computer too)."""
+    if endpoint.startswith(("ws://", "wss://")):
+        return endpoint
+    try:
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+            data = (await client.get(endpoint + "/json/version")).json()
+    except Exception as exc:
+        raise BrowserError(
+            f"Nothing answered at {endpoint}. Start the browser with --remote-debugging-port set to that port, "
+            "then try again."
+        ) from exc
+    ws = str((data or {}).get("webSocketDebuggerUrl") or "") if isinstance(data, dict) else ""
+    if not ws.startswith(("ws://", "wss://")):
+        raise BrowserError(f"The program at {endpoint} doesn't look like a browser's DevTools port.")
+    if not safety.is_loopback_host(urlsplit(ws).hostname or ""):
+        raise BrowserError(safety.NOT_LOCAL)
+    return ws
 
 
 # ----------------------------------------------------------------------------- engine discovery
@@ -138,6 +196,10 @@ class BrowserService(Service):
         super().__init__(app)
         self._pw: Any = None
         self._context: Any = None
+        self._browser: Any = None  # attach profiles: the user's browser we are connected to
+        self._attached = False
+        self._profile = DEFAULT_PROFILE  # the running profile, or the next one to start
+        self._for_user = False  # the open window was shown for the user (Open to sign in): don't switch under them
         self._engine: str | None = None
         self._headless = True
         self._active: Any = None
@@ -186,19 +248,24 @@ class BrowserService(Service):
         if _CURRENT is self:
             _CURRENT = None
 
-    def availability(self) -> tuple[bool, str | None]:
+    def availability(self, profile: str | None = None) -> tuple[bool, str | None]:
         cfg = self.app.config.browser
         if not cfg.enabled:
             return False, "The browser is turned off in Settings."
-        if not installed_engines(cfg.engine):
-            if cfg.engine == "auto":
+        prof = cfg.profiles.get(profile or DEFAULT_PROFILE)
+        if prof is not None and prof.kind == "attach":
+            return True, None
+        engine = (prof.engine if prof is not None else "") or cfg.engine
+        if not installed_engines(engine):
+            if engine == "auto":
                 return False, ("No supported browser was found. Install Microsoft Edge or Google Chrome so "
                                "Sentient can use websites for you.")
-            return False, f"{ENGINE_NAMES.get(cfg.engine, cfg.engine)} isn't installed on this computer."
+            return False, f"{ENGINE_NAMES.get(engine, engine)} isn't installed on this computer."
         return True, None
 
     def sync_visibility(self) -> None:
-        ok, _ = self.availability()
+        cfg = self.app.config.browser
+        ok = self.availability()[0] or (cfg.enabled and any(p.kind == "attach" for p in cfg.profiles.values()))
         reg = self.app.registry
         if reg.plugin(PLUGIN_ID) is not None:
             reg.set_hidden(PLUGIN_ID, not ok)
@@ -210,7 +277,8 @@ class BrowserService(Service):
                 if ev.get("type") != "config.updated":
                     continue
                 self.sync_visibility()
-                if not self.app.config.browser.enabled and self._context is not None:
+                cfg = self.app.config.browser
+                if self._context is not None and (not cfg.enabled or self._profile not in cfg.profiles):
                     await self.close()
 
     @property
@@ -231,10 +299,13 @@ class BrowserService(Service):
         return out
 
     async def status(self) -> dict:
-        ok, why = self.availability()
-        cfg = self.app.config.browser
-        engines = installed_engines(cfg.engine) if ok else []
         running = self._context is not None
+        name = self._profile if running else DEFAULT_PROFILE
+        ok, why = self.availability(name)
+        cfg = self.app.config.browser
+        prof = cfg.profiles.get(name)
+        attach = prof is not None and prof.kind == "attach"
+        engines = installed_engines((prof.engine if prof else "") or cfg.engine) if ok and not attach else []
         return {
             "available": ok,
             "running": running,
@@ -242,6 +313,8 @@ class BrowserService(Service):
             "headless": self._headless if running else cfg.headless,
             "tabs": await self._tabs(),
             "error": why or self._last_error,
+            "profile": name,
+            "attached": self._attached,
         }
 
     async def _publish_status(self) -> None:
@@ -258,12 +331,135 @@ class BrowserService(Service):
         self._bg.add(task)
         task.add_done_callback(self._bg.discard)
 
+    # ------------------------------------------------------------------ profiles
+    def _profile_cfg(self, name: str) -> Any:
+        prof = self.app.config.browser.profiles.get(name)
+        if prof is None:
+            names = ", ".join(self.app.config.browser.profiles)
+            raise BrowserError(f"There is no browser profile named '{name}'. Profiles: {names}.")
+        return prof
+
+    def _wanted(self, ctx: Any = None) -> str:
+        """The profile a call uses: the run's own (task default, skill or tool argument), else the one open now."""
+        name = str(((getattr(ctx, "extra", None) or {}).get(PROFILE_KEY)) or "").strip()
+        if not name:
+            return self._profile if self._context is not None else DEFAULT_PROFILE
+        self._profile_cfg(name)
+        return name
+
+    def use_profile(self, ctx: Any, name: str) -> None:
+        """Pin ``name`` for the rest of this run (a tool's ``profile`` argument)."""
+        name = str(name or "").strip()
+        if not name:
+            return
+        self._profile_cfg(name)
+        extra = getattr(ctx, "extra", None)
+        if isinstance(extra, dict):
+            extra[PROFILE_KEY] = name
+
+    def profiles(self) -> dict:
+        running = self._profile if self._context is not None else None
+        return {
+            "active": running,
+            "profiles": [
+                {"name": name, "kind": p.kind, "engine": p.engine, "endpoint": p.endpoint, "notes": p.notes,
+                 "running": name == running}
+                for name, p in self.app.config.browser.profiles.items()
+            ],
+        }
+
+    def _save_profiles(self, profiles: dict) -> None:
+        self.app.config.browser.profiles = profiles
+        save = getattr(self.app, "save_config", None)
+        if callable(save):
+            save()
+
+    def _profile_fields(self, kind: str, engine: str, endpoint: str, notes: str) -> Any:
+        if kind not in {"launch", "attach"}:
+            raise BrowserError("A profile is either one Sentient starts (launch) or one it attaches to (attach).")
+        fields = {"kind": kind, "engine": engine or "", "endpoint": "", "notes": str(notes or "").strip()[:500]}
+        if kind == "attach":
+            fields["engine"] = ""
+            fields["endpoint"], problem = safety.devtools_endpoint(endpoint)
+            if problem:
+                raise BrowserError(problem)
+        try:
+            return BrowserProfileConfig(**fields)
+        except ValueError as exc:
+            raise BrowserError("That browser choice isn't one Sentient knows.") from exc
+
+    async def create_profile(self, name: str, kind: str = "launch", engine: str = "", endpoint: str = "",
+                             notes: str = "") -> dict:
+        clean = profile_name(name)
+        if clean in self.app.config.browser.profiles:
+            raise BrowserError(f"There is already a profile named '{clean}'.")
+        prof = self._profile_fields(kind, engine, endpoint, notes)
+        self._save_profiles({**self.app.config.browser.profiles, clean: prof})
+        self.sync_visibility()
+        return self.profiles()
+
+    async def update_profile(self, name: str, *, new_name: str | None = None, engine: str | None = None,
+                             endpoint: str | None = None, notes: str | None = None) -> dict:
+        """Rename a profile (its folder moves with it) or change its browser, address or notes."""
+        prof = self._profile_cfg(name)
+        target = profile_name(new_name) if new_name is not None else name
+        if target != name:
+            if name == DEFAULT_PROFILE:
+                raise BrowserError("The default profile can't be renamed.")
+            if target in self.app.config.browser.profiles:
+                raise BrowserError(f"There is already a profile named '{target}'.")
+        updated = self._profile_fields(
+            prof.kind,
+            prof.engine if engine is None else engine,
+            prof.endpoint if endpoint is None else endpoint,
+            prof.notes if notes is None else notes,
+        )
+        restart = target != name or updated.engine != prof.engine or updated.endpoint != prof.endpoint
+        async with self._lock:
+            if restart and self._context is not None and self._profile == name:
+                await self._shutdown()
+            if target != name and prof.kind == "launch":
+                old, new = profile_dir(name), profile_dir(target)
+                if old.exists():
+                    try:
+                        old.rename(new)
+                    except OSError as exc:
+                        raise BrowserError(
+                            "Couldn't rename the profile's folder. Close any browser window using it and try again."
+                        ) from exc
+            self._save_profiles({
+                (target if k == name else k): (updated if k == name else v)
+                for k, v in self.app.config.browser.profiles.items()
+            })
+            if target != name:
+                rename = getattr(getattr(self.app, "tasks", None), "rename_browser_profile", None)
+                if callable(rename):
+                    await rename(name, target)
+        return self.profiles()
+
+    async def delete_profile(self, name: str) -> dict:
+        """Remove a profile. A launched profile's folder (its sign-ins) is deleted; an attached browser is untouched."""
+        prof = self._profile_cfg(name)
+        if name == DEFAULT_PROFILE:
+            raise BrowserError("The default profile can't be deleted.")
+        async with self._lock:
+            if self._context is not None and self._profile == name:
+                await self._shutdown()
+            if prof.kind == "launch":
+                folder = profile_dir(name)
+                if folder.exists():
+                    try:
+                        shutil.rmtree(folder)
+                    except OSError as exc:
+                        raise BrowserError(
+                            "Couldn't delete the profile's folder. Close any browser window using it and try again."
+                        ) from exc
+            self._save_profiles({k: v for k, v in self.app.config.browser.profiles.items() if k != name})
+        self.sync_visibility()
+        return self.profiles()
+
     # ------------------------------------------------------------------ launch / close
-    async def _launch(self, headless: bool) -> None:
-        ok, why = self.availability()
-        if not ok:
-            raise BrowserError(why)
-        cfg = self.app.config.browser
+    async def _start_playwright(self) -> None:
         try:
             from playwright.async_api import async_playwright
         except ImportError as exc:  # pragma: no cover - dependency is part of the app
@@ -273,13 +469,46 @@ class BrowserService(Service):
                 self._pw = await asyncio.wait_for(async_playwright().start(), timeout=LAUNCH_TIMEOUT_S)
             except NotImplementedError as exc:
                 raise BrowserError("The browser can't start in this mode of the app (unsupported event loop).") from exc
-        profile = paths.home() / "browser" / "profile"
-        profile.mkdir(parents=True, exist_ok=True)
+
+    async def _launch(self, headless: bool) -> None:
+        """Start (or attach to) the browser of ``self._profile``. Hold ``_life_lock``."""
+        prof = self._profile_cfg(self._profile)
+        ok, why = self.availability(self._profile)
+        if not ok:
+            raise BrowserError(why)
+        await self._start_playwright()
+        if prof.kind == "attach":
+            context = await self._attach(prof)
+            headless = False
+        else:
+            context = await self._launch_persistent(prof, headless)
+        self._last_error = None
+        self._context = context
+        self._headless = headless
+        self._snap = None
+        context.set_default_timeout(15_000)
+        context.set_default_navigation_timeout(30_000)
+        context.on("close", lambda: self._on_context_closed(context))
+        context.on("page", self._on_page)
+        for page in context.pages:
+            self._wire_page(page)
+        if self._attached:  # work in a tab of our own, never in one the user is using
+            self._active = await context.new_page()
+        else:
+            self._active = context.pages[0] if context.pages else await context.new_page()
+        self._last_used = time.monotonic()
+        if self._idle_task is None or self._idle_task.done():
+            self._idle_task = asyncio.create_task(self._idle_watch(), name="browser:idle")
+        await self._publish_status()
+
+    async def _launch_persistent(self, prof: Any, headless: bool) -> Any:
+        cfg = self.app.config.browser
+        folder = profile_dir(self._profile)
+        folder.mkdir(parents=True, exist_ok=True)
         errors: list[str] = []
-        context = None
-        for channel in installed_engines(cfg.engine):
+        for channel in installed_engines(prof.engine or cfg.engine):
             kwargs: dict[str, Any] = {
-                "user_data_dir": str(profile),
+                "user_data_dir": str(folder),
                 "headless": headless,
                 "timeout": 45_000,
                 "args": ["--no-first-run", "--no-default-browser-check", "--hide-crash-restore-bubble"],
@@ -295,61 +524,84 @@ class BrowserService(Service):
                     self._pw.chromium.launch_persistent_context(**kwargs), timeout=LAUNCH_TIMEOUT_S
                 )
                 self._engine = channel
-                break
+                return context
             except Exception as exc:
                 log.warning("browser: launching %s failed: %s", channel, exc)
                 errors.append(f"{ENGINE_NAMES.get(channel, channel)}: {str(exc).splitlines()[0][:200]}")
-        if context is None:
-            self._last_error = (
-                "The browser couldn't start. If a Sentient browser window is still open, close it and try again. "
-                + " ".join(errors)
-            ).strip()
-            raise BrowserError(self._last_error)
-        self._last_error = None
-        self._context = context
-        self._headless = headless
-        self._snap = None
-        context.set_default_timeout(15_000)
-        context.set_default_navigation_timeout(30_000)
-        context.on("close", lambda: self._on_context_closed(context))
-        context.on("page", self._on_page)
-        for page in context.pages:
-            self._wire_page(page)
-        self._active = context.pages[0] if context.pages else await context.new_page()
-        self._last_used = time.monotonic()
-        if self._idle_task is None or self._idle_task.done():
-            self._idle_task = asyncio.create_task(self._idle_watch(), name="browser:idle")
-        await self._publish_status()
+        self._last_error = (
+            "The browser couldn't start. If a Sentient browser window is still open, close it and try again. "
+            + " ".join(errors)
+        ).strip()
+        raise BrowserError(self._last_error)
 
-    async def _ensure(self) -> Any:
-        """The context, launching it (with the configured headless mode) when needed."""
+    async def _attach(self, prof: Any) -> Any:
+        """Connect to a browser the user started with a DevTools port on this computer (loopback only)."""
+        endpoint, problem = safety.devtools_endpoint(prof.endpoint)
+        if problem:
+            raise BrowserError(problem)
+        ws = await devtools_ws_url(endpoint)
+        try:
+            browser = await asyncio.wait_for(
+                self._pw.chromium.connect_over_cdp(ws, timeout=30_000), timeout=LAUNCH_TIMEOUT_S
+            )
+        except Exception as exc:
+            self._last_error = f"Couldn't attach to the browser at {endpoint}: {str(exc).splitlines()[0][:200]}"
+            raise BrowserError(self._last_error) from exc
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        browser.on("disconnected", lambda *_: self._on_context_closed(context))
+        self._browser = browser
+        self._attached = True
+        self._engine = None
+        return context
+
+    async def _ensure(self, ctx: Any = None) -> Any:
+        """The context of the profile this call uses, switching profiles or launching (configured mode) when needed."""
+        want = self._wanted(ctx)
         async with self._life_lock:
+            if self._context is not None and self._profile != want:
+                if self._for_user:
+                    raise BrowserError(
+                        f"The browser is open in a window on the '{self._profile}' profile, maybe so the user can "
+                        f"sign in. Ask the user to close that window, then try again to use '{want}'."
+                    )
+                await self._close_context()
             if self._context is None:
+                self._profile = want
                 await self._launch(headless=self.app.config.browser.headless)
             return self._context
 
-    async def _page(self) -> Any:
-        ctx = await self._ensure()
+    async def _page(self, ctx: Any = None) -> Any:
+        c = await self._ensure(ctx)
         if self._active is None or self._active.is_closed():
-            pages = [p for p in ctx.pages if not p.is_closed()]
-            self._active = pages[-1] if pages else await ctx.new_page()
+            pages = [p for p in c.pages if not p.is_closed()]
+            self._active = pages[-1] if pages and not self._attached else await c.new_page()
         return self._active
+
+    async def _close_context(self) -> None:
+        """Close the running profile. An attached browser is only disconnected, never closed. Hold ``_life_lock``."""
+        ctx, browser, attached = self._context, self._browser, self._attached
+        if ctx is None and browser is None:
+            return
+        self._closing = True
+        try:
+            with contextlib.suppress(Exception):
+                if attached:
+                    await asyncio.wait_for(browser.close(), timeout=CLOSE_TIMEOUT_S)
+                else:
+                    await asyncio.wait_for(ctx.close(), timeout=CLOSE_TIMEOUT_S)
+        finally:
+            self._closing = False
+            self._context = None
+            self._browser = None
+            self._attached = False
+            self._for_user = False
+            self._active = None
+            self._snap = None
+            self._focused = None
 
     async def _shutdown(self, publish: bool = True) -> None:
         async with self._life_lock:
-            ctx = self._context
-            if ctx is None:
-                return
-            self._closing = True
-            try:
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(ctx.close(), timeout=CLOSE_TIMEOUT_S)
-            finally:
-                self._closing = False
-                self._context = None
-                self._active = None
-                self._snap = None
-                self._focused = None
+            await self._close_context()
         if self._frame_task and not self._frame_task.done():
             self._frame_task.cancel()
         idle = self._idle_task
@@ -363,13 +615,15 @@ class BrowserService(Service):
         await self._shutdown()
         return await self.status()
 
-    async def open_for_user(self, url: str | None = None) -> dict:
-        """Relaunch the same profile in a visible window so the user can sign in or finish a step."""
-        await self._restart(headless=False, url=url)
+    async def open_for_user(self, url: str | None = None, profile: str | None = None) -> dict:
+        """Show a profile in a visible window so the user can sign in or finish a step (attached: a new tab)."""
+        await self._restart(headless=False, url=url, profile=profile)
         return await self.status()
 
-    async def _restart(self, headless: bool, url: str | None = None) -> None:
-        ok, why = self.availability()
+    async def _restart(self, headless: bool, url: str | None = None, profile: str | None = None) -> None:
+        name = (profile or "").strip() or (self._profile if self._context is not None else DEFAULT_PROFILE)
+        self._profile_cfg(name)
+        ok, why = self.availability(name)
         if not ok:
             raise BrowserError(why)
         target = safety.normalize_url(url or "")
@@ -378,19 +632,22 @@ class BrowserService(Service):
             if problem:
                 raise BrowserError(problem)
         async with self._lock:
-            if not target and self._active is not None and not self._active.is_closed():
+            same = self._context is not None and self._profile == name
+            if not target and same and self._active is not None and not self._active.is_closed():
                 current = self._active.url
                 if current.startswith(("http://", "https://")):
                     target = current
-            if self._context is not None and self._headless == headless:
-                page = await self._context.new_page() if target else await self._page()
+            if same and (self._headless == headless or self._attached):
+                page = await self._context.new_page() if target and not self._attached else await self._page()
             else:
                 await self._shutdown(publish=False)
                 async with self._life_lock:
+                    self._profile = name
                     await self._launch(headless=headless)
                 page = await self._page()
             self._active = page
-            if target:
+            self._for_user = not headless and not self._attached
+            if target and page.url != target:
                 with contextlib.suppress(Exception):
                     await page.goto(target, wait_until="domcontentloaded")
             with contextlib.suppress(Exception):
@@ -402,20 +659,30 @@ class BrowserService(Service):
         if self._context is not context:
             return
         self._context = None
+        self._browser = None
+        self._attached = False
+        self._for_user = False
         self._active = None
         self._snap = None
         self._focused = None
-        if not self._closing:  # the user closed the visible window
+        if not self._closing:  # the user closed the visible window (or their attached browser)
             self._spawn(self._publish_status())
 
     def _wire_page(self, page: Any) -> None:
         page.on("close", lambda: self._on_page_closed(page))
         page.on("dialog", self._on_dialog)
+        page.on("popup", lambda popup: self._on_popup(page, popup))
 
     def _on_page(self, page: Any) -> None:
         self._wire_page(page)
-        self._active = page  # a link opened a new tab: keep working in it
+        if not self._attached:  # a link opened a new tab: keep working in it
+            self._active = page
         self._spawn(self._publish_status())
+
+    def _on_popup(self, opener: Any, popup: Any) -> None:
+        # attached: follow only tabs our own tab opened, never ones the user opens
+        if self._attached and self._active is opener:
+            self._active = popup
 
     def _on_page_closed(self, page: Any) -> None:
         if self._snap and self._snap.get("page") is page:
@@ -423,7 +690,7 @@ class BrowserService(Service):
         ctx = self._context
         if self._active is page:
             remaining = [p for p in (ctx.pages if ctx else []) if p is not page and not p.is_closed()]
-            self._active = remaining[-1] if remaining else None
+            self._active = remaining[-1] if remaining and not self._attached else None
         if ctx is not None and not self._closing:
             self._spawn(self._publish_status())
 
@@ -442,7 +709,7 @@ class BrowserService(Service):
             if (
                 minutes
                 and self._context is not None
-                and self._headless
+                and (self._headless or self._attached)
                 and not self._lock.locked()
                 and time.monotonic() - self._last_used > minutes * 60
             ):
@@ -532,11 +799,11 @@ class BrowserService(Service):
         return None
 
     # ------------------------------------------------------------------ element lookup
-    async def _locate(self, ref: Any) -> tuple[Any, Any, dict]:
+    async def _locate(self, ctx: Any, ref: Any) -> tuple[Any, Any, dict]:
         clean = _clean_ref(ref)
         if not clean:
             raise BrowserError(f"'{ref}' isn't a valid ref. Refs look like e12; take them from browser_snapshot.")
-        page = await self._page()
+        page = await self._page(ctx)
         loc = page.locator(f'[{REF_ATTR}="{clean}"]')
         count = 0
         with contextlib.suppress(Exception):
@@ -643,25 +910,27 @@ class BrowserService(Service):
         return out
 
     # ------------------------------------------------------------------ tool actions
-    async def open(self, ctx: Any, url: str) -> dict:
+    async def open(self, ctx: Any, url: str, profile: str = "") -> dict:
         target = safety.normalize_url(url)
         if not target:
             raise BrowserError("Give a web address to open, for example https://example.com.")
         problem = self._url_problem(target)
         if problem:
             raise BrowserError(problem)
+        self.use_profile(ctx, profile)
         async with self._lock:
-            page = await self._page()
+            page = await self._page(ctx)
             await page.goto(target, wait_until="domcontentloaded")
             await self._settle(page)
             await self._enforce_domains(page)
             result = await self._snapshot_locked(page)
+            result["profile"] = self._profile
             await self._after_action(ctx, page)
             return self._take_dialogs(result)
 
     async def snapshot(self, ctx: Any) -> dict:
         async with self._lock:
-            page = await self._page()
+            page = await self._page(ctx)
             self._last_used = time.monotonic()
             return self._take_dialogs(await self._snapshot_locked(page))
 
@@ -684,7 +953,7 @@ class BrowserService(Service):
 
     async def click(self, ctx: Any, ref: str) -> dict:
         async with self._lock:
-            page, loc, info = await self._locate(ref)
+            page, loc, info = await self._locate(ctx, ref)
             if info.get("disabled"):
                 raise BrowserError(f"{format_element(info)} is disabled. Something else on the page may need to be done first.")
             live_risk = safety.click_risk(info) if self.app.config.browser.confirm_purchases else Risk.write
@@ -723,7 +992,7 @@ class BrowserService(Service):
 
     async def type(self, ctx: Any, ref: str, text: str, submit: bool = False) -> dict:
         async with self._lock:
-            page, loc, info = await self._locate(ref)
+            page, loc, info = await self._locate(ctx, ref)
             kind = safety.sensitive_field(info) or safety.sensitive_field(info.get("live"))
             if kind:
                 return safety.needs_user(kind)
@@ -757,7 +1026,7 @@ class BrowserService(Service):
 
     async def select(self, ctx: Any, ref: str, option: str) -> dict:
         async with self._lock:
-            page, loc, info = await self._locate(ref)
+            page, loc, info = await self._locate(ctx, ref)
             if str(info.get("tag", "")).lower() != "select":
                 raise BrowserError(
                     f"{format_element(info)} isn't a dropdown list. Click it with browser_click, take a snapshot "
@@ -784,7 +1053,7 @@ class BrowserService(Service):
     async def press(self, ctx: Any, key: str) -> dict:
         name = normalize_key(key)
         async with self._lock:
-            page = await self._page()
+            page = await self._page(ctx)
             focused = None
             with contextlib.suppress(Exception):
                 focused = await page.evaluate(FOCUSED_INFO_JS)
@@ -821,7 +1090,7 @@ class BrowserService(Service):
         if d not in scripts:
             raise BrowserError("direction must be one of: down, up, top, bottom, left, right.")
         async with self._lock:
-            page = await self._page()
+            page = await self._page(ctx)
             pos = await page.evaluate(
                 "() => { " + scripts[d] + "; return [Math.round(scrollY), Math.round(document.documentElement.scrollHeight"
                 " - scrollY - innerHeight)]; }"
@@ -834,7 +1103,7 @@ class BrowserService(Service):
 
     async def back(self, ctx: Any) -> dict:
         async with self._lock:
-            page = await self._page()
+            page = await self._page(ctx)
             resp = await page.go_back(wait_until="domcontentloaded")
             if resp is None and page.url in {"about:blank", ""}:
                 raise BrowserError("There is no earlier page in this tab.")
@@ -847,18 +1116,23 @@ class BrowserService(Service):
             await self._after_action(ctx, page)
             return out
 
-    async def tabs(self, ctx: Any) -> dict:
+    async def tabs(self, ctx: Any, profile: str = "") -> dict:
+        self.use_profile(ctx, profile)
         async with self._lock:
-            await self._ensure()
+            await self._ensure(ctx)
             self._last_used = time.monotonic()
-            return {"tabs": await self._tabs()}
+            return {"profile": self._profile, "tabs": await self._tabs()}
 
     async def switch_tab(self, ctx: Any, index: int) -> dict:
         async with self._lock:
-            c = await self._ensure()
+            c = await self._ensure(ctx)
             pages = list(c.pages)
             if not 0 <= index < len(pages):
                 raise BrowserError(f"There is no tab {index}. Open tabs are numbered 0 to {len(pages) - 1}.")
+            url = pages[index].url or ""
+            problem = self._url_problem(url) if url.startswith(("http://", "https://")) else None
+            if problem:  # an attached browser holds the user's own tabs: leave them as they are
+                raise BrowserError(problem)
             self._active = pages[index]
             with contextlib.suppress(Exception):
                 await self._active.bring_to_front()
@@ -873,7 +1147,7 @@ class BrowserService(Service):
     async def extract(self, ctx: Any, question: str = "") -> dict:
         cfg = self.app.config.browser
         async with self._lock:
-            page = await self._page()
+            page = await self._page(ctx)
             self._last_used = time.monotonic()
             data = await page.evaluate(EXTRACT_JS, {"maxText": cfg.max_extract_chars * 5})
             content, truncated = focus_on_question(data.get("text", ""), question, cfg.max_extract_chars)
@@ -886,7 +1160,7 @@ class BrowserService(Service):
 
     async def screenshot(self, ctx: Any) -> dict:
         async with self._lock:
-            page = await self._page()
+            page = await self._page(ctx)
             self._last_used = time.monotonic()
             folder = paths.files_dir() / "outputs" / "browser"
             folder.mkdir(parents=True, exist_ok=True)

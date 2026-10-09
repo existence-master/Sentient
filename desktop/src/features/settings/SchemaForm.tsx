@@ -187,6 +187,7 @@ export const LABELS: Record<string, FieldLabel> = {
   'browser.max_extract_chars': { label: 'Page text size', unit: 'chars' },
   'browser.confirm_purchases': { label: 'Ask before buying, sending or deleting' },
   'browser.live_view': { label: 'Show a live view' },
+  'browser.profiles': { hidden: true },
   // helpers
   'subagents.enabled': { label: 'Let Sentient use helpers', description: 'Sentient can hand parts of a bigger job to helpers that work alongside the chat, then report back.' },
   'subagents.max_concurrent': { label: 'Helpers at the same time' },

@@ -12,6 +12,7 @@ import { useSandboxStatus } from '@/hooks/tasks'
 import { useTerminalStatus } from '@/hooks/terminal'
 import type { VoicePrepareTarget } from '@/lib/types'
 import { SchemaForm } from '../SchemaForm'
+import { BrowserProfilesSection } from './BrowserProfiles'
 import type { SectionProps } from '../SettingsPage'
 
 export const WAKE_KEYS = ['voice.wake_word', 'voice.wake_engine', 'voice.wake_sensitivity', 'voice.wake_model', 'voice.wake_whisper_model', 'voice.wake_earcon', 'voice.follow_up_seconds']
@@ -178,7 +179,14 @@ export function BrowserSection({ query }: SectionProps) {
       <Explainer icon={<IconWorldWww size={18} />} title="Signing in is always up to you">
         Sentient never logs in on its own. When a site needs you, it opens a window so you can sign in, and it remembers that for next time.
       </Explainer>
-      {has === false ? <NotYet what="Browser" /> : <SchemaForm section="browser" title="Using the web" filter={query} />}
+      {has === false ? (
+        <NotYet what="Browser" />
+      ) : (
+        <>
+          {(!query.trim() || /profile|sign|account|attach|brave|devtools/i.test(query)) && <BrowserProfilesSection />}
+          <SchemaForm section="browser" title="Using the web" filter={query} />
+        </>
+      )}
     </div>
   )
 }

@@ -74,11 +74,12 @@ def btool(name: str, *, risk: Risk, risk_kind: str | None = None):
 
 
 @btool("browser_open", risk=Risk.read)
-async def browser_open(ctx: ToolContext, url: str) -> dict:
+async def browser_open(ctx: ToolContext, url: str, profile: str = "") -> dict:
     """Open a web address in Sentient's own browser and return a snapshot of the page: its buttons, links and
     fields with refs like [e12], plus the page text. Use for websites without an integration or when you need to
-    click or fill things in; to only read an article, web_fetch is faster."""
-    return await service_from(ctx).open(ctx, url)
+    click or fill things in; to only read an article, web_fetch is faster. `profile` picks a named browser profile
+    (each has its own sign-ins) for this and the following browser calls; leave it empty to keep the current one."""
+    return await service_from(ctx).open(ctx, url, profile)
 
 
 @btool("browser_snapshot", risk=Risk.read)
@@ -127,9 +128,9 @@ async def browser_back(ctx: ToolContext) -> dict:
 
 
 @btool("browser_tabs", risk=Risk.read)
-async def browser_tabs(ctx: ToolContext) -> dict:
-    """List the open browser tabs with their index, address and title."""
-    return await service_from(ctx).tabs(ctx)
+async def browser_tabs(ctx: ToolContext, profile: str = "") -> dict:
+    """List the open browser tabs with their index, address and title. `profile` works as in browser_open."""
+    return await service_from(ctx).tabs(ctx, profile)
 
 
 @btool("browser_switch_tab", risk=Risk.read)

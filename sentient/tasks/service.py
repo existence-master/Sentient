@@ -64,6 +64,7 @@ STATUSES = {
 }
 UPDATABLE_FIELDS = {
     "name", "description", "priority", "schedule", "plan", "enabled", "status", "model", "assignee", "script",
+    "browser_profile",
 }
 SANDBOX_RESULT = {
     "ok": False, "backend": None, "stdout": "", "stderr": "", "result": None, "files_created": [],
@@ -294,10 +295,12 @@ class TaskService(Service):
         original_context: dict | None = None,
         model: str | None = None,
         auto_approve: bool = False,
+        browser_profile: str | None = None,
     ) -> dict:
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("A prompt is required.")
+        browser_profile = self._browser_profile(browser_profile)
         context = dict(original_context or {})
         context.setdefault("source", "manual_creation" if source == "user" else source)
         now = self.now_iso()
@@ -311,6 +314,7 @@ class TaskService(Service):
             "source": source,
             "enabled": True,
             "model": model or None,
+            "browser_profile": browser_profile,
             "original_context": context,
             "plan": [],
             "chat_history": [],
@@ -519,6 +523,8 @@ class TaskService(Service):
             changes["priority"] = _priority(data["priority"])
         if "model" in data:
             changes["model"] = data["model"] or None
+        if "browser_profile" in data:
+            changes["browser_profile"] = self._browser_profile(data["browser_profile"])
         if "assignee" in data:
             changes["assignee"] = data["assignee"] or "ai"
         if "plan" in data:
@@ -621,6 +627,19 @@ class TaskService(Service):
         await self._resolve_plan_notifications(task_id, "declined")
         return await self.get_and_publish(task_id)
 
+    def _browser_profile(self, value: Any) -> str | None:
+        """A task's browser profile (``None``: the default one); it must be a profile in Settings > Browser."""
+        name = str(value or "").strip()
+        if not name or name == "default":
+            return None
+        if name not in self.app.config.browser.profiles:
+            raise ValueError(f"There is no browser profile named '{name}'. Add it in Settings > Browser first.")
+        return name
+
+    async def rename_browser_profile(self, old: str, new: str) -> None:
+        """Keep tasks on a renamed browser profile (called by the browser service)."""
+        await self.repo.store.execute("UPDATE tasks SET browser_profile = ? WHERE browser_profile = ?", (new, old))
+
     async def archive(self, task_id: str) -> dict:
         await self._require(task_id)
         await self._set(task_id, {"status": "archived"})
@@ -631,7 +650,7 @@ class TaskService(Service):
         task = await self._require(task_id)
         now = self.now_iso()
         keep = ("name", "description", "priority", "task_type", "schedule", "original_prompt", "source",
-                "assignee", "model", "original_context", "chat_history")
+                "assignee", "model", "browser_profile", "original_context", "chat_history")
         fields = {k: task.get(k) for k in keep}
         fields.update(status="planning", enabled=True, plan=[], clarifying_questions=[], error=None,
                       created_at=now, updated_at=now)
