@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import itertools
 import json
 import logging
+import wave
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -326,7 +328,13 @@ class FakeVoice:
         return self.text
 
     async def speak(self, text: str) -> bytes:
-        return b"RIFFwav"
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(b"\x00\x01" * 1600)
+        return buf.getvalue()
 
     async def start(self) -> None:
         return None
@@ -345,12 +353,40 @@ async def test_voice_note_is_transcribed_and_answered(tg, llm, monkeypatch):
     tg.api.files["v1"] = b"OggS-voice"
     await tg.pair(42)
     llm.replies = ["It's sunny."]
+    sent: list[tuple[str, dict]] = []
+    call = tg.ch.call
+
+    async def spy(method, **kwargs):
+        sent.append((method, kwargs))
+        return await call(method, **kwargs)
+
+    monkeypatch.setattr(tg.ch, "call", spy)
     await tg.say(42, None, **VOICE)
     assert voice.received == [(b"OggS-voice", "telegram-voice-u1.ogg")]
     assert any("<i>Heard:</i> what&#x27;s the weather" in t or "<i>Heard:</i> what's the weather" in t for t in tg.api.screen())
     assert llm.calls[-1]["messages"][-1]["content"] == "what's the weather in Pune"
     assert tg.api.screen()[-1] == "It's sunny."
-    assert tg.api.sent("sendAudio")  # voice reply as audio
+    voices = [kwargs for method, kwargs in sent if method == "sendVoice"]
+    assert len(voices) == 1
+    name, data, mime = voices[0]["files"]["voice"]
+    assert name.endswith(".ogg") and mime == "audio/ogg" and data.startswith(b"OggS")
+    assert not any(method == "sendAudio" for method, _ in sent)
+
+
+async def test_undecodable_audio_falls_back_to_send_audio(tg, monkeypatch):
+    sent: list[tuple[str, dict]] = []
+    call = tg.ch.call
+
+    async def spy(method, **kwargs):
+        sent.append((method, kwargs))
+        return await call(method, **kwargs)
+
+    monkeypatch.setattr(tg.ch, "call", spy)
+    await tg.ch.send_audio("42", b"not-a-wav", "reply.wav")
+    audio = [kwargs for method, kwargs in sent if method == "sendAudio"]
+    assert len(audio) == 1
+    assert audio[0]["files"]["audio"] == ("reply.wav", b"not-a-wav", "audio/wav")
+    assert not any(method == "sendVoice" for method, _ in sent)
 
 
 async def test_voice_note_without_voice_engine(tg, llm, monkeypatch):
