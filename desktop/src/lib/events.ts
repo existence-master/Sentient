@@ -5,6 +5,7 @@
  *   task.updated          -> upsert into ['tasks'] and ['tasks', id]
  *   task.deleted          -> remove from ['tasks']
  *   task.run_progress     -> append progress to the run in cache
+ *   task.run_activity     -> update the run's last activity time
  *   notification.new      -> prepend to ['notifications'], badge++, toast, native notification if unfocused
  *   notification.updated  -> replace in place (payload status changed)
  *   notification.read     -> mark read (id null = all)
@@ -62,11 +63,19 @@ export function installDomainEvents(qc: QueryClient): () => void {
       const { task_id, run_id, update } = e.data
       const patch = (t: Task): Task => ({
         ...t,
-        runs: t.runs.map((r) => (r.run_id === run_id ? { ...r, progress_updates: [...r.progress_updates, update] } : r))
+        runs: t.runs.map((r) => (r.run_id === run_id ? { ...r, progress_updates: [...r.progress_updates, update], last_activity_at: update.timestamp } : r))
       })
       qc.setQueryData<Task>(qk.tasks.detail(task_id), (old) => (old ? patch(old) : old))
       qc.setQueryData<Task[]>(qk.tasks.all, (old) => old?.map((t) => (t.task_id === task_id ? patch(t) : t)))
       qc.setQueryData<unknown[]>(qk.tasks.runEvents(task_id, run_id), (old) => (old ? [...old, update] : old))
+    })
+  )
+  offs.push(
+    live.onDomain('task.run_activity', (e) => {
+      const { task_id, run_id, last_activity_at } = e.data
+      const patch = (t: Task): Task => ({ ...t, runs: t.runs.map((r) => (r.run_id === run_id ? { ...r, last_activity_at } : r)) })
+      qc.setQueryData<Task>(qk.tasks.detail(task_id), (old) => (old ? patch(old) : old))
+      qc.setQueryData<Task[]>(qk.tasks.all, (old) => old?.map((t) => (t.task_id === task_id ? patch(t) : t)))
     })
   )
 

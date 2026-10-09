@@ -50,7 +50,8 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 |---|---|
 | `task.updated` | full **Task** (§4) |
 | `task.deleted` | `{task_id}` |
-| `task.run_progress` | `{task_id, run_id, update: ProgressUpdate}` |
+| `task.run_progress` | `{task_id, run_id, update: ProgressUpdate}` (also moves the run's `last_activity_at` to `update.timestamp`) |
+| `task.run_activity` | `{task_id, run_id, last_activity_at}`: a working run is alive (the model is writing), at most every 10 s |
 | `notification.new` | **Notification** (§6) |
 | `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"\|"declined"`; a task question (`payload.event = "question"`) gains `payload.status = "answered"` with `payload.answer`, or `"cancelled"`) |
 | `notification.read` / `notification.deleted` | `{id}` (`null` = all) |
@@ -193,8 +194,8 @@ Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
   "task_id": "hex", "name": "Weekly inbox digest", "description": "...",
   "status": "planning|clarification_pending|approval_pending|pending|active|processing|waiting_for_user|completed|completed_with_errors|error|declined|cancelled|archived",
   "priority": 0, "assignee": "ai", "task_type": "single|swarm|script",
-  "schedule": {"type": "once", "run_at": "2026-09-16T09:00|null", "timezone": "Asia/Kolkata"}
-            | {"type": "recurring", "frequency": "daily|weekly", "days": ["Monday"], "time": "09:00", "timezone": "..."}
+  "schedule": {"type": "once", "run_at": "2026-09-16T09:00|null", "timezone": "Asia/Kolkata", "catch_up?": "run|skip"}
+            | {"type": "recurring", "frequency": "daily|weekly", "days": ["Monday"], "time": "09:00", "timezone": "...", "catch_up?": "run|skip"}
             | {"type": "recurring", "frequency": "interval", "interval_minutes": 60, "timezone": "..."}
             | {"type": "triggered", "source": "gmail|gcalendar|webhook|...", "event": "new_email|new_event|<hook id>|...", "filter": {}, "timezone": "..."},
   "script": {"code": "...", "condition": "alert|changed", "then": "notify|run", "last_result": null, "last_run_at": "...|null", "last_error": "...|null"} | null,
@@ -221,9 +222,13 @@ task-creation prompt still only produces daily/weekly (v2), the planner uses `in
  "plan": [...], "trigger_event_data": {}|null, "progress_updates": [ProgressUpdate],
  "result": {"summary": "markdown", "links_created": [{"url": "", "description": ""}], "links_found": [...], "files_created": [{"filename": "", "description": ""}], "tools_used": ["gmail"]},
  "error": null, "retry_of": "run id this run retries|null",
- "pending_question": {"question": "Which flight should I book?", "options": ["IndiGo 07:10", "Air India 09:40"], "asked_at": "..."} | null}
+ "pending_question": {"question": "Which flight should I book?", "options": ["IndiGo 07:10", "Air India 09:40"], "asked_at": "...",
+                      "kind": "question|limit|stuck", "reason": "...|null"} | null,
+ "last_activity_at": "...|null"}
 ```
-`pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question" and "Limits on a run" below).
+`pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question", "Limits on a run"
+and "Stuck runs" below). `kind` says why it waits; `reason` is set for `stuck` only. `last_activity_at` is when the run
+last showed any sign of work (a progress update, or streamed model output; falls back to `execution_start_time`).
 Already approved one-call tasks (a follow-up's Send, section 6) carry `original_context.fixed_call = {tool, arguments,
 done_text}` and a one-step `plan`. They are created `pending`, start a run at once with no planner and no executor model,
 and the run makes exactly that call with exactly those arguments (`tool_call`, `tool_result`, `final_answer` updates). A
@@ -278,7 +283,10 @@ Behaviour notes:
   (`{"status": "failed"}`) as well as item fields (`name`, `body.status`).
 - Task notification `payload.event` values: `approval_needed`, `clarification_needed`, `planning_failed`, `run_completed`,
   `run_failed` (with `run_id`), `disabled`, `script_alert` (with `result`), `script_failed`, `script_recovered`,
-  `question` (with `run_id`, `question`, `options`; later `status: "answered"|"cancelled"` and `answer`).
+  `question` (with `run_id`, `question`, `options`; a stuck run adds `stuck: true` and `reason`; later
+  `status: "answered"|"cancelled"` and `answer`), `caught_up` (with `reason`, `ran`, `skipped`; see "Missed runs").
+- Every way a run ends sends a notification or leaves a visible status: a run that crashes inside Sentient ends
+  `error` with `Something went wrong inside Sentient while running this task.` and the usual `run_failed` notification.
 - Chat tools (plugin `tasks`): `create_task_from_prompt`, `search_tasks`, `get_task_status` (results include `script`),
   `update_task(task_id, name?, description?, enabled?, schedule?, script_code?, script_condition?, script_then?)` (write,
   internal; changed script code goes back to `approval_pending` when `tasks.require_plan_approval`), and
@@ -336,11 +344,58 @@ token or cost limit **pauses and asks**, using the same `waiting_for_user` machi
   `ollama_chat`, `lm_studio`, `llamafile`, `vllm`, `hosted_vllm`) are not counted. Streamed calls to every model except
   Ollama ask for usage (`stream_options.include_usage`). Cost uses LiteLLM's price list and only adds up for models
   whose price it knows. `0` turns a token or cost limit off. A retry starts with fresh limits.
-- Repeated calls (`tools.repeated_call_limit`, default 3) never ask: the run fails at once with
+- Repeated calls (`tools.repeated_call_limit`, default 3) that keep getting the same **error** make the run stuck (below).
+  Ones that keep getting the same working result never ask: the run fails at once with
   `Stopped because the same step kept repeating: file_read ran 3 times with the same details and got the same result each time. Edit the task to add what it needs, or retry it.`
 - Swarm runs and fixed-call runs do not ask. A swarm's workers share one token and cost limit and stop with an error
   when it runs out (the swarm finishes `completed_with_errors`); `run_timeout_minutes` stops the whole swarm or
   fixed call with `Stopped after 30 minutes without finishing. ...`.
+
+### Stuck runs
+A single run that stops getting anywhere **pauses and says why** instead of failing silently (`sentient/tasks/stuck.py`).
+It reuses the `waiting_for_user` pause (not a new status), so restarts, Cancel, notifications and answering from a paired
+chat work as for any question. Checked deterministically; no model decides.
+
+| Signal | Config (`tasks.*`) | Default | `reason` example |
+|---|---|---|---|
+| No activity: no streamed model output (text or thinking), tool progress or tool result | `stuck_after_minutes` (0 = off) | 10 | `the AI model hasn't answered for 10 minutes`, `Browser hasn't responded for 10 minutes` |
+| One tool fails with the same error that many times in a row (any details) | `stuck_after_repeated_errors` (0 = off) | 5 | `Restaurant keeps failing with the same error: The booking server said no` |
+| The same call gets the same error `tools.repeated_call_limit` times (loop breaker) | `tools.repeated_call_limit` | 3 | as above |
+| A step only the user can do: a tool result with `needs_user` (the browser refusing a password, PIN, card or one-time code field), or a browser page asking the visitor to prove they are a person | | | `the page asks for your password`, `the site wants proof that you're a person (a CAPTCHA)` |
+
+- On no activity the call in flight is cancelled; the transcript keeps every finished step and drops that call.
+- The run's `pending_question` is `{question: "I'm stuck: <reason>. What should I do?", options: ["Try again",
+  "Skip this step", "Cancel"], kind: "stuck", reason}` (stored with `stuck`: `stalled|errors|blocked`). The progress log
+  gets `Waiting for your answer: ...` and the notification is `kind: "task"`, title `"<task name> is stuck"`, message
+  `Sentient is stuck on '<task name>': <reason>. Open it to help or cancel.`, `payload: {task_id, event: "question",
+  run_id, question, options, stuck: true, reason}`.
+- Answering (`POST .../answer`, a button, or a reply in a paired chat; case, spaces and a final `.`/`!` ignored):
+  `Cancel` cancels the run (progress `Cancelled after getting stuck.`). `Try again`, `Skip this step` or any other text
+  adds a note for the model (try again and differently if it fails the same way / skip that step and say so in the
+  final answer / the user's own words) and the run carries on from its transcript.
+- Tools can say a step needs the user by returning `{"error": "...", "needs_user": "<plain reason>"}`.
+- The executor is told to call `ask_user` when only the user can get past a step (a login, a CAPTCHA, a code).
+- Swarm workers and fixed-call runs are not watched; they have their own time limit.
+
+### Missed runs (catch-up)
+Scheduled runs (`active` recurring and `pending` one-off tasks) whose time passed while the computer was off or asleep,
+Sentient was not running, or Stop everything was on, are handled on the next scheduler tick (`sentient/tasks/catchup.py`).
+A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` seconds late.
+
+- Each missed task follows its schedule's `catch_up`: absent (auto) runs it **once** now if it is less than
+  `tasks.catch_up_window_hours` (default 12; 0 always skips) late, else skips it; `"run"` always runs it once;
+  `"skip"` never catches up. Other values are dropped when the schedule is saved; triggered schedules have none.
+- Never a backlog: a recurring task's next time is computed from now, so missed occurrences are not replayed.
+  A skipped recurring task moves to its next time and stays `active`. A skipped one-off task becomes `error` with
+  `Skipped: it was due Sep 14, 18:30, while the computer was off or asleep. Choose Run now if you still want it.`
+- `interval` schedules (every N minutes) run once and are not reported, since their next check is due anyway; with
+  `catch_up: "skip"` the missed check is skipped (and reported) instead.
+- One notification per catch-up: `kind: "task"`, title `Caught up after sleep: ran 1, skipped 2` (or `after Sentient was
+  off` on startup, `after resuming` after Stop everything), message `Ran once now: 'A'.` and/or `Skipped: 'B', 'C'. Open
+  one and choose Run now if you still want it.`, `payload: {event: "caught_up", reason: "start"|"sleep"|"resume",
+  ran: [{task_id, name, due_at}], skipped: [...], task_id?}` (`task_id` when only one task is listed).
+- Waking from sleep is a jump of the wall clock between scheduler ticks of more than `tick_seconds` + 120 s.
+- While Stop everything is on nothing is caught up; it happens on the first tick after Resume.
 
 ---
 
@@ -1164,7 +1219,8 @@ can ignore it.
   sent.", dropped: true, client_id}` and `done` `{cancelled: true, dropped: [text], client_id}`, echoing the
   `client_id` the message was sent with so the window can mark that message, not the newest turn), and messages queued in Telegram or Discord chats (the chat gets the
   same note). The window shows steers of a cancelled reply as not sent. Messages sent after the stop work as usual.
-- While stopped: the scheduler claims nothing (due tasks start on the first tick after Resume), triggered tasks
+- While stopped: the scheduler claims nothing (due tasks start on the first tick after Resume, following the missed-run
+  rules in section 4), triggered tasks
   do not fire, change feeds, polls, push watchers and webhooks publish nothing (`source.items`), and proactivity,
   heartbeats, follow-ups, self-improvement reviews, the user model and dreaming do not run. Things the user starts
   directly still work: chat, Run now, answering a task's question, Dream now.
