@@ -6,6 +6,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Model presets:** switch every model between local and cloud in one click. Click the model name at the top of the
+  window to pick "Local only" (everything on this computer), "Cloud" (your Anthropic, OpenAI or OpenRouter key for
+  every job) or "Mixed" (cloud for chat and planning, this computer for background work and memory), go back to a
+  recent chat model, or undo the last switch. Save your own setup as a preset under Settings > Models. If a preset
+  needs something you don't have yet, the menu offers it right there: download the model with progress, or add the key.
+  In Telegram, Discord and WhatsApp, `/model` shows the current setup and switches with a tap or a number. Per-chat
+  and per-task model choices still win.
 - **WhatsApp:** link Sentient to your WhatsApp by scanning a QR code (Channels > Messaging apps), then talk to it in
   your own "Message yourself" chat: text, voice notes, photos and files, replies as they are written, task results and
   suggestions. When Sentient needs a yes or no it lists numbered options; reply with the number. `/stop`, `/stopall`,

@@ -1,5 +1,5 @@
 import { IconAlertCircle, IconAlertTriangle, IconChevronRight, IconCircleCheck, IconCircleDashed, IconStethoscope } from '@tabler/icons-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Card, Spinner } from '@/components/ui'
 import { useConfigEditor } from '@/hooks/config'
@@ -26,13 +26,22 @@ const STATUS: Record<CheckupStatus, { icon: typeof IconCircleCheck; className: s
 export function ModelCheckup({
   roles,
   onUseModel,
+  autoStart,
   className
 }: {
   roles?: Partial<Record<RoleName, string | null>>
   onUseModel?: (role: RoleName, model: string) => void
+  /** Start checking as soon as it shows (the title bar's "Check my models"). */
+  autoStart?: boolean
   className?: string
 }) {
   const c = useModelCheckup()
+  const autoStarted = useRef(false)
+  useEffect(() => {
+    if (!autoStart || autoStarted.current) return
+    autoStarted.current = true
+    void c.run(roles)
+  }, [autoStart, c, roles])
   const started = c.rows.length > 0 || c.running || !!c.error
   const issues = c.rows.filter((r) => r.result && (r.result.status === 'warn' || r.result.status === 'fail')).length
   const own = c.rows.filter((r) => r.model)

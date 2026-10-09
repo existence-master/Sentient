@@ -17,6 +17,7 @@ export const qk = {
 
   providers: ['models', 'providers'] as const,
   localModels: ['models', 'local'] as const,
+  modelPresets: ['models', 'presets'] as const,
   secrets: ['secrets'] as const,
 
   tasks: {

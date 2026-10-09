@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import respx
 
 from sentient import paths
 from sentient.channels import ChannelError
@@ -376,6 +377,19 @@ async def test_a_numbered_reply_still_answers_after_a_restart(wa, llm):
     assert wa.hub.last().startswith("Thanks! I passed your answer to 'Book a flight to Goa'.")
     task = await wa.app.tasks.get(task_id)
     assert task["status"] == "completed" and _executor_answer(llm, 1) == FLIGHTS[0]  # "1" became the option itself
+
+
+async def test_model_presets_as_numbered_options(wa, keychain):
+    keychain["anthropic"] = "sk-ant"
+    await wa.link()
+    await wa.say("/model")
+    msg = wa.hub.message_with("Pick a setup")
+    assert msg["text"].endswith("Reply to this message with a number:\n*1* Local only\n*2* Cloud\n*3* Mixed")
+    with respx.mock() as mock:  # the switch checks which local models are downloaded: never a real Ollama
+        mock.get("http://localhost:11434/api/tags").respond(200, json={"models": [{"name": "nomic-embed-text:latest"}]})
+        await wa.say("2", reply_to=msg["id"])
+    assert wa.app.config.models.active_preset == "Cloud"
+    assert "_Switched to Cloud._" in wa.hub.screen()
 
 
 # ---------------------------------------------------------------------------- voice, commands

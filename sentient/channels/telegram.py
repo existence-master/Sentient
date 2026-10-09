@@ -43,7 +43,7 @@ for the bot to answer.
 
 Now just message your bot to talk to Sentient. You can send text, voice notes, photos and files.
 Commands: `/new` starts a fresh chat, `/stop` stops a reply, `/stopall` stops everything Sentient is doing
-(`/resume` starts it again), `/help` shows help.
+(`/resume` starts it again), `/model` switches between local and cloud models, `/help` shows help.
 
 **Keep the token private.** Anyone who has it can use your bot. If it leaks, send `/revoke` to BotFather,
 then connect again here with the new token.

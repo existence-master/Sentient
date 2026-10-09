@@ -37,6 +37,45 @@ export function useSetRoles() {
   })
 }
 
+export function useModelPresets() {
+  return useQuery({ queryKey: qk.modelPresets, queryFn: api.models.presets.list, staleTime: 10_000 })
+}
+
+/** After a preset changes the models: refresh everything that shows them. */
+function useInvalidateModels() {
+  const qc = useQueryClient()
+  return () => {
+    void qc.invalidateQueries({ queryKey: qk.modelPresets })
+    void qc.invalidateQueries({ queryKey: qk.config })
+    void qc.invalidateQueries({ queryKey: qk.bootstrap })
+  }
+}
+
+export function useApplyPreset() {
+  const refresh = useInvalidateModels()
+  return useMutation({ mutationFn: (name: string) => api.models.presets.apply(name), onSuccess: refresh })
+}
+
+export function useUndoPreset() {
+  const refresh = useInvalidateModels()
+  return useMutation({ mutationFn: () => api.models.presets.undo(), onSuccess: refresh })
+}
+
+export function useSavePreset() {
+  const refresh = useInvalidateModels()
+  return useMutation({ mutationFn: ({ name, overwrite }: { name: string; overwrite?: boolean }) => api.models.presets.save(name, overwrite), onSuccess: refresh })
+}
+
+export function useRenamePreset() {
+  const refresh = useInvalidateModels()
+  return useMutation({ mutationFn: ({ name, to }: { name: string; to: string }) => api.models.presets.rename(name, to), onSuccess: refresh })
+}
+
+export function useDeletePreset() {
+  const refresh = useInvalidateModels()
+  return useMutation({ mutationFn: (name: string) => api.models.presets.delete(name), onSuccess: refresh })
+}
+
 export function useSetFallbacks() {
   const qc = useQueryClient()
   return useMutation({
@@ -52,6 +91,7 @@ export function useSetSecret() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.secrets })
       void qc.invalidateQueries({ queryKey: qk.providers })
+      void qc.invalidateQueries({ queryKey: qk.modelPresets })
     }
   })
 }
@@ -63,6 +103,7 @@ export function useDeleteSecret() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.secrets })
       void qc.invalidateQueries({ queryKey: qk.providers })
+      void qc.invalidateQueries({ queryKey: qk.modelPresets })
     }
   })
 }
