@@ -35,6 +35,7 @@ import type {
   StopState,
   ChatRequest,
   AgentEvent,
+  CheckupEvent,
   ClarificationAnswer,
   ConfigPatchResponse,
   ConnectResponse,
@@ -50,6 +51,7 @@ import type {
   LocalModels,
   McpServer,
   McpServerCreate,
+  McpSignInStart,
   McpTestResult,
   Memory,
   MemoryGraph,
@@ -446,7 +448,10 @@ export const api = {
     setFallbacks: (fallbacks: Partial<Record<RoleName, string[]>>) =>
       http.put<FallbacksResponse>('/api/models/fallbacks', fallbacks),
     pullOllama: (name: string, signal?: AbortSignal) =>
-      streamNdjson<OllamaPullProgress>('POST', '/api/models/ollama/pull', { body: { name }, signal })
+      streamNdjson<OllamaPullProgress>('POST', '/api/models/ollama/pull', { body: { name }, signal }),
+    /** Check each role's model (or only `roles`); never changes config. */
+    checkup: (roles?: Partial<Record<RoleName, string | null>>, signal?: AbortSignal) =>
+      streamNdjson<CheckupEvent>('POST', '/api/models/checkup', { body: roles ? { roles } : {}, signal })
   },
 
   secrets: {
@@ -504,7 +509,9 @@ export const api = {
       list: () => http.get<McpServer[]>('/api/integrations/mcp'),
       add: (body: McpServerCreate) => http.post<McpServer>('/api/integrations/mcp', body),
       remove: (name: string) => http.delete<OkResponse>(`/api/integrations/mcp/${enc(name)}`),
-      test: (name: string) => http.post<McpTestResult>(`/api/integrations/mcp/${enc(name)}/test`)
+      test: (name: string) => http.post<McpTestResult>(`/api/integrations/mcp/${enc(name)}/test`),
+      signIn: (name: string) => http.post<McpSignInStart>(`/api/integrations/mcp/${enc(name)}/sign-in`),
+      signOut: (name: string) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/sign-out`)
     },
     /** §16 change feeds (Gmail, Calendar) and IMAP push watchers. */
     feeds: {

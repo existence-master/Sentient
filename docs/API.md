@@ -178,6 +178,33 @@ Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
 - `GET /api/models/local` → `{ollama: {reachable, models: [{name, size, family, parameter_size, is_embedding, capabilities: string[]}]}, lm_studio: {reachable, models: [...]}}` (`capabilities` from Ollama, e.g. completion/tools/thinking/vision/embedding — a hint; `POST /api/models/test` is the authoritative tool-support check)
 - `POST /api/models/test` `{model, role?}` → `{ok, latency_ms, reply?, error?, supports_tools?}`
 - `POST /api/models/test-embedding` `{model}` → `{ok, dim?, error?}`
+- `POST /api/models/checkup` `{roles?: {role: model | null}}` → streams NDJSON while it checks each role's model,
+  one role at a time (local models are never loaded side by side). Without `roles` it checks every role in the saved
+  config; with `roles` it checks only those, with those models (onboarding checks its picks before saving). It is
+  informational only and never changes config. Each step has a short timeout (60 s). Roles with the same model
+  and the same settings the tests depend on (provider address, reasoning effort, context length, temperature) run
+  each model test (`reply`, `tools`, `chain`, `json`) once; the later role reuses it with a detail starting
+  "Same as primary." (the first role's name). Lines:
+  - `{type: "start", roles: [{role, model}]}` (`model` null = an optional role that uses the main model)
+  - `{type: "step", role, label}` progress, e.g. "Trying a tool call"
+  - `{type: "role", role, model, provider, local, inherits, status, checks: [Check]}` when a role is finished.
+    `inherits: "primary"` with `status: "skip"` and no checks for an optional role with no model of its own.
+  - `{type: "done", status, roles: [role results]}` (`status` = the worst role)
+
+  `Check` = `{id, label, status: "pass"|"warn"|"fail"|"skip", detail, fix?, action?}`. `detail` and `fix` are
+  plain sentences for the UI. Checks, in order, skipping those that do not apply:
+  `connection` (Ollama running and model downloaded, or a cloud key set; a failure stops the rest), `reply` (one
+  short answer), `tools` (one scripted `find_city` call; roles that use tools: primary, fast, executor, vision,
+  voice), `chain` (a second `get_weather` call using the first result; primary and executor), `json` (a JSON reply;
+  fast and planner), `thinking` (Ollama models that can think: thinking matches the role's reasoning setting),
+  `context` (tokens in use vs the model's maximum from `/api/show`), `gpu` (from Ollama `/api/ps`: `size_vram` vs
+  `size`, warns when part of the model runs on the processor), `embedding` (embedding role only). Cloud and
+  LM Studio models get no Ollama checks. `action` is an optional one-click fix the window may offer:
+  `{kind: "use_model", role, model, label}` (`PUT /api/models/roles`), `{kind: "pull_model", name, label}`
+  (`POST /api/models/ollama/pull`), `{kind: "set_reasoning", role, value, label}` (`models.reasoning`),
+  `{kind: "set_context_length", value, role: string|null, label}` (`models.context_length`, or
+  `models.context_length_per_role[role]` when `role` is set). Unknown role → 400. `sentient doctor --models` prints
+  the same check-up as a table.
 - `PUT /api/models/roles` `{primary?, fast?, planner?, executor?, embedding?, vision?, voice?}` → updated roles (null = use primary). The `voice` role is used for `channel` voice/glasses turns and defaults to reasoning `none`.
 - `PUT /api/models/fallbacks` `{role: [model, ...]}` → `{ok}`
 - `POST /api/models/ollama/pull` `{name}` → streams NDJSON `{status, completed?, total?}`
@@ -440,11 +467,30 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
 - `POST /api/integrations/{id}/test` → `{ok, detail}`
 - `GET /api/integrations/{id}/privacy-filters` → `{keywords: [], emails: [], labels: []}`
 - `PUT /api/integrations/{id}/privacy-filters` same shape → `{ok}`
-- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, enabled, status: "connecting|connected|error|disconnected|disabled", tools: [{name, mcp_name, description, risk}], error}]`
-  (`name` is the Sentient tool name `mcp_<server>_<tool>`; `env` values are kept in the keychain, only `env_keys` are returned)
-- `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, enabled?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input)
-- `DELETE /api/integrations/mcp/{name}` → `{ok}`
+- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, auth: "none|headers|oauth", header_keys, signed_in, signing_in, enabled, status: "connecting|connected|needs_sign_in|error|disconnected|disabled", tools: [{name, mcp_name, description, risk}], error}]`
+  (`name` is the Sentient tool name `mcp_<server>_<tool>`; `env` and header values are kept in the keychain, only `env_keys` and `header_keys` are returned)
+  - `auth` (remote servers only): `none`, `headers` (static headers such as `Authorization: Bearer ...` sent on every request) or `oauth` (sign-in with the MCP authorization spec). Header values are sent in every mode when `header_keys` is not empty.
+  - `signed_in`: an OAuth sign-in is stored (only with `auth: "oauth"`). `signing_in`: a browser sign-in is waiting for the user.
+  - `status: "needs_sign_in"`: the server answered 401, or `auth` is `oauth` with no stored sign-in, or the stored sign-in expired and could not be refreshed. `error` says what to do: `"This server asks you to sign in."` (none), `"The server didn't accept the saved headers. Check them and add the server again."` (headers), `"Sign in to use this server."` (oauth). The engine retries a server in this state every 5 minutes, and at once after a sign-in or a test.
+- `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, headers?, auth?, enabled?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input)
+  - `headers`: `{name: value}`; values go to the keychain. `auth` defaults to `headers` when headers are given, else `none`. 400 when `auth` is `headers` without headers, a header name or value is invalid, or a stdio server has headers or `auth` other than `none`.
+  - Replacing a server with a different URL drops its stored sign-in. Headers not given are deleted.
+- `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain)
 - `POST /api/integrations/mcp/{name}/test` → `{ok, tools: [mcp tool names], error?}`
+- `POST /api/integrations/mcp/{name}/sign-in` → `{auth_url, state}`; the desktop opens `auth_url` in the system browser. The engine
+  discovers the server's protected resource metadata and authorization server metadata (RFC 9728, RFC 8414), registers
+  a client when needed (RFC 7591, `client_name: "Sentient"`, public client), and uses PKCE (S256) with the `resource`
+  parameter (RFC 8707). The provider redirects to the shared loopback listener `http://127.0.0.1:<port>/oauth/callback`
+  (`integrations.oauth_redirect_port`, 0 = a free port; the client is registered again when the port changes), which
+  exchanges the code and shows a "You're connected" or "Connection failed" page. On success the server's `auth` becomes
+  `oauth` and it reconnects; poll `GET /api/integrations/mcp` while `signing_in` is true. A sign-in waits at most 15
+  minutes. 404 unknown server; 400 for stdio servers, a server that doesn't support sign-in (no metadata or
+  registration), a server that didn't ask for one, or no answer within 30 s.
+- `POST /api/integrations/mcp/{name}/sign-out` → server object; deletes the stored tokens (the client registration is kept)
+  and cancels a pending sign-in. A server with `auth: "oauth"` then shows `needs_sign_in`.
+- Tokens are refreshed with the refresh token before they expire (60 s early) and once after a 401 before asking for a
+  new sign-in. Keychain entries: `mcp:<name>` (env), `mcp:<name>:headers`, `mcp:<name>:oauth` (tokens),
+  `mcp:<name>:client` (registration); values too long for one entry continue in `<entry>:1`, `<entry>:2`...
 - `PUT /api/integrations/{id}/privacy-filters` → 400 when the integration has `privacy_filters.supported: false`
 
 - `GET /api/integrations/feeds` → `[{source, display_name, kind: "gmail_history"|"calendar_sync_token"|"imap_idle", connected, active,

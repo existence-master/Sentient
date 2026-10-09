@@ -64,7 +64,12 @@ export function useIntegrationActions() {
 }
 
 export function useMcpServers() {
-  return useQuery({ queryKey: qk.integrations.mcp, queryFn: api.integrations.mcp.list })
+  return useQuery({
+    queryKey: qk.integrations.mcp,
+    queryFn: api.integrations.mcp.list,
+    // No event tells the window when a browser sign-in finishes or a server connects: poll while one is pending.
+    refetchInterval: (q) => (q.state.data?.some((s) => s.signing_in || s.status === 'connecting') ? 2000 : false)
+  })
 }
 
 export function useMcpActions() {
@@ -73,6 +78,15 @@ export function useMcpActions() {
   return {
     add: useMutation({ mutationFn: (body: McpServerCreate) => api.integrations.mcp.add(body), onSuccess: invalidate }),
     remove: useMutation({ mutationFn: (name: string) => api.integrations.mcp.remove(name), onSuccess: invalidate }),
-    test: useMutation({ mutationFn: (name: string) => api.integrations.mcp.test(name) })
+    test: useMutation({ mutationFn: (name: string) => api.integrations.mcp.test(name) }),
+    /** Starts a browser sign-in and opens the provider's page; the server list shows when it finishes. */
+    signIn: useMutation({
+      mutationFn: (name: string) => api.integrations.mcp.signIn(name),
+      onSuccess: (res) => {
+        void getBridge().openExternal(res.auth_url)
+        invalidate()
+      }
+    }),
+    signOut: useMutation({ mutationFn: (name: string) => api.integrations.mcp.signOut(name), onSuccess: invalidate })
   }
 }
