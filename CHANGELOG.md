@@ -11,6 +11,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
   suggestions. When Sentient needs a yes or no it lists numbered options; reply with the number. `/stop`, `/stopall`,
   `/resume`, `/new` and `/help` work there too. Your other chats are never read or answered. This uses the same linking
   as WhatsApp Web through an unofficial app, so WhatsApp could limit an account that uses it; the connect screen says so.
+  Sentient's messages in that chat start with its name, so you can tell them from yours. In the installer, spoken
+  replies arrive as an audio file rather than a voice note.
 - Tasks can pause to ask you a question ("Which of these two flights?") and carry on with your answer. The question
   shows on the task, as a notification with quick answers, and in paired Telegram or Discord chats with buttons;
   replying to the question message there works too. A waiting task keeps waiting across restarts.

@@ -36,8 +36,8 @@ from sentient.channels.formatting import WHATSAPP_LIMIT, render_whatsapp_chunks
 
 log = logging.getLogger(__name__)
 
-PAIR_RE = re.compile(r"^/pair\s+\d{6}$", re.I)
-CHOICE_RE = re.compile(r"^\s*(\d{1,2})\s*[.)]?\s*$")
+PAIR_RE = re.compile(r"^/pair\s+[0-9]{6}$", re.I)
+CHOICE_RE = re.compile(r"^\s*([0-9]{1,2})\s*[.)]?\s*$")  # ASCII digits only: "\d" also matches "٢" or "²"
 IGNORED_SERVERS = {"g.us", "broadcast", "newsletter"}  # groups, status updates, channels
 MAX_CHOICES = 200
 
@@ -147,7 +147,7 @@ class WhatsAppChannel(Channel):
     instructions_md = INSTRUCTIONS
     uses_token = False
     status_lines = False  # WhatsApp leaves "This message was deleted" behind
-    choice_hint = "reply to it with an option's number"
+    choice_hint = "reply with an option's number"
 
     def __init__(self, service):
         super().__init__(service)
@@ -225,15 +225,18 @@ class WhatsAppChannel(Channel):
         failures = 0
         while True:
             self._outcome, self._up = None, False
-            self.bridge = self.bridge_factory(self.session_dir())
             error = "Can't reach WhatsApp. Check your internet connection."
-            try:
+            crashed = False
+            try:  # the bridge boundary: nothing the WhatsApp library raises may stop the engine
+                self.bridge = self.bridge_factory(self.session_dir())
                 await self.bridge.run(self.on_event)
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
-                log.warning("whatsapp connection failed: %s", exc)
-                error = f"WhatsApp connection failed: {str(exc)[:200]}"
+            except Exception:
+                log.exception("whatsapp bridge failed")
+                crashed = True
+                error = ("WhatsApp stopped working unexpectedly. Sentient keeps trying to reconnect; "
+                         "if this stays, click Reconnect.")
             finally:
                 await self.close()
             if self._outcome is not None:
@@ -251,8 +254,9 @@ class WhatsAppChannel(Channel):
             if self._up:
                 failures, backoff = 0, 1.0
             failures += 1
-            await self.service.set_status(self.id, "error" if failures >= 3 else "connecting",
-                                          error=error if failures >= 3 else None)
+            attention = crashed or failures >= 3
+            await self.service.set_status(self.id, "error" if attention else "connecting",
+                                          error=error if attention else None)
             await self.sleep(backoff)
             backoff = min(backoff * 2, 60.0)
 
@@ -408,8 +412,14 @@ class WhatsAppChannel(Channel):
             md = md.replace("Tap an option, or reply", "Reply with an option's number, or reply")
         return await super().send_markdown(chat_id, md, buttons)
 
+    def _signed(self, chat_id: str, text: str) -> str:
+        """In the self chat every message shows as the user's own, so Sentient's start with its name."""
+        if chat_id != self.self_chat:
+            return text
+        return f"*{self.app.config.assistant.name}:* {text}"
+
     async def send_chunk(self, chat_id: str, chunk: str, buttons: list[list[Button]] | None = None) -> str:
-        text = chunk + (self._options_text(buttons) if buttons else "")
+        text = self._signed(chat_id, chunk + (self._options_text(buttons) if buttons else ""))
         message_id = self._track(await self._bridge().send_text(chat_id, text))
         if buttons:
             self._remember_choices(chat_id, message_id, buttons)
@@ -421,7 +431,7 @@ class WhatsAppChannel(Channel):
         return message_id
 
     async def edit_chunk(self, chat_id: str, message_id: str, chunk: str, buttons: list[list[Button]] | None = None) -> None:
-        await self._bridge().edit_text(chat_id, message_id, chunk + (self._options_text(buttons) if buttons else ""))
+        await self._bridge().edit_text(chat_id, message_id, self._signed(chat_id, chunk + (self._options_text(buttons) if buttons else "")))
 
     async def delete_message(self, chat_id: str, message_id: str) -> None:
         await self._bridge().revoke(chat_id, message_id)

@@ -998,7 +998,10 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
     database. At startup a linked session reconnects; if it is gone, `status` is `error` ("needs to be linked again").
     Logged out on the phone → `error` "WhatsApp unlinked Sentient...", the session is deleted and `account_label` cleared.
     Another copy using the link, or a temporary ban, ends in `error` with a plain sentence. Dropped connections retry
-    with backoff (1 s doubling to 60 s; `error` after 3 failures in a row).
+    with backoff (1 s doubling to 60 s; `error` after 3 failures in a row). An exception from the WhatsApp library is
+    caught at the bridge boundary and logged: `status` becomes `error` ("WhatsApp stopped working unexpectedly...")
+    at once, reconnecting continues with backoff, and the engine keeps running. Exceptions in its event handlers are
+    only logged.
   - Who can talk to it: after linking, the "Message yourself" chat (`chat_id` `<number>@s.whatsapp.net`, label
     "Message yourself", also matched when WhatsApp addresses it by LID) is paired automatically and greeted once. Other
     chats can be paired with `/pair <code>` (instructions "From the other WhatsApp chat, send this to +<number>: /pair
@@ -1010,6 +1013,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
     message is edited to show it. A bare number (no reply) only answers a waiting approval. Out of range: "Reply with a
     number from 1 to N." A delivered question says "Reply with an option's number, or reply to this message with your
     answer." Replying to a delivered question with a number picks that option even after a restart (for every channel).
+  - In the self chat every message Sentient sends (and every edit) starts with `*<assistant.name>:* `, because there
+    everything shows as the user's own; other paired chats get no prefix.
   - Replies use WhatsApp markup (`*bold*`, `_italic_`, `~strike~`, code blocks; links as "label (url)"), 4000
     characters per message, edited at most every `channels.whatsapp.edit_interval_s` (2 s). No temporary status lines
     (a deleted message would leave "This message was deleted"). Voice replies are OGG/Opus voice notes when PyAV is

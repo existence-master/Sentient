@@ -17,6 +17,7 @@ import importlib.util
 import logging
 import sys
 import types
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +100,18 @@ def to_message(event: Any) -> WAMessage | None:
     )
 
 
+def _guarded(handler: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
+    """neonize calls handlers from its Go threads through the event loop: an exception there must only be logged."""
+
+    async def call(*args: Any) -> None:
+        try:
+            await handler(*args)
+        except Exception:
+            log.exception("WhatsApp event handler failed")
+
+    return call
+
+
 class NeonizeBridge:
     def __init__(self, session_dir: Path):
         self.session_dir = session_dir
@@ -171,14 +184,14 @@ class NeonizeBridge:
             if message is not None:
                 await emit("message", {"message": message})
 
-        client.event.qr(on_qr)
-        client.event(ConnectedEv)(on_connected)
-        client.event(DisconnectedEv)(on_disconnected)
-        client.event(LoggedOutEv)(on_logged_out)
-        client.event(StreamReplacedEv)(on_replaced)
-        client.event(TemporaryBanEv)(on_ban)
-        client.event(ConnectFailureEv)(on_failure)
-        client.event(MessageEv)(on_message)
+        client.event.qr(_guarded(on_qr))
+        client.event(ConnectedEv)(_guarded(on_connected))
+        client.event(DisconnectedEv)(_guarded(on_disconnected))
+        client.event(LoggedOutEv)(_guarded(on_logged_out))
+        client.event(StreamReplacedEv)(_guarded(on_replaced))
+        client.event(TemporaryBanEv)(_guarded(on_ban))
+        client.event(ConnectFailureEv)(_guarded(on_failure))
+        client.event(MessageEv)(_guarded(on_message))
 
         task = await client.connect()  # whatsmeow reconnects by itself while this runs
         waiter = asyncio.create_task(done.wait())

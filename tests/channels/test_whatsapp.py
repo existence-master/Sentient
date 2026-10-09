@@ -29,6 +29,7 @@ from tests.conftest import tool_call
 ME = "15550001111@s.whatsapp.net"
 MY_LID = "99887766@lid"
 FRIEND = "15559990000@s.whatsapp.net"
+SIGNED = "*Sentient:* "  # how Sentient's messages start in the self chat
 _ids = itertools.count(1)
 
 
@@ -97,6 +98,7 @@ class Hub:
         self.files: dict[str, bytes] = {}
         self.typing = 0
         self.logged_out = False
+        self.signed = SIGNED
 
     def factory(self, session_dir: Path) -> FakeBridge:
         bridge = FakeBridge(self, session_dir)
@@ -108,13 +110,22 @@ class Hub:
         return self.bridges[-1]
 
     def screen(self, chat: str = ME) -> list[str]:
-        """Current text of every message Sentient sent to ``chat``, oldest first."""
+        """Current text of every message Sentient sent to ``chat``, oldest first.
+
+        In the self chat every message and every edit must start with "*Sentient:* " (checked here, then left out).
+        """
         msgs: dict[str, str] = {}
         for s in self.sent:
             if s["chat"] != chat:
                 continue
             if s["op"] == "text" or (s["op"] == "edit" and s["id"] in msgs):
-                msgs[s["id"]] = s["text"]
+                text = s["text"]
+                if chat == ME:
+                    assert text.startswith(self.signed), text
+                    text = text.removeprefix(self.signed)
+                else:
+                    assert not text.startswith(self.signed), text
+                msgs[s["id"]] = text
             elif s["op"] == "revoke":
                 msgs.pop(s["id"], None)
         return list(msgs.values())
@@ -398,7 +409,7 @@ async def test_stopall_and_resume_from_whatsapp(wa):
     await wa.say("/resume")
     assert wa.hub.last().startswith("Resumed.") and not wa.app.stopped
     await wa.say("/help")
-    assert "/stopall" in wa.hub.last() and "reply to it with an option's number" in wa.hub.last()
+    assert "/stopall" in wa.hub.last() and "reply with an option's number" in wa.hub.last()
 
 
 # ---------------------------------------------------------------------------- connection
@@ -428,7 +439,7 @@ async def test_reconnects_after_a_dropped_connection(wa):
     assert "connecting" in statuses and statuses[-1] == "connected"
     assert wa.hub.bridges[0].closed
     assert len(await wa.app.channels.store.chats("whatsapp")) == 1  # no second self chat
-    assert len([s for s in wa.hub.sent if s.get("text", "").startswith("Linked!")]) == 1
+    assert len([s for s in wa.hub.sent if "Linked!" in s.get("text", "")]) == 1
 
 
 async def test_logged_out_on_the_phone_needs_a_new_scan(wa):
@@ -471,3 +482,74 @@ def test_markdown_to_whatsapp():
     assert markdown_to_whatsapp(md) == (
         "*Plan*\n*bold*, _italic_, ~old~ and `a **b**`. See the docs (https://example.com).\n- one\n```\nx = **1**\n```"
     )
+
+
+async def test_replies_in_the_self_chat_carry_the_assistant_name(wa, llm):
+    wa.app.config.assistant.name = "Juno"
+    wa.hub.signed = "*Juno:* "
+    await wa.link()
+    llm.replies = ["A reply long enough to be streamed in more than one piece."]
+    wa.ch.cfg.edit_interval_s = 0.3
+    await wa.say("hi")
+    mine = [s for s in wa.hub.sent if s["chat"] == ME and s["op"] in {"text", "edit"}]
+    assert mine and all(s["text"].startswith("*Juno:* ") for s in mine)  # edits keep it too
+    assert mine[-1]["text"] == "*Juno:* A reply long enough to be streamed in more than one piece."
+
+
+async def test_a_crash_inside_the_whatsapp_library_never_stops_the_engine(wa, llm, caplog):
+    class Exploding(FakeBridge):
+        async def run(self, emit) -> None:
+            raise RuntimeError("panic: runtime error in whatsmeow")
+
+    real = wa.hub.factory
+    wa.ch.bridge_factory = lambda d: Exploding(wa.hub, d)
+    await wa.app.channels.store.set_state("whatsapp", enabled=1, account_label="+15550001111")
+    wa.ch.session_dir().mkdir(parents=True)
+    assert await wa.ch.restore()
+    statuses: list[dict] = []
+    retries: list[float] = []
+
+    async def slow_sleep(seconds: float) -> None:
+        retries.append(seconds)
+        await asyncio.sleep(0.01)
+
+    wa.ch.sleep = slow_sleep
+    async with wa.app.bus.subscribe() as q:
+        wa.ch.start_runtime()
+        await until(lambda: not q.empty())
+        await asyncio.sleep(0.05)
+        while not q.empty():
+            e = q.get_nowait()
+            if e["type"] == "channel.updated":
+                statuses.append(e["data"])
+    assert statuses[0]["status"] == "error" and "stopped working unexpectedly" in statuses[0]["error"]
+    assert "whatsapp bridge failed" in caplog.text
+    assert wa.ch.running and retries[:2] == [1.0, 2.0]  # still trying, with backoff; the engine carries on
+    assert await wa.app.store.create_session(channel="desktop")  # the engine itself is untouched
+
+    wa.ch.bridge_factory = real  # the library behaves again: it reconnects
+    await until(lambda: bool(wa.hub.bridges))
+    await wa.hub.bridge.inbox.put(("connected", {"jid": ME, "lid": MY_LID, "name": "Maya"}))
+    await until(lambda: wa.hub.bridge.connected)
+    for _ in range(300):
+        if (await wa.app.channels.store.state("whatsapp"))["status"] == "connected":
+            break
+        await asyncio.sleep(0.01)
+    assert (await wa.app.channels.channel_dict("whatsapp"))["status"] == "connected"
+    # an event handler that blows up is logged, not raised
+    await wa.ch.on_event("message", {"message": None})
+    assert wa.ch.running
+
+
+async def test_only_ascii_digits_pick_an_option(wa, llm):
+    await wa.link()
+    llm.replies = [ASK_FLIGHT, "Done with the task."]
+    llm.json_replies = [dict(RESULT)]
+    await _waiting_task(wa.app, "Book a flight to Goa")
+    await until(lambda: wa.hub.message_with("Which flight should I book?") is not None)
+    msg = wa.hub.message_with("Which flight should I book?")
+    wa.ch._choices.clear()  # go through the stored question, as after a restart
+    await wa.say("²", reply_to=msg["id"])  # a Unicode digit is an answer in words, not option 2 (and no crash)
+    await wa.app.tasks.drain()
+    assert wa.hub.last().startswith("Thanks! I passed your answer to 'Book a flight to Goa'.")
+    assert _executor_answer(llm, 1) == "²"

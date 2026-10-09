@@ -502,8 +502,9 @@ class ChannelService(Service):
             reply = "That question has already been handled, so I didn't pass this on."
         else:
             options = [str(o) for o in waiting.get("options") or []]
-            if text.strip().isdigit() and 1 <= int(text.strip()) <= len(options):
-                text = options[int(text.strip()) - 1]  # "2" picks the second option
+            choice = text.strip()
+            if re.fullmatch(r"[0-9]{1,3}", choice) and 1 <= int(choice) <= len(options):
+                text = options[int(choice) - 1]  # "2" picks the second option (ASCII digits only)
             try:
                 await self.app.tasks.answer_question(waiting["task_id"], waiting["run_id"], text)
                 reply = f"Thanks! I passed your answer to '{summary_text(waiting['task_name'], 80)}'. It's carrying on now."

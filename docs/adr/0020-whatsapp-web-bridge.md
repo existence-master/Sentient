@@ -47,9 +47,11 @@ and that packages into the frozen engine (ADR 0002). The candidates:
 ## Consequences
 
 - No extra install and no second process: linking works the same in the installer and from source with the extra.
-- The engine now loads a Go runtime when WhatsApp is connected. A crash there would take the engine down; whatsmeow is
-  widely used, so we accept this, and the bridge interface lets us move to a separate process later without touching
-  the channel.
+- The engine now loads a Go runtime when WhatsApp is connected. Every Python exception from the library is caught at
+  the bridge boundary (the channel shows "needs attention" and keeps reconnecting; event handlers only log), so it
+  cannot stop the engine. A hard crash of the Go runtime itself cannot be caught from Python; whatsmeow is widely
+  used, so we accept that, and the bridge interface lets us move it to a separate process later without touching the
+  channel.
 - We depend on a small project tracking a moving, unofficial protocol. When WhatsApp changes, a neonize update is
   needed; old versions stop linking. Keep the dependency current.
 - Temporary status lines ("Searching the web...") are off for WhatsApp, because a deleted message leaves "This message
