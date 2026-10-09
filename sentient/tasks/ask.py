@@ -5,6 +5,10 @@ executor then stops the loop after that round (no model call while waiting), sto
 transcript and the question on the run (status ``waiting_for_user``), and the answer
 later replaces the tool's placeholder result before the run resumes. Offered only inside
 task runs: the plugin is ``scoped``, so chat, subagents and the planner never see it.
+
+The same pause carries a held call (ADR 0018): a run that read outside content and then tries to send something
+asks "OK to ...?" instead. "Yes, go ahead" marks that exact call approved in the transcript and the executor runs
+it, once, when the run continues; any other answer fails the run.
 """
 
 from __future__ import annotations
@@ -25,6 +29,17 @@ MAX_QUESTIONS_PER_RUN = 5
 
 WAITING_NOTE = "Your question was sent to the user. This task is paused until they answer."
 CANCELLED_NOTE = "The user cancelled this run instead of answering. Stop here."
+
+# a call held because the run read outside content (ADR 0018)
+GO_AHEAD = "Yes, go ahead"
+DONT = "No, stop the task"
+DECLINED_STOP = "You said no, so the task stopped without doing that step."
+APPROVED_KEY = "approved_by_user"  # set on the held call's tool message by the engine only, never by a model or tool
+# what the held call's result says while it runs: if Sentient stops in the middle, this is what the run sees later
+INTERRUPTED_NOTE = (
+    "The user said yes, but Sentient stopped while doing this, so it is not known whether it went through. "
+    "Don't do it again; tell the user to check."
+)
 
 
 def clean_options(raw: Any) -> list[str]:
@@ -89,6 +104,55 @@ def fill_result(messages: list[dict], call_id: str | None, content: str) -> list
             text = content
         out.append({"role": "user", "content": f"Reply to your question: {text}"})
     return out
+
+
+def untrusted_pending(needs_ok: dict) -> dict:
+    """The ``pending_question`` of a run holding a call because it read outside content (``LoopResult.needs_ok``)."""
+    return {
+        "question": str(needs_ok.get("question") or "")[:MAX_QUESTION_CHARS],
+        "options": [GO_AHEAD, DONT],
+        "tool_call_id": str(needs_ok.get("call_id") or ""),
+        "untrusted_call": True,
+        "stop_error": DECLINED_STOP,
+    }
+
+
+def approves(answer: str) -> bool:
+    """Only a clear yes runs the held call: "Yes, go ahead" or "yes" (any case, final ``.``/``!`` ignored)."""
+    return " ".join(str(answer or "").split()).strip(" .!").lower() in {"yes", GO_AHEAD.lower()}
+
+
+def approve_call(messages: list[dict], call_id: str | None) -> list[dict]:
+    """Mark the held call ``call_id`` approved; the executor runs it when the run continues (``take_approved``)."""
+    out: list[dict] = []
+    for m in messages or []:
+        if call_id and m.get("role") == "tool" and m.get("tool_call_id") == call_id:
+            m = {**m, "content": json.dumps({"error": INTERRUPTED_NOTE}), APPROVED_KEY: True}
+        out.append(m)
+    return out
+
+
+def take_approved(messages: list[dict]) -> tuple[list[dict], dict | None] | None:
+    """``(transcript without the mark, {id, name, arguments})`` for the approved held call, or None when there is
+    none. The mark is removed so the call never runs twice; the call is None when the transcript lost it."""
+    marked = next((m for m in messages or [] if m.get("role") == "tool" and m.get(APPROVED_KEY)), None)
+    if marked is None:
+        return None
+    call_id = marked.get("tool_call_id")
+    out = [{k: v for k, v in m.items() if k != APPROVED_KEY} if m is marked else m for m in messages]
+    for m in out:
+        calls = m.get("tool_calls") if m.get("role") == "assistant" else None
+        for tc in calls if isinstance(calls, list) else []:
+            fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
+            if not fn.get("name") or tc.get("id") != call_id:
+                continue
+            args = fn.get("arguments")
+            try:
+                args = json.loads(args) if isinstance(args, str) else args
+            except ValueError:
+                args = None
+            return out, {"id": call_id, "name": fn["name"], "arguments": args if isinstance(args, dict) else {}}
+    return out, None
 
 
 @tool(ASK_TOOL, risk=Risk.write, internal=True)

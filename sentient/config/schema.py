@@ -303,7 +303,10 @@ class IntegrationsConfig(BaseModel):
     )
     mcp_servers: dict[str, dict] = Field(
         default_factory=dict,
-        description="External MCP servers: {name: {transport: stdio|http, command, args, url, env, enabled}}.",
+        description=(
+            "External MCP servers: {name: {transport: stdio|http, command, args, url, env, enabled, "
+            "auth: none|headers|oauth, header_keys}}. Header values and sign-ins live in the keychain."
+        ),
     )
     hide_disconnected_tools: bool = Field(
         True,
@@ -371,6 +374,29 @@ class FollowUpsConfig(BaseModel):
     max_suggestions: int = Field(3, ge=1, le=20, description="At most this many follow-up suggestions per check.")
 
 
+class DailyBriefConfig(BaseModel):
+    """A short morning digest. It is an ordinary recurring task you can edit, pause or delete in Tasks."""
+
+    sections: list[str] = Field(
+        default_factory=lambda: ["calendar", "email", "tasks", "weather"],
+        description="What the brief includes: calendar, email, tasks, weather, news. Leave one out to turn it off.",
+    )
+    evening_sections: list[str] = Field(
+        default_factory=lambda: ["done", "sent", "files", "waiting", "tomorrow"],
+        description="What the Evening Brief includes: done (tasks finished or failed today), sent (emails sent today), "
+        "files (files made today), waiting (still waiting for you), tomorrow (tomorrow's first events).",
+    )
+    max_items: int = Field(7, ge=1, le=20, description="At most this many lines in one brief.")
+    news_topics: list[str] = Field(
+        default_factory=list,
+        description="Topics for the news section, for example 'climate' or 'cricket'. No topics means no news.",
+    )
+    summarize_emails: bool = Field(
+        True,
+        description="Let the fast model write one short line for each unread email. Off: show the sender and subject.",
+    )
+
+
 class ProactivityConfig(BaseModel):
     enabled: bool = Field(True, description="Let Sentient watch connected apps and suggest actions.")
     poll_interval_minutes: int = Field(10, ge=1, description="How often Gmail/Calendar are checked.")
@@ -408,6 +434,10 @@ class ProactivityConfig(BaseModel):
     followups: FollowUpsConfig = Field(
         default_factory=FollowUpsConfig,
         description="Notice emails waiting on a reply (from you or to you) and offer a draft. Gmail and IMAP email.",
+    )
+    brief: DailyBriefConfig = Field(
+        default_factory=DailyBriefConfig,
+        description="Your Daily Brief: today's calendar, emails that need you, tasks and the weather in a few lines.",
     )
 
 
@@ -642,7 +672,7 @@ class NodesConfig(BaseModel):
 
 # ----------------------------------------------------------------------------- channels (owner: channels agent)
 class ChannelAppConfig(BaseModel):
-    """Settings for one messaging app (Telegram, Discord)."""
+    """Settings for one messaging app (Telegram, Discord, WhatsApp)."""
 
     enabled: bool = Field(True, description="Allow this messaging app to be connected and used.")
     deliver_default: bool = Field(
@@ -666,6 +696,10 @@ class ChannelsConfig(BaseModel):
     enabled: bool = Field(True, description="Let paired messaging apps talk to Sentient.")
     telegram: ChannelAppConfig = Field(default_factory=ChannelAppConfig, description="Telegram bot settings.")
     discord: ChannelAppConfig = Field(default_factory=ChannelAppConfig, description="Discord bot (direct messages).")
+    whatsapp: ChannelAppConfig = Field(
+        default_factory=lambda: ChannelAppConfig(edit_interval_s=2.0),
+        description="WhatsApp, linked to your own account (your 'Message yourself' chat).",
+    )
     pairing_code_minutes: int = Field(
         10, ge=1, le=60, description="How long a pairing code stays valid after it is shown."
     )
@@ -676,6 +710,7 @@ class ChannelsConfig(BaseModel):
     deliver_plans: bool = Field(True, description="Send task plans that wait for approval, with Approve buttons.")
     deliver_suggestions: bool = Field(True, description="Send proactive suggestions, with Approve and Dismiss buttons.")
     deliver_subagents: bool = Field(True, description="Send summaries when background work finishes.")
+    deliver_briefs: bool = Field(True, description="Send your Daily Brief to delivery chats.")
 
 
 # ----------------------------------------------------------------------------- know you (owner: memory agent)

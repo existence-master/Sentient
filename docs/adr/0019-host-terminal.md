@@ -34,8 +34,10 @@ Add a `terminal` package with one tool, `terminal_run(command, cwd?)`, risk `exe
 - **Who may run commands.** Work nobody asked for never runs one ([ADR 0017](0017-unprompted-work-reads-only.md)):
   its effective risk stays `exec` and the tool refuses it too. Scripts from code execution can never call it, in
   any approvals mode. Task runs and helpers cannot stop to ask yet, so there only listed commands run, unless the user
-  set an Allow rule for the terminal or turned approvals off. The untrusted-content gate planned in #127 must count
-  this tool as one that can send data out, so an Allow rule asks again in a run that has read outside content.
+  set an Allow rule for the terminal or turned approvals off. Under [ADR 0018](0018-untrusted-content-gates-sending.md)
+  a command's output counts as outside content (`untrusted_output`), and a command that isn't listed (`exec`) counts
+  as able to send data out, so once a chat has read an email, a web page or a command's output, every such command
+  asks with the reason shown, even with an Allow rule. Listed commands stay free: they can't carry data out.
 - **Process.** Each call is a new PowerShell process on Windows (`pwsh` if installed, else Windows PowerShell) or
   bash, zsh or sh elsewhere, without profiles, with empty input. The environment is the engine's own minus anything
   that looks like a key, token or password, Sentient's own variables and the provider key variables in the config;

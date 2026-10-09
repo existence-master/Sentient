@@ -5,6 +5,7 @@ import {
   IconEdit,
   IconEye,
   IconFolder,
+  IconMailOpened,
   IconSend,
   IconShieldCheck,
   IconShieldQuestion,
@@ -109,9 +110,10 @@ export function ApprovalCard({
   const isBrowser = approval.name.startsWith('browser_')
   const args = approval.arguments ?? {}
   const command = approval.name === 'terminal_run' ? String(args.command ?? '') : ''
-  // A purchase, a deletion or a command on this computer asks for a single, deliberate "yes" every time:
-  // no blanket "allow for this chat" (the engine ignores it for commands too, ADR 0019).
-  const allowSession = !(risk.label === 'Purchase' || risk.label === 'Deletes' || approval.name === 'terminal_run')
+  // A purchase, a deletion or a command on this computer asks for a single, deliberate "yes" every time: no blanket
+  // "allow for this chat" (the engine ignores it for commands too, ADR 0019). After outside content came in, every
+  // send asks anyway, so the blanket answer would not help either.
+  const allowSession = !(risk.label === 'Purchase' || risk.label === 'Deletes' || approval.name === 'terminal_run' || approval.untrusted)
 
   return (
     <motion.div
@@ -144,6 +146,11 @@ export function ApprovalCard({
             <div className="mt-1 flex items-center gap-1 text-xs text-fg-subtle">
               <IconFolder size={12} className="shrink-0" />
               <span className="selectable truncate font-mono">{approval.target || (typeof args.cwd === 'string' && args.cwd) || 'The default folder'}</span>
+            </div>
+          )}
+          {approval.untrusted && (
+            <div className="mt-1.5 flex items-start gap-1.5 text-xs text-fg-muted">
+              <IconMailOpened size={13} className="mt-px shrink-0" /> {approval.untrusted}
             </div>
           )}
           {isBrowser && typeof args.url === 'string' && (

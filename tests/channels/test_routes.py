@@ -25,7 +25,7 @@ def test_requires_token(client):
 
 def test_channel_rest_flow(client, keychain):
     channels = client.get("/api/channels").json()
-    assert [c["id"] for c in channels] == ["telegram", "discord"]
+    assert [c["id"] for c in channels] == ["telegram", "discord", "whatsapp"]
     telegram = channels[0]
     assert telegram["status"] == "disconnected" and telegram["paired"] == []
     assert telegram["setup"]["fields"][0]["secret"] is True and "BotFather" in telegram["setup"]["instructions_md"]

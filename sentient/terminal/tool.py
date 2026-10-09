@@ -33,8 +33,13 @@ def _describe(arguments: dict, ctx: ToolContext) -> dict | None:
     return svc.describe(arguments or {}, ctx) if svc is not None else None
 
 
-# every command asks again: "Allow for this chat" never covers the terminal (ADR 0019)
-@tool(TOOL_NAME, risk=Risk.exec, description=DESCRIPTION, risk_fn=_risk, describe_fn=_describe, allow_for_chat=False)
+# Every command asks again: "Allow for this chat" never covers the terminal (ADR 0019). Output can carry content
+# someone else wrote (a downloaded file, a web page fetched with curl), so it counts as outside content (ADR 0018);
+# a command that isn't listed is ``exec``, which counts as able to send data out.
+@tool(
+    TOOL_NAME, risk=Risk.exec, description=DESCRIPTION, risk_fn=_risk, describe_fn=_describe, allow_for_chat=False,
+    untrusted_output=True,
+)
 async def terminal_run(ctx: ToolContext, command: str, cwd: str | None = None) -> dict:
     svc = _service(ctx)
     if svc is None:

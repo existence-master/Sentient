@@ -36,6 +36,7 @@ import type {
   StopState,
   ChatRequest,
   AgentEvent,
+  CheckupEvent,
   ClarificationAnswer,
   ConfigPatchResponse,
   ConnectResponse,
@@ -51,6 +52,7 @@ import type {
   LocalModels,
   McpServer,
   McpServerCreate,
+  McpSignInStart,
   McpTestResult,
   Memory,
   MemoryGraph,
@@ -69,6 +71,12 @@ import type {
   Persona,
   PrivacyFilters,
   ProactivityPreference,
+  Brief,
+  BriefFeedback,
+  BriefKind,
+  BriefSectionId,
+  BriefSetup,
+  BriefState,
   ProactivityStatus,
   ProgressUpdate,
   Provider,
@@ -441,7 +449,10 @@ export const api = {
     setFallbacks: (fallbacks: Partial<Record<RoleName, string[]>>) =>
       http.put<FallbacksResponse>('/api/models/fallbacks', fallbacks),
     pullOllama: (name: string, signal?: AbortSignal) =>
-      streamNdjson<OllamaPullProgress>('POST', '/api/models/ollama/pull', { body: { name }, signal })
+      streamNdjson<OllamaPullProgress>('POST', '/api/models/ollama/pull', { body: { name }, signal }),
+    /** Check each role's model (or only `roles`); never changes config. */
+    checkup: (roles?: Partial<Record<RoleName, string | null>>, signal?: AbortSignal) =>
+      streamNdjson<CheckupEvent>('POST', '/api/models/checkup', { body: roles ? { roles } : {}, signal })
   },
 
   secrets: {
@@ -499,7 +510,9 @@ export const api = {
       list: () => http.get<McpServer[]>('/api/integrations/mcp'),
       add: (body: McpServerCreate) => http.post<McpServer>('/api/integrations/mcp', body),
       remove: (name: string) => http.delete<OkResponse>(`/api/integrations/mcp/${enc(name)}`),
-      test: (name: string) => http.post<McpTestResult>(`/api/integrations/mcp/${enc(name)}/test`)
+      test: (name: string) => http.post<McpTestResult>(`/api/integrations/mcp/${enc(name)}/test`),
+      signIn: (name: string) => http.post<McpSignInStart>(`/api/integrations/mcp/${enc(name)}/sign-in`),
+      signOut: (name: string) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/sign-out`)
     },
     /** §16 change feeds (Gmail, Calendar) and IMAP push watchers. */
     feeds: {
@@ -525,7 +538,16 @@ export const api = {
     pollNow: () => http.post<{ ok: boolean; events: number }>('/api/proactivity/poll-now'),
     preferences: () => http.get<ProactivityPreference[]>('/api/proactivity/preferences'),
     resetPreference: (suggestionType: string) =>
-      http.delete<OkResponse>(`/api/proactivity/preferences/${enc(suggestionType)}`)
+      http.delete<OkResponse>(`/api/proactivity/preferences/${enc(suggestionType)}`),
+    /** Daily Brief: a recurring task the user can edit, pause or delete in Tasks. */
+    brief: {
+      get: () => http.get<BriefState>('/api/proactivity/brief'),
+      /** Set it up (creates the task once) or change time, days, sections and topics. */
+      setup: (body: BriefSetup = {}) => http.post<BriefState>('/api/proactivity/brief', body),
+      runNow: (kind: BriefKind = 'morning') => http.post<{ ok: boolean; task_id: string }>('/api/proactivity/brief/run', { kind }),
+      feedback: (body: { brief_id: string; value: BriefFeedback; item_id?: string; section?: BriefSectionId }) =>
+        http.post<Brief>('/api/proactivity/brief/feedback', body)
+    }
   },
 
   // §7 memory ------------------------------------------------------------------

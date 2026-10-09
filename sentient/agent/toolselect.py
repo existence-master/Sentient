@@ -64,7 +64,7 @@ TOOL_TRIGGERS: dict[str, tuple[str, ...]] = {
         "in parallel", "parallel", "background", "delegate", "subagent", "subagents", "sub-agent", "research",
         "deep dive", "investigate", "compare", "each of", "meanwhile", "while i", "several",
     ),
-    "channel_": ("telegram", "discord", "message me", "text me"),
+    "channel_": ("telegram", "discord", "whatsapp", "message me", "text me"),
     "terminal_": (
         "terminal", "command", "commands", "command line", "shell", "powershell", "bash", "git", "npm", "pip",
         "compile", "run the tests", "my repo", "repository",

@@ -5,6 +5,8 @@ and maps its typed events to v2 ProgressUpdates. The transcript is checkpointed 
 ``task_runs.messages`` after every tool result so a run can resume after a restart.
 A run that calls ``ask_user`` stops after that round and raises ``RunPaused``; the
 service parks it as ``waiting_for_user`` until the answer arrives (``tasks/ask.py``).
+A run that read outside content (a tool result, or the event that started it) and then tries
+to send something pauses the same way and asks first (ADR 0018).
 A run that gets stuck (``tasks/stuck.py``) pauses the same way with a plain reason.
 """
 
@@ -19,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from sentient.agent.loop import Budget, LoopResult, history_to_openai
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent
+from sentient.llm.provider import ToolCall
 from sentient.tasks import ask, limits, stuck
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
@@ -31,7 +34,7 @@ from sentient.tasks.prompts import (
 )
 from sentient.tasks.schedule import get_tz
 from sentient.tools.base import Risk
-from sentient.tools.rules import never_message
+from sentient.tools.rules import never_message, untrusted_in
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.tasks.service import TaskService
@@ -225,6 +228,36 @@ async def _executor_system_prompt(
     )
 
 
+def _trigger_source(app: Any, task: dict, run: dict) -> str:
+    """The app whose event started this run ("Gmail"), or "" for runs nobody outside started (ADR 0018)."""
+    if not run.get("trigger_data"):
+        return ""
+    source = str((task.get("schedule") or {}).get("source") or "")
+    plugin = app.registry.plugin(source) if source else None
+    return getattr(plugin, "display_name", None) or source or "the event that started it"
+
+
+async def _run_approved_call(svc: TaskService, task_id: str, run_id: str, ctx: Any, checkpoint: list[dict]) -> list[dict]:
+    """Run the held call the user said yes to (ADR 0018), once: the mark is saved away before the call starts, so a
+    restart in the middle never repeats it, and the saved placeholder then says the outcome is unknown
+    (``ask.INTERRUPTED_NOTE``). The call's result replaces that placeholder."""
+    taken = ask.take_approved(checkpoint)
+    if taken is None:
+        return checkpoint
+    messages, call = taken
+    await svc.repo.update_run(run_id, {"messages": messages})
+    if call is None:
+        return messages
+    await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": call["name"], "parameters": call["arguments"]})
+    res, is_error, content = await svc.app.agent.run_tool(ToolCall(**call), ctx)
+    await svc.progress(
+        task_id, run_id, {"type": "tool_result", "tool_name": call["name"], "result": truncate(res), "is_error": is_error}
+    )
+    messages = ask.fill_result(messages, call["id"], content)
+    await svc.repo.update_run(run_id, {"messages": messages})
+    return messages
+
+
 def _spent(state: dict, budget: Budget, started: float) -> dict:
     """Add this segment's steps, tokens, cost and active seconds to the run's stored limits."""
     used = state["used"]
@@ -289,8 +322,11 @@ async def execute_single(
                     "The executor will work around them.",
                 })
 
+            ctx = app.agent.tool_context(None, "task")
+            ctx.extra.update({"task_id": task_id, "run_id": run_id, ask.STATE_KEY: asking})
             checkpoint = run.get("messages") if resume else None
             if isinstance(checkpoint, list) and checkpoint:
+                checkpoint = await _run_approved_call(svc, task_id, run_id, ctx, checkpoint)
                 messages = history_to_openai(checkpoint)
                 if not answered and not is_first_retry_attempt(run):  # a retry's checkpoint already has its note
                     messages.append({"role": "user", "content": RESUME_NOTE})
@@ -299,9 +335,9 @@ async def execute_single(
                 messages = [{"role": "system", "content": system}, {"role": "user", "content": EXECUTOR_KICKOFF}]
                 await svc.repo.update_run(run_id, {"messages": messages})
 
-            ctx = app.agent.tool_context(None, "task")
             asking["asked"] = ask.count_questions(messages)
-            ctx.extra.update({"task_id": task_id, "run_id": run_id, ask.STATE_KEY: asking})
+            # outside content in play: the event that started the run, or a tool result earlier in it (ADR 0018)
+            ctx.untrusted = _trigger_source(app, task, run) or untrusted_in(messages, app.registry)
             if app.registry.get(ask.ASK_TOOL) is not None:
                 tool_names = [*tool_names, ask.ASK_TOOL]
             mapper = ProgressMapper(svc, task_id, run_id)
@@ -320,7 +356,9 @@ async def execute_single(
                     max_rounds=rounds,
                     use_approvals=False,  # v2: approving the plan is the approval
                     source="task",
-                    stop=lambda: bool(asking.get("question")) or watch.reason is not None,
+                    stop=lambda: (
+                        bool(asking.get("question")) or result.needs_ok is not None or watch.reason is not None
+                    ),
                     budget=budget,
                 ):
                     await alive(event)
@@ -368,6 +406,10 @@ async def execute_single(
     # the loop breaker: the same call kept getting the same result. A repeated error is stuck; anything else fails.
     if result.stopped_by_repeat and not watch.repeated():
         raise RunFailed(f"{result.stopped_by_repeat} Edit the task to add what it needs, or retry it.")
+    # One question at a time, each with its own pending_question keys: ask_user's own question first, then a call
+    # held after outside content (its yes runs that exact call), then stuck (seen again later if it still is).
+    if result.paused and result.needs_ok is not None and not asking.get("question"):
+        raise RunPaused(ask.untrusted_pending(result.needs_ok))  # it read outside content: ask before sending
     if watch.reason and not asking.get("question"):  # stuck: ask what to do (tasks/stuck.py)
         raise RunPaused(stuck.pending(watch.kind or "stalled", watch.reason))
     if result.paused:

@@ -21,7 +21,8 @@ def _progress(ctx: ToolContext):
     return on_update
 
 
-@tool("delegate_task", risk=Risk.write, internal=True)
+# a subagent's summary can carry what it read on the web or in mail, so it counts as outside content (ADR 0018)
+@tool("delegate_task", risk=Risk.write, internal=True, untrusted_output=True)
 async def delegate_task(
     ctx: ToolContext,
     goal: str,
@@ -47,10 +48,11 @@ async def delegate_task(
         background=background,
         on_update=None if background else _progress(ctx),
         origin=ctx.origin,
+        untrusted=ctx.untrusted,
     )
 
 
-@tool("delegate_tasks", risk=Risk.write, internal=True)
+@tool("delegate_tasks", risk=Risk.write, internal=True, untrusted_output=True)
 async def delegate_tasks(ctx: ToolContext, tasks: list[dict]) -> dict:
     """Run several independent pieces of work in parallel, one subagent each, and get every summary back.
     tasks is a list of objects like {"goal": "...", "context": "..."}. Each subagent cannot see this chat,
@@ -66,7 +68,8 @@ async def delegate_tasks(ctx: ToolContext, tasks: list[dict]) -> dict:
     if len(valid) > MAX_PARALLEL_TASKS:
         return {"error": f"At most {MAX_PARALLEL_TASKS} tasks at once. Split the work or combine related goals."}
     results = await mgr.delegate_many(
-        valid, session_id=ctx.session_id, parent_call_id=ctx.call_id, on_update=_progress(ctx), origin=ctx.origin
+        valid, session_id=ctx.session_id, parent_call_id=ctx.call_id, on_update=_progress(ctx), origin=ctx.origin,
+        untrusted=ctx.untrusted,
     )
     return {"results": results}
 

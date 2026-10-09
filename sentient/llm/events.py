@@ -66,6 +66,8 @@ class ApprovalRequest(_Event):
     reason: str = ""
     risk_label: str | None = None  # "Purchase", "Sends", "Runs code"... (Tool.describe_fn or the effective risk)
     target: str | None = None      # short human label of what is acted on, e.g. "Place order"
+    # why this asks although rules or modes would let it run: the chat read outside content (ADR 0018)
+    untrusted: str | None = None
 
 
 class UserInterjection(_Event):

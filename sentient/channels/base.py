@@ -1,6 +1,6 @@
 """Channel base class: everything a messaging app does that is not transport.
 
-A concrete channel (Telegram, Discord) implements a handful of transport primitives
+A concrete channel (Telegram, Discord, WhatsApp) implements a handful of transport primitives
 (``validate``, ``run``, ``render``, ``send_chunk``, ``edit_chunk``, ``delete_message``,
 ``send_typing``, ``clear_buttons``, ``send_audio``) and turns inbound updates into
 ``Incoming`` objects. This class handles pairing, commands, running chat turns with
@@ -244,6 +244,9 @@ class Channel:
     message_limit: int = 4000
     setup_fields: list[dict] = []
     instructions_md: str = ""
+    uses_token = True  # False: the channel keeps its own session (WhatsApp) instead of a keychain token
+    status_lines = True  # short "Searching the web..." messages that are deleted again
+    choice_hint = "tap an option"  # how a person picks one of a message's options
 
     def __init__(self, service: ChannelService):
         self.service = service
@@ -255,11 +258,17 @@ class Channel:
         self._tasks: set[asyncio.Task] = set()
         self._runtime: asyncio.Task | None = None
         self._button_text: dict[tuple[str, str], str] = {}
+        self.qr: str | None = None  # a code to scan while linking (WhatsApp), else None
 
     # ------------------------------------------------------------------ config
     @property
     def cfg(self):
         return getattr(self.app.config.channels, self.id)
+
+    @property
+    def ready(self) -> bool:
+        """Connected by the user and able to send (a token, or a linked session)."""
+        return bool(self.token)
 
     # ------------------------------------------------------------------ transport (override)
     async def validate(self, fields: dict[str, Any]) -> tuple[str, str]:
@@ -595,7 +604,7 @@ class Channel:
         ]
         if chat and chat.get("deliver"):
             lines += ["", "Task results, plans to approve, questions from your tasks and suggestions are also sent here. "
-                          "To answer a task's question, tap an option or reply to its message. "
+                          f"To answer a task's question, {self.choice_hint} or reply to its message. "
                           "You can turn that off in Sentient under Channels."]
         return "\n".join(lines)
 
@@ -680,7 +689,7 @@ class Channel:
                     if part := await stream.finish():
                         replies.append(part)
                     stream = ReplyStream(self, chat_id, streaming=cfg.stream_edits, interval=cfg.edit_interval_s)
-                    if cfg.show_tool_activity:
+                    if cfg.show_tool_activity and self.status_lines:
                         await status.show(self.activity_label(event.name))
                 elif isinstance(event, ApprovalRequest):
                     await status.clear()
@@ -756,11 +765,12 @@ class Channel:
             f"**Approval needed**\n{self.app.config.assistant.name} wants to use **{humanize_tool(event.name)}** "
             f"(risk: {event.risk}).\n```json\n{args}\n```"
         )
-        buttons = [
-            [Button("Allow", f"ap:a:{event.approval_id}", "success"),
-             Button("Allow for this chat", f"ap:s:{event.approval_id}", "primary")],
-            [Button("Deny", f"ap:d:{event.approval_id}", "danger")],
-        ]
+        first = [Button("Allow", f"ap:a:{event.approval_id}", "success")]
+        if event.untrusted:  # it read outside content: say why; "for this chat" would not cover the next one anyway
+            md += f"\n{event.untrusted}"
+        else:
+            first.append(Button("Allow for this chat", f"ap:s:{event.approval_id}", "primary"))
+        buttons = [first, [Button("Deny", f"ap:d:{event.approval_id}", "danger")]]
         try:
             ids = await self.send_markdown(chat_id, md, buttons)
             return ids[-1] if ids else None

@@ -346,12 +346,16 @@ class TaskService(Service):
         source: str = "user",
         original_context: dict | None = None,
         done_text: str = "Done.",
+        schedule: dict | None = None,
+        quiet: bool = False,
     ) -> dict:
-        """A one-off task the user has already approved as one exact tool call (a follow-up's "Send reply").
+        """A task the user has already approved as one exact tool call (a follow-up's "Send reply").
 
         No planner and no executor model: the run calls ``tool`` with exactly ``arguments`` right away, whatever
         ``tasks.require_plan_approval`` says, because the user approved this exact call. Lasting "never" rules
-        still stop it (the run fails with the rule's message)."""
+        still stop it (the run fails with the rule's message). With a recurring ``schedule`` the task is active
+        and runs at its times instead of now (the Daily Brief). ``quiet`` skips the "Task completed" notification
+        for a tool that sends its own."""
         prompt = (prompt or "").strip()
         t = self.app.registry.get(tool)
         if not prompt or t is None:
@@ -359,11 +363,17 @@ class TaskService(Service):
         context = dict(original_context or {})
         context.setdefault("source", source)
         context["fixed_call"] = {"tool": tool, "arguments": dict(arguments), "done_text": done_text}
+        if quiet:
+            context["fixed_call"]["quiet"] = True
+        recurring = normalize_schedule(schedule, self.tz_name(), override_timezone=False) if schedule else None
+        if recurring is not None and recurring["type"] != "recurring":
+            raise ValueError("Only a recurring schedule can be given here.")
         now = self.now_iso()
         task_id = await self.repo.insert_task({
             "name": _title(prompt),
             "description": (description or prompt).strip(),
-            "status": "pending",
+            "status": "active" if recurring else "pending",
+            "next_execution_at": iso(calculate_next_run(recurring, self.now())) if recurring else None,
             "priority": 1,
             "assignee": "ai",
             "original_prompt": prompt,
@@ -375,12 +385,12 @@ class TaskService(Service):
             "chat_history": [],
             "clarifying_questions": [],
             "task_type": "single",
-            "schedule": None,
+            "schedule": recurring,
             "created_at": now,
             "updated_at": now,
         })
-        task = await self._require(task_id)
-        await self._start_run(task)
+        if recurring is None:
+            await self._start_run(await self._require(task_id))
         data = await self.publish(task_id)
         assert data is not None
         return data
@@ -719,7 +729,12 @@ class TaskService(Service):
         if pending.get("stuck"):
             return await self._answer_stuck(task_id, run, pending, text)
         call_id = pending.get("tool_call_id")
-        messages = ask.fill_result(run.get("messages") or [], call_id, ask.answer_content(text))
+        if pending.get("untrusted_call"):  # a held call after outside content (ADR 0018): only a clear yes runs it
+            if not ask.approves(text):
+                return await self._stop_at_question(task_id, run_id, pending, text)
+            messages = ask.approve_call(run.get("messages") or [], call_id)
+        else:
+            messages = ask.fill_result(run.get("messages") or [], call_id, ask.answer_content(text))
         if not await self.repo.resume_run(run_id, messages):
             raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
         await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
@@ -732,11 +747,7 @@ class TaskService(Service):
         """A run waiting at a limit: "Keep going" raises that limit for this run; anything else fails the run."""
         run_id = run["id"]
         if not limits.keeps_going(text):
-            await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
-            await self._resolve_question_notifications(run_id, "answered", answer=text)
-            error = str(pending.get("stop_error") or "Stopped at a limit without finishing.")
-            await self._finish_run(task_id, run_id, "error", error=error, from_statuses=("waiting_for_user",))
-            return await self.get_and_publish(task_id)
+            return await self._stop_at_question(task_id, run_id, pending, text)
         state = limits.raise_limit(limits.load(run, self.app.config), pending["limit"])
         # one guarded write: a run cancelled meanwhile keeps its limits; the raised one survives a restart
         if not await self.repo.resume_run(run_id, run.get("messages") or [], limits=state):
@@ -745,6 +756,14 @@ class TaskService(Service):
         await self._set(task_id, {"status": "processing", "error": None})
         await self._resolve_question_notifications(run_id, "answered", answer=text)
         self._dispatch(task_id, run_id, resume=True, answered=True)
+        return await self.get_and_publish(task_id)
+
+    async def _stop_at_question(self, task_id: str, run_id: str, pending: dict, text: str) -> dict:
+        """The answer ends a waiting run: it fails with the question's ``stop_error``."""
+        await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
+        await self._resolve_question_notifications(run_id, "answered", answer=text)
+        error = str(pending.get("stop_error") or "Stopped at a limit without finishing.")
+        await self._finish_run(task_id, run_id, "error", error=error, from_statuses=("waiting_for_user",))
         return await self.get_and_publish(task_id)
 
     async def _answer_stuck(self, task_id: str, run: dict, pending: dict, text: str) -> dict:
@@ -962,9 +981,15 @@ class TaskService(Service):
             action = catchup.decide(schedule, (now - due).total_seconds(), cfg.catch_up_window_hours)
             if action == "quiet":
                 continue  # an interval check: this tick's claim runs it once
+            # a brief (quiet fixed call) reports for itself and is about its own day: never in the notice, and
+            # a missed one from an earlier day is skipped
+            silent = bool((executor.fixed_call_of(task) or {}).get("quiet"))
+            if silent and action == "run" and catchup.day_over(due, now, get_tz(schedule.get("timezone") or self.tz_name())):
+                action = "skip"
             entry = catchup.item(task, task.get("next_execution_at"))
             if action == "run":
-                report["ran"].append(entry)
+                if not silent:
+                    report["ran"].append(entry)
                 continue
             if schedule.get("type") == "recurring":
                 fields: dict[str, Any] = {"next_execution_at": iso(calculate_next_run(schedule, now))}
@@ -976,7 +1001,8 @@ class TaskService(Service):
                     "Choose Run now if you still want it.",
                 }
             if await self.repo.update_task_if_status(task["id"], {"active", "pending"}, {**fields, "updated_at": self.now_iso()}):
-                report["skipped"].append(entry)
+                if not silent:
+                    report["skipped"].append(entry)
                 await self.publish(task["id"])
         if report["ran"] or report["skipped"]:
             title, message = catchup.summary(reason or "start", report["ran"], report["skipped"])
@@ -1398,14 +1424,23 @@ class TaskService(Service):
         await self._after_run(task_id, status, error)
         await self.publish(task_id)
         await self._publish_run_finished(task_id, run_id, status)
+        quiet = bool((executor.fixed_call_of(task) or {}).get("quiet"))
         if succeeded:
-            result = await executor.generate_result(self, task, run_id, loop_result=loop_result, aggregated=aggregated)
+            if quiet:  # the tool reported for itself (the Daily Brief): no model call for a report
+                result = executor.normalize_result(
+                    {"tools_used": loop_result.tools_used if loop_result else []},
+                    (loop_result.text if loop_result else "") or "Done.",
+                )
+            else:
+                result = await executor.generate_result(self, task, run_id, loop_result=loop_result, aggregated=aggregated)
             await self.repo.update_run(run_id, {"result": result})
             await self.publish(task_id)
         name = task.get("name") or "Untitled task"
         if is_swarm and status in {"completed", "completed_with_errors"}:
             await self._notify(task, f"Swarm task '{name}' has completed.", "Swarm task completed", "run_completed")
         elif status in {"completed", "completed_with_errors"}:
+            if quiet:
+                return  # the tool delivered its own notification (the Daily Brief)
             await self._notify(task, f"Task '{name}' has finished with status: {status}.", "Task completed", "run_completed")
         elif status == "error":
             detail = f"\n\n{error}" if error else ""

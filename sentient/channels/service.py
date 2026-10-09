@@ -1,6 +1,8 @@
-"""Messaging channels (docs/API.md section 14): Telegram and Discord bots paired with pairing codes.
+"""Messaging channels (docs/API.md section 14): Telegram and Discord bots paired with pairing codes, and
+WhatsApp linked to the user's own account (their "Message yourself" chat).
 
-- Tokens live in the OS keychain (``channel_<id>_token``); config and logs never see them.
+- Tokens live in the OS keychain (``channel_<id>_token``); config and logs never see them. WhatsApp has no
+  token: its linked session is kept under ``~/.sentient/whatsapp``.
 - A paired chat is a normal Sentient chat whose session has ``channel`` = the channel id.
 - Delivery: ``notification.new`` events (task results, plans awaiting approval, questions from running
   tasks, proactive suggestions, subagent completions) are forwarded to paired chats with ``deliver`` on,
@@ -21,6 +23,8 @@ from sentient.channels.discord import DiscordChannel
 from sentient.channels.formatting import summary_text
 from sentient.channels.store import ChannelStore
 from sentient.channels.telegram import TelegramChannel
+from sentient.channels.whatsapp import WhatsAppChannel
+from sentient.proactivity.brief import DailyBrief
 from sentient.services import Service
 
 log = logging.getLogger(__name__)
@@ -61,7 +65,9 @@ class ChannelService(Service):
     def __init__(self, app):
         super().__init__(app)
         self.store = ChannelStore(app.store)
-        self.channels: dict[str, Channel] = {"telegram": TelegramChannel(self), "discord": DiscordChannel(self)}
+        self.channels: dict[str, Channel] = {
+            "telegram": TelegramChannel(self), "discord": DiscordChannel(self), "whatsapp": WhatsAppChannel(self),
+        }
         # notification id -> [(channel, chat_id, message_id)] for messages with action buttons
         self._delivered: dict[str, list[tuple[str, str, str]]] = {}
         self._subagents_sent: set[tuple[str, str, str]] = set()
@@ -80,11 +86,16 @@ class ChannelService(Service):
             state = await self.store.state(ch.id)
             if not state["enabled"]:
                 continue
-            token = keychain.get_secret(ch.secret_name)
-            if not token:
+            if not ch.uses_token:
+                if not await ch.restore():  # type: ignore[attr-defined]
+                    await self.set_status(ch.id, "error", error=f"{ch.display_name} needs to be linked again. "
+                                          "Click Reconnect and scan the code.")
+                    continue
+            elif token := keychain.get_secret(ch.secret_name):
+                ch.token = token
+            else:
                 await self.set_status(ch.id, "error", error="The bot token is missing from the system keychain. Connect again.")
                 continue
-            ch.token = token
             if self.app.enable_background and ch.cfg.enabled:
                 await self.set_status(ch.id, "connecting", error=None)
                 ch.start_runtime()
@@ -118,6 +129,7 @@ class ChannelService(Service):
             "status": state.get("status") or "disconnected",
             "account_label": state.get("account_label"),
             "error": state.get("error"),
+            "qr": ch.qr,
             "paired": await self.store.chats(channel_id),
             "setup": {"fields": ch.setup_fields, "instructions_md": ch.instructions_md},
         }
@@ -143,7 +155,7 @@ class ChannelService(Service):
 
     async def is_connected(self, channel_id: str) -> bool:
         ch = self.channels.get(channel_id)
-        if ch is None or not ch.token:
+        if ch is None or not ch.ready:
             return False
         return bool((await self.store.state(channel_id))["enabled"])
 
@@ -152,6 +164,8 @@ class ChannelService(Service):
         ch = self.get(channel_id)
         if not self.app.config.channels.enabled or not ch.cfg.enabled:
             raise ChannelError(f"{ch.display_name} is turned off in Settings (Channels).")
+        if not ch.uses_token:
+            return await self._link(ch)
         token, label = await ch.validate(fields or {})
         if not keychain.set_secret(ch.secret_name, token):
             raise ChannelError("Couldn't save the token in the system keychain.", 500)
@@ -168,11 +182,24 @@ class ChannelService(Service):
         await self.publish_channel(channel_id)
         return await self.channel_dict(channel_id)
 
+    async def _link(self, ch: Channel) -> dict:
+        """Start (or restart) a channel that links a session instead of using a token: WhatsApp shows a QR
+        code (``qr`` on the Channel, updated through ``channel.updated``) until the phone scans it."""
+        await ch.begin_link()  # type: ignore[attr-defined]
+        await self.store.set_state(ch.id, enabled=1, status="connecting" if ch.ready else "linking", error=None)
+        if self.app.enable_background:
+            ch.start_runtime()
+        await self.publish_channel(ch.id)
+        return await self.channel_dict(ch.id)
+
     async def disconnect(self, channel_id: str) -> dict:
         ch = self.get(channel_id)
+        if not ch.uses_token:
+            await ch.unlink()  # type: ignore[attr-defined]
         await ch.stop_runtime()
         ch.token = None
-        keychain.delete_secret(ch.secret_name)
+        if ch.uses_token:
+            keychain.delete_secret(ch.secret_name)
         await self.store.clear_code(channel_id)
         await self.store.set_state(channel_id, enabled=0, status="disconnected", error=None, account_label=None)
         await self.publish_channel(channel_id)
@@ -296,6 +323,11 @@ class ChannelService(Service):
                 return None
             md = f"**{title or 'Suggestion'}**\n{message}"
             return md, [[Button("Approve", f"sg:a:{nid}", "success"), Button("Dismiss", f"sg:d:{nid}", "secondary")]]
+        if kind == "brief":
+            brief = payload.get("brief")
+            if not cfg.deliver_briefs or not isinstance(brief, dict) or payload.get("status", "active") != "active":
+                return None
+            return f"**{title or 'Your Daily Brief'}**\n{DailyBrief.as_text(brief, links=True)}", None
         if payload.get("subagent_id") and cfg.deliver_subagents:
             return f"**{title or 'Background work finished'}**\n{message}", None
         return None
@@ -475,6 +507,10 @@ class ChannelService(Service):
         if waiting is None:
             reply = "That question has already been handled, so I didn't pass this on."
         else:
+            options = [str(o) for o in waiting.get("options") or []]
+            choice = text.strip()
+            if re.fullmatch(r"[0-9]{1,3}", choice) and 1 <= int(choice) <= len(options):
+                text = options[int(choice) - 1]  # "2" picks the second option (ASCII digits only)
             try:
                 await self.app.tasks.answer_question(waiting["task_id"], waiting["run_id"], text)
                 reply = f"Thanks! I passed your answer to '{summary_text(waiting['task_name'], 80)}'. It's carrying on now."

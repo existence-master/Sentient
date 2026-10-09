@@ -114,7 +114,7 @@ async def github_create_issue(ctx: ToolContext, repo: str, title: str, body: str
     return {"created": True, **_issue(await gh(ctx, "POST", f"/repos/{_repo(repo)}/issues", json=payload))}
 
 
-@itool(PID, "github_update_issue", risk=Risk.write)
+@itool(PID, "github_update_issue", risk=Risk.write, exfiltrates=True)  # issue text can be public
 async def github_update_issue(ctx: ToolContext, repo: str, number: int, title: str | None = None,
                               body: str | None = None, state: str | None = None, labels: list[str] | None = None,
                               assignees: list[str] | None = None) -> dict:

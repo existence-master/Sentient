@@ -12,10 +12,15 @@ Each missed task runs once or is skipped, by its schedule's ``catch_up``:
 Never more than once: a recurring task's next time is computed from now when the run ends, so missed occurrences are
 not replayed one by one. ``interval`` schedules (every N minutes) run once without a notice, since their next check
 is due anyway, unless they say ``skip``. Deterministic: no model decides.
+
+Quiet fixed-call tasks (the Daily and Evening Brief, whose tool sends its own notification) follow the same window but
+are never listed in the catch-up notice, and only run if it is still the day they were due: a brief is about its day,
+so a missed one from an earlier day is skipped quietly.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, tzinfo
 from typing import Any
 
 POLICIES = ("run", "skip")  # plus the default, "auto"
@@ -47,6 +52,11 @@ def decide(schedule: dict | None, late_s: float, window_hours: float) -> str:
     if chosen == "auto":
         chosen = "run" if window_hours > 0 and late_s < window_hours * 3600 else "skip"
     return chosen
+
+
+def day_over(due: datetime, now: datetime, tz: tzinfo) -> bool:
+    """True when ``now`` is a later local day than ``due`` (a missed brief from an earlier day is not worth running)."""
+    return now.astimezone(tz).date() != due.astimezone(tz).date()
 
 
 def _names(items: list[dict]) -> str:

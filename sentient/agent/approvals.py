@@ -18,6 +18,10 @@ name or a plugin id, and a tool's own rule beats its plugin's rule:
 
 Work nobody asked for (``ToolContext.origin`` in ``UNPROMPTED_ORIGINS``, ADR 0017) is checked before all of this:
 it may only read and make Sentient-internal changes, whatever the mode or rules say (``unprompted_refusal``).
+
+Once a run has read outside content (``ToolContext.untrusted``, ADR 0018), the agent loop asks for every call that
+can send data out (``rules.sends_out``) after "never" rules and before this broker's modes and rules, so an Allow
+rule, mode "off" or "Allow for this chat" never skip that question.
 """
 
 from __future__ import annotations
