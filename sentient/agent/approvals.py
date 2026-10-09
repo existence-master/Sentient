@@ -14,6 +14,9 @@ name or a plugin id, and a tool's own rule beats its plugin's rule:
 - ``never``: the tool is not offered to the model, and a call is refused without running.
 - ``ask``: always ask, even in mode "off", after "Allow for this chat" and for read-only tools.
 - ``allow``: run without asking, except purchases, which still ask whenever approvals are on.
+
+Work nobody asked for (``ToolContext.origin`` in ``UNPROMPTED_ORIGINS``, ADR 0017) is checked before all of this:
+it may only read and make Sentient-internal changes, whatever the mode or rules say (``unprompted_refusal``).
 """
 
 from __future__ import annotations
@@ -25,7 +28,13 @@ from typing import Any
 
 from sentient.config.schema import ApprovalsConfig
 from sentient.tools.base import Risk, Tool, ToolContext, effective_risk
-from sentient.tools.rules import is_purchase, rule_for, rule_label
+from sentient.tools.rules import (
+    is_purchase,
+    rule_for,
+    rule_label,
+    unprompted_allows,
+    unprompted_message,
+)
 
 Decision = str  # "allow" | "allow_session" | "deny"
 
@@ -69,6 +78,13 @@ class ApprovalBroker:
 
     def label(self, tool: Tool, registry: Any = None) -> str:
         return rule_label(tool, getattr(self.config, "rules", None), registry)
+
+    def unprompted_refusal(self, tool: Tool, risk: Risk, registry: Any = None) -> str | None:
+        """For work nobody asked for: None when the call may run (a look-up or a Sentient-internal change), else
+        the plain refusal. Checked before modes and rules, so an Allow rule never lifts it (ADR 0017)."""
+        if unprompted_allows(tool, risk):
+            return None
+        return unprompted_message(self.label(tool, registry))
 
     async def requires_approval(
         self, tool: Tool, arguments: dict, ctx: ToolContext, session_id: str | None = None

@@ -46,6 +46,7 @@ async def delegate_task(
         parent_call_id=ctx.call_id,
         background=background,
         on_update=None if background else _progress(ctx),
+        origin=ctx.origin,
     )
 
 
@@ -65,7 +66,7 @@ async def delegate_tasks(ctx: ToolContext, tasks: list[dict]) -> dict:
     if len(valid) > MAX_PARALLEL_TASKS:
         return {"error": f"At most {MAX_PARALLEL_TASKS} tasks at once. Split the work or combine related goals."}
     results = await mgr.delegate_many(
-        valid, session_id=ctx.session_id, parent_call_id=ctx.call_id, on_update=_progress(ctx)
+        valid, session_id=ctx.session_id, parent_call_id=ctx.call_id, on_update=_progress(ctx), origin=ctx.origin
     )
     return {"results": results}
 

@@ -45,6 +45,16 @@ class Risk(IntEnum):
     exec = 3
 
 
+# Who a run works for (ADR 0017). "user": someone asked for it (a chat, a task the user created or approved, a
+# suggestion the user accepted). These origins are work nobody asked for, which may only read.
+UNPROMPTED_ORIGINS = frozenset({"proactive", "heartbeat", "followups", "dreaming", "background"})
+
+
+def is_unprompted(origin: str | None) -> bool:
+    """True for work nobody asked for (an origin or a ``run_loop`` source in ``UNPROMPTED_ORIGINS``)."""
+    return str(origin or "").strip().lower() in UNPROMPTED_ORIGINS
+
+
 # (sink, call_id, tool_name) of the tool call running in the current asyncio task.
 # The agent loop sets it before running a tool in its own task; nested work the tool
 # starts (threads via asyncio.to_thread, child tasks) inherits it.
@@ -88,6 +98,8 @@ class ToolContext:
     session_id: str | None = None
     channel: str = "web"
     extra: dict[str, Any] = field(default_factory=dict)
+    # "user", or an ``UNPROMPTED_ORIGINS`` name when nobody asked for this work (then only reads may run)
+    origin: str = "user"
 
     @property
     def call_id(self) -> str | None:

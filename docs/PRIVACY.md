@@ -29,6 +29,9 @@ service name `sentient`.
 - Sentient asks before sending, deleting, buying or running code, and purchases always ask, even if you allowed an
   action for the rest of a chat.
 - Code that Sentient writes runs without your keys and can only read, not send.
+- Work Sentient starts on its own (suggestions, follow-up checks, the nightly memory tidy-up) can only look things up.
+  Anything that would send, delete, buy or run code becomes a suggestion you approve, whatever your approval
+  settings say.
 - Photos and screenshots from your devices ask first.
 - Only chats you paired with a code can talk to Sentient on Telegram or Discord.
 

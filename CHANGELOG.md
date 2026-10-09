@@ -23,6 +23,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
   `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.
 
 ### Security
+- Work Sentient does on its own (proactive checks, the heartbeat, follow-up scans, dreaming and any subagent they
+  start) can only look things up and change Sentient's own things. Sending, deleting, buying, running code, changing
+  anything outside Sentient or creating tasks is refused in code, even with an Allow rule, and comes back to you as a
+  suggestion instead. Chats, your tasks and suggestions you approve work as before.
 - Purchases now ask even when approvals are switched off, and code Sentient writes can never make one. A tool set
   to Never while a request waits for your yes, or while a script runs, is blocked right away.
 
