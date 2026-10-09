@@ -130,7 +130,7 @@ Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
 ### Sessions (chats)
 - `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts}]` newest first
   (`untrusted`: the app whose content the chat read, e.g. `"Gmail"`, `""` when clean, `null` before its first turn;
-  `visited_hosts`: JSON list of web hosts it loaded, or `null`; section 10)
+  `visited_hosts`: list of web hosts it loaded, or `null`; section 10)
 - `POST /api/sessions` → `{session_id}`
 - `PATCH /api/sessions/{id}` `{title}` → `{ok}`
 - `DELETE /api/sessions/{id}` → `{ok}`
@@ -772,9 +772,9 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   `execute_code`, every MCP server tool, `delegate_task`/`delegate_tasks`, `device_take_photo`, `device_capture_screen`.
 - `Tool.exfiltrates: bool | fn(arguments, ctx) -> bool` (also `@tool(..., exfiltrates=)`, `itool(..., exfiltrates=)`):
   the call can move data out below `send`. Set on `browser_type`, `github_update_issue`, MCP tools that are not
-  read-only, and per call on `gcal_create_event`/`gcal_update_event` when `attendees` names anyone other than the
-  calendar's owner (`calendar_id`) or `send_updates` is true. Drafts (`gmail_create_draft`) and private events stay
-  free. `rules.sends_out(tool, risk, arguments, ctx)` is effective risk `send`/`exec` or `exfiltrates` (a per-call
+  read-only, `gcal_update_event` (an event's existing guests see every change), and per call on
+  `gcal_create_event` when `attendees` names anyone other than the calendar's owner (`calendar_id`). Drafts
+  (`gmail_create_draft`) and new private events stay free. `rules.sends_out(tool, risk, arguments, ctx)` is effective risk `send`/`exec` or `exfiltrates` (a per-call
   function that fails counts as true).
 - `Tool.url_fn(arguments, ctx) -> str | None` (also `@tool(..., url_fn=)`, `itool(..., url_fn=)`): the web address a
   call loads. Set on `web_fetch` and `browser_open` (`url`) and `browser_click` (the clicked link's address, resolved

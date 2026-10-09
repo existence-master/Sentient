@@ -137,8 +137,8 @@ async def gcal_list_events(ctx: ToolContext, time_min: str | None = None, time_m
 
 
 def invites_others(arguments: dict, ctx: Any) -> bool:
-    """True when the call puts people other than the calendar's owner on the event (or emails its guests):
-    they see its details, so after outside content it asks first (ADR 0018)."""
+    """True when a new event puts people other than the calendar's owner on it (or emails them): they see its
+    details, so after outside content it asks first (ADR 0018)."""
     owner = str(arguments.get("calendar_id") or "").strip().lower()
     guests = [str(a or "").strip().lower() for a in arguments.get("attendees") or []]
     return any(g and g != owner for g in guests) or bool(arguments.get("send_updates"))
@@ -168,7 +168,9 @@ async def gcal_create_event(ctx: ToolContext, summary: str, start: str, end: str
     return {"created": True, "event": normalize_event(res)}
 
 
-@itool(PID, "gcal_update_event", risk=Risk.write, exfiltrates=invites_others)
+# an event's existing guests see every change even when the call names no attendees, and checking who they are
+# would take a request, so after outside content any update asks (ADR 0018)
+@itool(PID, "gcal_update_event", risk=Risk.write, exfiltrates=True)
 async def gcal_update_event(ctx: ToolContext, event_id: str, summary: str | None = None, start: str | None = None,
                             end: str | None = None, description: str | None = None, location: str | None = None,
                             attendees: list[str] | None = None, send_updates: bool = False,

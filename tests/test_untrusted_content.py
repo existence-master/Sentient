@@ -317,9 +317,8 @@ async def test_calendar_events_with_other_people_count_as_sending_out(config, is
         assert not sends_out(create, Risk.write, {"summary": "Gym", "start": "2026-10-10T07:00"})
         assert sends_out(create, Risk.write, {"summary": "Lunch", "start": "x", "attendees": ["sam@example.com"]})
         assert not sends_out(create, Risk.write, {"attendees": ["me@example.com"], "calendar_id": "me@example.com"})
-        assert not sends_out(update, Risk.write, {"event_id": "1", "summary": "Moved"})
-        assert sends_out(update, Risk.write, {"event_id": "1", "attendees": ["sam@example.com"]})
-        assert sends_out(update, Risk.write, {"event_id": "1", "summary": "Moved", "send_updates": True})
+        assert sends_out(update, Risk.write, {"event_id": "1", "summary": "Moved"})  # existing guests see it
+        assert sends_out(create, Risk.write, {"summary": "Lunch", "start": "x", "send_updates": True})
         assert not sends_out(s.registry.get("gmail_create_draft"), Risk.write, {"to": "sam@example.com"})
     finally:
         await s.stop()

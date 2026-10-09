@@ -21,7 +21,8 @@ Tools carry two tags next to their `Risk` ([ADR 0008](0008-effective-risk-and-ap
   services (`weather`, `charts`). Browser tools, code runs, MCP server tools, subagent results, device photos and
   screenshots are marked explicitly. Writes and sends return confirmations, so they do not count.
 - `exfiltrates`: the call can move data out even below `send`: typing into a web page, editing a GitHub issue, any
-  change on an MCP server, a calendar event with other people on it. It can be decided per call.
+  change on an MCP server, a new calendar event with other people on it, any calendar event update (existing guests
+  see it). It can be decided per call.
 - `url_fn`: the web address a call loads (`web_fetch`, `browser_open`, a link `browser_click` follows).
 
 A run is marked (`ToolContext.untrusted`, the app's name) when a tool with untrusted output actually ran. The
