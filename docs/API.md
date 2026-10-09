@@ -214,6 +214,34 @@ Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
 - `PUT /api/secrets/{name}` `{value}` → `{ok}` (stored in OS keychain; never echoed back)
 - `DELETE /api/secrets/{name}` → `{ok}`
 
+### Connecting plans (issue #204)
+
+Ways to use AI plans people already pay for. Every key lands in the keychain under the provider's id (`anthropic`,
+`openrouter`, `nous`), the same entry a pasted key uses, so `DELETE /api/secrets/{id}` disconnects.
+
+- **Claude Max and Team plans** include monthly API credits, spent through an ordinary Anthropic API key. Apps may not
+  sign in with a Claude account, so there is no sign-in flow: the window shows the steps to claim the credits in the
+  Claude Console, stores the key with `PUT /api/secrets/anthropic` and checks it.
+- **OpenRouter** has a browser sign-in for apps on the user's computer (OAuth with PKCE, S256). The callback is the
+  integrations' shared loopback listener (`http://127.0.0.1:<port>/oauth/callback`, port from
+  `integrations.oauth_redirect_port`); the `state` value routes it. The code is swapped for a key at
+  `https://openrouter.ai/api/v1/auth/keys`. A forged, expired or reused `state` is refused and nothing is stored.
+- **Nous Portal** has no sign-in for other apps, so it takes an API key. Models are `nous/<model>`, sent through
+  LiteLLM's OpenAI-compatible client to `https://inference-api.nousresearch.com/v1` (override with
+  `models.providers.nous.api_base`; env fallback `NOUS_API_KEY`).
+
+Routes:
+- `POST /api/models/connect/openrouter` → `{auth_url, state}`. The window opens `auth_url` in the browser.
+- `GET /api/models/connect/openrouter/{state}` → `{status: "waiting"|"exchanging"|"connected"|"failed", error}`; 404
+  for an unknown sign-in. On success the engine also publishes `config.updated` `{sections: ["secrets"]}`.
+- `POST /api/models/connect/{provider}/check` (`anthropic`, `openrouter`, `nous`) → `{ok, detail}` or
+  `{ok: false, error}` with a plain sentence. A free request with the saved key (the model list, or OpenRouter's key
+  info); it spends no credits. Other providers → 404.
+- `GET /api/models/catalog/{provider}` (`openrouter`, `nous`, `anthropic`) → `[{id, label, free, tools, context_length}]`,
+  `id` a full model string such as `openrouter/meta-llama/llama-4-maverick:free`. OpenRouter's list is public;
+  the others need the key (502 with a plain `detail` without one). Cached for 10 minutes; removing the key clears it.
+  The window only asks for a provider's list once that provider has a key.
+
 ---
 
 ## 4. Tasks (long-running work) — v2 semantics preserved

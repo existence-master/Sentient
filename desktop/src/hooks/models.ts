@@ -14,6 +14,25 @@ export function useLocalModels() {
   return useQuery({ queryKey: qk.localModels, queryFn: api.models.local, staleTime: 15_000 })
 }
 
+/** A cloud provider's live model list. Only fetched when `enabled`, so nothing is asked of providers you don't use. */
+export function useModelCatalog(provider: string, enabled: boolean) {
+  return useQuery({ queryKey: qk.catalog(provider), queryFn: () => api.models.catalog(provider), enabled, staleTime: 10 * 60_000, retry: false })
+}
+
+/** Polls an OpenRouter sign-in until it is connected or failed. */
+export function useSignInStatus(state: string | null) {
+  return useQuery({
+    queryKey: qk.signIn(state ?? ''),
+    queryFn: () => api.models.signInStatus(state ?? ''),
+    enabled: !!state,
+    refetchInterval: (q) => (q.state.data && ['connected', 'failed'].includes(q.state.data.status) ? false : 1500)
+  })
+}
+
+export function useCheckKey() {
+  return useMutation({ mutationFn: (provider: string) => api.models.checkKey(provider) })
+}
+
 export function useSecrets() {
   return useQuery({ queryKey: qk.secrets, queryFn: api.secrets.list })
 }
@@ -60,9 +79,10 @@ export function useDeleteSecret() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (name: string) => api.secrets.delete(name),
-    onSuccess: () => {
+    onSuccess: (_res, name) => {
       void qc.invalidateQueries({ queryKey: qk.secrets })
       void qc.invalidateQueries({ queryKey: qk.providers })
+      qc.removeQueries({ queryKey: qk.catalog(name) })
     }
   })
 }

@@ -427,6 +427,34 @@ export interface LocalModels {
   lm_studio: LocalRuntime
 }
 
+/** `POST /api/models/connect/openrouter` (docs/API.md §3). */
+export interface ProviderSignIn {
+  auth_url: string
+  state: string
+}
+
+/** `GET /api/models/connect/openrouter/{state}`. */
+export interface ProviderSignInStatus {
+  status: 'waiting' | 'exchanging' | 'connected' | 'failed'
+  error: string | null
+}
+
+/** `POST /api/models/connect/{provider}/check`: a free request with the saved key. */
+export interface ProviderKeyCheck {
+  ok: boolean
+  detail?: string
+  error?: string
+}
+
+/** One entry of `GET /api/models/catalog/{provider}`. `id` is a full model string, e.g. `openrouter/x/y:free`. */
+export interface CatalogModel {
+  id: string
+  label: string
+  free: boolean
+  tools: boolean | null
+  context_length: number | null
+}
+
 export interface ModelTestResult {
   ok: boolean
   latency_ms: number

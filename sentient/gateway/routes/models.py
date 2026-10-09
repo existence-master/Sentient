@@ -18,6 +18,8 @@ from pydantic import BaseModel
 
 from sentient import secrets
 from sentient.gateway.deps import AUTH, get_core
+from sentient.llm import connect
+from sentient.llm.provider import provider_config
 
 router = APIRouter(prefix="/api", tags=["models"], dependencies=AUTH)
 
@@ -42,11 +44,13 @@ PROVIDERS: list[dict[str, Any]] = [
      "docs_url": "https://platform.deepseek.com/api_keys", "suggested": ["deepseek/deepseek-chat"]},
     {"id": "xai", "label": "xAI", "kind": "cloud", "key_required": True,
      "docs_url": "https://console.x.ai/", "suggested": ["xai/grok-4"]},
+    {"id": "nous", "label": "Nous Portal", "kind": "cloud", "key_required": True,
+     "docs_url": "https://portal.nousresearch.com/", "suggested": []},
 ]
 
 
 def _provider_key_status(s, pid: str) -> tuple[bool, str | None]:
-    pc = s.config.models.providers.get(pid)
+    pc = provider_config(s.config, pid)
     env = pc.api_key_env if pc else None
     import os
 
@@ -255,6 +259,38 @@ async def pull_ollama(request: Request, body: PullBody):
     return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
+# ----------------------------------------------------------------------------- connecting plans
+@router.post("/models/connect/openrouter")
+async def connect_openrouter(request: Request):
+    """Start OpenRouter's browser sign-in. The window opens ``auth_url``; the key lands in the keychain."""
+    return await get_core(request).connections.start_openrouter()
+
+
+@router.get("/models/connect/openrouter/{state}")
+async def connect_openrouter_status(request: Request, state: str):
+    status = get_core(request).connections.flow_status(state)
+    if status is None:
+        raise HTTPException(404, "unknown sign-in")
+    return status
+
+
+@router.post("/models/connect/{provider}/check")
+async def check_provider_key(request: Request, provider: str):
+    if provider not in connect.CHECKABLE:
+        raise HTTPException(404, f"no key check for {provider}")
+    return await connect.check_key(get_core(request).config, provider)
+
+
+@router.get("/models/catalog/{provider}")
+async def provider_catalog(request: Request, provider: str):
+    if provider not in connect.CATALOGS:
+        raise HTTPException(404, f"no model list for {provider}")
+    try:
+        return await get_core(request).connections.catalog(provider)
+    except connect.ConnectError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
 # ----------------------------------------------------------------------------- secrets
 @router.get("/secrets")
 async def list_secrets(request: Request):
@@ -290,5 +326,6 @@ async def put_secret(request: Request, name: str, body: SecretBody):
 @router.delete("/secrets/{name}")
 async def delete_secret(request: Request, name: str):
     secrets.delete_secret(name)
+    get_core(request).connections.forget(name)
     get_core(request).bus.publish("config.updated", {"sections": ["secrets"]})
     return {"ok": True}

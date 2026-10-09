@@ -1,8 +1,8 @@
 import { IconRefresh } from '@tabler/icons-react'
 import { useMemo } from 'react'
 import { Combobox } from '@/components/ui'
-import { useLocalModels, useProviders } from '@/hooks/models'
-import { buildModelOptions, isLocalModel, modelShortName, providerLabel, providerOf } from '@/lib/models'
+import { useLocalModels, useModelCatalog, useProviders } from '@/hooks/models'
+import { buildModelOptions, isLocalModel, modelShortName, providerLabel, providerOf, withCatalog } from '@/lib/models'
 import { cn } from '@/lib/utils'
 
 export interface ModelPickerProps {
@@ -22,11 +22,17 @@ export interface ModelPickerProps {
 export function ModelPicker({ value, onChange, embedding, noneLabel, provider, className, size, id }: ModelPickerProps) {
   const local = useLocalModels()
   const providers = useProviders()
+  // Live model lists for connected providers whose models change often. Never fetched for a provider without a key.
+  const connected = (id: string) => !!providers.data?.find((p) => p.id === id)?.key_set && (!provider || provider === id)
+  const openrouter = useModelCatalog('openrouter', connected('openrouter'))
+  const nous = useModelCatalog('nous', connected('nous'))
 
   const groups = useMemo(() => {
-    const all = buildModelOptions(local.data, providers.data, { embedding })
+    let all = buildModelOptions(local.data, providers.data, { embedding })
+    all = withCatalog(all, { id: 'openrouter', label: providerLabel('openrouter') }, openrouter.data, { embedding })
+    all = withCatalog(all, { id: 'nous', label: providerLabel('nous') }, nous.data, { embedding })
     return provider ? all.filter((g) => g.id === provider || (provider === 'ollama_chat' && g.id === 'ollama')) : all
-  }, [local.data, providers.data, embedding, provider])
+  }, [local.data, providers.data, embedding, provider, openrouter.data, nous.data])
 
   return (
     <Combobox

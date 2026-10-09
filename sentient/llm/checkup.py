@@ -20,7 +20,7 @@ import httpx
 
 from sentient import secrets
 from sentient.config.schema import ModelRoles, SentientConfig
-from sentient.llm.provider import ToolCall
+from sentient.llm.provider import ToolCall, provider_config
 
 ROLES = ("primary", "fast", "planner", "executor", "vision", "voice", "embedding")
 TOOL_ROLES = {"primary", "fast", "executor", "vision", "voice"}  # roles that run the agent loop with tools
@@ -35,7 +35,7 @@ SMALL_QWEN = re.compile(r"^qwen3:(0\.6|1\.7|4)b")
 LABELS = {
     "ollama": "Ollama", "ollama_chat": "Ollama", "lm_studio": "LM Studio", "anthropic": "Anthropic",
     "openai": "OpenAI", "gemini": "Google Gemini", "openrouter": "OpenRouter", "groq": "Groq",
-    "mistral": "Mistral", "deepseek": "DeepSeek", "xai": "xAI",
+    "mistral": "Mistral", "deepseek": "DeepSeek", "xai": "xAI", "nous": "Nous Portal",
 }
 ORDER = {"fail": 3, "warn": 2, "pass": 1, "skip": 0}
 
@@ -206,7 +206,7 @@ class _RoleCheck:
     def _settings_key(self) -> tuple:
         """Everything a model test depends on. Roles with the same key get the same answers, so they share results."""
         models = self.run.config.models
-        pc = models.providers.get(self.prefix)
+        pc = provider_config(self.run.config, self.prefix)
         base = self._base() if self.ollama else (pc.api_base if pc else None)
         ctx = (models.context_length_per_role.get(self.role) or models.context_length) if self.ollama else None
         return (self.model, base, models.reasoning.get(self.role), ctx, models.temperature.get(self.role))
@@ -249,7 +249,7 @@ class _RoleCheck:
                 return False
             self.add("connection", "Connection", "pass", f"Ollama is running and {self.name} is downloaded.")
             return True
-        pc = self.run.config.models.providers.get(self.prefix)
+        pc = provider_config(self.run.config, self.prefix)
         if self.prefix not in LOCAL and pc and pc.api_key_env:
             if not secrets.get_secret(self.prefix, pc.api_key_env):
                 self.add("connection", "Connection", "fail", f"No {self.label} key is set.",

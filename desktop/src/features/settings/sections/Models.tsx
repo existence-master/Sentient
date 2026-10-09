@@ -42,6 +42,7 @@ import {
   StatusDot,
   Switch
 } from '@/components/ui'
+import { ConnectPlansSection } from '@/features/models/ConnectPlans'
 import { ModelCheckup } from '@/features/models/ModelCheckup'
 import { ModelPicker } from '@/features/models/ModelPicker'
 import { ModelTest } from '@/features/models/ModelTest'
@@ -91,6 +92,7 @@ export function ModelsSection({ query }: SectionProps) {
           <RoleCard key={r} role={r} config={config} />
         ))}
       </section>
+      {(!q || 'plan claude max anthropic credits openrouter nous portal connect sign in subscription'.includes(q)) && <ConnectPlansSection />}
       <ProvidersPanel />
       <OllamaPanel />
     </div>

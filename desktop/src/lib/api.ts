@@ -63,6 +63,10 @@ import type {
   MessageSearchHit,
   ModelRoles,
   ModelTestResult,
+  CatalogModel,
+  ProviderKeyCheck,
+  ProviderSignIn,
+  ProviderSignInStatus,
   NotificationList,
   OkResponse,
   OllamaPullProgress,
@@ -451,7 +455,12 @@ export const api = {
       streamNdjson<OllamaPullProgress>('POST', '/api/models/ollama/pull', { body: { name }, signal }),
     /** Check each role's model (or only `roles`); never changes config. */
     checkup: (roles?: Partial<Record<RoleName, string | null>>, signal?: AbortSignal) =>
-      streamNdjson<CheckupEvent>('POST', '/api/models/checkup', { body: roles ? { roles } : {}, signal })
+      streamNdjson<CheckupEvent>('POST', '/api/models/checkup', { body: roles ? { roles } : {}, signal }),
+    /** Start OpenRouter's browser sign-in; open `auth_url`, then poll `signInStatus(state)`. */
+    connectOpenRouter: () => http.post<ProviderSignIn>('/api/models/connect/openrouter'),
+    signInStatus: (state: string) => http.get<ProviderSignInStatus>(`/api/models/connect/openrouter/${enc(state)}`),
+    checkKey: (provider: string) => http.post<ProviderKeyCheck>(`/api/models/connect/${enc(provider)}/check`),
+    catalog: (provider: string) => http.get<CatalogModel[]>(`/api/models/catalog/${enc(provider)}`)
   },
 
   secrets: {
