@@ -1107,8 +1107,9 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     whose `webSocketDebuggerUrl` points elsewhere. Sentient opens a tab of its own and follows only tabs that tab
     opens. Closing, idling out, switching profiles or deleting the profile only disconnects; the user's browser and
     its tabs stay open. `browser_switch_tab` refuses a tab on a blocked or not-allowed site (it is left as it is).
-  - One profile is open at a time. A call uses the run's profile (`ctx.extra["browser_profile"]`), else the profile
-    open now, else `default`. The run's profile is the task's `browser_profile` when a task run starts, and is
+  - One profile is open at a time. A tool call uses the run's profile (`ctx.extra["browser_profile"]`), else
+    `default`, switching if another profile is open: profiles are signed in as different people, so a chat or run
+    that picked none never keeps using a profile another run left open. The run's profile is the task's `browser_profile` when a task run starts, and is
     replaced by a skill's `browser_profile` when `skill_view` reads it and by a `profile` argument (the latest wins,
     for the rest of that chat turn or run). Switching closes the open one cleanly first, except a window the user opened
     with `POST /api/browser/open` (signing in): then the call returns `{error}` asking the user to close it. An unknown
@@ -1119,7 +1120,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   profiles`. Every safety rule below applies the same in every profile, attached ones included.
 - Tools (plugin `browser`). Failures return `{error}` with a message the model can act on.
   - `browser_open(url, profile="")` read → same as `browser_snapshot` plus `profile` (http/https only; allow/block lists
-    apply, also after redirects). `profile` switches to that profile for this and the following calls of the run.
+    apply, also after redirects). `profile` switches to that profile for this and the following calls of the run;
+    empty uses the run's profile, else `default`.
   - `browser_snapshot()` read → `{url, title, text, truncated?}`. `text` is `Page:`/`URL:`/`Scroll:` header, interactive
     elements one per line (`[e12] button "Sign in"`, `[e4] textbox "Search" value=""`, `[e7] combobox "Country"
     value="India" options: India | Japan`, `[e3] link "Docs" -> /docs`, flags `checked`, `disabled`, `focused`) and the

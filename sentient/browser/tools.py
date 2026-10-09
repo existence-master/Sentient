@@ -78,7 +78,8 @@ async def browser_open(ctx: ToolContext, url: str, profile: str = "") -> dict:
     """Open a web address in Sentient's own browser and return a snapshot of the page: its buttons, links and
     fields with refs like [e12], plus the page text. Use for websites without an integration or when you need to
     click or fill things in; to only read an article, web_fetch is faster. `profile` picks a named browser profile
-    (each has its own sign-ins) for this and the following browser calls; leave it empty to keep the current one."""
+    (each has its own sign-ins) for this and the following browser calls; leave it empty to use the task's or skill's
+    profile, else the default one."""
     return await service_from(ctx).open(ctx, url, profile)
 
 

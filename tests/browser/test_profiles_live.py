@@ -51,10 +51,9 @@ async def test_profiles_keep_separate_sign_ins_and_switch(browser, site):
     assert (await browser.status())["profile"] == "default"
     assert await _recall(browser, ctx, site, "work") == ["who=office", "office"]
 
-    # a call without a profile stays on the open one; a new run (fresh context) does too until it picks one
-    again = await bt.browser_snapshot.call(make_ctx(app), {})
-    assert again["title"] == "Help" and browser._profile == "work"
-    tabs = await bt.browser_tabs.call(make_ctx(app), {"profile": "default"})
+    # within the run the picked profile sticks; a new run that picks none gets "default", never "work"
+    assert (await bt.browser_snapshot.call(ctx, {}))["title"] == "Help" and browser._profile == "work"
+    tabs = await bt.browser_tabs.call(make_ctx(app), {})
     assert tabs["profile"] == "default" and browser._profile == "default"
 
 
@@ -69,6 +68,21 @@ async def test_task_default_profile_is_used(browser, site):
     await bt.browser_open.call(ctx, {"url": f"{site}/help.html", "profile": "default"})
     assert ctx.extra["browser_profile"] == "default"
     assert (await bt.browser_snapshot.call(ctx, {}))["title"] == "Help" and browser._profile == "default"
+
+
+async def test_a_chat_after_a_task_on_another_profile_uses_default(browser, site):
+    app = browser.app
+    app.config.browser.profiles["x-posting"] = BrowserProfileConfig(notes="Signed in to the X account")
+    await _remember(browser, make_ctx(app), site, "home", profile="default")
+    task = make_ctx(app)
+    task.extra["browser_profile"] = "x-posting"  # a task run on the X profile
+    await _remember(browser, task, site, "poster")
+    assert (await browser.status())["profile"] == "x-posting"
+
+    chat = make_ctx(app)  # a later chat turn that names no profile
+    snap = await bt.browser_open.call(chat, {"url": f"{site}/help.html"})
+    assert snap["profile"] == "default" and (await browser.status())["profile"] == "default"
+    assert await browser._active.evaluate(RECALL) == ["who=home", "home"]  # the default sign-ins, not the X ones
 
 
 # ----------------------------------------------------------------------------- attach

@@ -320,3 +320,16 @@ async def test_notes_change_does_not_move_the_old_default_folder():
     await svc.update_profile("default", notes="Everyday browsing")
     assert old.is_dir() and not (paths.home() / "browser" / "profiles" / "default").exists()
     assert app.config.browser.profiles["default"].notes == "Everyday browsing"
+
+
+def test_a_run_that_picks_no_profile_gets_default():
+    cfg = SentientConfig()
+    cfg.browser.profiles["x-posting"] = BrowserProfileConfig()
+    app = make_app(cfg)
+    svc = BrowserService(app)
+    svc._context, svc._profile = object(), "x-posting"  # a task left the X profile open
+    assert svc._wanted(make_ctx(app)) == "default"  # a later chat never keeps using it
+    task = make_ctx(app)
+    task.extra["browser_profile"] = "x-posting"
+    assert svc._wanted(task) == "x-posting"
+    assert svc._wanted(None) == "x-posting"  # the user's own Open window stays on what is open

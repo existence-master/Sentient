@@ -340,10 +340,13 @@ class BrowserService(Service):
         return prof
 
     def _wanted(self, ctx: Any = None) -> str:
-        """The profile a call uses: the run's own (task default, skill or tool argument), else the one open now."""
-        name = str(((getattr(ctx, "extra", None) or {}).get(PROFILE_KEY)) or "").strip()
-        if not name:
+        """The profile a tool call uses: the run's own (task default, skill or tool argument), else ``default``.
+
+        Profiles are signed in as different people, so a run that picked none never keeps using another run's
+        profile. Internal calls without a ctx (the user's Open window) stay on the open profile."""
+        if ctx is None:
             return self._profile if self._context is not None else DEFAULT_PROFILE
+        name = str(((getattr(ctx, "extra", None) or {}).get(PROFILE_KEY)) or "").strip() or DEFAULT_PROFILE
         self._profile_cfg(name)
         return name
 
