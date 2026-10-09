@@ -62,6 +62,27 @@ def unattended_ask_message(label: str) -> str:
     return f"{label} is set to Ask, and tasks can't ask yet. Change it in Settings > Approvals & safety."
 
 
+# Apps whose "internal" changes turn into outside actions later (a task runs its plan on its own), so work nobody
+# asked for can't use them either (ADR 0017).
+UNPROMPTED_BLOCKED_PLUGINS = frozenset({"tasks"})
+
+
+def unprompted_allows(tool: Tool, risk: Risk) -> bool:
+    """Work nobody asked for may look things up (effective risk ``read``) and change Sentient's own things (an
+    ``internal`` tool at ``write``), never send, delete, buy, run code, change anything outside Sentient or plan
+    more work. Rules and approval modes never widen this."""
+    risk = Risk(risk)
+    if risk == Risk.read:
+        return True
+    return risk == Risk.write and bool(tool.internal) and tool.plugin not in UNPROMPTED_BLOCKED_PLUGINS
+
+
+def unprompted_message(label: str) -> str:
+    """What the model is told when work nobody asked for tries to act."""
+    return (f"Nobody asked for this work, so Sentient can only look things up. {label} was not done. "
+            "If it would help, suggest it to the user instead.")
+
+
 async def is_purchase(tool: Tool, arguments: dict, ctx: Any, risk: Risk) -> bool:
     """True when the call spends money: effective risk ``send`` or higher and approval wording "Purchase"."""
     if Risk(risk) < Risk.send:

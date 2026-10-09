@@ -172,9 +172,11 @@ class SubagentManager(Service):
         parent_call_id: str | None = None,
         background: bool = False,
         on_update: UpdateFn | None = None,
+        origin: str = "user",
     ) -> dict:
         """Start a subagent. Foreground: waits and returns ``{subagent_id, status, summary, files_created}``
-        (plus ``error``). Background: returns ``{subagent_id, status: "running"}`` right away."""
+        (plus ``error``). Background: returns ``{subagent_id, status: "running"}`` right away. ``origin`` is the
+        parent run's ``ToolContext.origin``: a subagent of work nobody asked for may only read too (ADR 0017)."""
         cfg = self.app.config.subagents
         if not cfg.enabled:
             return {"status": "error", "error": "Subagents are turned off in Settings."}
@@ -194,7 +196,7 @@ class SubagentManager(Service):
         )
         self._publish(await self.get(sub_id, events=False))
         task = asyncio.create_task(
-            self._run(sub_id, goal, context or "", tools, session_id, bool(background), on_update),
+            self._run(sub_id, goal, context or "", tools, session_id, bool(background), on_update, origin),
             name=f"subagent:{sub_id}",
         )
         self._tasks[sub_id] = task
@@ -220,6 +222,7 @@ class SubagentManager(Service):
         session_id: str | None = None,
         parent_call_id: str | None = None,
         on_update: UpdateFn | None = None,
+        origin: str = "user",
     ) -> list[dict]:
         """Run several foreground subagents; at most ``subagents.max_concurrent`` at a time."""
         jobs = [
@@ -230,6 +233,7 @@ class SubagentManager(Service):
                 session_id=session_id,
                 parent_call_id=parent_call_id,
                 on_update=on_update,
+                origin=origin,
             )
             for t in tasks
         ]
@@ -328,6 +332,7 @@ class SubagentManager(Service):
         session_id: str | None,
         background: bool,
         on_update: UpdateFn | None,
+        origin: str = "user",
     ) -> None:
         cfg = self.app.config.subagents
         agent = self.app.agent
@@ -353,7 +358,7 @@ class SubagentManager(Service):
                     {"role": "system", "content": self._system_prompt()},
                     {"role": "user", "content": f"Goal: {goal}" + (f"\n\nContext:\n{context}" if context else "")},
                 ]
-                ctx = agent.tool_context(session_id, "subagent")
+                ctx = agent.tool_context(session_id, "subagent", origin=origin)
                 ctx.extra["subagent_id"] = sub_id
                 names = await self._tool_names(goal, context, tools, cfg.role)
                 narration = ""
