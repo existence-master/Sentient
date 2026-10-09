@@ -28,6 +28,7 @@ from sentient.config.schema import (
     SentientConfig,
 )
 from sentient.llm.checkup import LABELS, LOCAL, OLLAMA
+from sentient.llm.provider import provider_config
 
 UNDO_META_KEY = "models.preset_undo"
 BUILTIN = (LOCAL_PRESET, CLOUD_PRESET, MIXED_PRESET)
@@ -50,7 +51,7 @@ def _prefix(model: str | None) -> str:
 
 
 def key_set(config: SentientConfig, provider: str) -> bool:
-    pc = config.models.providers.get(provider)
+    pc = provider_config(config, provider)
     return bool(secrets.get_secret(provider, pc.api_key_env if pc else None))
 
 
@@ -319,7 +320,7 @@ async def missing(config: SentientConfig) -> list[dict[str, Any]]:
                                 "fix": f"Download {name}. It can take a few minutes.",
                                 "action": {"kind": "pull_model", "name": name, "label": f"Download {name}"}})
                 continue
-            pc = config.models.providers.get(prefix)
+            pc = provider_config(config, prefix)
             if prefix in LOCAL or not (pc and pc.api_key_env) or key_set(config, prefix):
                 continue
             label = LABELS.get(prefix, prefix)

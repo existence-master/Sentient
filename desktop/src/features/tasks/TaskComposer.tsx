@@ -362,7 +362,7 @@ export function TaskModelPicker({ value, onChange }: { value: string | undefined
             if (custom.trim()) pick(custom.trim())
           }}
         >
-          <Input size="sm" value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="Any model, e.g. anthropic/claude-sonnet-5" className="font-mono" />
+          <Input size="sm" value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="Any model, e.g. anthropic/claude-sonnet-5-5" className="font-mono" />
         </form>
       </PopoverContent>
     </Popover>

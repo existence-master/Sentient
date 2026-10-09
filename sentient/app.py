@@ -33,6 +33,7 @@ from sentient.config import SentientConfig, load_config, save_config
 from sentient.events import EventBus
 from sentient.evolution import EvolutionService
 from sentient.integrations import IntegrationManager
+from sentient.llm.connect import ProviderConnections
 from sentient.llm.provider import LiteLLMProvider, LLMProvider
 from sentient.memory.dreaming import DreamingService
 from sentient.memory.facts import FactMemory
@@ -84,6 +85,8 @@ class SentientApp:
         # feature services
         self.notifications = NotificationService(self)
         self.integrations = IntegrationManager(self)
+        self.connections = ProviderConnections(self)  # OpenRouter sign-in, provider key checks
+        self.integrations.oauth_owners.append(self.connections)
         self.tasks = TaskService(self)
         self.proactivity = ProactiveEngine(self)
         self.evolution = EvolutionService(self)

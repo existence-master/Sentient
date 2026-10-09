@@ -69,6 +69,10 @@ import type {
   ModelPresetList,
   ModelRoles,
   ModelTestResult,
+  CatalogModel,
+  ProviderKeyCheck,
+  ProviderSignIn,
+  ProviderSignInStatus,
   NotificationList,
   OkResponse,
   PresetApplyResult,
@@ -459,6 +463,11 @@ export const api = {
     /** Check each role's model (or only `roles`); never changes config. */
     checkup: (roles?: Partial<Record<RoleName, string | null>>, signal?: AbortSignal) =>
       streamNdjson<CheckupEvent>('POST', '/api/models/checkup', { body: roles ? { roles } : {}, signal }),
+    /** Start OpenRouter's browser sign-in; open `auth_url`, then poll `signInStatus(state)`. */
+    connectOpenRouter: () => http.post<ProviderSignIn>('/api/models/connect/openrouter'),
+    signInStatus: (state: string) => http.get<ProviderSignInStatus>(`/api/models/connect/openrouter/${enc(state)}`),
+    checkKey: (provider: string) => http.post<ProviderKeyCheck>(`/api/models/connect/${enc(provider)}/check`),
+    catalog: (provider: string) => http.get<CatalogModel[]>(`/api/models/catalog/${enc(provider)}`),
     /** Model presets: switch every role at once, save your own, undo the last switch. */
     presets: {
       list: () => http.get<ModelPresetList>('/api/models/presets'),

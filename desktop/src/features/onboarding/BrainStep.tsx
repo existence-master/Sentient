@@ -2,6 +2,8 @@ import { IconAlertTriangle, IconCircleCheck, IconCloud, IconDeviceDesktop, IconD
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Card, Field, IconButton, Input, SegmentedControl, Skeleton } from '@/components/ui'
+import { InstructionsGuide } from '@/features/integrations/InstructionsGuide'
+import { CLAUDE_PLAN_STEPS, NOUS_STEPS, OpenRouterConnect } from '@/features/models/ConnectPlans'
 import { ModelCheckup } from '@/features/models/ModelCheckup'
 import { ModelPicker } from '@/features/models/ModelPicker'
 import { ModelTest } from '@/features/models/ModelTest'
@@ -218,42 +220,50 @@ function CloudBrain() {
               Your {selected.label} key is saved in the system keychain.
             </div>
           ) : (
-            <Field label={`${selected.label} API key`} description="Stored in your operating system's keychain. Never written to files or logs.">
-              <form
-                className="flex gap-2"
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  if (!key.trim()) return
-                  setSecret.mutate(
-                    { name: selected.id, value: key.trim() },
-                    {
-                      onSuccess: () => {
-                        setKey('')
-                        toast.success('Key saved')
-                      },
-                      onError: (err) => toast.error("Couldn't save the key", { description: errorMessage(err) })
-                    }
-                  )
-                }}
+            <>
+              {selected.id === 'openrouter' && <OpenRouterConnect />}
+              {selected.id === 'anthropic' && <PlanSteps title="Have a Claude Max or Team plan? Use its included API credits" markdown={CLAUDE_PLAN_STEPS} />}
+              {selected.id === 'nous' && <InstructionsGuide markdown={NOUS_STEPS} />}
+              <Field
+                label={selected.id === 'openrouter' ? 'Or paste an OpenRouter key' : `${selected.label} API key`}
+                description="Stored in your operating system's keychain. Never written to files or logs."
               >
-                <Input
-                  type={show ? 'text' : 'password'}
-                  autoComplete="off"
-                  value={key}
-                  onChange={(e) => setKey(e.target.value)}
-                  placeholder="Paste your API key"
-                  leftIcon={<IconKey />}
-                  className="font-mono text-xs"
-                  rightSlot={<IconButton size="xs" tooltip={false} label={show ? 'Hide' : 'Show'} icon={show ? <IconEyeOff size={14} /> : <IconEye size={14} />} onClick={() => setShow((s) => !s)} />}
-                />
-                <Button type="submit" variant="primary" loading={setSecret.isPending} disabled={!key.trim()}>
-                  Save
-                </Button>
-              </form>
-              <button type="button" onClick={() => void getBridge().openExternal(selected.docs_url)} className="mt-2 flex items-center gap-1 text-xs text-accent-text hover:underline">
-                Get a {selected.label} key <IconExternalLink size={12} />
-              </button>
-            </Field>
+                <form
+                  className="flex gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    if (!key.trim()) return
+                    setSecret.mutate(
+                      { name: selected.id, value: key.trim() },
+                      {
+                        onSuccess: () => {
+                          setKey('')
+                          toast.success('Key saved')
+                        },
+                        onError: (err) => toast.error("Couldn't save the key", { description: errorMessage(err) })
+                      }
+                    )
+                  }}
+                >
+                  <Input
+                    type={show ? 'text' : 'password'}
+                    autoComplete="off"
+                    value={key}
+                    onChange={(e) => setKey(e.target.value)}
+                    placeholder="Paste your API key"
+                    leftIcon={<IconKey />}
+                    className="font-mono text-xs"
+                    rightSlot={<IconButton size="xs" tooltip={false} label={show ? 'Hide' : 'Show'} icon={show ? <IconEyeOff size={14} /> : <IconEye size={14} />} onClick={() => setShow((s) => !s)} />}
+                  />
+                  <Button type="submit" variant="primary" loading={setSecret.isPending} disabled={!key.trim()}>
+                    Save
+                  </Button>
+                </form>
+                <button type="button" onClick={() => void getBridge().openExternal(selected.docs_url)} className="mt-2 flex items-center gap-1 text-xs text-accent-text hover:underline">
+                  Get a {selected.label} key <IconExternalLink size={12} />
+                </button>
+              </Field>
+            </>
           )}
           <Field label="Main model">
             <div className="flex items-center gap-2">
@@ -273,6 +283,25 @@ function CloudBrain() {
         </Card>
       )}
       {selected?.key_set && <DraftCheckup />}
+    </div>
+  )
+}
+
+/** Steps for using a plan, folded away until asked for. */
+function PlanSteps({ title, markdown }: { title: string; markdown: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="rounded-xl border border-border bg-surface/60 px-3.5 py-2.5">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-2 text-left text-sm font-medium text-fg"
+      >
+        {title}
+        <span className="shrink-0 text-xs font-normal text-accent-text">{open ? 'Hide steps' : 'Show steps'}</span>
+      </button>
+      {open && <InstructionsGuide markdown={markdown} className="mt-3" />}
     </div>
   )
 }

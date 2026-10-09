@@ -17,6 +17,9 @@ service name `sentient`.
 |---|---|
 | Use a **local model** (Ollama, LM Studio) | Nothing. Prompts stay on your machine. |
 | Use a **cloud model** | The conversation, relevant memories and tool results for each request go to that provider (for example Anthropic or OpenAI) under their terms. |
+| Use your **Claude plan's API credits** | The same as any Claude model: requests go to Anthropic with your API key. Sentient never asks for your Claude account login. |
+| **Connect OpenRouter** | You sign in on openrouter.ai in your browser and OpenRouter hands Sentient a key for your account, kept in your keychain. Requests then go to OpenRouter, which passes them to the company that runs the model you picked. The model list is fetched from openrouter.ai once connected. |
+| Use **Nous Portal** | Requests go to Nous Research with your Nous Portal key. |
 | **Connect an app** (Gmail, Slack, Notion...) | Sentient talks directly to that app's servers with your own login. |
 | Use **web search, weather, maps or news** | Your query goes to that service. Web search uses DuckDuckGo by default. |
 | Let Sentient **use the browser** | It visits the sites the task needs, in a separate browser profile. You sign in yourself; Sentient never types passwords or card numbers. |

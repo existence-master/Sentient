@@ -14,6 +14,25 @@ export function useLocalModels() {
   return useQuery({ queryKey: qk.localModels, queryFn: api.models.local, staleTime: 15_000 })
 }
 
+/** A cloud provider's live model list. Only fetched when `enabled`, so nothing is asked of providers you don't use. */
+export function useModelCatalog(provider: string, enabled: boolean) {
+  return useQuery({ queryKey: qk.catalog(provider), queryFn: () => api.models.catalog(provider), enabled, staleTime: 10 * 60_000, retry: false })
+}
+
+/** Polls an OpenRouter sign-in until it is connected or failed. */
+export function useSignInStatus(state: string | null) {
+  return useQuery({
+    queryKey: qk.signIn(state ?? ''),
+    queryFn: () => api.models.signInStatus(state ?? ''),
+    enabled: !!state,
+    refetchInterval: (q) => (q.state.data && ['connected', 'failed'].includes(q.state.data.status) ? false : 1500)
+  })
+}
+
+export function useCheckKey() {
+  return useMutation({ mutationFn: (provider: string) => api.models.checkKey(provider) })
+}
+
 export function useSecrets() {
   return useQuery({ queryKey: qk.secrets, queryFn: api.secrets.list })
 }
@@ -88,21 +107,31 @@ export function useSetSecret() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ name, value }: { name: string; value: string }) => api.secrets.set(name, value),
-    onSuccess: () => {
+    onSuccess: (_res, { name }) => {
       void qc.invalidateQueries({ queryKey: qk.secrets })
       void qc.invalidateQueries({ queryKey: qk.providers })
+      void qc.invalidateQueries({ queryKey: qk.catalog(name) }) // a new key can mean a different account's models
       void qc.invalidateQueries({ queryKey: qk.modelPresets })
+      qc.setQueryData<number>(qk.secretSaves(name), (n) => (n ?? 0) + 1)
     }
   })
+}
+
+/** How many times this secret was saved since the window opened. It changes when a key is replaced. */
+export function useSecretSaves(name: string) {
+  // A counter kept in the query cache for the life of the window: never fetched, never stale, never collected.
+  const saves = useQuery({ queryKey: qk.secretSaves(name), queryFn: () => 0, initialData: 0, staleTime: Infinity, gcTime: Infinity })
+  return saves.data
 }
 
 export function useDeleteSecret() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (name: string) => api.secrets.delete(name),
-    onSuccess: () => {
+    onSuccess: (_res, name) => {
       void qc.invalidateQueries({ queryKey: qk.secrets })
       void qc.invalidateQueries({ queryKey: qk.providers })
+      qc.removeQueries({ queryKey: qk.catalog(name) })
       void qc.invalidateQueries({ queryKey: qk.modelPresets })
     }
   })

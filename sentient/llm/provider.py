@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from sentient import secrets
-from sentient.config.schema import SentientConfig
+from sentient.config.schema import ProviderConfig, SentientConfig
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +72,28 @@ class LLMProvider(Protocol):
 
 def _provider_prefix(model: str) -> str:
     return model.split("/", 1)[0] if "/" in model else ""
+
+
+# Providers LiteLLM has no prefix for, reached through its OpenAI-compatible client. ``nous/<model>`` is sent
+# as ``openai/<model>`` to the provider's own address, with the key stored under ``nous``.
+OPENAI_COMPATIBLE: dict[str, ProviderConfig] = {
+    "nous": ProviderConfig(api_base="https://inference-api.nousresearch.com/v1", api_key_env="NOUS_API_KEY"),
+}
+
+
+def provider_config(config: SentientConfig, prefix: str) -> ProviderConfig | None:
+    """The provider's settings from config, filled in with built-in defaults for OpenAI-compatible providers."""
+    pc = config.models.providers.get(prefix)
+    default = OPENAI_COMPATIBLE.get(prefix)
+    if default is None or pc is None:
+        return pc or default
+    return ProviderConfig(api_base=pc.api_base or default.api_base, api_key_env=pc.api_key_env or default.api_key_env)
+
+
+def litellm_model(model: str) -> str:
+    """The model string LiteLLM understands: ``nous/x`` becomes ``openai/x``; everything else is unchanged."""
+    prefix = _provider_prefix(model)
+    return f"openai/{model.split('/', 1)[1]}" if prefix in OPENAI_COMPATIBLE else model
 
 
 def _response_cost(litellm: Any, response: Any, model: str) -> float | None:
@@ -139,7 +161,7 @@ class LiteLLMProvider:
 
     def _kwargs_for(self, model: str, role: str | None = None) -> dict:
         prefix = _provider_prefix(model)
-        pc = self.config.models.providers.get(prefix)
+        pc = provider_config(self.config, prefix)
         kwargs: dict[str, Any] = {"timeout": self.config.models.request_timeout_s}
         effort = self.config.models.reasoning.get(role or "")
         temp = self.config.models.temperature.get(role or "")
@@ -217,7 +239,7 @@ class LiteLLMProvider:
                     kwargs["tools"] = sent_tools
                     kwargs["tool_choice"] = "auto"
                 response = await litellm.acompletion(
-                    model=model, messages=sent_messages, stream=True, **kwargs
+                    model=litellm_model(model), messages=sent_messages, stream=True, **kwargs
                 )
                 chunks: list[Any] = []
                 in_think = False
@@ -288,7 +310,7 @@ class LiteLLMProvider:
             try:
                 kwargs = await self._call_kwargs(model, role)
                 sent, _ = apply_prompt_cache(model, messages)
-                resp = await litellm.acompletion(model=model, messages=sent, **kwargs)
+                resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
                 text = resp.choices[0].message.content or ""
                 return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
             except Exception as exc:
@@ -309,7 +331,7 @@ class LiteLLMProvider:
                 if _provider_prefix(model) not in {"ollama", "ollama_chat"}:
                     kwargs["response_format"] = {"type": "json_object"}
                 sent, _ = apply_prompt_cache(model, messages)
-                resp = await litellm.acompletion(model=model, messages=sent, **kwargs)
+                resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
                 text = resp.choices[0].message.content or ""
                 return parse_json_loose(text)
             except Exception as exc:
@@ -324,7 +346,7 @@ class LiteLLMProvider:
         model = model or self.model_for("embedding")
         kwargs = self._kwargs_for(model)
         kwargs.pop("timeout", None)
-        resp = await litellm.aembedding(model=model, input=texts, **kwargs)
+        resp = await litellm.aembedding(model=litellm_model(model), input=texts, **kwargs)
         return [d["embedding"] for d in resp.data]
 
 

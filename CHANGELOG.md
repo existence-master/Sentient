@@ -21,6 +21,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
   needs something you don't have yet, the menu offers it right there: download the model with progress, or add the key.
   In Telegram, Discord and WhatsApp, `/model` shows the current setup and switches with a tap or a number. Per-chat
   and per-task model choices still win.
+- **Use the AI plans you already pay for** (Settings > Models and the first-run setup): step-by-step help to use the
+  monthly API credits included with Claude Max and Team plans (paste the key, test it, then switch every job to Claude
+  in one click with the Cloud preset, which you can undo), **Connect OpenRouter** with a browser sign-in instead of copying a key, and
+  **Nous Portal** as a provider with an API key. OpenRouter's and Nous Portal's model lists show up in the model
+  pickers, with free OpenRouter models marked. Keys stay in your system keychain and removing one disconnects. Pro
+  plans don't include API credits, and apps aren't allowed to sign in with a Claude account, so the app says so.
 - **WhatsApp:** link Sentient to your WhatsApp by scanning a QR code (Channels > Messaging apps), then talk to it in
   your own "Message yourself" chat: text, voice notes, photos and files, replies as they are written, task results and
   suggestions. When Sentient needs a yes or no it lists numbered options; reply with the number. `/stop`, `/stopall`,

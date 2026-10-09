@@ -18,8 +18,9 @@ from pydantic import BaseModel
 
 from sentient import secrets
 from sentient.gateway.deps import AUTH, get_core
-from sentient.llm import presets
+from sentient.llm import connect, presets
 from sentient.llm.presets import PresetError
+from sentient.llm.provider import provider_config
 
 router = APIRouter(prefix="/api", tags=["models"], dependencies=AUTH)
 
@@ -29,13 +30,13 @@ PROVIDERS: list[dict[str, Any]] = [
     {"id": "lm_studio", "label": "LM Studio (local)", "kind": "local", "key_required": False,
      "docs_url": "https://lmstudio.ai/", "suggested": []},
     {"id": "anthropic", "label": "Anthropic", "kind": "cloud", "key_required": True,
-     "docs_url": "https://console.anthropic.com/settings/keys", "suggested": ["anthropic/claude-sonnet-5", "anthropic/claude-opus-5", "anthropic/claude-haiku-4-5"]},
+     "docs_url": "https://console.anthropic.com/settings/keys", "suggested": ["anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5", "anthropic/claude-haiku-5-5"]},
     {"id": "openai", "label": "OpenAI", "kind": "cloud", "key_required": True,
      "docs_url": "https://platform.openai.com/api-keys", "suggested": ["openai/gpt-5", "openai/gpt-5-mini", "openai/text-embedding-3-small"]},
     {"id": "gemini", "label": "Google Gemini", "kind": "cloud", "key_required": True,
      "docs_url": "https://aistudio.google.com/apikey", "suggested": ["gemini/gemini-2.5-pro", "gemini/gemini-2.5-flash", "gemini/gemini-embedding-001"]},
     {"id": "openrouter", "label": "OpenRouter", "kind": "cloud", "key_required": True,
-     "docs_url": "https://openrouter.ai/keys", "suggested": ["openrouter/anthropic/claude-sonnet-5", "openrouter/meta-llama/llama-4-maverick"]},
+     "docs_url": "https://openrouter.ai/keys", "suggested": ["openrouter/anthropic/claude-sonnet-5.5", "openrouter/meta-llama/llama-4-maverick"]},
     {"id": "groq", "label": "Groq", "kind": "cloud", "key_required": True,
      "docs_url": "https://console.groq.com/keys", "suggested": ["groq/llama-3.3-70b-versatile"]},
     {"id": "mistral", "label": "Mistral", "kind": "cloud", "key_required": True,
@@ -44,11 +45,13 @@ PROVIDERS: list[dict[str, Any]] = [
      "docs_url": "https://platform.deepseek.com/api_keys", "suggested": ["deepseek/deepseek-chat"]},
     {"id": "xai", "label": "xAI", "kind": "cloud", "key_required": True,
      "docs_url": "https://console.x.ai/", "suggested": ["xai/grok-4"]},
+    {"id": "nous", "label": "Nous Portal", "kind": "cloud", "key_required": True,
+     "docs_url": "https://portal.nousresearch.com/", "suggested": []},
 ]
 
 
 def _provider_key_status(s, pid: str) -> tuple[bool, str | None]:
-    pc = s.config.models.providers.get(pid)
+    pc = provider_config(s.config, pid)
     env = pc.api_key_env if pc else None
     import os
 
@@ -313,6 +316,38 @@ async def pull_ollama(request: Request, body: PullBody):
     return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
+# ----------------------------------------------------------------------------- connecting plans
+@router.post("/models/connect/openrouter")
+async def connect_openrouter(request: Request):
+    """Start OpenRouter's browser sign-in. The window opens ``auth_url``; the key lands in the keychain."""
+    return await get_core(request).connections.start_openrouter()
+
+
+@router.get("/models/connect/openrouter/{state}")
+async def connect_openrouter_status(request: Request, state: str):
+    status = get_core(request).connections.flow_status(state)
+    if status is None:
+        raise HTTPException(404, "unknown sign-in")
+    return status
+
+
+@router.post("/models/connect/{provider}/check")
+async def check_provider_key(request: Request, provider: str):
+    if provider not in connect.CHECKABLE:
+        raise HTTPException(404, f"no key check for {provider}")
+    return await connect.check_key(get_core(request).config, provider)
+
+
+@router.get("/models/catalog/{provider}")
+async def provider_catalog(request: Request, provider: str):
+    if provider not in connect.CATALOGS:
+        raise HTTPException(404, f"no model list for {provider}")
+    try:
+        return await get_core(request).connections.catalog(provider)
+    except connect.ConnectError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
 # ----------------------------------------------------------------------------- secrets
 @router.get("/secrets")
 async def list_secrets(request: Request):
@@ -341,6 +376,7 @@ async def put_secret(request: Request, name: str, body: SecretBody):
         raise HTTPException(400, "empty value")
     if not secrets.set_secret(name, body.value.strip()):
         raise HTTPException(500, "the OS keychain is unavailable")
+    get_core(request).connections.forget(name)  # a new key can mean a different account's models
     get_core(request).bus.publish("config.updated", {"sections": ["secrets"]})
     return {"ok": True}
 
@@ -348,5 +384,6 @@ async def put_secret(request: Request, name: str, body: SecretBody):
 @router.delete("/secrets/{name}")
 async def delete_secret(request: Request, name: str):
     secrets.delete_secret(name)
+    get_core(request).connections.forget(name)
     get_core(request).bus.publish("config.updated", {"sections": ["secrets"]})
     return {"ok": True}
