@@ -167,7 +167,8 @@ Reply with ONLY this JSON:
 Rules:
 - needs_follow_up is false for thank-you notes, FYIs, announcements, receipts and anything that does not need an answer.
 - The draft is short (2 to 4 sentences), friendly and in {user}'s own voice. No subject line. End with "{first}".
-- Never invent facts, dates or promises. Where {user} must decide something, use a placeholder like [day].
+- The draft is sent exactly as written. Never use placeholders, brackets or blanks to fill in later.
+- Never invent facts, dates or promises. Leave out anything you do not know.
 """
 
 FOLLOW_UP_WAITING_ON_YOU = (

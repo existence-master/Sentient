@@ -207,7 +207,7 @@ async def test_a_new_message_in_a_suggested_thread_is_judged_again(mail_app, key
         assert await app.proactivity.run_followups(now=NOW) == []
     threads["t-direct"].append(gmsg("m9", "t-direct", PRIYA, ME, "Re: Invoice for September",
                                     "Maya, could you also send the PO number?", days=3.5))
-    app.fake.text_replies.append(yes("the PO number", "Here it is: [PO number]. Maya"))
+    app.fake.text_replies.append(yes("the PO number", "I will send the PO number this afternoon. Maya"))
     with respx.mock() as router:
         mock_gmail(router, threads)
         [rec] = await app.proactivity.run_followups(now=NOW)
@@ -240,6 +240,76 @@ async def test_malformed_model_json_is_skipped_and_retried_next_time(mail_app, k
         [rec] = await app.proactivity.run_followups(now=NOW)
     assert len(app.fake.text_calls) == 3
     assert rec["suggestion"]["confidence"] == followups.DEFAULT_CONFIDENCE
+
+
+async def test_prompt_forbids_placeholders(mail_app, keychain):
+    app = mail_app
+    await connect_gmail(app, keychain)
+    app.fake.text_replies.append(NO)
+    with respx.mock() as router:
+        mock_gmail(router, {"t-direct": base_threads()["t-direct"]})
+        await app.proactivity.run_followups(now=NOW)
+    system = app.fake.text_calls[0]["messages"][0]["content"]
+    assert "Never use placeholders, brackets or blanks" in system and "Leave out anything you do not know" in system
+    assert "[day]" not in system
+
+
+async def test_draft_with_a_placeholder_is_dropped_and_retried(mail_app, keychain):
+    app = mail_app
+    await connect_gmail(app, keychain)
+    threads = {"t-direct": base_threads()["t-direct"]}
+    app.fake.text_replies += [yes("the invoice", "Hi Priya, I can confirm by [day]. Maya"),
+                              yes("the invoice", "Hi Priya, the amount is TBD. Maya")]
+    with respx.mock() as router:
+        mock_gmail(router, threads)
+        assert await app.proactivity.run_followups(now=NOW) == []
+        assert await app.proactivity.run_followups(now=NOW) == []  # not marked as decided: asked again
+        app.fake.text_replies.append(yes("the invoice", "Hi Priya, the amount is right. I will confirm on Friday. Maya"))
+        [rec] = await app.proactivity.run_followups(now=NOW)
+    assert len(app.fake.text_calls) == 3
+    assert rec["suggestion"]["follow_up"]["draft"] == "Hi Priya, the amount is right. I will confirm on Friday. Maya"
+    assert len(await notes(app)) == 1
+
+
+@pytest.mark.parametrize("draft,found", [
+    ("I can confirm by [day].", True),
+    ("Hi [name], thanks!", True),
+    ("See you on {date}.", True),
+    ("See you on <date>.", True),
+    ("The total is XX rupees.", True),
+    ("Timing is TBD for now.", True),
+    ("Thanks, (your name)", True),
+    ("Write to me at <maya@example.com> any time.", False),
+    ("Sounds good, see you Saturday at 10. Maya", False),
+    ("Is the 2x price right?", False),
+])
+def test_has_placeholder(draft, found):
+    assert followups.has_placeholder(draft) is found
+
+
+async def test_only_listed_accounts_are_read(mail_app, keychain, monkeypatch):
+    app = mail_app
+    await connect_gmail(app, keychain)
+    fake = FakeImap(imap_boxes(), LISTING)
+    await connect_imap(app, monkeypatch, fake)
+    app.config.proactivity.followups.sources = ["gmail"]
+    app.fake.text_replies += [NO, NO]
+    with respx.mock() as router:
+        mock_gmail(router, base_threads())
+        await app.proactivity.run_followups(now=NOW)
+    assert fake.selected == []  # the connected IMAP account was never opened
+    assert len(app.fake.text_calls) == 2  # only the two Gmail candidates
+
+    app.config.proactivity.followups.sources = ["email_imap"]
+    app.fake.text_replies += [NO, NO]
+    with respx.mock() as router:  # any Gmail request would be unmocked and fail
+        await app.proactivity.run_followups(now=NOW)
+    assert "Sent Messages" in fake.selected and len(app.fake.text_calls) == 4
+
+    app.config.proactivity.followups.sources = []
+    with respx.mock():
+        assert await app.proactivity.run_followups(now=NOW) == []
+    assert len(app.fake.text_calls) == 4
 
 
 async def test_caps_on_candidates_and_suggestions(mail_app, keychain, monkeypatch):
@@ -508,8 +578,11 @@ def test_config_schema_describes_followups():
 
     schema = SentientConfig.model_json_schema()
     fu = schema["$defs"]["FollowUpsConfig"]["properties"]
-    assert set(fu) == {"enabled", "waiting_on_you_days", "waiting_on_them_days", "max_age_days", "max_suggestions"}
+    assert set(fu) == {"enabled", "sources", "waiting_on_you_days", "waiting_on_them_days", "max_age_days",
+                       "max_suggestions"}
     assert all(p.get("description") for p in fu.values())
     cfg = SentientConfig()
+    assert cfg.proactivity.followups.sources == ["gmail", "email_imap"]
+    assert cfg.proactivity.sources == ["gmail", "gcalendar"]  # the watched-apps list is unchanged
     assert (cfg.proactivity.followups.waiting_on_you_days, cfg.proactivity.followups.waiting_on_them_days,
             cfg.proactivity.followups.max_age_days, cfg.proactivity.followups.max_suggestions) == (3, 4, 21, 3)

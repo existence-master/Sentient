@@ -315,7 +315,7 @@ async def seed_notifications(app: SentientApp) -> None:
 
     # 10. pending follow-up: an email waiting on Maya's reply for 4 days, with a ready draft (most recent)
     draft = ("Hi Leela,\n\nThanks for the revised quote, and sorry for the slow reply. The new scope looks right to me. "
-             "Could you send the updated timeline as well? Then I can confirm by [day].\n\nMaya")
+             "Could you send the updated timeline as well? Then I can confirm the project.\n\nMaya")
     follow_up = {
         "suggestion": {
             "suggestion_type": "follow_up_reply",

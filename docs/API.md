@@ -333,8 +333,9 @@ The heartbeat (`heartbeat_minutes > 0`) looks at upcoming calendar events, tasks
 memories, the time of day and `app.user_model.context_for`; the model answers `NO_REPLY` unless one nudge is worth it.
 It does not run during quiet hours and makes at most `proactivity.heartbeat_daily_cap` suggestions per day.
 
-**Follow-ups** (`proactivity.followups`, on unless proactivity is off) notice dropped email threads in connected Gmail and
-IMAP accounts (`app.integrations.recent_threads`, section 5). The check runs once a day from 08:00 in the user's timezone,
+**Follow-ups** (`proactivity.followups`, on unless proactivity is off) notice dropped email threads in the email accounts
+listed in `followups.sources` (default `["gmail", "email_imap"]`; only accounts that are both listed and connected are read,
+independent of `proactivity.sources`) through `app.integrations.recent_threads` (section 5). The check runs once a day from 08:00 in the user's timezone,
 and in the background after `POST /api/proactivity/poll-now`. Two kinds:
 - `waiting_on_you`: the newest message is from someone else, has you in `To` (not only Cc/Bcc), and has had no answer for
   `waiting_on_you_days` (3).
@@ -346,7 +347,9 @@ Deterministic filters run first and skip: no-reply and notification senders, mai
 auto-replies, mail from your own addresses, notes to yourself, short thank-you notes, threads quiet for more than
 `max_age_days` (21), and any thread already suggested, dismissed or judged by the model in the same state (dedupe on thread id
 plus newest message id, so a new message makes it eligible again). At most 10 threads per check reach the `fast` model, which
-answers `{needs_follow_up, about, draft, confidence}` (parsed loosely; an unusable answer is retried at the next check);
+answers `{needs_follow_up, about, draft, confidence}` (parsed loosely; an unusable answer, or a draft with a placeholder
+such as `[day]`, `{name}`, `<date>`, `XX`, `TBD` or `(your name)`, is dropped and retried at the next check, because the
+draft is sent exactly as written);
 at most `max_suggestions` (3) suggestions per check, and the learned per-type threshold applies. Nothing is ever sent by the
 check itself.
 

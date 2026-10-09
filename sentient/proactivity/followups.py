@@ -40,7 +40,16 @@ _ASK_RE = re.compile(
     r"send me|waiting for|waiting to hear|hear back|looking forward to hearing)\b",
     re.IGNORECASE,
 )
-_SUBJECT_PREFIX_RE = re.compile(r"^\s*((re|fwd?|aw|wg|sv)\s*:\s*)+", re.IGNORECASE)
+_PLACEHOLDER_RE = re.compile(
+    r"\[[^\]\n]{0,40}\]"                       # [day], [name], [ ]
+    r"|\{[^}\n]{0,40}\}"                       # {date}
+    r"|<\s*[A-Za-z][A-Za-z _-]{0,30}\s*>"      # <name> (not <a@b.com>)
+    r"|\bX{2,}\b"                              # XX, XXX
+    r"|\b(?:TBD|TBC)\b"
+    r"|\((?:your|insert|add|enter)\s[^)\n]{1,30}\)",  # (your name)
+    re.IGNORECASE,
+)
+_SUBJECT_PREFIX_RE =re.compile(r"^\s*((re|fwd?|aw|wg|sv)\s*:\s*)+", re.IGNORECASE)
 
 
 @dataclass
@@ -230,6 +239,12 @@ def clean_draft(text: Any) -> str:
         lines = lines[1:]
     draft = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip().strip('"').strip()
     return draft[:1500]
+
+
+def has_placeholder(draft: str) -> bool:
+    """True when a draft has a blank to fill in ([day], {name}, <date>, XX, TBD...). Drafts are sent exactly as
+    written, so such a draft must never reach the user as a suggestion."""
+    return bool(_PLACEHOLDER_RE.search(draft or ""))
 
 
 def clean_about(text: Any) -> str:

@@ -77,7 +77,7 @@ INACTIVE_TASK_STATUSES = {"archived", "cancelled", "declined", "completed"}
 OPEN_STATUSES = ("pending", "deferred")
 HEARTBEAT_TTL_HOURS = 12
 DUPLICATE_SIMILARITY = 0.8
-FOLLOWUP_SOURCES = ("gmail", "email_imap")
+FOLLOWUP_SOURCES = ("gmail", "email_imap")  # email accounts follow-ups can read; followups.sources picks among them
 FOLLOWUP_LOCAL_TIME = time(8, 0)  # the daily follow-up check runs from this local time on
 FOLLOWUP_MAX_CANDIDATES = 10      # threads per check that reach the model
 FOLLOWUP_SCAN_THREADS = 40        # recent threads read per mail account per check
@@ -827,15 +827,17 @@ class ProactiveEngine(Service):
         )
 
     async def followup_candidates(self, now: datetime | None = None) -> list[followups.Candidate]:
-        """Threads from connected Gmail and IMAP accounts that pass the deterministic filters and are new."""
+        """Threads from the email accounts in ``followups.sources`` that are connected, pass the deterministic
+        filters and are new."""
         now = now or datetime.now(UTC)
         fu = self.cfg.followups
         fetch = getattr(self.app.integrations, "recent_threads", None)
         if not callable(fetch):
             return []
         out: list[followups.Candidate] = []
+        wanted = {str(s).strip().lower() for s in fu.sources}
         for source in FOLLOWUP_SOURCES:
-            if not await self._is_connected(source):
+            if source not in wanted or not await self._is_connected(source):
                 continue
             try:
                 data = await _maybe_await(fetch(
@@ -895,6 +897,10 @@ class ProactiveEngine(Service):
         decision = followups.parse_decision(text)
         if decision is None:
             log.info("follow-up for %s %s: no usable answer from the model, trying again next check", c.source, c.key)
+            return None
+        if decision.needed and followups.has_placeholder(decision.draft):
+            # the draft would be sent exactly as written: drop it now, ask again next check
+            log.info("follow-up for %s %s: the draft has a placeholder, trying again next check", c.source, c.key)
             return None
         await self._mark_followup_checked(c, now)
         if not decision.needed:

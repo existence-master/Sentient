@@ -269,6 +269,10 @@ class FollowUpsConfig(BaseModel):
         description="Once a day, find emails still waiting on a reply and offer a ready draft. Nothing is sent "
         "without your approval.",
     )
+    sources: list[str] = Field(
+        default_factory=lambda: ["gmail", "email_imap"],
+        description="Which connected email accounts follow-ups check (gmail, email_imap).",
+    )
     waiting_on_you_days: int = Field(
         3, ge=1, le=60, description="Suggest a reply when an email sent to you has had no answer for this many days."
     )
