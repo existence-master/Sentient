@@ -1238,8 +1238,7 @@ class BrowserService(Service):
                 title = await page.title()
             out = {"ok": True, "url": page.url, "title": title}
             await self._after_action(ctx, page)
-            out = await self._include_downloads(out, downloads_before)
-            return out
+            return await self._include_downloads(out, downloads_before)
 
     async def tabs(self, ctx: Any, profile: str = "") -> dict:
         self.use_profile(ctx, profile)
