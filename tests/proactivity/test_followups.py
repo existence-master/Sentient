@@ -5,6 +5,7 @@ Gmail is mocked with respx, IMAP with a fake session, the model with FakeProvide
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import email
 import json
@@ -467,6 +468,28 @@ async def test_send_runs_right_away_with_exactly_the_draft(mail_app, keychain):
     assert not any(c["role"] in {"planner", "executor", "primary"} for c in app.fake.calls[calls_before:])
     note = await app.notifications.get(rec["notification_id"])
     assert note["payload"]["status"] == "approved" and note["payload"]["task_id"] == res["task_id"]
+
+
+async def test_two_clicks_at_once_send_only_once(mail_app, keychain):
+    """The window and Telegram approving the same card together must not send the reply twice."""
+    app = mail_app
+    with respx.mock(assert_all_called=False) as router:
+        rec = await suggest_priya(app, keychain, router)
+        router.get(host=GMAIL, path=f"{API}/messages/m1").mock(return_value=httpx.Response(200, json=gmsg(
+            "m1", "t-direct", PRIYA, ME, "Invoice for September", "Could you confirm?", days=4)))
+        send = router.post(host=GMAIL, path=f"{API}/messages/send").mock(
+            return_value=httpx.Response(200, json={"id": "s1", "threadId": "t-direct"}))
+        nid = rec["notification_id"]
+        results = await asyncio.gather(
+            app.proactivity.act_on_suggestion(nid, "approve"),
+            app.proactivity.act_on_suggestion(nid, "approve"),
+            return_exceptions=True,
+        )
+        await app.tasks.drain(10)
+    ok = [r for r in results if isinstance(r, dict)]
+    refused = [r for r in results if isinstance(r, pro_service.SuggestionError)]
+    assert len(ok) == 1 and len(refused) == 1 and refused[0].status == 409
+    assert send.call_count == 1
 
 
 @pytest.mark.parametrize("rule_key", ["gmail_reply", "gmail"])

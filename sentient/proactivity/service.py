@@ -156,6 +156,7 @@ class ProactiveEngine(Service):
         super().__init__(app)
         self._poll_lock = asyncio.Lock()  # one pipeline at a time: polls and pushed items share the model
         self._followup_lock = asyncio.Lock()
+        self._acting: set[str] = set()  # suggestions being approved or dismissed right now
         self._background: set[asyncio.Task] = set()
 
     @property
@@ -980,6 +981,16 @@ class ProactiveEngine(Service):
         payload = note["payload"]
         if payload.get("status", "pending") != "pending":
             raise SuggestionError(409, f"suggestion already {payload.get('status')}")
+        # claim it before the first await: two clicks at once (window and Telegram) must not send twice
+        if notification_id in self._acting:
+            raise SuggestionError(409, "suggestion already being handled")
+        self._acting.add(notification_id)
+        try:
+            return await self._act_on_suggestion(notification_id, note, payload, action)
+        finally:
+            self._acting.discard(notification_id)
+
+    async def _act_on_suggestion(self, notification_id: str, note: dict, payload: dict, action: str) -> dict:
         suggestion = payload["suggestion"]
         stype = suggestion.get("suggestion_type") or DEFAULT_TYPE
         task_id = None
