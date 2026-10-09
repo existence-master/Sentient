@@ -418,8 +418,10 @@ class BrowserService(Service):
         async with self._lock:
             if restart and self._context is not None and self._profile == name:
                 await self._shutdown()
-            old, new, moved = profile_dir(name), profile_dir(target), False
-            if target != name and prof.kind == "launch" and old.exists():
+            moved = False
+            # only a launch profile's rename touches folders (never the default one, which can't be renamed)
+            old, new = (profile_dir(name), profile_dir(target)) if target != name and prof.kind == "launch" else (None, None)
+            if old is not None and new is not None and old.exists():
                 if new.exists():
                     raise BrowserError(f"A browser folder named '{target}' is already there. Pick another name.")
                 try:
@@ -436,9 +438,15 @@ class BrowserService(Service):
                 })
             except Exception as exc:  # keep the folder and the settings in step
                 self.app.config.browser.profiles = previous
-                if moved:
-                    with contextlib.suppress(OSError):
+                if moved and old is not None and new is not None:
+                    try:
                         new.rename(old)
+                    except OSError as undo_exc:
+                        log.error("browser: could not move profile folder %s back to %s: %s", new, old, undo_exc)
+                        raise BrowserError(
+                            f"Couldn't save the profile change, and its folder is now named '{target}'. Rename the "
+                            f"folder {new} back to '{name}' to keep its sign-ins."
+                        ) from exc
                 raise BrowserError("Couldn't save the profile change, so nothing was changed.") from exc
             if target != name:
                 rename = getattr(getattr(self.app, "tasks", None), "rename_browser_profile", None)

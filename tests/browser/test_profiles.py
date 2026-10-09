@@ -310,3 +310,13 @@ async def test_rename_keeps_folder_and_settings_in_step(monkeypatch):
         await svc.update_profile("work", new_name="office")
     assert (profile_dir("work") / "Default").is_dir() and not profile_dir("office").exists()
     assert "work" in app.config.browser.profiles and "office" not in app.config.browser.profiles
+
+
+async def test_notes_change_does_not_move_the_old_default_folder():
+    app = make_app()
+    svc = BrowserService(app)
+    old = paths.home() / "browser" / "profile"
+    old.mkdir(parents=True)
+    await svc.update_profile("default", notes="Everyday browsing")
+    assert old.is_dir() and not (paths.home() / "browser" / "profiles" / "default").exists()
+    assert app.config.browser.profiles["default"].notes == "Everyday browsing"
