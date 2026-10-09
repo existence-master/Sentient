@@ -729,7 +729,12 @@ class TaskService(Service):
         if pending.get("stuck"):
             return await self._answer_stuck(task_id, run, pending, text)
         call_id = pending.get("tool_call_id")
-        messages = ask.fill_result(run.get("messages") or [], call_id, ask.answer_content(text))
+        if pending.get("untrusted_call"):  # a held call after outside content (ADR 0018): only a clear yes runs it
+            if not ask.approves(text):
+                return await self._stop_at_question(task_id, run_id, pending, text)
+            messages = ask.approve_call(run.get("messages") or [], call_id)
+        else:
+            messages = ask.fill_result(run.get("messages") or [], call_id, ask.answer_content(text))
         if not await self.repo.resume_run(run_id, messages):
             raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
         await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
@@ -742,11 +747,7 @@ class TaskService(Service):
         """A run waiting at a limit: "Keep going" raises that limit for this run; anything else fails the run."""
         run_id = run["id"]
         if not limits.keeps_going(text):
-            await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
-            await self._resolve_question_notifications(run_id, "answered", answer=text)
-            error = str(pending.get("stop_error") or "Stopped at a limit without finishing.")
-            await self._finish_run(task_id, run_id, "error", error=error, from_statuses=("waiting_for_user",))
-            return await self.get_and_publish(task_id)
+            return await self._stop_at_question(task_id, run_id, pending, text)
         state = limits.raise_limit(limits.load(run, self.app.config), pending["limit"])
         # one guarded write: a run cancelled meanwhile keeps its limits; the raised one survives a restart
         if not await self.repo.resume_run(run_id, run.get("messages") or [], limits=state):
@@ -755,6 +756,14 @@ class TaskService(Service):
         await self._set(task_id, {"status": "processing", "error": None})
         await self._resolve_question_notifications(run_id, "answered", answer=text)
         self._dispatch(task_id, run_id, resume=True, answered=True)
+        return await self.get_and_publish(task_id)
+
+    async def _stop_at_question(self, task_id: str, run_id: str, pending: dict, text: str) -> dict:
+        """The answer ends a waiting run: it fails with the question's ``stop_error``."""
+        await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
+        await self._resolve_question_notifications(run_id, "answered", answer=text)
+        error = str(pending.get("stop_error") or "Stopped at a limit without finishing.")
+        await self._finish_run(task_id, run_id, "error", error=error, from_statuses=("waiting_for_user",))
         return await self.get_and_publish(task_id)
 
     async def _answer_stuck(self, task_id: str, run: dict, pending: dict, text: str) -> dict:

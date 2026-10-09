@@ -127,7 +127,7 @@ async def device_list(ctx: ToolContext) -> dict:
     }  # fmt: skip
 
 
-@tool(risk=Risk.read)
+@tool(risk=Risk.read, untrusted_output=True)  # a photo can show text someone else wrote (ADR 0018)
 async def device_take_photo(ctx: ToolContext, device: str = "", question: str = "") -> dict:
     """Take a photo with a device camera. Smart glasses see what the user is looking at.
     question: what you want to know about the photo, e.g. "What am I looking at?". Leave empty to just save it.
@@ -145,7 +145,7 @@ async def device_take_photo(ctx: ToolContext, device: str = "", question: str = 
     return out
 
 
-@tool(risk=Risk.read)
+@tool(risk=Risk.read, untrusted_output=True)
 async def device_capture_screen(ctx: ToolContext, device: str = "", question: str = "") -> dict:
     """Take a screenshot of a device screen (usually this computer).
     question: what you want to know about the screen; empty just saves the screenshot.

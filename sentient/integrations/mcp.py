@@ -582,6 +582,9 @@ class MCPManager:
                 risk=risk,
                 plugin=pid,
             )
+            # another program's tools: results are outside content, and any change may send data out (ADR 0018)
+            jt.untrusted_output = True
+            jt.exfiltrates = risk != Risk.read
             tools.append(jt)
             described.append({"name": name, "mcp_name": t.name, "description": jt.description, "risk": risk.name})
         plugin = MCPServerPlugin(conn.name, tools)

@@ -45,6 +45,8 @@ export interface ApprovalView {
   /** Engine label of what is acted on ("Place order"), live only. */
   target?: string | null
   riskLabel?: string | null
+  /** Why this asks although rules would let it run: the chat read outside content (ADR 0018), live only. */
+  untrusted?: string | null
 }
 
 export type TurnSegment =
@@ -271,6 +273,7 @@ export function applyAgentEvent(turn: AssistantTurnView, ev: AgentEvent): Assist
             reason: ev.reason,
             target: ev.target ?? null,
             riskLabel: ev.risk_label ?? null,
+            untrusted: ev.untrusted ?? null,
             status: 'pending'
           }
         ]

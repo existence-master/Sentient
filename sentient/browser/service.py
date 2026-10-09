@@ -26,6 +26,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
 from sentient import paths
 from sentient.browser import safety
@@ -485,6 +486,15 @@ class BrowserService(Service):
         self._risk_evals = {k: v for k, v in self._risk_evals.items() if now - v[0] <= window}
         self._risk_evals[(kind, key)] = (now, risk)
         return risk
+
+    def link_for(self, arguments: dict | None) -> str:
+        """Where clicking this element (from the last snapshot) goes: its link as a full address, else ""."""
+        ref = _clean_ref((arguments or {}).get("ref"))
+        el = (self._snap or {}).get("refs", {}).get(ref) if ref else None
+        href = str((el or {}).get("href") or "").strip()
+        if not href or href.lower().startswith(("javascript:", "#")):
+            return ""
+        return urljoin(str((self._snap or {}).get("url") or ""), href)
 
     def describe_for(self, kind: str, arguments: dict | None) -> dict:
         """Approval wording for a click/type/press from the last snapshot: ``{risk_label, target}``."""

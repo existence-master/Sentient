@@ -35,7 +35,7 @@ All carry `session_id` and `turn_id`.
 | `tool_call` | `call_id`, `name`, `arguments` |
 | `tool_progress` | `call_id`, `name`, `kind: stdout\|stderr\|status\|frame\|subagent`, `text?`, `image?`, `data?` (section 10) |
 | `tool_result` | `call_id`, `name`, `result`, `is_error`, `duration_ms` (a call the user declined has `result: {error, declined: true}`) |
-| `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?` (section 10) |
+| `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10) |
 | `user_interjection` | `text` (a steer message the model just received, section 10) |
 | `steer_ack` | `session_id`, `queued`, `client_id` (echo; no `turn_id`) |
 | `usage` | `model`, `prompt_tokens`, `completion_tokens` |
@@ -129,7 +129,9 @@ Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
 `await app.approvals.decide(tool, session_id, risk, arguments, ctx) -> bool`, pure helpers in `sentient.tools.rules`.
 
 ### Sessions (chats)
-- `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at}]` newest first
+- `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts}]` newest first
+  (`untrusted`: the app whose content the chat read, e.g. `"Gmail"`, `""` when clean, `null` before its first turn;
+  `visited_hosts`: list of web hosts it loaded, or `null`; section 10)
 - `POST /api/sessions` → `{session_id}`
 - `PATCH /api/sessions/{id}` `{title}` → `{ok}`
 - `DELETE /api/sessions/{id}` → `{ok}`
@@ -341,6 +343,15 @@ Behaviour notes:
 - Answering (`POST .../answer`, a button, or a reply to the question message in a paired chat) puts the answer in place of the `ask_user` tool
   result, logs `You answered: ...`, sets the notification's `payload.status = "answered"` (and marks it read), moves run and
   task back to `processing` and continues the run without the restart note.
+- A run that read outside content and then tries to send asks the same way (section 10, "Outside content"):
+  the question is `This task read content from <app>, so it checks with you before anything leaves Sentient. OK to
+  use <tool>(<details>)?` with `options: ["Yes, go ahead", "No, stop the task"]`. `Yes, go ahead` or `yes` (any case,
+  a final `.`/`!` ignored) runs exactly the held call once when the run continues (its result replaces the
+  placeholder; a restart in the middle never repeats it); any other answer fails the run with
+  `You said no, so the task stopped without doing that step.` and the usual `Task failed` notification.
+  `pending_question` also stores `untrusted_call: true` and `stop_error`; the API shows only `{question, options, asked_at}`.
+  A run asks one question at a time: its own `ask_user` question first, then a held call, then a stuck step
+  (a stuck step in the same round shows up again later if it still is).
 - While a task waits: `approve`, `chat`, `run-now` and `retry` on a one-off task return 409; recurring tasks are not
   started by the scheduler until the answer arrives; triggered tasks keep accepting events (each in its own run) and
   return to `waiting_for_user` when those runs end.
@@ -893,6 +904,52 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - Proactive look-ups run with origin `"proactive"`; held calls are passed to the reasoner, which can offer them as a
   suggestion card. A subagent started from an unprompted run inherits its origin (`delegate(..., origin=)`).
   Heartbeat, follow-ups and dreaming make no tool calls.
+
+### Outside content (ADR 0018)
+- `Tool.untrusted_output: bool | None` (also `@tool(..., untrusted_output=)`): the result can carry content someone
+  else wrote. `None` uses `sentient.tools.rules.brings_untrusted`: look-ups (base risk `read`) of every app outside
+  `TRUSTED_PLUGINS` (`memory`, `files`, `skills`, `time`, `tasks`, `task_questions`, `subagents`, `devices`,
+  `weather`, `charts`) count; internal tools, writes and sends do not. Marked explicitly: every browser tool,
+  `execute_code`, every MCP server tool, `delegate_task`/`delegate_tasks`, `device_take_photo`, `device_capture_screen`.
+- `Tool.exfiltrates: bool | fn(arguments, ctx) -> bool` (also `@tool(..., exfiltrates=)`, `itool(..., exfiltrates=)`):
+  the call can move data out below `send`. Set on `browser_type`, `github_update_issue`, MCP tools that are not
+  read-only, `gcal_update_event` (an event's existing guests see every change), and per call on
+  `gcal_create_event` when `attendees` names anyone other than the calendar's owner (`calendar_id`). Drafts
+  (`gmail_create_draft`) and new private events stay free. `rules.sends_out(tool, risk, arguments, ctx)` is effective risk `send`/`exec` or `exfiltrates` (a per-call
+  function that fails counts as true).
+- `Tool.url_fn(arguments, ctx) -> str | None` (also `@tool(..., url_fn=)`, `itool(..., url_fn=)`): the web address a
+  call loads. Set on `web_fetch` and `browser_open` (`url`) and `browser_click` (the clicked link's address, resolved
+  against the page). `rules.address_carries_data(url)` is true for a query string, a path over 100 characters, a
+  fragment over 40, a user name, or a link the page snapshot cut short.
+- `ToolContext.untrusted: str`: `""`, or the app's display name once a tool with untrusted output ran in this run
+  (`rules.untrusted_source`). Calls the model chose in that same round are not affected. Chats save it on the session
+  (`sessions.untrusted`) and start every later turn with it; a new chat starts clean. Task runs start with it when an
+  outside event started them (the trigger's app, e.g. `"Webhooks"`) or when their transcript already holds such a
+  result (`rules.untrusted_in(messages, registry)`; a result whose tool is no longer registered counts, as
+  `"a tool that is no longer available"`, except the engine's own "unknown tool" refusal). A chat whose
+  `sessions.untrusted` is still `NULL` (created before this mark) is classified once from its stored tool results the
+  same way and saved (`""` = clean). Subagents inherit it (`delegate(..., untrusted=)`).
+- `ToolContext.visited: set[str]`: web hosts this run loaded (a call with a `url_fn` that ran). Chats save them on the
+  session (`sessions.visited_hosts`, a JSON list) and start every turn with them; task runs keep them for one stretch
+  of work (a resumed run starts empty, so it asks more, never less).
+- While it is set, `run_loop` treats any call where `sends_out` is true as needing the user: with approvals
+  (chat, voice, channels) it always sends an `approval_request` with
+  `untrusted: "Sentient read content from <app> in this chat, so it checks with you before sending anything."`,
+  whatever the mode, Allow rules or "Allow for this chat" say, and "Allow for this chat" does not cover the next
+  one (cards and channel messages leave that button out). "Never" rules and the unprompted-work limit come first.
+  Without approvals the call does not run: its result is `{error: "Not done: this run read content from <app>, so
+  <tool> needs the user's OK first. ..."}` and the first one is described in `LoopResult.needs_ok`
+  `{tool, arguments, call_id, question}`. Task runs stop after that round and ask (section 4); subagents and swarm
+  workers just carry on without it. No model output can clear the mark.
+- Addresses: while the mark is set, a call whose `url_fn` address is on a host not in `ToolContext.visited` and
+  `address_carries_data` asks (or is held) the same way, with
+  `untrusted: "Sentient read content from <app> in this chat, and this address could carry your data to <host>, so it checks with you first."`
+  Short clean addresses and hosts already visited in the run or chat load freely.
+- The held call a task user approved is replaced, before it runs, by `{error: "The user said yes, but Sentient
+  stopped while doing this, so it is not known whether it went through. ..."}`, and then by its real result; a
+  restart in between leaves that note and never repeats the call.
+- `await app.agent.run_tool(ToolCall, ctx) -> (result, is_error, content)` runs one call the user approved outside
+  the loop (lasting rules still apply).
 
 ### Subagents
 - Tools (plugin `subagents`):

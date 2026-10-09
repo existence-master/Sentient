@@ -50,6 +50,8 @@ def test_sessions_crud_and_search(client):
     assert hits and hits[0]["session_id"] == sid
     assert client.patch(f"/api/sessions/{sid}", json={"title": "Notebook"}).json()["ok"]
     assert client.get("/api/sessions").json()[0]["title"] == "Notebook"
+    listed = client.get("/api/sessions").json()[0]
+    assert listed["untrusted"] == "" and listed["visited_hosts"] is None  # checked and clean, no web pages yet
     client.delete(f"/api/sessions/{sid}")
     assert client.get("/api/sessions").json() == []
 
@@ -110,3 +112,12 @@ def test_patch_config_null_removes_map_entry_and_structured_errors(client):
     bad = client.patch("/api/config", json={"tools": {"approvals": {"mode": "sometimes"}}})
     assert bad.status_code == 422
     assert bad.json()["detail"][0]["loc"][-1] == "mode"
+
+
+def test_sessions_list_gives_visited_hosts_as_a_list(client):
+    r = client.post("/api/chat", json={"text": "hi"})
+    sid = json.loads(r.text.splitlines()[0])["session_id"]
+    store = client.app.state.sentient.store
+    client.portal.call(store.execute, "UPDATE sessions SET visited_hosts = ? WHERE id = ?", ('["news.example"]', sid))
+    listed = next(x for x in client.get("/api/sessions").json() if x["id"] == sid)
+    assert listed["visited_hosts"] == ["news.example"]
