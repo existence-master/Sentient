@@ -21,6 +21,9 @@ import type {
   DevicePairing,
   Dream,
   FeedStatus,
+  HermesPart,
+  HermesPreview,
+  HermesResult,
   Hook,
   HookCreated,
   Insight,
@@ -524,7 +527,8 @@ export const api = {
       remove: (name: string) => http.delete<OkResponse>(`/api/integrations/mcp/${enc(name)}`),
       test: (name: string) => http.post<McpTestResult>(`/api/integrations/mcp/${enc(name)}/test`),
       signIn: (name: string) => http.post<McpSignInStart>(`/api/integrations/mcp/${enc(name)}/sign-in`),
-      signOut: (name: string) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/sign-out`)
+      signOut: (name: string) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/sign-out`),
+      setEnabled: (name: string, enabled: boolean) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/enabled`, { enabled })
     },
     /** §16 change feeds (Gmail, Calendar) and IMAP push watchers. */
     feeds: {
@@ -689,6 +693,16 @@ export const api = {
       withDemoFallback(() => http.post<{ ok: boolean }>(`/api/user-model/questions/${enc(id)}`, { answer }), () => demo.dropQuestion(id)),
     dismissQuestion: (id: string) =>
       withDemoFallback(() => http.delete<{ ok: boolean }>(`/api/user-model/questions/${enc(id)}`), () => demo.dropQuestion(id))
+  },
+
+  // §19 moving from Hermes ------------------------------------------------------------------
+  imports: {
+    hermes: {
+      info: () => http.get<{ path: string; exists: boolean }>('/api/import/hermes'),
+      preview: (path?: string) => http.post<HermesPreview>('/api/import/hermes/preview', { path: path || null }),
+      apply: (body: { path?: string; parts: HermesPart[]; skip?: string[] }) => http.post<HermesResult>('/api/import/hermes/apply', body),
+      removeMemories: () => http.delete<{ facts: number; insights: number }>('/api/import/hermes/memories')
+    }
   },
 
   // §16 webhooks --------------------------------------------------------------------------

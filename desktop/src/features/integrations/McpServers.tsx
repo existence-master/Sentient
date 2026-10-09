@@ -6,6 +6,7 @@ import {
   IconKey,
   IconLogin2,
   IconLogout,
+  IconPlayerPlay,
   IconPlus,
   IconRefresh,
   IconServer2,
@@ -111,7 +112,7 @@ export function McpServersSection({ id }: { id?: string }) {
 }
 
 function McpServerRow({ server: s }: { server: McpServer }) {
-  const { test, remove, signIn, signOut } = useMcpActions()
+  const { test, remove, signIn, signOut, setEnabled } = useMcpActions()
   const [confirm, setConfirm] = useState(false)
   const [open, setOpen] = useState(false)
   const status = STATUS[s.status] ?? { tone: 'neutral' as Tone, label: s.status }
@@ -142,7 +143,23 @@ function McpServerRow({ server: s }: { server: McpServer }) {
             {target}
           </div>
         </div>
-        {canSignIn && (
+        {!s.enabled && (
+          <Button
+            size="sm"
+            variant="primary"
+            leftIcon={<IconPlayerPlay size={14} />}
+            loading={setEnabled.isPending && setEnabled.variables?.name === s.name}
+            onClick={() =>
+              setEnabled.mutate(
+                { name: s.name, enabled: true },
+                { onError: (e) => toast.error(`Couldn't turn on ${s.name}`, { description: errorMessage(e) }) }
+              )
+            }
+          >
+            Turn on
+          </Button>
+        )}
+        {s.enabled && canSignIn && (
           <Button size="sm" variant="primary" leftIcon={<IconLogin2 size={14} />} loading={signIn.isPending && signIn.variables === s.name} onClick={startSignIn}>
             {s.signing_in ? 'Sign in again' : 'Sign in'}
           </Button>

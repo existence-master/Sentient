@@ -495,7 +495,9 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
             </Button>
           }
         >
-          It won't run on its schedule or triggers until you resume it.
+          {task.original_context?.imported_from && !task.plan.length
+            ? 'Brought over from Hermes. Resume it and Sentient makes a plan for you to approve before it runs.'
+            : "It won't run on its schedule or triggers until you resume it."}
         </Alert>
       )}
 

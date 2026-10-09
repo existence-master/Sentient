@@ -270,6 +270,52 @@ class MCPManager:
                 await asyncio.wait_for(conn.ready.wait(), wait_s)
         return self.describe(conn)
 
+    async def import_server(self, name: str, spec: dict) -> dict:
+        """Add a server brought over from another assistant, turned off and without any secret values: only the
+        names of its headers and environment settings are kept, and an OAuth server signs in again when turned on."""
+        name = name.strip()
+        transport = spec.get("transport", "stdio")
+        if not name or transport not in {"stdio", "http"}:
+            raise ValueError("This server can't be added.")
+        if (transport == "stdio" and not spec.get("command")) or (transport == "http" and not spec.get("url")):
+            raise ValueError("It has no address or command.")
+        pid = plugin_id_for(name)
+        if any(plugin_id_for(other) == pid for other in [*self.servers, *self.app.config.integrations.mcp_servers]):
+            raise ValueError("Sentient already has a server with this name.")
+        header_keys = sorted(str(k) for k in spec.get("header_keys") or []) if transport == "http" else []
+        auth = spec.get("auth") if transport == "http" and spec.get("auth") in AUTH_MODES else "none"
+        if auth == "headers" and not header_keys:
+            auth = "none"
+        stored = {
+            "transport": transport,
+            "command": spec.get("command") if transport == "stdio" else None,
+            "args": [str(a) for a in spec.get("args") or []] if transport == "stdio" else [],
+            "url": spec.get("url") if transport == "http" else None,
+            "env_keys": sorted(str(k) for k in spec.get("env_keys") or []) if transport == "stdio" else [],
+            "auth": auth,
+            "header_keys": header_keys,
+            "enabled": False,
+        }
+        cfg = self.app.config
+        cfg.integrations.mcp_servers = {**cfg.integrations.mcp_servers, name: stored}
+        self.app.save_config()
+        return self.describe(self._launch(name, stored))
+
+    async def set_enabled(self, name: str, enabled: bool) -> dict:
+        """Turn a server on or off without changing anything else."""
+        cfg = self.app.config
+        spec = cfg.integrations.mcp_servers.get(name)
+        if spec is None:
+            raise KeyError(name)
+        stored = {**spec, "enabled": bool(enabled)}
+        cfg.integrations.mcp_servers = {**cfg.integrations.mcp_servers, name: stored}
+        self.app.save_config()
+        old = self.servers.pop(name, None)
+        if old is not None:
+            self._cancel_sign_in(old)
+            await self._shutdown(old)
+        return self.describe(self._launch(name, stored))
+
     async def remove(self, name: str) -> bool:
         conn = self.servers.pop(name, None)
         if conn is not None:

@@ -87,6 +87,10 @@ export function useMcpActions() {
         invalidate()
       }
     }),
-    signOut: useMutation({ mutationFn: (name: string) => api.integrations.mcp.signOut(name), onSuccess: invalidate })
+    signOut: useMutation({ mutationFn: (name: string) => api.integrations.mcp.signOut(name), onSuccess: invalidate }),
+    setEnabled: useMutation({
+      mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) => api.integrations.mcp.setEnabled(name, enabled),
+      onSuccess: invalidate
+    })
   }
 }

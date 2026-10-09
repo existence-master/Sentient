@@ -1,0 +1,79 @@
+{
+  "jobs": [
+    {
+      "id": "a1b2c3d4e5f6",
+      "name": "Morning brief",
+      "prompt": "Summarize my calendar and the weather for today.",
+      "skills": [],
+      "skill": null,
+      "script": null,
+      "no_agent": false,
+      "schedule": {"kind": "cron", "expr": "0 8 * * *", "display": "0 8 * * *"},
+      "schedule_display": "0 8 * * *",
+      "repeat": {"times": null, "completed": 12},
+      "enabled": true,
+      "state": "scheduled",
+      "deliver": "whatsapp:fixture-chat",
+      "origin": null
+    },
+    {
+      "id": "b2c3d4e5f6a1",
+      "name": "Weekday standup notes",
+      "prompt": "Draft my standup notes from yesterday's commits.",
+      "skills": ["weekly-review"],
+      "skill": "weekly-review",
+      "script": null,
+      "no_agent": false,
+      "schedule": {"kind": "cron", "expr": "30 9 * * 1-5", "display": "weekdays at 9:30am"},
+      "enabled": false,
+      "state": "paused",
+      "deliver": "local"
+    },
+    {
+      "id": "c3d4e5f6a1b2",
+      "name": "Watch prices",
+      "prompt": "",
+      "skills": [],
+      "script": "check_prices.py",
+      "no_agent": true,
+      "schedule": {"kind": "interval", "minutes": 30, "display": "every 30m"},
+      "enabled": true,
+      "deliver": "local"
+    },
+    {
+      "id": "d4e5f6a1b2c3",
+      "name": "Disk check",
+      "prompt": "Tell me if the disk is almost full.",
+      "script": "missing.py",
+      "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+      "enabled": true,
+      "deliver": "local"
+    },
+    {
+      "id": "e5f6a1b2c3d4",
+      "name": "Nightly backup",
+      "prompt": "",
+      "script": "backup.sh",
+      "no_agent": true,
+      "schedule": {"kind": "cron", "expr": "0 2 * * *", "display": "0 2 * * *"},
+      "enabled": true,
+      "deliver": "local"
+    },
+    {
+      "id": "f6a1b2c3d4e5",
+      "name": "Pay rent reminder",
+      "prompt": "Remind me to pay rent.",
+      "schedule": {"kind": "cron", "expr": "0 9 1 * *", "display": "0 9 1 * *"},
+      "enabled": true,
+      "deliver": "local"
+    },
+    {
+      "id": "a6b1c2d3e4f5",
+      "name": "Inbox ping",
+      "prompt": "Check for urgent email.",
+      "schedule": {"kind": "interval", "minutes": 2, "display": "every 2m"},
+      "enabled": true,
+      "deliver": "telegram:fixture-chat"
+    }
+  ]
+}

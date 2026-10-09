@@ -332,9 +332,11 @@ function registerIpc(): void {
     platform: process.platform,
     arch: process.arch
   }))
-  ipcMain.handle(CH.pickFiles, async (_e, options?: { multiple?: boolean }) => {
+  ipcMain.handle(CH.pickFiles, async (_e, options?: { multiple?: boolean; directory?: boolean }) => {
     const parent = win ?? undefined
-    const props: Array<'openFile' | 'multiSelections'> = ['openFile']
+    const props: Array<'openFile' | 'openDirectory' | 'multiSelections' | 'showHiddenFiles'> = options?.directory
+      ? ['openDirectory', 'showHiddenFiles']
+      : ['openFile']
     if (options?.multiple !== false) props.push('multiSelections')
     const result = parent
       ? await dialog.showOpenDialog(parent, { properties: props })

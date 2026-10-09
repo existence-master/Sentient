@@ -11,6 +11,7 @@ terminal                    : terminal package
 nodes                       : nodes package (also defines /ws/node)
 user_model                  : memory package (user model and dreams)
 hooks                       : integrations package (inbound webhooks)
+migrate                     : core (importing from Hermes)
 """
 
 from sentient.gateway.routes import (
@@ -20,6 +21,7 @@ from sentient.gateway.routes import (
     hooks,
     integrations,
     memory,
+    migrate,
     models,
     nodes,
     notifications,
@@ -51,4 +53,5 @@ ROUTERS = [
     channels.router,
     user_model.router,
     hooks.router,
+    migrate.router,
 ]

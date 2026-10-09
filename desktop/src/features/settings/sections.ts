@@ -150,7 +150,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'Advanced',
     description: 'Data folder, logs, engine and raw configuration.',
     icon: IconTool,
-    keywords: ['logs', 'folder', 'restart', 'version', 'json', 'debug', 'gateway', 'integrations']
+    keywords: ['logs', 'folder', 'restart', 'version', 'json', 'debug', 'gateway', 'integrations', 'hermes', 'import', 'migrate', 'move']
   }
 ]
 

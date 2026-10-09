@@ -6,6 +6,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Coming from Hermes?** Bring your Hermes setup over in one step, from the last onboarding screen or Settings >
+  Advanced. Sentient looks inside your Hermes folder (`~/.hermes`, or one you pick) and shows what it found before
+  anything changes: your own skills go to Skills for review (Hermes' built-in ones you never changed are left out),
+  MEMORY.md and USER.md become memories and things Sentient knows about you (with a button to remove them again),
+  SOUL.md replaces the personality only if you say so after seeing both side by side, scheduled jobs become paused
+  tasks that keep their schedule (resume one and Sentient plans it for you to approve), and MCP servers are added
+  turned off. Keys, tokens, sign-ins, `auth.json` and `.env` are never read or copied, so remote servers need a fresh
+  sign-in. Jobs Sentient can't run yet (monthly schedules, shell scripts, missing scripts) are listed with the reason.
 - **Model presets:** switch every model between local and cloud in one click. Click the model name at the top of the
   window to pick "Local only" (everything on this computer), "Cloud" (your Anthropic, OpenAI or OpenRouter key for
   every job) or "Mixed" (cloud for chat and planning, this computer for background work and memory), go back to a
