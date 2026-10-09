@@ -31,6 +31,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
   title bar, the tray menu, the shortcut Ctrl+Alt+Shift+S, `/stopall` in paired Telegram and Discord chats, and on
   paired phones. Messages you queued before the stop are not sent. It never asks the model, so nothing can
   talk its way past it.
+- **Check my models:** a check-up in Settings > Models and in onboarding tests each role's model the way Sentient
+  uses it: a short reply, a tool call (and a second tool step for chat and tasks), a JSON reply for background jobs,
+  thinking, context length, and whether Ollama runs the model on the graphics card or partly on the processor. Each
+  role gets a pass, warning or failure with a plain fix ("qwen3:4b can't call tools reliably; try qwen3:8b") and,
+  where the fix is obvious, a button that does it. Nothing changes unless you press it. `sentient doctor --models`
+  runs the same check in a terminal.
 - **Stuck tasks tell you.** A task that makes no progress for 10 minutes, keeps hitting the same error, or reaches a
   step only you can do (a password, a CAPTCHA) pauses and says why: "Sentient is stuck on 'Book the table': the page
   asks for your password. Open it to help or cancel." Choose Try again, Skip this step or Cancel, or tell it what to
