@@ -476,6 +476,8 @@ class Channel:
             text = f"{transcript}\n\n{text}".strip() if text else transcript
         if not text and not attachments:
             return
+        if text and not attachments and await self.service.answer_from_chat(self, chat, text):
+            return  # it answered a task's question
 
         session_id = await self.ensure_session(chat)
         if rt.running:
@@ -559,7 +561,8 @@ class Channel:
             "/help - show this message",
         ]
         if chat and chat.get("deliver"):
-            lines += ["", "Task results, plans to approve and suggestions are also sent here. "
+            lines += ["", "Task results, plans to approve, questions from your tasks and suggestions are also sent here. "
+                          "While a task waits for your answer, your next message here answers it. "
                           "You can turn that off in Sentient under Channels."]
         return "\n".join(lines)
 
@@ -755,4 +758,6 @@ class Channel:
             return await self.service.act_on_plan(self, chat_id, message_id, ref, approve=code == "a")
         if kind == "sg":
             return await self.service.act_on_suggestion(self, chat_id, message_id, ref, approve=code == "a")
+        if kind == "tq":
+            return await self.service.act_on_question(self, chat_id, message_id, ref, code)
         return "Unknown button."

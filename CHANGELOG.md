@@ -6,6 +6,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Tasks can pause to ask you a question ("Which of these two flights?") and carry on with your answer. The question
+  shows on the task, as a notification with quick answers, and in paired Telegram or Discord chats with buttons; a
+  plain reply there works too. A waiting task keeps waiting across restarts.
 - Proper documentation: getting started, privacy, architecture decision records, agent guides, verification report.
 - README screenshots and a new banner.
 

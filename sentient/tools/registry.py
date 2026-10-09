@@ -6,6 +6,8 @@ A plugin can be *hidden*: its tools stay registered (so an explicit call still
 reaches the tool, which reports "not connected") but they are not offered to
 the model and not listed in the catalog. Integrations hide disconnected apps so
 small local models are not flooded with dozens of unusable tools.
+A plugin can also be *scoped* (``ToolPlugin.scoped``): its tools are offered only to a
+caller that names them (``ask_user`` exists only inside task runs), never by default.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         self._disabled = set(disabled)
         self._hidden: set[str] = set()
+        self._scoped: set[str] = set()
 
     # ------------------------------------------------------------------ loading
     def register(self, plugin: ToolPlugin, *, replace: bool = False) -> None:
@@ -42,6 +45,8 @@ class ToolRegistry:
             if t.name in self._tools:
                 raise ValueError(f"duplicate tool name {t.name} from plugin {plugin.id}")
         self._plugins[plugin.id] = plugin
+        if getattr(plugin, "scoped", False):
+            self._scoped.add(plugin.id)
         for t in plugin.tools:
             if t.name in self._disabled:
                 continue
@@ -54,6 +59,7 @@ class ToolRegistry:
         for name in [n for n, t in self._tools.items() if t.plugin == plugin_id]:
             self._tools.pop(name, None)
         self._hidden.discard(plugin_id)
+        self._scoped.discard(plugin_id)
         return plugin
 
     def set_hidden(self, plugin_id: str, hidden: bool) -> None:
@@ -98,18 +104,22 @@ class ToolRegistry:
         return t.plugin not in self._hidden
 
     def tools(self, *, include_hidden: bool = False) -> list[Tool]:
-        return [t for t in self._tools.values() if include_hidden or self._visible(t)]
+        """Tools offered by default. Hidden and scoped plugins are left out unless ``include_hidden``."""
+        return [
+            t for t in self._tools.values()
+            if include_hidden or (self._visible(t) and t.plugin not in self._scoped)
+        ]
 
     def plugins(self) -> list[ToolPlugin]:
         return list(self._plugins.values())
 
     def openai_schemas(self, names: Iterable[str] | None = None) -> list[dict]:
-        """Schemas offered to the model. Hidden plugins are never offered."""
+        """Schemas offered to the model. Hidden plugins are never offered; scoped ones only when named."""
         wanted = None if names is None else set(names)
         return [
             t.openai_schema()
             for n, t in self._tools.items()
-            if self._visible(t) and (wanted is None or n in wanted)
+            if self._visible(t) and (n in wanted if wanted is not None else t.plugin not in self._scoped)
         ]
 
     def catalog(self, *, include_hidden: bool = False) -> list[dict]:
@@ -117,7 +127,7 @@ class ToolRegistry:
         out = []
         for p in self._plugins.values():
             hidden = p.id in self._hidden
-            if hidden and not include_hidden:
+            if (hidden or p.id in self._scoped) and not include_hidden:
                 continue
             out.append(
                 {

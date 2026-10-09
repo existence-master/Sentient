@@ -2,8 +2,9 @@
 
 - Tokens live in the OS keychain (``channel_<id>_token``); config and logs never see them.
 - A paired chat is a normal Sentient chat whose session has ``channel`` = the channel id.
-- Delivery: ``notification.new`` events (task results, plans awaiting approval, proactive suggestions,
-  subagent completions) are forwarded to paired chats with ``deliver`` on, with action buttons.
+- Delivery: ``notification.new`` events (task results, plans awaiting approval, questions from running
+  tasks, proactive suggestions, subagent completions) are forwarded to paired chats with ``deliver`` on,
+  with action buttons. A plain text reply answers a task's question when exactly one is waiting.
 """
 
 from __future__ import annotations
@@ -26,7 +27,10 @@ log = logging.getLogger(__name__)
 
 _UNSET: Any = object()
 TASK_RESULT_EVENTS = {"run_completed", "run_failed", "planning_failed", "clarification_needed", "disabled"}
-STATUS_LABELS = {"approved": "Approved", "declined": "Declined", "dismissed": "Dismissed"}
+STATUS_LABELS = {
+    "approved": "Approved", "declined": "Declined", "dismissed": "Dismissed", "answered": "Answered", "cancelled": "Cancelled",
+}
+QUESTION_ROW = 2  # option buttons per row (Discord allows 5 per row and 5 rows)
 _TOKEN_LOG_RE = re.compile(r"bot\d{5,}:[A-Za-z0-9_-]{20,}")
 
 
@@ -267,6 +271,8 @@ class ChannelService(Service):
                     return None
                 md = f"**{title or 'Plan ready for approval'}**\n{message}"
                 return md, [[Button("Approve plan", f"tp:a:{task_id}", "success"), Button("Decline", f"tp:d:{task_id}", "danger")]]
+            if event == "question":
+                return self._format_question(note) if cfg.deliver_task_results else None
             if event in TASK_RESULT_EVENTS and cfg.deliver_task_results:
                 md = f"**{title or 'Task update'}**\n{message}"
                 if event == "run_completed":
@@ -286,6 +292,21 @@ class ChannelService(Service):
         if payload.get("subagent_id") and cfg.deliver_subagents:
             return f"**{title or 'Background work finished'}**\n{message}", None
         return None
+
+    @staticmethod
+    def _format_question(note: dict) -> tuple[str, list[list[Button]] | None] | None:
+        payload = note.get("payload") or {}
+        run_id, question = payload.get("run_id"), str(payload.get("question") or note.get("message") or "").strip()
+        if not run_id or not question or payload.get("status"):
+            return None
+        title = (note.get("title") or "").strip() or "A task needs your answer"
+        options = [str(o) for o in payload.get("options") or [] if str(o).strip()]
+        hint = "Tap an answer or reply here with your own." if options else "Reply here with your answer."
+        md = f"**{title}**\n{summary_text(question, 900)}\n\n_{hint}_"
+        if not options:
+            return md, None
+        buttons = [Button(label[:60], f"tq:{i}:{run_id}", "primary") for i, label in enumerate(options)]
+        return md, [buttons[i:i + QUESTION_ROW] for i in range(0, len(buttons), QUESTION_ROW)]
 
     async def deliver_notification(self, note: dict) -> int:
         formatted = await self.format_notification(note)
@@ -317,7 +338,11 @@ class ChannelService(Service):
             return
         targets = self._delivered.pop(str(note.get("id")), [])
         label = STATUS_LABELS[status]
-        if note.get("kind") == "task":
+        payload = note.get("payload") or {}
+        if note.get("kind") == "task" and payload.get("event") == "question":
+            answer = summary_text(str(payload.get("answer") or ""), 80)
+            label = f"Answered: {answer}" if status == "answered" and answer else label
+        elif note.get("kind") == "task":
             label = f"Plan {status}"
         for channel_id, chat_id, message_id in targets:
             ch = self.channels.get(channel_id)
@@ -387,6 +412,74 @@ class ChannelService(Service):
             outcome = "Dismissed"
         await ch.settle_buttons(chat_id, message_id, outcome)
         return outcome
+
+    async def act_on_question(self, ch: Channel, chat_id: str, message_id: str, run_id: str, index: str) -> str:
+        """An option button under a task's question: answer it with that option."""
+        found = await self._waiting_question(run_id)
+        if found is None:
+            await ch.settle_buttons(chat_id, message_id, "This question is no longer waiting")
+            return "This question is no longer waiting."
+        options = found.get("options") or []
+        if not index.isdigit() or int(index) >= len(options):
+            return "Unknown button."
+        self._forget_delivered(ch.id, chat_id, message_id)
+        answer = str(options[int(index)])
+        try:
+            await self.app.tasks.answer_question(found["task_id"], run_id, answer)
+        except Exception as exc:
+            text = str(exc) or "That didn't work."
+            await ch.settle_buttons(chat_id, message_id, text[:120])
+            return text[:190]
+        outcome = f"Answered: {summary_text(answer, 80)}"
+        await ch.settle_buttons(chat_id, message_id, outcome)
+        return outcome
+
+    async def _waiting_question(self, run_id: str) -> dict | None:
+        fn = getattr(self.app.tasks, "waiting_questions", None)
+        if fn is None:
+            return None
+        with contextlib.suppress(Exception):
+            for q in await fn():
+                if q.get("run_id") == run_id:
+                    return q
+        return None
+
+    async def answer_from_chat(self, ch: Channel, chat: dict, text: str) -> bool:
+        """A plain message from a delivery chat answers a task's question when exactly one is waiting.
+
+        Returns True when the message was used (answered, or the chat was asked to pick in the app
+        because several questions are waiting); False to treat it as a normal chat message.
+        """
+        if not chat.get("deliver") or not self.app.config.channels.deliver_task_results:
+            return False
+        fn = getattr(self.app.tasks, "waiting_questions", None)
+        if fn is None:
+            return False
+        try:
+            waiting = await fn()
+        except Exception:
+            log.exception("could not list waiting task questions")
+            return False
+        if not waiting:
+            return False
+        chat_id = str(chat["chat_id"])
+        ch.publish_message(chat_id, chat.get("session_id"), "in", text)
+        if len(waiting) > 1:
+            names = ", ".join(f"'{summary_text(q['task_name'], 60)}'" for q in waiting[:3])
+            reply = (
+                f"{len(waiting)} tasks are waiting for your answer ({names}), so I can't tell which one this is for. "
+                "Tap a button under the question, or answer in the Sentient app under Tasks."
+            )
+        else:
+            q = waiting[0]
+            try:
+                await self.app.tasks.answer_question(q["task_id"], q["run_id"], text)
+                reply = f"Thanks! I passed your answer to '{summary_text(q['task_name'], 80)}'. It's carrying on now."
+            except Exception as exc:
+                reply = f"I couldn't pass that on: {str(exc)[:200] or 'something went wrong'}"
+        await ch.reply(chat_id, reply)
+        ch.publish_message(chat_id, None, "out", reply)
+        return True
 
     def _forget_delivered(self, channel_id: str, chat_id: str, message_id: str) -> None:
         for nid, targets in list(self._delivered.items()):

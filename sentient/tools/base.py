@@ -265,6 +265,7 @@ class ToolPlugin:
     icon: str = "IconPuzzle"        # tabler icon name used by the UI
     auth: str = "none"              # none | api_key | oauth | manual
     selection_hint: str = ""        # one line telling the model when these tools are relevant
+    scoped: bool = False            # offered only to callers that name the tools (never in chat or the catalog)
     tools: list[Tool] = []
 
     def __init__(self) -> None:

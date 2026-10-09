@@ -129,6 +129,15 @@ async def cancel_run(request: Request, task_id: str, run_id: str):
     return await _guard(_tasks(request).cancel_run(task_id, run_id))
 
 
+class AnswerBody(BaseModel):
+    answer: str = ""
+
+
+@router.post("/{task_id}/runs/{run_id}/answer")
+async def answer_question(request: Request, task_id: str, run_id: str, body: AnswerBody):
+    return await _guard(_tasks(request).answer_question(task_id, run_id, body.answer))
+
+
 @router.post("/{task_id}/runs/{run_id}/retry")
 async def retry_run(request: Request, task_id: str, run_id: str):
     return await _guard(_tasks(request).retry_run(task_id, run_id))
