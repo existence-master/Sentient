@@ -105,7 +105,7 @@ def test_switch_defaults_on_and_is_described():
     cfg = SentientConfig()
     assert cfg.integrations.hide_one_time_codes is True
     field = type(cfg.integrations).model_fields["hide_one_time_codes"]
-    assert field.description and "—" not in field.description
+    assert field.description and chr(0x2014) not in field.description
     assert redact.enabled(type("App", (), {"config": cfg})()) is True
     cfg.integrations.hide_one_time_codes = False
     assert redact.enabled(type("Mgr", (), {"app": type("App", (), {"config": cfg})()})()) is False
