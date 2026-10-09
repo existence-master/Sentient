@@ -82,7 +82,8 @@ function PanelBody({ onClose }: { onClose: () => void }) {
   const imageSrc = frame?.image ?? (running && !shotFailed ? api.browser.screenshotUrl(Math.floor(now / 15000)) : undefined)
 
   const profileList = profiles.data?.profiles ?? []
-  const profile = picked ?? s?.profile ?? 'default'
+  // a picked profile that was deleted or renamed meanwhile falls back to the open one
+  const profile = (picked && profileList.some((p) => p.name === picked) ? picked : null) ?? s?.profile ?? 'default'
   const pickedProfile = profileList.find((p) => p.name === profile)
 
   const openForSignIn = () => {
