@@ -40,7 +40,7 @@ from sentient.memory.facts import (
 )
 from sentient.memory.schema import ensure_memory_schema
 from sentient.memory.vectors import cosine
-from sentient.services import Service
+from sentient.services import Service, cancel_tasks
 from sentient.store.db import new_id, now_iso
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -119,6 +119,7 @@ def _short(text: str, n: int = 90) -> str:
 
 class DreamingService(Service):
     name = "dreaming"
+    pause_on_stop = True  # no dream starts while Sentient is stopped (Stop everything)
 
     def __init__(self, app: SentientApp):
         super().__init__(app)
@@ -149,6 +150,20 @@ class DreamingService(Service):
         if self._task is not None and not self._task.done():
             self._task.cancel()
         await super().stop()
+
+    async def halt(self) -> int:
+        """Stop everything: cancel the dream that is running and record it as stopped."""
+        cancelled = await super().halt() + await cancel_tasks([self._task] if self._task is not None else [])
+        dream_id, self._current = self._current, None
+        if dream_id is not None:
+            await self.app.store.execute(
+                "UPDATE dreams SET status = 'error', error = ?, finished_at = ? WHERE id = ? AND status = 'running'",
+                ("Stopped by Stop everything.", now_iso(), dream_id),
+            )
+            dream = await self.get(dream_id)
+            if dream is not None:
+                self.app.bus.publish("dream.updated", dream)
+        return cancelled
 
     async def _listen(self) -> None:
         async with self.app.bus.subscribe() as q:
@@ -182,6 +197,8 @@ class DreamingService(Service):
         cfg = self.cfg
         if not cfg.enabled:
             return False, "disabled"
+        if self.app.stopped:
+            return False, "stopped"
         now = now or self.clock()
         local = self.local_now(now)
         hour, minute = parse_hhmm(cfg.time)

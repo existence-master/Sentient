@@ -95,6 +95,13 @@ class ChannelService(Service):
                 await ch.stop_runtime()
         await super().stop()
 
+    async def halt(self) -> int:
+        """Stop everything: stop the reply in progress in every chat and drop queued messages."""
+        stopped = 0
+        for ch in self.channels.values():
+            stopped += await ch.stop_all_turns()
+        return stopped
+
     # ------------------------------------------------------------------ helpers
     def get(self, channel_id: str) -> Channel:
         ch = self.channels.get(channel_id)

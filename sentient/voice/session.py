@@ -117,6 +117,7 @@ class VoiceSession:
         self._transcribing_pcm: bytes | None = None
         self._approvals: dict[str, str] = {}  # call_id -> approval_id
         self._side: set[asyncio.Task] = set()
+        self._stop_side: set[asyncio.Task] = set()  # side tasks Stop everything cancels (spoken approval answers)
         self._warned_not_started = False
         self._wake_lock = asyncio.Lock()
         self._follow_up: asyncio.Task | None = None
@@ -447,7 +448,7 @@ class VoiceSession:
     async def _on_utterance(self, pcm: bytes) -> None:
         if self._turn is not None and not self._turn.done():
             if self._approvals:
-                self._spawn(self._answer_approval_by_voice(pcm))
+                self._spawn(self._answer_approval_by_voice(pcm), cancel_on_stop=True)
                 return
             if self._transcribing_pcm is not None:
                 pcm = self._transcribing_pcm + pcm  # still transcribing: treat as one utterance
@@ -465,6 +466,23 @@ class VoiceSession:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await turn
         self._turn = None
+
+    async def stop_turn(self) -> bool:
+        """Stop everything: cancel the reply being heard or spoken and go back to listening."""
+        active = (self._turn is not None and not self._turn.done()) or self.state in {"transcribing", "thinking", "speaking"}
+        # a spoken answer to an approval can start a new turn once transcribed: cancel it first
+        answering = [t for t in self._stop_side if not t.done()]
+        for t in answering:
+            t.cancel()
+        for t in answering:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await t
+        await self._cancel_turn()
+        if self._speaker is not None and not self._speaker.done():
+            self._speaker.cancel()
+        if active:
+            await self.set_state("listening")
+        return active
 
     async def interrupt(self, reason: str = "client") -> None:
         """Stop speaking now. Text generation (if any) continues silently."""
@@ -660,10 +678,13 @@ class VoiceSession:
             return
         await self._begin(None, text=text)  # not an answer: treat it as a new request
 
-    def _spawn(self, coro: Awaitable[None]) -> None:
+    def _spawn(self, coro: Awaitable[None], *, cancel_on_stop: bool = False) -> None:
         task = asyncio.ensure_future(coro)
         self._side.add(task)
         task.add_done_callback(self._side.discard)
+        if cancel_on_stop:  # Stop everything cancels it (stop_turn)
+            self._stop_side.add(task)
+            task.add_done_callback(self._stop_side.discard)
         self.service.track(task)
 
     # ------------------------------------------------------------------ shutdown

@@ -30,7 +30,7 @@ from sentient.memory import prompts
 from sentient.memory.facts import FactMemory, word_overlap
 from sentient.memory.schema import ensure_memory_schema
 from sentient.memory.vectors import VecTable, cosine
-from sentient.services import Service
+from sentient.services import Service, cancel_tasks
 from sentient.store.db import new_id, now_iso
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -217,11 +217,14 @@ class UserModelService(Service):
             t.cancel()
         await super().stop()
 
+    async def halt(self) -> int:
+        return await cancel_tasks(self._background)
+
     async def _listen(self) -> None:
         async with self.app.bus.subscribe() as q:
             while True:
                 event = await q.get()
-                if event.get("type") == "chat.turn_completed":
+                if event.get("type") == "chat.turn_completed" and not self.app.stopped:
                     task = asyncio.create_task(self._safe_turn(event.get("data") or {}))
                     self._background.add(task)
                     task.add_done_callback(self._background.discard)

@@ -183,6 +183,14 @@ class VoiceService(Service):
         self._stt = self._tts = self._wake_stt = None
         self._stt_sig = self._tts_sig = self._wake_stt_sig = None
 
+    async def halt(self) -> int:
+        """Stop everything: cancel every voice reply in progress (sessions stay open)."""
+        stopped = 0
+        for session in list(self.sessions):
+            with contextlib.suppress(Exception):
+                stopped += int(await session.stop_turn())
+        return stopped
+
     def track(self, task: asyncio.Task) -> None:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
