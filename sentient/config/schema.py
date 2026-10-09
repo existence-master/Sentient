@@ -274,8 +274,9 @@ class TasksConfig(BaseModel):
         "instead of marking them failed.",
     )
     stuck_after_minutes: int = Field(
-        10, ge=0, description="A run that makes no progress for this many minutes (no reply from the AI model and no "
-        "finished step) stops and asks you what to do: try again, skip the step or cancel. 0 turns this off.",
+        10, ge=0, description="A run that shows no sign of work for this many minutes (the AI model writes or thinks nothing, "
+        "and no step reports progress or finishes) stops and asks you what to do: try again, skip the step or cancel. "
+        "0 turns this off.",
     )
     stuck_after_repeated_errors: int = Field(
         5, ge=0, le=50, description="A run whose step keeps failing with the same error this many times in a row "

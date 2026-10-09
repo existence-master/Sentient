@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
+from sentient.llm.provider import StreamChunk, ToolCall
 from sentient.tasks import executor, stuck
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from tests.conftest import FakeProvider
@@ -33,10 +34,37 @@ async def open_site(ctx: ToolContext) -> dict:
     return {"error": "This looks like a password field.", "needs_user": "the page asks for your password"}
 
 
+@tool("long_search", risk=Risk.read)
+async def long_search(ctx: ToolContext) -> str:
+    """Search every table (slow, but it reports progress)."""
+    for i in range(8):
+        await asyncio.sleep(0.2)
+        await ctx.progress({"kind": "status", "text": f"Checked {i + 1} of 8"})
+    return "found a table at 8pm"
+
+
 class Restaurant(ToolPlugin):
     id = "restaurant"
     display_name = "Restaurant"
-    tools = [slow_lookup, book_table, open_site]
+    tools = [slow_lookup, book_table, open_site, long_search]
+
+
+class SlowStreamingProvider(FakeProvider):
+    """A slow CPU model: thinks, then writes, one small chunk every 0.2 s, well past the no-activity limit."""
+
+    async def stream(self, role, messages, tools=None, *, model=None):
+        self.calls.append({"role": role, "messages": messages, "tools": tools, "model": model})
+        reply = self.replies.pop(0) if self.replies else "ok"
+        for _ in range(5):
+            await asyncio.sleep(0.2)
+            yield StreamChunk(thinking="hmm ", model="fake")
+        if isinstance(reply, list):
+            yield StreamChunk(done=True, tool_calls=[ToolCall(**tc) for tc in reply], model="fake")
+            return
+        for word in reply.split():
+            await asyncio.sleep(0.2)
+            yield StreamChunk(text=word + " ", model="fake")
+        yield StreamChunk(done=True, model="fake")
 
 
 def call(name: str, n: int, **arguments) -> list[dict]:
@@ -92,6 +120,21 @@ async def test_a_hung_step_gets_stuck_and_try_again_carries_on(make_app, config)
     assert not any(m.get("tool_calls") for m in resumed)  # the hung call was dropped, so it is simply made again
     assert resumed[-1]["role"] == "user" and "asked you to try again" in resumed[-1]["content"]
     assert "Restaurant hasn't responded" in resumed[-1]["content"]
+
+
+async def test_a_slow_model_that_keeps_thinking_and_writing_is_never_stuck(make_app, config):
+    config.tasks.stuck_after_minutes = 0.01  # 0.6 s; each model reply and the tool take 1.6 s or more
+    llm = SlowStreamingProvider(
+        replies=[call("long_search", 1), "Booked a table for two at 8pm tonight."], json_replies=[dict(RESULT)]
+    )
+    app = await make_app(llm)
+    task_id = await start_task(app)
+    task = await app.tasks.get(task_id)
+    run = task["runs"][-1]
+    assert task["status"] == "completed" and run["status"] == "completed", run["error"]
+    assert not [n for n in await app.notifications.list() if n["payload"].get("stuck")]
+    results = [u["message"] for u in run["progress_updates"] if u["message"]["type"] == "tool_result"]
+    assert results and results[0]["result"] == "found a table at 8pm"  # the slow tool finished, it wasn't cut off
 
 
 async def test_a_silent_model_gets_stuck_and_cancel_ends_the_run(make_app, config):

@@ -358,7 +358,7 @@ chat work as for any question. Checked deterministically; no model decides.
 
 | Signal | Config (`tasks.*`) | Default | `reason` example |
 |---|---|---|---|
-| No activity: no streamed model output, tool progress or tool result | `stuck_after_minutes` (0 = off) | 10 | `the AI model hasn't answered for 10 minutes`, `Browser hasn't responded for 10 minutes` |
+| No activity: no streamed model output (text or thinking), tool progress or tool result | `stuck_after_minutes` (0 = off) | 10 | `the AI model hasn't answered for 10 minutes`, `Browser hasn't responded for 10 minutes` |
 | One tool fails with the same error that many times in a row (any details) | `stuck_after_repeated_errors` (0 = off) | 5 | `Restaurant keeps failing with the same error: The booking server said no` |
 | The same call gets the same error `tools.repeated_call_limit` times (loop breaker) | `tools.repeated_call_limit` | 3 | as above |
 | A step only the user can do: a tool result with `needs_user` (the browser refusing a password, PIN, card or one-time code field), or a browser page asking the visitor to prove they are a person | | | `the page asks for your password`, `the site wants proof that you're a person (a CAPTCHA)` |
