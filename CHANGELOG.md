@@ -8,6 +8,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ### Added
 - Proper documentation: getting started, privacy, architecture decision records, agent guides, verification report.
 - README screenshots and a new banner.
+- **Follow-ups:** once a day Sentient notices emails waiting on your reply, and your own questions nobody answered,
+  in Gmail and IMAP email, and suggests a ready draft. Newsletters, no-reply senders and answered threads are skipped,
+  and nothing is sent until you approve it. Settings under Proactivity.
 
 ## [3.0.0-alpha.0] - 2026-10-08
 

@@ -1092,6 +1092,21 @@ export interface ProactiveSuggestion {
   reasoning: string
   confidence: number
   source_event: { source: 'gmail' | 'gcalendar' | 'heartbeat' | string; event_type: string; summary: string; item_id?: string; url?: string }
+  /** Set on follow-up suggestions (dropped email threads), docs/API.md section 6. */
+  follow_up?: FollowUp
+}
+
+export interface FollowUp {
+  kind: 'waiting_on_you' | 'waiting_on_them'
+  person: string
+  person_email: string
+  to: string
+  subject: string
+  draft: string
+  days_waiting: number
+  thread_id: string
+  message_id: string
+  mailbox?: string
 }
 
 export interface SuggestionPayload {
@@ -1137,6 +1152,8 @@ export interface ProactivityStatus {
   /** Inside `proactivity.quiet_hours` right now (suggestions are held). */
   quiet_now?: boolean
   heartbeat_minutes?: number
+  /** Daily check for emails waiting on a reply. */
+  followups?: { enabled: boolean; last_run_at: ISODate | null }
 }
 
 export interface ProactivityPreference {

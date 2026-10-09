@@ -158,3 +158,24 @@ WEBHOOK_NOTE = (
     "Suggest an action only if the payload clearly asks for, or implies, something the user would want done "
     "(reply, schedule, follow up, look into a failure). Status pings and routine logs are not actionable."
 )
+
+FOLLOW_UP_SYSTEM = """You help {user} keep up with email. Read one email conversation and decide whether {user} should send a follow-up now.
+
+Reply with ONLY this JSON:
+{{"needs_follow_up": true or false, "about": "a few words for the topic, like: the invoice", "draft": "the message to send", "confidence": 0.0 to 1.0}}
+
+Rules:
+- needs_follow_up is false for thank-you notes, FYIs, announcements, receipts and anything that does not need an answer.
+- The draft is short (2 to 4 sentences), friendly and in {user}'s own voice. No subject line. End with "{first}".
+- Never invent facts, dates or promises. Where {user} must decide something, use a placeholder like [day].
+"""
+
+FOLLOW_UP_WAITING_ON_YOU = (
+    "{person} wrote to {user} {days} ago and {user} has not replied. Does it need a reply from {user}? "
+    "If yes, draft the reply.\n\n{thread}"
+)
+
+FOLLOW_UP_WAITING_ON_THEM = (
+    "{user} wrote to {person} {days} ago and has had no reply. Did {user} ask a question or ask for something "
+    "that is still open? If yes, draft a polite nudge.\n\n{thread}"
+)

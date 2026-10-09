@@ -294,6 +294,15 @@ Backend-only API used by tasks/proactivity (not HTTP):
   keeping the source current, so timer polling can skip it. False when not connected, feeds are off, or after 3 failed syncs in a row.
 - `await app.integrations.feed_status()` → the list returned by `GET /api/integrations/feeds`.
 - `await app.integrations.emit_items(source, origin, items, event=None)` → published items (shared seen record, privacy filters).
+- `await app.integrations.recent_threads("gmail"|"email_imap", newer_than_days=, idle_days=, limit=40)` → `{addresses, threads, note?}`
+  for follow-ups (section 6). `threads`: `[{source, thread_id, url, messages: [...]}]`, conversations active in the last
+  `newer_than_days` days whose newest message is at least `idle_days` old. Messages use the gmail item shape plus `cc`,
+  `message_id`, `headers` (only `list-unsubscribe`, `list-id`, `precedence`, `auto-submitted`, `content-type`) and
+  `from_me`; IMAP messages also carry `mailbox` and only the newest message has its text. `addresses` are the user's own
+  addresses seen (account address and senders of sent mail). A thread is dropped whole when the privacy filters hide any
+  of its messages or people. IMAP finds the Sent mailbox by SPECIAL-USE `\Sent`, else the names `Sent`, `Sent Items`,
+  `[Gmail]/Sent Mail`, `Sent Messages`, `Sent Mail`, `INBOX.Sent`; without one it returns no threads and
+  `note: "no_sent_mailbox"`. Read-only; raises `IntegrationError` when the service call fails.
 
 Item shapes. gmail: `{id, thread_id, from, sender_email, to, subject, snippet, body, date, labels, url}`;
 email_imap: the gmail shape plus `message_id` (`id` is the IMAP UID, `url` is null, `labels` are `INBOX` plus `UNREAD`/`STARRED`);
@@ -323,12 +332,41 @@ suggestions as soon as the event starts): `payload.status` becomes `expired` (`n
 The heartbeat (`heartbeat_minutes > 0`) looks at upcoming calendar events, tasks needing attention, expiring short-term
 memories, the time of day and `app.user_model.context_for`; the model answers `NO_REPLY` unless one nudge is worth it.
 It does not run during quiet hours and makes at most `proactivity.heartbeat_daily_cap` suggestions per day.
+
+**Follow-ups** (`proactivity.followups`, on unless proactivity is off) notice dropped email threads in connected Gmail and
+IMAP accounts (`app.integrations.recent_threads`, section 5). The check runs once a day from 08:00 in the user's timezone,
+and in the background after `POST /api/proactivity/poll-now`. Two kinds:
+- `waiting_on_you`: the newest message is from someone else, has you in `To` (not only Cc/Bcc), and has had no answer for
+  `waiting_on_you_days` (3).
+- `waiting_on_them`: your own newest message asked something or asked for something and has had no answer for
+  `waiting_on_them_days` (4).
+
+Deterministic filters run first and skip: no-reply and notification senders, mailing lists and bulk mail (`List-Unsubscribe`,
+`List-Id`, `Precedence: bulk|list|junk`, `Auto-Submitted`, Gmail Promotions/Social/Updates/Forums), calendar invites and
+auto-replies, mail from your own addresses, notes to yourself, short thank-you notes, threads quiet for more than
+`max_age_days` (21), and any thread already suggested, dismissed or judged by the model in the same state (dedupe on thread id
+plus newest message id, so a new message makes it eligible again). At most 10 threads per check reach the `fast` model, which
+answers `{needs_follow_up, about, draft, confidence}` (parsed loosely; an unusable answer is retried at the next check);
+at most `max_suggestions` (3) suggestions per check, and the learned per-type threshold applies. Nothing is ever sent by the
+check itself.
+
+Follow-up suggestion: `suggestion_type` `follow_up_reply` or `follow_up_nudge`, `source_event.event_type: "follow_up"`,
+`source_event.item_id` is `<thread id>:<newest message id>`, `description` is a plain title
+(`"Priya is waiting for your reply about the invoice"`, `"No reply from Rohan about Saturday yet"`), the notification
+`message` is the description followed by the draft as a quote, and the suggestion carries
+```json
+"follow_up": {"kind": "waiting_on_you|waiting_on_them", "person": "Priya Shah", "person_email": "priya@acme.example",
+  "to": "priya@acme.example", "subject": "Re: Invoice for September", "draft": "Hi Priya, ...", "days_waiting": 4,
+  "thread_id": "...", "message_id": "<gmail id or IMAP uid>", "mailbox": "INBOX (IMAP only)"}
+```
+Approving it creates a task that sends exactly the draft (`gmail_reply` in the same thread, or `email_imap_send`); the task's
+plan approval is the send approval, as for every task.
 - `GET /api/notifications?limit=&unread_only=` → `{notifications: [Notification], unread}`
 - `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all`
 - `DELETE /api/notifications/{id}`, `DELETE /api/notifications`
 - `POST /api/proactivity/suggestions/{notification_id}` `{action: "approve"|"dismiss"}` → `{ok, task_id?}` (approve creates a task from `action_details` with `original_context.source = "proactive"`; both update the learned per-type threshold, mark the notification read and set `payload.status`/`payload.task_id`). Errors: 400 bad action, 404 not a suggestion, 409 already actioned or expired, 503 tasks unavailable. v2 spellings `approved`/`dismissed` are accepted.
-- `GET /api/proactivity/status` → `{enabled, last_poll_at: {gmail, gcalendar}, sources: [{source, connected, last_poll_at, last_error, feed_active}], suggestions_today, quiet_now, heartbeat_minutes}`. `sources[].last_error` is the message the integrations package recorded when `poll_source` raised `IntegrationError` (other sources keep polling); `null` after the next successful poll. `feed_active: true` means a change feed delivers that source's items, so it is not timer-polled.
-- `POST /api/proactivity/poll-now` → `{ok, events}` (`events` = new items seen; polls every connected source, including ones with an active change feed. Triggered tasks are fired by the tasks package from `source.items`, section 16)
+- `GET /api/proactivity/status` → `{enabled, last_poll_at: {gmail, gcalendar}, sources: [{source, connected, last_poll_at, last_error, feed_active}], suggestions_today, quiet_now, heartbeat_minutes, followups: {enabled, last_run_at}}`. `sources[].last_error` is the message the integrations package recorded when `poll_source` raised `IntegrationError` (other sources keep polling); `null` after the next successful poll. `feed_active: true` means a change feed delivers that source's items, so it is not timer-polled.
+- `POST /api/proactivity/poll-now` → `{ok, events}` (`events` = new items seen; polls every connected source, including ones with an active change feed, then starts a follow-up check in the background when follow-ups are on. Triggered tasks are fired by the tasks package from `source.items`, section 16)
 - `GET /api/proactivity/preferences` → `[{suggestion_type, score, threshold, approvals, dismissals}]`
 - `DELETE /api/proactivity/preferences/{suggestion_type}` → `{ok}` (`ok: false` when there was nothing to reset)
 

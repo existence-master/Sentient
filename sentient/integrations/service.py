@@ -519,6 +519,40 @@ class IntegrationManager(Service):
             await self._save_poll_state(source, started.isoformat(), list(dict.fromkeys(keys + list(st["seen"]))), None)
             return kept
 
+    async def recent_threads(self, source: str, *, newer_than_days: int, idle_days: int, limit: int = 40) -> dict:
+        """Recent mail conversations of ``gmail`` or ``email_imap`` for follow-ups (docs/API.md section 5).
+
+        Returns ``{addresses, threads}``; a thread is dropped whole when any of its messages, senders or
+        recipients is hidden by the privacy filters. ``{addresses: [], threads: []}`` when not connected."""
+        p = self.plugin(source)
+        fn = getattr(p, "recent_threads", None)
+        if p is None or fn is None:
+            raise ValueError(f"{source} has no mail threads")
+        if not self._connected_sync(source):
+            return {"addresses": [], "threads": []}
+        try:
+            data = await fn(self, newer_than_days=newer_than_days, idle_days=idle_days, limit=limit)
+        except IntegrationError:
+            raise
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+            raise IntegrationError(f"{p.display_name} couldn't be checked ({detail}).") from exc
+        filters = await self.get_privacy_filters(source)
+        if any(filters.values()):
+            emails = [e.lower() for e in filters.get("emails", [])]
+
+            def blocked(thread: dict) -> bool:
+                for m in thread.get("messages") or []:
+                    if email_blocked(m, filters):
+                        return True
+                    people = f"{m.get('to') or ''} {m.get('cc') or ''}".lower()
+                    if any(e in people for e in emails):
+                        return True
+                return False
+
+            data = {**data, "threads": [t for t in data.get("threads") or [] if not blocked(t)]}
+        return data
+
     # ------------------------------------------------------------------ change feeds, push watchers, source.items
     def feed_active(self, source: str) -> bool:
         """True when a change feed (gmail, gcalendar) or push watcher (email_imap) keeps ``source`` current,

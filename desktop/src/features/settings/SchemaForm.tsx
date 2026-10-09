@@ -50,6 +50,12 @@ export const LABELS: Record<string, FieldLabel> = {
   'proactivity.base_confidence_threshold': { label: 'Minimum confidence', percent: true },
   'proactivity.quiet_hours': { label: 'Quiet hours', placeholder: '22:00-07:00' },
   'proactivity.heartbeat_minutes': { label: 'Periodic check-in', unit: 'min', description: 'A check-in with no trigger. 0 turns it off.' },
+  'proactivity.followups': { label: 'Unanswered emails' },
+  'proactivity.followups.enabled': { label: 'Notice unanswered emails' },
+  'proactivity.followups.waiting_on_you_days': { label: 'Remind me to reply after', unit: 'days' },
+  'proactivity.followups.waiting_on_them_days': { label: 'Offer a nudge after', unit: 'days' },
+  'proactivity.followups.max_age_days': { label: 'Ignore emails quiet for over', unit: 'days' },
+  'proactivity.followups.max_suggestions': { label: 'Most suggestions per check' },
   // approvals & tools
   'tools.approvals.mode': {
     label: 'Ask before acting',
@@ -218,7 +224,7 @@ function collectGroups(section: string, root: JsonSchema): Group[] {
       const meta = LABELS[path] ?? {}
       if (meta.hidden) continue
       if (s.type === 'object' && s.properties) {
-        walk(s, path, humanize(key), s.description)
+        walk(s, path, meta.label ?? humanize(key), meta.description ?? s.description)
         continue
       }
       if (s.type === 'object') continue // free-form dicts are edited elsewhere
