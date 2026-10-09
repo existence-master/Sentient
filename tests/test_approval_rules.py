@@ -131,14 +131,17 @@ async def test_allow_still_asks_for_purchases(config, isolated_home):
         await s.stop()
 
 
-async def test_allow_purchase_follows_approvals_off(config, isolated_home):
-    """With approvals switched off the user chose never to be asked; an allow rule does not add questions."""
+async def test_purchases_ask_even_with_approvals_off(config, isolated_home):
+    """Switching approvals off quiets everyday questions, never spending money (browser.confirm_purchases is
+    the one switch for that); an allow rule does not change it either."""
     s = await _start(config, isolated_home, FakeProvider(), "purchase_off", _shop([]))
     try:
-        s.approvals.config.rules = {"shop_click": "allow"}
         click = s.registry.get("shop_click")
         s.approvals.config.mode = "off"
-        assert not await s.approvals.decide(click, "s1", Risk.send, {"label": "Place order"}, None)
+        assert await s.approvals.decide(click, "s1", Risk.send, {"label": "Place order"}, None)
+        assert not await s.approvals.decide(click, "s1", Risk.send, {"label": "Post review"}, None)
+        s.approvals.config.rules = {"shop_click": "allow"}
+        assert await s.approvals.decide(click, "s1", Risk.send, {"label": "Place order"}, None)
         s.approvals.config.mode = "ask"
         assert await s.approvals.decide(click, "s1", Risk.send, {"label": "Place order"}, None)
     finally:
@@ -253,6 +256,27 @@ async def test_never_applies_to_every_tool_of_an_app_and_in_task_runs(config, is
         assert llm.calls[0]["tools"] is None  # nothing left to offer
         res = next(e for e in events if isinstance(e, ToolResultEvent))
         assert res.result["error"].startswith("You've set Sentient to never use Postcards.")
+        assert log == []
+    finally:
+        await s.stop()
+
+
+async def test_never_set_while_an_approval_waits_still_wins(config, isolated_home):
+    """The rule is checked again right before the tool runs, so approving an old request cannot bypass it."""
+    log: list[str] = []
+    config.tools.approvals.mode = "ask"
+    llm = FakeProvider(replies=[[tool_call("send_postcard", text="x")], "ok"])
+    s = await _start(config, isolated_home, llm, "never_pending", _postcards(log))
+    try:
+        sid = await s.store.create_session(channel="cli")
+        events = []
+        async for ev in s.agent.run_turn(sid, "send it", channel="cli"):
+            events.append(ev)
+            if isinstance(ev, ApprovalRequest):
+                s.approvals.config.rules = {"send_postcard": "never"}  # changed in Settings meanwhile
+                s.approvals.resolve(ev.approval_id, "allow")
+        res = next(e for e in events if isinstance(e, ToolResultEvent))
+        assert res.is_error and res.result["error"].startswith("You've set Sentient to never use")
         assert log == []
     finally:
         await s.stop()

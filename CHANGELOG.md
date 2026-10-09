@@ -17,6 +17,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
   in Gmail and IMAP email, and suggests a ready draft. Newsletters, no-reply senders and answered threads are skipped,
   and nothing is sent until you approve it. Settings under Proactivity.
 
+### Security
+- Purchases now ask even when approvals are switched off, and code Sentient writes can never make one. A tool set
+  to Never while a request waits for your yes, or while a script runs, is blocked right away.
+
 ## [3.0.0-alpha.0] - 2026-10-08
 
 Sentient v3: a rewrite as a desktop app that runs on your own computer. No account, no servers, no `.env`.

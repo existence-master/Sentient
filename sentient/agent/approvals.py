@@ -79,9 +79,9 @@ class ApprovalBroker:
         return await self.decide(tool, sid, risk, arguments, ctx), risk
 
     async def decide(self, tool: Tool, session_id: str | None, risk: Risk, arguments: dict, ctx: Any) -> bool:
-        """``needs_approval`` for a call whose effective risk is known. Under an "allow" rule it also
-        checks whether the call is a purchase, which still asks."""
-        purchase = self.rule(tool) == "allow" and await is_purchase(tool, arguments, ctx, risk)
+        """``needs_approval`` for a call whose effective risk is known. It also checks whether the call is
+        a purchase: purchases always ask, whatever the mode, rules or "allow for this chat" say."""
+        purchase = await is_purchase(tool, arguments, ctx, risk)
         return self.needs_approval(tool, session_id, risk, purchase=purchase)
 
     def needs_approval(
@@ -97,7 +97,7 @@ class ApprovalBroker:
         """``risk`` is the call's effective risk. Without it, pass ``arguments`` (and ``ctx``) so a synchronous
         ``tool.risk_fn`` is evaluated here; an async ``risk_fn`` cannot be awaited in this sync method and is
         treated as at least ``send`` (use ``await requires_approval(...)`` instead). ``purchase`` marks a call
-        that spends money; only an "allow" rule looks at it (``decide`` works it out)."""
+        that spends money (``decide`` works it out); it always asks, even with approvals mode "off"."""
         if risk is None and arguments is not None and getattr(tool, "risk_fn", None) is not None:
             risk = _sync_effective_risk(tool, arguments, ctx)
         risk = tool.risk if risk is None else Risk(risk)
@@ -105,8 +105,10 @@ class ApprovalBroker:
         rule = self.rule(tool)
         if rule in {"ask", "never"}:  # "never" is refused before this; asking is the safe answer anyway
             return True
+        if purchase:  # spending money always asks; browser.confirm_purchases is the only switch for it
+            return True
         if rule == "allow":
-            return purchase and mode != "off"
+            return False
         if mode == "off":
             return False
         if self.config.remember_session and session_id:

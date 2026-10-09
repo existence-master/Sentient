@@ -161,11 +161,24 @@ async def test_policy_unit_follows_lasting_rules():
         await policy.check(look, "kit_lookup", {}, ctx, 0)
     # "allow" never widens what scripts may do: they only read (ADR 0012), purchases included
     for t in (post, buy):
-        with pytest.raises(Refused, match="cannot run from inside a script"):
+        with pytest.raises(Refused, match=r"cannot run from inside a script|would spend money"):
             await policy.check(t, t.name, {}, ctx, 0)
     ask = BridgePolicy(approvals_mode="off", rules={"kit": "ask"})
     with pytest.raises(Refused, match="always ask before using kit"):
         await ask.check(look, "kit_lookup", {}, ctx, 0)
+    # approvals "off" lets scripts send, never spend money
+    off = BridgePolicy(approvals_mode="off")
+    assert await off.check(post, "kit_post", {}, ctx, 0) == Risk.send
+    with pytest.raises(Refused, match="would spend money"):
+        await off.check(buy, "kit_buy", {}, ctx, 0)
+    # rules are read on every call, so a rule changed while a script runs applies at once
+    live: dict[str, str] = {}
+    running = BridgePolicy(approvals_mode="off", rules_source=lambda: live)
+    assert await running.check(look, "kit_lookup", {}, ctx, 0) == Risk.read
+    live["kit_lookup"] = "never"
+    assert not running.is_available(look)
+    with pytest.raises(Refused, match="never use"):
+        await running.check(look, "kit_lookup", {}, ctx, 1)
 
 
 async def test_syntax_error_is_friendly_and_nothing_runs(sandbox_app):
