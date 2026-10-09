@@ -388,7 +388,8 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
 - Never a backlog: a recurring task's next time is computed from now, so missed occurrences are not replayed.
   A skipped recurring task moves to its next time and stays `active`. A skipped one-off task becomes `error` with
   `Skipped: it was due Sep 14, 18:30, while the computer was off or asleep. Choose Run now if you still want it.`
-- `interval` schedules (every N minutes) always run once and are not reported: their next check is due anyway.
+- `interval` schedules (every N minutes) run once and are not reported, since their next check is due anyway; with
+  `catch_up: "skip"` the missed check is skipped (and reported) instead.
 - One notification per catch-up: `kind: "task"`, title `Caught up after sleep: ran 1, skipped 2` (or `after Sentient was
   off` on startup, `after resuming` after Stop everything), message `Ran once now: 'A'.` and/or `Skipped: 'B', 'C'. Open
   one and choose Run now if you still want it.`, `payload: {event: "caught_up", reason: "start"|"sleep"|"resume",

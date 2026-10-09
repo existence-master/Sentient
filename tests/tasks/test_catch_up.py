@@ -112,6 +112,17 @@ async def test_a_run_a_moment_late_is_not_a_catch_up(make_app, clock):
     assert await caught_up(app) == []
 
 
+async def test_an_every_few_minutes_check_that_says_skip_is_skipped(make_app, clock):
+    app = await make_app(llm(), clock=clock)
+    interval = {"type": "recurring", "frequency": "interval", "interval_minutes": 60, "timezone": "UTC", "catch_up": "skip"}
+    task_id = await scheduled(app, "Check the price", clock.dt - timedelta(hours=2), normalize_schedule(interval, "UTC"))
+    assert await tick(app) == []
+    task = await app.tasks.get(task_id)
+    assert task["runs"] == [] and task["next_execution_at"] == "2026-09-15T03:00:00+00:00"
+    [note] = await caught_up(app)
+    assert note["title"] == "Caught up after Sentient was off: ran 0, skipped 1"
+
+
 async def test_nothing_is_caught_up_while_stopped_and_it_happens_on_resume(make_app, clock):
     app = await make_app(llm(), clock=clock)
     assert await tick(app) == []

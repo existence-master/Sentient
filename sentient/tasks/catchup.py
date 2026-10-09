@@ -10,8 +10,8 @@ Each missed task runs once or is skipped, by its schedule's ``catch_up``:
 - ``skip``: never catch up.
 
 Never more than once: a recurring task's next time is computed from now when the run ends, so missed occurrences are
-not replayed one by one. ``interval`` schedules (every N minutes) always run once without a notice: their next check
-is due anyway. Deterministic: no model decides.
+not replayed one by one. ``interval`` schedules (every N minutes) run once without a notice, since their next check
+is due anyway, unless they say ``skip``. Deterministic: no model decides.
 """
 
 from __future__ import annotations
@@ -41,9 +41,9 @@ def policy(schedule: dict | None) -> str:
 def decide(schedule: dict | None, late_s: float, window_hours: float) -> str:
     """``run`` (once, now), ``skip``, or ``quiet`` (run once without telling: an interval check)."""
     schedule = schedule or {}
-    if schedule.get("type") == "recurring" and str(schedule.get("frequency") or "") == "interval":
-        return "quiet"
     chosen = policy(schedule)
+    if schedule.get("type") == "recurring" and str(schedule.get("frequency") or "") == "interval":
+        return "skip" if chosen == "skip" else "quiet"  # an explicit skip still wins
     if chosen == "auto":
         chosen = "run" if window_hours > 0 and late_s < window_hours * 3600 else "skip"
     return chosen
