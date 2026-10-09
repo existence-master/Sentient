@@ -42,7 +42,8 @@ Add a `terminal` package with one tool, `terminal_run(command, cwd?)`, risk `exe
   keychain secrets are never added. Output streams to the chat, is trimmed for the model, and is saved to a file when
   long. The timeout (default 180 s), the card's Stop button, cancelling the reply and Stop everything kill the whole
   process tree, using the sandbox's process runner; on macOS and Linux every process carrying the run's marker is
-  killed too, so a child that left the process group can't outlive Stop.
+  killed too, so a child that left the process group can't outlive Stop. A process that clears its own
+  environment can still escape there; approval is the gate for that.
 
 ## Consequences
 

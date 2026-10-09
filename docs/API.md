@@ -1252,7 +1252,8 @@ Off by default ([ADR 0019](adr/0019-host-terminal.md)). Settings > Terminal (con
 - Stopping: at `timeout_s`, from the card's Stop button and from Stop everything (section 17) the command's whole
   process tree is killed: a Job Object on Windows; elsewhere its process group plus every process carrying its run
   marker, so a child that left the group (`setsid`) dies too. The same sweep runs when a command ends, so nothing it
-  started keeps running. Cancelling the chat reply also kills it.
+  started keeps running (a process that clears its own environment can still escape on macOS and Linux).
+  Cancelling the chat reply also kills it.
 - Scripts (section 11) can never call it, in any approvals mode.
 - `GET /api/terminal/status` → `{enabled, shell, shell_path, allowed_folders, default_folder, blocked: [string],
   running: [{id, call_id, command, cwd, started_at}]}` (`id` is unique per run). `shell` is `pwsh`, `powershell`, `bash`, `zsh`, `sh` or null.
