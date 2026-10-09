@@ -12,7 +12,8 @@ Two layers:
 - ``Agent.run_turn`` is a chat turn: persists the user message (with
   attachments), builds the system prompt (persona, profile, recalled memory,
   user model, skills, clock, running conversation summary), runs the loop,
-  persists the transcript, then kicks off background work (fact extraction,
+  persists the transcript (the final reply carries its memory sources: the facts and
+  insights in its prompt and the facts memory tools returned), then kicks off background work (fact extraction,
   auto title, context compression). Messages the user sends while a reply runs
   (``Agent.steer``) are fed to the model at the next round.
 """
@@ -57,6 +58,7 @@ from sentient.llm.events import (
 )
 from sentient.llm.provider import LLMProvider, ProviderError, ToolCall
 from sentient.memory.facts import FactMemory
+from sentient.memory.sources import MemorySources
 from sentient.memory.workspace import Workspace
 from sentient.services import cancel_tasks
 from sentient.skills.loader import SkillLibrary
@@ -303,19 +305,22 @@ class Agent:
             },
         )
 
-    async def _user_model_context(self, user_text: str) -> str:
+    async def _user_model_context(self, user_text: str) -> tuple[str, list[dict]]:
+        """(prompt block, insights in it). Uses ``context_with_sources`` when the user model has it."""
         um = getattr(self.app, "user_model", None) if self.app is not None else None
-        fn = getattr(um, "context_for", None)
+        fn = getattr(um, "context_with_sources", None) or getattr(um, "context_for", None)
         if not callable(fn):
-            return ""
+            return "", []
         try:
             out = await asyncio.wait_for(fn(user_text), timeout=USER_MODEL_TIMEOUT_S)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # includes the timeout: the user model must never slow a turn down much
             log.debug("user model context skipped: %s", exc)
-            return ""
-        return out.strip() if isinstance(out, str) else ""
+            return "", []
+        text, insights = out if isinstance(out, tuple) and len(out) == 2 else (out, [])
+        text = text.strip() if isinstance(text, str) else ""
+        return text, (insights if text and isinstance(insights, list) else [])
 
     async def _recall(self, user_text: str) -> list[dict]:
         if self.memory is None or self.config.memory.facts_top_k <= 0 or not user_text.strip():
@@ -329,7 +334,18 @@ class Agent:
             return []
 
     async def system_prompt(self, user_text: str, channel: str, session: dict | None = None) -> str:
-        facts, user_context = await asyncio.gather(self._recall(user_text), self._user_model_context(user_text))
+        return (await self._system_prompt_with_sources(user_text, channel, session))[0]
+
+    async def _system_prompt_with_sources(
+        self, user_text: str, channel: str, session: dict | None = None
+    ) -> tuple[str, MemorySources]:
+        """The system prompt and the memories put into it (recalled facts, user-model insights)."""
+        facts, (user_context, insights) = await asyncio.gather(
+            self._recall(user_text), self._user_model_context(user_text)
+        )
+        sources = MemorySources()
+        sources.add_facts(facts)
+        sources.add_insights(insights)
         prompt = build_system_prompt(
             snapshot=self.workspace.snapshot(),
             facts=facts,
@@ -344,7 +360,7 @@ class Agent:
         )
         if session and session.get("context_summary"):
             prompt += "\n\n## Earlier in this conversation\n" + session["context_summary"]
-        return prompt
+        return prompt, sources
 
     # ------------------------------------------------------------------ reusable engine
     async def run_loop(
@@ -638,6 +654,17 @@ class Agent:
             await persist("tool", content, tool_call_id=tc.id, name=tc.name)
         yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
 
+    def _delivered_rows(self, res: Any) -> Any:
+        """The rows of a list result the model actually read: ``_tool_content`` cuts long results, and a
+        memory from the cut part must not be shown as one Sentient had in mind."""
+        limit = self.config.chat.tool_result_max_chars
+        if not limit or not isinstance(res, list) or len(_json_safe(res)) <= limit:
+            return res
+        keep = 0
+        while keep < len(res) and len(_json_safe(res[: keep + 1])) <= limit:
+            keep += 1
+        return res[:keep]
+
     async def _tool_content(self, res: Any, call_id: str) -> str:
         """The tool message the model reads. Long results are cut; the full text goes to files/outputs/."""
         content = _json_safe(res)
@@ -726,12 +753,13 @@ class Agent:
 
         result = LoopResult()
         partial = ""
+        sources = MemorySources()  # what this reply had in mind (shown under it, never asked of the model)
         try:
             await self.store.add_message(session_id, "user", user_text, attachments=attachments)
             await self.store.touch_session(session_id, title=(user_text or (attachments[0] if attachments else ""))[:60])
 
             session = await self.store.get_session(session_id)
-            system = await self.system_prompt(user_text, channel, session)
+            system, sources = await self._system_prompt_with_sources(user_text, channel, session)
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
             convo = history_to_openai(history)
             # replace the just-stored user message with the rich version (attachments inlined)
@@ -768,14 +796,14 @@ class Agent:
                     partial += event.text
                 elif isinstance(event, ToolResultEvent | UserInterjection):
                     partial = ""  # text before a tool call or a steer was already persisted
+                    if isinstance(event, ToolResultEvent) and not event.is_error:
+                        sources.add_tool_result(event.name, self._delivered_rows(event.result))
                 yield event
         except (asyncio.CancelledError, GeneratorExit):
             release()
             # the user pressed Stop (or the window went away): keep what was shown
             with contextlib.suppress(Exception):
-                await asyncio.shield(
-                    self.store.add_message(session_id, "assistant", (partial.rstrip() + "\n\n_(stopped)_").strip())
-                )
+                await asyncio.shield(self._persist_stopped(session_id, partial, sources))
             raise
         except BaseException:
             release()
@@ -783,10 +811,11 @@ class Agent:
         leftover = release()
 
         if not (result.error and not result.text):
+            memory_sources = await sources.resolve(self.store)
             message_id = await self.store.add_message(
-                session_id, "assistant", result.text, thinking=result.thinking or None
+                session_id, "assistant", result.text, thinking=result.thinking or None, memory_sources=memory_sources
             )
-            yield Done(content=result.text, message_id=message_id, **ev)
+            yield Done(content=result.text, message_id=message_id, memory_sources=memory_sources, **ev)
 
             said = "\n\n".join([user_text, *result.interjections]).strip()
             if self.memory is not None and self.config.memory.extract_after_turn:
@@ -812,6 +841,12 @@ class Agent:
             # steer messages that arrived after the final round start a new turn
             async for event in self.run_turn(session_id, "\n\n".join(leftover), channel=channel, model=model):
                 yield event
+
+    async def _persist_stopped(self, session_id: str, partial: str, sources: MemorySources) -> None:
+        content = (partial.rstrip() + "\n\n_(stopped)_").strip()
+        await self.store.add_message(
+            session_id, "assistant", content, memory_sources=await sources.resolve(self.store)
+        )
 
     # ------------------------------------------------------------------ tools
     @staticmethod

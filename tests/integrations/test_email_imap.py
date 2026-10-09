@@ -367,3 +367,33 @@ def test_normalize_html_only_email():
     item = normalize_raw(9, raw, ["\\Seen"])
     assert item["body"] == "Big news today" and item["labels"] == ["INBOX"] and item["thread_id"] == "9"
     assert item["sender_email"] == "news@x.com" and item["message_id"] is None
+
+
+async def test_imap_hides_codes_and_magic_links(app, ctx, monkeypatch):
+    """#128: tool results and pushed feed items carry placeholders, ordinary numbers stay."""
+    mgr = app.integrations
+    monkeypatch.setattr(feeds_mod, "MIN_INTERVAL_S", 0.0)
+    body = ("Use code 730215 to sign in, or click this link:\r\n"
+            "https://app.example.com/l/9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c\r\n"
+            "Questions? Call 415-555-0134. Invoice 2026-0042.")
+    box = FakeMailbox({1: raw_email("Old <old@x.com>", "Old news", "Seen before", "m1")})
+    install_fake_imap(monkeypatch, box)
+    await connect_imap(app)
+
+    box.messages[2] = raw_email("Acme <hello@acme.example>", "Your sign-in link", body, "m2")
+    found = (await app.registry.get("email_imap_search").call(ctx, {"text": "acme"}))["messages"]
+    read = await app.registry.get("email_imap_read").call(ctx, {"message_id": "2"})
+    item = next(m for m in found if m["id"] == "2")
+    for m in (item, read):
+        assert "730215" not in m["body"] and "9f8e7d6c5b4a" not in m["body"] and "730215" not in m["snippet"]
+        assert "[one-time code hidden]" in m["body"] and "[sign-in link hidden]" in m["body"]
+        assert "415-555-0134" in m["body"] and "Invoice 2026-0042" in m["body"]
+
+    # pushed new mail is masked before it is published to proactivity and triggered tasks
+    session = await email_imap.open_session(CREDS)
+    await email_imap.PLUGIN.check_new(mgr, session)  # baseline
+    box.messages[3] = raw_email("Acme <hello@acme.example>", "Code", "Your verification code is 118822", "m3")
+    async with app.bus.subscribe() as q:
+        await email_imap.PLUGIN.check_new(mgr, session)
+        batch = await next_items(q)
+    assert batch["items"][0]["body"] == "Your verification code is [one-time code hidden]"

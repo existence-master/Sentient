@@ -50,6 +50,7 @@ except ImportError:  # pragma: no cover
     class IntegrationError(Exception):  # type: ignore[no-redef]
         pass
 
+from sentient.integrations import redact
 from sentient.llm.provider import parse_json_loose
 from sentient.proactivity import followups, prompts
 from sentient.proactivity.prefilter import (
@@ -421,6 +422,9 @@ class ProactiveEngine(Service):
         """Run the whole proactive pipeline for one item. Returns the suggestion record, or None."""
         now = now or datetime.now(UTC)
         kind = source_kind(source)
+        if source in EMAIL_SOURCES and redact.enabled(self.app):
+            # the mail plugins already hide one-time codes and sign-in links; this keeps any other path safe too
+            item = redact.hide_email_secrets(dict(item))
         if item.get("id") and await self._already_suggested(source, str(item["id"])):
             log.info("%s item %s already produced a suggestion", source, item.get("id"))
             return None
@@ -856,6 +860,9 @@ class ProactiveEngine(Service):
                 log.warning("follow-ups: reading %s failed: %s", source, exc)
                 continue
             me = {str(a).lower() for a in (data or {}).get("addresses") or []}
+            if redact.enabled(self.app):
+                for thread in (data or {}).get("threads") or []:
+                    thread["messages"] = [redact.hide_email_secrets(dict(m)) for m in thread.get("messages") or []]
             user = await self._user_email(source)
             if user:
                 me.add(user.lower())

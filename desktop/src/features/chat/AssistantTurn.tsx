@@ -19,6 +19,7 @@ import { turnText, type AssistantTurnView, type TurnSegment } from '@/lib/chatFo
 import { modelShortName } from '@/lib/models'
 import type { ApprovalDecision } from '@/lib/types'
 import { cn, copyText, formatNumber } from '@/lib/utils'
+import { MemorySources } from './MemorySources'
 import { ToolCallCard } from './ToolCallCard'
 
 export interface AssistantTurnProps {
@@ -188,6 +189,8 @@ export const AssistantTurn = memo(function AssistantTurn({ turn, assistantName, 
             )}
           </div>
         )}
+
+        {!streaming && !!turn.memorySources?.length && <MemorySources sources={turn.memorySources} assistantName={assistantName} />}
 
         {!streaming && (textOut || isLast) && (
           <div className={cn('-ml-1.5 flex h-7 items-center gap-0.5 transition-opacity', isLast ? 'opacity-100' : 'opacity-0 group-hover/turn:opacity-100')}>

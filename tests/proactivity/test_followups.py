@@ -760,3 +760,20 @@ def test_config_schema_describes_followups():
     assert cfg.proactivity.sources == ["gmail", "gcalendar"]  # the watched-apps list is unchanged
     assert (cfg.proactivity.followups.waiting_on_you_days, cfg.proactivity.followups.waiting_on_them_days,
             cfg.proactivity.followups.max_age_days, cfg.proactivity.followups.max_suggestions) == (3, 4, 21, 3)
+
+
+async def test_codes_and_sign_in_links_never_reach_the_follow_up_prompt(mail_app, keychain):
+    """#128: a thread that quotes a code and a sign-in link reaches the model only with placeholders."""
+    app = mail_app
+    await connect_gmail(app, keychain)
+    app.fake.text_replies.append(NO)
+    body = ("Hi Maya, could you log in to the vendor portal and approve the invoice? The login code is 482913 and "
+            "the sign-in link is https://portal.example/magic/9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c Thanks, Priya")
+    with respx.mock() as router:
+        mock_gmail(router, {"t-code": [gmsg("m1", "t-code", PRIYA, ME, "Vendor portal", body, days=4)]})
+        await app.proactivity.run_followups(now=NOW)
+    assert len(app.fake.text_calls) == 1
+    prompt = app.fake.text_calls[0]["messages"][1]["content"]
+    assert "approve the invoice" in prompt
+    assert "482913" not in prompt and "9f8e7d6c5b4a" not in prompt
+    assert "[one-time code hidden]" in prompt and "[sign-in link hidden]" in prompt
