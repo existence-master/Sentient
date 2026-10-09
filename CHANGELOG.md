@@ -31,6 +31,27 @@ and versions follow [Semantic Versioning](https://semver.org/).
   title bar, the tray menu, the shortcut Ctrl+Alt+Shift+S, `/stopall` in paired Telegram and Discord chats, and on
   paired phones. Messages you queued before the stop are not sent. It never asks the model, so nothing can
   talk its way past it.
+- **Daily Brief:** a few lines each weekday morning at 07:30 with today's meetings, emails that need you, tasks due
+  or waiting for you and the weather, plus headlines on topics you pick. Turn it on in onboarding or with **Set up my
+  Daily Brief** in Notifications. It is a normal task you can reschedule, pause or delete, it only reads (it never
+  sends or changes anything), and it shows at most 7 lines, each with a link and a "why am I seeing this". Thumbs up
+  or down on a line or a section shapes the next briefs (change your mind and the latest rating counts), any section
+  can be turned off, and the brief expires at the end of the day. It also arrives in paired Telegram and Discord chats,
+  and "read my brief" works in chat and by voice.
+- **Evening Brief:** an optional wrap-up at 21:00 every day, set up from the same card: tasks finished or failed today,
+  replies and emails sent, files made, what is still waiting for you and tomorrow's first events. Its own task, the
+  same 7-line cap, links, read-only rule and end-of-day expiry.
+- **Remote MCP servers that need sign-in:** hosted servers such as Notion's or Composio's can now be used. Add a
+  remote server and click **Sign in** to approve Sentient in your browser; Sentient refreshes the sign-in on its own and
+  **Sign out** forgets it. Servers that take an access token instead get headers (like `Authorization: Bearer ...`)
+  whose values are kept in your system keychain. A server that turns Sentient away now shows "Needs sign-in" instead
+  of a generic error.
+- **Check my models:** a check-up in Settings > Models and in onboarding tests each role's model the way Sentient
+  uses it: a short reply, a tool call (and a second tool step for chat and tasks), a JSON reply for background jobs,
+  thinking, context length, and whether Ollama runs the model on the graphics card or partly on the processor. Each
+  role gets a pass, warning or failure with a plain fix ("qwen3:4b can't call tools reliably; try qwen3:8b") and,
+  where the fix is obvious, a button that does it. Nothing changes unless you press it. `sentient doctor --models`
+  runs the same check in a terminal.
 - **Stuck tasks tell you.** A task that makes no progress for 10 minutes, keeps hitting the same error, or reaches a
   step only you can do (a password, a CAPTCHA) pauses and says why: "Sentient is stuck on 'Book the table': the page
   asks for your password. Open it to help or cancel." Choose Try again, Skip this step or Cancel, or tell it what to

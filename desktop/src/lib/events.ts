@@ -2,12 +2,13 @@
  * THE place where domain events from `/ws` update the React Query cache.
  * Feature code should not subscribe to domain events for cache purposes; add a case here.
  *
- *   task.updated          -> upsert into ['tasks'] and ['tasks', id]
- *   task.deleted          -> remove from ['tasks']
+ *   task.updated          -> upsert into ['tasks'] and ['tasks', id] (+ refetch the Daily Brief state)
+ *   task.deleted          -> remove from ['tasks'] (+ refetch the Daily Brief state)
  *   task.run_progress     -> append progress to the run in cache
  *   task.run_activity     -> update the run's last activity time
  *   notification.new      -> prepend to ['notifications'], badge++, toast, native notification if unfocused
  *   notification.updated  -> replace in place (payload status changed)
+ *   (a `brief` notification, new or updated, also refetches ['proactivity', 'brief'])
  *   notification.read     -> mark read (id null = all)
  *   notification.deleted  -> remove (id null = all)
  *   integration.updated   -> upsert into ['integrations'], refetch change feeds (+ ['hooks'] for the webhook integration)
@@ -56,8 +57,19 @@ function plain(md: string, max = 180): string {
 export function installDomainEvents(qc: QueryClient): () => void {
   const offs: Array<() => void> = []
 
-  offs.push(live.onDomain('task.updated', (e) => upsertTask(qc, e.data)))
-  offs.push(live.onDomain('task.deleted', (e) => removeTask(qc, e.data.task_id)))
+  const refreshBrief = () => void qc.invalidateQueries({ queryKey: qk.proactivity.brief })
+  offs.push(
+    live.onDomain('task.updated', (e) => {
+      upsertTask(qc, e.data)
+      if (e.data.original_context?.source === 'brief') refreshBrief()
+    })
+  )
+  offs.push(
+    live.onDomain('task.deleted', (e) => {
+      removeTask(qc, e.data.task_id)
+      refreshBrief()
+    })
+  )
   offs.push(
     live.onDomain('task.run_progress', (e) => {
       const { task_id, run_id, update } = e.data
@@ -86,6 +98,7 @@ export function installDomainEvents(qc: QueryClient): () => void {
         old ? { notifications: [n, ...old.notifications.filter((x) => x.id !== n.id)], unread: old.unread + (n.read ? 0 : 1) } : old
       )
       useNotificationStore.getState().push(n)
+      if (n.kind === 'brief') refreshBrief()
       const title = n.title || 'Sentient'
       toast(title, {
         description: plain(n.message),
@@ -118,6 +131,7 @@ export function installDomainEvents(qc: QueryClient): () => void {
         old ? { ...old, notifications: old.notifications.map((x) => (x.id === n.id ? n : x)) } : old
       )
       useNotificationStore.getState().update(n)
+      if (n.kind === 'brief') refreshBrief()
     })
   )
   offs.push(

@@ -99,12 +99,16 @@ def node(
 
 
 @app.command()
-def doctor():
+def doctor(
+    models: bool = typer.Option(
+        False, "--models", help="Also run the model check-up: a reply, a tool call, JSON, context and GPU per role."
+    ),
+):
     """Check that everything needed to run is in place."""
-    asyncio.run(_doctor())
+    asyncio.run(_doctor(models))
 
 
-async def _doctor() -> None:
+async def _doctor(models: bool = False) -> None:
     from sentient.app import SentientApp
 
     table = Table(title="sentient doctor")
@@ -125,6 +129,7 @@ async def _doctor() -> None:
         console.print(table)
         return
     s = SentientApp(cfg, enable_background=False)
+    checkup_table: Table | None = None
     try:
         await s.start()
         row("database", True, str(s.store.path))
@@ -150,11 +155,39 @@ async def _doctor() -> None:
             row("embedding model", True, f"{s.llm.model_for('embedding')} (dim {len(vec)})")
         except Exception as exc:
             row("embedding model", False, f"{s.llm.model_for('embedding')}: {exc}")
+        if models:
+            checkup_table = await _model_checkup(s)
     except Exception as exc:
         row("startup", False, str(exc))
     finally:
         await s.stop()
     console.print(table)
+    if checkup_table is not None:
+        console.print(checkup_table)
+
+
+async def _model_checkup(s) -> Table:
+    from sentient.llm.checkup import run_checkup
+
+    marks = {"pass": "[green]ok[/green]", "warn": "[yellow]warn[/yellow]", "fail": "[red]fail[/red]", "skip": "skip"}
+    table = Table(title="model check-up")
+    table.add_column("role")
+    table.add_column("check")
+    table.add_column("status")
+    table.add_column("detail", overflow="fold")
+    with console.status("Checking models...") as status:
+        async for event in run_checkup(s.config, s.llm):
+            if event["type"] == "step":
+                status.update(f"{event['role']}: {event['label']}...")
+            elif event["type"] == "role":
+                name = f"{event['role']}\n[dim]{event['model'] or 'uses primary'}[/dim]"
+                if not event["checks"]:
+                    table.add_row(name, "", marks["skip"], "Uses the primary model.")
+                for i, c in enumerate(event["checks"]):
+                    detail = c["detail"] + (f"\n[bold]Fix:[/bold] {c['fix']}" if c.get("fix") else "")
+                    table.add_row(name if i == 0 else "", c["label"], marks[c["status"]], detail)
+                table.add_section()
+    return table
 
 
 @config_app.command("path")

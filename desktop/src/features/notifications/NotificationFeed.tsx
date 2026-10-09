@@ -5,6 +5,7 @@ import { Button, EmptyState, Skeleton } from '@/components/ui'
 import { useNotifications } from '@/hooks/notifications'
 import { errorMessage } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { BriefCard } from './BriefCard'
 import { NotificationItem } from './NotificationItem'
 import { FILTERS, groupByDay, matchesFilter, needsAction, type FeedFilter } from './utils'
 
@@ -35,7 +36,8 @@ export function NotificationFeed({
 }) {
   const { data, isLoading, isError, error, refetch } = useNotifications()
   const [filter, setFilter] = useState<FeedFilter>(initialFilter)
-  const list = data?.notifications ?? []
+  // the Daily Brief has its own card at the top instead of a row in the feed
+  const list = useMemo(() => (data?.notifications ?? []).filter((n) => n.kind !== 'brief'), [data])
 
   const counts = useMemo(() => {
     const c = {} as Record<FeedFilter, number>
@@ -73,6 +75,11 @@ export function NotificationFeed({
       </div>
 
       <div className={cn(panel && 'px-3 pb-6 pt-1')}>
+        {filter === 'all' && (
+          <div className={cn(panel && 'pt-2')}>
+            <BriefCard compact={panel} onNavigate={onNavigate} />
+          </div>
+        )}
         {isLoading ? (
           <div className="space-y-2 pt-3">
             {[0, 1, 2, 3].map((i) => (

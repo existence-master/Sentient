@@ -42,6 +42,7 @@ import {
   StatusDot,
   Switch
 } from '@/components/ui'
+import { ModelCheckup } from '@/features/models/ModelCheckup'
 import { ModelPicker } from '@/features/models/ModelPicker'
 import { ModelTest } from '@/features/models/ModelTest'
 import { OllamaPull } from '@/features/models/OllamaPull'
@@ -83,6 +84,7 @@ export function ModelsSection({ query }: SectionProps) {
 
   return (
     <div className="space-y-10">
+      {(!q || 'check my models check-up checkup test tools gpu graphics card'.includes(q)) && <ModelCheckup />}
       <section className="space-y-3">
         <SectionTitle title="Roles" description="Sentient uses different models for different jobs. Mix local and cloud freely." />
         {roles.map((r) => (

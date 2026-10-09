@@ -2,6 +2,7 @@ import { IconAlertTriangle, IconCircleCheck, IconCloud, IconDeviceDesktop, IconD
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Card, Field, IconButton, Input, SegmentedControl, Skeleton } from '@/components/ui'
+import { ModelCheckup } from '@/features/models/ModelCheckup'
 import { ModelPicker } from '@/features/models/ModelPicker'
 import { ModelTest } from '@/features/models/ModelTest'
 import { OllamaPull } from '@/features/models/OllamaPull'
@@ -10,6 +11,7 @@ import { useLocalModels, useProviders, useSetSecret } from '@/hooks/models'
 import { errorMessage } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
 import { looksLikeEmbedding, recommendFastLocal, recommendLocal } from '@/lib/models'
+import type { RoleName } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useOnboardingDraft } from './draft'
 import { StepHeader } from './Steps'
@@ -144,8 +146,18 @@ function LocalBrain() {
           </div>
         )}
       </Card>
+      <DraftCheckup />
     </div>
   )
+}
+
+/** The model check-up for the models picked so far (they are saved when onboarding finishes). */
+function DraftCheckup() {
+  const d = useOnboardingDraft()
+  if (!d.primary) return null
+  const roles: Partial<Record<RoleName, string>> = { primary: d.primary, fast: d.fast || d.primary }
+  if (d.embedding) roles.embedding = d.embedding
+  return <ModelCheckup roles={roles} onUseModel={(role, model) => (role === 'primary' || role === 'fast') && d.set({ [role]: model })} />
 }
 
 function CloudBrain() {
@@ -260,6 +272,7 @@ function CloudBrain() {
           </Field>
         </Card>
       )}
+      {selected?.key_set && <DraftCheckup />}
     </div>
   )
 }

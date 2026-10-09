@@ -86,6 +86,7 @@ class OnboardingBody(BaseModel):
     professional_context: str = ""
     personal_context: str = ""
     persona: str = "friendly"
+    daily_brief: bool = False
 
 
 @router.post("/api/onboarding", dependencies=_auth)
@@ -134,6 +135,8 @@ async def onboarding(request: Request, body: OnboardingBody):
 
         assert s.agent is not None
         s.agent._spawn(_seed())
+    if body.daily_brief:  # the first opt-in: a recurring task the user can edit, pause or delete later
+        await s.proactivity.brief.setup({})
     return {"ok": True}
 
 

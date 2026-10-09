@@ -1,8 +1,9 @@
 /** React Query hooks for §3 models & secrets. */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, errorMessage } from '@/lib/api'
-import type { ModelRoles, OllamaPullProgress, RoleName, SentientConfig } from '@/lib/types'
+import { demo, isDemoMode } from '@/lib/demo'
+import type { CheckupRole, CheckupStatus, ModelRoles, OllamaPullProgress, RoleName, SentientConfig } from '@/lib/types'
 import { qk } from './queryKeys'
 
 export function useProviders() {
@@ -119,4 +120,71 @@ export function useOllamaPull() {
   const cancel = useCallback(() => abort.current?.abort(), [])
   const reset = useCallback(() => setState(idle), [])
   return { ...state, pull, cancel, reset }
+}
+
+export interface CheckupRow {
+  role: RoleName
+  model: string | null
+  /** What is being tried right now, while this role is being checked. */
+  step: string | null
+  result: CheckupRole | null
+}
+
+export interface CheckupState {
+  rows: CheckupRow[]
+  running: boolean
+  error: string | null
+  /** Worst result once finished. */
+  status: CheckupStatus | null
+  /** Showing the dev-only example result. */
+  example: boolean
+}
+
+const noCheckup: CheckupState = { rows: [], running: false, error: null, status: null, example: false }
+
+function exampleCheckup(): CheckupState {
+  const roles = demo.modelCheckup()
+  const rank: Record<CheckupStatus, number> = { skip: 0, pass: 1, warn: 2, fail: 3 }
+  const status = roles.reduce<CheckupStatus>((w, r) => (rank[r.status] > rank[w] ? r.status : w), 'skip')
+  return { rows: roles.map((r) => ({ role: r.role, model: r.model, step: null, result: r })), running: false, error: null, status, example: true }
+}
+
+/** `POST /api/models/checkup` with live progress. `roles` limits the check to these models (onboarding). */
+export function useModelCheckup() {
+  const [state, setRunState] = useState<CheckupState>(() => (isDemoMode() ? exampleCheckup() : noCheckup))
+  const abort = useRef<AbortController | null>(null)
+  const current = useRef(0)
+
+  const run = useCallback(async (roles?: Partial<Record<RoleName, string | null>>) => {
+    abort.current?.abort()
+    const ctrl = new AbortController()
+    abort.current = ctrl
+    // A stopped run settles later; only the latest run may touch the state.
+    const id = ++current.current
+    const setState = (next: CheckupState | ((s: CheckupState) => CheckupState)) => {
+      if (current.current === id) setRunState(next)
+    }
+    setState({ ...noCheckup, running: true })
+    const patchRow = (role: RoleName, p: Partial<CheckupRow>) =>
+      setState((s) => ({ ...s, rows: s.rows.map((r) => (r.role === role ? { ...r, ...p } : r)) }))
+    try {
+      for await (const e of api.models.checkup(roles, ctrl.signal)) {
+        if (e.type === 'start') setState((s) => ({ ...s, rows: e.roles.map((r) => ({ ...r, step: null, result: null })) }))
+        else if (e.type === 'step') patchRow(e.role, { step: e.label })
+        else if (e.type === 'role') {
+          const { type: _type, ...result } = e
+          void _type
+          patchRow(e.role, { step: null, result })
+        } else if (e.type === 'done') setState((s) => ({ ...s, status: e.status }))
+      }
+      setState((s) => ({ ...s, running: false, error: s.status ? null : "The check-up stopped before it finished. Try again." }))
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') setState((s) => ({ ...s, running: false }))
+      else setState((s) => ({ ...s, running: false, error: errorMessage(err) }))
+    }
+  }, [])
+
+  const cancel = useCallback(() => abort.current?.abort(), [])
+  useEffect(() => () => abort.current?.abort(), [])
+  return { ...state, run, cancel }
 }
