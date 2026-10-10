@@ -277,7 +277,7 @@ async def test_oauth_refreshes_expired_and_rejected_tokens(app, keychain, monkey
         if len(mock.seen_tokens) > seen and conn.status == "connected":
             break
         await asyncio.sleep(0.05)
-    assert conn.status == "connected" and mock.seen_tokens[-1] == mock.issued[2]
+    assert len(mock.seen_tokens) > seen and conn.status == "connected" and mock.seen_tokens[-1] == mock.issued[2]
     assert len(mock.token_calls) == 3  # still valid: no refresh
     mock.valid.discard(mock.issued[2])
     conn.broken.set()

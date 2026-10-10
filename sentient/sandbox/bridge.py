@@ -25,6 +25,9 @@ log = logging.getLogger(__name__)
 
 MAX_BODY = 8 * 1024 * 1024
 MAX_RESULT_CHARS = 2_000_000
+# A refused request's body is still read, so the refusal arrives instead of a reset connection: small ones, briefly.
+REFUSED_BODY_MAX = 64 * 1024
+REFUSED_BODY_WAIT_S = 10
 
 
 class ToolBridge:
@@ -149,24 +152,29 @@ class ToolBridge:
             length = -1
         if length < 0 or length > MAX_BODY:
             return "413 Payload Too Large", self.encode({"ok": False, "error": "request too large"})
-        # Read the whole request before answering, refusals included: closing with the body unread (or still on
-        # its way, as clients send it separately from the headers) resets the connection instead of answering.
-        try:
-            body = await asyncio.wait_for(reader.readexactly(length), 30)
-        except (asyncio.IncompleteReadError, TimeoutError):
-            return "400 Bad Request", self.encode({"ok": False, "error": "bad request"})
         if len(parts) < 2 or parts[0] != "POST" or parts[1] != "/call":
+            await self._discard_body(reader, length)
             return "404 Not Found", self.encode({"ok": False, "error": "not found"})
         if not hmac.compare_digest(headers.get("x-sentient-token", ""), self.token):
+            await self._discard_body(reader, length)
             return "403 Forbidden", self.encode({"ok": False, "error": "forbidden"})
         try:
+            body = await asyncio.wait_for(reader.readexactly(length), 30)
             payload = json.loads(body.decode("utf-8") or "{}")
-        except ValueError:
+        except (asyncio.IncompleteReadError, TimeoutError, ValueError):
             return "400 Bad Request", self.encode({"ok": False, "error": "invalid JSON"})
         if not isinstance(payload, dict):
             return "400 Bad Request", self.encode({"ok": False, "error": "invalid request"})
         response = await self.handle(payload.get("tool"), payload.get("arguments", {}))
         return "200 OK", self.encode(response)
+
+    @staticmethod
+    async def _discard_body(reader: asyncio.StreamReader, length: int) -> None:
+        """Read a refused request's body before answering. Closing with it unread (or still on its way, as clients
+        send it after the headers) resets the connection instead of delivering the refusal."""
+        if 0 < length <= REFUSED_BODY_MAX:
+            with contextlib.suppress(asyncio.IncompleteReadError, TimeoutError):
+                await asyncio.wait_for(reader.readexactly(length), REFUSED_BODY_WAIT_S)
 
     # ------------------------------------------------------------------ mailbox transport
     async def _poll_mailbox(self) -> None:
