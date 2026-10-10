@@ -1,101 +1,55 @@
-import { IconKeyboard } from '@tabler/icons-react'
+import { IconArrowRight, IconKeyboard } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
-import { Alert, Button, FormRow, FormSection, Shortcut, Switch } from '@/components/ui'
-import { useConfigEditor } from '@/hooks/config'
+import { useNavigate } from 'react-router'
+import { Alert, Button, FormRow, FormSection, Shortcut } from '@/components/ui'
 import { useDictationStatus } from '@/features/voice/dictation'
+import { formatAccelerator } from '@/lib/accelerator'
 import { getBridge } from '@/lib/bridge'
-import { acceleratorFromKeyPress, formatAccelerator } from '@/lib/shortcuts'
-import type { DictationShortcutStatus } from '@/types/bridge'
+import type { ShortcutInfo } from '@/types/bridge'
 import { SchemaForm } from '../SchemaForm'
 import type { SectionProps } from '../SettingsPage'
 
 /** Shown in this section; the generic voice form leaves them out. */
 export const DICTATION_KEYS = [
-  'voice.dictation.push_to_talk',
-  'voice.dictation.push_to_talk_shortcut',
-  'voice.dictation.dictate',
-  'voice.dictation.dictate_shortcut',
   'voice.dictation.cleanup',
   'voice.dictation.language',
   'voice.dictation.stop_after_silence_s',
   'voice.dictation.speak_replies'
 ]
 
-const DETAIL_KEYS = DICTATION_KEYS.slice(4)
-
-/** Click, then press the new keys. Esc keeps the old shortcut. */
-function ShortcutButton({ value, onChange, label }: { value: string; onChange: (accelerator: string) => void; label: string }) {
-  const platform = getBridge().platform
-  const [recording, setRecording] = useState(false)
-  const [hint, setHint] = useState<string | null>(null)
-  // While recording, the current shortcuts are off so pressing them doesn't start the microphone. The cleanup
-  // turns them back on however recording ends (new keys, Esc, clicking away, leaving the page).
-  useEffect(() => {
-    if (!recording) return
-    const dictation = getBridge().dictation
-    void dictation.pause(true)
-    return () => void dictation.pause(false)
-  }, [recording])
-  if (recording) {
-    return (
-      <Button
-        size="sm"
-        variant="secondary"
-        autoFocus
-        aria-label={`Press the new keys for ${label}`}
-        onBlur={() => {
-          setRecording(false)
-          setHint(null)
-        }}
-        onKeyDown={(e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          if (e.key === 'Escape') {
-            setRecording(false)
-            setHint(null)
-            return
-          }
-          const acc = acceleratorFromKeyPress(e, platform)
-          if (acc === null) return // only modifiers so far
-          if (!acc) {
-            setHint('Hold Ctrl, Alt or Shift too')
-            return
-          }
-          setRecording(false)
-          setHint(null)
-          onChange(acc)
-        }}
-      >
-        {hint ?? 'Press the new keys…'}
-      </Button>
-    )
+const MODES = [
+  {
+    id: 'pushToTalk',
+    label: 'Push to talk',
+    how: (keys: string) => `Hold ${keys}, speak, and let go. What you said goes to Sentient as a chat message.`
+  },
+  {
+    id: 'dictate',
+    label: 'Dictate into any app',
+    how: (keys: string) =>
+      `Press ${keys}, speak, then press it again or pause. Sentient types your words where your cursor is, and never into a password box.`
   }
-  return (
-    <Button size="sm" variant="ghost" aria-label={`Change the shortcut for ${label}`} onClick={() => setRecording(true)}>
-      <Shortcut keys={formatAccelerator(value, platform)} />
-    </Button>
-  )
-}
+] as const
 
-function Problem({ status }: { status?: DictationShortcutStatus }) {
-  if (!status?.enabled || status.registered || !status.problem) return null
-  return <span className="text-danger">{status.problem}</span>
-}
-
+/** Push to talk and dictation (#169). The shortcuts are changed in Settings > General with the other shortcuts. */
 export function DictationSection({ query }: SectionProps) {
-  const { config, setValue } = useConfigEditor()
-  const status = useDictationStatus((s) => s.status)
+  const navigate = useNavigate()
   const bridge = getBridge()
-  const d = config?.voice?.dictation
+  const status = useDictationStatus((s) => s.status)
+  const [shortcuts, setShortcuts] = useState<ShortcutInfo[]>([])
   const q = query.trim().toLowerCase()
   const matches = !q || 'push to talk dictation dictate type any app shortcut hotkey keys microphone hold'.includes(q)
-  if (!d) return null // an older engine without dictation settings
+
+  useEffect(() => {
+    if (!bridge.isDesktop) return
+    bridge
+      .getShortcuts()
+      .then(setShortcuts)
+      .catch(() => setShortcuts([]))
+  }, [bridge])
 
   const platform = bridge.platform
-  const talkKeys = formatAccelerator(d.push_to_talk_shortcut, platform)
-  const dictateKeys = formatAccelerator(d.dictate_shortcut, platform)
   const mac = platform === 'darwin'
-  const set = (key: string, value: unknown) => setValue(`voice.dictation.${key}`, value, { immediate: true })
 
   return (
     <div className="space-y-6">
@@ -103,35 +57,34 @@ export function DictationSection({ query }: SectionProps) {
         <FormSection
           title="Push to talk and dictation"
           description="Talk to Sentient or type with your voice in any app. Your speech is turned into text on this computer."
+          actions={
+            bridge.isDesktop && (
+              <Button size="sm" variant="ghost" rightIcon={<IconArrowRight size={13} />} onClick={() => navigate('/settings/general')}>
+                Change shortcuts
+              </Button>
+            )
+          }
         >
-          <FormRow
-            label="Push to talk"
-            description={
-              <>
-                Hold {talkKeys}, speak, and let go. What you said goes to Sentient as a chat message.{' '}
-                <Problem status={status?.talk} />
-              </>
-            }
-          >
-            <div className="flex items-center gap-2">
-              <ShortcutButton label="push to talk" value={d.push_to_talk_shortcut} onChange={(acc) => set('push_to_talk_shortcut', acc)} />
-              <Switch checked={d.push_to_talk} onCheckedChange={(on) => set('push_to_talk', on)} aria-label="Push to talk" />
-            </div>
-          </FormRow>
-          <FormRow
-            label="Dictate into any app"
-            description={
-              <>
-                Press {dictateKeys}, speak, then press it again or pause. Sentient types your words where your cursor
-                is, and never into a password box. <Problem status={status?.dictate} />
-              </>
-            }
-          >
-            <div className="flex items-center gap-2">
-              <ShortcutButton label="dictation" value={d.dictate_shortcut} onChange={(acc) => set('dictate_shortcut', acc)} />
-              <Switch checked={d.dictate} onCheckedChange={(on) => set('dictate', on)} aria-label="Dictate into any app" />
-            </div>
-          </FormRow>
+          {MODES.map((m) => {
+            const s = shortcuts.find((x) => x.id === m.id)
+            const keys = s?.accelerator ? formatAccelerator(s.accelerator, platform) : ''
+            return (
+              <FormRow
+                key={m.id}
+                label={m.label}
+                description={
+                  !bridge.isDesktop
+                    ? 'Available in the desktop app.'
+                    : keys
+                      ? m.how(keys)
+                      : 'Turned off. Give it a shortcut in Settings > General to use it.'
+                }
+                error={s?.taken && s.accelerator ? 'Another app was already using this shortcut when Sentient started. Pick a different one.' : undefined}
+              >
+                {keys ? <Shortcut keys={keys} /> : <span className="text-sm text-fg-subtle">Off</span>}
+              </FormRow>
+            )
+          })}
           <div className="flex items-center gap-2 px-4 py-2.5 text-xs text-fg-muted">
             <IconKeyboard size={14} className="text-fg-subtle" />
             While the microphone is on, a small bar at the bottom of your screen shows it. Press Esc to cancel.
@@ -169,7 +122,7 @@ export function DictationSection({ query }: SectionProps) {
           cursor is before you dictate.
         </Alert>
       )}
-      <SchemaForm section="voice" title="Dictation" include={DETAIL_KEYS} filter={query} />
+      <SchemaForm section="voice" title="Dictation" include={DICTATION_KEYS} filter={query} />
     </div>
   )
 }

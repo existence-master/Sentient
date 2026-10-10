@@ -116,12 +116,8 @@ export const LABELS: Record<string, FieldLabel> = {
   'voice.wake_whisper_model': { label: 'Listening model', options: { tiny: 'Tiny (fastest)', 'tiny.en': 'Tiny, English only', base: 'Base (more accurate)', 'base.en': 'Base, English only' } },
   'voice.wake_earcon': { label: 'Play a chime when I hear you' },
   'voice.follow_up_seconds': { label: 'Keep listening after a reply for', unit: 's', description: 'Ask a follow-up without saying the phrase again.' },
-  // push to talk and dictation (#169): the switches and shortcuts live in sections/Dictation.tsx
+  // push to talk and dictation (#169); the shortcuts are in Settings > General > Keyboard shortcuts
   'voice.dictation': { label: 'Dictation' },
-  'voice.dictation.push_to_talk': { label: 'Push to talk', hidden: true },
-  'voice.dictation.push_to_talk_shortcut': { label: 'Push to talk shortcut', hidden: true },
-  'voice.dictation.dictate': { label: 'Dictate into any app', hidden: true },
-  'voice.dictation.dictate_shortcut': { label: 'Dictation shortcut', hidden: true },
   'voice.dictation.cleanup': {
     label: 'Clean up what I say',
     description: 'Tidy runs on this computer. Polish also sends the text to your fast model, and keeps the tidy version if the model changed any words.',

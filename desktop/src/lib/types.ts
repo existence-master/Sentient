@@ -272,11 +272,8 @@ export interface VoiceConfig {
   [key: string]: unknown
 }
 
+/** The shortcuts are desktop settings (bridge `getShortcuts`: `pushToTalk`, `dictate`). */
 export interface DictationConfig {
-  push_to_talk: boolean
-  push_to_talk_shortcut: string
-  dictate: boolean
-  dictate_shortcut: string
   /** raw: as heard; tidy: fillers and punctuation fixed locally; polish: also the fast model, guarded. */
   cleanup: 'raw' | 'tidy' | 'polish'
   language: string

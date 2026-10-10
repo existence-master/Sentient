@@ -12,8 +12,15 @@ and versions follow [Semantic Versioning](https://semver.org/).
   bottom of the screen shows the microphone is on, with a level meter; Esc cancels. Speech is turned into text on this
   computer. Dictation drops "um" and "uh" and fixes punctuation, or keeps exactly what you said, or lets your fast model
   polish it without ever changing your words (if it does, the tidy version is used). Sentient never types into a
-  password box it can recognize, and puts back what you had copied. Change the shortcuts, turn either one off, and
-  pick the language in Settings > Voice. Stop everything turns the microphone off.
+  password box it can recognize, and puts back what you had copied. Change or turn off the shortcuts in Settings >
+  General, and pick the cleanup and language in Settings > Voice. Stop everything turns the microphone off.
+- **Share your screen with a shortcut:** press Ctrl+Alt+Shift+W (Command+Option+Shift+W on a Mac) to share the
+  window you are using, or Ctrl+Alt+Shift+R (Command+Option+Shift+R) to drag over part of the screen. Sentient opens a
+  new chat with the picture attached, named after the window, so you can type or say your question and send it. A
+  short outline flashes where the picture was taken, nothing is sent until you press send, and the picture goes to
+  your vision model when you set one. Both shortcuts are also in the tray menu and can be changed or turned off in
+  Settings > General. Since a screen can show other people's text, a chat with a shared picture checks with you
+  before sending anything. On a Mac, Sentient explains how to allow Screen Recording the first time.
 - **Sign in with ChatGPT** (Settings > Models > Use a plan you already have > ChatGPT plan): use your ChatGPT Plus or
   Pro plan for chat, tasks and background work. Click **Continue with ChatGPT**, sign in in your browser and allow
   Sentient; your plan's models then show up in every model picker, and **Use ChatGPT for every job** switches the

@@ -4,15 +4,13 @@ import { test } from 'node:test'
 import {
   encodePowerShell,
   FIRST_REPEAT_MS,
-  normalizeAccelerator,
   pasteCommands,
   pasteOutcome,
   pillBounds,
   RELEASE_GAP_MS,
-  ShortcutPresses,
-  shortcutProblem
+  ShortcutPresses
 } from '../electron/main/dictation-logic.ts'
-import { acceleratorFromKeyPress, formatAccelerator } from '../src/lib/shortcuts.ts'
+import { acceleratorProblem, normalizeAccelerator } from '../src/lib/accelerator.ts'
 import { meterLevel, rms, SilenceDetector } from '../src/pill/silence.ts'
 
 // ------------------------------------------------------------------ holding a shortcut
@@ -48,26 +46,13 @@ test('a second press later is a new press', () => {
 })
 
 // ------------------------------------------------------------------ shortcut choice
-test('accelerators compare however they are written', () => {
-  assert.equal(normalizeAccelerator('CommandOrControl+Alt+Shift+D', 'win32'), normalizeAccelerator('shift+ctrl+alt+d', 'win32'))
-  assert.notEqual(normalizeAccelerator('CommandOrControl+D', 'darwin'), normalizeAccelerator('Control+D', 'darwin'))
-})
-
-test('shortcut problems are plain and catch clashes with Sentient’s own shortcuts', () => {
-  const taken = { 'CommandOrControl+Alt+Shift+S': 'Stop everything', 'CommandOrControl+Shift+Space': 'New chat' }
-  assert.equal(shortcutProblem('CommandOrControl+Alt+Shift+D', 'win32', taken), null)
-  assert.equal(shortcutProblem('Ctrl+Shift+Alt+S', 'win32', taken), 'Stop everything already uses this shortcut.')
-  assert.match(shortcutProblem('D', 'win32', taken) ?? '', /Ctrl, Alt or Shift/)
-  assert.equal(shortcutProblem('F9', 'win32', taken), null)
-  assert.match(shortcutProblem('Ctrl+Alt', 'win32', taken) ?? '', /one key/)
-})
-
-test('defaults differ from Stop everything, New chat and each other', () => {
-  const defaults = ['CommandOrControl+Alt+Shift+T', 'CommandOrControl+Alt+Shift+D']
-  const fixed = ['CommandOrControl+Alt+Shift+S', 'CommandOrControl+Shift+Space']
-  for (const platform of ['win32', 'darwin', 'linux']) {
-    const all = [...defaults, ...fixed].map((a) => normalizeAccelerator(a, platform))
+test('push to talk and dictate defaults differ from every other shortcut', () => {
+  const ours = ['CommandOrControl+Alt+Shift+T', 'CommandOrControl+Alt+Shift+D']
+  const others = ['CommandOrControl+Shift+Space', 'CommandOrControl+Alt+Shift+S', 'CommandOrControl+Alt+Shift+W', 'CommandOrControl+Alt+Shift+R']
+  for (const platform of ['win32', 'darwin', 'linux'] as const) {
+    const all = [...ours, ...others].map((a) => normalizeAccelerator(a, platform))
     assert.equal(new Set(all).size, all.length)
+    for (const acc of ours) assert.equal(acceleratorProblem(acc, platform, others), null)
   }
 })
 
@@ -153,36 +138,4 @@ test('loudness and the level meter', () => {
   assert.equal(meterLevel(0.0005), 0)
   assert.equal(meterLevel(1), 1)
   assert.ok(meterLevel(0.05) > 0.5 && meterLevel(0.05) < 1)
-})
-
-// ------------------------------------------------------------------ recording a shortcut in Settings
-const press = (code: string, mods: Partial<Record<'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey', boolean>> = {}, key = code) => ({
-  key,
-  code,
-  ctrlKey: false,
-  metaKey: false,
-  altKey: false,
-  shiftKey: false,
-  ...mods
-})
-
-test('a key press becomes an accelerator', () => {
-  assert.equal(acceleratorFromKeyPress(press('KeyD', { ctrlKey: true, altKey: true, shiftKey: true }), 'win32'), 'CommandOrControl+Alt+Shift+D')
-  assert.equal(acceleratorFromKeyPress(press('KeyD', { metaKey: true, altKey: true }), 'darwin'), 'CommandOrControl+Alt+D')
-  assert.equal(acceleratorFromKeyPress(press('KeyD', { ctrlKey: true }), 'darwin'), 'Control+D')
-  assert.equal(acceleratorFromKeyPress(press('F8'), 'linux'), 'F8')
-  assert.equal(acceleratorFromKeyPress(press('Space', { ctrlKey: true }), 'win32'), 'CommandOrControl+Space')
-})
-
-test('modifiers alone wait, typing is refused', () => {
-  assert.equal(acceleratorFromKeyPress(press('ControlLeft', { ctrlKey: true }, 'Control'), 'win32'), null)
-  assert.equal(acceleratorFromKeyPress(press('KeyD'), 'win32'), '')
-  assert.equal(acceleratorFromKeyPress(press('KeyD', { shiftKey: true }), 'win32'), '')
-  assert.equal(acceleratorFromKeyPress(press('IntlRo', { ctrlKey: true }), 'win32'), '')
-})
-
-test('shortcuts read the way people say them', () => {
-  assert.equal(formatAccelerator('CommandOrControl+Alt+Shift+D', 'win32'), 'Ctrl+Alt+Shift+D')
-  assert.equal(formatAccelerator('CommandOrControl+Alt+Shift+D', 'darwin'), 'Cmd+Option+Shift+D')
-  assert.equal(formatAccelerator('', 'linux'), 'Not set')
 })

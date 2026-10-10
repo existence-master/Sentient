@@ -1,9 +1,9 @@
 /**
  * Push to talk and dictation into any app (#169).
  *
- * Two global shortcuts from `voice.dictation`. Push to talk: hold it, speak, let go; the words go to Sentient as a
- * chat message. Dictate: press it, speak, press it again (or pause); the cleaned-up words are typed into the app
- * that has focus.
+ * Two global shortcuts from the shortcut table (shortcuts.ts, Settings > General). Push to talk: hold it, speak, let
+ * go; the words go to Sentient as a chat message. Dictate: press it, speak, press it again (or pause); the cleaned-up
+ * words are typed into the app that has focus.
  *
  * A small always-on-top "pill" window owns the microphone. It records only while it shows (with a level meter and
  * Esc to cancel), and sends the audio to the engine, where speech is recognized on this computer. The shell then
@@ -12,13 +12,7 @@
 import { BrowserWindow, clipboard, ClipboardItem, globalShortcut, screen, shell, systemPreferences } from 'electron'
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
-import type {
-  DictationCommand,
-  DictationEvent,
-  DictationShellSettings,
-  DictationShortcutStatus,
-  DictationStatus
-} from '../../src/types/bridge'
+import type { DictationCommand, DictationEvent, DictationShellSettings, DictationStatus } from '../../src/types/bridge'
 import { CH } from './channels'
 import {
   FIRST_REPEAT_MS,
@@ -28,33 +22,17 @@ import {
   pillBounds,
   RESTORE_CLIPBOARD_MS,
   ShortcutPresses,
-  shortcutProblem,
   type DictationMode
 } from './dictation-logic'
 
-export const DICTATION_DEFAULTS: DictationShellSettings = {
-  pushToTalk: true,
-  pushToTalkShortcut: 'CommandOrControl+Alt+Shift+T',
-  dictate: true,
-  dictateShortcut: 'CommandOrControl+Alt+Shift+D',
-  stopAfterSilenceS: 2.5
-}
+export const DICTATION_DEFAULTS: DictationShellSettings = { stopAfterSilenceS: 2.5 }
 
 /** `voice.dictation` from `GET /api/config` (snake_case) to the shell's settings. */
 export function dictationSettingsFromConfig(d: Record<string, unknown> | undefined): DictationShellSettings {
-  const str = (v: unknown, fallback: string) => (typeof v === 'string' ? v : fallback)
-  const bool = (v: unknown, fallback: boolean) => (typeof v === 'boolean' ? v : fallback)
-  return {
-    pushToTalk: bool(d?.push_to_talk, DICTATION_DEFAULTS.pushToTalk),
-    pushToTalkShortcut: str(d?.push_to_talk_shortcut, DICTATION_DEFAULTS.pushToTalkShortcut),
-    dictate: bool(d?.dictate, DICTATION_DEFAULTS.dictate),
-    dictateShortcut: str(d?.dictate_shortcut, DICTATION_DEFAULTS.dictateShortcut),
-    stopAfterSilenceS: typeof d?.stop_after_silence_s === 'number' ? d.stop_after_silence_s : DICTATION_DEFAULTS.stopAfterSilenceS
-  }
+  const silence = d?.stop_after_silence_s
+  return { stopAfterSilenceS: typeof silence === 'number' ? silence : DICTATION_DEFAULTS.stopAfterSilenceS }
 }
 
-const MODES: DictationMode[] = ['talk', 'dictate']
-const LABEL: Record<DictationMode, string> = { talk: 'Push to talk', dictate: 'Dictate' }
 const CANCEL_KEY = 'Escape'
 const PILL_WIDTH = 300
 const PILL_HEIGHT = 56
@@ -65,8 +43,6 @@ const MAC_PANES = {
 } as const
 
 export interface DictationHost {
-  /** Shortcuts Sentient already uses: accelerator -> plain name. */
-  reserved: Record<string, string>
   /** Push to talk heard something: send it to Sentient. */
   talk(text: string): void
   notify(title: string, body: string): void
@@ -80,9 +56,6 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 export class DictationController {
   private settings: DictationShellSettings = DICTATION_DEFAULTS
-  private paused = false
-  private registered: Partial<Record<DictationMode, string>> = {}
-  private problems: Partial<Record<DictationMode, string>> = {}
   private pill: BrowserWindow | null = null
   private pillLoaded: Promise<void> | null = null
   private phase: Phase = 'idle'
@@ -102,64 +75,16 @@ export class DictationController {
     return this.mic
   }
 
-  // ---------------------------------------------------------------- shortcuts
-  /** Register the shortcuts from `voice.dictation` (called on start and whenever the config changes). */
+  /** Settings from `voice.dictation` (on start and whenever the config changes). Also gets the pill ready. */
   apply(next: DictationShellSettings): DictationStatus {
     this.settings = { ...DICTATION_DEFAULTS, ...next }
-    this.unregisterAll()
-    if (this.paused) return this.status()
-    const taken = { ...this.host.reserved }
-    for (const mode of MODES) {
-      const { enabled, accelerator } = this.shortcut(mode)
-      if (!enabled) continue
-      const problem = shortcutProblem(accelerator, process.platform, taken)
-      if (problem) {
-        this.problems[mode] = problem
-        continue
-      }
-      let ok = false
-      try {
-        ok = globalShortcut.register(accelerator, () => this.trigger(mode))
-      } catch {
-        ok = false // Electron couldn't read the accelerator
-      }
-      if (ok) {
-        this.registered[mode] = accelerator
-        taken[accelerator] = LABEL[mode]
-      } else {
-        this.problems[mode] = 'Another app is using this shortcut. Pick a different one.'
-        console.warn(`[shell] global shortcut ${accelerator} (${mode}) is taken by another app`)
-      }
-    }
-    if (this.mode && !this.registered[this.mode]) this.cancel()
-    if (MODES.some((m) => this.registered[m])) void this.ensurePill().catch(() => undefined) // ready before the first press
+    void this.ensurePill().catch(() => undefined) // ready before the first press
     return this.status()
-  }
-
-  /** While Settings records a new shortcut, the current ones must not start the microphone. */
-  pause(paused: boolean): void {
-    if (paused === this.paused) return
-    this.paused = paused
-    if (paused) {
-      this.cancel()
-      this.unregisterAll()
-    } else this.apply(this.settings)
-  }
-
-  private unregisterAll(): void {
-    for (const mode of MODES) {
-      const acc = this.registered[mode]
-      if (acc) globalShortcut.unregister(acc)
-      delete this.registered[mode]
-      delete this.problems[mode]
-    }
   }
 
   status(): DictationStatus {
     const mac = process.platform === 'darwin'
     return {
-      talk: this.shortcutStatus('talk'),
-      dictate: this.shortcutStatus('dictate'),
       accessibility: mac ? systemPreferences.isTrustedAccessibilityClient(false) : null,
       microphone: mac ? systemPreferences.getMediaAccessStatus('microphone') : null
     }
@@ -171,19 +96,8 @@ export class DictationController {
     void shell.openExternal(MAC_PANES[kind])
   }
 
-  private shortcut(mode: DictationMode): { enabled: boolean; accelerator: string } {
-    const s = this.settings
-    return mode === 'talk'
-      ? { enabled: s.pushToTalk, accelerator: s.pushToTalkShortcut.trim() }
-      : { enabled: s.dictate, accelerator: s.dictateShortcut.trim() }
-  }
-
-  private shortcutStatus(mode: DictationMode): DictationShortcutStatus {
-    const { enabled, accelerator } = this.shortcut(mode)
-    return { accelerator, enabled, registered: !!this.registered[mode], ...(this.problems[mode] ? { problem: this.problems[mode] } : {}) }
-  }
-
-  private trigger(mode: DictationMode): void {
+  /** A shortcut fired: on every press, and on every autorepeat while it is held. */
+  trigger(mode: DictationMode): void {
     const now = Date.now()
     const kind = this.presses[mode].trigger(now)
     this.lastTrigger = now
@@ -421,7 +335,6 @@ export class DictationController {
 
   dispose(): void {
     this.cancel()
-    this.unregisterAll()
     if (this.pill && !this.pill.isDestroyed()) this.pill.destroy()
     this.pill = null
   }

@@ -1,7 +1,7 @@
 /**
  * Push to talk and dictation into any app (#169), the window's side. The shell owns the global shortcuts and the
  * listening pill (electron/main/dictation.ts); this file
- * - keeps the shell's shortcuts in step with `voice.dictation` and remembers what the shell could register,
+ * - keeps the shell in step with `voice.dictation` and remembers the macOS permission state,
  * - sends what was said with push to talk to the open chat (or a new one) and reads the answer aloud.
  */
 import { useEffect } from 'react'
@@ -18,13 +18,7 @@ import type { DictationShellSettings, DictationStatus } from '@/types/bridge'
 export const useDictationStatus = create<{ status: DictationStatus | null }>(() => ({ status: null }))
 
 export function shellSettings(d: DictationConfig): DictationShellSettings {
-  return {
-    pushToTalk: d.push_to_talk,
-    pushToTalkShortcut: d.push_to_talk_shortcut,
-    dictate: d.dictate,
-    dictateShortcut: d.dictate_shortcut,
-    stopAfterSilenceS: d.stop_after_silence_s
-  }
+  return { stopAfterSilenceS: d.stop_after_silence_s }
 }
 
 /** Mounted once inside the app: pushes `voice.dictation` to the shell whenever it changes. */

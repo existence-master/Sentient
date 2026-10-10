@@ -577,22 +577,10 @@ class EvolutionConfig(BaseModel):
 
 # ----------------------------------------------------------------------------- voice (owner: voice agent)
 class DictationConfig(BaseModel):
-    """Global shortcuts for talking to Sentient and dictating into any app (#169). Speech is transcribed on this
-    computer; text goes to the fast model only when ``cleanup`` is ``polish``."""
+    """Push to talk and dictation into any app (#169). The two global shortcuts are desktop settings (Settings >
+    General > Keyboard shortcuts). Speech is transcribed on this computer; text goes to the fast model only when
+    ``cleanup`` is ``polish``."""
 
-    push_to_talk: bool = Field(
-        True, description="Hold a shortcut anywhere, speak, and let go to send what you said to Sentient."
-    )
-    push_to_talk_shortcut: str = Field(
-        "CommandOrControl+Alt+Shift+T", description="Shortcut for push to talk (Electron accelerator)."
-    )
-    dictate: bool = Field(
-        True,
-        description="Press a shortcut, speak, and press it again: your words are typed into the app you are using.",
-    )
-    dictate_shortcut: str = Field(
-        "CommandOrControl+Alt+Shift+D", description="Shortcut for dictating into any app (Electron accelerator)."
-    )
     cleanup: Literal["raw", "tidy", "polish"] = Field(
         "tidy",
         description="raw: exactly what was heard. tidy: drop um and uh, fix spacing, capitals and the final full "

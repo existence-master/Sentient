@@ -33,8 +33,9 @@ export const CH = {
   dictationApply: 'sentient:dictation-apply',
   dictationStatus: 'sentient:dictation-status',
   dictationCancel: 'sentient:dictation-cancel',
-  dictationPause: 'sentient:dictation-pause',
   dictationPermission: 'sentient:dictation-permission',
   dictationCommand: 'sentient:dictation-command',
-  dictationEvent: 'sentient:dictation-event'
+  dictationEvent: 'sentient:dictation-event',
+  getShortcuts: 'sentient:get-shortcuts',
+  setShortcut: 'sentient:set-shortcut'
 } as const

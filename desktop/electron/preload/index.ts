@@ -18,6 +18,8 @@ import type {
   OpenPathTarget,
   SentientBridge,
   ShellPrefs,
+  ShortcutInfo,
+  ShortcutResult,
   VersionInfo
 } from '../../src/types/bridge'
 import { CH } from '../main/channels'
@@ -71,11 +73,12 @@ const bridge: SentientBridge = {
     apply: (settings: DictationShellSettings) => ipcRenderer.invoke(CH.dictationApply, settings) as Promise<DictationStatus>,
     status: () => ipcRenderer.invoke(CH.dictationStatus) as Promise<DictationStatus>,
     cancel: () => ipcRenderer.invoke(CH.dictationCancel),
-    pause: (paused: boolean) => ipcRenderer.invoke(CH.dictationPause, paused),
     openPermissionSettings: (kind) => ipcRenderer.invoke(CH.dictationPermission, kind),
     onCommand: (cb) => subscribe<DictationCommand>(CH.dictationCommand, cb),
     report: (event: DictationEvent) => ipcRenderer.send(CH.dictationEvent, event)
-  }
+  },
+  getShortcuts: () => ipcRenderer.invoke(CH.getShortcuts) as Promise<ShortcutInfo[]>,
+  setShortcut: (id, accelerator) => ipcRenderer.invoke(CH.setShortcut, id, accelerator) as Promise<ShortcutResult>
 }
 
 contextBridge.exposeInMainWorld('sentient', bridge)

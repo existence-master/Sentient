@@ -43,49 +43,6 @@ export class ShortcutPresses {
   }
 }
 
-const MODIFIERS: Record<string, string> = {
-  commandorcontrol: 'cmdorctrl',
-  cmdorctrl: 'cmdorctrl',
-  command: 'cmd',
-  cmd: 'cmd',
-  control: 'ctrl',
-  ctrl: 'ctrl',
-  alt: 'alt',
-  option: 'alt',
-  altgr: 'altgr',
-  shift: 'shift',
-  super: 'super',
-  meta: 'super'
-}
-
-/** A comparable form of an accelerator ("Ctrl+Shift+alt+d" and "CommandOrControl+Alt+Shift+D" match on Windows). */
-export function normalizeAccelerator(accelerator: string, platform: string): string {
-  const parts = accelerator.split('+').map((p) => p.trim().toLowerCase()).filter(Boolean)
-  const mods = new Set<string>()
-  const keys: string[] = []
-  for (const part of parts) {
-    let mod = MODIFIERS[part]
-    if (mod === 'cmdorctrl') mod = platform === 'darwin' ? 'cmd' : 'ctrl'
-    if (mod) mods.add(mod)
-    else keys.push(part)
-  }
-  return [...[...mods].sort(), ...keys].join('+')
-}
-
-/** Why `accelerator` can't be used, in plain words, or null when it can. `taken` maps other shortcuts to their names. */
-export function shortcutProblem(accelerator: string, platform: string, taken: Record<string, string>): string | null {
-  const parts = accelerator.split('+').map((p) => p.trim()).filter(Boolean)
-  const keys = parts.filter((p) => !MODIFIERS[p.toLowerCase()])
-  if (keys.length !== 1) return 'Pick one key together with Ctrl, Alt or Shift.'
-  const fKey = /^F([1-9]|1[0-9]|2[0-4])$/i.test(keys[0])
-  if (parts.length === 1 && !fKey) return 'Add Ctrl, Alt or Shift so normal typing never starts the microphone.'
-  const mine = normalizeAccelerator(accelerator, platform)
-  for (const [other, name] of Object.entries(taken)) {
-    if (other && normalizeAccelerator(other, platform) === mine) return `${name} already uses this shortcut.`
-  }
-  return null
-}
-
 export interface PasteCommand {
   file: string
   args: string[]

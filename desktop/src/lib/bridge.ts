@@ -155,17 +155,17 @@ function createBrowserBridge(): SentientBridge {
       apply: async () => noDictation,
       status: async () => noDictation,
       cancel: async () => undefined,
-      pause: async () => undefined,
       openPermissionSettings: async () => undefined,
       onCommand: () => () => undefined,
       report: () => undefined
-    }
+    },
+    getShortcuts: async () => [],
+    setShortcut: async () => ({ ok: false, error: 'Available in the desktop app.', shortcuts: [] })
   }
 }
 
-const off = { accelerator: '', enabled: false, registered: false }
 /** In a browser tab there are no global shortcuts. */
-const noDictation: DictationStatus = { talk: off, dictate: off, accessibility: null, microphone: null }
+const noDictation: DictationStatus = { accessibility: null, microphone: null }
 
 let cached: SentientBridge | null = null
 

@@ -56,6 +56,40 @@ export type AppCommand =
   | { type: 'open-settings'; section?: string }
   /** Push to talk: what the user said, to send as a chat message in the open chat (or a new one). */
   | { type: 'push-to-talk'; text: string }
+  /** Share this window / Share a region: open a new chat with the picture attached (nothing is sent yet). */
+  | { type: 'share-screen'; share: ScreenShare }
+
+/** A picture taken with the share shortcuts. The chat uploads it with `source: "screen"` (docs/API.md section 2). */
+export interface ScreenShare {
+  kind: 'window' | 'region'
+  /** The shared window's title, or "Screen region". */
+  title: string
+  /** e.g. `Inbox - Mail.png` */
+  fileName: string
+  mime: 'image/png'
+  data: Uint8Array
+}
+
+/** Global shortcuts people can change in Settings > General. */
+export type ShortcutId = 'shareWindow' | 'shareRegion' | 'pushToTalk' | 'dictate'
+
+export interface ShortcutInfo {
+  id: ShortcutId
+  label: string
+  description: string
+  /** Electron accelerator, e.g. `CommandOrControl+Alt+Shift+W`; `""` when turned off. */
+  accelerator: string
+  defaultAccelerator: string
+  /** Another app had the shortcut when Sentient started, so it does nothing until changed. */
+  taken: boolean
+}
+
+export interface ShortcutResult {
+  ok: boolean
+  /** Plain sentence when the shortcut couldn't be used (the old one stays). */
+  error?: string
+  shortcuts: ShortcutInfo[]
+}
 
 export type OpenPathTarget = 'home' | 'logs' | 'files' | 'workspace' | 'skills'
 
@@ -80,6 +114,8 @@ export interface ShellPrefs {
   cameraCapture?: boolean | null
   /** Listen for "Hey Sentient" in the background, also while the window is hidden in the tray. */
   alwaysListening?: boolean
+  /** Changed global shortcuts; `""` = turned off, missing = the default. */
+  shortcuts?: Partial<Record<ShortcutId, string>>
 }
 
 /** Desktop-as-a-device privacy switches. `null` = never asked (Sentient asks once, the first time). */
@@ -100,28 +136,14 @@ export type DesktopNodeState = 'off' | 'connecting' | 'online' | 'offline' | 'un
 /** Push to talk (`talk`) and dictation into any app (`dictate`), #169. */
 export type DictationMode = 'talk' | 'dictate'
 
-/** The shell's part of `voice.dictation` (camelCase), pushed by the window whenever the config changes. */
+/** The shell's part of `voice.dictation` (camelCase), pushed by the window whenever the config changes. The two
+ * shortcuts themselves are in the shortcut table (`pushToTalk`, `dictate`). */
 export interface DictationShellSettings {
-  pushToTalk: boolean
-  pushToTalkShortcut: string
-  dictate: boolean
-  dictateShortcut: string
   /** 0 = only the shortcut stops dictation. */
   stopAfterSilenceS: number
 }
 
-export interface DictationShortcutStatus {
-  accelerator: string
-  enabled: boolean
-  /** True when the global shortcut is active. */
-  registered: boolean
-  /** Why it isn't, in plain words. */
-  problem?: string
-}
-
 export interface DictationStatus {
-  talk: DictationShortcutStatus
-  dictate: DictationShortcutStatus
   /** macOS: may Sentient press keys in other apps (Accessibility)? null elsewhere. */
   accessibility: boolean | null
   /** macOS microphone permission ('granted', 'denied', 'not-determined'...); null elsewhere. */
@@ -149,13 +171,11 @@ export type DictationEvent =
   | { type: 'escape' }
 
 export interface DictationBridge {
-  /** Register the shortcuts from `voice.dictation`; returns what is active. */
+  /** Settings from `voice.dictation`; returns the macOS permission state. */
   apply(settings: DictationShellSettings): Promise<DictationStatus>
   status(): Promise<DictationStatus>
   /** Turn the microphone off and drop what was heard (Stop everything). */
   cancel(): Promise<void>
-  /** Settings is recording a new shortcut: turn the dictation shortcuts off until `pause(false)`. */
-  pause(paused: boolean): Promise<void>
   /** macOS: open System Settings at the Microphone or Accessibility list. */
   openPermissionSettings(kind: 'microphone' | 'accessibility'): Promise<void>
   /** Listening pill only. */
@@ -217,6 +237,10 @@ export interface SentientBridge {
   notifyWake(): Promise<void>
   /** Push to talk and dictation into any app (#169). */
   dictation: DictationBridge
+  /** Global shortcuts that can be changed (Share this window, Share a region). */
+  getShortcuts(): Promise<ShortcutInfo[]>
+  /** Set a shortcut (an accelerator, `""` to turn it off, `null` for the default). */
+  setShortcut(id: ShortcutId, accelerator: string | null): Promise<ShortcutResult>
 }
 
 declare global {
