@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import http.server
 import json
 import threading
@@ -336,6 +337,9 @@ def test_a_run_that_picks_no_profile_gets_default():
 
 
 # ----------------------------------------------------------------------------- site storage reaches disk
+_REAL_SLEEP = asyncio.sleep
+
+
 class _FakePage:
     def __init__(self, url: str, log: list):
         self.url, self._log, self._closed = url, log, False
@@ -343,9 +347,13 @@ class _FakePage:
     def is_closed(self) -> bool:
         return self._closed
 
-    async def close(self) -> None:
+    async def close(self, run_before_unload: bool = False) -> None:
         self._closed = True
-        self._log.append(f"close page {self.url}")
+        self._log.append(f"close page {self.url}" + (" with unload handlers" if run_before_unload else ""))
+
+    async def wait_for_event(self, event: str, timeout: float = 0) -> None:
+        while not self._closed:
+            await _REAL_SLEEP(0)
 
 
 class _FakeContext:
@@ -369,11 +377,17 @@ async def test_closing_a_launched_profile_lets_site_storage_reach_disk(monkeypat
     svc = BrowserService(make_app())
     svc._context = _FakeContext(["https://x.example/home", "about:blank"], log)
     await svc._close_context()
-    assert log == ["close page https://x.example/home", "close page about:blank", "wait", "close context"]
+    assert log == ["close page https://x.example/home with unload handlers",
+                   "close page about:blank with unload handlers", "wait", "close context"]
     assert svc._context is None
 
-    log.clear()  # nothing visited and nothing done lately: close at once
-    svc._context, svc._last_used = _FakeContext(["about:blank"], log), 0.0
+    log.clear()  # a website was shown earlier (say the user signed in, then closed that tab): still wait
+    svc._context, svc._site_seen = _FakeContext(["about:blank"], log), True
+    await svc._close_context()
+    assert log == ["close page about:blank with unload handlers", "wait", "close context"]
+
+    log.clear()  # no website was ever shown: close at once
+    svc._context, svc._site_seen = _FakeContext(["about:blank"], log), False
     await svc._close_context()
     assert log == ["close context"]
 
