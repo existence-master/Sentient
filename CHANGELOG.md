@@ -176,6 +176,18 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- A task that can't be planned because Claude Code is your main model now says so and what to do ("Pick a
+  planner model in Settings > Models"), instead of saying the AI model is unavailable.
+- A memory waiting for your review now shows the page or message it came from, not the error from a later action
+  you declined or that failed.
+- Adding a server (MCP) that you already signed in to from another Sentient setup on the same computer, such as a
+  fresh install or a test setup, no longer signs you out of it. The sign-in now remembers the server's address, so it
+  is kept and reused for the same address and only cleared when the address changes.
+- Local models can now use large MCP servers such as Composio, Notion or GitHub. Naming the server in your message
+  ("using Composio...") always offers its tools, and a server with more tools than fit offers its most relevant ones,
+  keeping its "search" and "run" tools together, instead of none at all.
+- A message with a link now offers local models the page reader (`web_fetch`) next to the web browser, and a tool
+  you name exactly ("use web_fetch") is always offered (#252).
 - Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
   and many tools are no longer cut off without warning. Change it with `models.context_length`, per role with
   `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.
@@ -188,6 +200,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   changed when the new one is about the same person and the same thing. A vaguer memory that an existing one already
   covers ("your sister lives in a city", "you have a sister") is no longer added, and neither are gaps like "your
   sister's job is unknown".
+- Everyday phrases like "If you don't know, say so" no longer make Sentient suggest a Never rule for unrelated
+  tools. A suggested rule for a single tool now needs your words to name an action, the app or the tool, so
+  "Never write files for me" still suggests blocking file writing.
 
 ### Security
 - Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before

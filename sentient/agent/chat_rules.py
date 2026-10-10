@@ -15,7 +15,8 @@ Checks, cheapest first:
 3. One short ``fast``-role prompt maps the words to candidate keys and a level, parsed tolerantly. Keys outside the
    candidates, and keys an equal or stricter rule already covers, are dropped. Nothing valid, no card.
 4. ``narrow_app_keys``: a whole app is proposed only when the words name no specific action ("never use Slack").
-   When they do ("never delete my emails"), an app key becomes that app's tools whose names match the action.
+   When they do ("never delete my emails"), an app key becomes that app's tools whose names match the action. A tool
+   key stands only when the words name an action, its app or the tool itself.
 
 Until the user decides, a pending proposal makes its chat ask before the matched tools (``chat_rule``), also after a
 restart or once the conversation has been summarized. While a check is still running (a slow fast model), the tools
@@ -54,6 +55,9 @@ _ASK_FIRST = re.compile(
     r"\b(always (ask|check)|ask me (first|before)|check with me|without (asking|checking)|without my "
     r"(ok|okay|permission|approval|go-ahead))\b"
 )
+# everyday phrases with a "don't" that are no prohibition ("if you don't know, say so", "don't worry"): left out
+# before the negation check, so they never reach the model
+_BENIGN = re.compile(r"\b(if (you|u) (don't|dont|do not)|(don't|dont|do not) (know|worry|mind|forget|hesitate))\b")
 # "don't ask me", "stop asking": the user wants fewer questions, which a proposal can never give
 _LOOSEN = re.compile(r"\b(don't|dont|do not|never|no need to|stop|quit) (ask|asking|check|checking)\b")
 # words that make the level "ask" whatever the model says: the user named a condition, not a ban
@@ -126,6 +130,7 @@ def standing_text(text: str) -> str:
         plain = _plain(sentence)
         if not plain.strip() or _LOOSEN.search(plain):
             continue
+        plain = _BENIGN.sub(" ", plain)
         if _NEGATION.search(plain) or _ASK_FIRST.search(plain):
             kept.append(" ".join(sentence.split()))
     return " ".join(kept)[:MAX_SAID].strip()
@@ -203,21 +208,35 @@ def _app_named(clause: str, app_id: str, app_name: str) -> bool:
     return any(_match(term, tok) for term in _terms(clause) for tok in tokens)
 
 
+def _tool_named(clause: str, tool: Tool) -> bool:
+    tokens = {_stem(w) for w in tool.name.split("_") if len(w) >= 3}
+    return any(_match(term, tok) for term in _terms(clause) for tok in tokens)
+
+
 def narrow_app_keys(
     keys: list[str], said: str, tools: Iterable[Tool], app_names: dict[str, str] | None = None
 ) -> list[str]:
     """Keep an app key only when its own instruction names no specific action. Otherwise the app key becomes that
-    app's tools whose names match the action (none match: dropped). Tool keys stay. The instruction for an app is the
-    clause that mentions it ("never delete my emails. never use Slack" narrows Gmail, not Slack), else all of
-    ``said``. Deterministic; runs after validation."""
+    app's tools whose names match the action (none match: dropped). The instruction for an app is the clause that
+    mentions it ("never delete my emails. never use Slack" narrows Gmail, not Slack), else all of ``said``.
+
+    A tool key stays only when a clause names an action ("never write files"), the tool's app ("don't use my
+    devices") or the tool itself ("never take photos"); "never say you don't know" names none of them, so a tool the
+    model matched on a loose word is dropped. Deterministic; runs after validation."""
     by_name = {t.name: t for t in tools}
-    clauses = _clauses(said)
+    clauses = _clauses(said) or [_plain(said)]
+    names = app_names or {}
     out: list[str] = []
     for key in keys:
-        if key in by_name:
-            out.append(key)
+        tool = by_name.get(key)
+        if tool is not None:
+            if any(
+                action_terms(c) or _app_named(c, tool.plugin, names.get(tool.plugin, "")) or _tool_named(c, tool)
+                for c in clauses
+            ):
+                out.append(key)
             continue
-        own = [c for c in clauses if _app_named(c, key, (app_names or {}).get(key, ""))]
+        own = [c for c in clauses if _app_named(c, key, names.get(key, ""))]
         actions = set().union(*(action_terms(c) for c in own)) if own else action_terms(said)
         if not actions:
             out.append(key)

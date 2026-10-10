@@ -394,3 +394,53 @@ def test_long_keychain_values_are_split(keychain):
     mcp_auth.save_json("mcp:big:oauth", data)
     mcp_auth.delete_json("mcp:big:oauth")
     assert keychain == {}
+
+
+async def test_another_setup_adding_the_same_server_keeps_the_sign_in(app, keychain):
+    """The keychain is shared by every setup on the computer (#248): adding the same server elsewhere reuses it."""
+    mock = MockServer(oauth=True)
+    app.integrations.mcp.http_transport = mock.transport()
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": URL})
+    await _sign_in(app, mock, "Notes")
+    await _wait(app, "Notes", "connected")
+    assert _tokens(keychain, "Notes")["server_url"] == URL
+    assert mcp_auth.load_json("mcp:Notes:client")["server_url"] == URL
+    access = _tokens(keychain, "Notes")["tokens"]["access_token"]
+
+    # a second setup has never seen "Notes": same name and address, so the sign-in stays and is used
+    app.config.integrations.mcp_servers = {}
+    added = await app.integrations.mcp.add("Notes", {"transport": "http", "url": URL, "auth": "oauth"})
+    assert added["status"] == "connected" and added["signed_in"] is True
+    assert _tokens(keychain, "Notes")["tokens"]["access_token"] == access and len(mock.token_calls) == 1
+
+    # a local server with the same name leaves the sign-in to the setup that uses it
+    app.config.integrations.mcp_servers = {}
+    await app.integrations.mcp.add("Notes", {"transport": "stdio", "command": "x", "enabled": False})
+    assert "mcp:Notes:oauth" in keychain and "mcp:Notes:client" in keychain
+
+    # another address under the same name: that sign-in can't be for it, so it is cleared
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": f"{BASE}/other", "enabled": False})
+    assert not any(k.startswith(("mcp:Notes:oauth", "mcp:Notes:client")) for k in keychain)
+
+
+async def test_older_sign_in_without_an_address(app, keychain):
+    """Records saved before they named their address are kept unless this setup moved the server elsewhere."""
+    legacy_tokens = {"tokens": {"access_token": "old", "token_type": "bearer"}, "expires_at": None}
+    legacy_client = {"client_id": "c-1", "redirect_uris": ["http://127.0.0.1:1/oauth/callback"]}
+    mcp_auth.save_json("mcp:Notes:oauth", legacy_tokens)
+    mcp_auth.save_json("mcp:Notes:client", legacy_client)
+
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": URL, "enabled": False})  # new to this setup
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": URL, "enabled": False})  # same address here
+    assert _tokens(keychain, "Notes") == legacy_tokens and mcp_auth.load_json("mcp:Notes:client") == legacy_client
+
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": f"{BASE}/other", "enabled": False})
+    assert not any(k.startswith(("mcp:Notes:oauth", "mcp:Notes:client")) for k in keychain)
+
+
+async def test_tagged_client_record_still_loads():
+    store = mcp_auth.KeychainTokenStorage("Tagged", url=URL)
+    mcp_auth.save_json("mcp:Tagged:client", {"client_id": "c-9", "redirect_uris": ["http://127.0.0.1:1/cb"],
+                                             "server_url": URL})
+    info = await store.get_client_info()
+    assert info is not None and info.client_id == "c-9"
