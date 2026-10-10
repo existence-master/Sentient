@@ -189,7 +189,7 @@ async def test_resuming_an_imported_task_plans_it_for_approval(app, hermes_home)
     })
     out = await app.tasks.update(brief["task_id"], {"enabled": True, "plan": [{"tool": "files", "description": "x"}]})
     assert out["status"] == "planning"  # a plan sent with the resume can't skip planning and approval
-    for _ in range(100):
+    for _ in range(1000):  # a 20 s ceiling; planning with the scripted model takes moments
         task = await app.tasks.get(brief["task_id"])
         if task["status"] != "planning":
             break

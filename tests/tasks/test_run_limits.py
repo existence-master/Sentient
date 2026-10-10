@@ -10,6 +10,7 @@ keeps getting the same error is stuck and asks (tasks/stuck.py).
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -151,7 +152,7 @@ async def waiting_question(app, task_id: str) -> tuple[str, str]:
     return run["run_id"], run["pending_question"]["question"]
 
 
-async def test_hung_tool_hits_the_hard_deadline_and_the_run_resumes(make_app, config, monkeypatch):
+async def test_hung_tool_hits_the_hard_deadline_and_the_run_resumes(make_app, config, monkeypatch, skip_clock):
     monkeypatch.setattr(executor, "HARD_DEADLINE_GRACE_S", 0.3)
     config.tasks.run_timeout_minutes = 0.05  # 3 s of work, then 0.3 s of grace for the call in flight
     llm = FakeProvider(
@@ -168,22 +169,24 @@ async def test_hung_tool_hits_the_hard_deadline_and_the_run_resumes(make_app, co
     assert 3.2 < paused_at < 5.5  # the hung call was cancelled at limit + grace (well under the raised 6 s)
     assert len(stream_calls(llm)) == 1
 
-    await asyncio.sleep(3.0)  # waiting for the answer is longer than the whole limit, and is not counted
+    await skip_clock.sleep(10)  # waiting for the answer takes longer than the whole limit, and is not counted
+    answered = time.monotonic()
     task = await answer(app, task_id, run_id, KEEP_GOING)
+    resumed_s = time.monotonic() - answered
     assert task["status"] == "completed", task["runs"][-1]["error"]
     run = await app.tasks.repo.get_run(run_id)
     assert run["limits"]["max"]["seconds"] == pytest.approx(6.0)
-    assert run["limits"]["used"]["seconds"] - paused_at < 2.5  # the 3 s spent waiting were not counted
+    assert run["limits"]["used"]["seconds"] - paused_at <= resumed_s  # only the resumed work counted, not the wait
     # resumed from the saved transcript: the cancelled call (no result) was dropped, nothing else was lost
     resumed = stream_calls(llm)[1]["messages"]
     assert resumed[0]["role"] == "system" and not any(m.get("tool_calls") for m in resumed)
 
 
-async def test_time_limit_lets_the_call_in_flight_finish_then_asks(make_app, config):
+async def test_time_limit_lets_the_call_in_flight_finish_then_asks(make_app, config, skip_clock):
     @tool("steady_lookup", risk=Risk.read)
     async def steady_lookup(ctx: ToolContext) -> str:
-        """Look something up, taking a moment."""
-        await asyncio.sleep(2.0)
+        """Look something up, taking a while."""
+        await skip_clock.sleep(31)
         return "found it"
 
     class Steady(ToolPlugin):
@@ -191,7 +194,7 @@ async def test_time_limit_lets_the_call_in_flight_finish_then_asks(make_app, con
         display_name = "Steady"
         tools = [steady_lookup]
 
-    config.tasks.run_timeout_minutes = 0.02  # 1.2 s: passed while the lookup runs
+    config.tasks.run_timeout_minutes = 0.5  # 30 s: passed while the lookup runs (start-up can't use it up)
     llm = FakeProvider(
         replies=[[{"id": "c1", "name": "steady_lookup", "arguments": {}}], "Done."], json_replies=[dict(RESULT)]
     )
@@ -206,7 +209,7 @@ async def test_time_limit_lets_the_call_in_flight_finish_then_asks(make_app, con
 
     task = await answer(app, task_id, run_id, STOP_HERE)
     run = task["runs"][-1]
-    assert run["status"] == "error" and run["error"].startswith("Stopped after 0.0") and run["error"].endswith(HINT)
+    assert run["status"] == "error" and run["error"].startswith("Stopped after 0.5") and run["error"].endswith(HINT)
 
 
 # ---------------------------------------------------------------------- Keep going

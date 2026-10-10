@@ -532,7 +532,7 @@ class UserModelService(Service):
         if cfg.recent_messages:
             rows = await store.fetchall(
                 "SELECT id, content, created_at FROM messages WHERE role = 'user' AND content IS NOT NULL"
-                " AND content != '' AND created_at > ? ORDER BY created_at DESC LIMIT ?",
+                " AND content != '' AND created_at > ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 (since, cfg.recent_messages),
             )
             lines = []

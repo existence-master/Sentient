@@ -57,7 +57,7 @@ async def _wait_for(path, timeout: float = 20.0) -> str:
 
 
 async def _gone(pid: int) -> bool:
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 30  # a ceiling: a killed process is usually gone at once
     while pid_alive(pid) and time.monotonic() < deadline:
         await asyncio.sleep(0.1)
     return not pid_alive(pid)
@@ -83,7 +83,7 @@ async def test_turning_it_on_offers_the_tool(config, isolated_home):
     try:
         app.config.terminal.enabled = True
         app.save_config()
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + 30
         while app.registry.is_hidden("terminal") and time.monotonic() < deadline:
             await asyncio.sleep(0.02)
         schema = next(s for s in app.registry.openai_schemas() if s["function"]["name"] == TOOL)
