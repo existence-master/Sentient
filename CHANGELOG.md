@@ -6,6 +6,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Read only or Read and write for each connection:** when you connect Gmail, Calendar, GitHub or any other app,
+  and on every custom MCP server, pick **Read only** or **Read and write**. Read only lets Sentient look things up
+  there but never change, send, delete or run anything: those abilities are hidden from the model and refused if
+  it tries anyway, in chats, tasks, helpers and scripts alike, even with an Allow rule or approvals turned off. Switch
+  any time from the app's panel in Integrations (or the server's row); it applies at once, no restart. For a server
+  that runs other apps' actions by name (Composio's multi-execute), Read only still allows the look-ups and refuses
+  the rest, and those look-ups no longer ask for approval. Fewer tools also helps small local models pick the right one.
 - **Claude through your own Claude Code (experimental):** if Claude Code is installed and signed in on your computer,
   your chats can use Claude through it (Settings > Models, off until you turn it on). Sentient never reads or keeps
   your Claude login, and leaves API keys and other sign-in settings in your environment out, so Claude Code always

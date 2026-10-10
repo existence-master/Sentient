@@ -17,9 +17,10 @@ import { toast } from 'sonner'
 import { Alert, Button, Dialog, Field, Input, Spinner } from '@/components/ui'
 import { upsertIntegration, useIntegrationActions, useIntegrations } from '@/hooks/integrations'
 import { errorMessage } from '@/lib/api'
-import type { Integration, OAuthStart } from '@/lib/types'
+import type { ConnectionAccess, Integration, OAuthStart } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
+import { AccessChoice, hasChangingTools } from './AccessChoice'
 import { BrandIcon } from './BrandIcon'
 import { CopyChip, ExternalLinkChip, InstructionsGuide, openExternal } from './InstructionsGuide'
 import { isGoogle } from './meta'
@@ -75,6 +76,8 @@ function ConnectBody({ integration, close }: { integration: Integration; close: 
   const [formError, setFormError] = useState<string | null>(live.status === 'error' ? live.error : null)
   const [phase, setPhase] = useState<Phase>({ kind: 'form' })
   const [guideOpen, setGuideOpen] = useState(!googleClientSaved)
+  const [access, setAccess] = useState<ConnectionAccess>(live.access ?? 'read_write')
+  const canChooseAccess = live.access !== undefined && hasChangingTools(live.tools)
   const errorAtStart = useRef<string | null>(null)
   const phaseRef = useRef<Phase>(phase)
   phaseRef.current = phase
@@ -122,7 +125,7 @@ function ConnectBody({ integration, close }: { integration: Integration; close: 
     errorAtStart.current = live.status === 'error' ? live.error : null
     const payload = Object.fromEntries(Object.entries(values).map(([k, v]) => [k, v.trim()]).filter(([, v]) => v))
     connect.mutate(
-      { id: live.id, fields: payload },
+      { id: live.id, fields: payload, access: canChooseAccess ? access : undefined },
       {
         onSuccess: (res) => {
           if ('auth_url' in res) {
@@ -295,6 +298,12 @@ function ConnectBody({ integration, close }: { integration: Integration; close: 
             )
           })}
         </div>
+      )}
+
+      {canChooseAccess && (
+        <Field label="What Sentient may do">
+          <AccessChoice value={access} onChange={setAccess} app={live.display_name} />
+        </Field>
       )}
 
       {formError && (

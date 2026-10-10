@@ -2,7 +2,7 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
-import type { Integration, McpServerCreate, PrivacyFilters } from '@/lib/types'
+import type { ConnectionAccess, Integration, McpServerCreate, PrivacyFilters } from '@/lib/types'
 import { qk } from './queryKeys'
 
 export function upsertIntegration(qc: QueryClient, integration: Integration) {
@@ -42,7 +42,8 @@ export function useIntegrationActions() {
      * render `user_code` prominently from the mutation's `data`. Completion arrives via `integration.updated`.
      */
     connect: useMutation({
-      mutationFn: ({ id, fields }: { id: string; fields?: Record<string, string> }) => api.integrations.connect(id, fields),
+      mutationFn: ({ id, fields, access }: { id: string; fields?: Record<string, string>; access?: ConnectionAccess }) =>
+        api.integrations.connect(id, fields, access),
       onSuccess: (res) => {
         if ('auth_url' in res) void getBridge().openExternal(res.auth_url)
         else upsertIntegration(qc, res)
@@ -56,6 +57,11 @@ export function useIntegrationActions() {
       }
     }),
     test: useMutation({ mutationFn: (id: string) => api.integrations.test(id) }),
+    /** Read only or Read and write; the engine applies it at once. */
+    setAccess: useMutation({
+      mutationFn: ({ id, access }: { id: string; access: ConnectionAccess }) => api.integrations.setAccess(id, access),
+      onSuccess: (res) => upsertIntegration(qc, res)
+    }),
     setPrivacyFilters: useMutation({
       mutationFn: ({ id, filters }: { id: string; filters: PrivacyFilters }) => api.integrations.setPrivacyFilters(id, filters),
       onSuccess: (_r, { id, filters }) => qc.setQueryData(qk.integrations.privacyFilters(id), filters)
@@ -90,6 +96,10 @@ export function useMcpActions() {
     signOut: useMutation({ mutationFn: (name: string) => api.integrations.mcp.signOut(name), onSuccess: invalidate }),
     setEnabled: useMutation({
       mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) => api.integrations.mcp.setEnabled(name, enabled),
+      onSuccess: invalidate
+    }),
+    setAccess: useMutation({
+      mutationFn: ({ name, access }: { name: string; access: ConnectionAccess }) => api.integrations.mcp.setAccess(name, access),
       onSuccess: invalidate
     }),
     setValues: useMutation({

@@ -36,7 +36,8 @@ class ToolRegistry:
         self._blocked: Callable[[Tool], bool] | None = None
 
     def set_blocked(self, fn: Callable[[Tool], bool] | None) -> None:
-        """``fn(tool) -> True`` hides that tool from the model (the approvals broker's "never" rules)."""
+        """``fn(tool) -> True`` hides that tool from the model (the approvals broker's "never" rules and the
+        write tools of Read only connections)."""
         self._blocked = fn
 
     def is_blocked(self, t: Tool) -> bool:

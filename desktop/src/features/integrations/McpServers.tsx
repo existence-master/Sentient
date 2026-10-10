@@ -35,8 +35,9 @@ import {
 } from '@/components/ui'
 import { useMcpActions, useMcpServers } from '@/hooks/integrations'
 import { errorMessage, isNotImplemented } from '@/lib/api'
-import type { McpAuth, McpServer } from '@/lib/types'
+import type { ConnectionAccess, McpAuth, McpServer } from '@/lib/types'
 import { cn } from '@/lib/utils'
+import { AccessChoice, accessHint } from './AccessChoice'
 import { BrandIcon } from './BrandIcon'
 import { plainDescription, RISK_LABEL, riskOf, toolLabel } from './meta'
 
@@ -112,7 +113,7 @@ export function McpServersSection({ id }: { id?: string }) {
 }
 
 function McpServerRow({ server: s }: { server: McpServer }) {
-  const { test, remove, signIn, signOut, setEnabled } = useMcpActions()
+  const { test, remove, signIn, signOut, setEnabled, setAccess } = useMcpActions()
   const [confirm, setConfirm] = useState(false)
   const [open, setOpen] = useState(false)
   const [editingValues, setEditingValues] = useState(false)
@@ -267,6 +268,25 @@ function McpServerRow({ server: s }: { server: McpServer }) {
         ) : (
           <span className="text-xs text-fg-subtle">{s.status === 'connected' ? 'No tools exposed' : 'Tools appear once the server connects'}</span>
         )}
+        {s.access && (
+          <span className="ml-auto" title={accessHint(s.access, s.name)}>
+            <AccessChoice
+              size="sm"
+              hint={false}
+              app={s.name}
+              value={s.access}
+              onChange={(access) =>
+                setAccess.mutate(
+                  { name: s.name, access },
+                  {
+                    onSuccess: () => toast.success(access === 'read' ? `${s.name} is read only` : `${s.name} can read and write`),
+                    onError: (e) => toast.error("Couldn't change access", { description: errorMessage(e) })
+                  }
+                )
+              }
+            />
+          </span>
+        )}
       </div>
 
       <AnimatePresence initial={false}>
@@ -274,14 +294,15 @@ function McpServerRow({ server: s }: { server: McpServer }) {
           <motion.ul initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} className="divide-y divide-border overflow-hidden border-t border-border">
             {s.tools.map((t) => {
               const risk = RISK_LABEL[riskOf(t.risk)]
+              const off = s.access === 'read' && riskOf(t.risk) !== 'read'
               return (
                 <li key={t.name} className="flex items-start gap-3 px-4 py-2">
                   <div className="min-w-0 flex-1">
                     <div className="text-sm text-fg">{toolLabel(t.mcp_name || t.name)}</div>
                     {t.description && <div className="text-xs text-fg-subtle">{plainDescription(t.description)}</div>}
                   </div>
-                  <Badge size="xs" tone={risk.tone}>
-                    {risk.label}
+                  <Badge size="xs" tone={off ? 'neutral' : risk.tone}>
+                    {off ? (t.per_call ? 'Look-ups only' : 'Off') : risk.label}
                   </Badge>
                 </li>
               )
@@ -501,6 +522,7 @@ function AddMcpDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
   const [args, setArgs] = useState('')
   const [url, setUrl] = useState('')
   const [auth, setAuth] = useState<McpAuth>('none')
+  const [access, setAccess] = useState<ConnectionAccess>('read_write')
   const [env, setEnv] = useState<SecretRow[]>([])
   const [headers, setHeaders] = useState<SecretRow[]>([])
   const [touched, setTouched] = useState(false)
@@ -513,6 +535,7 @@ function AddMcpDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
     setArgs('')
     setUrl('')
     setAuth('none')
+    setAccess('read_write')
     setEnv([])
     setHeaders([])
     setTouched(false)
@@ -529,8 +552,8 @@ function AddMcpDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
     setError(null)
     add.mutate(
       transport === 'stdio'
-        ? { name: name.trim(), transport, command: command.trim(), args: splitArgs(args), env: toObject(env) }
-        : { name: name.trim(), transport, url: url.trim(), auth, headers: auth === 'headers' ? toObject(headers) : {} },
+        ? { name: name.trim(), transport, command: command.trim(), args: splitArgs(args), env: toObject(env), access }
+        : { name: name.trim(), transport, url: url.trim(), auth, headers: auth === 'headers' ? toObject(headers) : {}, access },
       {
         onSuccess: (srv) => {
           if (srv.auth === 'oauth' && !srv.signed_in) {
@@ -659,6 +682,10 @@ function AddMcpDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
             )}
           </>
         )}
+
+        <Field label="What Sentient may do">
+          <AccessChoice value={access} onChange={setAccess} app={name.trim() || 'this server'} />
+        </Field>
 
         {error && (
           <Alert tone="danger" icon={<IconAlertTriangle />} title="Couldn't add the server">
