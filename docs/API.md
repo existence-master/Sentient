@@ -359,7 +359,11 @@ accept or loosen a rule.
   assistant message or `result` (no price: the plan pays). Only a chat reply or `POST /api/models/test` may use it:
   other callers (tasks, subagents, proactivity, follow-ups, dreaming, briefs, memory notes, titles, summaries) get
   "Claude Code only answers your chats..." so the role's fallbacks are tried, and embeddings fail with a plain
-  message. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
+  message. The refusal names the setting to change for the `planner` role ("...so it can't plan tasks. Pick a planner
+  model in Settings > Models.") and the `executor` role ("...Pick an executor model..."). It is a `ModelRefused`
+  (a `ProviderError`); when every model of a role refused, that sentence is the error as is, so a task that fails
+  this way has it as its `error` (instead of "Sorry, the AI model is unavailable right now...") and a task route
+  answers `503` with it as `detail`. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
   and vision). Stop everything kills every running Claude Code process tree.
 - `GET /api/secrets` → `[{name, set: bool, source: "keychain"|"env"|null, kind: "provider"|"integration"}]` for every provider + integration secret name
 - `PUT /api/secrets/{name}` `{value}` → `{ok}` (stored in OS keychain; never echoed back). `chatgpt` → 400: it is a
