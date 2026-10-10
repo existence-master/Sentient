@@ -293,6 +293,19 @@ async def test_meter_warns_near_the_limit_and_never_blocks(make_app):
     assert events[-1].type == "done" and events[-1].content == "still answering"
 
 
+async def test_meter_works_when_the_provider_reports_no_usage(make_app):
+    class NoUsage(WindowProvider):
+        async def stream(self, role, messages, tools=None, *, model=None):
+            async for chunk in super().stream(role, messages, tools, model=model):
+                chunk.usage = {}
+                yield chunk
+
+    app = await make_app(NoUsage(1000, replies=["hi"]))
+    [usage] = await _usage_events(app)
+    assert usage.prompt_tokens == 0 and usage.context_length == 1000 and usage.context_used > 0
+    assert await app.store.fetchall("SELECT * FROM usage") == []  # nothing reported, nothing recorded
+
+
 async def test_meter_is_left_out_when_the_context_length_is_unknown(make_app):
     for llm in (FakeProvider(replies=["a"]), WindowProvider(None, replies=["b"])):
         app = await make_app(llm)
@@ -326,7 +339,9 @@ async def test_task_runs_stream_the_meter_and_log_the_warning_once():
     full = Usage(model="m", **meter.meter(90, 100, "ollama_chat/qwen3:8b", "task"))
     for event in (calm, full, full, Usage(model="m")):
         await mapper.handle(event, [])
-    assert [d["percent"] for _, d in published] == [50, 90, 90]
+    # a call with an unknown context length (a fallback model) clears the meter instead of leaving the old one
+    assert [d["percent"] for _, d in published] == [50, 90, 90, None]
+    assert published[-1][1]["length"] is None and published[-1][1]["warning"] is None
     assert published[0] == ("task.run_context", {"task_id": "t1", "run_id": "r1", "used": 50, "length": 100,
                                                  "percent": 50, "warning": None})
     assert logged == [{"type": "info", "content": full.context_warning}]

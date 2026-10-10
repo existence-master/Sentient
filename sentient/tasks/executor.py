@@ -193,8 +193,9 @@ class ProgressMapper:
                 "content": json.dumps(event.result, ensure_ascii=False, default=str),
             }
             await self.svc.repo.update_run(self.run_id, {"messages": [*messages, tool_msg]})
-        elif isinstance(event, Usage) and event.context_length:
-            # context meter (#131): live on the running task; the warning is also kept in the log
+        elif isinstance(event, Usage):
+            # context meter (#131): live on the running task (all null when this model's context length is unknown,
+            # e.g. after a fallback, so the window clears an older meter); the warning is also kept in the log
             self.svc.app.bus.publish("task.run_context", {
                 "task_id": self.task_id, "run_id": self.run_id, "used": event.context_used,
                 "length": event.context_length, "percent": event.context_percent, "warning": event.context_warning,

@@ -555,12 +555,15 @@ class Agent:
                         yield TextDelta(text=chunk.text, **ev)
                     if chunk.done:
                         tool_calls = chunk.tool_calls
+                        # the context meter also works when the provider reported no usage (prompt counted here)
+                        gauge = await measure(self.llm, role, chunk.model or model or self.llm.model_for(role),
+                                              messages, tools, chunk.usage or {}, source)
+                        if chunk.usage or gauge:
+                            yield Usage(model=chunk.model or model or self.llm.model_for(role), **(chunk.usage or {}),
+                                        **gauge, **ev)
                         if chunk.usage:
                             result.prompt_tokens += chunk.usage.get("prompt_tokens", 0)
                             result.completion_tokens += chunk.usage.get("completion_tokens", 0)
-                            gauge = await measure(self.llm, role, chunk.model or model or self.llm.model_for(role),
-                                                  messages, tools, chunk.usage, source)
-                            yield Usage(model=chunk.model, **chunk.usage, **gauge, **ev)
                             if budget is not None:
                                 budget.add(chunk.model, chunk.usage, getattr(chunk, "cost", None))
                             with contextlib.suppress(Exception):

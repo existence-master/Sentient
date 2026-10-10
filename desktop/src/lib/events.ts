@@ -94,7 +94,8 @@ export function installDomainEvents(qc: QueryClient): () => void {
   offs.push(
     live.onDomain('task.run_context', (e) => {
       const { task_id, run_id, used, length, percent, warning } = e.data
-      const context = { used, length, percent, warning }
+      // no length: this model's context length is unknown, so an older meter is cleared
+      const context = length ? { used: used ?? 0, length, percent: percent ?? 0, warning } : null
       const patch = (t: Task): Task => ({ ...t, runs: t.runs.map((r) => (r.run_id === run_id ? { ...r, context } : r)) })
       qc.setQueryData<Task>(qk.tasks.detail(task_id), (old) => (old ? patch(old) : old))
       qc.setQueryData<Task[]>(qk.tasks.all, (old) => old?.map((t) => (t.task_id === task_id ? patch(t) : t)))

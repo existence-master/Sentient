@@ -278,8 +278,11 @@ export const useChat = create<ChatState>((set, get) => ({
         }
         const sid = ev.session_id
         if (ev.type === 'usage' && sid) {
+          // the latest call's model decides: one with an unknown context length clears the meter
+          const { [sid]: _old, ...others } = get().context
+          void _old
           const meter = meterFrom(ev)
-          if (meter) set({ context: { ...get().context, [sid]: meter } })
+          set({ context: meter ? { ...others, [sid]: meter } : others })
         }
         const key = sid && state.live[sid] ? sid : null
         if (!key) {

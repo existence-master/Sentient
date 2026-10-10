@@ -773,7 +773,7 @@ export interface DomainEventMap {
   'task.deleted': { task_id: string }
   'task.run_progress': { task_id: string; run_id: string; update: ProgressUpdate }
   'task.run_activity': { task_id: string; run_id: string; last_activity_at: ISODate }
-  'task.run_context': { task_id: string; run_id: string } & ContextMeter
+  'task.run_context': { task_id: string; run_id: string; used: number | null; length: number | null; percent: number | null; warning: string | null }
   'notification.new': Notification
   'notification.updated': Notification
   'notification.read': { id: string | null }

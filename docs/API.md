@@ -50,7 +50,9 @@ that role (Ollama's `num_ctx` as sent, capped at the model's maximum, or a cloud
 bundled list), and `context_percent` the share, rounded. From 85% `context_warning` is a plain sentence, e.g. `This chat
 is getting long for qwen3:8b (87% of what it reads at once). Older messages may be left out: start a new chat, or set a
 longer context length in Settings > Models.` (cloud models: `..., so a new chat works best.`). All four are `null` when
-the context length is unknown (LM Studio, a model LiteLLM doesn't list). Nothing is ever blocked.
+the context length is unknown (LM Studio, a model LiteLLM doesn't list). A call whose provider reported no token usage
+still gets a `usage` event (tokens 0) when its context length is known, so the meter keeps working. Nothing is ever
+blocked.
 
 ### Server → client: domain events (dotted `type`, payload in `data`)
 Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
@@ -61,7 +63,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `task.deleted` | `{task_id}` |
 | `task.run_progress` | `{task_id, run_id, update: ProgressUpdate}` (also moves the run's `last_activity_at` to `update.timestamp`) |
 | `task.run_activity` | `{task_id, run_id, last_activity_at}`: a working run is alive (the model is writing), at most every 10 s |
-| `task.run_context` | `{task_id, run_id, used, length, percent, warning}`: the running run's context meter after each model call (as `usage` above; not stored). The first warning of a run is also logged as an `info` progress update |
+| `task.run_context` | `{task_id, run_id, used, length, percent, warning}`: the running run's context meter after each model call (as `usage` above; all `null` when that model's context length is unknown; not stored). The first warning of a run is also logged as an `info` progress update |
 | `notification.new` | **Notification** (§6) |
 | `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"\|"declined"`; a task question (`payload.event = "question"`) gains `payload.status = "answered"` with `payload.answer`, or `"cancelled"`) |
 | `notification.read` / `notification.deleted` | `{id}` (`null` = all) |
