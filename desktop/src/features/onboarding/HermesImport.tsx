@@ -293,7 +293,7 @@ function ImportSummary({ result, onUndoMemories, undoing }: { result: HermesResu
   if (result.memory) {
     const n = result.memory.facts + result.memory.insights
     lines.push({
-      text: `${plural(result.memory.facts, 'memory', 'memories')} and ${plural(result.memory.insights, 'thing', 'things')} about you were added.`,
+      text: `${plural(result.memory.facts, 'memory', 'memories')} and ${plural(result.memory.insights, 'thing', 'things')} about you are waiting for your review in Memory.`,
       action:
         n > 0 ? (
           <Button size="xs" variant="ghost" loading={undoing} onClick={onUndoMemories}>

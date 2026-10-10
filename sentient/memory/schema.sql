@@ -23,9 +23,10 @@ CREATE TABLE IF NOT EXISTS user_insights (
     dimension   TEXT NOT NULL DEFAULT 'context',
     statement   TEXT NOT NULL,
     confidence  REAL NOT NULL DEFAULT 0.5,
-    status      TEXT NOT NULL DEFAULT 'active',       -- active | confirmed | disputed | retired
+    status      TEXT NOT NULL DEFAULT 'active',       -- active | confirmed | disputed | retired | pending (held for review)
     source      TEXT NOT NULL DEFAULT 'inferred',     -- inferred | user
     evidence    TEXT NOT NULL DEFAULT '[]',           -- JSON [{kind, ref, quote, at}]
+    review      TEXT,                                 -- JSON {from, snippet, session_id} while held for review
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );

@@ -13,6 +13,9 @@ memory from documents, and the similarity graph. Changes:
 - Expired facts are filtered at query time as well as purged hourly.
 - Importing a document adds to memory instead of wiping it (v2 build_initial_memory).
 - Search by source works (v2 formatted a prompt with a missing key and crashed).
+- Memories from outside content, unprompted work or imports are held for review (``status = 'pending'``, ADR
+  0021): they have no vector, and every read here except ``pending_facts`` skips them, so recall, prompts,
+  proactivity, the user model and dreaming never see one until the user approves it.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from typing import Any
 from sentient.config.schema import SentientConfig
 from sentient.llm.provider import LLMProvider
 from sentient.memory import prompts
+from sentient.memory import review as reviews
 from sentient.memory.episodic import EpisodicMemory
 from sentient.memory.schema import ensure_memory_schema
 from sentient.memory.topics import DEFAULT_TOPIC, TOPICS, normalize_topics
@@ -50,7 +54,10 @@ _USER_REF_RE = re.compile(r"\b(the user|USERNAME)\b", re.IGNORECASE)
 # self-evident facts small models like to emit ("Maya's name is Maya.")
 _TAUTOLOGY_RE = re.compile(r"^\s*(?P<n>[\w .'-]+?)['\u2019]s name is (?P=n)\s*\.?\s*$", re.IGNORECASE)
 
-MEMORY_COLUMNS = "id, content, source, topics, memory_type, created_at, updated_at, expires_at, previous_content"
+MEMORY_COLUMNS = (
+    "id, content, source, topics, memory_type, created_at, updated_at, expires_at, previous_content, status, review"
+)
+ACTIVE = "status = 'active'"  # held memories (``pending``) are left out of every read but ``pending_facts``
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 STOPWORDS = frozenset(
@@ -326,6 +333,8 @@ def _row_to_memory(r: Any, similarity: float | None = None) -> dict:
         "updated_at": r["updated_at"],
         "expires_at": r["expires_at"],
         "previous_content": r["previous_content"] if "previous_content" in r.keys() else None,  # noqa: SIM118 - sqlite Row, where `in row` checks values
+        "status": r["status"] if "status" in r.keys() else "active",  # noqa: SIM118
+        "review": reviews.load(r["review"]) if "review" in r.keys() else None,  # noqa: SIM118
     }
     if similarity is not None:
         d["similarity"] = round(similarity, 4)
@@ -372,7 +381,7 @@ class FactMemory:
 
     async def reindex(self) -> int:
         """Re-embed every fact (embedding model or metric changed)."""
-        rows = await self.store.fetchall("SELECT id, content FROM facts ORDER BY id")
+        rows = await self.store.fetchall(f"SELECT id, content FROM facts WHERE {ACTIVE} ORDER BY id")
         done = 0
         for i in range(0, len(rows), 32):
             batch = rows[i : i + 32]
@@ -401,7 +410,10 @@ class FactMemory:
     async def _keyword_ids(self, tokens: list[str], limit: int, source: str | None) -> list[int]:
         if not tokens:
             return []
-        sql = "SELECT f.id FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid WHERE facts_fts MATCH ?"
+        sql = (
+            "SELECT f.id FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid"
+            " WHERE facts_fts MATCH ? AND f.status = 'active'"
+        )
         params: list[Any] = [" OR ".join(f'"{t}"' for t in tokens)]
         if source is not None:
             sql += " AND f.source = ?"
@@ -429,7 +441,8 @@ class FactMemory:
         else:
             rows = await self.store.fetchall(
                 "SELECT f.id, vec_distance_cosine(v.embedding, ?) AS distance"
-                " FROM facts f JOIN facts_vec v ON v.rowid = f.id WHERE f.source = ? ORDER BY distance LIMIT ?",
+                " FROM facts f JOIN facts_vec v ON v.rowid = f.id WHERE f.source = ? AND f.status = 'active'"
+                " ORDER BY distance LIMIT ?",
                 (pack(qvec), source, pool),
             )
             sims = {int(r["id"]): 1.0 - float(r["distance"]) for r in rows}
@@ -448,7 +461,9 @@ class FactMemory:
         if not sims:
             return []
         marks = ",".join("?" * len(sims))
-        rows = await self.store.fetchall(f"SELECT {MEMORY_COLUMNS} FROM facts WHERE id IN ({marks})", list(sims))
+        rows = await self.store.fetchall(
+            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE id IN ({marks}) AND {ACTIVE}", list(sims)
+        )
         qset = set(tokens)
         scored = []
         for r in rows:
@@ -507,25 +522,29 @@ class FactMemory:
         topics: list[str],
         memory_type: str,
         duration: str | None,
+        review: dict | None = None,
     ) -> int:
+        """A held fact (``review`` set) is saved as pending without a vector, so recall cannot find it."""
         await self.ensure_schema()
         ts = now_iso()
         cur = await self.store.execute(
-            "INSERT INTO facts(content, source, topics, memory_type, created_at, updated_at, expires_at, embedding_model)"
-            " VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO facts(content, source, topics, memory_type, created_at, updated_at, expires_at, embedding_model,"
+            " status, review) VALUES(?,?,?,?,?,?,?,?,?,?)",
             (
                 content, source, json.dumps(topics), memory_type, ts, ts,
                 expires_for(memory_type, duration), self.llm.model_for("embedding"),
+                "pending" if review is not None else "active", reviews.dump(review),
             ),
         )
         fid = int(cur.lastrowid)
-        await self.vec.upsert(fid, vec)
+        if review is None:
+            await self.vec.upsert(fid, vec)
         return fid
 
     async def _update(
         self, fid: int, content: str, vec: list[float], topics: list[str], memory_type: str, duration: str | None
     ) -> None:
-        row = await self.store.fetchone("SELECT content FROM facts WHERE id = ?", (fid,))
+        row = await self.store.fetchone("SELECT content, status FROM facts WHERE id = ?", (fid,))
         prev = row["content"] if row else None
         await self.store.execute(
             "UPDATE facts SET content = ?, topics = ?, memory_type = ?, expires_at = ?, updated_at = ?,"
@@ -535,7 +554,8 @@ class FactMemory:
                 prev, self.llm.model_for("embedding"), fid,
             ),
         )
-        await self.vec.upsert(fid, vec)
+        if row is None or row["status"] == "active":  # a held fact stays out of the vector index until approved
+            await self.vec.upsert(fid, vec)
 
     async def analyze(self, text: str) -> tuple[list[str], str, str | None]:
         """v2 fact analysis: topics, long/short-term and duration for one fact."""
@@ -586,7 +606,8 @@ class FactMemory:
             return []
         marks = ",".join("?" * len(ids))
         rows = await self.store.fetchall(
-            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE id IN ({marks}) AND (expires_at IS NULL OR expires_at > ?)",
+            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE id IN ({marks}) AND {ACTIVE}"
+            " AND (expires_at IS NULL OR expires_at > ?)",
             [*ids, now_iso()],
         )
         out = []
@@ -616,19 +637,52 @@ class FactMemory:
         return max(peers, key=lambda n: n.get("updated_at") or "") if peers else None
 
     async def remember(
-        self, fact: str, *, source: str = "conversation", use_llm: bool = True, notify: bool = False
+        self,
+        fact: str,
+        *,
+        source: str = "conversation",
+        use_llm: bool = True,
+        notify: bool = False,
+        review: dict | None = None,
     ) -> dict[str, Any]:
-        """Store one fact with dedup / CUD logic. Returns {action, id, content}."""
-        result = await self._remember(fact, source=source, use_llm=use_llm)
+        """Store one fact with dedup / CUD logic. Returns {action, id, content}.
+
+        With ``review`` (``memory.review.note``) the fact is held for the user's review instead: it is only ever
+        added (never updates or deletes another fact), and the result carries ``status: "pending"``."""
+        if review is not None:
+            result = await self._hold(fact, source=source, use_llm=use_llm, review=review)
+        else:
+            result = await self._remember(fact, source=source, use_llm=use_llm)
         if notify and result["action"] in {"ADD", "UPDATE", "DELETE"}:
-            self.publish(result["action"], result["id"], result["content"])
+            extra = {"status": "pending"} if result.get("status") == "pending" else {}
+            self.publish(result["action"], result["id"], result["content"], **extra)
         return result
+
+    async def _hold(self, fact: str, *, source: str, use_llm: bool, review: dict) -> dict[str, Any]:
+        """Save ``fact`` as pending. Duplicates of any fact (held or not) are skipped; nothing else changes."""
+        fact = fact.strip()
+        if not fact:
+            return {"action": "SKIP", "id": None, "content": fact}
+        await self.ensure_schema()
+        exact = await self.store.fetchone("SELECT id FROM facts WHERE content = ? COLLATE NOCASE", (fact,))
+        if exact:
+            return {"action": "SKIP", "id": int(exact["id"]), "content": fact}
+        neighbours = await self.recall(fact, top_k=1, min_similarity=0.0, track=False)
+        if neighbours and neighbours[0]["similarity"] >= self.config.memory.duplicate_similarity:
+            return {"action": "SKIP", "id": neighbours[0]["id"], "content": neighbours[0]["content"]}
+        topics, memory_type, duration = await self.analyze(fact) if use_llm else ([DEFAULT_TOPIC], "long-term", None)
+        fid = await self._insert(
+            fact, [], source=source, topics=topics, memory_type=memory_type, duration=duration, review=review
+        )
+        return {"action": "ADD", "id": fid, "content": fact, "status": "pending"}
 
     async def _remember(self, fact: str, *, source: str, use_llm: bool) -> dict[str, Any]:
         fact = fact.strip()
         if not fact:
             return {"action": "SKIP", "id": None, "content": fact}
-        exact = await self.store.fetchone("SELECT id FROM facts WHERE content = ? COLLATE NOCASE", (fact,))
+        exact = await self.store.fetchone(
+            f"SELECT id FROM facts WHERE content = ? COLLATE NOCASE AND {ACTIVE}", (fact,)
+        )
         if exact:
             return {"action": "SKIP", "id": int(exact["id"]), "content": fact}
         [vec] = await self._embed([fact])
@@ -802,11 +856,12 @@ class FactMemory:
         text = "\n".join(t for _, t in kept)
         return text[-max_chars:] if len(text) > max_chars else text
 
-    async def flush_conversation(self, transcript: str, user_name: str) -> list[dict]:
+    async def flush_conversation(self, transcript: str, user_name: str, *, review: dict | None = None) -> list[dict]:
         """Save lasting facts from chat turns that are about to be compressed (docs/API.md section 10).
 
         One extraction call over the bounded transcript, then the normal CUD path per fact
         (exact and near duplicates short-circuit without a model call). Publishes ``memory.updated``.
+        With ``review`` (a chat that read outside content) the facts are held for review.
         """
         cfg = self.config.memory
         if not cfg.flush_enabled or cfg.flush_max_facts <= 0:
@@ -829,15 +884,18 @@ class FactMemory:
         results: list[dict] = []
         for fact in self._facts_from(raw, user_name)[: cfg.flush_max_facts]:
             try:
-                results.append(await self.remember(fact, source="conversation", notify=True))
+                results.append(await self.remember(
+                    fact, source="conversation", notify=True, review=reviews.with_snippet(review, text, fact)
+                ))
             except Exception as exc:
                 log.warning("memory flush could not store %r: %s", fact, exc)
         return results
 
     async def extract_and_store(
-        self, text: str, username: str, source: str = "conversation", *, notify: bool = False
+        self, text: str, username: str, source: str = "conversation", *, notify: bool = False, review: dict | None = None
     ) -> list[dict]:
-        """Pull atomic facts out of text and remember each (v2 cud_memory)."""
+        """Pull atomic facts out of text and remember each (v2 cud_memory). With ``review`` they are held for review,
+        each with the sentence of ``text`` it most likely came from."""
         try:
             facts = await self.extract_facts(text, username)
         except Exception as exc:
@@ -846,25 +904,32 @@ class FactMemory:
         results = []
         for f in facts[:20]:
             try:
-                results.append(await self.remember(f, source=source, notify=notify))
+                results.append(await self.remember(
+                    f, source=source, notify=notify, review=reviews.with_snippet(review, text, f)
+                ))
             except Exception as exc:
                 log.warning("failed to store fact %r: %s", f, exc)
         return results
 
     async def import_document(self, path: Path, *, username: str, source: str | None = None) -> dict:
-        """v2 build_initial_memory for one file, without wiping existing memories."""
+        """v2 build_initial_memory for one file, without wiping existing memories. The facts are held for the
+        user's review (``pending`` counts them), so nothing already remembered changes."""
         from sentient.files.extract import extract_text
 
         source = source or f"file:{path.name}"
         text = await asyncio.to_thread(extract_text, path, 200_000)
         text = re.sub(r"\[page \d+\]\n", "", text)
-        counts = {"added": 0, "updated": 0, "skipped": 0}
+        counts = {"added": 0, "updated": 0, "skipped": 0, "pending": 0}
+        review = reviews.note(path.name)
         for chunk in chunk_text(text, self.config.memory.import_chunk_chars):
-            for r in await self.extract_and_store(chunk, username, source=source):
+            for r in await self.extract_and_store(chunk, username, source=source, review=review):
                 key = {"ADD": "added", "UPDATE": "updated", "DELETE": "updated"}.get(r["action"], "skipped")
                 counts[key] += 1
+                counts["pending"] += r.get("status") == "pending"
         if counts["added"] or counts["updated"]:
-            self.publish("ADD", None, None, source=source, count=counts["added"] + counts["updated"])
+            self.publish(
+                "ADD", None, None, source=source, count=counts["added"] + counts["updated"], status="pending"
+            )
         return {**counts, "source": source}
 
     # ------------------------------------------------------------------ reads
@@ -893,7 +958,7 @@ class FactMemory:
                 return hits[offset : offset + limit]
             except Exception as exc:
                 log.debug("semantic list search unavailable, using keyword match: %s", exc)
-        where = ["(expires_at IS NULL OR expires_at > ?)"]
+        where = [ACTIVE, "(expires_at IS NULL OR expires_at > ?)"]
         params: list[Any] = [now_iso()]
         if source:
             where.append("source = ?")
@@ -913,7 +978,7 @@ class FactMemory:
 
     async def topic_counts(self) -> list[dict]:
         rows = await self.store.fetchall(
-            "SELECT topics FROM facts WHERE expires_at IS NULL OR expires_at > ?", (now_iso(),)
+            f"SELECT topics FROM facts WHERE {ACTIVE} AND (expires_at IS NULL OR expires_at > ?)", (now_iso(),)
         )
         counts = {t["name"]: 0 for t in TOPICS}
         for r in rows:
@@ -924,8 +989,8 @@ class FactMemory:
     async def expiring_soon(self, within: timedelta = timedelta(days=1)) -> list[dict]:
         now = datetime.now(UTC)
         rows = await self.store.fetchall(
-            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE expires_at IS NOT NULL AND expires_at > ? AND expires_at <= ?"
-            " ORDER BY expires_at",
+            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE {ACTIVE} AND expires_at IS NOT NULL AND expires_at > ?"
+            " AND expires_at <= ? ORDER BY expires_at",
             (now.isoformat(), (now + within).isoformat()),
         )
         return [_row_to_memory(r) for r in rows]
@@ -933,7 +998,7 @@ class FactMemory:
     async def graph(self, max_nodes: int = 1500) -> dict:
         """v2 create_memory_graph: nodes plus links where cosine similarity >= threshold."""
         rows = await self.store.fetchall(
-            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE expires_at IS NULL OR expires_at > ?"
+            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE {ACTIVE} AND (expires_at IS NULL OR expires_at > ?)"
             " ORDER BY created_at DESC LIMIT ?",
             (now_iso(), max_nodes),
         )
@@ -989,16 +1054,79 @@ class FactMemory:
         return len(rows)
 
     async def count(self) -> int:
-        row = await self.store.fetchone("SELECT COUNT(*) AS n FROM facts")
+        row = await self.store.fetchone(f"SELECT COUNT(*) AS n FROM facts WHERE {ACTIVE}")
         return int(row["n"]) if row else 0
+
+    # ------------------------------------------------------------------ review (ADR 0021)
+    async def pending_facts(self, limit: int = 500) -> list[dict]:
+        """Facts held for the user's review, newest first (``limit=-1``: all of them)."""
+        await self.ensure_schema()
+        rows = await self.store.fetchall(
+            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE status = 'pending' ORDER BY created_at DESC, id DESC LIMIT ?",
+            (limit,),
+        )
+        return [_row_to_memory(r) for r in rows]
+
+    async def pending_count(self) -> int:
+        row = await self.store.fetchone("SELECT COUNT(*) AS n FROM facts WHERE status = 'pending'")
+        return int(row["n"]) if row else 0
+
+    async def approve(self, fid: int, content: str | None = None) -> dict | None:
+        """The user approved a held fact, maybe in their own words: it becomes active and recall can find it.
+        None when ``fid`` is not pending. A fact Sentient already remembers in the same words is not added twice."""
+        row = await self.store.fetchone("SELECT content FROM facts WHERE id = ? AND status = 'pending'", (fid,))
+        if row is None:
+            return None
+        text = " ".join(str(content or "").split()) or row["content"]
+        same = await self.store.fetchone(
+            f"SELECT id FROM facts WHERE content = ? COLLATE NOCASE AND {ACTIVE}", (text,)
+        )
+        if same is not None:
+            await self.forget(fid)
+            self.publish("DELETE", fid, row["content"], reason="approved", merged_into=int(same["id"]))
+            return await self.get_fact(int(same["id"]))
+        [vec] = await self._embed([text])
+        if text != row["content"]:
+            topics, memory_type, duration = await self.analyze(text)
+            await self.store.execute(
+                "UPDATE facts SET content = ?, previous_content = ?, topics = ?, memory_type = ?, expires_at = ?"
+                " WHERE id = ?",
+                (text, row["content"], json.dumps(topics), memory_type, expires_for(memory_type, duration), fid),
+            )
+        await self.store.execute(
+            "UPDATE facts SET status = 'active', updated_at = ?, embedding_model = ? WHERE id = ?",
+            (now_iso(), self.llm.model_for("embedding"), fid),
+        )
+        await self.vec.upsert(fid, vec)
+        self.publish("ADD", fid, text, reason="approved")
+        return await self.get_fact(fid)
+
+    async def discard(self, fid: int) -> bool:
+        """The user turned a held fact down: it is deleted. False when ``fid`` is not pending."""
+        row = await self.store.fetchone("SELECT content FROM facts WHERE id = ? AND status = 'pending'", (fid,))
+        if row is None or not await self.forget(fid):
+            return False
+        self.publish("DELETE", fid, row["content"], reason="discarded")
+        return True
+
+    async def expire_pending(self, before: str) -> int:
+        """Delete held facts created before ``before`` (ISO time) that nobody reviewed."""
+        rows = await self.store.fetchall(
+            "SELECT id FROM facts WHERE status = 'pending' AND created_at < ?", (before,)
+        )
+        for r in rows:
+            await self.forget(int(r["id"]))
+        if rows:
+            self.publish("DELETE", None, None, reason="review_expired", count=len(rows))
+        return len(rows)
 
     # ------------------------------------------------------------------ consolidation (dreaming)
     async def active_facts(self, limit: int = 500) -> list[dict]:
         """Unexpired facts, most recently updated first, with ``recall_count`` and ``vector`` (or None)."""
         await self.ensure_schema()
         rows = await self.store.fetchall(
-            f"SELECT {MEMORY_COLUMNS}, recall_count FROM facts WHERE expires_at IS NULL OR expires_at > ?"
-            " ORDER BY updated_at DESC, id DESC LIMIT ?",
+            f"SELECT {MEMORY_COLUMNS}, recall_count FROM facts WHERE {ACTIVE}"
+            " AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id DESC LIMIT ?",
             (now_iso(), limit),
         )
         vectors: dict[int, list[float]] = {}
@@ -1071,7 +1199,7 @@ class FactMemory:
         """Short-term facts recalled at least ``min_recalls`` times become long-term (no expiry)."""
         await self.ensure_schema()
         rows = await self.store.fetchall(
-            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE memory_type = 'short-term' AND recall_count >= ?"
+            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE {ACTIVE} AND memory_type = 'short-term' AND recall_count >= ?"
             " AND (expires_at IS NULL OR expires_at > ?) ORDER BY recall_count DESC LIMIT ?",
             (min_recalls, now_iso(), limit),
         )

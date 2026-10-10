@@ -162,7 +162,9 @@ Each turn the system prompt carries SOUL.md (persona), USER.md, MEMORY.md,
 recent daily notes, recalled facts, the skill index, the clock and a running
 summary of long conversations. v2 relied on the model deciding to call a memory
 tool before it knew anything about you. Tools remain for explicit recall,
-remembering, forgetting and history search.
+remembering, forgetting and history search. Memories learned from outside
+content (an email, a web page), from work nobody asked for, or from an import
+wait in a review inbox and reach no prompt until you approve them (ADR 0021).
 
 ### Tasks keep v2 semantics, lose Celery
 Same statuses, JSON field names and stages as v2 (so the task UI ports

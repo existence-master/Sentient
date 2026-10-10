@@ -715,8 +715,11 @@ export interface MemoryUpdatedData {
   id: number | null
   content?: string
   source?: string
+  /** `merged` | `contradicted` | `promoted` | `expired` | `approved` | `discarded` | `review_expired` */
   reason?: string
   count?: number
+  /** `pending`: the memory waits in the review inbox (ADR 0021). */
+  status?: 'pending'
 }
 
 export interface DomainEventMap {
@@ -1555,6 +1558,37 @@ export interface Memory {
   expires_at: ISODate | null
   /** Present on semantic search results (`q`). */
   similarity?: number
+  /** Listed memories are always `active`; `pending` ones are only in the review inbox. */
+  status?: 'active' | 'pending'
+  review?: ReviewNote | null
+}
+
+/** Where a memory waiting for review came from (ADR 0021). */
+export interface ReviewNote {
+  /** Plain name of the source: "Gmail", "Hermes", "resume.pdf", "a proactive check". */
+  from: string
+  /** The text it was taken from, at most 400 characters. */
+  snippet: string | null
+  session_id: string | null
+}
+
+export interface MemoryReviewItem {
+  kind: 'fact' | 'insight'
+  id: number | string
+  text: string
+  source: string
+  from: string
+  snippet: string | null
+  session_id: string | null
+  created_at: ISODate
+  /** When it is let go if nobody reviews it. */
+  expires_at: ISODate | null
+}
+
+export interface MemoryReviewInbox {
+  items: MemoryReviewItem[]
+  count: number
+  expire_days: number
 }
 
 export interface MemoryQuery {
@@ -1595,12 +1629,15 @@ export interface MemoryWriteResult {
   action: 'ADD' | 'UPDATE' | 'DELETE' | 'SKIP'
   id: number | null
   content: string
+  status?: 'pending'
 }
 
 export interface MemoryImportResult {
   added: number
   updated: number
   skipped: number
+  /** How many wait for review (older engines leave it out). */
+  pending?: number
   source: string
 }
 
@@ -1610,6 +1647,8 @@ export interface MemorySummary {
   start_at: ISODate
   end_at: ISODate
   session_id: string | null
+  /** The app whose content that chat read; such summaries are kept out of other chats (ADR 0021). */
+  untrusted?: string | null
 }
 
 export type WorkspaceFileId = 'soul' | 'user' | 'memory'
@@ -1835,6 +1874,7 @@ export interface Insight {
   status: InsightStatus
   source: 'inferred' | 'user' | 'import:hermes' | string
   evidence: InsightEvidence[]
+  review?: ReviewNote | null
   created_at: ISODate
   updated_at: ISODate
 }
@@ -1858,6 +1898,8 @@ export interface UserModelRefreshResult {
   updated: number
   disputed: number
   questions: number
+  /** New insights waiting for review. */
+  held?: number
 }
 
 export interface UserModelUpdatedData {

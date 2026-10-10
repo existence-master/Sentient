@@ -25,6 +25,7 @@ proposing a change to one of them.
 | [0018](0018-untrusted-content-gates-sending.md) | Ask before sending anything once untrusted content is in play | Accepted | 2026-10-09 |
 | [0019](0019-host-terminal.md) | Run commands on the host only when turned on, in allowed folders, with approval | Accepted | 2026-10-09 |
 | [0020](0020-whatsapp-web-bridge.md) | Link WhatsApp as a device with an in-process WhatsApp Web bridge | Accepted | 2026-10-09 |
+| [0021](0021-hold-untrusted-memories-for-review.md) | Hold memories from untrusted sources for the user's review | Accepted | 2026-10-10 |
 
 ## Adding a record
 

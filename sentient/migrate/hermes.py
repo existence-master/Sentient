@@ -5,9 +5,9 @@ in it; ``apply(app, path, parts, skip)`` does it for the parts the user picked:
 
 - ``skills/**/SKILL.md``         -> ``~/.sentient/skills/pending/<name>/`` (never active). Hermes' bundled skills
                                    the user never changed are skipped; names are made unique.
-- ``memories/MEMORY.md``         -> facts with source ``import:hermes`` (``DELETE /api/import/hermes/memories``
-                                   removes them again).
-- ``memories/USER.md``           -> user-model insights with source ``import:hermes``.
+- ``memories/MEMORY.md``         -> facts with source ``import:hermes``, held for review in Memory (ADR 0021;
+                                   ``DELETE /api/import/hermes/memories`` removes them again).
+- ``memories/USER.md``           -> user-model insights with source ``import:hermes``, held for review too.
 - ``SOUL.md``                    -> Sentient's SOUL.md, only when ``persona`` is picked (the preview shows both).
 - ``cron/jobs.json``             -> paused tasks. Resuming one plans it and asks for approval like any new task.
                                    A script job becomes a script task only when its Python script is there.
@@ -47,6 +47,7 @@ from typing import Any
 
 import yaml
 
+from sentient.memory import review as memory_review
 from sentient.skills.loader import slugify, valid_name
 from sentient.tasks.delivery import MAX_CHATS, WHATSAPP_SELF
 from sentient.tasks.schedule import DAY_NAMES, MIN_INTERVAL_MINUTES, normalize_schedule, parse_iso
@@ -55,6 +56,7 @@ from sentient.tasks.scripts import ScriptInvalid, validate_code
 log = logging.getLogger(__name__)
 
 SOURCE = "import:hermes"
+REVIEW_FROM = "Hermes"  # what the Memory review inbox says these came from
 PARTS = ("skills", "memory", "persona", "jobs", "mcp")
 MEMORY_DELIMITER = "\n§\n"
 # never opened, wherever they appear (also inside skill folders)
@@ -329,7 +331,9 @@ async def _plan_memory(app: Any, home: Path) -> list[dict]:
         if kind == "fact" and app.memory is None:
             items.append(_item(key, "skip", "Memory is turned off on this computer.", kind=kind, text=text))
             continue
-        items.append(_item(key, "import", f"Becomes {where}, marked as imported from Hermes.", kind=kind, text=text))
+        items.append(_item(
+            key, "import", f"Becomes {where} once you approve it in Memory > Review.", kind=kind, text=text
+        ))
     return items
 
 
@@ -793,15 +797,19 @@ async def apply(app: Any, path: str | None, parts: list[str] | None, skip: list[
         for item in _picked(plan["memory"], left_out):
             try:
                 if item["kind"] == "fact":
-                    r = await app.memory.remember(item["text"], source=SOURCE, use_llm=False)
+                    r = await app.memory.remember(
+                        item["text"], source=SOURCE, use_llm=False, review=memory_review.note(REVIEW_FROM)
+                    )
                     facts += r["action"] == "ADD"
                 else:
-                    insights += await app.user_model.import_insight(item["text"], source=SOURCE) is not None
+                    insights += await app.user_model.import_insight(
+                        item["text"], source=SOURCE, review=memory_review.note(REVIEW_FROM)
+                    ) is not None
             except Exception as exc:
                 log.warning("could not import a Hermes memory: %s", exc)
                 failed.append({"key": item["key"], "name": item["text"], "note": "Couldn't save it."})
         if facts and app.memory is not None:
-            app.memory.publish("ADD", None, None, source=SOURCE, count=facts)
+            app.memory.publish("ADD", None, None, source=SOURCE, count=facts, status="pending")
         result["memory"] = {"facts": facts, "insights": insights, "skipped": _skipped(plan["memory"], left_out) + failed}
 
     if "persona" in chosen:

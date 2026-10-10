@@ -51,6 +51,12 @@ service name `sentient`.
   clean address is the one way out it doesn't check. This holds even for apps you set to Allow and with approvals
   switched off, and no email or web page can talk it out of asking. In a chat it lasts until you start a new chat; a
   task asks with a notification and waits for your yes.
+- Memories that come from something other people wrote (an email, a web page, a message, a tool's result), from work
+  Sentient did on its own, or from an import (a document, Hermes) wait for you in Memory > Review. Sentient doesn't
+  use them anywhere until you approve them, and no email or web page can approve them for you. Ones you don't review
+  are deleted after 30 days (Settings > Memory). What you tell Sentient yourself in a chat that hasn't read outside
+  content is remembered as before. Summaries of such chats stay out of your other chats and out of the notes
+  Sentient keeps about you (MEMORY.md), though you can still read them under Memory > Conversations.
 - Photos and screenshots from your devices ask first.
 - One-time codes, sign-in links and password reset links in your email are hidden from the AI, so a tricky email
   can't get them out of Sentient. You still see them when you open the email in your mail app. You can turn this off

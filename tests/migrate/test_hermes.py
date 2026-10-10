@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from sentient import paths
 from sentient.gateway.app import create_app
+from sentient.memory import review
 from sentient.migrate import hermes
 from sentient.migrate.hermes import _has_secret, cron_to_schedule
 from sentient.tasks.service import TaskConflict
@@ -90,26 +91,43 @@ async def test_skill_names_stay_unique(app, hermes_home):
     assert again["counts"]["skills"] == 0
 
 
-async def test_memory_entries_become_facts_and_insights_with_source(app, hermes_home):
+async def test_memory_entries_wait_for_review_with_source(app, hermes_home):
+    plan = await hermes.preview(app, str(hermes_home))
+    assert all("once you approve it in Memory > Review" in i["note"] for i in plan["memory"] if i["action"] == "import")
     result = await hermes.apply(app, str(hermes_home), ["memory"])
     assert result["memory"]["facts"] == 3
     assert result["memory"]["insights"] == 2
-    facts = await app.memory.list_facts(100, 0, source=hermes.SOURCE)
-    assert {f["content"] for f in facts} >= {"This machine runs Ubuntu 22.04 with Docker installed"}
+    # held for review (issue #137): not remembered, not recalled, not in the user model yet
+    assert await app.memory.list_facts(100, 0, source=hermes.SOURCE) == []
+    assert await app.memory.recall("Ubuntu Docker machine", min_similarity=0.0) == []
     state = await app.user_model.get_state()
-    imported = [i for i in state["insights"] if i["source"] == hermes.SOURCE]
-    assert {i["statement"] for i in imported} == {
+    assert [i for i in state["insights"] if i["source"] == hermes.SOURCE] == []
+    held = (await review.inbox(app))["items"]
+    assert {(i["kind"], i["from"]) for i in held} == {("fact", "Hermes"), ("insight", "Hermes")}
+    assert "This machine runs Ubuntu 22.04 with Docker installed" in {i["text"] for i in held}
+    assert {i["text"] for i in held if i["kind"] == "insight"} == {
         "Sarthak prefers concise answers without bullet points", "Sarthak works mostly in the evenings",
     }
-    assert all(i["status"] == "active" for i in imported)
     assert app.fake.calls == []  # no model calls, only embeddings
 
     again = await hermes.preview(app, str(hermes_home))
     assert again["counts"]["memory"] == 0
 
+    assert await review.approve_from(app, "Hermes") == 5
+    facts = await app.memory.list_facts(100, 0, source=hermes.SOURCE)
+    assert {f["content"] for f in facts} >= {"This machine runs Ubuntu 22.04 with Docker installed"}
+    imported = [i for i in (await app.user_model.get_state())["insights"] if i["source"] == hermes.SOURCE]
+    assert len(imported) == 2 and all(i["status"] == "active" for i in imported)
+
     removed = await hermes.remove_memories(app)
     assert removed == {"facts": 3, "insights": 2}
     assert await app.memory.list_facts(100, 0, source=hermes.SOURCE) == []
+
+
+async def test_removing_hermes_memories_also_clears_ones_still_waiting(app, hermes_home):
+    await hermes.apply(app, str(hermes_home), ["memory"])
+    assert await hermes.remove_memories(app) == {"facts": 3, "insights": 2}
+    assert (await review.inbox(app))["count"] == 0
 
 
 async def test_soul_changes_only_when_persona_is_picked(app, hermes_home):

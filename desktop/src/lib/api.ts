@@ -64,6 +64,7 @@ import type {
   MemoryGraph,
   MemoryImportResult,
   MemoryQuery,
+  MemoryReviewInbox,
   MemorySummary,
   MemoryTopic,
   MemoryWriteResult,
@@ -597,6 +598,14 @@ export const api = {
     writeWorkspace: (which: WorkspaceFileId, content: string) =>
       http.put<{ saved: boolean }>(`/api/memories/workspace/${which}`, { content }),
     personas: () => http.get<Persona[]>('/api/memories/personas'),
+    /** §7 memories waiting for the user's review (ADR 0021). */
+    review: {
+      list: () => http.get<MemoryReviewInbox>('/api/memories/review'),
+      approve: (kind: 'fact' | 'insight', id: number | string, content?: string) =>
+        http.post<OkResponse>(`/api/memories/review/${kind}/${enc(String(id))}/approve`, content === undefined ? {} : { content }),
+      discard: (kind: 'fact' | 'insight', id: number | string) => http.delete<OkResponse>(`/api/memories/review/${kind}/${enc(String(id))}`),
+      approveAll: (from: string) => http.post<{ approved: number }>('/api/memories/review/approve-all', { from })
+    },
     /** §15 dreams: overnight memory consolidation. */
     dreams: {
       list: (limit = 30) => withDemoFallback(() => http.get<Dream[]>('/api/memories/dreams', { query: { limit } }), () => demo.dreams()),

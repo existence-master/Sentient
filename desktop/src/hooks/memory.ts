@@ -20,6 +20,37 @@ export function useMemorySummaries(limit = 50) {
   return useQuery({ queryKey: qk.memories.summaries, queryFn: () => api.memories.summaries(limit) })
 }
 
+/** Memories waiting for the user's review. Never fails loudly: an older engine without the route counts as empty. */
+export function useMemoryReview() {
+  return useQuery({
+    queryKey: qk.memories.review,
+    queryFn: async () => {
+      try {
+        return await api.memories.review.list()
+      } catch (err) {
+        if (isNotImplemented(err)) return { items: [], count: 0, expire_days: 30 }
+        throw err
+      }
+    }
+  })
+}
+
+export function useMemoryReviewActions() {
+  const qc = useQueryClient()
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey: qk.memories.all })
+    void qc.invalidateQueries({ queryKey: qk.userModel })
+  }
+  return {
+    approve: useMutation({
+      mutationFn: ({ kind, id, content }: { kind: 'fact' | 'insight'; id: number | string; content?: string }) => api.memories.review.approve(kind, id, content),
+      onSuccess: invalidate
+    }),
+    discard: useMutation({ mutationFn: ({ kind, id }: { kind: 'fact' | 'insight'; id: number | string }) => api.memories.review.discard(kind, id), onSuccess: invalidate }),
+    approveAll: useMutation({ mutationFn: (from: string) => api.memories.review.approveAll(from), onSuccess: invalidate })
+  }
+}
+
 export function useWorkspace() {
   return useQuery({ queryKey: qk.memories.workspace, queryFn: api.memories.workspace })
 }

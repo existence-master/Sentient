@@ -60,11 +60,16 @@ async def test_import_document_adds_without_wiping(app, tmp_path, suffix):
              "analysis": {"topics": ["Work & Learning"], "memory_type": "long-term", "duration": None}}
         )
     out = await mem.import_document(path, username="Sarthak")
-    assert out == {"added": 2, "updated": 0, "skipped": 0, "source": f"file:resume{suffix}"}
+    assert out == {"added": 2, "updated": 0, "skipped": 0, "pending": 2, "source": f"file:resume{suffix}"}
     extraction_input = [c for c in llm.calls if c.get("json")][-3]["messages"][1]["content"]
     assert "backend engineer" in extraction_input
     assert await mem.get_fact(keep["id"]) is not None
-    assert len(await mem.list_facts(source=f"file:resume{suffix}")) == 2
+    # imported facts wait for the user's review (issue #137) before Sentient uses them
+    assert await mem.list_facts(source=f"file:resume{suffix}") == []
+    held = await mem.pending_facts()
+    assert {f["content"] for f in held} == {"Sarthak is a backend engineer", "Sarthak knows Rust"}
+    assert {f["review"]["from"] for f in held} == {f"resume{suffix}"}
+    assert all("backend engineer" in f["review"]["snippet"] for f in held)
 
 
 async def test_summaries_job_marks_messages(app):
@@ -159,7 +164,8 @@ def test_memory_routes(client):
          "analysis": {"topics": ["Interests & Lifestyle"], "memory_type": "long-term", "duration": None}}
     )
     imp = client.post("/api/memories/import", files={"file": ("notes.md", b"I enjoy sailing.", "text/markdown")}).json()
-    assert imp == {"added": 1, "updated": 0, "skipped": 0, "source": "file:notes.md"}
+    assert imp == {"added": 1, "updated": 0, "skipped": 0, "pending": 1, "source": "file:notes.md"}
+    assert client.get("/api/memories/review").json()["items"][0]["from"] == "notes.md"
     assert client.post("/api/memories/import", files={"file": ("x.exe", b"MZ", "application/octet-stream")}).status_code == 400
     assert client.delete("/api/memories/source/file:notes.md").json() == {"deleted": 1}
 
