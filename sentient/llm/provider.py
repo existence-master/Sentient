@@ -20,7 +20,7 @@ from typing import Any, Protocol
 from sentient import secrets
 from sentient.config.schema import ProviderConfig, SentientConfig
 from sentient.llm.chatgpt import ChatGPTError
-from sentient.llm.errors import plain_error
+from sentient.llm.errors import is_tool_support_error, plain_error
 from sentient.llm.responses import ResponsesError
 
 log = logging.getLogger(__name__)
@@ -48,9 +48,9 @@ def _failure(exc: Exception, model: str) -> Exception:
     Claude Code and ChatGPT plan errors are written for the user already."""
     if isinstance(exc, PlainProviderError):
         return exc
-    if isinstance(exc, ResponsesError | ChatGPTError) or (
+    if (isinstance(exc, ResponsesError | ChatGPTError) or (
         _provider_prefix(model) == CLAUDE_CODE and type(exc) is ProviderError
-    ):
+    )) and not is_tool_support_error(str(exc)):  # a tool refusal stays as is: chat answers without tools
         return ProviderFailed(str(exc))
     plain = plain_error(exc, model)
     return ProviderFailed(plain) if plain else exc

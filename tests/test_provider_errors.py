@@ -165,6 +165,13 @@ async def test_unknown_failures_and_tool_refusals_keep_their_own_text(http):
     assert not isinstance(no_tools.value, PlainProviderError)
     assert is_tool_format_error(no_tools.value)  # chat answers without tools instead of failing
 
+    from sentient.llm.provider import _failure
+    from sentient.llm.responses import ResponsesError
+
+    no_tools_plan = ResponsesError("This model does not support tools.", 400)
+    assert _failure(no_tools_plan, "chatgpt/gpt-test") is no_tools_plan  # left for the loop to answer without tools
+    assert isinstance(_failure(ResponsesError("Usage limit reached.", 429), "chatgpt/gpt-test"), ProviderFailed)
+
     odd = litellm.BadRequestError(message="OpenrouterException - something new", model="x", llm_provider="openrouter")
     assert plain_error(odd, FREE) is None
     assert plain_error(ValueError("Model did not return JSON: 'x'"), FREE) is None  # Sentient's own errors
