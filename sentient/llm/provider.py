@@ -19,6 +19,9 @@ from typing import Any, Protocol
 
 from sentient import secrets
 from sentient.config.schema import ProviderConfig, SentientConfig
+from sentient.llm.chatgpt import ChatGPTError
+from sentient.llm.errors import plain_error
+from sentient.llm.responses import ResponsesError
 
 log = logging.getLogger(__name__)
 
@@ -27,15 +30,39 @@ class ProviderError(RuntimeError):
     pass
 
 
-class ModelRefused(ProviderError):
+class PlainProviderError(ProviderError):
+    """The message is a plain sentence that says what to do, for the user as is (the raw error is only logged)."""
+
+
+class ModelRefused(PlainProviderError):
     """A model that is set up can't do this job (Claude Code in the background, for one). The message is a plain
     sentence that says what to change, for the user as is."""
 
 
+class ProviderFailed(PlainProviderError):
+    """A provider turned the request down for a known reason: out of credits, a rate limit, a bad key... (#280)."""
+
+
+def _failure(exc: Exception, model: str) -> Exception:
+    """What a failed model leaves for the user: a plain error for a known provider failure, else ``exc`` itself.
+    Claude Code and ChatGPT plan errors are written for the user already."""
+    if isinstance(exc, PlainProviderError):
+        return exc
+    if isinstance(exc, ResponsesError | ChatGPTError) or (
+        _provider_prefix(model) == CLAUDE_CODE and type(exc) is ProviderError
+    ):
+        return ProviderFailed(str(exc))
+    plain = plain_error(exc, model)
+    return ProviderFailed(plain) if plain else exc
+
+
 def _all_failed(role: str, errors: list[Exception]) -> ProviderError:
-    """The error for a role whose every model failed. When every model refused the job, say why and what to do."""
+    """The error for a role whose every model failed: the last model's plain reason when Sentient knows it (when
+    every model refused the job, why and what to do), else the general error."""
     if errors and all(isinstance(e, ModelRefused) for e in errors):
         return ModelRefused(str(errors[0]))
+    if errors and isinstance(errors[-1], PlainProviderError):
+        return ProviderFailed(str(errors[-1]))
     return ProviderError(f"All models failed for role '{role}': {errors[-1] if errors else None}")
 
 
@@ -332,10 +359,13 @@ class LiteLLMProvider:
                 )
                 return
             except Exception as exc:
-                errors.append(exc)
+                failure = _failure(exc, model)
+                errors.append(failure)
                 log.warning("model %s failed for role %s: %s", model, role, exc)
                 if emitted:
                     # part of a reply already reached the user; switching models would duplicate it
+                    if isinstance(failure, PlainProviderError):
+                        raise ProviderFailed(str(failure)) from exc
                     raise ProviderError(f"{model} stopped mid-reply: {exc}") from exc
                 continue
         raise _all_failed(role, errors)
@@ -397,7 +427,7 @@ class LiteLLMProvider:
                     text = resp.choices[0].message.content or ""
                 return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
             except Exception as exc:
-                errors.append(exc)
+                errors.append(_failure(exc, model))
                 log.warning("model %s failed for role %s: %s", model, role, exc)
         raise _all_failed(role, errors)
 
@@ -421,7 +451,7 @@ class LiteLLMProvider:
                 text = resp.choices[0].message.content or ""
                 return parse_json_loose(text)
             except Exception as exc:
-                errors.append(exc)
+                errors.append(_failure(exc, model))
                 log.warning("model %s failed for role %s: %s", model, role, exc)
         raise _all_failed(role, errors)
 
@@ -438,7 +468,14 @@ class LiteLLMProvider:
             raise ProviderError("ChatGPT plans don't include embedding models. Pick a local or API embedding model.")
         kwargs = self._kwargs_for(model)
         kwargs.pop("timeout", None)
-        resp = await litellm.aembedding(model=litellm_model(model), input=texts, **kwargs)
+        try:
+            resp = await litellm.aembedding(model=litellm_model(model), input=texts, **kwargs)
+        except Exception as exc:
+            plain = plain_error(exc, model)
+            if plain is None:
+                raise
+            log.warning("embedding model %s failed: %s", model, exc)
+            raise ProviderFailed(plain) from exc
         return [d["embedding"] for d in resp.data]
 
 

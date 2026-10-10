@@ -30,7 +30,7 @@ from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sentient.llm.provider import ModelRefused, ProviderError
+from sentient.llm.provider import PlainProviderError, ProviderError
 from sentient.services import Service, cancel_tasks
 from sentient.tasks import ask, catchup, executor, limits, scripts, stuck, swarm
 from sentient.tasks.delivery import from_stored, stored
@@ -80,9 +80,10 @@ _KEEP: Any = object()
 
 
 def _provider_down(exc: ProviderError, *, detail: bool = False) -> str:
-    """What a task shows when its model failed: the reason itself when a model refused the job (it says what to
-    change), else the general sentence, with the error when ``detail``."""
-    if isinstance(exc, ModelRefused):
+    """What a task shows when its model failed: the reason itself when Sentient knows it (a model that refused the
+    job, a provider out of credits or over its limit: it says what to do), else the general sentence, with the error
+    when ``detail``."""
+    if isinstance(exc, PlainProviderError):
         return str(exc)
     return f"{PROVIDER_DOWN} ({exc})" if detail else PROVIDER_DOWN
 

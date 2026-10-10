@@ -183,6 +183,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- When a cloud model says no, chat and tasks now say why in a plain sentence and what to do, instead of showing the
+  provider's raw reply. For example: "OpenRouter's free models have reached today's limit. Add credits on
+  openrouter.ai, wait until tomorrow, or pick another model in Settings > Models." This covers rate limits, an
+  account out of credits, a key that was mistyped or revoked, a free model OpenRouter keeps for coding tools, a model
+  that doesn't exist or isn't downloaded, and a provider that is down or too slow. The raw reply stays in the log.
 - Turning on "Use my Claude Code for chats" now shows the Claude Code version straight away, instead of sometimes
   showing nothing until you came back to the page. Settings also says that its replies take a few seconds to start
   and arrive in larger pieces than with your other models.
