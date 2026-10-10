@@ -30,6 +30,12 @@ export const CH = {
   getAlwaysListening: 'sentient:get-always-listening',
   alwaysListeningChanged: 'sentient:always-listening-changed',
   wakeDetected: 'sentient:wake-detected',
+  dictationApply: 'sentient:dictation-apply',
+  dictationStatus: 'sentient:dictation-status',
+  dictationCancel: 'sentient:dictation-cancel',
+  dictationPermission: 'sentient:dictation-permission',
+  dictationCommand: 'sentient:dictation-command',
+  dictationEvent: 'sentient:dictation-event',
   getShortcuts: 'sentient:get-shortcuts',
   setShortcut: 'sentient:set-shortcut'
 } as const

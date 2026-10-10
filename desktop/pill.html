@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- CSP -->
+    <meta name="color-scheme" content="dark" />
+    <title>Sentient is listening</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; }
+      body { display: flex; align-items: center; justify-content: center; font: 500 13px/1 system-ui, -apple-system, 'Segoe UI', sans-serif; color: #f4f4f5; }
+      #pill {
+        display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 8px 0 14px; border-radius: 20px;
+        background: rgba(18, 18, 22, 0.94); border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 0 6px 18px -6px rgba(0, 0, 0, 0.6);
+      }
+      #dot { width: 9px; height: 9px; border-radius: 50%; background: #71717a; flex: none; }
+      #pill[data-state='listening'] #dot { background: #ef4444; animation: pulse 1.2s ease-in-out infinite; }
+      #pill[data-state='working'] #dot { background: #f1a21d; }
+      #pill[data-state='error'] #dot { background: #f97316; }
+      #label { white-space: nowrap; max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+      #pill[data-state='error'] #label, #pill[data-state='empty'] #label { max-width: 220px; }
+      #meter { display: flex; align-items: center; gap: 2px; height: 18px; }
+      #meter span { width: 3px; height: 18px; border-radius: 2px; background: #f1a21d; transform: scaleY(0.15); transition: transform 60ms linear; }
+      #pill:not([data-state='listening']) #meter { display: none; }
+      #hint { color: #a1a1aa; font-size: 11px; white-space: nowrap; }
+      #pill:not([data-state='listening']):not([data-state='starting']) #hint { display: none; }
+      #close {
+        all: unset; width: 24px; height: 24px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
+        color: #a1a1aa; cursor: default; font-size: 15px;
+      }
+      #close:hover { background: rgba(255, 255, 255, 0.1); color: #f4f4f5; }
+      @keyframes pulse { 50% { opacity: 0.45; } }
+      @media (prefers-reduced-motion: reduce) { #pill[data-state='listening'] #dot { animation: none; } }
+    </style>
+  </head>
+  <body>
+    <div id="pill" data-state="starting" role="status" aria-live="polite">
+      <span id="dot"></span>
+      <span id="label">Starting…</span>
+      <div id="meter" aria-hidden="true"></div>
+      <span id="hint">Esc to cancel</span>
+      <button id="close" type="button" aria-label="Cancel">×</button>
+    </div>
+    <script type="module" src="./src/pill/main.ts"></script>
+  </body>
+</html>

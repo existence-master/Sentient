@@ -20,6 +20,9 @@ import type {
   AppCommand,
   CaptureNotice,
   DevicePrivacy,
+  DictationEvent,
+  DictationShellSettings,
+  DictationStatus,
   NativeNotification,
   OpenPathTarget,
   ShellPrefs,
@@ -28,6 +31,7 @@ import type {
 import notificationIcon from '../../resources/icon.png?asset'
 import { BackendManager } from './backend'
 import { CH } from './channels'
+import { DictationController, dictationSettingsFromConfig } from './dictation'
 import { DesktopNode } from './node'
 import { homePaths, sentientHome } from './paths'
 import { shellState, THEME_BG } from './prefs'
@@ -51,6 +55,7 @@ let tray: AppTray | null = null
 let quitting = false
 let smokeRunner: SmokeRunner | null = null
 let engineStopped: boolean | undefined // §17 Stop everything, as the engine last reported it
+let dictation: DictationController | null = null // #169 push to talk and dictation into any app
 const liveNotifications = new Set<Notification>()
 
 function showWindow(): void {
@@ -111,6 +116,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 interface ConfigSubset {
   ui?: { minimize_to_tray?: boolean; theme?: 'dark' | 'light' | 'system' }
   proactivity?: { enabled?: boolean }
+  voice?: { dictation?: Record<string, unknown> }
 }
 
 async function syncFromBackend(): Promise<void> {
@@ -126,6 +132,7 @@ async function syncFromBackend(): Promise<void> {
       proactivityEnabled: cfg.proactivity?.enabled,
       theme: cfg.ui?.theme ?? shellState.prefs().theme
     })
+    dictation?.apply(dictationSettingsFromConfig(cfg.voice?.dictation))
   } catch {
     /* engine may not expose config yet */
   }
@@ -146,6 +153,7 @@ async function toggleProactivity(): Promise<void> {
 // ------------------------------------------------------------------ stop everything (§17)
 /** Stop or resume from the tray or the global shortcut. Works with the window hidden; never asks the model. */
 async function setStopped(stop: boolean, source: 'tray' | 'hotkey'): Promise<void> {
+  if (stop) dictation?.cancel() // the microphone goes off at once, before the engine answers
   try {
     const state = await api<{ stopped: boolean; cancelled?: number }>(stop ? '/api/stop-all' : '/api/resume', {
       method: 'POST',
@@ -183,6 +191,7 @@ const desktopNode = new DesktopNode({
   },
   onStopState: (stopped) => {
     engineStopped = stopped
+    if (stopped) dictation?.cancel()
     tray?.refresh()
   },
   notice: (kind) => {
@@ -390,7 +399,17 @@ function registerIpc(): void {
   ipcMain.handle(CH.setShortcut, (_e, id: ShortcutId, accelerator: string | null) =>
     shortcuts.set(id, accelerator === null ? null : String(accelerator ?? ''))
   )
+  // #169 push to talk and dictation: settings from voice.dictation, events from the listening pill.
+  ipcMain.handle(CH.dictationApply, (_e, settings: DictationShellSettings) =>
+    dictation ? dictation.apply(settings) : DICTATION_OFF
+  )
+  ipcMain.handle(CH.dictationStatus, () => (dictation ? dictation.status() : DICTATION_OFF))
+  ipcMain.handle(CH.dictationCancel, () => dictation?.cancel())
+  ipcMain.handle(CH.dictationPermission, (_e, kind: 'microphone' | 'accessibility') => dictation?.openPermissionSettings(kind))
+  ipcMain.on(CH.dictationEvent, (e, ev: DictationEvent) => dictation?.onPillEvent(e.sender.id, ev))
 }
+
+const DICTATION_OFF: DictationStatus = { accessibility: null, microphone: null }
 
 // ------------------------------------------------------------------ lifecycle
 function boot(): void {
@@ -432,7 +451,16 @@ function boot(): void {
       toggleStopped: () => void setStopped(engineStopped !== true, 'tray'),
       shareWindow: () => void sharer.shareWindow(),
       shareRegion: () => void sharer.shareRegion(),
-      shareAccelerators: () => ({ window: shortcuts.accelerator('shareWindow'), region: shortcuts.accelerator('shareRegion') })
+      shareAccelerators: () => ({ window: shortcuts.accelerator('shareWindow'), region: shortcuts.accelerator('shareRegion') }),
+      micOn: () => dictation?.micOn === true
+    })
+
+    dictation = new DictationController({
+      talk: (text) => sendCommand({ type: 'push-to-talk', text }),
+      notify: (title, body) => {
+        if (Notification.isSupported()) new Notification({ title, body, silent: true, icon: notificationIcon }).show()
+      },
+      micChanged: () => tray?.refresh()
     })
 
     shortcuts.registerFixed(NEW_CHAT_ACCELERATOR, () => sendCommand({ type: 'new-chat' }))
@@ -440,13 +468,20 @@ function boot(): void {
     shortcuts.registerFixed(STOP_ACCELERATOR, () => {
       if (backend.status.state === 'ready') void setStopped(true, 'hotkey')
     })
-    shortcuts.start({ shareWindow: () => void sharer.shareWindow(), shareRegion: () => void sharer.shareRegion() })
+    shortcuts.start({
+      shareWindow: () => void sharer.shareWindow(),
+      shareRegion: () => void sharer.shareRegion(),
+      // Called on every press and every autorepeat of a held key: the controller tells holding from pressing.
+      pushToTalk: () => dictation?.trigger('talk'),
+      dictate: () => dictation?.trigger('dictate')
+    })
   })
 
   app.on('activate', () => showWindow())
 
   app.on('before-quit', () => {
     quitting = true
+    dictation?.dispose()
     shortcuts.stopAll()
     desktopNode.stop()
     backend.stop()

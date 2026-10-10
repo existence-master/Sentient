@@ -13,6 +13,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
   approvals and rules, and Stop everything stops it. It only answers your chats: tasks, suggestions and other
   background work keep using your other models, and it can't be the memory search model. Anthropic may change how
   this is counted or allowed.
+- **Push to talk and dictation into any app:** hold Ctrl+Alt+Shift+T (Cmd+Option+Shift+T on a Mac) anywhere, speak,
+  and let go: what you said goes to Sentient as a chat message, and the answer is read aloud. Press Ctrl+Alt+Shift+D,
+  speak, and press it again (or just pause): your words are typed where your cursor is, in any app. A small bar at the
+  bottom of the screen shows the microphone is on, with a level meter; Esc cancels. Speech is turned into text on this
+  computer. Dictation drops "um" and "uh" and fixes punctuation, or keeps exactly what you said, or lets your fast model
+  polish it without ever changing your words (if it does, the tidy version is used). Sentient never types into a
+  password box it can recognize, and puts back what you had copied. Change or turn off the shortcuts in Settings >
+  General, and pick the cleanup and language in Settings > Voice. Stop everything turns the microphone off.
 - **Share your screen with a shortcut:** press Ctrl+Alt+Shift+W (Command+Option+Shift+W on a Mac) to share the
   window you are using, or Ctrl+Alt+Shift+R (Command+Option+Shift+R) to drag over part of the screen. Sentient opens a
   new chat with the picture attached, named after the window, so you can type or say your question and send it. A

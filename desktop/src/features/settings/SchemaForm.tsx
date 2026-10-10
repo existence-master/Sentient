@@ -116,6 +116,16 @@ export const LABELS: Record<string, FieldLabel> = {
   'voice.wake_whisper_model': { label: 'Listening model', options: { tiny: 'Tiny (fastest)', 'tiny.en': 'Tiny, English only', base: 'Base (more accurate)', 'base.en': 'Base, English only' } },
   'voice.wake_earcon': { label: 'Play a chime when I hear you' },
   'voice.follow_up_seconds': { label: 'Keep listening after a reply for', unit: 's', description: 'Ask a follow-up without saying the phrase again.' },
+  // push to talk and dictation (#169); the shortcuts are in Settings > General > Keyboard shortcuts
+  'voice.dictation': { label: 'Dictation' },
+  'voice.dictation.cleanup': {
+    label: 'Clean up what I say',
+    description: 'Tidy runs on this computer. Polish also sends the text to your fast model, and keeps the tidy version if the model changed any words.',
+    options: { raw: 'Exactly as heard', tidy: 'Tidy: drop um and uh, fix punctuation', polish: 'Polish with the fast model' }
+  },
+  'voice.dictation.language': { label: 'Language I dictate in', placeholder: 'Same as speech recognition', description: "A language code such as en or de, or 'auto' to detect it." },
+  'voice.dictation.stop_after_silence_s': { label: 'Stop dictating after a pause of', unit: 's', description: '0 waits for you to press the shortcut again.' },
+  'voice.dictation.speak_replies': { label: 'Read answers aloud after push to talk' },
   // knowing you
   'user_model.enabled': { label: 'Build a picture of me', description: 'Sentient notices your preferences, goals and style over time. You can see and correct all of it on the About you page.' },
   'user_model.refresh_after_turns': { label: 'Look for new things about me every', unit: 'messages' },
