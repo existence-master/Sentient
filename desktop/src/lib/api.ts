@@ -74,6 +74,7 @@ import type {
   ModelRoles,
   ModelTestResult,
   CatalogModel,
+  ChatGPTStatus,
   ProviderKeyCheck,
   ProviderSignIn,
   ProviderSignInStatus,
@@ -469,7 +470,14 @@ export const api = {
       streamNdjson<CheckupEvent>('POST', '/api/models/checkup', { body: roles ? { roles } : {}, signal }),
     /** Start OpenRouter's browser sign-in; open `auth_url`, then poll `signInStatus(state)`. */
     connectOpenRouter: () => http.post<ProviderSignIn>('/api/models/connect/openrouter'),
-    signInStatus: (state: string) => http.get<ProviderSignInStatus>(`/api/models/connect/openrouter/${enc(state)}`),
+    signInStatus: (state: string, provider: 'openrouter' | 'chatgpt' = 'openrouter') =>
+      http.get<ProviderSignInStatus>(`/api/models/connect/${provider}/${enc(state)}`),
+    /** Sign in with ChatGPT to use a ChatGPT plan: status, start (open `auth_url`, poll `signInStatus`), sign out. */
+    chatgpt: {
+      status: () => http.get<ChatGPTStatus>('/api/models/connect/chatgpt'),
+      connect: () => http.post<ProviderSignIn>('/api/models/connect/chatgpt'),
+      signOut: () => http.delete<OkResponse>('/api/models/connect/chatgpt')
+    },
     checkKey: (provider: string) => http.post<ProviderKeyCheck>(`/api/models/connect/${enc(provider)}/check`),
     catalog: (provider: string) => http.get<CatalogModel[]>(`/api/models/catalog/${enc(provider)}`),
     /** Model presets: switch every role at once, save your own, undo the last switch. */

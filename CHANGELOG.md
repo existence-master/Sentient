@@ -6,6 +6,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Sign in with ChatGPT** (Settings > Models > Use a plan you already have > ChatGPT plan): use your ChatGPT Plus or
+  Pro plan for chat, tasks and background work. Click **Continue with ChatGPT**, sign in in your browser and allow
+  Sentient; your plan's models then show up in every model picker, and **Use ChatGPT for every job** switches the
+  main and background models in one click (the Cloud preset uses your plan when you have no other cloud key). The
+  sign-in stays in your system keychain, renews on its own, and **Sign out** removes it. **Manage usage** opens your
+  ChatGPT usage settings, and reaching your plan's limit says so plainly. Memory search keeps its own model, because
+  ChatGPT plans don't include one for it.
 - **Memory review:** memories that come from an email, a web page, a message, a tool's result, work Sentient did on its
   own, or an imported document wait for you on the new Review tab of the Memory page, with a count in the sidebar.
   Each one shows where it came from and the text it was taken from; approve it, change the wording and approve, turn

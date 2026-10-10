@@ -154,6 +154,12 @@ class ModelsConfig(BaseModel):
         },
         description="Provider connection settings keyed by LiteLLM provider prefix.",
     )
+    chatgpt_client_id: str = Field(
+        "dynamic_agent_client",
+        description="How Sentient signs in with ChatGPT to use a ChatGPT plan. The default lets this computer "
+        "register Sentient on the first sign-in, which OpenAI offers to open-source apps. Put a client id from "
+        "OpenAI here to use that instead, or leave it empty to turn Sign in with ChatGPT off.",
+    )
     max_tool_rounds: int = Field(12, ge=1, le=100, description="Max tool-call rounds per chat turn.")
     request_timeout_s: int = Field(180, ge=10, description="Per-request timeout in seconds.")
 

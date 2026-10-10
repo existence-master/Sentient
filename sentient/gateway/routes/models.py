@@ -47,6 +47,9 @@ PROVIDERS: list[dict[str, Any]] = [
      "docs_url": "https://console.x.ai/", "suggested": ["xai/grok-4"]},
     {"id": "nous", "label": "Nous Portal", "kind": "cloud", "key_required": True,
      "docs_url": "https://portal.nousresearch.com/", "suggested": []},
+    # signed in from Settings > Models, never a pasted key; its models come from the plan's own list
+    {"id": "chatgpt", "label": "ChatGPT plan", "kind": "cloud", "key_required": True, "sign_in": True,
+     "docs_url": "https://developers.openai.com/siwc/quickstart", "suggested": []},
 ]
 
 
@@ -70,7 +73,8 @@ async def providers(request: Request):
     for p in PROVIDERS:
         key_set, _ = _provider_key_status(s, p["id"])
         pc = s.config.models.providers.get(p["id"])
-        out.append({**p, "key_set": key_set if p["key_required"] else True, "api_base": pc.api_base if pc else None})
+        out.append({**p, "key_set": key_set if p["key_required"] else True, "api_base": pc.api_base if pc else None,
+                    "sign_in": p.get("sign_in", False)})
     return out
 
 
@@ -331,6 +335,33 @@ async def connect_openrouter_status(request: Request, state: str):
     return status
 
 
+@router.get("/models/connect/chatgpt")
+async def chatgpt_status(request: Request):
+    """Whether Sign in with ChatGPT can be used here, and whether someone is signed in."""
+    return get_core(request).connections.chatgpt_status()
+
+
+@router.post("/models/connect/chatgpt")
+async def connect_chatgpt(request: Request):
+    """Start Sign in with ChatGPT. The window opens ``auth_url``; the tokens land in the keychain."""
+    try:
+        return await get_core(request).connections.start_chatgpt()
+    except connect.ConnectError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/models/connect/chatgpt/{state}")
+async def connect_chatgpt_status(request: Request, state: str):
+    return await connect_openrouter_status(request, state)
+
+
+@router.delete("/models/connect/chatgpt")
+async def sign_out_chatgpt(request: Request):
+    """Sign out: revoke the sign-in with OpenAI and remove the tokens from the keychain."""
+    await get_core(request).connections.sign_out_chatgpt()
+    return {"ok": True}
+
+
 @router.post("/models/connect/{provider}/check")
 async def check_provider_key(request: Request, provider: str):
     if provider not in connect.CHECKABLE:
@@ -374,6 +405,8 @@ class SecretBody(BaseModel):
 async def put_secret(request: Request, name: str, body: SecretBody):
     if not body.value.strip():
         raise HTTPException(400, "empty value")
+    if name == "chatgpt":
+        raise HTTPException(400, "ChatGPT plans use Sign in with ChatGPT in Settings > Models, not a key.")
     if not secrets.set_secret(name, body.value.strip()):
         raise HTTPException(500, "the OS keychain is unavailable")
     get_core(request).connections.forget(name)  # a new key can mean a different account's models
@@ -383,6 +416,9 @@ async def put_secret(request: Request, name: str, body: SecretBody):
 
 @router.delete("/secrets/{name}")
 async def delete_secret(request: Request, name: str):
+    if name == "chatgpt":  # a sign-in, not a key: revoke it and remove every part of it
+        await get_core(request).connections.sign_out_chatgpt()
+        return {"ok": True}
     secrets.delete_secret(name)
     get_core(request).connections.forget(name)
     get_core(request).bus.publish("config.updated", {"sections": ["secrets"]})

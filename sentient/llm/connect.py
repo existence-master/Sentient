@@ -2,6 +2,8 @@
 
 - OpenRouter: its browser sign-in for apps on the user's computer (OAuth with PKCE). The browser comes back to
   the shared loopback listener of the integration manager with a code, which is swapped for an API key.
+- ChatGPT (Plus and Pro plans): Sign in with ChatGPT, OpenAI's sign-in for open-source apps (``chatgpt.py``). The
+  same listener receives the code; the tokens go to the keychain and refresh on their own.
 - Claude (Max and Team plans include monthly API credits) and Nous Portal: an ordinary API key, checked here
   with a free request that lists the account's models.
 
@@ -13,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import secrets as pysecrets
 import time
 from typing import TYPE_CHECKING, Any
@@ -21,12 +24,15 @@ from urllib.parse import urlencode
 import httpx
 
 from sentient import secrets
+from sentient.llm import chatgpt
 from sentient.llm.provider import provider_config
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.app import SentientApp
 
-OPENROUTER_AUTH_URL = "https://openrouter.ai/auth"
+log = logging.getLogger(__name__)
+
+OPENROUTER_AUTH_URL ="https://openrouter.ai/auth"
 OPENROUTER_KEYS_URL = "https://openrouter.ai/api/v1/auth/keys"
 OPENROUTER_KEY_INFO_URL = "https://openrouter.ai/api/v1/key"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
@@ -36,9 +42,9 @@ FLOW_TTL_S = 600  # OpenRouter codes expire after 10 minutes
 CATALOG_TTL_S = 600
 TIMEOUT_S = 15
 
-CHECKABLE = {"anthropic", "openrouter", "nous"}
-CATALOGS = {"anthropic", "openrouter", "nous"}
-LABELS = {"anthropic": "Anthropic", "openrouter": "OpenRouter", "nous": "Nous Portal"}
+CHECKABLE = {"anthropic", "openrouter", "nous", "chatgpt"}
+CATALOGS = {"anthropic", "openrouter", "nous", "chatgpt"}
+LABELS = {"anthropic": "Anthropic", "openrouter": "OpenRouter", "nous": "Nous Portal", "chatgpt": "ChatGPT"}
 
 
 class ConnectError(Exception):
@@ -121,6 +127,11 @@ async def _get(url: str, headers: dict[str, str], provider: str) -> Any:
 
 async def list_models(config, provider: str) -> list[dict]:
     """The provider's models as ``[{id, label, free, tools, context_length}]``, ``id`` with Sentient's prefix."""
+    if provider == "chatgpt":
+        try:
+            return await chatgpt.list_models(config)
+        except chatgpt.ChatGPTError as exc:
+            raise ConnectError(str(exc)) from exc
     if provider == "openrouter":  # a public list; no key needed
         data = await _get(OPENROUTER_MODELS_URL, {}, provider)
         out = []
@@ -152,6 +163,12 @@ async def list_models(config, provider: str) -> list[dict]:
 async def check_key(config, provider: str) -> dict:
     """A free request with the stored key. ``{ok, detail}`` or ``{ok: False, error}``; never spends credits."""
     label = LABELS[provider]
+    if provider == "chatgpt":
+        try:
+            n = len(await list_models(config, provider))
+        except ConnectError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "detail": f"You're signed in with ChatGPT. {n} model{'' if n == 1 else 's'} on your plan."}
     if provider == "openrouter" and not _key(config, provider):
         return {"ok": False, "error": "Connect OpenRouter or add a key first."}
     try:
@@ -171,15 +188,16 @@ async def check_key(config, provider: str) -> dict:
 
 
 class ProviderConnections:
-    """OpenRouter sign-ins in flight, and a short-lived cache of model lists."""
+    """OpenRouter and ChatGPT sign-ins in flight, and a short-lived cache of model lists."""
 
     def __init__(self, app: SentientApp):
         self.app = app
         self._flows: dict[str, dict] = {}
         self._catalog: dict[str, tuple[float, list[dict]]] = {}
 
-    # ------------------------------------------------------------------ OpenRouter sign-in
-    async def start_openrouter(self) -> dict:
+    # ------------------------------------------------------------------ browser sign-ins
+    async def _new_flow(self, provider: str, **extra: Any) -> tuple[str, str, str]:
+        """Drop expired sign-ins, start the listener and record a new flow. Returns ``(state, challenge, redirect)``."""
         now = time.time()
         for state, flow in list(self._flows.items()):
             if now - flow["created"] > FLOW_TTL_S:
@@ -188,8 +206,45 @@ class ProviderConnections:
         await listener.start(self.app.config.integrations.oauth_redirect_port)
         verifier, challenge = pkce_pair()
         state = pysecrets.token_urlsafe(24)
-        self._flows[state] = {"verifier": verifier, "created": now, "status": "waiting", "error": None}
-        return {"auth_url": openrouter_auth_url(listener.redirect_uri(), challenge, state), "state": state}
+        redirect = listener.redirect_uri()
+        self._flows[state] = {"provider": provider, "verifier": verifier, "redirect_uri": redirect, "created": now,
+                              "status": "waiting", "error": None, **extra}
+        return state, challenge, redirect
+
+    async def start_openrouter(self) -> dict:
+        state, challenge, redirect = await self._new_flow("openrouter")
+        return {"auth_url": openrouter_auth_url(redirect, challenge, state), "state": state}
+
+    async def start_chatgpt(self) -> dict:
+        """Start Sign in with ChatGPT. The first sign-in on this computer registers Sentient with OpenAI."""
+        config = self.app.config
+        configured = chatgpt.configured_client(config)
+        if not configured:
+            raise ConnectError(chatgpt.unavailable_reason(config) or "Sign in with ChatGPT is turned off.")
+        if configured == chatgpt.DYNAMIC_CLIENT:
+            saved = await self.app.store.get_meta(chatgpt.CLIENT_META) or ""
+        else:
+            saved = configured
+        registering = not saved
+        host = await chatgpt.host_id(self.app.store)
+        nonce = pysecrets.token_urlsafe(24)
+        state, challenge, redirect = await self._new_flow("chatgpt", nonce=nonce, registering=registering,
+                                                          client_id=None if registering else saved)
+        url = chatgpt.auth_url(client_id=chatgpt.DYNAMIC_CLIENT if registering else saved, redirect_uri=redirect,
+                               challenge=challenge, state=state, nonce=nonce, host_id=host, registering=registering)
+        return {"auth_url": url, "state": state}
+
+    def chatgpt_status(self) -> dict:
+        """``GET /api/models/connect/chatgpt``: whether the sign-in can be used and who is signed in."""
+        tokens = chatgpt.load_tokens()
+        reason = chatgpt.unavailable_reason(self.app.config)
+        return {"available": reason is None, "reason": reason, "signed_in": tokens is not None,
+                "email": (tokens or {}).get("email"), "manage_usage_url": chatgpt.MANAGE_USAGE_URL}
+
+    async def sign_out_chatgpt(self) -> None:
+        await chatgpt.sign_out()
+        self._catalog.pop("chatgpt", None)
+        self.app.bus.publish("config.updated", {"sections": ["secrets"]})
 
     def flow_status(self, state: str) -> dict | None:
         flow = self._flows.get(state)
@@ -203,7 +258,7 @@ class ProviderConnections:
         return bool(state) and state in self._flows
 
     async def oauth_callback(self, params: dict[str, str]) -> tuple[bool, str]:
-        """The browser came back to the loopback listener from OpenRouter."""
+        """The browser came back to the loopback listener from OpenRouter or ChatGPT."""
         flow = self._flows.get(params.get("state", ""))
         if flow is None or time.time() - flow["created"] > FLOW_TTL_S:
             return False, "This sign-in link has expired."
@@ -211,18 +266,30 @@ class ProviderConnections:
             return False, "This sign-in link was already used."
         if params.get("error") or not params.get("code"):
             return self._fail(flow, "You cancelled the sign-in." if params.get("error") == "access_denied"
-                              else "OpenRouter didn't send a sign-in code.")
+                              else f"{LABELS[flow['provider']]} didn't send a sign-in code.")
         flow["status"] = "exchanging"
+        if flow["provider"] == "chatgpt":
+            try:
+                await chatgpt.finish_sign_in(self.app.store, flow, params)
+            except chatgpt.ChatGPTError as exc:
+                return self._fail(flow, str(exc))
+            except Exception:  # an odd reply must not leave the window waiting forever
+                log.warning("ChatGPT sign-in failed", exc_info=True)
+                return self._fail(flow, "ChatGPT sent back something Sentient didn't expect. Please try again.")
+            return self._connected(flow, "chatgpt", "You're signed in with ChatGPT. Sentient can now use your plan.")
         try:
             key = await exchange_openrouter_code(params["code"], flow["verifier"])
         except ConnectError as exc:
             return self._fail(flow, str(exc))
         if not secrets.set_secret("openrouter", key):
             return self._fail(flow, "Your system keychain is unavailable, so the key can't be saved.")
+        return self._connected(flow, "openrouter", "OpenRouter is connected.")
+
+    def _connected(self, flow: dict, provider: str, message: str) -> tuple[bool, str]:
         flow["status"] = "connected"
-        self._catalog.pop("openrouter", None)
+        self._catalog.pop(provider, None)
         self.app.bus.publish("config.updated", {"sections": ["secrets"]})
-        return True, "OpenRouter is connected."
+        return True, message
 
     @staticmethod
     def _fail(flow: dict, reason: str) -> tuple[bool, str]:

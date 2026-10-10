@@ -168,7 +168,8 @@ function CloudBrain() {
   const setSecret = useSetSecret()
   const [key, setKey] = useState('')
   const [show, setShow] = useState(false)
-  const cloud = (providers.data ?? []).filter((p) => p.kind === 'cloud')
+  // a ChatGPT plan is signed in from Settings > Models once setup is done; its models come from the plan's own list
+  const cloud = (providers.data ?? []).filter((p) => p.kind === 'cloud' && !p.sign_in)
   const selected = cloud.find((p) => p.id === d.cloudProvider)
 
   useEffect(() => {

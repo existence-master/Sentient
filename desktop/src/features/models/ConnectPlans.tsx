@@ -1,15 +1,40 @@
 /**
  * Use the AI plans people already pay for (docs/API.md §3, "Connecting plans"):
- * a Claude Max or Team plan's API credits, OpenRouter's browser sign-in and a Nous Portal key.
- * Every key goes to the system keychain; removing it disconnects.
+ * a Claude Max or Team plan's API credits, Sign in with ChatGPT for a ChatGPT plan, OpenRouter's browser sign-in and
+ * a Nous Portal key. Every key and sign-in goes to the system keychain; removing it disconnects.
  */
-import { IconCircleCheck, IconEye, IconEyeOff, IconInfoCircle, IconKey, IconLogin, IconPlugConnected, IconTrash } from '@tabler/icons-react'
+import {
+  IconCircleCheck,
+  IconExternalLink,
+  IconEye,
+  IconEyeOff,
+  IconInfoCircle,
+  IconKey,
+  IconLogin,
+  IconLogout,
+  IconPlugConnected,
+  IconTrash
+} from '@tabler/icons-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Card, IconButton, Input, SegmentedControl } from '@/components/ui'
 import { InstructionsGuide, openExternal } from '@/features/integrations/InstructionsGuide'
 import { usePresetSwitch } from '@/features/models/usePresetSwitch'
-import { useCheckKey, useDeleteSecret, useModelCatalog, useModelPresets, useProviders, useSecretSaves, useSetRoles, useSetSecret, useSignInStatus } from '@/hooks/models'
+import {
+  useChatGPTStatus,
+  useCheckKey,
+  useDeleteSecret,
+  useModelCatalog,
+  useModelPresets,
+  useProviders,
+  useSecretSaves,
+  useSetRoles,
+  useSetSecret,
+  useSignInStatus,
+  useSignOutChatGPT
+} from '@/hooks/models'
+import { qk } from '@/hooks/queryKeys'
 import { api, errorMessage } from '@/lib/api'
 import { looksLikeEmbedding } from '@/lib/models'
 import type { ProviderKeyCheck } from '@/lib/types'
@@ -305,6 +330,154 @@ export function OpenRouterConnect() {
   )
 }
 
+/** Sign in with ChatGPT: a ChatGPT Plus or Pro plan's models for any job, through OpenAI's sign-in for open-source apps. */
+export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string, fast: string) => void }) {
+  const qc = useQueryClient()
+  const status = useChatGPTStatus()
+  const signOut = useSignOutChatGPT()
+  const check = useCheckKey()
+  const [flow, setFlow] = useState<{ state: string; url: string } | null>(null)
+  const [starting, setStarting] = useState(false)
+  const signedIn = !!status.data?.signed_in
+  const catalog = useModelCatalog('chatgpt', signedIn)
+  const flowStatus = useSignInStatus(flow?.state ?? null, 'chatgpt')
+  const manageUsage = status.data?.manage_usage_url ?? 'https://chatgpt.com/settings/usage'
+
+  useEffect(() => {
+    if (flowStatus.data?.status === 'connected') {
+      toast.success("You're using your ChatGPT plan", {
+        description: 'Your sign-in is kept in your system keychain. Pick ChatGPT models under Roles.'
+      })
+      setFlow(null)
+      void qc.invalidateQueries({ queryKey: qk.chatgpt })
+    }
+  }, [flowStatus.data?.status, qc])
+
+  const start = async () => {
+    setStarting(true)
+    try {
+      const res = await api.models.chatgpt.connect()
+      setFlow({ state: res.state, url: res.auth_url })
+      openExternal(res.auth_url)
+    } catch (e) {
+      toast.error("Couldn't start the sign-in", {
+        description: errorMessage(e)
+      })
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  const models = (catalog.data ?? []).map((m) => m.id).filter((m) => !looksLikeEmbedding(m))
+  const main = models[0]
+  const fast = models.find((m) => /mini|nano/i.test(m)) ?? main
+
+  if (status.isError) {
+    return <Alert tone="danger">{errorMessage(status.error)}</Alert>
+  }
+  if (status.data && !status.data.available) {
+    return (
+      <Alert tone="info" icon={<IconInfoCircle />} title="Sign in with ChatGPT isn't available yet">
+        {status.data.reason}
+      </Alert>
+    )
+  }
+  return (
+    <div className="space-y-3">
+      <p className="text-sm leading-relaxed text-fg-muted">
+        Use your ChatGPT Plus or Pro plan for chat and tasks. Your browser opens ChatGPT; sign in and allow Sentient. Usage counts against your plan, not
+        an API bill, and you can set a limit for Sentient in ChatGPT's settings. Your sign-in stays in your system keychain and renews on its own. ChatGPT
+        plans don't include models for memory search, so that keeps its current model.
+      </p>
+      {signedIn ? (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone="success" size="sm">
+              Using your ChatGPT plan
+            </Badge>
+            <span className="text-xs text-fg-subtle">
+              {status.data?.email ? `${status.data.email}. ` : ''}
+              {catalog.data ? `${catalog.data.length} models on your plan. Pick them under Roles.` : catalog.isError ? errorMessage(catalog.error) : ''}
+            </span>
+            <div className="flex-1" />
+            <Button size="sm" variant="secondary" loading={check.isPending} onClick={() => check.mutate('chatgpt')}>
+              Test
+            </Button>
+            <Button size="sm" variant="ghost" leftIcon={<IconExternalLink size={13} />} onClick={() => openExternal(manageUsage)}>
+              Manage usage
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              leftIcon={<IconLogout size={13} />}
+              loading={signOut.isPending}
+              onClick={() =>
+                signOut.mutate(undefined, {
+                  onSuccess: () => {
+                    check.reset()
+                    toast.success('Signed out of ChatGPT', {
+                      description: 'The sign-in was removed from your keychain.'
+                    })
+                  },
+                  onError: (e) =>
+                    toast.error("Couldn't sign out", {
+                      description: errorMessage(e)
+                    })
+                })
+              }
+            >
+              Sign out
+            </Button>
+          </div>
+          {check.data && (
+            <Alert tone={check.data.ok ? 'success' : 'danger'} className="py-2">
+              {check.data.ok ? check.data.detail : check.data.error}
+            </Alert>
+          )}
+          {main && onUseModels && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" variant="primary" onClick={() => onUseModels(main, fast ?? main)}>
+                Use ChatGPT for every job
+              </Button>
+              <span className="text-xs text-fg-subtle">You can still pick a model per job under Roles.</span>
+            </div>
+          )}
+        </div>
+      ) : flow ? (
+        <div className="space-y-2">
+          {flowStatus.data?.status === 'failed' ? (
+            <Alert
+              tone="danger"
+              title="ChatGPT didn't connect"
+              action={
+                <Button size="xs" onClick={() => void start()}>
+                  Try again
+                </Button>
+              }
+            >
+              {flowStatus.data.error}
+            </Alert>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2 text-sm text-fg-muted">
+              <span className="flex-1">Waiting for you to sign in to ChatGPT in your browser…</span>
+              <Button size="sm" variant="secondary" onClick={() => openExternal(flow.url)}>
+                Open the page again
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setFlow(null)}>
+                Cancel
+              </Button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <Button variant="primary" leftIcon={<IconLogin size={15} />} loading={starting || status.isLoading} onClick={() => void start()}>
+          Continue with ChatGPT
+        </Button>
+      )}
+    </div>
+  )
+}
+
 export function NousPortalGuide() {
   return (
     <div className="space-y-4">
@@ -315,7 +488,7 @@ export function NousPortalGuide() {
   )
 }
 
-type Plan = 'claude' | 'openrouter' | 'nous'
+type Plan = 'claude' | 'chatgpt' | 'openrouter' | 'nous'
 
 /** Settings > Models: "Use a plan you already have". */
 export function ConnectPlansSection() {
@@ -323,16 +496,15 @@ export function ConnectPlansSection() {
   const setRoles = useSetRoles()
   const presets = useModelPresets()
   const presetSwitch = usePresetSwitch()
-  // With a Claude key the built-in Cloud preset is Claude for every job, and switching to it can be undone.
-  const claudePreset = presets.data?.presets.find((p) => p.builtin && p.available && p.provider === 'anthropic')
-  const applyClaude = (primary: string, fast: string) =>
-    claudePreset
-      ? presetSwitch.apply(claudePreset.name)
-      : setRoles.mutate(
+  // When the built-in Cloud preset uses this provider, switch to it so it can be undone; otherwise set the two roles.
+  const applyPlan = (provider: string, label: string) => (primary: string, fast: string) => {
+    const preset = presets.data?.presets.find((p) => p.builtin && p.available && p.provider === provider)
+    if (preset) return presetSwitch.apply(preset.name)
+    setRoles.mutate(
       { primary, fast },
       {
         onSuccess: () =>
-          toast.success('Sentient now uses Claude', {
+          toast.success(`Sentient now uses ${label}`, {
             description: 'For chat and for background work.'
           }),
         onError: (e) =>
@@ -341,13 +513,16 @@ export function ConnectPlansSection() {
           })
       }
     )
+  }
   return (
     <section className="space-y-3">
       <div className="px-1">
         <h3 className="flex items-center gap-1.5 text-sm font-semibold text-fg">
           <IconPlugConnected size={15} /> Use a plan you already have
         </h3>
-        <p className="mt-0.5 text-xs text-fg-subtle">Claude Max credits, an OpenRouter account or Nous Portal. Keys stay in your system keychain.</p>
+        <p className="mt-0.5 text-xs text-fg-subtle">
+          Claude Max credits, your ChatGPT plan, an OpenRouter account or Nous Portal. Keys and sign-ins stay in your system keychain.
+        </p>
       </div>
       <Card className="space-y-4 p-4">
         <SegmentedControl
@@ -355,11 +530,20 @@ export function ConnectPlansSection() {
           onChange={setPlan}
           options={[
             { value: 'claude', label: 'Claude plan' },
+            { value: 'chatgpt', label: 'ChatGPT plan' },
             { value: 'openrouter', label: 'OpenRouter' },
             { value: 'nous', label: 'Nous Portal' }
           ]}
         />
-        {plan === 'claude' ? <ClaudePlanGuide onUseModels={applyClaude} /> : plan === 'openrouter' ? <OpenRouterConnect /> : <NousPortalGuide />}
+        {plan === 'claude' ? (
+          <ClaudePlanGuide onUseModels={applyPlan('anthropic', 'Claude')} />
+        ) : plan === 'chatgpt' ? (
+          <ChatGPTConnect onUseModels={applyPlan('chatgpt', 'your ChatGPT plan')} />
+        ) : plan === 'openrouter' ? (
+          <OpenRouterConnect />
+        ) : (
+          <NousPortalGuide />
+        )}
       </Card>
     </section>
   )

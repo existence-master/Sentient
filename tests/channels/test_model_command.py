@@ -23,7 +23,7 @@ async def test_model_lists_presets_and_a_button_applies_one(tg):
     await tg.say(42, "/model")
     msg = tg.api.button_messages()[-1]
     assert "your own setup, chatting with openai/gpt-x" in msg["text"]
-    assert "Cloud: Needs a key for Anthropic, OpenAI or OpenRouter." in msg["text"]
+    assert "Cloud: Needs a key for Anthropic, OpenAI or OpenRouter, or a ChatGPT sign-in." in msg["text"]
     buttons = keyboard(msg)
     assert [b["text"] for b in buttons] == ["Local only"]  # Cloud and Mixed need a key first
     assert all(len(b["callback_data"].encode()) <= 64 for b in buttons)

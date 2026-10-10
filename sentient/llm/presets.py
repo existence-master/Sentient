@@ -1,7 +1,7 @@
 """Model presets: switch every model role between local and cloud in one step (#212).
 
 The built-in presets ("Local only", "Cloud", "Mixed") are generated from ``config/schema.py`` and the cloud keys that
-are set; the user's own presets live in ``models.presets``. Applying a preset is one config save. The setup it
+are set (or a ChatGPT sign-in, whose models come from the plan's own list); the user's own presets live in ``models.presets``. Applying a preset is one config save. The setup it
 replaced is kept (store meta) so the switch can be undone, and anything still missing (an Ollama model that isn't
 downloaded, a provider key that isn't set) comes back with a plain fix and, where possible, a one-click action.
 
@@ -10,6 +10,7 @@ Shared by ``/api/models/presets`` and the ``/model`` command in messaging channe
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -27,11 +28,15 @@ from sentient.config.schema import (
     ModelRoles,
     SentientConfig,
 )
+from sentient.llm import chatgpt
 from sentient.llm.checkup import LABELS, LOCAL, OLLAMA
 from sentient.llm.provider import provider_config
 
 UNDO_META_KEY = "models.preset_undo"
 BUILTIN = (LOCAL_PRESET, CLOUD_PRESET, MIXED_PRESET)
+CLOUD_ORDER = (*PRESET_CLOUD_MODELS, chatgpt.PREFIX)
+PLAN_MODELS_META = "chatgpt.models"  # the plan's model list from last time, for when it can't be loaded
+PLAN_MODELS_TIMEOUT_S = 5
 SETUP_FIELDS = ("fallbacks", "reasoning", "context_length", "context_length_per_role")
 MAX_NAME = 40
 _BAD_NAME = re.compile(r"[/\\\x00-\x1f]")
@@ -51,16 +56,34 @@ def _prefix(model: str | None) -> str:
 
 
 def key_set(config: SentientConfig, provider: str) -> bool:
+    if provider == chatgpt.PREFIX:
+        return chatgpt.signed_in()
     pc = provider_config(config, provider)
     return bool(secrets.get_secret(provider, pc.api_key_env if pc else None))
 
 
 def cloud_provider(config: SentientConfig) -> str | None:
-    """The first of Anthropic, OpenAI and OpenRouter with a key set."""
-    return next((pid for pid in PRESET_CLOUD_MODELS if key_set(config, pid)), None)
+    """The first of Anthropic, OpenAI and OpenRouter with a key set, then a ChatGPT sign-in."""
+    return next((pid for pid in CLOUD_ORDER if key_set(config, pid)), None)
 
 
-def _builtin(config: SentientConfig) -> list[dict[str, Any]]:
+async def plan_models(app: Any) -> list[str] | None:
+    """The ChatGPT plan's models when the Cloud preset would use them; None when not signed in or not loaded."""
+    if cloud_provider(app.config) != chatgpt.PREFIX:
+        return None
+    try:
+        models = [m["id"] for m in await asyncio.wait_for(app.connections.catalog(chatgpt.PREFIX), PLAN_MODELS_TIMEOUT_S)]
+    except Exception:  # offline or refused: the list from last time still names the plan's models
+        try:
+            saved = json.loads(await app.store.get_meta(PLAN_MODELS_META) or "null")
+        except ValueError:
+            saved = None
+        return saved if isinstance(saved, list) and saved else None
+    await app.store.set_meta(PLAN_MODELS_META, json.dumps(models))
+    return models
+
+
+def _builtin(config: SentientConfig, plan: list[str] | None = None) -> list[dict[str, Any]]:
     defaults = ModelRoles()
     current_embedding = config.models.roles.embedding
     # keep a local embedding model the user picked: changing it re-indexes memory
@@ -68,19 +91,27 @@ def _builtin(config: SentientConfig) -> list[dict[str, Any]]:
     optional = {"planner": None, "executor": None, "vision": None}
     local = {"primary": defaults.primary, "fast": defaults.fast, **optional, "voice": None, "embedding": embedding}
     pid = cloud_provider(config)
-    cloud = PRESET_CLOUD_MODELS[pid or next(iter(PRESET_CLOUD_MODELS))]
     label = LABELS.get(pid or "", "")
-    reason = None if pid else "Needs a key for Anthropic, OpenAI or OpenRouter."
+    reason = None if pid else "Needs a key for Anthropic, OpenAI or OpenRouter, or a ChatGPT sign-in."
+    if pid == chatgpt.PREFIX:
+        picked = chatgpt.pick_models(plan or [])
+        if picked is None:
+            reason = "Couldn't load the models on your ChatGPT plan. Check your internet connection and try again."
+        cloud = picked or {"main": "", "fast": ""}
+        label = "Your ChatGPT plan"
+    else:
+        cloud = PRESET_CLOUD_MODELS[pid or next(iter(PRESET_CLOUD_MODELS))]
+    available = pid is not None and reason is None
     return [
         {"name": LOCAL_PRESET, "builtin": True, "available": True, "reason": None, "provider": None,
          "description": "Everything runs on this computer with Ollama. Private, and works offline.",
          "roles": local, "fallbacks": {}},
-        {"name": CLOUD_PRESET, "builtin": True, "available": pid is not None, "reason": reason, "provider": pid,
+        {"name": CLOUD_PRESET, "builtin": True, "available": available, "reason": reason, "provider": pid,
          # embedding is left as it is: a cloud embedding model would re-index all of memory
          "description": f"{label or 'A cloud provider'} for every job. Needs the internet.",
          "roles": {"primary": cloud["main"], "fast": cloud["fast"], **optional, "voice": cloud["fast"]},
          "fallbacks": {}},
-        {"name": MIXED_PRESET, "builtin": True, "available": pid is not None, "reason": reason, "provider": pid,
+        {"name": MIXED_PRESET, "builtin": True, "available": available, "reason": reason, "provider": pid,
          "description": f"{label or 'The cloud'} for chat and planning, this computer for background jobs and memory.",
          "roles": {"primary": cloud["main"], "fast": defaults.fast, **optional, "voice": cloud["fast"],
                    "embedding": embedding},
@@ -98,16 +129,17 @@ def _custom(name: str, preset: ModelPreset) -> dict[str, Any]:
     return out
 
 
-def presets(config: SentientConfig) -> list[dict[str, Any]]:
-    """Built-in presets first, then the user's own in saved order. A saved preset can't shadow a built-in."""
+def presets(config: SentientConfig, plan: list[str] | None = None) -> list[dict[str, Any]]:
+    """Built-in presets first, then the user's own in saved order. A saved preset can't shadow a built-in.
+    ``plan`` is the ChatGPT plan's model list (``plan_models``), needed only when the cloud presets use it."""
     builtin_names = {n.lower() for n in BUILTIN}
     custom = [_custom(n, p) for n, p in config.models.presets.items() if n.lower() not in builtin_names]
-    return _builtin(config) + custom
+    return _builtin(config, plan) + custom
 
 
-def find(config: SentientConfig, name: str) -> dict[str, Any]:
+def find(config: SentientConfig, name: str, plan: list[str] | None = None) -> dict[str, Any]:
     wanted = name.strip().lower()
-    for p in presets(config):
+    for p in presets(config, plan):
         if p["name"].lower() == wanted:
             return p
     raise PresetError(f"There's no model setup called {name.strip()!r}.", 404)
@@ -133,7 +165,7 @@ def _changes(before: SentientConfig, after: SentientConfig) -> list[dict[str, An
 async def listing(app: Any) -> dict[str, Any]:
     """``GET /api/models/presets``: every preset, which one is active, and whether a switch can be undone."""
     config = app.config
-    items = presets(config)
+    items = presets(config, await plan_models(app))
     active = config.models.active_preset
     current = next((p for p in items if active and p["name"].lower() == active.lower()), None)
     for p in items:
@@ -152,7 +184,7 @@ async def listing(app: Any) -> dict[str, Any]:
 async def apply(app: Any, name: str) -> dict[str, Any]:
     """Switch every role (and the preset's other settings) at once. Returns what changed and what is missing."""
     before = app.config
-    preset = find(before, name)
+    preset = find(before, name, await plan_models(app))
     if not preset["available"]:
         raise PresetError(preset["reason"] or f"{preset['name']} can't be used yet.", 409)
     cfg = before.model_copy(deep=True)
@@ -284,7 +316,8 @@ def _installed(name: str, installed: list[str]) -> bool:
 
 async def missing(config: SentientConfig) -> list[dict[str, Any]]:
     """Models the roles use that can't work yet, with a plain fix and an optional one-click ``action``:
-    ``{kind: "pull_model", name, label}`` or ``{kind: "add_key", provider, label}``."""
+    ``{kind: "pull_model", name, label}`` or ``{kind: "add_key", provider, label}``. A missing ChatGPT sign-in is
+    ``kind: "sign_in"`` with no action."""
     by_model: dict[str, list[str]] = {}
     for role, model in config.models.roles.model_dump().items():
         if model:
@@ -321,11 +354,18 @@ async def missing(config: SentientConfig) -> list[dict[str, Any]]:
                                 "action": {"kind": "pull_model", "name": name, "label": f"Download {name}"}})
                 continue
             pc = provider_config(config, prefix)
-            if prefix in LOCAL or not (pc and pc.api_key_env) or key_set(config, prefix):
+            sign_in = prefix == chatgpt.PREFIX
+            if prefix in LOCAL or not (sign_in or (pc and pc.api_key_env)) or key_set(config, prefix):
                 continue
             label = LABELS.get(prefix, prefix)
             item = keyless.get(prefix)
-            if item is None:
+            if item is None and sign_in:  # a sign-in, not a key: fixed in Settings > Models
+                item = keyless[prefix] = {
+                    "kind": "sign_in", "roles": [], "model": model, "provider": prefix,
+                    "detail": "You're not signed in with ChatGPT.",
+                    "fix": "Sign in with ChatGPT under Settings > Models.", "action": None}
+                out.append(item)
+            elif item is None:
                 item = keyless[prefix] = {
                     "kind": "add_key", "roles": [], "model": model, "provider": prefix,
                     "detail": f"No {label} key is set.", "fix": f"Add your {label} key.",
