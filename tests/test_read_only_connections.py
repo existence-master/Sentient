@@ -107,6 +107,9 @@ def test_slug_call_risk_only_lowers_for_plain_look_ups():
     assert _slug_call_risk(Risk.write, two, None) == Risk.send
     assert _slug_call_risk(Risk.send, {"tools": [{"tool_slug": "GMAIL_CREATE_EMAIL_DRAFT"}]}, None) == Risk.send
     assert _slug_call_risk(Risk.write, {"tools": []}, None) is None  # nothing named: the tool's own risk
+    # a server that marks its runner read-only can't make a send look like a look-up
+    assert _slug_call_risk(Risk.read, two, None) == Risk.send
+    assert _slug_call_risk(Risk.read, one, None) == Risk.read
     assert _runs_slugs(MULTI_EXECUTE_SCHEMA)
     assert not _runs_slugs({"type": "object", "properties": {"tool_slugs": {"type": "array"}}})
 

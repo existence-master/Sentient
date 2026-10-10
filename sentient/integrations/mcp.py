@@ -784,8 +784,9 @@ class MCPManager:
             # another program's tools: results are outside content, and any change may send data out (ADR 0018)
             jt.untrusted_output = True
             jt.exfiltrates = risk != Risk.read
-            if risk > Risk.read and _runs_slugs(jt.input_schema):  # runs other tools: judged per call (#141)
+            if _runs_slugs(jt.input_schema):  # runs other tools: judged per call, whatever its hints say (#141)
                 jt.risk_fn = functools.partial(_slug_call_risk, risk)
+                jt.exfiltrates = True
             tools.append(jt)
             described.append({"name": name, "mcp_name": t.name, "description": jt.description, "risk": risk.name,
                               "per_call": jt.risk_fn is not None})

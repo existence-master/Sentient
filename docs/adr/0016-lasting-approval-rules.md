@@ -85,7 +85,7 @@ refused in code before modes, rules, "Allow for this chat" or a script's approva
 right before the tool runs. Like a Never rule it only takes away: an Allow rule never reopens a write tool of a Read
 only connection. A tool whose risk depends on its arguments (`risk_fn`) stays offered and each call is judged on its
 effective risk. MCP tools that run other tools named by a slug with their arguments (Composio's
-`COMPOSIO_MULTI_EXECUTE_TOOL`) now get such a `risk_fn`: the verb in each slug decides (`GMAIL_FETCH_EMAILS` reads,
+`COMPOSIO_MULTI_EXECUTE_TOOL`) now get such a `risk_fn`, whatever the server's own hints say: the verb in each slug decides (`GMAIL_FETCH_EMAILS` reads,
 `GMAIL_SEND_EMAIL` sends), a slug with no known verb counts as `write`, and a call is `read` only when every slug it
 runs is a plain look-up. This also means those look-ups no longer ask in approvals mode "ask"; they still ask once
 the chat has read outside content (ADR 0018), because the tool stays marked as one that can send data out.

@@ -789,7 +789,7 @@ that runs other tools by slug (`tool_slug`, `action_slug` or `slug` next to `arg
 risk: `GET`, `LIST`, `FETCH`, `SEARCH`, `FIND`, `READ`, `RETRIEVE`, `QUERY`, `VIEW`, `DESCRIBE`, `LOOKUP`, `COUNT` read;
 `SEND`, `REPLY`, `FORWARD`, `POST`, `DELETE`, `REMOVE`, `TRASH`, `SHARE`, `INVITE`... send; `EXECUTE`, `RUN` exec; other
 known changes write; a slug with no known verb counts as `write`. The first verb after the app name decides, a later
-verb that changes things raises it, and a call is `read` only when every slug is a look-up (then approvals mode "ask"
+verb that changes things raises it, whatever the server's own hints say, and a call is `read` only when every slug is a look-up (then approvals mode "ask"
 no longer asks for it). The chat's system prompt names the connected Read only apps so the model can say why it
 can't act.
 
