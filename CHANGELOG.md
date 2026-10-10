@@ -176,6 +176,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- A memory waiting for your review now shows the page or message it came from, not the error from a later action
+  you declined or that failed.
 - Adding a server (MCP) that you already signed in to from another Sentient setup on the same computer, such as a
   fresh install or a test setup, no longer signs you out of it. The sign-in now remembers the server's address, so it
   is kept and reused for the same address and only cleared when the address changes.

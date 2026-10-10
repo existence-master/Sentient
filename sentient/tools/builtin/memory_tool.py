@@ -6,6 +6,7 @@ Ports the v2 memory MCP (search, cud, search by source) and the v2 history MCP
 
 from __future__ import annotations
 
+import json
 import re
 
 from sentient.memory import review
@@ -72,7 +73,8 @@ async def _mark_if_outside(ctx: ToolContext, session_ids: list) -> None:
 
 
 async def _last_outside_result(ctx: ToolContext) -> str | None:
-    """The latest tool result in this chat that brought in outside content (the review card shows it)."""
+    """The latest successful tool result in this chat that brought in outside content (the review card shows it).
+    Errors and declined calls are skipped: they say nothing about where a fact came from."""
     registry = ctx.extra.get("registry")
     if not ctx.session_id or registry is None or not ctx.untrusted:
         return None
@@ -86,9 +88,18 @@ async def _last_outside_result(ctx: ToolContext) -> str | None:
         return None
     for r in rows:
         t = registry.get(r["name"] or "")
-        if t is not None and brings_untrusted(t):
+        if t is not None and brings_untrusted(t) and not _failed(r["content"]):
             return r["content"]
     return None
+
+
+def _failed(content: str | None) -> bool:
+    """A stored tool result that is an error or a declined call (``{"error": ...}`` or ``{"declined": true}``)."""
+    try:
+        data = json.loads(content or "")
+    except ValueError:
+        return False
+    return isinstance(data, dict) and bool(data.get("error") or data.get("declined"))
 
 
 @tool("memory_forget", risk=Risk.send)
