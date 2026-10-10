@@ -592,3 +592,29 @@ async def test_only_ascii_digits_pick_an_option(wa, llm):
     await wa.app.tasks.drain()
     assert wa.hub.last().startswith("Thanks! I passed your answer to 'Book a flight to Goa'.")
     assert _executor_answer(llm, 1) == "²"
+
+
+# ---------------------------------------------------------------------------- rules from chat (#130)
+async def test_rule_proposal_by_numbered_reply(wa, llm):
+    await wa.link()
+    llm.replies, llm.json_replies = ["Understood."], [{"keys": ["gmail_trash"], "rule": "never"}]
+    await wa.say("never delete my emails")
+    await until(lambda: wa.hub.message_with("Make this a rule?") is not None)
+    msg = wa.hub.message_with("Make this a rule?")
+    assert "Never: Gmail > Trash" in msg["text"]
+    assert msg["text"].endswith("Reply to this message with a number:\n*1* Make it a rule\n*2* Not now")
+    await wa.say("1", reply_to=msg["id"])
+    assert wa.app.config.tools.approvals.rules == {"gmail_trash": "never"}
+    assert any(line.startswith("_Made it a rule") for line in wa.hub.screen())
+    edits = [s for s in wa.hub.sent if s["op"] == "edit" and s["id"] == msg["id"]]
+    assert edits and "Reply to this message" not in edits[-1]["text"]
+
+
+async def test_rule_proposal_declined_by_numbered_reply(wa, llm):
+    await wa.link()
+    llm.replies, llm.json_replies = ["Understood."], [{"keys": ["gmail_trash"], "rule": "never"}]
+    await wa.say("never delete my emails")
+    await until(lambda: wa.hub.message_with("Make this a rule?") is not None)
+    await wa.say("2", reply_to=wa.hub.message_with("Make this a rule?")["id"])
+    assert wa.app.config.tools.approvals.rules == {}
+    assert "_Not now._" in wa.hub.screen()

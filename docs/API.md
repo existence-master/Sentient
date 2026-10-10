@@ -59,6 +59,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending"}`; `status: "pending"` means the memory waits in the review inbox (section 7); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE) |
 | `skill.updated` | `{name, state: "active"\|"pending_review"\|"stale"\|"archived"\|"rejected"\|"deleted"}` |
 | `session.updated` | `{session_id, title}` |
+| `rule_proposal.updated` | **RuleProposal** (section 2, rules from chat): a new "Make this a rule?" card, or one the user answered |
 | `config.updated` | `{sections: string[]}` |
 | `voice.state` | `{state, session_id}` (mirrors voice socket for other windows) |
 | `stop.updated` | **StopState** (section 17): Stop everything was turned on or off |
@@ -100,7 +101,7 @@ Saves config, writes USER.md, seeds memory facts (source `onboarding`) in the ba
 - `GET /api/config` → full config object (see `sentient/config/schema.py`).
 - `GET /api/config/schema` → JSON schema (every field has `description`; Settings forms are generated from it).
 - `PUT /api/config` body: full config → `{saved: true}`. Hot-applied.
-- `PATCH /api/config` body: partial nested object, deep-merged → `{saved: true, config}`. Inside free-form maps (`models.fallbacks`, `models.reasoning`, `models.temperature`, `models.context_length_per_role`, `models.providers`, `integrations.mcp_servers`, `tools.approvals.rules`) a `null` value removes that entry.
+- `PATCH /api/config` body: partial nested object, deep-merged → `{saved: true, config}`. Inside free-form maps (`models.fallbacks`, `models.reasoning`, `models.temperature`, `models.context_length_per_role`, `models.providers`, `integrations.mcp_servers`, `tools.approvals.rules`, `tools.approvals.rule_origins`) a `null` value removes that entry.
 - Validation failures on PUT/PATCH return 422 with `detail: [{loc: string[], msg, type}]`.
 
 ### Lasting approval rules (`tools.approvals.rules`, ADR 0016)
@@ -127,6 +128,47 @@ applied in code before every call and take effect at once:
   so a rule changed while a call waits for approval, or while a script runs, applies to it.
 Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
 `await app.approvals.decide(tool, session_id, risk, arguments, ctx) -> bool`, pure helpers in `sentient.tools.rules`.
+
+### Rules from chat (#130)
+When a chat message reads like a standing "never" or "ask me first" about an action ("never delete my emails",
+"don't post to Slack without asking me", "always ask before sending money"), Sentient proposes the matching lasting
+rule instead of only remembering it, because anything said once in a chat can be lost when the conversation is
+summarized. Only the user's click creates the rule; the model only maps words to rule keys and can never create,
+accept or loosen a rule.
+- **Detection** (`sentient.agent.chat_rules`), on the user's message and on steer messages, in every chat channel:
+  a deterministic pre-filter (never, don't, do not, must not, always ask, ask me first, without asking...; "don't ask
+  me" and "stop asking" never count); then tools whose names or descriptions share a word with the message; then one
+  short `fast`-role prompt that returns `{"keys": [...], "rule": "never"|"ask"}`, parsed tolerantly. Keys must be
+  tool names or app ids among those candidates (checked in code). Words that name a condition ("without asking me",
+  "always ask") make the rule `ask`. Keys an equal or stricter rule already covers (also a pending proposal in the
+  same chat) are dropped. A whole app is proposed only when the words name no specific action ("never use Slack",
+  "don't touch my Notion"); when they name one (delete, send, post, pay, share, trash, archive...), an app key is
+  replaced in code by that app's tools whose names match the action, or dropped when none do ("never delete my emails"
+  -> Gmail > Trash, never all of Gmail). Each app is judged by the instruction that mentions it ("never delete my
+  emails. never use Slack" gives Gmail > Trash and all of Slack), and a word after "my" or a noun is an object, not an
+  action ("my email messages" is not "message"). Nothing left, no proposal. A message that fails the pre-filter or has no matching tools
+  never calls a model. The check runs before the reply's model call (it waits at most 20 s; a slower check finishes
+  in the background, and until it does every tool it is weighing asks first in that chat).
+- **Until the user decides**, a pending proposal makes its chat ask before every matched tool (`approval_request`),
+  even under an Allow rule, with approvals mode `off` and after "Allow for this chat"; subagents of that chat refuse
+  the call. It is saved with the chat, so it survives a restart and summarizing, and only ever adds a question.
+- **RuleProposal**: `{id, session_id, message_id, said, rule: "never"|"ask", keys: string[], targets: [{key, app,
+  tool, label}], status: "pending"|"accepted"|"declined", created_at, decided_at}`. `said` is the user's matching
+  words (at most 300 characters); `label` is `"Gmail > Trash"` for a tool or `"Gmail"` for a whole app; `message_id`
+  is the user message (or steer message) it came from.
+- `GET /api/sessions/{id}/rule-proposals?status=pending|accepted|declined|all` (default `pending`) → `[RuleProposal]`
+  oldest first.
+- `POST /api/rule-proposals/{id}` `{decision: "accept"|"decline"}` → **RuleProposal**. `accept` saves each key in
+  `tools.approvals.rules` where it tightens (a stricter rule already there stays; for an app key, tools inside it
+  whose own looser rule would beat the app's rule are tightened too) plus an origin note in
+  `tools.approvals.rule_origins`; `decline` saves nothing. Either ends the chat's extra asking. 404 for an unknown id,
+  409 once answered. Both publish `rule_proposal.updated`; `accept` also `config.updated`.
+- **In messaging apps** (section 14): a proposal made in a paired chat is also sent to that chat with **Make it a
+  rule** / **Not now** (callback `rp:a:<id>` / `rp:d:<id>`; WhatsApp: reply to the message with 1 or 2). Answering
+  there is the same decision as `POST /api/rule-proposals/{id}`; an answer from anywhere replaces the buttons with the
+  outcome.
+- `tools.approvals.rule_origins`: `{"<key>": {rule: "never"|"ask", said, at, session_id}}`, default `{}`. Settings shows
+  "From your message on <date>". An entry is dropped when its rule is changed or removed.
 
 ### Sessions (chats)
 - `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts}]` newest first
@@ -1361,6 +1403,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `notification.updated` shows the plan/suggestion was handled elsewhere. A background subagent (`subagent.updated`,
   `background: true`, `completed`/`error`) whose session belongs to a paired chat sends its summary to that chat once.
   The Daily Brief (`kind: "brief"`, `payload.status: "active"`) is sent as its sections and lines, with links.
+  A "Make this a rule?" proposal (`rule_proposal.updated`, section 2) made in a paired chat goes back to that chat
+  (whatever `deliver` says) with **Make it a rule** / **Not now** (`rp:a:<id>` / `rp:d:<id>`).
   Toggles: `channels.deliver_task_results`, `deliver_plans`, `deliver_suggestions`, `deliver_subagents`, `deliver_briefs`.
 - Answering a task's question by replying: the delivered question ends with "Tap an option, or reply to this message
   with your answer." (without options: "Reply to this message with your answer."). The ids of the messages that carried
