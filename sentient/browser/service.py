@@ -793,19 +793,19 @@ class BrowserService(Service):
                 raise BrowserError(f"Couldn't save downloaded file '{name}'") from exc
         return target.relative_to(paths.files_dir()).as_posix()
 
-    async def _include_downloads(self, result: dict, before: set[asyncio.Task[str]]) -> dict:
-        # Finished tasks from earlier actions (already in `before`) were never reported; drop them.
-        for task in before:
-            if task.done():
-                self._download_tasks.discard(task)
-
+    async def _include_downloads(
+        self,
+        result: dict,
+        before: set[asyncio.Task[str]],
+    ) -> dict:
         deadline = time.monotonic() + DOWNLOAD_APPEAR_GRACE_S
         while time.monotonic() < deadline:
-            if self._download_tasks - before:
+            if self._download_tasks - before or any(task.done() for task in self._download_tasks):
                 break
             await asyncio.sleep(0.05)
 
-        tasks = self._download_tasks - before
+        # Wait for downloads started during this action, and include older downloads only once finished.
+        tasks = (self._download_tasks - before) | {task for task in self._download_tasks if task.done()}
         if not tasks:
             return result
         try:
@@ -1045,9 +1045,12 @@ class BrowserService(Service):
 
     async def snapshot(self, ctx: Any) -> dict:
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page = await self._page(ctx)
             self._last_used = time.monotonic()
-            return self._take_dialogs(await self._snapshot_locked(page))
+            result = await self._snapshot_locked(page)
+            result = await self._include_downloads(result, downloads_before)
+            return self._take_dialogs(result)
 
     async def _snapshot_locked(self, page: Any) -> dict:
         cfg = self.app.config.browser
@@ -1213,6 +1216,7 @@ class BrowserService(Service):
         if d not in scripts:
             raise BrowserError("direction must be one of: down, up, top, bottom, left, right.")
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page = await self._page(ctx)
             pos = await page.evaluate(
                 "() => { " + scripts[d] + "; return [Math.round(scrollY), Math.round(document.documentElement.scrollHeight"
@@ -1222,7 +1226,7 @@ class BrowserService(Service):
             out = {"ok": True, "scrolled": d, "from_top": pos[0], "more_below": max(0, pos[1]),
                    "message": "Call browser_snapshot to see what is visible now."}
             await self._after_action(ctx, page)
-            return out
+            return await self._include_downloads(out, downloads_before)
 
     async def back(self, ctx: Any) -> dict:
         async with self._lock:
@@ -1243,12 +1247,15 @@ class BrowserService(Service):
     async def tabs(self, ctx: Any, profile: str = "") -> dict:
         self.use_profile(ctx, profile)
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             await self._ensure(ctx)
             self._last_used = time.monotonic()
-            return {"profile": self._profile, "tabs": await self._tabs()}
+            result = {"profile": self._profile, "tabs": await self._tabs()}
+            return await self._include_downloads(result, downloads_before)
 
     async def switch_tab(self, ctx: Any, index: int) -> dict:
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             c = await self._ensure(ctx)
             pages = list(c.pages)
             if not 0 <= index < len(pages):
@@ -1266,11 +1273,12 @@ class BrowserService(Service):
             out = {"ok": True, "index": index, "url": self._active.url, "title": title,
                    "message": "Switched. Call browser_snapshot to see this tab."}
             await self._after_action(ctx, self._active)
-            return out
+            return await self._include_downloads(out, downloads_before)
 
     async def extract(self, ctx: Any, question: str = "") -> dict:
         cfg = self.app.config.browser
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page = await self._page(ctx)
             self._last_used = time.monotonic()
             data = await page.evaluate(EXTRACT_JS, {"maxText": cfg.max_extract_chars * 5})
@@ -1280,10 +1288,11 @@ class BrowserService(Service):
                 out["question"] = question
             if truncated:
                 out["truncated"] = True
-            return out
+            return await self._include_downloads(out, downloads_before)
 
     async def screenshot(self, ctx: Any) -> dict:
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page = await self._page(ctx)
             self._last_used = time.monotonic()
             folder = paths.files_dir() / "outputs" / "browser"
@@ -1293,13 +1302,16 @@ class BrowserService(Service):
             title = ""
             with contextlib.suppress(Exception):
                 title = await page.title()
-            return {"file": f"outputs/browser/{name}", "url": page.url, "title": title}
+            result = {"file": f"outputs/browser/{name}", "url": page.url, "title": title}
+            return await self._include_downloads(result, downloads_before)
 
     async def close_tool(self, ctx: Any) -> dict:
+        downloads_before = self._download_tasks.copy()
         was_running = self._context is not None
         async with self._lock:
             await self._shutdown()
-        return {"ok": True, "message": "Browser closed." if was_running else "The browser wasn't open."}
+        result = {"ok": True, "message": "Browser closed." if was_running else "The browser wasn't open."}
+        return await self._include_downloads(result, downloads_before)
 
 
 def _clean_ref(ref: Any) -> str | None:

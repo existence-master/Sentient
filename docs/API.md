@@ -1439,8 +1439,12 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   idle_minutes, allow_domains, block_domains, max_snapshot_chars, max_extract_chars, confirm_purchases, live_view,
   profiles`. Every safety rule below applies the same in every profile, attached ones included.
 - Tools (plugin `browser`). Failures return `{error}` with a message the model can act on.
-    - `browser_open(url, profile="")` read → same as `browser_snapshot` plus `profile` (http/https only; allow/block lists apply, also after redirects). `profile` switches to that profile for this and the following calls of the run; empty uses the run's profile, else `default`.
-    Any download started by a browser action is saved under `downloads/` in the Files folder and included as a relative path in that action's optional `downloads` array.
+  - Downloads from launched profiles are accepted by Playwright; downloads from pages Sentient opens in an attached
+  profile are handled the same way. Every download is saved under `downloads/` in Sentient's Files folder. Browser
+  tool results (including `browser_scroll`) may include an optional `downloads` array of relative paths such as
+  `["downloads/report.pdf"]`. Results wait up to 0.3 s for a download to start during the action; if it starts later,
+  it remains tracked and is reported on a later browser result after saving finishes.
+  - `browser_open(url, profile="")` read → same as `browser_snapshot` plus `profile` (http/https only; allow/block lists apply, also after redirects). `profile` switches to that profile for this and the following calls of the run; empty uses the run's profile, else `default`.
   - `browser_snapshot()` read → `{url, title, text, truncated?}`. `text` is `Page:`/`URL:`/`Scroll:` header, interactive
     elements one per line (`[e12] button "Sign in"`, `[e4] textbox "Search" value=""`, `[e7] combobox "Country"
     value="India" options: India | Japan`, `[e3] link "Docs" -> /docs`, flags `checked`, `disabled`, `focused`) and the

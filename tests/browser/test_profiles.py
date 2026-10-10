@@ -406,3 +406,16 @@ async def test_launched_browsers_commit_site_storage_quickly(monkeypatch):
     with pytest.raises(BrowserError):
         await svc._launch_persistent(BrowserProfileConfig(), headless=True)
     assert browser_service.STORAGE_FLAG in seen["args"]
+    assert seen["accept_downloads"] is True
+
+
+async def test_finished_download_is_reported_on_the_next_result():
+    svc = BrowserService(make_app())
+    task = asyncio.create_task(asyncio.sleep(0, result="downloads/late-report.txt"))
+    svc._download_tasks.add(task)
+    await task
+
+    result = await svc._include_downloads({"ok": True}, {task})
+
+    assert result["downloads"] == ["downloads/late-report.txt"]
+    assert task not in svc._download_tasks
