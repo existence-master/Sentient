@@ -228,6 +228,21 @@ async def test_declined_tool_call_never_runs(make_app, fake_claude, cc_config):
     assert next(e for e in events if isinstance(e, ToolResultEvent)).is_error
 
 
+async def test_only_the_users_own_plan_login_is_used(make_app, fake_claude, monkeypatch):
+    """Nothing in the environment can switch Claude Code to an API key, a cloud provider or another endpoint."""
+    overrides = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_PROFILE",
+                 "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_MODEL", "CLAUDE_CODE_OAUTH_TOKEN",
+                 "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_SIMPLE",
+                 "CLAUDE_CODE_OAUTH_SCOPES"]
+    for name in overrides:
+        monkeypatch.setenv(name, "x")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(Path("which-login-folder").resolve()))  # the user's own choice: kept
+    app = await make_app()
+    await _turn(app, "say hello")
+    [run] = fake_claude.runs()
+    assert run["auth_env"] == ["CLAUDE_CONFIG_DIR"]
+
+
 # ---------------------------------------------------------------------------- refusals
 async def test_refuses_when_turned_off(cc_config, fake_claude):
     cc_config.models.experimental_claude_code = False

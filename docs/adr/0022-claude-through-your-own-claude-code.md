@@ -33,7 +33,14 @@ this is counted or allowed."
 
 - **The user's own install and login.** Sentient finds `claude` on PATH and starts it per reply in print mode with
   streaming JSON. It never reads, copies or stores Claude credentials or files under `~/.claude`, never offers a
-  Claude sign-in, and never names Sentient "Claude Code". Settings shows `claude --version` while the switch is on;
+  Claude sign-in, and never names Sentient "Claude Code". Claude Code prefers other credentials over the plan login
+  ([authentication precedence](https://code.claude.com/docs/en/authentication)), so Sentient leaves every one of them
+  out of its environment: every `ANTHROPIC_*` variable (API key, bearer token, base URL, profile, federation),
+  `CLAUDE_CODE_OAUTH_*` (a `setup-token`), the `CLAUDE_CODE_USE_*` cloud switches (Bedrock, Vertex, Foundry),
+  `CLAUDE_CODE_SIMPLE` (bare mode, which never reads the login) and a parent Claude Code session's
+  `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH`. `CLAUDE_CONFIG_DIR`, which picks which of the user's
+  own logins to use, is kept. The user's Claude Code settings are not loaded either, so an `apiKeyHelper` there is not
+  used. Settings shows `claude --version` while the switch is on;
   whether it is signed in is only checked when the user presses Test, which is one small reply.
 - **Claude Code only writes the reply.** It starts with `--tools ""` (none of its own tools), the dangerous built-ins
   also denied by name, `--permission-mode dontAsk`, no user settings, hooks, plugins, slash commands or other MCP

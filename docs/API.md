@@ -337,7 +337,10 @@ accept or loosen a rule.
   built-ins> --permission-mode dontAsk --setting-sources= --strict-mcp-config --disable-slash-commands
   --no-session-persistence --max-turns 1 --system-prompt-file <file> [--mcp-config <file>] [--effort <role's
   reasoning>]` in a scratch folder under `~/.sentient/tmp/claude-code/`, removed afterwards. The environment is the
-  engine's, minus the window token, with `ENABLE_TOOL_SEARCH=false`. The conversation goes in as one stream-json user
+  engine's minus the window token and everything that would make Claude Code use something other than the plan login
+  (every `ANTHROPIC_*`, `CLAUDE_CODE_USE_*` and `CLAUDE_CODE_OAUTH_*` variable, `CLAUDE_CODE_SIMPLE`,
+  `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH`; `CLAUDE_CONFIG_DIR` is kept), with
+  `ENABLE_TOOL_SEARCH=false`. The conversation goes in as one stream-json user
   message (a transcript with `<user>`, `<assistant>`, `<tool_call>` and `<tool_result>` blocks; images as image
   blocks). Sentient's tools are offered by a stdio MCP server named `sentient` (`sentient/llm/claude_code_tools.py`,
   or `sentient-engine claude-code-tools` in an installed app) that lists them and answers every call with an error:

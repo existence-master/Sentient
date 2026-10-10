@@ -53,7 +53,7 @@ export function ClaudeCodeSection() {
               </Badge>
             </div>
             <p className="mt-0.5 text-xs leading-relaxed text-fg-subtle">
-              Sentient starts Claude Code with your own sign-in and never sees or keeps your Claude login. Claude Code's own tools stay off: everything it does goes through Sentient's tools and approvals.
+              Sentient starts Claude Code with the plan you signed in to and never sees or keeps your Claude login. API keys and other sign-in settings in your environment are left out, so it always uses that plan. Claude Code's own tools stay off: everything it does goes through Sentient's tools and approvals.
             </p>
           </div>
           <Switch

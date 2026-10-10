@@ -8,7 +8,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ### Added
 - **Claude through your own Claude Code (experimental):** if Claude Code is installed and signed in on your computer,
   your chats can use Claude through it (Settings > Models, off until you turn it on). Sentient never reads or keeps
-  your Claude login. Claude Code's own tools stay off, so anything it wants done goes through Sentient's tools,
+  your Claude login, and leaves API keys and other sign-in settings in your environment out, so Claude Code always
+  uses the plan you signed in to. Claude Code's own tools stay off, so anything it wants done goes through Sentient's tools,
   approvals and rules, and Stop everything stops it. It only answers your chats: tasks, suggestions and other
   background work keep using your other models, and it can't be the memory search model. Anthropic may change how
   this is counted or allowed.

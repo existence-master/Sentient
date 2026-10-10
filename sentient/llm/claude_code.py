@@ -62,6 +62,13 @@ EFFORTS = {"low", "medium", "high"}
 MODEL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,79}$")
 UNSAFE_FOR_BATCH = re.compile(r'["%!^&|<>\r\n]')  # cmd.exe would read these when claude is a .cmd launcher
 SECRET_ENV = {"SENTIENT_GATEWAY_TOKEN", "CLAUDECODE"}  # never handed to Claude Code
+# Variables that make Claude Code use something other than the plan login the user made with /login
+# (code.claude.com/docs/en/authentication, "Authentication precedence"): an API key or bearer token, a setup-token,
+# Bedrock, Vertex or Foundry, another endpoint (ANTHROPIC_BASE_URL), an Anthropic profile or federation, bare mode
+# (which never reads the login), or a parent Claude Code session's sign-in. Every ANTHROPIC_* variable, every
+# CLAUDE_CODE_USE_* switch and every CLAUDE_CODE_OAUTH_* variable is left out.
+AUTH_ENV_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_USE_", "CLAUDE_CODE_OAUTH_")
+AUTH_ENV = {"CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH"}
 VERSION_TIMEOUT_S = 15
 STDERR_KEEP = 4000
 
@@ -174,7 +181,12 @@ def refusal(config: SentientConfig, role: str | None = None) -> str | None:
 
 # ---------------------------------------------------------------------------- what Claude Code is given
 def _env() -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if k.upper() not in SECRET_ENV}
+    """The engine's environment without Sentient's window token or anything that would switch Claude Code away from
+    the user's own plan login."""
+    env = {
+        k: v for k, v in os.environ.items()
+        if k.upper() not in SECRET_ENV | AUTH_ENV and not k.upper().startswith(AUTH_ENV_PREFIXES)
+    }
     env["ENABLE_TOOL_SEARCH"] = "false"  # every Sentient tool up front: no extra round to look one up
     return env
 

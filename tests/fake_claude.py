@@ -16,6 +16,9 @@ import time
 from pathlib import Path
 
 BUILTINS = ["Bash", "Read", "Edit", "Write", "WebFetch"]
+# what decides which credentials Claude Code uses (code.claude.com/docs/en/authentication), recorded by name only
+AUTH_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_USE_", "CLAUDE_CODE_OAUTH_")
+AUTH_NAMES = {"CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH", "CLAUDE_CONFIG_DIR"}
 
 
 def emit(event: dict) -> None:
@@ -58,7 +61,8 @@ def main() -> int:
     scenario = os.environ.get("FAKE_CLAUDE_SCENARIO", "chat")
     record: dict = {"argv": argv, "cwd": os.getcwd(), "scenario": scenario,
                     "has_gateway_token": "SENTIENT_GATEWAY_TOKEN" in os.environ,
-                    "tool_search": os.environ.get("ENABLE_TOOL_SEARCH")}
+                    "tool_search": os.environ.get("ENABLE_TOOL_SEARCH"),
+                    "auth_env": sorted(k for k in os.environ if k.upper().startswith(AUTH_PREFIXES) or k.upper() in AUTH_NAMES)}
     stdin = sys.stdin.read()
     record["stdin"] = [json.loads(line) for line in stdin.splitlines() if line.strip()]
     system_file = flag(argv, "--system-prompt-file")
