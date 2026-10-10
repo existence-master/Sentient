@@ -360,7 +360,11 @@ accept or loosen a rule.
   assistant message or `result` (no price: the plan pays). Only a chat reply or `POST /api/models/test` may use it:
   other callers (tasks, subagents, proactivity, follow-ups, dreaming, briefs, memory notes, titles, summaries) get
   "Claude Code only answers your chats..." so the role's fallbacks are tried, and embeddings fail with a plain
-  message. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
+  message. The refusal names the setting to change for the `planner` role ("...so it can't plan tasks. Pick a planner
+  model in Settings > Models.") and the `executor` role ("...Pick an executor model..."). It is a `ModelRefused`
+  (a `ProviderError`); when every model of a role refused, that sentence is the error as is, so a task that fails
+  this way has it as its `error` (instead of "Sorry, the AI model is unavailable right now...") and a task route
+  answers `503` with it as `detail`. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
   and vision). Stop everything kills every running Claude Code process tree.
 - `GET /api/secrets` → `[{name, set: bool, source: "keychain"|"env"|null, kind: "provider"|"integration"}]` for every provider + integration secret name
 - `PUT /api/secrets/{name}` `{value}` → `{ok}` (stored in OS keychain; never echoed back). `chatgpt` → 400: it is a
@@ -731,7 +735,11 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   - `status: "needs_sign_in"`: the server answered 401, or `auth` is `oauth` with no stored sign-in, or the stored sign-in expired and could not be refreshed. `error` says what to do: `"This server asks you to sign in."` (none), `"The server didn't accept the saved headers. Change their values with the key button on the server."` (headers), `"Sign in to use this server."` (oauth). The engine retries a server in this state every 5 minutes, and at once after a sign-in or a test.
 - `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, headers?, auth?, enabled?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input)
   - `headers`: `{name: value}`; values go to the keychain. `auth` defaults to `headers` when headers are given, else `none`. 400 when `auth` is `headers` without headers, a header name or value is invalid, or a stdio server has headers or `auth` other than `none`.
-  - Replacing a server with a different URL drops its stored sign-in. Headers not given are deleted.
+  - Headers not given are deleted. The keychain is shared by every Sentient setup on the computer, so a stored sign-in
+    (tokens and client registration) records the server URL it was made for (`server_url`) and is kept when a
+    server with the same name and URL is added (in this setup or another), then used. It is dropped when the URL
+    differs, and an older record without `server_url` is dropped only when this setup had the server at another
+    URL. Adding a local (stdio) server with the same name leaves a stored sign-in alone.
 - `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain)
 - `POST /api/integrations/mcp/{name}/test` → `{ok, tools: [mcp tool names], error?}`
 - `POST /api/integrations/mcp/{name}/enabled` `{enabled: bool}` → server object (turns a server on or off and nothing else; `enabled` must be a boolean, 422 otherwise; 404 if missing)
@@ -984,7 +992,7 @@ Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
 - `GET /api/memories?topic=&q=&source=&limit=&offset=` → `[Memory]` newest first, expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
 - `GET /api/memories/topics` → `[{name, description, count}]`
 - `GET /api/memories/graph` → `{nodes: [{id, label, title, content, topics, memory_type, source, created_at}], links: [{source, target, value}]}` (`label` = content truncated to 25 chars, `title` = full content, as in v2; a link means cosine similarity ≥ `memory.graph_link_similarity`, `value` is that similarity)
-- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone)
+- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. An UPDATE only replaces a fact about the same person and the same action on the same thing ("doesn't want files written" or "doesn't want emails deleted" never replaces "doesn't want files deleted"; it is added instead), and a new fact that an existing one already says in full, with no new name, place or number ("sister lives in a city" next to "sister Meera lives in Lisbon"), returns `SKIP` with that fact)
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)
 - `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
 - `DELETE /api/memories/source/{source}` → `{deleted: n}`
