@@ -109,6 +109,8 @@ def _response_cost(litellm: Any, response: Any, model: str) -> float | None:
 
 CACHE_PREFIXES = {"anthropic"}
 CHATGPT = "chatgpt"  # ChatGPT plan models (``chatgpt/<model>``) go through the Responses API shim, not LiteLLM
+# local servers whose context length Sentient can't know (LiteLLM's list has no entry for them)
+UNLISTED_PREFIXES = {"lm_studio", "llamafile", "vllm", "hosted_vllm"}
 
 
 def apply_prompt_cache(model: str, messages: list[dict], tools: list[dict] | None = None) -> tuple[list[dict], list[dict] | None]:
@@ -218,6 +220,32 @@ class LiteLLMProvider:
     async def context_length(self, role: str) -> int | None:
         """The context length sent with this role's calls, or None when its model is not an Ollama model."""
         return (await self._call_kwargs(self.model_for(role), role)).get("num_ctx")
+
+    async def context_window(self, role: str, model: str | None = None) -> int | None:
+        """How many tokens ``model`` (default: the role's) reads at once in this role: the ``num_ctx`` sent to an
+        Ollama model, or a cloud model's input window from LiteLLM's bundled list. None when unknown."""
+        model = model or self.model_for(role)
+        prefix = _provider_prefix(model)
+        if prefix in {"ollama", "ollama_chat"}:
+            models = self.config.models
+            num_ctx = models.context_length_per_role.get(role) or models.context_length
+            pc = provider_config(self.config, prefix)
+            limit = await self._model_max_context(model, pc.api_base if pc else None)
+            return min(num_ctx, limit) if limit else num_ctx
+        if prefix == CHATGPT:  # from the plan's own model list when it gave one; LiteLLM's list doesn't apply
+            from sentient.llm import chatgpt
+
+            return chatgpt.context_window(model)
+        if prefix in UNLISTED_PREFIXES:
+            return None
+        import litellm
+
+        try:
+            info = litellm.get_model_info(litellm_model(model))
+        except Exception:  # not in LiteLLM's list
+            return None
+        window = info.get("max_input_tokens") or info.get("max_tokens")
+        return int(window) if window else None
 
     # ------------------------------------------------------------------ streaming chat
     async def stream(

@@ -51,6 +51,7 @@ TIMEOUT_S = 15
 DEAD_REFRESH = {"invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired",
                 "refresh_token_invalidated", "refresh_token_reused"}
 
+_windows: dict[str, int] = {}  # model -> context window, from the plan's last model list (for the context meter)
 _locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
 
 
@@ -339,9 +340,18 @@ async def list_models(config: SentientConfig) -> list[dict]:
         slug = m.get("slug") or m.get("id")
         if not slug or m.get("visibility", "list") != "list":
             continue
+        window = m.get("context_window") or m.get("context_length")
+        window = int(window) if isinstance(window, int | float) and window > 0 else None
+        if window:
+            _windows[f"{PREFIX}/{slug}"] = window
         out.append({"id": f"{PREFIX}/{slug}", "label": m.get("display_name") or slug, "free": False, "tools": True,
-                    "context_length": m.get("context_window") or m.get("context_length")})
+                    "context_length": window})
     return out
+
+
+def context_window(model: str) -> int | None:
+    """How many tokens a plan model reads at once, when the plan's model list said so; None otherwise."""
+    return _windows.get(model)
 
 
 def pick_models(models: list[str]) -> dict[str, str] | None:

@@ -585,9 +585,43 @@ export interface CheckupRole {
   checks: CheckupCheck[]
 }
 
+/** `GET /api/system/hardware` (docs/API.md §3, #131): this computer and the local model that fits it. */
+export interface HardwareGpu {
+  name: string
+  vendor: 'nvidia' | 'amd' | 'intel' | 'apple' | 'other'
+  vram_gb: number | null
+  /** Ollama can run models on it (NVIDIA, AMD with its own memory, Apple silicon). */
+  usable: boolean
+}
+
+export interface HardwareRecommendation {
+  tier: string
+  model: string
+  name: string
+  context_length: number
+  runs_on: 'graphics' | 'processor' | 'unknown'
+  /** Too little memory for a local model that can do tasks: a cloud model comes first and `model` is chat only. */
+  cloud_first: boolean
+  /** "qwen3:8b, reading 8,192 tokens at a time" */
+  summary: string
+  note: string
+}
+
+export interface Hardware {
+  os: string | null
+  ram_gb: number | null
+  gpus: HardwareGpu[]
+  unified_memory: boolean
+  usable_vram_gb: number | null
+  ollama_vram_gb: number | null
+  /** Plain description, or "unknown" when nothing could be checked. */
+  summary: string
+  recommendation: HardwareRecommendation
+}
+
 /** One NDJSON line of `POST /api/models/checkup`. */
 export type CheckupEvent =
-  | { type: 'start'; roles: { role: RoleName; model: string | null }[] }
+  | { type: 'start'; roles: { role: RoleName; model: string | null }[]; hardware?: Hardware }
   | { type: 'step'; role: RoleName; label: string }
   | ({ type: 'role' } & CheckupRole)
   | { type: 'done'; status: CheckupStatus; roles: CheckupRole[] }
@@ -678,6 +712,20 @@ export interface UsageEvent extends TurnScoped {
   model: string
   prompt_tokens: number
   completion_tokens: number
+  /** Context meter (#131), null when the model's context length is unknown. */
+  context_used?: number | null
+  context_length?: number | null
+  context_percent?: number | null
+  /** Plain warning from 85%. */
+  context_warning?: string | null
+}
+
+/** How full the model's context was after its latest call (chat `usage`, task `task.run_context`). */
+export interface ContextMeter {
+  used: number
+  length: number
+  percent: number
+  warning: string | null
 }
 export interface ErrorEvent extends TurnScoped {
   type: 'error'
@@ -770,6 +818,7 @@ export interface DomainEventMap {
   'task.deleted': { task_id: string }
   'task.run_progress': { task_id: string; run_id: string; update: ProgressUpdate }
   'task.run_activity': { task_id: string; run_id: string; last_activity_at: ISODate }
+  'task.run_context': { task_id: string; run_id: string; used: number | null; length: number | null; percent: number | null; warning: string | null }
   'notification.new': Notification
   'notification.updated': Notification
   'notification.read': { id: string | null }
@@ -1190,6 +1239,8 @@ export interface Run {
   pending_question?: RunQuestion | null
   /** When the run last showed any sign of work (a step, a model reply). */
   last_activity_at?: ISODate | null
+  /** Live only (never sent by the engine): how full the model's context is, from `task.run_context` (#131). */
+  context?: ContextMeter | null
   /** Memories the run had in mind: facts in its instructions or found by a memory look-up (docs/API.md §4). */
   memory_sources?: MemorySource[]
 }

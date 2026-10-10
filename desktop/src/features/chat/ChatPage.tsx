@@ -31,6 +31,7 @@ function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPro
   const liveKey = sessionId ?? pendingKey
   const liveSession = useChat((s) => (liveKey ? s.live[liveKey] : undefined))
   const resolvedId = useChat((s) => (pendingKey ? s.resolved[pendingKey.replace('pending:', '')] : undefined))
+  const context = useChat((s) => (sessionId ? s.context[sessionId] : undefined))
   const send = useChat((s) => s.send)
   const cancel = useChat((s) => s.cancel)
   const retry = useChat((s) => s.retry)
@@ -198,6 +199,7 @@ function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPro
                 draftKey={sessionId ?? 'pending'}
                 assistantName={assistantName}
                 streaming={streaming}
+                context={context}
                 attachments={attachments}
                 onSend={onSend}
                 onStop={() => liveSession && cancel(liveSession.key)}

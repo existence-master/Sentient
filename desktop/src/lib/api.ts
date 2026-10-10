@@ -51,6 +51,7 @@ import type {
   EvolutionLogEntry,
   FallbacksResponse,
   FileEntry,
+  Hardware,
   Health,
   Integration,
   IntegrationTestResult,
@@ -466,6 +467,8 @@ export const api = {
   models: {
     providers: () => http.get<Provider[]>('/api/models/providers'),
     local: () => http.get<LocalModels>('/api/models/local'),
+    /** This computer's memory and graphics card, and the local model that fits it (cached by the engine). */
+    hardware: (refresh = false) => http.get<Hardware>('/api/system/hardware', { query: refresh ? { refresh: true } : undefined }),
     test: (model: string, role?: RoleName) => http.post<ModelTestResult>('/api/models/test', { model, role }),
     testEmbedding: (model: string) => http.post<EmbeddingTestResult>('/api/models/test-embedding', { model }),
     setRoles: (roles: Partial<Record<RoleName, string | null>>) => http.put<ModelRoles>('/api/models/roles', roles),

@@ -82,6 +82,12 @@ class Usage(_Event):
     model: str
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # context meter (#131), set when the model's context length is known: tokens in its context after this call,
+    # what it reads at once, the share in percent, and a plain warning from 85%
+    context_used: int | None = None
+    context_length: int | None = None
+    context_percent: int | None = None
+    context_warning: str | None = None
 
 
 class Error(_Event):

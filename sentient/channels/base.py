@@ -873,7 +873,7 @@ class Channel:
         return "\n".join(lines)
 
     async def _preset_button(self, chat_id: str, message_id: str, ref: str) -> str:
-        name = next((p["name"] for p in model_presets.presets(self.app.config) if self.preset_ref(p["name"]) == ref), None)
+        name = next((p["name"] for p in model_presets.presets(self.app.config, model_presets.hardware(self.app)) if self.preset_ref(p["name"]) == ref), None)
         if name is None:
             await self.settle_buttons(chat_id, message_id, "That setup no longer exists")
             return "That setup no longer exists."

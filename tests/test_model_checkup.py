@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from sentient.app import SentientApp
 from sentient.gateway.app import create_app
+from sentient.llm import hardware
 from sentient.llm.checkup import checkup, run_checkup
 from tests.conftest import FakeProvider, tool_call
 
@@ -174,6 +175,14 @@ async def test_events_stream_and_optional_roles_use_primary(config):
 @pytest.fixture
 def client(config, isolated_home, monkeypatch):
     monkeypatch.setenv("SENTIENT_GATEWAY_TOKEN", "test-token")
+    # the route sizes its hints for this computer: never run the real detection or reach Ollama here
+    monkeypatch.setattr(hardware, "detect", lambda: {"os": "linux", "ram_gb": None, "gpus": [], "unified_memory": False,
+                                                     "usable_vram_gb": None, "ollama_vram_gb": None})
+
+    async def no_ollama(base):
+        return None
+
+    monkeypatch.setattr(hardware, "ollama_vram_gb", no_ollama)
     llm = FakeProvider(replies=["ready", *GOOD_TOOLS])
     app = create_app(SentientApp(config, llm=llm, db_path=isolated_home / "r.db", enable_background=False))
     with TestClient(app) as c:
@@ -187,12 +196,13 @@ def test_checkup_route_streams_ndjson_and_never_changes_config(client):
     assert r.headers["content-type"].startswith("application/x-ndjson")
     lines = [json.loads(line) for line in r.text.splitlines()]
     assert lines[0]["type"] == "start" and lines[-1]["type"] == "done"
+    assert lines[0]["hardware"]["summary"] == "unknown"
     assert lines[-1]["roles"][0]["status"] == "pass"
     assert client.get("/api/config").json() == before
     assert client.post("/api/models/checkup", json={"roles": {"boss": "fake/x"}}).status_code == 400
     # an empty selection checks nothing (it is not "every role")
     empty = [json.loads(line) for line in client.post("/api/models/checkup", json={"roles": {}}).text.splitlines()]
-    assert empty[0] == {"type": "start", "roles": []} and empty[-1]["roles"] == []
+    assert empty[0]["roles"] == [] and empty[-1]["roles"] == []
 
 
 async def test_doctor_models_table(config):

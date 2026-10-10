@@ -207,7 +207,8 @@ async def model_checkup(request: Request, body: CheckupBody | None = None):
         raise HTTPException(400, f"unknown role {sorted(set(roles) - ROLE_KEYS)[0]}")
 
     async def gen():
-        async for event in run_checkup(s.config, s.llm, roles):
+        hardware = await s.hardware.get()
+        async for event in run_checkup(s.config, s.llm, roles, hardware=hardware):
             yield json.dumps(event) + "\n"
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")

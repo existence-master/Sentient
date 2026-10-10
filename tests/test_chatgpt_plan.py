@@ -416,7 +416,7 @@ async def test_plan_models_feed_the_catalog_and_cloud_preset(app, keychain):
     assert [(m["kind"], m["roles"], m["action"]) for m in missing] == [("sign_in", ["primary"], None)]
 
     _signed_in(keychain)
-    listing = {"models": [{"slug": "gpt-test", "display_name": "GPT Test", "visibility": "list"},
+    listing = {"models": [{"slug": "gpt-test", "display_name": "GPT Test", "visibility": "list", "context_window": 272000},
                           {"slug": "gpt-hidden", "display_name": "Hidden", "visibility": "hide"},
                           {"slug": "gpt-test-mini", "display_name": "GPT Test mini", "visibility": "list"}]}
     with respx.mock() as router:
@@ -428,6 +428,10 @@ async def test_plan_models_feed_the_catalog_and_cloud_preset(app, keychain):
     assert models.calls.last.request.headers["authorization"] == "Bearer at-1"
     assert [(m["id"], m["label"]) for m in catalog] == [("chatgpt/gpt-test", "GPT Test"),
                                                          ("chatgpt/gpt-test-mini", "GPT Test mini")]
+    # the context meter knows a plan model's window once the plan's list said it, and leaves others out
+    llm = LiteLLMProvider(app.config)
+    assert await llm.context_window("primary", "chatgpt/gpt-test") == 272000
+    assert await llm.context_window("primary", "chatgpt/gpt-test-mini") is None
     cloud = items["Cloud"]
     assert cloud["available"] and cloud["provider"] == "chatgpt"
     assert cloud["roles"]["primary"] == "chatgpt/gpt-test" and cloud["roles"]["fast"] == "chatgpt/gpt-test-mini"

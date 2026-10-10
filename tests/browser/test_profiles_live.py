@@ -185,3 +185,18 @@ async def test_attach_to_a_running_browser_and_detach_leaves_it_running(browser,
     await bt.browser_open.call(ctx, {"url": f"{site}/index.html", "profile": "mine"})
     await bt.browser_open.call(ctx, {"url": f"{site}/help.html", "profile": "default"})
     assert browser._profile == "default" and not browser._attached and _answers(port)
+
+
+async def test_writes_in_unload_handlers_survive_a_switch(browser, site):
+    app = browser.app
+    app.config.browser.profiles["work"] = BrowserProfileConfig()
+    ctx = make_ctx(app)
+    await bt.browser_open.call(ctx, {"url": f"{site}/index.html", "profile": "default"})
+    await browser._active.evaluate(
+        "() => { addEventListener('beforeunload', () => localStorage.setItem('bye', 'before'));"
+        " addEventListener('pagehide', () => localStorage.setItem('hide', 'yes')); return true; }"
+    )
+    await bt.browser_open.call(ctx, {"url": f"{site}/help.html", "profile": "work"})  # closes "default"
+    await bt.browser_open.call(ctx, {"url": f"{site}/help.html", "profile": "default"})
+    stored = await browser._active.evaluate("() => [localStorage.getItem('bye'), localStorage.getItem('hide')]")
+    assert stored == ["before", "yes"]

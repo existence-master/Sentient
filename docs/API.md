@@ -38,10 +38,21 @@ All carry `session_id` and `turn_id`.
 | `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10) |
 | `user_interjection` | `text` (a steer message the model just received, section 10) |
 | `steer_ack` | `session_id`, `queued`, `client_id` (echo; no `turn_id`) |
-| `usage` | `model`, `prompt_tokens`, `completion_tokens` |
+| `usage` | `model`, `prompt_tokens`, `completion_tokens`, `context_used`, `context_length`, `context_percent`, `context_warning` (context meter, below) |
 | `error` | `message`, `recoverable` |
 | `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id` and its `memory_sources` too (none when it was stopped before it started) |
 | `approval.ack` | `approval_id`, `resolved` |
+
+**Context meter** (#131). After every model call `usage` says how full the model's context is: `context_used` is the
+prompt (the larger of what the provider reported and a local count with LiteLLM's bundled tokenizer, because Ollama
+reports only the part of a prompt it had not cached) plus the reply, `context_length` what the model reads at once in
+that role (Ollama's `num_ctx` as sent, capped at the model's maximum, or a cloud model's input window from LiteLLM's
+bundled list; for a ChatGPT plan model, the window its plan's model list gave, if any), and `context_percent` the share, rounded. From 85% `context_warning` is a plain sentence, e.g. `This chat
+is getting long for qwen3:8b (87% of what it reads at once). Older messages may be left out: start a new chat, or set a
+longer context length in Settings > Models.` (cloud models: `..., so a new chat works best.`). All four are `null` when
+the context length is unknown (LM Studio, a model LiteLLM doesn't list). A call whose provider reported no token usage
+still gets a `usage` event (tokens 0) when its context length is known, so the meter keeps working. Nothing is ever
+blocked.
 
 ### Server → client: domain events (dotted `type`, payload in `data`)
 Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
@@ -52,6 +63,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `task.deleted` | `{task_id}` |
 | `task.run_progress` | `{task_id, run_id, update: ProgressUpdate}` (also moves the run's `last_activity_at` to `update.timestamp`) |
 | `task.run_activity` | `{task_id, run_id, last_activity_at}`: a working run is alive (the model is writing), at most every 10 s |
+| `task.run_context` | `{task_id, run_id, used, length, percent, warning}`: the running run's context meter after each model call (as `usage` above; all `null` when that model's context length is unknown; not stored). The first warning of a run is also logged as an `info` progress update |
 | `notification.new` | **Notification** (§6) |
 | `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"\|"declined"`; a task question (`payload.event = "question"`) gains `payload.status = "answered"` with `payload.answer`, or `"cancelled"`) |
 | `notification.read` / `notification.deleted` | `{id}` (`null` = all) |
@@ -224,6 +236,28 @@ accept or loosen a rule.
   ```
   `sign_in: true` (the `chatgpt` entry) means the provider is connected by signing in, never by a pasted key;
   `key_set` then means signed in.
+- `GET /api/system/hardware?refresh=false` (#131) → what this computer can run, detected once and cached (`refresh=true`
+  checks again). Detection never fails: anything it can't read is `null` and `summary` is `"unknown"`.
+  ```json
+  {"os": "windows|macos|linux", "ram_gb": 15.3, "unified_memory": false, "usable_vram_gb": 8.0, "ollama_vram_gb": null,
+   "gpus": [{"name": "NVIDIA GeForce RTX 4060 Laptop GPU", "vendor": "nvidia|amd|intel|apple|other", "vram_gb": 8.0, "usable": true}],
+   "summary": "NVIDIA GeForce RTX 4060 Laptop GPU with 8 GB of graphics memory, 15.3 GB of memory",
+   "recommendation": {"tier": "gpu_8", "model": "ollama_chat/qwen3:8b", "name": "qwen3:8b", "context_length": 8192,
+                      "runs_on": "graphics|processor|unknown", "cloud_first": false,
+                      "summary": "qwen3:8b, reading 8,192 tokens at a time",
+                      "note": "Fits on the graphics card, so replies stay quick."}}
+  ```
+  Memory comes from the operating system (psutil when installed, otherwise Windows, macOS or Linux APIs). NVIDIA cards
+  from `nvidia-smi --query-gpu=name,memory.total`, other cards from the Windows registry or `/sys/class/drm` (AMD on
+  Linux); Apple silicon counts two thirds of its memory as graphics memory (`unified_memory: true`). Built-in Intel
+  graphics and AMD chips with under 2 GB of their own memory are `usable: false`. `ollama_vram_gb` is what models
+  loaded in Ollama use right now (`/api/ps`), a lower bound when no card was found. `recommendation` is the first row of
+  `LOCAL_MODEL_TIERS` in `config/schema.py` the computer meets: by usable graphics memory (24 GB and up, 16, 12, 8), else
+  by memory (8 GB and up: qwen3:8b on the processor, with a note that it is slow and a cloud model is faster; below
+  that `cloud_first: true`: a cloud model is the recommendation and `model` is qwen3:4b only as a labelled chat-only
+  fallback, never picked for the user, never used by "Local only" or the check-up's fixes); `tier: "unknown"` with today's defaults
+  when nothing could be read. Onboarding shows it as "Recommended for this computer" and saves its context length with a
+  local brain; the "Local only" preset and the check-up use it too.
 - `GET /api/models/local` → `{ollama: {reachable, models: [{name, size, family, parameter_size, is_embedding, capabilities: string[]}]}, lm_studio: {reachable, models: [...]}}` (`capabilities` from Ollama, e.g. completion/tools/thinking/vision/embedding — a hint; `POST /api/models/test` is the authoritative tool-support check)
 - `POST /api/models/test` `{model, role?}` → `{ok, latency_ms, reply?, error?, supports_tools?}`
 - `POST /api/models/test-embedding` `{model}` → `{ok, dim?, error?}`
@@ -234,7 +268,8 @@ accept or loosen a rule.
   and the same settings the tests depend on (provider address, reasoning effort, context length, temperature) run
   each model test (`reply`, `tools`, `chain`, `json`) once; the later role reuses it with a detail starting
   "Same as primary." (the first role's name). Lines:
-  - `{type: "start", roles: [{role, model}]}` (`model` null = an optional role that uses the main model)
+  - `{type: "start", roles: [{role, model}], hardware}` (`model` null = an optional role that uses the main model;
+    `hardware` is `GET /api/system/hardware`)
   - `{type: "step", role, label}` progress, e.g. "Trying a tool call"
   - `{type: "role", role, model, provider, local, inherits, status, checks: [Check]}` when a role is finished.
     `inherits: "primary"` with `status: "skip"` and no checks for an optional role with no model of its own.
@@ -246,8 +281,12 @@ accept or loosen a rule.
   short answer), `tools` (one scripted `find_city` call; roles that use tools: primary, fast, executor, vision,
   voice), `chain` (a second `get_weather` call using the first result; primary and executor), `json` (a JSON reply;
   fast and planner), `thinking` (Ollama models that can think: thinking matches the role's reasoning setting),
-  `context` (tokens in use vs the model's maximum from `/api/show`), `gpu` (from Ollama `/api/ps`: `size_vram` vs
-  `size`, warns when part of the model runs on the processor), `embedding` (embedding role only). Cloud and
+  `context` (tokens in use vs the model's maximum from `/api/show`; also warns when the role uses the model sized for
+  this computer with more tokens than its graphics card holds, with a `set_context_length` fix to the recommended
+  length), `gpu` (from Ollama `/api/ps`: `size_vram` vs `size`, warns when part of the model runs on the processor; its
+  fix names the recommended model and context length and its action shortens to the recommended length when that is
+  shorter, else 8,192), `embedding` (embedding role only). A model that fails the tool checks gets the recommended model
+  as its fix (`qwen3:8b` when the computer only fits a small one). Cloud and
   LM Studio models get no Ollama checks. `action` is an optional one-click fix the window may offer:
   `{kind: "use_model", role, model, label}` (`PUT /api/models/roles`), `{kind: "pull_model", name, label}`
   (`POST /api/models/ollama/pull`), `{kind: "set_reasoning", role, value, label}` (`models.reasoning`),
@@ -258,8 +297,9 @@ accept or loosen a rule.
 - `PUT /api/models/fallbacks` `{role: [model, ...]}` → `{ok}`
 - `POST /api/models/ollama/pull` `{name}` → streams NDJSON `{status, completed?, total?}`
 - **Model presets** (#212): named setups that switch every role in one step. Three built-ins are generated, never
-  stored: "Local only" (the `ModelRoles` defaults from `config/schema.py`; a local embedding model the user picked is
-  kept), "Cloud" and "Mixed" (the first of Anthropic, OpenAI, OpenRouter with a key set, models from
+  stored: "Local only" (the `ModelRoles` defaults from `config/schema.py`, or, once the hardware is known, the
+  recommended model for `primary` and `fast` plus its `context_length`, see `GET /api/system/hardware`; a local
+  embedding model the user picked is kept), "Cloud" and "Mixed" (the first of Anthropic, OpenAI, OpenRouter with a key set, models from
   `PRESET_CLOUD_MODELS` in `config/schema.py`, or else a ChatGPT sign-in, whose main model is the first on the plan's
   list and whose fast model is the first "mini" or "nano" one; Cloud leaves the embedding model alone because changing it re-indexes
   memory; Mixed keeps `fast` and `embedding` local). Built-ins clear `models.fallbacks`. The user's own presets are in
@@ -1257,6 +1297,10 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     Chrome). Older versions' `~/.sentient/browser/profile` moves to `profiles/default` on first use (if it can't be
     moved, it keeps being used). Starts on the first tool call, hidden unless `browser.headless` is false, one window
     with tabs, closes itself after `browser.idle_minutes` without use (not while visible).
+    Site storage (localStorage, where many sites keep a sign-in) is made durable before a launched profile closes
+    (switch, idle close, quit): the browser runs with a 1 s storage commit delay
+    (`--enable-aggressive-domstorage-flushing`), and closing one that showed a website first closes its tabs with their
+    beforeunload/unload handlers (a beforeunload prompt is accepted) and waits 1.5 s.
   - `attach`: connects with `connect_over_cdp` to a browser the user started with `--remote-debugging-port`.
     `endpoint` must be on this computer (`localhost`, `127.0.0.0/8`, `::1`; `9333` and `127.0.0.1:9333` are
     normalized to `http://127.0.0.1:9333`); anything else is refused with a plain message, and so is a DevTools port
