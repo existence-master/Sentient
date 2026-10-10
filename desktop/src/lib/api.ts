@@ -18,6 +18,7 @@ import type {
   BrowserStatus,
   Channel,
   ChannelPairing,
+  ClaudeCodeStatus,
   DeviceInvokeResult,
   DeviceLanInfo,
   DeviceNode,
@@ -470,6 +471,7 @@ export const api = {
     hardware: (refresh = false) => http.get<Hardware>('/api/system/hardware', { query: refresh ? { refresh: true } : undefined }),
     test: (model: string, role?: RoleName) => http.post<ModelTestResult>('/api/models/test', { model, role }),
     testEmbedding: (model: string) => http.post<EmbeddingTestResult>('/api/models/test-embedding', { model }),
+    claudeCode: () => http.get<ClaudeCodeStatus>('/api/models/claude-code'),
     setRoles: (roles: Partial<Record<RoleName, string | null>>) => http.put<ModelRoles>('/api/models/roles', roles),
     setFallbacks: (fallbacks: Partial<Record<RoleName, string[]>>) =>
       http.put<FallbacksResponse>('/api/models/fallbacks', fallbacks),

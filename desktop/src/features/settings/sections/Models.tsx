@@ -50,6 +50,7 @@ import {
   StatusDot,
   Switch
 } from '@/components/ui'
+import { ClaudeCodeSection } from '@/features/models/ClaudeCodeSection'
 import { ConnectPlansSection } from '@/features/models/ConnectPlans'
 import { ModelCheckup } from '@/features/models/ModelCheckup'
 import { ModelPicker } from '@/features/models/ModelPicker'
@@ -121,6 +122,7 @@ export function ModelsSection({ query }: SectionProps) {
         ))}
       </section>
       {(!q || 'plan claude max anthropic credits openrouter nous portal connect sign in subscription'.includes(q)) && <ConnectPlansSection />}
+      {(!q || 'claude code experimental subscription plan sign in'.includes(q)) && <ClaudeCodeSection />}
       <ProvidersPanel />
       <OllamaPanel />
     </div>

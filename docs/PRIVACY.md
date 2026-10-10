@@ -17,6 +17,7 @@ service name `sentient`.
 |---|---|
 | Use a **local model** (Ollama, LM Studio) | Nothing. Prompts stay on your machine. |
 | Use a **cloud model** | The conversation, relevant memories and tool results for each request go to that provider (for example Anthropic or OpenAI) under their terms. |
+| Turn on **Claude through your Claude Code** (experimental) | Sentient starts the Claude Code program already on your computer for each chat reply, and Claude Code sends the conversation, relevant memories and tool results to Anthropic under your own Claude Code login and Anthropic's terms. Sentient never reads, copies or keeps your Claude login or anything in your `.claude` folder, and Claude Code's own tools stay off: anything it wants done goes through Sentient's tools and approvals. Only your chats use it, never background work. Off until you turn it on. |
 | Use your **Claude plan's API credits** | The same as any Claude model: requests go to Anthropic with your API key. Sentient never asks for your Claude account login. |
 | **Connect OpenRouter** | You sign in on openrouter.ai in your browser and OpenRouter hands Sentient a key for your account, kept in your keychain. Requests then go to OpenRouter, which passes them to the company that runs the model you picked. The model list is fetched from openrouter.ai once connected. |
 | Use **Nous Portal** | Requests go to Nous Research with your Nous Portal key. |

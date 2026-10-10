@@ -258,6 +258,12 @@ accept or loosen a rule.
 - `GET /api/models/local` → `{ollama: {reachable, models: [{name, size, family, parameter_size, is_embedding, capabilities: string[]}]}, lm_studio: {reachable, models: [...]}}` (`capabilities` from Ollama, e.g. completion/tools/thinking/vision/embedding — a hint; `POST /api/models/test` is the authoritative tool-support check)
 - `POST /api/models/test` `{model, role?}` → `{ok, latency_ms, reply?, error?, supports_tools?}`
 - `POST /api/models/test-embedding` `{model}` → `{ok, dim?, error?}`
+- `GET /api/models/claude-code` → `{enabled, installed, version, detail, models}`: Claude through the user's own
+  Claude Code (experimental, ADR 0022). `enabled` is `models.experimental_claude_code` (default false). `installed`
+  means a `claude` program is on PATH; `version` is its `claude --version` line, asked only while `enabled` (null
+  otherwise or when it doesn't answer). `detail` is a plain sentence for Settings. `models` are the model names to
+  offer (`CLAUDE_CODE_MODELS` in `config/schema.py`: `claude-code/sonnet`, `claude-code/opus`). It never calls a model
+  and never reads Claude's login; `POST /api/models/test` with a `claude-code/` model is the only dry run.
 - `POST /api/models/checkup` `{roles?: {role: model | null}}` → streams NDJSON while it checks each role's model,
   one role at a time (local models are never loaded side by side). Without `roles` it checks every role in the saved
   config; with `roles` it checks only those, with those models (onboarding checks its picks before saving). It is
@@ -320,6 +326,25 @@ accept or loosen a rule.
   - `PATCH /api/models/presets/{name}` `{name}` → Preset (rename; `active_preset` follows). 400 built-in, 404, 409.
   - `DELETE /api/models/presets/{name}` → `{ok}`; models stay as they are. 400 built-in, 404.
   - Per-chat (`model` on a chat message) and per-task model overrides still win over the roles a preset sets.
+- **Claude through your own Claude Code** (experimental, #206, ADR 0022). With `models.experimental_claude_code` on,
+  a model `claude-code/<name>` (any Claude Code model alias or full name) is answered by the `claude` program on this
+  computer under the user's own login, outside LiteLLM. Each reply starts `claude -p --input-format stream-json
+  --output-format stream-json --verbose --include-partial-messages --model <name> --tools "" --disallowedTools <its
+  built-ins> --permission-mode dontAsk --setting-sources= --strict-mcp-config --disable-slash-commands
+  --no-session-persistence --max-turns 1 --system-prompt-file <file> [--mcp-config <file>] [--effort <role's
+  reasoning>]` in a scratch folder under `~/.sentient/tmp/claude-code/`, removed afterwards. The environment is the
+  engine's, minus the window token, with `ENABLE_TOOL_SEARCH=false`. The conversation goes in as one stream-json user
+  message (a transcript with `<user>`, `<assistant>`, `<tool_call>` and `<tool_result>` blocks; images as image
+  blocks). Sentient's tools are offered by a stdio MCP server named `sentient` (`sentient/llm/claude_code_tools.py`,
+  or `sentient-engine claude-code-tools` in an installed app) that lists them and answers every call with an error:
+  Claude's `mcp__sentient__<tool>` requests come back as ordinary tool calls for the agent loop. The `system/init`
+  event must list only `mcp__sentient__*` tools plus EndConversation and ToolSearch, or the process is killed and the
+  reply fails with a plain message. Text and thinking stream from `stream_event` deltas; usage comes from the
+  assistant message or `result` (no price: the plan pays). Only a chat reply or `POST /api/models/test` may use it:
+  other callers (tasks, subagents, proactivity, follow-ups, dreaming, briefs, memory notes, titles, summaries) get
+  "Claude Code only answers your chats..." so the role's fallbacks are tried, and embeddings fail with a plain
+  message. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
+  and vision). Stop everything kills every running Claude Code process tree.
 - `GET /api/secrets` → `[{name, set: bool, source: "keychain"|"env"|null, kind: "provider"|"integration"}]` for every provider + integration secret name
 - `PUT /api/secrets/{name}` `{value}` → `{ok}` (stored in OS keychain; never echoed back)
 - `DELETE /api/secrets/{name}` → `{ok}`
@@ -1696,7 +1721,8 @@ can ignore it.
   `GET /api/bootstrap` includes it as `stop`.
 - Stop everything, in this order: the flag is set and saved (so nothing new starts), then every running chat reply
   (desktop, channels, voice; the partial reply is kept with "(stopped)"), task run (status `cancelled`, progress
-  "Run stopped by Stop everything.", retryable from its checkpoint), task planning and check scripts, helper
+  "Run stopped by Stop everything.", retryable from its checkpoint), task planning and check scripts, a chat reply's
+  Claude Code process tree (ADR 0022), helper
   (subagent, status `cancelled`), running dream (status `error`, "Stopped by Stop everything.") and background job
   (memory notes, reviews, suggestions) is cancelled. Code runs, terminal commands (section 18) and browser actions stop
   with the reply or run they belong to; a command's whole process tree is killed. Runs waiting for the user's answer keep waiting.

@@ -42,6 +42,11 @@ export function useSecrets() {
   return useQuery({ queryKey: qk.secrets, queryFn: api.secrets.list })
 }
 
+/** Claude through your own Claude Code: on, installed, version. Asked again when the switch changes. */
+export function useClaudeCodeStatus(enabled: boolean) {
+  return useQuery({ queryKey: qk.claudeCode(enabled), queryFn: api.models.claudeCode, staleTime: 60_000, retry: false })
+}
+
 export function useTestModel() {
   return useMutation({ mutationFn: ({ model, role }: { model: string; role?: RoleName }) => api.models.test(model, role) })
 }

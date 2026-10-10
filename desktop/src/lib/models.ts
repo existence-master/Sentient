@@ -75,7 +75,8 @@ const PROVIDER_LABELS: Record<string, string> = {
   mistral: 'Mistral',
   deepseek: 'DeepSeek',
   xai: 'xAI',
-  nous: 'Nous Portal'
+  nous: 'Nous Portal',
+  'claude-code': 'Claude Code'
 }
 
 export function providerOf(model: string | null | undefined): string {

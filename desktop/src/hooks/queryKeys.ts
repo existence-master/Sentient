@@ -22,6 +22,7 @@ export const qk = {
   catalog: (provider: string) => ['models', 'catalog', provider] as const,
   signIn: (state: string) => ['models', 'sign-in', state] as const,
   modelPresets: ['models', 'presets'] as const,
+  claudeCode: (enabled: boolean) => ['models', 'claude-code', enabled] as const,
   secrets: ['secrets'] as const,
   /** How many times a secret was saved in this window (see `useSecretSaves`). Never fetched. */
   secretSaves: (name: string) => ['secret-saves', name] as const,

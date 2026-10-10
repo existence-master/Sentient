@@ -108,6 +108,7 @@ def _response_cost(litellm: Any, response: Any, model: str) -> float | None:
 
 
 CACHE_PREFIXES = {"anthropic"}
+CLAUDE_CODE = "claude-code"  # Claude through the user's own Claude Code (``claude-code/<model>``), not LiteLLM (#206)
 # local servers whose context length Sentient can't know (LiteLLM's list has no entry for them)
 UNLISTED_PREFIXES = {"lm_studio", "llamafile", "vllm", "hosted_vllm"}
 
@@ -231,7 +232,7 @@ class LiteLLMProvider:
             pc = provider_config(self.config, prefix)
             limit = await self._model_max_context(model, pc.api_base if pc else None)
             return min(num_ctx, limit) if limit else num_ctx
-        if prefix in UNLISTED_PREFIXES:
+        if prefix in UNLISTED_PREFIXES or prefix == CLAUDE_CODE:
             return None
         import litellm
 
@@ -253,7 +254,15 @@ class LiteLLMProvider:
         last_error: Exception | None = None
         override = model
         for model in self._chain(role, override):
+            emitted = False
             try:
+                if _provider_prefix(model) == CLAUDE_CODE:
+                    from sentient.llm import claude_code
+
+                    async for chunk in claude_code.stream(self.config, model, role, messages, tools):
+                        emitted = emitted or bool(chunk.text or chunk.thinking)
+                        yield chunk
+                    return
                 kwargs = await self._call_kwargs(model, role)
                 if _provider_prefix(model) not in {"ollama", "ollama_chat"}:
                     # OpenAI-style streams leave out token usage unless asked; budgets and prices need it
@@ -267,7 +276,6 @@ class LiteLLMProvider:
                 )
                 chunks: list[Any] = []
                 in_think = False
-                emitted = False
                 async for chunk in response:
                     chunks.append(chunk)
                     delta = chunk.choices[0].delta if chunk.choices else None
@@ -315,7 +323,7 @@ class LiteLLMProvider:
             except Exception as exc:
                 last_error = exc
                 log.warning("model %s failed for role %s: %s", model, role, exc)
-                if "emitted" in locals() and emitted:
+                if emitted:
                     # part of a reply already reached the user; switching models would duplicate it
                     raise ProviderError(f"{model} stopped mid-reply: {exc}") from exc
                 continue
@@ -332,6 +340,7 @@ class LiteLLMProvider:
         override = model
         for model in self._chain(role, override):
             try:
+                _refuse_claude_code(model)
                 kwargs = await self._call_kwargs(model, role)
                 sent, _ = apply_prompt_cache(model, messages)
                 resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
@@ -350,6 +359,7 @@ class LiteLLMProvider:
         override = model
         for model in self._chain(role, override):
             try:
+                _refuse_claude_code(model)
                 kwargs = await self._call_kwargs(model, role)
                 # Ollama's JSON mode corrupts qwen3 output ({"{"name": ...); ask for plain text and parse loosely
                 if _provider_prefix(model) not in {"ollama", "ollama_chat"}:
@@ -368,6 +378,10 @@ class LiteLLMProvider:
         import litellm
 
         model = model or self.model_for("embedding")
+        if _provider_prefix(model) == CLAUDE_CODE:
+            from sentient.llm.claude_code import NO_EMBEDDINGS
+
+            raise ProviderError(NO_EMBEDDINGS)
         kwargs = self._kwargs_for(model)
         kwargs.pop("timeout", None)
         resp = await litellm.aembedding(model=litellm_model(model), input=texts, **kwargs)
@@ -375,6 +389,14 @@ class LiteLLMProvider:
 
 
 # ---------------------------------------------------------------------- helpers
+def _refuse_claude_code(model: str) -> None:
+    """Claude Code only writes chat replies (ADR 0022): text and JSON jobs run in the background."""
+    if _provider_prefix(model) == CLAUDE_CODE:
+        from sentient.llm.claude_code import CHATS_ONLY
+
+        raise ProviderError(CHATS_ONLY)
+
+
 def split_think(text: str, in_think: bool) -> tuple[list[tuple[str, bool]], bool]:
     """Split a text delta on <think> / </think> boundaries.
 

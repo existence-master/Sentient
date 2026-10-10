@@ -72,6 +72,9 @@ PRESET_CLOUD_MODELS: dict[str, dict[str, str]] = {
     "openrouter": {"main": "openrouter/anthropic/claude-sonnet-5.5", "fast": "openrouter/anthropic/claude-haiku-5.5"},
 }
 
+# Models offered for Claude through the user's own Claude Code (#206, ADR 0022): Claude Code's model aliases.
+CLAUDE_CODE_MODELS: tuple[str, ...] = ("claude-code/sonnet", "claude-code/opus")
+
 # Local model sizing for this computer (#131), used by onboarding, the "Local only" preset and the model check-up.
 # Rows are tried in order and the first one the computer meets is recommended. ``min_vram_gb`` is graphics memory a
 # local model can use (an NVIDIA or AMD card, or about two thirds of the memory on Apple silicon); ``min_ram_gb`` is
@@ -171,6 +174,13 @@ class ModelsConfig(BaseModel):
             "lm_studio": ProviderConfig(api_base="http://localhost:1234/v1"),
         },
         description="Provider connection settings keyed by LiteLLM provider prefix.",
+    )
+    experimental_claude_code: bool = Field(
+        False,
+        description="Experimental. Uses your own Claude Code install and login. Anthropic may change how this is "
+        "counted or allowed. When on, models named claude-code/<model> (claude-code/sonnet, claude-code/opus) answer "
+        "your chats through the claude program on this computer, with Sentient's tools and approvals. Never used for "
+        "work that runs in the background, and it can't make embeddings. Sentient never reads your Claude login.",
     )
     max_tool_rounds: int = Field(12, ge=1, le=100, description="Max tool-call rounds per chat turn.")
     request_timeout_s: int = Field(180, ge=10, description="Per-request timeout in seconds.")

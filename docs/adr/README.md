@@ -26,6 +26,7 @@ proposing a change to one of them.
 | [0019](0019-host-terminal.md) | Run commands on the host only when turned on, in allowed folders, with approval | Accepted | 2026-10-09 |
 | [0020](0020-whatsapp-web-bridge.md) | Link WhatsApp as a device with an in-process WhatsApp Web bridge | Accepted | 2026-10-09 |
 | [0021](0021-hold-untrusted-memories-for-review.md) | Hold memories from untrusted sources for the user's review | Accepted | 2026-10-10 |
+| [0022](0022-claude-through-your-own-claude-code.md) | Let chats use Claude through the user's own Claude Code, off by default | Accepted | 2026-10-10 |
 
 ## Adding a record
 

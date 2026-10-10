@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from sentient import secrets
 from sentient.gateway.deps import AUTH, get_core
-from sentient.llm import connect, presets
+from sentient.llm import claude_code, connect, presets
 from sentient.llm.presets import PresetError
 from sentient.llm.provider import provider_config
 
@@ -152,15 +152,16 @@ async def test_model(request: Request, body: TestBody):
     }
     try:
         tool_called = False
-        async for chunk in s.llm.stream(
-            body.role or "fast",
-            [{"role": "user", "content": "Call the report_ready tool with status 'ready'."}],
-            [probe_tool],
-            model=body.model,
-        ):
-            text += chunk.text
-            if chunk.done and chunk.tool_calls:
-                tool_called = True
+        with claude_code.attended():  # the user pressed Test: the only dry run Claude Code gets (ADR 0022)
+            async for chunk in s.llm.stream(
+                body.role or "fast",
+                [{"role": "user", "content": "Call the report_ready tool with status 'ready'."}],
+                [probe_tool],
+                model=body.model,
+            ):
+                text += chunk.text
+                if chunk.done and chunk.tool_calls:
+                    tool_called = True
         return {
             "ok": True,
             "latency_ms": int((time.perf_counter() - started) * 1000),
@@ -169,6 +170,15 @@ async def test_model(request: Request, body: TestBody):
         }
     except Exception as exc:
         return {"ok": False, "latency_ms": int((time.perf_counter() - started) * 1000), "error": str(exc)[:500]}
+
+
+@router.get("/models/claude-code")
+async def claude_code_status(request: Request):
+    """Claude through the user's own Claude Code (experimental, ADR 0022): turned on, installed, version. Runs
+    ``claude --version`` only while it is turned on; never a model call, never reads Claude's login."""
+    from sentient.config.schema import CLAUDE_CODE_MODELS
+
+    return {**await claude_code.status(get_core(request).config), "models": list(CLAUDE_CODE_MODELS)}
 
 
 class EmbedTestBody(BaseModel):

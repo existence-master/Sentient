@@ -6,6 +6,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Claude through your own Claude Code (experimental):** if Claude Code is installed and signed in on your computer,
+  your chats can use Claude through it (Settings > Models, off until you turn it on). Sentient never reads or keeps
+  your Claude login. Claude Code's own tools stay off, so anything it wants done goes through Sentient's tools,
+  approvals and rules, and Stop everything stops it. It only answers your chats: tasks, suggestions and other
+  background work keep using your other models, and it can't be the memory search model. Anthropic may change how
+  this is counted or allowed.
 - **Models sized for your computer:** Sentient checks how much memory and graphics memory this computer has before
   anything is installed and recommends a local model and how much text it reads at once (for example qwen3:8b reading
   8,192 tokens on an 8 GB graphics card, qwen3:14b reading 16,384 on a 16 GB one). A computer with less than 8 GB of
