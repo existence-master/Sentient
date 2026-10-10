@@ -720,6 +720,9 @@ class Agent:
         unprompted: bool = False,
     ) -> _CallPlan:
         tool = self.registry.get(tc.name)
+        # an undecided rule proposal in this chat (#130) is looked up first (it may read the database), so the
+        # lasting rule read next is current: a Never saved meanwhile is refused, never turned into a question
+        chat_rule = await self._chat_rule(tool, ctx.session_id) if tool is not None else None
         rule = self.approvals.rule(tool) if tool is not None else None
         if tool is not None and rule == "never":
             # lasting rule (ADR 0016): the tool is not offered, and a call made anyway is refused without running
@@ -727,8 +730,8 @@ class Agent:
             return _CallPlan(tc=tc, tool=None, preset=({"error": refusal}, True, 0))
         if tool is None or not (tool_names is None or tc.name in tool_names):
             return _CallPlan(tc=tc, tool=None, preset=({"error": f"unknown tool {tc.name}"}, True, 0))
-        if rule != "ask" and await self._chat_rule(tool, ctx.session_id) == "ask":
-            rule = "ask"  # an undecided rule proposal in this chat (#130): ask first, whatever else says yes
+        if chat_rule == "ask":
+            rule = "ask"  # ask first while the user hasn't answered the proposal, whatever else says yes
         plan = _CallPlan(tc=tc, tool=tool, risk=tool.risk)
         if "_raw" in tc.arguments and len(tc.arguments) == 1:
             plan.preset = self._raw_arguments_error(tool, tc)

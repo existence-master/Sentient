@@ -294,6 +294,25 @@ async def test_until_decided_the_tool_asks_even_under_an_allow_rule(config, isol
         await s.stop()
 
 
+async def test_a_never_rule_saved_during_the_chat_lookup_is_refused_not_asked(config, isolated_home, monkeypatch):
+    log: list[str] = []
+    llm = FakeProvider(replies=[[tool_call("mail_delete_email", message_id="m1")], "Could not."])
+    s = await _start(config, isolated_home, llm, log)
+    try:
+        sid = await s.store.create_session(channel="cli")
+
+        async def pending_while_never_is_saved(tool, session_id):
+            s.approvals.config.rules = {"mail_delete_email": "never"}  # Settings saved Never meanwhile
+            return "ask"
+
+        monkeypatch.setattr(s.chat_rules, "chat_rule", pending_while_never_is_saved)
+        asked, events = await _turn(s, sid, "delete m1", decision="allow")
+        res = next(e for e in events if isinstance(e, ToolResultEvent))
+        assert asked == [] and "never use" in res.result["error"] and log == []
+    finally:
+        await s.stop()
+
+
 async def test_a_steer_message_is_checked_before_the_next_round(config, isolated_home):
     log: list[str] = []
     llm = FakeProvider(
