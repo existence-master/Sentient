@@ -405,7 +405,18 @@ export class DictationController {
     })
     if (process.env.ELECTRON_RENDERER_URL) void pill.loadURL(`${process.env.ELECTRON_RENDERER_URL}/pill.html`)
     else void pill.loadFile(join(__dirname, '../renderer/pill.html'))
-    return this.pillLoaded.then(() => pill)
+    return this.pillLoaded.then(
+      () => pill,
+      (error: unknown) => {
+        // A pill that failed to load is dropped, so the next press builds a new one.
+        if (this.pill === pill) {
+          this.pill = null
+          this.pillLoaded = null
+          if (!pill.isDestroyed()) pill.destroy()
+        }
+        throw error
+      }
+    )
   }
 
   dispose(): void {
