@@ -56,3 +56,16 @@ Review found three gaps, now closed: purchases asked only while approvals were o
 scripts refuse them in every mode); a "never" rule set while a call waited for approval did not stop that call
 (the rule is now checked again right before any tool runs); and a running script kept the rules it started with
 (scripts now read the current rules on every call).
+
+## Amendment (2026-10-10): rules from chat (#130)
+
+An OpenClaw user's "don't delete my emails" was lost when the agent compacted its context, and it deleted real email.
+Something said once in a chat can be lost; a rule in code cannot. When a chat message reads like a standing "never"
+or "ask me first" about an action, Sentient now proposes the matching Never or Ask rule as a card in the chat ("Make
+this a rule? Never: Gmail > Trash"). This keeps the decision above: a model never picks rules. A deterministic
+pre-filter and a word match against the tool registry come first, the fast model only maps the words to tool names or
+app ids, those are checked in code, and only the user's click on "Make it a rule" saves the rule (with a note in
+`tools.approvals.rule_origins` so Settings says where it came from). Until the user answers, the proposal makes that
+chat ask before the matched tools, saved with the chat so a summary or a restart cannot drop it; like every rule, it
+only adds questions. Declining saves nothing. Instructions that ask for fewer questions ("don't ask me before
+archiving") are never proposed: loosening stays a choice made in Settings.

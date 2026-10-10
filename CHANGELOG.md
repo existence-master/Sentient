@@ -6,6 +6,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **"Never do this" becomes a rule.** When you tell Sentient something like "never delete my emails" or "don't post
+  to Slack without asking me", it offers to turn it into a lasting rule: a small card in the chat ("Make this a rule?
+  Never: Gmail > Trash") with "Make it a rule" and "Not now". A rule keeps working in every chat, even after a long
+  conversation has been summarized, and Settings > Approvals & safety shows it came from your message. Nothing becomes
+  a rule without your click, and until you choose, Sentient checks with you before using that tool in the chat.
 - **Coming from Hermes?** Bring your Hermes setup over in one step, from the last onboarding screen or Settings >
   Advanced. Sentient looks inside your Hermes folder (`~/.hermes`, or one you pick) and shows what it found before
   anything changes: your own skills go to Skills for review (Hermes' built-in ones you never changed are left out),
