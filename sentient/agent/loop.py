@@ -498,10 +498,23 @@ class Agent:
             location=self.config.assistant.location,
             user_context=user_context,
             tool_names=[t.name for t in self.registry.tools()],
+            read_only_apps=self._read_only_apps(),
         )
         if session and session.get("context_summary"):
             prompt += "\n\n## Earlier in this conversation\n" + session["context_summary"]
         return prompt, sources
+
+    def _read_only_apps(self) -> list[str]:
+        """Names of the connected apps set to Read only that have tools Sentient now can't use (#141), so the model
+        can say why instead of looking for another way."""
+        names: list[str] = []
+        for pid in self.approvals.read_only():
+            plugin = self.registry.plugin(pid)
+            if plugin is None or self.registry.is_hidden(pid):
+                continue
+            if any(self.registry.get(t.name) is t and self.registry.is_blocked(t) for t in plugin.tools):
+                names.append(getattr(plugin, "display_name", None) or pid)
+        return names
 
     # ------------------------------------------------------------------ reusable engine
     async def run_loop(
@@ -771,6 +784,14 @@ class Agent:
             # lasting rule (ADR 0016): the tool is not offered, and a call made anyway is refused without running
             refusal = never_message(self.approvals.label(tool, self.registry))
             return _CallPlan(tc=tc, tool=None, preset=({"error": refusal}, True, 0))
+        risk: Risk | None = None
+        if tool is not None and tool.plugin in self.approvals.read_only():
+            # a Read only connection (#141): a call that would change, send, delete or run something is refused
+            # like a "never" rule, judged on this call's effective risk (Composio's multi-execute can just look up)
+            risk = await effective_risk(tool, tc.arguments, ctx)
+            refusal = self.approvals.read_only_refusal(tool, risk, self.registry)
+            if refusal:
+                return _CallPlan(tc=tc, tool=None, preset=({"error": refusal}, True, 0))
         if tool is None or not (tool_names is None or tc.name in tool_names):
             return _CallPlan(tc=tc, tool=None, preset=({"error": f"unknown tool {tc.name}"}, True, 0))
         if chat_rule == "ask":
@@ -779,7 +800,7 @@ class Agent:
         if "_raw" in tc.arguments and len(tc.arguments) == 1:
             plan.preset = self._raw_arguments_error(tool, tc)
             return plan
-        plan.risk = await effective_risk(tool, tc.arguments, ctx)
+        plan.risk = risk if risk is not None else await effective_risk(tool, tc.arguments, ctx)
         address = call_address(tool, tc.arguments, ctx)
         plan.host = address_host(address)
         if unprompted:  # work nobody asked for: look-ups and Sentient-internal changes only, before any rule
@@ -1247,6 +1268,10 @@ class Agent:
             return {"error": f"unknown tool {tc.name}"}, True, 0
         if self.approvals.is_never(tool):  # a "never" rule set while this call waited for approval still wins
             return {"error": never_message(self.approvals.label(tool, self.registry))}, True, 0
+        if tool.plugin in self.approvals.read_only():  # so does a switch to Read only (#141)
+            refusal = self.approvals.read_only_refusal(tool, await effective_risk(tool, tc.arguments, ctx), self.registry)
+            if refusal:
+                return {"error": refusal}, True, 0
         started = time.perf_counter()
         if "_raw" in tc.arguments and len(tc.arguments) == 1:
             return self._raw_arguments_error(tool, tc)

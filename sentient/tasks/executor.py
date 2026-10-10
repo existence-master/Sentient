@@ -36,7 +36,7 @@ from sentient.tasks.prompts import (
     build_executor_prompt,
 )
 from sentient.tasks.schedule import get_tz
-from sentient.tools.base import Risk
+from sentient.tools.base import Risk, effective_risk
 from sentient.tools.rules import never_message, untrusted_in
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -491,12 +491,16 @@ async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume:
         raise RunFailed(f"The tool {name} is not available, so nothing was done.")
     if app.approvals.rule(tool) == "never":
         raise RunFailed(never_message(app.approvals.label(tool, app.registry)))
-    await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": name, "parameters": arguments})
     ctx = app.agent.tool_context(None, "task") if app.agent is not None else None
     if ctx is not None:
         ctx.extra.update({"task_id": task_id, "run_id": run_id})
         if task.get("browser_profile"):
             ctx.extra["browser_profile"] = task["browser_profile"]
+    if tool.plugin in app.approvals.read_only():  # a Read only connection (#141) refuses it like a "never" rule
+        refusal = app.approvals.read_only_refusal(tool, await effective_risk(tool, arguments, ctx), app.registry)
+        if refusal:
+            raise RunFailed(refusal)
+    await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": name, "parameters": arguments})
     try:
         result = await tool.call(ctx, arguments)
     except Exception as exc:

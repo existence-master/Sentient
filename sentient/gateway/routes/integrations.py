@@ -20,8 +20,16 @@ def _mgr(request: Request) -> IntegrationManager:
     return get_core(request).integrations
 
 
+Access = Literal["read", "read_write"]
+
+
 class ConnectBody(BaseModel):
     fields: dict[str, Any] = Field(default_factory=dict)
+    access: Access | None = None  # Read only or Read and write (#141); None keeps the current choice
+
+
+class AccessBody(BaseModel):
+    access: Access
 
 
 class PrivacyFilters(BaseModel):
@@ -40,6 +48,7 @@ class MCPServerBody(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     auth: Literal["none", "headers", "oauth"] | None = None
     enabled: bool = True
+    access: Access | None = None
 
 
 # ----------------------------------------------------------------------------- list
@@ -92,6 +101,14 @@ async def enable_mcp(request: Request, name: str, body: MCPEnabledBody):
 class MCPValuesBody(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
     enable: StrictBool = False
+
+
+@router.post("/mcp/{name}/access")
+async def mcp_access(request: Request, name: str, body: AccessBody):
+    try:
+        return await _mgr(request).mcp.set_access(name, body.access)
+    except KeyError as exc:
+        raise HTTPException(404, f"no MCP server named {name}") from exc
 
 
 @router.post("/mcp/{name}/values")
@@ -149,11 +166,20 @@ async def get_integration(request: Request, integration_id: str):
 @router.post("/{integration_id}/connect")
 async def connect(request: Request, integration_id: str, body: ConnectBody | None = None):
     try:
-        return await _mgr(request).connect(integration_id, (body or ConnectBody()).fields)
+        body = body or ConnectBody()
+        return await _mgr(request).connect(integration_id, body.fields, access=body.access)
     except KeyError as exc:
         raise HTTPException(404, f"unknown integration {integration_id}") from exc
     except IntegrationError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@router.put("/{integration_id}/access")
+async def put_access(request: Request, integration_id: str, body: AccessBody):
+    try:
+        return await _mgr(request).set_access(integration_id, body.access)
+    except KeyError as exc:
+        raise HTTPException(404, f"unknown integration {integration_id}") from exc
 
 
 @router.post("/{integration_id}/cancel")

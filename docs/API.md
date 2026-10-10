@@ -138,7 +138,8 @@ applied in code before every call and take effect at once:
 - Purchases ask in every approvals mode, `off` included (only `browser.confirm_purchases: false` turns that off),
   and scripts refuse them in every mode. Rules are read again right before a tool runs and on every script tool call,
   so a rule changed while a call waits for approval, or while a script runs, applies to it.
-Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
+Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`, `app.approvals.is_hidden(tool)` (never
+rules plus Read only connections, section 5), `app.approvals.read_only_refusal(tool, risk, registry)`,
 `await app.approvals.decide(tool, session_id, risk, arguments, ctx) -> bool`, pure helpers in `sentient.tools.rules`.
 
 ### Rules from chat (#130)
@@ -707,9 +708,10 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
            "instructions_md": "1. Open ... 2. ...", "docs_url": "https://..."},
  "privacy_filters": {"supported": true, "fields": ["keywords", "emails", "labels"]},
  "triggers": [{"event": "new_email", "label": "New email"}],
- "alternative_for": null,
+ "alternative_for": null, "access": "read_write",
  "tools": [{"name": "gmail_search", "description": "...", "risk": "read"}]}
 ```
+- `access`: `read` (Read only) or `read_write` (Read and write, the default), see "Read only connections" below.
 - `alternative_for`: for optional keyed providers that replace a keyless builtin (`accuweather` → `weather`,
   `newsapi` → `news`, `brave_search`/`google_cse` → `internet_search`, `google_maps` → `maps`); these have no tools
   of their own. `null` otherwise.
@@ -720,17 +722,22 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   always listed here.
 - `GET /api/integrations` → `[Integration]`
 - `GET /api/integrations/{id}` → `Integration`
-- `POST /api/integrations/{id}/connect` `{fields: {...}}` →
+- `POST /api/integrations/{id}/connect` `{fields: {...}, access?: "read"|"read_write"}` → (`access` is saved before
+  anything connects; left out, the current choice is kept)
   - api_key/manual: validates → `Integration`
   - oauth: `{auth_url, state}`; the desktop opens `auth_url` in the system browser; a loopback listener finishes the flow and emits `integration.updated`
   - github with `integrations.github_oauth_client_id` set and no `token` field: device flow, `{auth_url, state, user_code}`; show `user_code` for the user to type at `auth_url`; completion arrives as `integration.updated`
   - validation failures → HTTP 400 `{detail: "friendly message"}`; the integration's `status`/`error` also update
 - `POST /api/integrations/{id}/disconnect` → `Integration` (also disables tasks that depend on it, v2 behaviour)
 - `POST /api/integrations/{id}/test` → `{ok, detail}`
+- `PUT /api/integrations/{id}/access` `{access: "read"|"read_write"}` → `Integration` (also emits `integration.updated`;
+  404 unknown integration, 422 any other value)
 - `GET /api/integrations/{id}/privacy-filters` → `{keywords: [], emails: [], labels: []}`
 - `PUT /api/integrations/{id}/privacy-filters` same shape → `{ok}`
-- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, auth: "none|headers|oauth", header_keys, missing_values, signed_in, signing_in, enabled, status: "connecting|connected|needs_sign_in|error|disconnected|disabled", tools: [{name, mcp_name, description, risk}], error}]`
+- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, auth: "none|headers|oauth", header_keys, missing_values, signed_in, signing_in, enabled, access: "read|read_write", status: "connecting|connected|needs_sign_in|error|disconnected|disabled", tools: [{name, mcp_name, description, risk, per_call}], error}]`
   (`name` is the Sentient tool name `mcp_<server>_<tool>`; `env` and header values are kept in the keychain, only `env_keys` and `header_keys` are returned)
+  - `per_call`: the tool runs other tools named by a slug with their arguments (Composio's `COMPOSIO_MULTI_EXECUTE_TOOL`),
+    so each call's risk comes from those slugs (see "Read only connections"); `risk` is the tool's own risk.
   - A call of an MCP tool returns `{content: text, structured?}` or `{error}`. `structured` is the server's
     structured content, left out when it only repeats the text (`{"result": text}` or the text's own JSON).
   - `missing_values`: the `header_keys` (remote servers) or `env_keys` (local commands) that have no value in the
@@ -738,14 +745,16 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   - `auth` (remote servers only): `none`, `headers` (static headers such as `Authorization: Bearer ...` sent on every request) or `oauth` (sign-in with the MCP authorization spec). Header values are sent in every mode when `header_keys` is not empty.
   - `signed_in`: an OAuth sign-in is stored (only with `auth: "oauth"`). `signing_in`: a browser sign-in is waiting for the user.
   - `status: "needs_sign_in"`: the server answered 401, or `auth` is `oauth` with no stored sign-in, or the stored sign-in expired and could not be refreshed. `error` says what to do: `"This server asks you to sign in."` (none), `"The server didn't accept the saved headers. Change their values with the key button on the server."` (headers), `"Sign in to use this server."` (oauth). The engine retries a server in this state every 5 minutes, and at once after a sign-in or a test.
-- `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, headers?, auth?, enabled?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input)
+- `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, headers?, auth?, enabled?, access?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input; `access` is saved before the server starts, and left out keeps the current choice)
   - `headers`: `{name: value}`; values go to the keychain. `auth` defaults to `headers` when headers are given, else `none`. 400 when `auth` is `headers` without headers, a header name or value is invalid, or a stdio server has headers or `auth` other than `none`.
   - Headers not given are deleted. The keychain is shared by every Sentient setup on the computer, so a stored sign-in
     (tokens and client registration) records the server URL it was made for (`server_url`) and is kept when a
     server with the same name and URL is added (in this setup or another), then used. It is dropped when the URL
     differs, and an older record without `server_url` is dropped only when this setup had the server at another
     URL. Adding a local (stdio) server with the same name leaves a stored sign-in alone.
-- `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain)
+- `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain, and its Read only setting)
+- `POST /api/integrations/mcp/{name}/access` `{access: "read"|"read_write"}` → server object; the server keeps running
+  (404 unknown server, 422 any other value)
 - `POST /api/integrations/mcp/{name}/test` → `{ok, tools: [mcp tool names], error?}`
 - `POST /api/integrations/mcp/{name}/enabled` `{enabled: bool}` → server object (turns a server on or off and nothing else; `enabled` must be a boolean, 422 otherwise; 404 if missing)
 - `POST /api/integrations/mcp/{name}/values` `{values: {name: value}, enable?: bool}` → server object. Fills in the
@@ -773,6 +782,23 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   token endpoint; a record without the metadata looks it up once),
   `mcp:<name>:client` (registration); values too long for one entry continue in `<entry>:1`, `<entry>:2`...
 - `PUT /api/integrations/{id}/privacy-filters` → 400 when the integration has `privacy_filters.supported: false`
+
+**Read only connections (#141, ADR 0016 amendment).** `integrations.read_only` lists the app ids (`gmail`, `github`,
+`mcp_<server>`) set to Read only; the routes above keep it, and it is hidden in Settings. It is read on every check, so a
+switch applies at once, also to a chat waiting for approval and to a running script. For a Read only connection, every
+tool whose effective risk is above `read` works like a `never` rule: tools whose risk can't be `read` are not offered
+on any surface or listed for planners (`GET /api/tools` still lists them), and a call made anyway does not run, even
+with an `allow` rule, approvals mode `off` or "Allow for this chat". Its `tool_result` is
+`{error: "<App> is set to Read only, so Sentient can look things up there but can't change, send or delete anything. \"<Tool>\" was not done. Change this in Integrations."}`;
+a task run with one fixed call fails with that text, and a script gets it as a refusal. A tool whose risk depends on its
+arguments (`per_call`, browser-like `risk_fn`) stays offered and only calls above `read` are refused. For an MCP tool
+that runs other tools by slug (`tool_slug`, `action_slug` or `slug` next to `arguments`), each slug's verb sets the
+risk: `GET`, `LIST`, `FETCH`, `SEARCH`, `FIND`, `READ`, `RETRIEVE`, `QUERY`, `VIEW`, `DESCRIBE`, `LOOKUP`, `COUNT` read;
+`SEND`, `REPLY`, `FORWARD`, `POST`, `DELETE`, `REMOVE`, `TRASH`, `SHARE`, `INVITE`... send; `EXECUTE`, `RUN` exec; other
+known changes write; a slug with no known verb counts as `write`. The first verb after the app name decides, a later
+verb that changes things raises it, whatever the server's own hints say, and a call is `read` only when every slug is a look-up (then approvals mode "ask"
+no longer asks for it). The chat's system prompt names the connected Read only apps so the model can say why it
+can't act.
 
 - `GET /api/integrations/feeds` → `[{source, display_name, kind: "gmail_history"|"calendar_sync_token"|"imap_idle", connected, active,
   status: "disconnected"|"off"|"starting"|"ok"|"error", last_sync_at, last_success_at, last_error, note, failures, next_attempt_at, emitted}]`

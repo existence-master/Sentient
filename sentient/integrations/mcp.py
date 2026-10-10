@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import ipaddress
 import json
@@ -28,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
-from sentient.integrations.base import JsonSchemaTool
+from sentient.integrations.base import IntegrationError, JsonSchemaTool
 from sentient.integrations.common import delete_secret, load_secret_json, store_secret_json
 from sentient.integrations.mcp_auth import (
     KeychainTokenStorage,
@@ -140,6 +141,72 @@ def _risk_for(tool: Any) -> Risk:
     return Risk.write
 
 
+# A tool that runs other tools named by a slug, with their arguments (Composio's COMPOSIO_MULTI_EXECUTE_TOOL takes
+# {"tools": [{"tool_slug": "GMAIL_SEND_EMAIL", "arguments": {...}}]}), is only as risky as the tools it runs (#141).
+SLUG_KEYS = frozenset({"tool_slug", "action_slug", "slug"})
+SLUG_ARGUMENT_KEYS = frozenset({"arguments", "args", "params", "parameters", "input"})
+_SLUG_VERBS: dict[str, Risk] = {
+    **dict.fromkeys(("GET", "LIST", "FETCH", "SEARCH", "FIND", "READ", "RETRIEVE", "QUERY", "VIEW", "DESCRIBE",
+                     "LOOKUP", "COUNT"), Risk.read),
+    **dict.fromkeys(("CREATE", "UPDATE", "ADD", "SET", "EDIT", "MODIFY", "PATCH", "PUT", "INSERT", "UPLOAD", "MOVE",
+                     "ARCHIVE", "MARK", "STAR", "ASSIGN", "CLOSE", "RENAME", "COPY", "APPEND", "REPLACE", "UPSERT",
+                     "SAVE", "ENABLE", "DISABLE", "START", "STOP", "SCHEDULE", "CLEAR", "LABEL", "UNSUBSCRIBE"),
+                    Risk.write),
+    **dict.fromkeys(("SEND", "REPLY", "FORWARD", "POST", "DELETE", "REMOVE", "TRASH", "PUBLISH", "INVITE", "SHARE",
+                     "MERGE", "TRANSFER", "PAY", "PURCHASE", "CANCEL", "APPROVE", "REJECT", "DECLINE"), Risk.send),
+    **dict.fromkeys(("EXECUTE", "RUN", "EVAL"), Risk.exec),
+}
+# words that are also nouns ("GITHUB_GET_A_WORKFLOW_RUN", "WORDPRESS_GET_POST"): they count only as the first verb
+_SLUG_NOUNS_TOO = frozenset({"RUN", "POST", "LABEL", "STAR", "SHARE", "COPY", "SCHEDULE"})
+
+
+def slug_risk(slug: str) -> Risk:
+    """Risk of one tool named by a slug such as ``GMAIL_SEND_EMAIL`` (send) or ``GITHUB_LIST_ISSUES`` (read).
+
+    The first verb after the app name decides, and any later verb that changes things raises it. A slug with no
+    known verb counts as ``write``, so only a plain look-up ever comes out as ``read``."""
+    tokens = [t for t in re.split(r"[^A-Z0-9]+", str(slug or "").upper()) if t]
+    verbs = [(t, _SLUG_VERBS[t]) for t in (tokens[1:] if len(tokens) > 1 else tokens) if t in _SLUG_VERBS]
+    if not verbs:
+        return Risk.write
+    return max([verbs[0][1], *(r for t, r in verbs[1:] if t not in _SLUG_NOUNS_TOO)])
+
+
+def _runs_slugs(schema: Any) -> bool:
+    """True when an input schema has an object with a slug and its arguments (a tool that runs other tools)."""
+    if isinstance(schema, dict):
+        props = schema.get("properties")
+        if isinstance(props, dict) and SLUG_KEYS & props.keys() and SLUG_ARGUMENT_KEYS & props.keys():
+            return True
+        return any(_runs_slugs(v) for v in schema.values())
+    if isinstance(schema, list):
+        return any(_runs_slugs(v) for v in schema)
+    return False
+
+
+def _slugs_in(arguments: Any, out: list[str]) -> list[str]:
+    if isinstance(arguments, dict):
+        for key, value in arguments.items():
+            if key in SLUG_KEYS and isinstance(value, str):
+                out.append(value)
+            else:
+                _slugs_in(value, out)
+    elif isinstance(arguments, list):
+        for value in arguments:
+            _slugs_in(value, out)
+    return out
+
+
+def _slug_call_risk(base: Risk, arguments: dict, ctx: Any) -> Risk | None:
+    """Per-call risk of a tool that runs other tools: ``read`` when every slug it runs is a look-up, else the
+    riskiest slug and never below the tool's own risk. No slug found: the tool's own risk."""
+    slugs = _slugs_in(arguments, [])
+    if not slugs:
+        return None
+    risk = max(slug_risk(s) for s in slugs)
+    return Risk.read if risk == Risk.read else max(risk, base)
+
+
 def _result_to_json(result: Any) -> dict:
     texts: list[str] = []
     for block in getattr(result, "content", None) or []:
@@ -223,6 +290,7 @@ class MCPManager:
             "signed_in": auth == "oauth" and KeychainTokenStorage(conn.name).has_tokens(),
             "signing_in": conn.signin is not None,
             "enabled": bool(spec.get("enabled", True)),
+            "access": self.mgr.access(plugin_id_for(conn.name)),
             "status": conn.status,
             "tools": list(conn.tools),
             "error": conn.error,
@@ -232,6 +300,8 @@ class MCPManager:
         name = name.strip()
         if not name:
             raise ValueError("A server name is required.")
+        if spec.get("access") not in (None, "read", "read_write"):
+            raise ValueError("access must be 'read' or 'read_write'.")
         transport = spec.get("transport", "stdio")
         if transport not in {"stdio", "http"}:
             raise ValueError("transport must be 'stdio' or 'http'.")
@@ -287,6 +357,8 @@ class MCPManager:
                 await self._shutdown(old)
             cfg = self.app.config
             cfg.integrations.mcp_servers = {**cfg.integrations.mcp_servers, name: stored}
+            if spec.get("access") is not None:  # saved before the server starts, so it never has more than chosen
+                self.mgr.save_access(pid, str(spec["access"]))
             self.app.save_config()
             conn = self._launch(name, stored)
         if stored["enabled"] and wait_s > 0:
@@ -397,6 +469,20 @@ class MCPManager:
             self.app.save_config()
             return self.describe(await self._relaunch(name, stored))
 
+    async def set_access(self, name: str, access: str) -> dict:
+        """Set a server to Read only (``read``) or Read and write (``read_write``). It keeps running: the change
+        applies to the next tool list and the next call (#141)."""
+        async with self._server_lock(name):
+            if name not in self.app.config.integrations.mcp_servers:
+                raise KeyError(name)
+            try:
+                self.mgr.save_access(plugin_id_for(name), access)
+            except IntegrationError as exc:
+                raise ValueError(str(exc)) from exc
+            conn = self.servers.get(name)
+            return self.describe(conn) if conn is not None else self.describe(ServerConn(name, dict(
+                self.app.config.integrations.mcp_servers[name])))
+
     async def remove(self, name: str) -> bool:
         async with self._server_lock(name):
             conn = self.servers.pop(name, None)
@@ -407,6 +493,7 @@ class MCPManager:
             existed = name in cfg.integrations.mcp_servers
             if existed:
                 cfg.integrations.mcp_servers = {k: v for k, v in cfg.integrations.mcp_servers.items() if k != name}
+                cfg.integrations.read_only = [p for p in cfg.integrations.read_only if p != plugin_id_for(name)]
                 self.app.save_config()
             delete_secret(f"mcp:{name}")
             forget_server(name)
@@ -715,8 +802,12 @@ class MCPManager:
             jt.untrusted_output = True
             jt.exfiltrates = risk != Risk.read
             jt.shorten_fn = shortener_for(t.name)  # known long results keep their useful part (#264)
+            if _runs_slugs(jt.input_schema):  # runs other tools: judged per call, whatever its hints say (#141)
+                jt.risk_fn = functools.partial(_slug_call_risk, risk)
+                jt.exfiltrates = True
             tools.append(jt)
-            described.append({"name": name, "mcp_name": t.name, "description": jt.description, "risk": risk.name})
+            described.append({"name": name, "mcp_name": t.name, "description": jt.description, "risk": risk.name,
+                              "per_call": jt.risk_fn is not None})
         plugin = MCPServerPlugin(conn.name, tools)
         reg = self.app.registry
         plugin.tools = [t for t in tools if not reg.has_tool(t.name)]

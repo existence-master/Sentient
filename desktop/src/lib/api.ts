@@ -46,6 +46,7 @@ import type {
   CheckupEvent,
   ClarificationAnswer,
   ConfigPatchResponse,
+  ConnectionAccess,
   ConnectResponse,
   DeepPartial,
   DictateResult,
@@ -547,8 +548,10 @@ export const api = {
   integrations: {
     list: () => http.get<Integration[]>('/api/integrations'),
     get: (id: string) => http.get<Integration>(`/api/integrations/${enc(id)}`),
-    connect: (id: string, fields: Record<string, string> = {}) =>
-      http.post<ConnectResponse>(`/api/integrations/${enc(id)}/connect`, { fields }),
+    connect: (id: string, fields: Record<string, string> = {}, access?: ConnectionAccess) =>
+      http.post<ConnectResponse>(`/api/integrations/${enc(id)}/connect`, access ? { fields, access } : { fields }),
+    /** Read only or Read and write (#141). Takes effect at once. */
+    setAccess: (id: string, access: ConnectionAccess) => http.put<Integration>(`/api/integrations/${enc(id)}/access`, { access }),
     disconnect: (id: string) => http.post<Integration>(`/api/integrations/${enc(id)}/disconnect`),
     /** Abandon a pending browser sign-in so the integration stops showing "connecting". */
     cancel: (id: string) => http.post<Integration>(`/api/integrations/${enc(id)}/cancel`),
@@ -564,6 +567,7 @@ export const api = {
       signIn: (name: string) => http.post<McpSignInStart>(`/api/integrations/mcp/${enc(name)}/sign-in`),
       signOut: (name: string) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/sign-out`),
       setEnabled: (name: string, enabled: boolean) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/enabled`, { enabled }),
+      setAccess: (name: string, access: ConnectionAccess) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/access`, { access }),
       /** Fill in the server's own header or env values (keychain only), then it reconnects. */
       setValues: (name: string, values: Record<string, string>, enable = false) =>
         http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/values`, { values, enable })
