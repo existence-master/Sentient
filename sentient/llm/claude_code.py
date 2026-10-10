@@ -431,6 +431,10 @@ async def stream(
             elif kind == "assistant":
                 msg = event.get("message") or {}
                 seen = msg.get("id") in streamed or None in streamed  # its text came as deltas (None: no id given)
+                if None in streamed:  # deltas without an id belong to this message only
+                    streamed.discard(None)
+                    if msg.get("id") is not None:
+                        streamed.add(msg["id"])
                 for block in msg.get("content") or []:
                     if not isinstance(block, dict):
                         continue

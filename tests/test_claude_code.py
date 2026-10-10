@@ -444,3 +444,55 @@ def test_init_check():
         claude_code.check_init({"tools": ["EndConversation"]}, True)
     with pytest.raises(ProviderError, match="other"):  # another MCP server slipped in
         claude_code.check_init({"tools": ["mcp__other__x"]}, False)
+
+
+async def test_deltas_without_an_id_cover_only_their_own_message(cc_config, monkeypatch):
+    """Text that came as deltas is not shown again from the full message, and never hides a later message."""
+    lines = [
+        {"type": "system", "subtype": "init", "tools": ["EndConversation"]},
+        {"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "One. "}}},
+        {"type": "assistant", "message": {"id": "m1", "content": [{"type": "text", "text": "One. "}]}},
+        {"type": "assistant", "message": {"id": "m1", "content": [{"type": "text", "text": "One. "}]}},
+        {"type": "assistant", "message": {"id": "m2", "content": [{"type": "text", "text": "Two."}]}},
+        {"type": "result", "subtype": "success", "is_error": False},
+    ]
+
+    class Proc:
+        pid = 999_999_999
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    def start(proc, stdin_data, loop, queue, stderr):
+        for line in lines:
+            queue.put_nowait(json.dumps(line).encode())
+        queue.put_nowait(None)
+        import threading
+
+        return threading.Thread(target=lambda: None)
+
+    monkeypatch.setattr(claude_code, "find_executable", lambda: "claude")
+    monkeypatch.setattr(claude_code.subprocess, "Popen", lambda *a, **k: Proc())
+    monkeypatch.setattr(claude_code, "new_job", lambda: None)
+
+    class Tree:  # nothing real to kill
+        def __init__(self, proc, job=None):
+            self.proc = proc
+
+        def kill(self):
+            pass
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(claude_code, "ProcessTree", Tree)
+    monkeypatch.setattr(claude_code, "_start_threads", start)
+    with claude_code.attended():
+        chunks = [c async for c in claude_code.stream(cc_config, MODEL, "primary", [{"role": "user", "content": "hi"}], None)]
+    assert "".join(c.text for c in chunks) == "One. Two."
