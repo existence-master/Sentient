@@ -149,7 +149,9 @@ function createBrowserBridge(): SentientBridge {
     onAlwaysListeningChange: () => () => undefined,
     notifyWake: async () => {
       window.focus()
-    }
+    },
+    getShortcuts: async () => [],
+    setShortcut: async () => ({ ok: false, error: 'Available in the desktop app.', shortcuts: [] })
   }
 }
 

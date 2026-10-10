@@ -37,7 +37,7 @@ process with one database file.
 ┌────────────────────────── Sentient.app (Electron) ──────────────────────────┐
 │ main process                                                                │
 │  • picks a free port + random token, spawns the engine, restarts on crash   │
-│  • window, tray, global shortcut, native notifications, launch at login     │
+│  • window, tray, global shortcuts, screen sharing, notifications, autostart │
 │  • preload bridge window.sentient {getConnection, openExternal, ...}        │
 │                                                                             │
 │ renderer (React + TypeScript)                                               │

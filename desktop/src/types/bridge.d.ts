@@ -54,6 +54,40 @@ export type AppCommand =
   /** `wake: true` when opened by the wake word, so Voice mode starts listening right away. */
   | { type: 'voice-mode'; wake?: boolean }
   | { type: 'open-settings'; section?: string }
+  /** Share this window / Share a region: open a new chat with the picture attached (nothing is sent yet). */
+  | { type: 'share-screen'; share: ScreenShare }
+
+/** A picture taken with the share shortcuts. The chat uploads it with `source: "screen"` (docs/API.md section 2). */
+export interface ScreenShare {
+  kind: 'window' | 'region'
+  /** The shared window's title, or "Screen region". */
+  title: string
+  /** e.g. `Inbox - Mail.png` */
+  fileName: string
+  mime: 'image/png'
+  data: Uint8Array
+}
+
+/** Global shortcuts people can change in Settings > General. */
+export type ShortcutId = 'shareWindow' | 'shareRegion'
+
+export interface ShortcutInfo {
+  id: ShortcutId
+  label: string
+  description: string
+  /** Electron accelerator, e.g. `CommandOrControl+Alt+Shift+W`; `""` when turned off. */
+  accelerator: string
+  defaultAccelerator: string
+  /** Another app had the shortcut when Sentient started, so it does nothing until changed. */
+  taken: boolean
+}
+
+export interface ShortcutResult {
+  ok: boolean
+  /** Plain sentence when the shortcut couldn't be used (the old one stays). */
+  error?: string
+  shortcuts: ShortcutInfo[]
+}
 
 export type OpenPathTarget = 'home' | 'logs' | 'files' | 'workspace' | 'skills'
 
@@ -78,6 +112,8 @@ export interface ShellPrefs {
   cameraCapture?: boolean | null
   /** Listen for "Hey Sentient" in the background, also while the window is hidden in the tray. */
   alwaysListening?: boolean
+  /** Changed global shortcuts; `""` = turned off, missing = the default. */
+  shortcuts?: Partial<Record<ShortcutId, string>>
 }
 
 /** Desktop-as-a-device privacy switches. `null` = never asked (Sentient asks once, the first time). */
@@ -146,6 +182,10 @@ export interface SentientBridge {
   onAlwaysListeningChange(cb: (enabled: boolean) => void): () => void
   /** The wake word was heard: show and focus the window. */
   notifyWake(): Promise<void>
+  /** Global shortcuts that can be changed (Share this window, Share a region). */
+  getShortcuts(): Promise<ShortcutInfo[]>
+  /** Set a shortcut (an accelerator, `""` to turn it off, `null` for the default). */
+  setShortcut(id: ShortcutId, accelerator: string | null): Promise<ShortcutResult>
 }
 
 declare global {

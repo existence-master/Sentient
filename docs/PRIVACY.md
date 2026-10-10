@@ -60,6 +60,15 @@ service name `sentient`.
   content is remembered as before. Summaries of such chats stay out of your other chats and out of the notes
   Sentient keeps about you (MEMORY.md), though you can still read them under Memory > Conversations.
 - Photos and screenshots from your devices ask first.
+- **Sharing your screen.** Sentient only takes a picture of your screen when you press Share this window
+  (Ctrl+Alt+Shift+W, or Command+Option+Shift+W on a Mac) or Share a region (Ctrl+Alt+Shift+R, or
+  Command+Option+Shift+R), or pick them from the tray menu. It never captures in the background. Each picture
+  flashes an outline on the screen and shows in the tray, then waits in a new chat; nothing goes to a model until you
+  write your question and press send. Pictures are kept in `~/.sentient/files/screens`; removing one from the message
+  box deletes it, and you can delete the folder at any time. A screen can show text other people wrote, so a chat with
+  a shared picture checks with you before sending anything, like a chat that read an email. You can change or turn off
+  both shortcuts in Settings > General. On a Mac, macOS asks once for Screen Recording permission; until you allow it
+  in System Settings > Privacy & Security, Sentient explains where and captures nothing.
 - One-time codes, sign-in links and password reset links in your email are hidden from the AI, so a tricky email
   can't get them out of Sentient. You still see them when you open the email in your mail app. You can turn this off
   in Settings (Integrations, "Hide one-time codes in email").
