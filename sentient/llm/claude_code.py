@@ -60,6 +60,12 @@ DISALLOWED = ("Bash", "PowerShell", "Edit", "Write", "NotebookEdit", "Read", "Gl
               "Agent", "Monitor", "Skill", "Workflow")
 EFFORTS = {"low", "medium", "high"}
 MODEL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,79}$")
+# LiteLLM's bundled model list doesn't know "claude-code/<model>", so the context meter reads the window of
+# the matching Anthropic model instead (#258). None stays None when LiteLLM doesn't know that model either.
+# In Claude Code, sonnet/opus/haiku/fable are aliases for the latest model of each family
+# (claude --help: "an alias for the latest model"), so these track the current flagships.
+ANTHROPIC_MODELS = {"sonnet": "anthropic/claude-sonnet-5-5", "opus": "anthropic/claude-opus-5-5",
+                    "haiku": "anthropic/claude-haiku-4-5", "fable": "anthropic/claude-fable-4-5"}
 UNSAFE_FOR_BATCH = re.compile(r'["%!^&|<>\r\n]')  # cmd.exe would read these when claude is a .cmd launcher
 SECRET_ENV = {"SENTIENT_GATEWAY_TOKEN", "CLAUDECODE"}  # never handed to Claude Code
 # Variables that make Claude Code use something other than the plan login the user made with /login
@@ -166,6 +172,26 @@ async def status(config: SentientConfig) -> dict[str, Any]:
         out["detail"] = ("Claude Code is ready to try. Press Test to check that it is signed in." if out["version"]
                          else "Sentient found Claude Code but it didn't answer. Run claude in a terminal to check it.")
     return out
+
+
+def context_window(model: str) -> int | None:
+    """How many tokens a ``claude-code/<model>`` model reads at once, from the matching Anthropic model's context
+    window in LiteLLM's bundled list; None when LiteLLM doesn't know that model."""
+    name = model.split("/", 1)[1] if "/" in model else model
+    mapped = ANTHROPIC_MODELS.get(name)
+    if mapped is None and name.startswith("claude-"):
+        # MODEL_NAME accepts full model names too: map them to the Anthropic one directly.
+        mapped = f"anthropic/{name}"
+    if not mapped:
+        return None
+    import litellm
+
+    try:
+        info = litellm.get_model_info(mapped)
+    except Exception:  # not in LiteLLM's list
+        return None
+    window = info.get("max_input_tokens") or info.get("max_tokens")
+    return int(window) if window else None
 
 
 def refusal(config: SentientConfig, role: str | None = None) -> str | None:
