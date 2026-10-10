@@ -2,16 +2,13 @@
 
 Everything the model needs to *be* the user's assistant is injected here every
 turn: persona, who the user is, curated notes, recalled facts, the user model,
-the skill index, and the clock. The legacy system relied on the model calling a
+and the skill index. The legacy system relied on the model calling a
 memory tool before it knew anything; here memory is pushed, and tools are the fallback.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime
-
-from sentient.tools.builtin.time_tool import resolve_tz
 
 TOOL_RULES = """## Working rules
 - If a request can be done with a tool, do it and report the outcome briefly. Do not narrate what you are about to do.
@@ -107,8 +104,6 @@ def build_system_prompt(
     tool_names: Iterable[str] | None = None,
     read_only_apps: Iterable[str] | None = None,
 ) -> str:
-    tz = resolve_tz(timezone)
-    now = datetime.now(tz)
     parts: list[str] = []
 
     soul = snapshot.get("soul") or f"You are {assistant_name}, a personal assistant."
@@ -137,7 +132,6 @@ def build_system_prompt(
 
     parts.append(
         "## Context\n"
-        f"- Now: {now.strftime('%A %Y-%m-%d %H:%M')} ({now.tzinfo})\n"
         f"- User: {user_name or 'unknown (ask once, then remember)'}\n"
         f"- User location: {location or 'unknown'}\n"
         f"- Channel: {channel}\n"
