@@ -12,7 +12,8 @@ without an LLM call:
 - plugins used recently in the same conversation stay available;
 - a few capabilities that embeddings match poorly (browser, code, devices,
   subagents, messaging channels, the terminal) get a boost when trigger phrases appear;
-- a plugin the user names ("using Composio", "in Notion") comes first;
+- a tool the user names exactly ("use web_fetch") is always offered, and a
+  plugin the user names ("using Composio", "in Notion") comes first;
 - the best plugins are added until the tool budget is reached. A plugin with
   more tools than the room left (a large MCP server) offers its best tools,
   scored one by one from their names and descriptions, keeping a server's
@@ -44,7 +45,7 @@ _WORD = re.compile(r"[a-z0-9]+")
 _STOP = {
     "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "is", "are", "my", "me", "i", "you",
     "it", "this", "that", "what", "whats", "how", "can", "please", "with", "at", "be", "do", "does",
-    "there", "now", "right", "your", "from", "about", "tell", "get", "show", "some", "any",
+    "there", "now", "right", "your", "from", "about", "tell", "get", "show", "some", "any", "use", "using",
 }
 
 
@@ -69,6 +70,9 @@ TOOL_TRIGGERS: dict[str, tuple[str, ...]] = {
         "in parallel", "parallel", "background", "delegate", "subagent", "subagents", "sub-agent", "research",
         "deep dive", "investigate", "compare", "each of", "meanwhile", "while i", "several",
     ),
+    "web_fetch": (
+        "url", "http", "https", "www", "link", "web page", "webpage", "article", "blog post", "this page",
+    ),
     "channel_": ("telegram", "discord", "whatsapp", "message me", "text me"),
     "terminal_": (
         "terminal", "command", "commands", "command line", "shell", "powershell", "bash", "git", "npm", "pip",
@@ -81,6 +85,8 @@ MIN_PARTIAL = 4
 # Words that mark a server's discovery tools and its action tools (search-then-execute MCP servers).
 DISCOVER_WORDS = frozenset({"search", "list", "schema", "find", "discover"})
 ACT_WORDS = frozenset({"execute", "run", "call", "invoke"})
+# Tools that connect the server to the user's apps: also entry points, needed before anything else works.
+SETUP_WORDS = frozenset({"connect", "connection", "auth", "login", "account"})
 
 
 def _compile_triggers() -> dict[str, re.Pattern]:
@@ -136,9 +142,23 @@ def named_plugins(text: str, plugins: list[dict]) -> set[str]:
     return out
 
 
+def named_tools(text: str, plugins: list[dict]) -> list[str]:
+    """Tools the message names exactly ("use web_fetch", "COMPOSIO_SEARCH_TOOLS"), in catalog order. An MCP tool
+    also answers to its name on the server. Only names with an underscore count: single words are everyday words."""
+    low = text.lower()
+    out = []
+    for p in plugins:
+        for t in p["tools"]:
+            candidates = {t["name"], t["name"].removeprefix(p["id"] + "_")}
+            if any("_" in c and re.search(rf"(?<![a-z0-9_]){re.escape(c)}(?![a-z0-9_])", low) for c in candidates):
+                out.append(t["name"])
+    return out
+
+
 def _tool_scores(plugin: dict, words: set[str]) -> list[tuple[float, float, str]]:
     """(keyword score, order key, kind) per tool. The keyword score counts the message's words in the tool's
-    name and the start of its description; the order key adds a tie-break that puts entry points first."""
+    name and the start of its description; the order key adds a tie-break that puts entry points (search/list,
+    execute/run, connect) first."""
     own = _stems(f"{plugin['id']} {plugin['display_name']}")
     out = []
     for t in plugin["tools"]:
@@ -146,7 +166,12 @@ def _tool_scores(plugin: dict, words: set[str]) -> list[tuple[float, float, str]
         name_words = _stems(name.replace("_", " ")) - own
         desc_words = _stems((t.get("description") or "")[:300]) - own - name_words
         score = 0.3 * len(words & name_words) + 0.1 * min(len(words & desc_words), 3)
-        kind = "discover" if name_words & DISCOVER_WORDS else "act" if name_words & ACT_WORDS else ""
+        kind = (
+            "discover" if name_words & DISCOVER_WORDS
+            else "act" if name_words & ACT_WORDS
+            else "setup" if name_words & SETUP_WORDS
+            else ""
+        )
         out.append((score, score + (0.05 if kind else 0.0), kind))
     return out
 
@@ -239,7 +264,11 @@ class ToolSelector:
                 qvec = None
 
         named = named_plugins(text, plugins) if text.strip() else set()
+        for name in named_tools(text, plugins) if text.strip() else []:
+            if name not in chosen and len(chosen) < budget:
+                chosen.append(name)
         scores: dict[str, float] = {}
+        triggered: set[str] = set()
         for p in plugins:
             score = _cos(qvec, self._plugin_vecs[p["id"]]) if qvec is not None and p["id"] in self._plugin_vecs else 0.0
             vocab = _words(
@@ -250,6 +279,7 @@ class ToolSelector:
                 score += 0.5
             if triggers and any(t["name"].startswith(prefix) for prefix in triggers for t in p["tools"]):
                 score += TRIGGER_BOOST
+                triggered.add(p["id"])
             scores[p["id"]] = score
 
         top = max(scores.values(), default=0.0)
@@ -270,14 +300,18 @@ class ToolSelector:
             if len(tools) <= room:
                 chosen.extend(t["name"] for t in tools)
                 continue
-            # too big for the room left: offer its best tools when it was named, is the best match, or some
-            # of its tools match the message by name or description
+            # too big for the room left: offer its best tools when it was named, is the best match, a trigger
+            # phrase points at it, or some of its tools match the message by name or description
             scored = _tool_scores({**p, "tools": tools}, stems)
-            if room < 2 or not (p["id"] in named or i == 0 or any(s[0] > 0 for s in scored)):
+            if room < 2 or not (p["id"] in named or p["id"] in triggered or i == 0 or any(s[0] > 0 for s in scored)):
                 continue
+            # leave room for the smaller relevant plugins after it; a named plugin only for those also named
+            # or matching the message better than it does
             keep = min(room, MIN_PARTIAL)
             reserve = 0
             for q in relevant[i + 1:]:
+                if p["id"] in named and q["id"] not in named and scores[q["id"]] <= scores[p["id"]]:
+                    continue
                 n = sum(1 for t in q["tools"] if t["name"] not in chosen)
                 if n and reserve + n <= room - keep:
                     reserve += n

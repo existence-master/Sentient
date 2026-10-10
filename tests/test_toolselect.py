@@ -201,3 +201,62 @@ def test_named_plugins_match_display_and_server_names():
     assert named_plugins("Using Composio, list my events", catalog) == {"mcp_composio"}
     assert named_plugins("what's on my google calendar? check memory", catalog) == {"gcalendar"}
     assert named_plugins("compositions of music", catalog) == set()
+
+
+async def test_named_server_keeps_its_connect_tool_and_room_over_weaker_matches():
+    o = owner_with_composio(9)  # room for 4 tools after the core ones
+    o.registry.register(plugin("files", "files, folders", "file_list", "file_read", "file_write"))
+    names = await ToolSelector(o).select(
+        "Using Composio, list the events on my Google Calendar for today", model="ollama_chat/qwen3:8b"
+    )
+    # "list" matches the files plugin only weakly: the named server keeps the room, connect tool included
+    assert composio_names(names) >= {"search_tools", "multi_execute_tool", "manage_connections"}
+    assert "file_list" not in names
+
+
+# ---------------------------------------------------------------------------- links and named tools (#252)
+BROWSER = (
+    "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_select", "browser_press",
+    "browser_scroll", "browser_back", "browser_tabs", "browser_switch_tab", "browser_extract", "browser_screenshot",
+    "browser_close",
+)
+
+
+def owner_with_browser(budget_local: int = 12) -> SimpleNamespace:
+    o = owner(budget_local)
+    o.registry.register(plugin("browser", "operate a website step by step", *BROWSER))
+    o.registry.register(plugin("web", "open and read a specific page", "web_fetch"))
+    return o
+
+
+async def test_link_offers_web_fetch_next_to_the_big_browser_plugin():
+    o = owner_with_browser(12)
+    names = await ToolSelector(o).select(
+        "read http://127.0.0.1:8123/recipe.html and tell me the recipe name", model="ollama_chat/qwen3:8b"
+    )
+    assert "web_fetch" in names and "browser_open" in names
+    assert len(names) <= 12
+
+
+async def test_a_tool_named_exactly_is_always_offered():
+    o = owner_with_browser(7)  # no room beyond the core tools and one more
+    model = "ollama_chat/qwen3:8b"
+    names = await ToolSelector(o).select("Use web_fetch to read http://example.com and the weather forecast", model=model)
+    assert "web_fetch" in names and len(names) <= 7
+    o = owner_with_composio(7)
+    names = await ToolSelector(o).select("call COMPOSIO_USE_SKILL with my skill", model=model)
+    assert "mcp_composio_composio_use_skill" in names
+
+
+def test_named_tools_need_the_exact_name():
+    from sentient.agent.toolselect import named_tools
+
+    catalog = [
+        {"id": "web", "tools": [{"name": "web_fetch"}]},
+        {"id": "mcp_composio", "tools": [{"name": "mcp_composio_composio_search_tools"}]},
+        {"id": "weather", "tools": [{"name": "weather_current"}]},
+    ]
+    assert named_tools("Use web_fetch on this", catalog) == ["web_fetch"]
+    assert named_tools("run COMPOSIO_SEARCH_TOOLS first", catalog) == ["mcp_composio_composio_search_tools"]
+    assert named_tools("fetch the web page, current weather", catalog) == []
+    assert named_tools("use web_fetcher", catalog) == []
