@@ -77,7 +77,7 @@ switch and this ADR are where to change course.
 ## Alternatives considered
 
 Reading `~/.claude/.credentials.json` or a `setup-token` and calling the API with Claude Code headers (Hermes's native
-path): forbidden by Anthropic's terms, and since April 2026 billed as extra usage anyway. The Claude Agent SDK for Python: it drives the
+path): forbidden by Anthropic's terms, and reported since April 2026 to be billed as extra usage anyway. The Claude Agent SDK for Python: it drives the
 same binary, but adds a dependency and its in-process MCP tools would run inside Claude Code's loop instead of
 Sentient's. Letting Claude Code run Sentient's tools through an MCP server that calls back into the engine: a second
 tool loop to keep in step with approvals, rules and outside-content checks. Allowing it for background work: it would
