@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import http.server
 import json
 import threading
@@ -333,3 +334,75 @@ def test_a_run_that_picks_no_profile_gets_default():
     task.extra["browser_profile"] = "x-posting"
     assert svc._wanted(task) == "x-posting"
     assert svc._wanted(None) == "x-posting"  # the user's own Open window stays on what is open
+
+
+# ----------------------------------------------------------------------------- site storage reaches disk
+_REAL_SLEEP = asyncio.sleep
+
+
+class _FakePage:
+    def __init__(self, url: str, log: list):
+        self.url, self._log, self._closed = url, log, False
+
+    def is_closed(self) -> bool:
+        return self._closed
+
+    async def close(self, run_before_unload: bool = False) -> None:
+        self._closed = True
+        self._log.append(f"close page {self.url}" + (" with unload handlers" if run_before_unload else ""))
+
+    async def wait_for_event(self, event: str, timeout: float = 0) -> None:
+        while not self._closed:
+            await _REAL_SLEEP(0)
+
+
+class _FakeContext:
+    def __init__(self, urls: list[str], log: list):
+        self.pages, self._log = [_FakePage(u, log) for u in urls], log
+
+    async def close(self) -> None:
+        self._log.append("close context")
+
+
+async def test_closing_a_launched_profile_lets_site_storage_reach_disk(monkeypatch):
+    monkeypatch.setattr(browser_service, "STORAGE_FLUSH_S", 0.01)
+    real_sleep = browser_service.asyncio.sleep
+    log: list = []
+
+    async def sleep(s):
+        log.append("wait")
+        await real_sleep(0)
+
+    monkeypatch.setattr(browser_service.asyncio, "sleep", sleep)
+    svc = BrowserService(make_app())
+    svc._context = _FakeContext(["https://x.example/home", "about:blank"], log)
+    await svc._close_context()
+    assert log == ["close page https://x.example/home with unload handlers",
+                   "close page about:blank with unload handlers", "wait", "close context"]
+    assert svc._context is None
+
+    log.clear()  # a website was shown earlier (say the user signed in, then closed that tab): still wait
+    svc._context, svc._site_seen = _FakeContext(["about:blank"], log), True
+    await svc._close_context()
+    assert log == ["close page about:blank with unload handlers", "wait", "close context"]
+
+    log.clear()  # no website was ever shown: close at once
+    svc._context, svc._site_seen = _FakeContext(["about:blank"], log), False
+    await svc._close_context()
+    assert log == ["close context"]
+
+
+async def test_launched_browsers_commit_site_storage_quickly(monkeypatch):
+    seen: dict = {}
+
+    class Chromium:
+        async def launch_persistent_context(self, **kwargs):
+            seen.update(kwargs)
+            raise RuntimeError("stop here")
+
+    monkeypatch.setattr(browser_service, "installed_engines", lambda pref="auto": ["msedge"])
+    svc = BrowserService(make_app())
+    svc._pw = type("PW", (), {"chromium": Chromium()})()
+    with pytest.raises(BrowserError):
+        await svc._launch_persistent(BrowserProfileConfig(), headless=True)
+    assert browser_service.STORAGE_FLAG in seen["args"]
