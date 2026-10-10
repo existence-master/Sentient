@@ -27,6 +27,8 @@ export function useAttachments() {
   const [items, setItems] = useState<PendingAttachment[]>([])
   const itemsRef = useRef(items)
   itemsRef.current = items
+  // screen captures removed while uploading: the upload finishes and the file is deleted by its server name
+  const removedScreens = useRef(new Set<string>())
 
   const update = (id: string, patch: Partial<PendingAttachment>) =>
     setItems((list) => list.map((x) => (x.id === id ? { ...x, ...patch } : x)))
@@ -40,9 +42,15 @@ export function useAttachments() {
         extra: item.source ? { source: item.source } : undefined,
         onProgress: (p) => update(item.id, { progress: p })
       })
-      .then((res) => update(item.id, { status: 'done', progress: 1, name: res.name, size: res.size, mime: res.mime }))
+      .then((res) => {
+        if (removedScreens.current.delete(item.id)) {
+          void api.files.delete(res.name).catch(() => undefined)
+          return
+        }
+        update(item.id, { status: 'done', progress: 1, name: res.name, size: res.size, mime: res.mime })
+      })
       .catch((err) => {
-        if ((err as Error)?.name === 'AbortError') return
+        if (removedScreens.current.delete(item.id) || (err as Error)?.name === 'AbortError') return
         update(item.id, { status: 'error', error: errorMessage(err) })
       })
   }, [])
@@ -75,10 +83,12 @@ export function useAttachments() {
 
   const remove = useCallback((id: string) => {
     const item = itemsRef.current.find((x) => x.id === id)
-    item?.abort?.abort()
     if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl)
     // a screen capture the user took back is deleted, not left behind in the files folder
-    if (item?.source === 'screen' && item.name) void api.files.delete(item.name).catch(() => undefined)
+    if (item?.source === 'screen') {
+      if (item.name) void api.files.delete(item.name).catch(() => undefined)
+      else if (item.status === 'uploading') removedScreens.current.add(id)
+    } else item?.abort?.abort()
     setItems((list) => list.filter((x) => x.id !== id))
   }, [])
 
