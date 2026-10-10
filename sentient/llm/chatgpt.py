@@ -154,7 +154,10 @@ async def exchange_code(*, client_id: str, code: str, verifier: str, redirect_ur
         err = ChatGPTError(f"ChatGPT turned down the sign-in ({detail or code_ or r.status_code}). Please try again.")
         err.code = code_  # type: ignore[attr-defined]
         raise err
-    tok = r.json()
+    try:
+        tok = r.json()
+    except ValueError:
+        tok = None
     if not isinstance(tok, dict) or not tok.get("access_token"):
         raise ChatGPTError("ChatGPT didn't send a sign-in back. Please try again.")
     return tok
@@ -188,11 +191,17 @@ async def _refresh(tokens: dict) -> dict:
                                      "refresh_token": tokens["refresh_token"], "resource": RESOURCE})
     if r.status_code >= 400:
         code, _detail = _oauth_error(r)
-        if code in DEAD_REFRESH or r.status_code in {400, 401}:
+        if code in DEAD_REFRESH or r.status_code == 401:
             delete_json(SECRET)
             raise ChatGPTError("ChatGPT signed you out. Sign in with ChatGPT again in Settings > Models.")
         raise ChatGPTError(f"ChatGPT couldn't renew the sign-in right now ({r.status_code}). Try again in a moment.")
-    record = _record(tokens["client_id"], r.json(), tokens)
+    try:
+        tok = r.json()
+    except ValueError:
+        tok = None
+    if not isinstance(tok, dict) or not tok.get("access_token"):
+        raise ChatGPTError("ChatGPT couldn't renew the sign-in right now. Try again in a moment.")
+    record = _record(tokens["client_id"], tok, tokens)
     if not save_json(SECRET, record):
         raise ChatGPTError("Your system keychain is unavailable, so the ChatGPT sign-in can't be kept.")
     return record
