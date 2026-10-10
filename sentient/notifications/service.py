@@ -32,6 +32,7 @@ def _row_to_dict(r: Any) -> dict:
 
 class NotificationService(Service):
     name = "notifications"
+    model_kind = "background"
     MAX_KEPT = 500
 
     async def create(

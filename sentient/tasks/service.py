@@ -30,6 +30,7 @@ from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sentient.llm.jobs import detached
 from sentient.llm.provider import ModelRefused, ProviderError
 from sentient.services import Service, cancel_tasks
 from sentient.tasks import ask, catchup, executor, limits, scripts, stuck, swarm
@@ -148,6 +149,7 @@ def normalize_questions(raw: Any, start: int = 0) -> list[dict]:
 
 class TaskService(Service):
     name = "tasks"
+    model_kind = "task"
 
     def __init__(self, app: Any):
         super().__init__(app)
@@ -245,7 +247,8 @@ class TaskService(Service):
         return self.now().astimezone(get_tz(tz_name)).strftime("%Y-%m-%d %H:%M:%S %Z (%A)")
 
     def _spawn(self, coro: Coroutine[Any, Any, Any], name: str) -> asyncio.Task:
-        t = asyncio.create_task(coro, name=f"tasks:{name}")
+        # planning and runs are task work even when a chat or a button started them (#149)
+        t = asyncio.create_task(coro, name=f"tasks:{name}", context=detached("task"))
         self._background.add(t)
         t.add_done_callback(self._background.discard)
         return t
@@ -1442,7 +1445,8 @@ class TaskService(Service):
 
     def _dispatch(self, task_id: str, run_id: str, *, resume: bool = False, answered: bool = False) -> None:
         t = asyncio.create_task(
-            self._execute(task_id, run_id, resume=resume, answered=answered), name=f"tasks:run:{run_id}"
+            self._execute(task_id, run_id, resume=resume, answered=answered), name=f"tasks:run:{run_id}",
+            context=detached("task"),
         )
         self._runs[run_id] = t
         t.add_done_callback(lambda _t, rid=run_id: self._runs.pop(rid, None))

@@ -60,6 +60,7 @@ from sentient.llm.events import (
     UserInterjection,
     tool_progress_event,
 )
+from sentient.llm.jobs import as_kind, detached
 from sentient.llm.meter import measure
 from sentient.llm.provider import LLMProvider, ProviderError, StreamChunk, ToolCall
 from sentient.memory import review as memory_review
@@ -1045,8 +1046,13 @@ class Agent:
         turn_task = asyncio.current_task()  # Stop everything cancels this task (halt)
         if turn_task is not None:
             self._turn_tasks.add(turn_task)
+        # the model serves this reply (and what it runs) first; background work waits until it has been quiet (#149)
+        jobs = getattr(self.app, "model_jobs", None)
+        turn_scope = contextlib.ExitStack()
+        turn_scope.enter_context(jobs.chat_turn() if jobs is not None else as_kind("chat"))
 
         def release() -> list[str]:
+            turn_scope.close()
             if turn_task is not None:
                 self._turn_tasks.discard(turn_task)
             if steer is None:
@@ -1158,10 +1164,10 @@ class Agent:
             said = "\n\n".join([user_text, *result.interjections]).strip()
             if self.memory is not None and self.config.memory.extract_after_turn:
                 # a chat that read outside content holds what it learns for the user's review (ADR 0021)
-                self._spawn(self._extract(said, memory_review.for_context(ctx)))
+                self._spawn(self._extract(said, memory_review.for_context(ctx)), "memory")
             if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
-                self._spawn(self._auto_title(session_id, user_text, result.text))
-            self._spawn(self._maybe_compress(session_id))
+                self._spawn(self._auto_title(session_id, user_text, result.text), "titles")
+            self._spawn(self._maybe_compress(session_id), "memory")
             if self.app is not None:
                 self.app.bus.publish(
                     "chat.turn_completed",
@@ -1255,8 +1261,9 @@ class Agent:
         return res, is_error, await self._tool_content(res, call.id)
 
     # ------------------------------------------------------------------ background
-    def _spawn(self, coro) -> None:
-        task = asyncio.create_task(coro)
+    def _spawn(self, coro, kind: str = "background") -> None:
+        """Background work after a reply: it calls the model as ``kind`` and waits for a quiet moment (#149)."""
+        task = asyncio.create_task(coro, context=detached(kind))
         self._background.add(task)
         task.add_done_callback(self._background.discard)
 

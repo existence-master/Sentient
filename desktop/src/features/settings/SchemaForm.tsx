@@ -37,6 +37,10 @@ export const LABELS: Record<string, FieldLabel> = {
   'memory.graph_link_similarity': { label: 'Graph link threshold', percent: true },
   'memory.summarize_after_minutes': { label: 'Summarize conversations after', unit: 'min' },
   'memory.summary_chunk_messages': { label: 'Messages per summary', unit: 'messages' },
+  // models (#149)
+  'models.local_queue': { label: 'One job at a time, your chats first' },
+  'models.background_quiet_s': { label: 'Background work waits after you chat', unit: 's' },
+  'models.background_on_battery': { label: 'Background work on battery' },
   // tasks
   'tasks.tick_seconds': { label: 'Scheduler check interval', unit: 's' },
   'tasks.max_concurrent_runs': { label: 'Runs at the same time' },
