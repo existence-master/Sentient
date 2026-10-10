@@ -34,6 +34,7 @@ from sentient.config import SentientConfig, load_config, save_config
 from sentient.events import EventBus
 from sentient.evolution import EvolutionService
 from sentient.integrations import IntegrationManager
+from sentient.llm import claude_code
 from sentient.llm.connect import ProviderConnections
 from sentient.llm.hardware import HardwareProbe
 from sentient.llm.provider import LiteLLMProvider, LLMProvider
@@ -181,6 +182,7 @@ class SentientApp:
                     cancelled += await svc.halt()
                 except Exception:
                     log.exception("service %s failed to halt", svc.name)
+            claude_code.kill_all()  # a Claude Code reply left running by anything above (ADR 0022)
             if changed:  # devices hear about it after the work is cancelled, never before
                 await self._tell_devices()
             return {**self.stop_state, "cancelled": cancelled}
@@ -258,5 +260,6 @@ class SentientApp:
                 log.exception("service %s failed to stop", svc.name)
         if self.agent is not None:
             await self.agent.drain(timeout=SHUTDOWN_GRACE_S)
+        claude_code.kill_all()
         await self.store.close()
         self._started = False

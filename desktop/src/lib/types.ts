@@ -117,6 +117,8 @@ export interface ModelsConfig {
   /** The user's own saved model setups (built-ins are not stored). */
   presets: Record<string, Omit<ModelPreset, 'name' | 'builtin' | 'available' | 'reason' | 'provider' | 'description' | 'active'>>
   active_preset: string | null
+  /** Experimental: claude-code/<model> answers chats through the user's own Claude Code (ADR 0022). */
+  experimental_claude_code?: boolean
   max_tool_rounds: number
   request_timeout_s: number
 }
@@ -510,6 +512,16 @@ export interface CatalogModel {
   free: boolean
   tools: boolean | null
   context_length: number | null
+}
+
+/** `GET /api/models/claude-code`: Claude through the user's own Claude Code (experimental, ADR 0022). */
+export interface ClaudeCodeStatus {
+  enabled: boolean
+  installed: boolean
+  /** From `claude --version`, only asked while it is turned on. */
+  version: string | null
+  detail: string
+  models: string[]
 }
 
 export interface ModelTestResult {

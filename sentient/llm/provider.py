@@ -108,6 +108,7 @@ def _response_cost(litellm: Any, response: Any, model: str) -> float | None:
 
 
 CACHE_PREFIXES = {"anthropic"}
+CLAUDE_CODE = "claude-code"  # Claude through the user's own Claude Code (``claude-code/<model>``), not LiteLLM (#206)
 CHATGPT = "chatgpt"  # ChatGPT plan models (``chatgpt/<model>``) go through the Responses API shim, not LiteLLM
 # local servers whose context length Sentient can't know (LiteLLM's list has no entry for them)
 UNLISTED_PREFIXES = {"lm_studio", "llamafile", "vllm", "hosted_vllm"}
@@ -236,7 +237,7 @@ class LiteLLMProvider:
             from sentient.llm import chatgpt
 
             return chatgpt.context_window(model)
-        if prefix in UNLISTED_PREFIXES:
+        if prefix in UNLISTED_PREFIXES or prefix == CLAUDE_CODE:
             return None
         import litellm
 
@@ -260,8 +261,12 @@ class LiteLLMProvider:
         for model in self._chain(role, override):
             emitted = False
             try:
-                if _provider_prefix(model) == CHATGPT:
-                    async for chunk in self._chatgpt_stream(model, role, messages, tools):
+                if _provider_prefix(model) in {CHATGPT, CLAUDE_CODE}:
+                    from sentient.llm import claude_code
+
+                    other = (self._chatgpt_stream(model, role, messages, tools) if _provider_prefix(model) == CHATGPT
+                             else claude_code.stream(self.config, model, role, messages, tools))
+                    async for chunk in other:
                         emitted = emitted or bool(chunk.text or chunk.thinking)
                         yield chunk
                     return
@@ -370,6 +375,7 @@ class LiteLLMProvider:
         override = model
         for model in self._chain(role, override):
             try:
+                _refuse_claude_code(model)
                 if _provider_prefix(model) == CHATGPT:
                     text = await self._chatgpt_text(model, role, messages)
                 else:
@@ -391,6 +397,7 @@ class LiteLLMProvider:
         override = model
         for model in self._chain(role, override):
             try:
+                _refuse_claude_code(model)
                 if _provider_prefix(model) == CHATGPT:
                     return parse_json_loose(await self._chatgpt_text(model, role, messages))
                 kwargs = await self._call_kwargs(model, role)
@@ -411,6 +418,10 @@ class LiteLLMProvider:
         import litellm
 
         model = model or self.model_for("embedding")
+        if _provider_prefix(model) == CLAUDE_CODE:
+            from sentient.llm.claude_code import NO_EMBEDDINGS
+
+            raise ProviderError(NO_EMBEDDINGS)
         if _provider_prefix(model) == CHATGPT:
             raise ProviderError("ChatGPT plans don't include embedding models. Pick a local or API embedding model.")
         kwargs = self._kwargs_for(model)
@@ -420,6 +431,14 @@ class LiteLLMProvider:
 
 
 # ---------------------------------------------------------------------- helpers
+def _refuse_claude_code(model: str) -> None:
+    """Claude Code only writes chat replies (ADR 0022): text and JSON jobs run in the background."""
+    if _provider_prefix(model) == CLAUDE_CODE:
+        from sentient.llm.claude_code import CHATS_ONLY
+
+        raise ProviderError(CHATS_ONLY)
+
+
 def tool_arguments(raw: str | None) -> dict:
     """A tool call's JSON arguments, parsed loosely; ``{"_raw": ...}`` when they aren't an object."""
     try:

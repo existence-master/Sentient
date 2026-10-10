@@ -98,6 +98,14 @@ def node(
     )
 
 
+@app.command("claude-code-tools", hidden=True)
+def claude_code_tools(tools_file: str):
+    """Sentient's tool list for Claude Code (started by Claude Code itself; see sentient/llm/claude_code_tools.py)."""
+    from sentient.llm.claude_code_tools import main
+
+    raise typer.Exit(main([tools_file]))
+
+
 @app.command()
 def doctor(
     models: bool = typer.Option(

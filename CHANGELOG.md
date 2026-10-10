@@ -6,6 +6,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Claude through your own Claude Code (experimental):** if Claude Code is installed and signed in on your computer,
+  your chats can use Claude through it (Settings > Models, off until you turn it on). Sentient never reads or keeps
+  your Claude login, and leaves API keys and other sign-in settings in your environment out, so Claude Code always
+  uses the plan you signed in to. Claude Code's own tools stay off, so anything it wants done goes through Sentient's tools,
+  approvals and rules, and Stop everything stops it. It only answers your chats: tasks, suggestions and other
+  background work keep using your other models, and it can't be the memory search model. Anthropic may change how
+  this is counted or allowed.
 - **Push to talk and dictation into any app:** hold Ctrl+Alt+Shift+T (Cmd+Option+Shift+T on a Mac) anywhere, speak,
   and let go: what you said goes to Sentient as a chat message, and the answer is read aloud. Press Ctrl+Alt+Shift+D,
   speak, and press it again (or just pause): your words are typed where your cursor is, in any app. A small bar at the

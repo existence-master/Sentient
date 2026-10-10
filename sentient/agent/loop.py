@@ -45,6 +45,7 @@ from sentient.agent.prompt import build_system_prompt
 from sentient.agent.toolselect import ToolSelector, is_local_model
 from sentient.config.schema import SentientConfig
 from sentient.files.extract import extract_text, is_image
+from sentient.llm import claude_code
 from sentient.llm.events import (
     AgentEvent,
     ApprovalRequest,
@@ -60,7 +61,7 @@ from sentient.llm.events import (
     tool_progress_event,
 )
 from sentient.llm.meter import measure
-from sentient.llm.provider import LLMProvider, ProviderError, ToolCall
+from sentient.llm.provider import LLMProvider, ProviderError, StreamChunk, ToolCall
 from sentient.memory import review as memory_review
 from sentient.memory.facts import FactMemory
 from sentient.memory.sources import MemorySources
@@ -554,7 +555,7 @@ class Agent:
             think_acc = ""
             tool_calls: list[ToolCall] = []
             try:
-                async for chunk in self.llm.stream(role, messages, tools, model=model):
+                async for chunk in self._model_stream(role, messages, tools, model, source == "chat" and not unprompted):
                     if chunk.thinking:
                         think_acc += chunk.thinking
                         yield ThinkingDelta(text=chunk.thinking, **ev)
@@ -710,6 +711,15 @@ class Agent:
         result.hit_step_limit = True
         result.text = text_acc or "I reached the step limit before finishing. Tell me how to continue."
         result.messages = messages
+
+    async def _model_stream(
+        self, role: str, messages: list[dict], tools: list[dict] | None, model: str | None, attended: bool
+    ) -> AsyncIterator[StreamChunk]:
+        """``llm.stream``, marked as a reply someone is waiting for only in a chat: Claude Code answers nothing
+        else (ADR 0022)."""
+        with claude_code.attended(attended):
+            async for chunk in self.llm.stream(role, messages, tools, model=model):
+                yield chunk
 
     async def _interject(
         self, text: str, messages: list[dict], persist: PersistFn | None, result: LoopResult, ev: dict

@@ -118,7 +118,10 @@ Ollama roles get an explicit context length (`num_ctx`). An
 explicit pick (per chat message, per task) is strict: no silent fallback.
 Settings → Models lists installed Ollama models, provider suggestions, key status
 and a one-click test that also reports tool-calling support. Keys go to the OS
-keychain.
+keychain. One experimental provider sits outside LiteLLM: `claude-code/<model>`
+runs the user's own Claude Code for chat replies only, with its own tools off and
+Sentient's tools offered through a bridge that runs nothing
+([ADR 0022](adr/0022-claude-through-your-own-claude-code.md)).
 
 Local-model note: Ollama's `think` flag must be passed (as `reasoning_effort`)
 or qwen3's reasoning leaks into visible text through LiteLLM streaming; the

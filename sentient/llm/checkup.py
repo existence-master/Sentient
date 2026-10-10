@@ -20,8 +20,8 @@ import httpx
 
 from sentient import secrets
 from sentient.config.schema import ModelRoles, SentientConfig
-from sentient.llm import chatgpt
-from sentient.llm.provider import ToolCall, provider_config
+from sentient.llm import chatgpt, claude_code
+from sentient.llm.provider import CLAUDE_CODE, ToolCall, provider_config
 
 ROLES = ("primary", "fast", "planner", "executor", "vision", "voice", "embedding")
 TOOL_ROLES = {"primary", "fast", "executor", "vision", "voice"}  # roles that run the agent loop with tools
@@ -37,6 +37,7 @@ LABELS = {
     "ollama": "Ollama", "ollama_chat": "Ollama", "lm_studio": "LM Studio", "anthropic": "Anthropic",
     "openai": "OpenAI", "gemini": "Google Gemini", "openrouter": "OpenRouter", "groq": "Groq",
     "mistral": "Mistral", "deepseek": "DeepSeek", "xai": "xAI", "nous": "Nous Portal", "chatgpt": "ChatGPT",
+    "claude-code": "Claude Code",
 }
 ORDER = {"fail": 3, "warn": 2, "pass": 1, "skip": 0}
 
@@ -237,6 +238,16 @@ class _RoleCheck:
     # ------------------------------------------------------------------ checks
     async def connection(self) -> bool:
         """Can the model be reached at all? False stops the remaining checks."""
+        if self.prefix == CLAUDE_CODE:
+            # never a model call here: a reply through Claude Code uses the user's plan, so only Test runs one
+            reason = claude_code.refusal(self.run.config, self.role)
+            if reason:
+                fix = "Pick another model for this role." if reason == claude_code.CHATS_ONLY else None
+                self.add("connection", "Connection", "fail", reason, fix)
+            else:
+                self.add("connection", "Connection", "pass", "Claude Code is on this computer. The check-up doesn't "
+                         "use your plan: press Test next to the model to try a reply.")
+            return False
         if self.ollama:
             base = self._base()
             if not await self.run.ollama.up(base):

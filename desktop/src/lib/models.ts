@@ -76,6 +76,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   deepseek: 'DeepSeek',
   xai: 'xAI',
   nous: 'Nous Portal',
+  'claude-code': 'Claude Code',
   chatgpt: 'ChatGPT plan'
 }
 
