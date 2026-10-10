@@ -419,3 +419,117 @@ async def test_finished_download_is_reported_on_the_next_result():
 
     assert result["downloads"] == ["downloads/late-report.txt"]
     assert task not in svc._download_tasks
+
+
+async def test_unfinished_download_stays_tracked_until_a_later_result(monkeypatch):
+    svc = BrowserService(make_app())
+    completion = asyncio.get_running_loop().create_future()
+
+    class SlowDownload:
+        suggested_filename = "slow-report.pdf"
+
+    async def save_download(download):
+        return await completion
+
+    monkeypatch.setattr(svc, "_save_download", save_download)
+    svc._on_download(SlowDownload())
+    task = next(iter(svc._download_tasks))
+
+    result = await asyncio.wait_for(svc._include_downloads({"ok": True}, set()), timeout=0.5)
+
+    assert result == {"ok": True, "downloads_in_progress": ["slow-report.pdf"]}
+    assert task in svc._download_tasks
+    assert not task.done()
+
+    completion.set_result("downloads/slow-report.pdf")
+    await task
+    result = await svc._include_downloads({"ok": True}, set())
+
+    assert result["downloads"] == ["downloads/slow-report.pdf"]
+    assert task not in svc._download_tasks
+    assert task not in svc._download_names
+    if svc._download_cleanup_task:
+        svc._download_cleanup_task.cancel()
+        await asyncio.gather(svc._download_cleanup_task, return_exceptions=True)
+
+
+async def test_failed_download_does_not_discard_action_or_successful_download():
+    svc = BrowserService(make_app())
+
+    async def fail_download():
+        raise BrowserError("Couldn't save downloaded file 'broken.pdf'")
+
+    successful = asyncio.create_task(asyncio.sleep(0, result="downloads/report.pdf"))
+    failed = asyncio.create_task(fail_download())
+    svc._download_tasks.update((successful, failed))
+    await asyncio.sleep(0)
+
+    result = await svc._include_downloads({"ok": True, "clicked": "Download"}, set())
+
+    assert result == {
+        "ok": True,
+        "clicked": "Download",
+        "downloads": ["downloads/report.pdf"],
+        "download_errors": ["Couldn't save downloaded file 'broken.pdf'"],
+    }
+    assert successful not in svc._download_tasks
+    assert failed not in svc._download_tasks
+
+
+async def test_stalled_download_is_timed_out_and_reported(tmp_path, monkeypatch):
+    svc = BrowserService(make_app())
+
+    class StalledDownload:
+        suggested_filename = "stalled.pdf"
+
+        async def save_as(self, target):
+            await asyncio.Future()
+
+    monkeypatch.setattr(browser_service.paths, "files_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser_service, "DOWNLOAD_MAX_DURATION_S", 0.01)
+    task = asyncio.create_task(svc._save_download(StalledDownload()))
+    svc._download_tasks.add(task)
+
+    with pytest.raises(BrowserError, match="did not finish within"):
+        await task
+    result = await svc._include_downloads({"ok": True}, set())
+
+    assert result == {
+        "ok": True,
+        "download_errors": ["Download 'stalled.pdf' did not finish within 0.01 seconds."],
+    }
+    assert task not in svc._download_tasks
+
+
+async def test_unreported_completed_download_expires_after_reporting_window(monkeypatch):
+    svc = BrowserService(make_app())
+    monkeypatch.setattr(browser_service, "DOWNLOAD_TASK_RETENTION_S", 0.01)
+    monkeypatch.setattr(browser_service, "DOWNLOAD_TASK_CLEANUP_INTERVAL_S", 0.01)
+
+    async def save_download(download):
+        return f"downloads/{download}.pdf"
+
+    monkeypatch.setattr(svc, "_save_download", save_download)
+    await svc._lock.acquire()
+    try:
+        downloads = list(range(100))
+        for download in downloads:
+            svc._on_download(download)
+        tasks = set(svc._download_tasks)
+        await asyncio.gather(*tasks)
+        await asyncio.sleep(0)
+        assert svc._download_cleanup_task is not None
+        assert svc._download_cleanup_task.get_name() == "browser:download-cleanup"
+        assert len(svc._download_tasks) == len(downloads)
+        await asyncio.sleep(0.02)
+        assert len(svc._download_tasks) == len(downloads)
+    finally:
+        svc._lock.release()
+
+    for _ in range(20):
+        if not svc._download_tasks:
+            break
+        await asyncio.sleep(0.01)
+    assert not svc._download_tasks
+    assert not svc._download_completed_at
+    assert not svc._download_names

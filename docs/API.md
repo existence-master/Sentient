@@ -1443,7 +1443,14 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   profile are handled the same way. Every download is saved under `downloads/` in Sentient's Files folder. Browser
   tool results (including `browser_scroll`) may include an optional `downloads` array of relative paths such as
   `["downloads/report.pdf"]`. Results wait up to 0.3 s for a download to start during the action; if it starts later,
-  it remains tracked and is reported on a later browser result after saving finishes.
+  it remains tracked and is reported on a later browser result after saving finishes. Actions do not wait for downloads
+  to finish; unfinished downloads are listed by filename in an optional `downloads_in_progress` array and reported
+  under `downloads` when a later result observes that they have finished. Each save is limited to 120 s total,
+  including waiting for another save to finish; a save that exceeds this limit is cancelled.
+  Failed saves are reported in an optional `download_errors` array; they don't discard the browser action result or
+  successful downloads from the same batch. Completed downloads that no browser result consumes become eligible for
+  cleanup after 5 minutes; one cleanup task checks every 30 seconds, and an active browser action gets the chance to
+  report them before cleanup.
   - `browser_open(url, profile="")` read → same as `browser_snapshot` plus `profile` (http/https only; allow/block lists apply, also after redirects). `profile` switches to that profile for this and the following calls of the run; empty uses the run's profile, else `default`.
   - `browser_snapshot()` read → `{url, title, text, truncated?}`. `text` is `Page:`/`URL:`/`Scroll:` header, interactive
     elements one per line (`[e12] button "Sign in"`, `[e4] textbox "Search" value=""`, `[e7] combobox "Country"

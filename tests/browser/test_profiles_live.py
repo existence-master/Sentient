@@ -11,6 +11,7 @@ import time
 import httpx
 import pytest
 
+from sentient import paths
 from sentient.browser import tools as bt
 from sentient.browser.service import _engine_paths, profile_dir
 from sentient.config.schema import BrowserProfileConfig
@@ -164,7 +165,27 @@ async def test_attach_to_a_running_browser_and_detach_leaves_it_running(browser,
     assert status["attached"] and status["profile"] == "mine" and status["engine"] is None
     assert len(status["tabs"]) >= 2  # the user's own tab plus the one Sentient opened for itself
 
+    download_page = await bt.browser_open.call(ctx, {"url": f"{site}/download.html", "profile": "mine"})
+    download_ref = next(
+        line.split("]")[0][1:]
+        for line in download_page["text"].splitlines()
+        if 'link "Download report"' in line
+    )
+    download_result = await bt.browser_click.call(ctx, {"ref": download_ref})
+    download_paths = download_result.get("downloads", [])
+    if not download_paths:
+        assert download_result["downloads_in_progress"] == ["report.txt"]
+        pending = [task for task in browser._download_tasks if not task.done()]
+        assert pending
+        await asyncio.wait_for(asyncio.gather(*pending), timeout=10)
+        later_result = await bt.browser_snapshot.call(ctx, {})
+        download_paths = later_result["downloads"]
+    assert download_paths == ["downloads/report.txt"]
+    saved = paths.files_dir() / download_paths[0]
+    assert saved.read_text(encoding="utf-8") == "Sentient browser download test.\n"
+
     # the same safety applies inside the user's browser
+    snap = await bt.browser_open.call(ctx, {"url": f"{site}/index.html", "profile": "mine"})
     app.config.tools.approvals.mode = "ask"
     text = snap["text"]
     pw = next(line.split("]")[0][1:] for line in text.splitlines() if 'textbox "Password"' in line)

@@ -65,6 +65,9 @@ STORAGE_FLAG = "--enable-aggressive-domstorage-flushing"
 STORAGE_FLUSH_S = 1.5
 PAGE_CLOSE_TIMEOUT_S = 5.0
 DOWNLOAD_APPEAR_GRACE_S = 0.3
+DOWNLOAD_MAX_DURATION_S = 120.0
+DOWNLOAD_TASK_RETENTION_S = 300.0
+DOWNLOAD_TASK_CLEANUP_INTERVAL_S = 30.0
 # models often pass the whole snapshot line ("[e4] button \"Place order\"") instead of just "e4"
 _REF_RE = re.compile(r"\b(e\d+)\b", re.IGNORECASE)
 
@@ -228,6 +231,9 @@ class BrowserService(Service):
         self._last_tabs_sig: Any = None
         self.idle_check_s = 30.0
         self._download_tasks: set[asyncio.Task[str]] = set()
+        self._download_names: dict[asyncio.Task[str], str] = {}
+        self._download_completed_at: dict[asyncio.Task[str], float] = {}
+        self._download_cleanup_task: asyncio.Task | None = None
         self._download_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ lifecycle
@@ -769,28 +775,78 @@ class BrowserService(Service):
 
     def _on_download(self, download: Any) -> None:
         task = asyncio.create_task(self._save_download(download), name="browser:download")
-        task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
         self._download_tasks.add(task)
+        self._download_names[task] = self._download_filename(download)
+        task.add_done_callback(self._on_download_task_done)
+
+    def _on_download_task_done(self, task: asyncio.Task[str]) -> None:
+        if not task.cancelled():
+            with contextlib.suppress(Exception):
+                task.exception()
+        if task in self._download_tasks:
+            self._download_completed_at[task] = time.monotonic()
+            if self._download_cleanup_task is None or self._download_cleanup_task.done():
+                self._download_cleanup_task = asyncio.create_task(
+                    self._cleanup_download_tasks(), name="browser:download-cleanup"
+                )
+                self._bg.add(self._download_cleanup_task)
+                self._download_cleanup_task.add_done_callback(self._bg.discard)
+
+    async def _cleanup_download_tasks(self) -> None:
+        try:
+            while self._download_completed_at:
+                await asyncio.sleep(DOWNLOAD_TASK_CLEANUP_INTERVAL_S)
+                expired_before = time.monotonic() - DOWNLOAD_TASK_RETENTION_S
+                async with self._lock:
+                    expired = [
+                        task
+                        for task, completed_at in self._download_completed_at.items()
+                        if completed_at <= expired_before and task.done()
+                    ]
+                    for task in expired:
+                        self._download_tasks.discard(task)
+                        self._download_names.pop(task, None)
+                        self._download_completed_at.pop(task, None)
+        finally:
+            self._download_cleanup_task = None
+
+    @staticmethod
+    def _download_filename(download: Any) -> str:
+        raw_name = str(getattr(download, "suggested_filename", None) or "download")
+        name = raw_name.replace("\\", "/").rsplit("/", 1)[-1]
+        return re.sub(r"[^\w.\- ()]+", "_", name).strip(" .")[:160] or "download"
 
     async def _save_download(self, download: Any) -> str:
-        raw_name = str(download.suggested_filename or "download")
-        name = raw_name.replace("\\", "/").rsplit("/", 1)[-1]
-        name = re.sub(r"[^\w.\- ()]+", "_", name).strip(" .")[:160] or "download"
+        name = self._download_filename(download)
 
-        async with self._download_lock:
-            folder = paths.files_dir() / "downloads"
-            folder.mkdir(parents=True, exist_ok=True)
-            target = folder / name
-            stem  = target.stem
-            suffix = target.suffix
-            index = 1
-            while target.exists():
-                target = folder / f"{stem}({index}){suffix}"
-                index += 1
-            try:
+        def reject_symlinked_folder(folder: Path) -> None:
+            if folder.is_symlink():
+                raise BrowserError("The downloads folder must not be a symbolic link.")
+
+        timeout = asyncio.timeout(DOWNLOAD_MAX_DURATION_S)
+        try:
+            async with timeout, self._download_lock:
+                folder = paths.files_dir() / "downloads"
+                reject_symlinked_folder(folder)
+                folder.mkdir(parents=True, exist_ok=True)
+                target = folder / name
+                stem  = target.stem
+                suffix = target.suffix
+                index = 1
+                while target.exists():
+                    target = folder / f"{stem}({index}){suffix}"
+                    index += 1
                 await download.save_as(str(target))
-            except Exception as exc:
-                raise BrowserError(f"Couldn't save downloaded file '{name}'") from exc
+        except TimeoutError as exc:
+            if timeout.expired():
+                raise BrowserError(
+                    f"Download '{name}' did not finish within {DOWNLOAD_MAX_DURATION_S:g} seconds."
+                ) from exc
+            raise BrowserError(f"Couldn't save downloaded file '{name}'") from exc
+        except Exception as exc:
+            if isinstance(exc, BrowserError):
+                raise
+            raise BrowserError(f"Couldn't save downloaded file '{name}'") from exc
         return target.relative_to(paths.files_dir()).as_posix()
 
     async def _include_downloads(
@@ -804,15 +860,35 @@ class BrowserService(Service):
                 break
             await asyncio.sleep(0.05)
 
-        # Wait for downloads started during this action, and include older downloads only once finished.
+        # Collect finished downloads, but never wait for a save to complete inside a browser action.
         tasks = (self._download_tasks - before) | {task for task in self._download_tasks if task.done()}
-        if not tasks:
-            return result
-        try:
-            names = await asyncio.gather(*tasks)
-        finally:
-            self._download_tasks.difference_update(tasks)
-        result["downloads"] = list(names)
+        done = {task for task in tasks if task.done()}
+        if done:
+            try:
+                outcomes = await asyncio.gather(*done, return_exceptions=True)
+            finally:
+                self._download_tasks.difference_update(done)
+                for task in done:
+                    self._download_names.pop(task, None)
+                    self._download_completed_at.pop(task, None)
+            names = []
+            errors = []
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    message = str(outcome).strip() or f"{type(outcome).__name__} while saving download"
+                    errors.append(message)
+                else:
+                    names.append(outcome)
+            if names:
+                result["downloads"] = names
+            if errors:
+                result["download_errors"] = errors
+
+        pending = [task for task in self._download_tasks if not task.done()]
+        if pending:
+            result["downloads_in_progress"] = [
+                self._download_names.get(task, "download") for task in pending
+            ]
         return result
 
     async def _idle_watch(self) -> None:
