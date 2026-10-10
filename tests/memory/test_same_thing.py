@@ -32,6 +32,9 @@ def test_fact_actions_reads_verb_forms():
         # the same action on something else is a second rule, not a change of the first
         ("Sarthak does not want her emails deleted.", "Sarthak does not want her files deleted.", False),
         ("Sarthak does not want calls before 10am.", "Sarthak does not want calls before 9am.", True),
+        # a replacement that drops an action loses a preference
+        ("Sarthak does not want files deleted.", "Sarthak does not want files deleted or sent.", False),
+        ("Sarthak does not want files deleted or sent.", "Sarthak does not want files deleted.", True),
         # Sentient and "the assistant" are the same
         ("Sarthak does not want the assistant to write files for her.",
          "Sarthak doesn't want Sentient to write files for her", True),
@@ -57,6 +60,10 @@ def test_same_thing(new, old, same):
         ("Sarthak eats meat.", "Sarthak does not eat meat.", False),
         ("Sarthak lives in Pune.", "Sarthak lived in Pune as a child.", False),
         ("Sarthak's brother lives in a city.", "Sarthak's sister Meera lives in Lisbon.", False),
+        # a placeholder needs a fact that names it
+        ("Sarthak has a job.", "Sarthak has a dog.", False),
+        ("Sarthak has a job.", "Sarthak has a dog named Rex.", False),
+        ("Sarthak works at a company.", "Sarthak works at Acme.", True),
         # saying a relation exists is covered by any fact about that relation, but not a fact about someone else
         ("Sarthak has a sister.", "Sarthak's sister Meera lives in Lisbon.", True),
         ("Sarthak does not want the assistant to write files for her.",
@@ -125,3 +132,22 @@ async def test_a_vaguer_fact_is_skipped(config, isolated_home):
 def test_a_gap_is_not_a_fact(fact):
     assert FactMemory.clean_fact(fact, "Sarthak") is None
     assert FactMemory.clean_fact("Sarthak's sister is a marine biologist.", "Sarthak")
+
+
+async def test_a_rewrite_about_another_action_is_not_stored(config, isolated_home):
+    """The new fact matches, but the model's rewrite that would be stored is about writing, not deleting."""
+    store, llm, mem = await _memory(config, isolated_home, "rewrite.db")
+    try:
+        first = await mem.remember("Sarthak does not want their files deleted.", use_llm=False)
+        llm.json_replies.extend([
+            {"action": "UPDATE", "fact_id": first["id"], "content": "Sarthak does not want files to be written.",
+             "analysis": None},
+            ANALYSIS, ANALYSIS,
+        ])
+        second = await mem.remember("Sarthak never wants files deleted.", use_llm=True)
+        stored = sorted(f["content"] for f in await mem.list_facts())
+        assert second["action"] == "ADD" and second["content"] == "Sarthak never wants files deleted."
+        assert "Sarthak does not want their files deleted." in stored
+        assert "Sarthak does not want files to be written." not in stored
+    finally:
+        await store.close()

@@ -315,13 +315,14 @@ def same_subject(a: str, b: str, user_name: str = "") -> bool:
 def same_thing(new_fact: str, existing: str, user_name: str = "") -> bool:
     """True when ``new_fact`` may replace ``existing``: the same subject and, where both name one, the same action.
     "does not want their files deleted" and "does not want files to be written" are two preferences, and so are
-    "does not want her files deleted" and "does not want her emails deleted"."""
+    "does not want her files deleted" and "does not want her emails deleted". A replacement must also keep every
+    action ``existing`` names: "doesn't want files deleted" never replaces "doesn't want files deleted or sent"."""
     if not same_subject(new_fact, existing, user_name):
         return False
     acts_new, acts_old = fact_actions(new_fact), fact_actions(existing)
     if not acts_new or not acts_old:
         return True
-    if not acts_new & acts_old:
+    if not acts_new & acts_old or acts_old - acts_new:
         return False
     if NEGATION_RE.search(new_fact) and NEGATION_RE.search(existing):
         # two "does not want X deleted" rules about different things ("files", "emails") both hold
@@ -363,8 +364,8 @@ def _only_names_relation(new_fact: str, existing: str, user_name: str) -> bool:
 
 def covered_by(new_fact: str, existing: str, user_name: str = "") -> bool:
     """True when ``existing`` already says everything ``new_fact`` says: same subject, same negation and tense, no
-    new name, place or number, and every other word is in it (or a placeholder like "a city"). "Maya has a sister"
-    is covered by any fact about Maya's sister."""
+    new name, place or number, and every other word is in it (or a placeholder like "a city" that it names). "Maya
+    has a sister" is covered by any fact about Maya's sister."""
     if not new_fact.strip() or not existing.strip():
         return False
     if bool(NEGATION_RE.search(new_fact)) != bool(NEGATION_RE.search(existing)):
@@ -378,8 +379,15 @@ def covered_by(new_fact: str, existing: str, user_name: str = "") -> bool:
     have = _plain_words(existing)
     user = (user_name or "").strip().lower()
     have.update(w for w in (user, "user") if w)
-    left = {w for w in _plain_words(new_fact) - have if w not in _PLACEHOLDERS}
-    return not left
+    missing = _plain_words(new_fact) - have
+    if missing - _PLACEHOLDERS:
+        return False
+    if missing:
+        # a placeholder ("lives in a city") is only covered by a fact that names it ("lives in Lisbon"): the same
+        # kind of attribute plus a name, place or number the new fact lacks. "has a job" is not covered by "has a dog"
+        shared = attribute_families(new_fact) & attribute_families(existing)
+        return bool(shared) and bool(new_details(existing, new_fact))
+    return True
 
 
 def conflict_strength(a: str | FactProfile, b: str | FactProfile, user_name: str = "") -> int:
@@ -882,8 +890,9 @@ class FactMemory:
         if action == "UPDATE":
             matched = next((n["content"] for n in candidates if n["id"] == fid), "")
             dropped = new_details(matched, content or "") if matched else set()
-            if matched and not same_thing(fact, matched, user):
-                # a different person or action ("files written" vs "files deleted"): both facts hold
+            if matched and not (same_thing(fact, matched, user) and same_thing(content, matched, user)):
+                # a different person or action ("files written" vs "files deleted"), in the new fact or in the
+                # model's rewrite that would be stored: both facts hold
                 log.info("CUD UPDATE of %s kept as ADD for %r (about something else)", fid, fact)
                 action, content, topics = "ADD", fact, None
             elif dropped and not new_details(fact, matched):
