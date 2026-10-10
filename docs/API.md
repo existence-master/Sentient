@@ -159,7 +159,8 @@ accept or loosen a rule.
 - `GET /api/sessions/{id}/rule-proposals?status=pending|accepted|declined|all` (default `pending`) → `[RuleProposal]`
   oldest first.
 - `POST /api/rule-proposals/{id}` `{decision: "accept"|"decline"}` → **RuleProposal**. `accept` saves each key in
-  `tools.approvals.rules` where it tightens (a stricter rule already there stays) plus an origin note in
+  `tools.approvals.rules` where it tightens (a stricter rule already there stays; for an app key, tools inside it
+  whose own looser rule would beat the app's rule are tightened too) plus an origin note in
   `tools.approvals.rule_origins`; `decline` saves nothing. Either ends the chat's extra asking. 404 for an unknown id,
   409 once answered. Both publish `rule_proposal.updated`; `accept` also `config.updated`.
 - **In messaging apps** (section 14): a proposal made in a paired chat is also sent to that chat with **Make it a

@@ -24,6 +24,7 @@ it is weighing ask too, so a reply that stops waiting for it fails closed. Both 
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -303,15 +304,29 @@ class ChatRules:
         self.app = app
         self._pending: dict[str, dict[str, str]] = {}  # session_id -> {key: level} of undecided proposals
         self._checking: dict[str, list[frozenset[str]]] = {}  # session_id -> candidate tools of running checks
+        self._deciding = asyncio.Lock()  # the desktop and a messaging app can answer at the same moment
 
     # ------------------------------------------------------------------ lookups
     def _app_names(self) -> dict[str, str]:
         return {p.id: getattr(p, "display_name", "") or p.id for p in self.app.registry.plugins()}
 
-    def _current(self, rules: dict[str, str], key: str) -> str | None:
-        """The lasting rule that applies to ``key`` now: a tool's own or its app's rule; an app's own rule."""
+    def _is_tool(self, key: str) -> bool:
         tool = self.app.registry.get(key)
-        return rule_for(rules, tool) if tool is not None and tool.name == key else rules.get(key)
+        return tool is not None and tool.name == key
+
+    def _overrides(self, rules: dict[str, str], key: str) -> list[str]:
+        """Tools inside app ``key`` that have a rule of their own (which beats the app's rule); [] for a tool."""
+        if self._is_tool(key):
+            return []
+        return [k for k in rules if self._is_tool(k) and self.app.registry.get(k).plugin == key]
+
+    def _current(self, rules: dict[str, str], key: str) -> str | None:
+        """The lasting rule that applies to ``key`` now: for a tool its own or its app's rule; for an app the loosest
+        of its own rule and the rules of tools inside it, since those beat the app's rule."""
+        if self._is_tool(key):
+            return rule_for(rules, self.app.registry.get(key))
+        values = [rules.get(key), *(rules[k] for k in self._overrides(rules, key))]
+        return min(values, key=lambda r: STRICTNESS.get(r, 1))
 
     async def _session_pending(self, session_id: str) -> dict[str, str]:
         cached = self._pending.get(session_id)
@@ -438,19 +453,20 @@ class ChatRules:
         saves nothing. Raises ``LookupError`` for an unknown id and ``ValueError`` once it was answered."""
         if decision not in {"accept", "decline"}:
             raise ValueError("Choose accept or decline.")
-        row = await self.app.store.fetchone("SELECT * FROM rule_proposals WHERE id = ?", (proposal_id,))
-        if row is None:
-            raise LookupError(proposal_id)
-        if row["status"] != PENDING:
-            raise ValueError("This was already answered.")
-        if decision == "accept":
-            self._save_rules(dict(row))
-        status = ACCEPTED if decision == "accept" else DECLINED
-        await self.app.store.execute(
-            "UPDATE rule_proposals SET status = ?, decided_at = ? WHERE id = ?", (status, now_iso(), proposal_id)
-        )
-        self._pending.pop(row["session_id"], None)  # rebuilt from what is still pending
-        proposal = await self.get(proposal_id)
+        async with self._deciding:  # one answer wins; a second one sees it was already answered
+            row = await self.app.store.fetchone("SELECT * FROM rule_proposals WHERE id = ?", (proposal_id,))
+            if row is None:
+                raise LookupError(proposal_id)
+            if row["status"] != PENDING:
+                raise ValueError("This was already answered.")
+            if decision == "accept":
+                self._save_rules(dict(row))
+            status = ACCEPTED if decision == "accept" else DECLINED
+            await self.app.store.execute(
+                "UPDATE rule_proposals SET status = ?, decided_at = ? WHERE id = ?", (status, now_iso(), proposal_id)
+            )
+            self._pending.pop(row["session_id"], None)  # rebuilt from what is still pending
+            proposal = await self.get(proposal_id)
         self.app.bus.publish("rule_proposal.updated", proposal)
         return proposal  # type: ignore[return-value]
 
@@ -464,10 +480,15 @@ class ChatRules:
         origins = dict(approvals.rule_origins)
         changed = False
         for key in _keys(row["keys"]):
-            if STRICTNESS[level] > STRICTNESS.get(self._current(rules, key), 1):
-                rules[key] = level
-                origins[key] = RuleOrigin(rule=level, said=row["said"], at=now_iso(), session_id=row["session_id"])
-                changed = True
+            # a tool: its effective rule; an app: its own rule, plus tools inside it whose own looser rule would
+            # otherwise beat the new app rule ("never use Mail" also covers a tool that was set to Allow)
+            checks = [(key, self._current(rules, key) if self._is_tool(key) else rules.get(key))]
+            checks += [(k, rules.get(k)) for k in self._overrides(rules, key)]
+            for k, current in checks:
+                if STRICTNESS[level] > STRICTNESS.get(current, 1):
+                    rules[k] = level
+                    origins[k] = RuleOrigin(rule=level, said=row["said"], at=now_iso(), session_id=row["session_id"])
+                    changed = True
         if changed:
             approvals.rules = rules
             approvals.rule_origins = origins

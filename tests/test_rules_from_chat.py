@@ -246,6 +246,49 @@ async def test_each_app_is_narrowed_by_its_own_instruction(config, isolated_home
         await s.stop()
 
 
+async def test_a_whole_app_never_also_covers_its_allowed_tools(config, isolated_home):
+    """A tool's own rule beats its app's, so accepting "Never: Mail" tightens a tool set to Allow as well."""
+    log: list[str] = []
+    config.tools.approvals.rules = {"mail": "never", "mail_delete_email": "allow", "mail_search": "never"}
+    llm = FakeProvider(replies=["ok", [tool_call("mail_delete_email", message_id="m1")], "Could not."],
+                       json_replies=[{"keys": ["mail"], "rule": "never"}])
+    s = await _start(config, isolated_home, llm, log)
+    try:
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, "never use my mail")
+        [proposal] = await s.chat_rules.list(sid)  # proposed although the app already says Never
+        assert proposal["keys"] == ["mail"]
+        await s.chat_rules.decide(proposal["id"], "accept")
+        approvals = s.config.tools.approvals
+        assert approvals.rules == {"mail": "never", "mail_delete_email": "never", "mail_search": "never"}
+        assert set(approvals.rule_origins) == {"mail_delete_email"}  # the rules that changed
+        _, events = await _turn(s, sid, "delete m1")
+        res = next(e for e in events if isinstance(e, ToolResultEvent))
+        assert "never use" in res.result["error"] and log == []
+    finally:
+        await s.stop()
+
+
+async def test_simultaneous_answers_cannot_both_win(config, isolated_home):
+    import asyncio
+
+    llm = FakeProvider(replies=["ok"], json_replies=[NEVER_DELETE])
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, "never delete my emails")
+        [proposal] = await s.chat_rules.list(sid)
+        results = await asyncio.gather(
+            s.chat_rules.decide(proposal["id"], "accept"), s.chat_rules.decide(proposal["id"], "decline"),
+            return_exceptions=True,
+        )
+        assert isinstance(results[1], ValueError) and results[0]["status"] == "accepted"
+        [final] = await s.chat_rules.list(sid, None)
+        assert final["status"] == "accepted" and s.config.tools.approvals.rules == {"mail_delete_email": "never"}
+    finally:
+        await s.stop()
+
+
 async def test_without_asking_makes_an_ask_rule(config, isolated_home):
     llm = FakeProvider(replies=["ok"], json_replies=[NEVER_DELETE])
     s = await _start(config, isolated_home, llm, [])
