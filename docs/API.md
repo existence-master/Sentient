@@ -299,8 +299,9 @@ accept or loosen a rule.
   fast and planner), `thinking` (Ollama models that can think: thinking matches the role's reasoning setting),
   `context` (tokens in use vs the model's maximum from `/api/show`; also warns when the role uses the model sized for
   this computer with more tokens than its graphics card holds, with a `set_context_length` fix to the recommended
-  length), `gpu` (from Ollama `/api/ps`: `size_vram` vs `size`, warns when part of the model runs on the processor; its
-  fix names the recommended model and context length and its action shortens to the recommended length when that is
+  length), `gpu` (from Ollama `/api/ps`: `size_vram` vs `size`, warns when part of the model runs on the processor, except
+  that the model sized for this computer at no more than the recommended length passes with 85% or more on the
+  graphics card, since qwen3:8b at 8,192 tokens keeps about 90% there on an 8 GB card; its fix names the recommended model and context length and its action shortens to the recommended length when that is
   shorter, else 8,192), `embedding` (embedding role only). A model that fails the tool checks gets the recommended model
   as its fix (`qwen3:8b` when the computer only fits a small one). Cloud and
   LM Studio models get no Ollama checks. `action` is an optional one-click fix the window may offer:
@@ -765,7 +766,9 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
 - `POST /api/integrations/mcp/{name}/sign-out` → server object; deletes the stored tokens (the client registration is kept)
   and cancels a pending sign-in. A server with `auth: "oauth"` then shows `needs_sign_in`.
 - Tokens are refreshed with the refresh token before they expire (60 s early) and once after a 401 before asking for a
-  new sign-in. Keychain entries: `mcp:<name>` (env), `mcp:<name>:headers`, `mcp:<name>:oauth` (tokens),
+  new sign-in. Keychain entries: `mcp:<name>` (env), `mcp:<name>:headers`, `mcp:<name>:oauth` (tokens, their expiry
+  and the authorization server metadata with the server URL it belongs to, so a refresh after a restart uses the real
+  token endpoint; a record without the metadata looks it up once),
   `mcp:<name>:client` (registration); values too long for one entry continue in `<entry>:1`, `<entry>:2`...
 - `PUT /api/integrations/{id}/privacy-filters` → 400 when the integration has `privacy_filters.supported: false`
 

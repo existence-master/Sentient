@@ -611,7 +611,8 @@ class MCPManager:
 
         registered = load_json(client_secret(name)) or {}
         redirect = (registered.get("redirect_uris") or ["http://127.0.0.1/oauth/callback"])[0]
-        return SentientOAuthProvider(url, client_metadata(redirect), store, no_browser, no_code)
+        return SentientOAuthProvider(url, client_metadata(redirect), store, no_browser, no_code,
+                                     discovery_transport=self.http_transport)
 
     @staticmethod
     async def _list_tools(client: Any) -> list:

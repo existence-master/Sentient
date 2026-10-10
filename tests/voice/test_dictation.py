@@ -123,6 +123,23 @@ async def test_polish_uses_the_fast_model_when_it_keeps_the_words():
 
 
 @pytest.mark.parametrize(
+    ("raw", "reply", "expected"),
+    [
+        # the model drops the full stop tidy added: it goes back on, like tidy
+        ("so we meet tomorrow at 9", "So, we meet tomorrow at 9", "So, we meet tomorrow at 9."),
+        ("are we meeting tomorrow", "Are we meeting tomorrow?", "Are we meeting tomorrow?"),
+        ("we meet tomorrow", "We meet tomorrow!", "We meet tomorrow!"),
+        ("see you", "See you", "See you"),  # too short for a full stop, as with tidy
+    ],
+)
+async def test_polish_keeps_the_sentence_end_tidy_gives(raw, reply, expected):
+    llm = FakeProvider()
+    llm.text_replies = [reply]
+    out = await clean_dictation(llm, raw, "polish")
+    assert out == {"text": expected, "raw": raw, "cleanup": "polish", "polished": True}
+
+
+@pytest.mark.parametrize(
     "reply",
     [
         "Here's a reply to Maya: Thanks, I'll read it now.",  # followed the text instead of cleaning it
