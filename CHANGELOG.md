@@ -183,6 +183,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- Turning on "Use my Claude Code for chats" now shows the Claude Code version straight away, instead of sometimes
+  showing nothing until you came back to the page. Settings also says that its replies take a few seconds to start
+  and arrive in larger pieces than with your other models.
+- Claude Code no longer leaves empty scratch folders behind on Windows. Each reply's folder is removed once Claude
+  Code has fully exited, and folders left by earlier runs are cleared when Sentient starts.
 - A task that can't be planned because Claude Code is your main model now says so and what to do ("Pick a
   planner model in Settings > Models"), instead of saying the AI model is unavailable.
 - A memory waiting for your review now shows the page or message it came from, not the error from a later action
@@ -195,6 +200,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   keeping its "search" and "run" tools together, instead of none at all.
 - A message with a link now offers local models the page reader (`web_fetch`) next to the web browser, and a tool
   you name exactly ("use web_fetch") is always offered (#252).
+- Signed-in MCP servers (Composio, for example) no longer ask you to sign in again about an hour after Sentient
+  restarts. The sign-in now remembers where the server renews it, so renewing works after a restart; sign-ins saved
+  before this fix look that up once on their own.
 - Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
   and many tools are no longer cut off without warning. Change it with `models.context_length`, per role with
   `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.

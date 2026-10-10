@@ -212,6 +212,7 @@ class SentientApp:
         if self._started:
             return self
         paths.ensure_layout()
+        await asyncio.to_thread(claude_code.sweep_scratch)  # folders an earlier run couldn't remove (ADR 0022)
         await self.store.open()
         await self._load_stop_state()  # before services start: a stopped Sentient starts paused
         self.workspace.ensure_defaults(

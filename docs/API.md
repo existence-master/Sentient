@@ -276,7 +276,8 @@ accept or loosen a rule.
   means a `claude` program is on PATH; `version` is its `claude --version` line, asked only while `enabled` (null
   otherwise or when it doesn't answer). `detail` is a plain sentence for Settings. `models` are the model names to
   offer (`CLAUDE_CODE_MODELS` in `config/schema.py`: `claude-code/sonnet`, `claude-code/opus`). It never calls a model
-  and never reads Claude's login; `POST /api/models/test` with a `claude-code/` model is the only dry run.
+  and never reads Claude's login; `POST /api/models/test` with a `claude-code/` model is the only dry run. `enabled`
+  is the saved setting, so a window that has just flipped the switch asks again until it matches.
 - `POST /api/models/checkup` `{roles?: {role: model | null}}` → streams NDJSON while it checks each role's model,
   one role at a time (local models are never loaded side by side). Without `roles` it checks every role in the saved
   config; with `roles` it checks only those, with those models (onboarding checks its picks before saving). It is
@@ -347,7 +348,9 @@ accept or loosen a rule.
   --output-format stream-json --verbose --include-partial-messages --model <name> --tools "" --disallowedTools <its
   built-ins> --permission-mode dontAsk --setting-sources= --strict-mcp-config --disable-slash-commands
   --no-session-persistence --max-turns 1 --system-prompt-file <file> [--mcp-config <file>] [--effort <role's
-  reasoning>]` in a scratch folder under `~/.sentient/tmp/claude-code/`, removed afterwards. The environment is the
+  reasoning>]` in a scratch folder under `~/.sentient/tmp/claude-code/`, removed once Claude Code and its tool bridge
+  have exited (retried for a few seconds while Windows still holds it; folders older than an hour are swept when the
+  engine starts). The environment is the
   engine's minus the window token and everything that would make Claude Code use something other than the plan login
   (every `ANTHROPIC_*`, `CLAUDE_CODE_USE_*` and `CLAUDE_CODE_OAUTH_*` variable, `CLAUDE_CODE_SIMPLE`,
   `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH`; `CLAUDE_CONFIG_DIR` is kept), with
@@ -772,7 +775,9 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
 - `POST /api/integrations/mcp/{name}/sign-out` → server object; deletes the stored tokens (the client registration is kept)
   and cancels a pending sign-in. A server with `auth: "oauth"` then shows `needs_sign_in`.
 - Tokens are refreshed with the refresh token before they expire (60 s early) and once after a 401 before asking for a
-  new sign-in. Keychain entries: `mcp:<name>` (env), `mcp:<name>:headers`, `mcp:<name>:oauth` (tokens),
+  new sign-in. Keychain entries: `mcp:<name>` (env), `mcp:<name>:headers`, `mcp:<name>:oauth` (tokens, their expiry
+  and the authorization server metadata with the server URL it belongs to, so a refresh after a restart uses the real
+  token endpoint; a record without the metadata looks it up once),
   `mcp:<name>:client` (registration); values too long for one entry continue in `<entry>:1`, `<entry>:2`...
 - `PUT /api/integrations/{id}/privacy-filters` → 400 when the integration has `privacy_filters.supported: false`
 
