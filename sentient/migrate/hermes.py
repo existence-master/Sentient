@@ -11,6 +11,7 @@ in it; ``apply(app, path, parts, skip)`` does it for the parts the user picked:
 - ``SOUL.md``                    -> Sentient's SOUL.md, only when ``persona`` is picked (the preview shows both).
 - ``cron/jobs.json``             -> paused tasks. Resuming one plans it and asks for approval like any new task.
                                    A script job becomes a script task only when its Python script is there.
+                                   ``deliver`` becomes the task's ``deliver_to`` (``_delivery``).
 - ``config.yaml`` ``mcp_servers`` -> MCP servers, turned off, with no header, environment or sign-in values.
 - ``config.yaml`` wake word and voice -> suggestions only.
 
@@ -47,6 +48,7 @@ from typing import Any
 import yaml
 
 from sentient.skills.loader import slugify, valid_name
+from sentient.tasks.delivery import WHATSAPP_SELF
 from sentient.tasks.schedule import DAY_NAMES, MIN_INTERVAL_MINUTES, normalize_schedule, parse_iso
 from sentient.tasks.scripts import ScriptInvalid, validate_code
 
@@ -505,23 +507,65 @@ def _script(home: Path, raw: str) -> tuple[Path | None, str, str]:
     return real, shown, ""
 
 
-async def _delivery(app: Any, deliver: Any, origin: Any = None) -> tuple[str, str]:
-    """Where results go: a paired messaging app named by the job (or the chat it was made in), else this computer."""
-    wanted = [d.split(":", 1)[0].strip().lower() for d in str(deliver or "").split(",") if d.strip()]
-    if "origin" in wanted and isinstance(origin, dict):
-        wanted.append(str(origin.get("platform") or "").strip().lower())
-    asked = [p for p in wanted if p in CHANNEL_NAMES]
-    for platform in asked:
-        try:
-            paired = await app.channels.store.chats(platform)
-        except Exception:
-            paired = []
-        if paired:
-            return platform, f"Results go to your paired {CHANNEL_NAMES[platform]} chat and this computer."
-    if asked:
-        name = CHANNEL_NAMES[asked[0]]
-        return "desktop", f"{name} isn't set up in Sentient yet, so results show on this computer. Pair it in Channels."
-    return "desktop", "Results show on this computer."
+async def _paired(app: Any, platform: str) -> list[dict]:
+    try:
+        return await app.channels.store.chats(platform)
+    except Exception:
+        return []
+
+
+async def _whatsapp_self(app: Any) -> dict | None:
+    """The paired "Message yourself" chat: the linked number's own chat, else the chat with that label."""
+    chats = await _paired(app, "whatsapp")
+    try:
+        number = re.sub(r"\D", "", str((await app.channels.store.state("whatsapp")).get("account_label") or ""))
+    except Exception:
+        number = ""
+    own = [c for c in chats if number and c["chat_id"] == f"{number}@s.whatsapp.net"]
+    return (own or [c for c in chats if c.get("label") == "Message yourself"] or [None])[0]
+
+
+async def _delivery(app: Any, deliver: Any, origin: Any = None) -> tuple[str, Any, str]:
+    """(messaging app for the preview, the task's ``deliver_to``, a note). Hermes' ``deliver`` is ``local``,
+    ``origin`` or ``<platform>[:<chat>]``, comma-separated: WhatsApp means the "Message yourself" chat (kept even
+    when WhatsApp isn't linked yet), Telegram and Discord the paired chat with that id (else every paired chat of
+    that app), and ``local`` this computer only."""
+    asked: list[tuple[str, str]] = []
+    for part in str(deliver or "").split(","):
+        platform, _, chat = part.strip().partition(":")
+        platform = platform.strip().lower()
+        if platform == "origin" and isinstance(origin, dict):
+            platform, chat = str(origin.get("platform") or "").strip().lower(), str(origin.get("chat_id") or "")
+        if platform in CHANNEL_NAMES and (platform, chat.strip()) not in asked:
+            asked.append((platform, chat.strip()))
+    if not asked:
+        return "desktop", "desktop", "Results show on this computer only."
+    chats: list[dict] = []
+    labels: list[str] = []
+    hints: list[str] = []
+    for platform, chat_id in asked:
+        name = CHANNEL_NAMES[platform]
+        if platform == "whatsapp":
+            own = await _whatsapp_self(app)
+            chats.append({"channel": "whatsapp", "chat_id": own["chat_id"] if own else WHATSAPP_SELF})
+            if own is None:
+                hints.append("WhatsApp isn't linked in Sentient yet, so results show on this computer until you link it "
+                             "in Channels. Then they go to your Message yourself chat.")
+            else:
+                labels.append("WhatsApp: Message yourself")
+            continue
+        paired = await _paired(app, platform)
+        picked = [c for c in paired if c["chat_id"] == chat_id] or paired
+        if not picked:
+            hints.append(f"{name} isn't set up in Sentient yet. Pair it in Channels, then pick the chat on the task.")
+        for c in picked:
+            chats.append({"channel": platform, "chat_id": c["chat_id"]})
+            labels.append(f"{name}: {c.get('label') or c['chat_id']}")
+    unique = [c for i, c in enumerate(chats) if c not in chats[:i]]
+    if not unique:
+        return "desktop", "default", " ".join(["Results show on this computer.", *hints])
+    lead = [f"Results go to {', '.join(dict.fromkeys(labels))} and this computer."] if labels else []
+    return unique[0]["channel"], unique, " ".join([*lead, *hints])
 
 
 async def _plan_jobs(app: Any, home: Path) -> list[dict]:
@@ -540,15 +584,19 @@ async def _plan_jobs(app: Any, home: Path) -> list[dict]:
         schedule, shown, reason = _job_schedule(job.get("schedule"))
         info: dict[str, Any] = {"name": name, "prompt": prompt, "schedule_text": shown, "skills": skills, "script": None}
         if key.split(":", 1)[1] in done:
-            items.append(_item(key, "skip", "Already brought over.", schedule=None, kind="task", delivery="desktop", **info))
+            items.append(_item(key, "skip", "Already brought over.", schedule=None, kind="task", delivery="desktop",
+                               deliver_to="desktop", **info))
             continue
         if schedule is None:
-            items.append(_item(key, "skip", reason, schedule=None, kind="task", delivery="desktop", **info))
+            items.append(_item(key, "skip", reason, schedule=None, kind="task", delivery="desktop", deliver_to="desktop",
+                               **info))
             continue
         schedule = normalize_schedule(schedule, tz)
-        delivery, delivery_note = await _delivery(app, job.get("deliver"), job.get("origin"))
-        info.update(schedule=schedule, delivery=delivery)
-        raw_script = str(job.get("monitor_script") or job.get("script") or "").strip()
+        delivery, deliver_to, delivery_note = await _delivery(app, job.get("deliver"), job.get("origin"))
+        info.update(schedule=schedule, delivery=delivery, deliver_to=deliver_to,
+                    hermes_deliver=str(job.get("deliver") or "").strip() or None)
+        monitor = str(job.get("monitor_script") or "").strip()
+        raw_script = monitor or str(job.get("script") or "").strip()
         kind = "task"
         notes = [delivery_note]
         if raw_script:
@@ -565,9 +613,12 @@ async def _plan_jobs(app: Any, home: Path) -> list[dict]:
             kind = "script"
             info["script"] = {"path": shown_path, "code": code}
             then = "run" if prompt and not job.get("no_agent") else "notify"
-            info["then"] = then
-            notes.insert(0, f"Runs your script {shown_path} with no AI; when its output changes, "
-                         + ("Sentient carries out the job." if then == "run" else "you get a notification."))
+            # Hermes reports a plain script job on every run (empty output stays quiet); a monitor job only on change
+            condition = "changed" if monitor else "every_run"
+            info.update(then=then, condition=condition)
+            when = "when its output changes" if monitor else "after every run that prints something"
+            notes.insert(0, f"Runs your script {shown_path} with no AI; {when}, "
+                         + ("Sentient carries out the job." if then == "run" else "you get its output."))
         elif not prompt and not skills:
             items.append(_item(key, "skip", "This job has nothing to do.", kind="task", **info))
             continue
@@ -627,9 +678,9 @@ def _plan_mcp(app: Any, cfg: dict) -> list[dict]:
         if auth == "oauth":
             notes.append("Then sign in again.")
         if info["header_keys"]:
-            notes.append(f"Its header values ({', '.join(info['header_keys'])}) aren't copied; add the server again with them.")
+            notes.append(f"Its header values ({', '.join(info['header_keys'])}) aren't copied; fill them in with Add values on the server.")
         if info["env_keys"]:
-            notes.append(f"Its settings ({', '.join(info['env_keys'])}) aren't copied; add the server again with them.")
+            notes.append(f"Its settings ({', '.join(info['env_keys'])}) aren't copied; fill them in with Add values on the server.")
         if "${" in " ".join([url, command, *info["args"]]):
             notes.append("It uses ${...} values from Hermes' settings; change them to real values when you add it again.")
         if str(spec.get("transport") or "").lower() == "sse":
@@ -766,11 +817,13 @@ async def apply(app: Any, path: str | None, parts: list[str] | None, skip: list[
                     name=item["name"],
                     prompt=_job_prompt(item),
                     schedule=item["schedule"],
-                    script=({"code": item["script"]["code"], "condition": "changed", "then": item["then"]}
+                    script=({"code": item["script"]["code"], "condition": item["condition"], "then": item["then"]}
                             if item["kind"] == "script" else None),
                     context={"source": SOURCE, "imported_from": "hermes", "hermes_job": item["key"].split(":", 1)[1],
                              "hermes_schedule": item["schedule_text"], "deliver": item["delivery"],
+                             "hermes_deliver": item["hermes_deliver"],
                              **({"script_path": item["script"]["path"]} if item["script"] else {})},
+                    deliver_to=item["deliver_to"],
                 )
             except Exception as exc:
                 log.warning("could not import Hermes job %s: %s", item["key"], exc)

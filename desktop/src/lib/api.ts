@@ -540,7 +540,10 @@ export const api = {
       test: (name: string) => http.post<McpTestResult>(`/api/integrations/mcp/${enc(name)}/test`),
       signIn: (name: string) => http.post<McpSignInStart>(`/api/integrations/mcp/${enc(name)}/sign-in`),
       signOut: (name: string) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/sign-out`),
-      setEnabled: (name: string, enabled: boolean) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/enabled`, { enabled })
+      setEnabled: (name: string, enabled: boolean) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/enabled`, { enabled }),
+      /** Fill in the server's own header or env values (keychain only), then it reconnects. */
+      setValues: (name: string, values: Record<string, string>, enable = false) =>
+        http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/values`, { values, enable })
     },
     /** §16 change feeds (Gmail, Calendar) and IMAP push watchers. */
     feeds: {

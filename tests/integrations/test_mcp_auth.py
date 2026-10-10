@@ -211,6 +211,44 @@ async def test_header_validation(app):
         await app.integrations.mcp.add("x", {"transport": "stdio", "command": "x", "headers": {"A": "b"}})
 
 
+async def test_missing_values_are_filled_in_and_used_on_reconnect(app, ctx, keychain):
+    """An imported server lists header and environment names without values; "Add values" fills them in."""
+    mock = MockServer(oauth=False)
+    app.integrations.mcp.http_transport = mock.transport()
+    mcp = app.integrations.mcp
+    notes = await mcp.import_server("Notes", {"transport": "http", "url": URL, "auth": "headers",
+                                              "header_keys": ["Authorization"]})
+    assert notes["missing_values"] == ["Authorization"] and notes["status"] == "disabled"
+    local = await mcp.import_server("Local", {"transport": "stdio", "command": "npx", "args": ["-y", "some-mcp"],
+                                              "env_keys": ["API_TOKEN", "REGION"]})
+    assert local["missing_values"] == ["API_TOKEN", "REGION"]
+
+    with pytest.raises(ValueError, match="isn't one of this server's headers"):
+        await mcp.set_values("Notes", {"X-Other": "v"})
+    with pytest.raises(ValueError, match="single-line"):
+        await mcp.set_values("Notes", {"Authorization": "Bearer a\nb"})
+    with pytest.raises(KeyError):
+        await mcp.set_values("Missing", {})
+
+    filled = await mcp.set_values("Notes", {"Authorization": "Bearer static-secret"}, enable=True)
+    assert filled["status"] == "connected" and filled["missing_values"] == [] and filled["enabled"] is True
+    assert set(mock.seen_tokens) == {"static-secret"}
+    assert (await app.registry.get("mcp_notes_hello").call(ctx, {}))["content"] == "hi there"
+    assert "static-secret" in keychain["mcp:Notes:headers"]
+    # a blank value keeps the saved one; the server reconnects with it
+    mock.seen_tokens.clear()
+    again = await mcp.set_values("Notes", {"Authorization": "  "})
+    assert again["status"] == "connected" and set(mock.seen_tokens) == {"static-secret"}
+
+    partly = await mcp.set_values("Local", {"API_TOKEN": "tok-123"})
+    assert partly["missing_values"] == ["REGION"] and partly["status"] == "disabled"
+    assert "tok-123" in keychain["mcp:Local"]
+    saved = paths.config_file().read_text(encoding="utf-8")
+    assert "static-secret" not in saved and "tok-123" not in saved
+    assert "headers" not in app.config.integrations.mcp_servers["Notes"]
+    assert "env" not in app.config.integrations.mcp_servers["Local"]
+
+
 # ---------------------------------------------------------------------------- OAuth
 async def test_oauth_sign_in_with_pkce_and_dynamic_registration(app, ctx, keychain):
     mock = MockServer(oauth=True)

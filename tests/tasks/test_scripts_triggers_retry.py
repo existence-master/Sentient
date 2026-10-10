@@ -218,6 +218,32 @@ async def test_script_job_changed_then_run(make_app):
     assert "price" in stream_calls(llm)[0]["messages"][0]["content"]
 
 
+async def test_every_run_reports_identical_output_and_changed_does_not(make_app):
+    app = await make_app(FakeProvider())
+    same = [{"ok": True, "result": None, "stdout": "3 new posts drafted\n"} for _ in range(3)]
+    app.sandbox.run = FakeSandbox([*same, {"ok": True, "result": None, "stdout": ""}, *same])
+    every = await _script_task(app, condition="every_run", status="active", name="Posting report")
+    for _ in range(4):  # the fourth check prints nothing: no report
+        await app.tasks.run_now(every)
+        await app.tasks.drain()
+    changed = await _script_task(app, condition="changed", status="active", name="Posting watch")
+    for _ in range(3):
+        await app.tasks.run_now(changed)
+        await app.tasks.drain()
+    notes = await app.notifications.list()
+    reports = [n for n in notes if n.get("task_id") == every and n["payload"].get("event") == "script_alert"]
+    assert len(reports) == 3 and {n["message"] for n in reports} == {"3 new posts drafted"}
+    assert "script_alert" not in _events(notes, changed)  # the same output three times is never a change
+    task = await app.tasks.get(every)
+    assert task["status"] == "active" and task["script"]["condition"] == "every_run"
+    assert scripts.describe_for_approval(task["script"]).startswith("Runs a small check script with no AI calls; after every")
+    # switching an existing job between the two is a normal script edit
+    switched = await app.tasks.update(changed, {"script": {"condition": "every_run"}})
+    assert switched["script"]["condition"] == "every_run"
+    with pytest.raises(ScriptInvalid):
+        await app.tasks.update(changed, {"script": {"condition": "sometimes"}})
+
+
 async def test_triggered_script_job_gets_the_event(make_app):
     app = await make_app(FakeProvider())
     sandbox = FakeSandbox([{"ok": True, "result": {"alert": True, "message": "Deploy failed"}}])

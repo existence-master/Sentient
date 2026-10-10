@@ -58,7 +58,7 @@ AUTH_MODES = ("none", "headers", "oauth")
 HEADER_NAME = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$")
 SIGN_IN_MESSAGES = {
     "none": "This server asks you to sign in.",
-    "headers": "The server didn't accept the saved headers. Check them and add the server again.",
+    "headers": "The server didn't accept the saved headers. Change their values with the key button on the server.",
     "oauth": "Sign in to use this server.",
 }
 
@@ -200,6 +200,7 @@ class MCPManager:
             "env_keys": env_keys,
             "auth": auth,
             "header_keys": sorted(spec.get("header_keys") or []),
+            "missing_values": self._missing_values(conn.name, spec),
             "signed_in": auth == "oauth" and KeychainTokenStorage(conn.name).has_tokens(),
             "signing_in": conn.signin is not None,
             "enabled": bool(spec.get("enabled", True)),
@@ -300,6 +301,55 @@ class MCPManager:
         cfg.integrations.mcp_servers = {**cfg.integrations.mcp_servers, name: stored}
         self.app.save_config()
         return self.describe(self._launch(name, stored))
+
+    @staticmethod
+    def _missing_values(name: str, spec: dict) -> list[str]:
+        """Header and environment names this server lists without a value (an imported server, for example)."""
+        if spec.get("transport", "stdio") == "http":
+            have = load_json(headers_secret(name)) or {}
+            return sorted(k for k in spec.get("header_keys") or [] if not str(have.get(k) or "").strip())
+        have = {**(spec.get("env") or {}), **(load_secret_json(f"mcp:{name}") or {})}
+        return sorted(k for k in spec.get("env_keys") or [] if not str(have.get(k) or "").strip())
+
+    async def set_values(self, name: str, values: dict, *, enable: bool = False, wait_s: float = 15.0) -> dict:
+        """Fill in the header or environment values a server lists by name (the "Add values" form). Values go to the
+        keychain, never to config; a blank value keeps the saved one. Then the server reconnects (and is turned on
+        with ``enable``)."""
+        cfg = self.app.config
+        spec = cfg.integrations.mcp_servers.get(name)
+        if spec is None:
+            raise KeyError(name)
+        http = spec.get("transport", "stdio") == "http"
+        allowed = set(spec.get("header_keys" if http else "env_keys") or [])
+        given = {str(k).strip(): str(v).strip() for k, v in (values or {}).items() if str(v).strip()}
+        for key, value in given.items():
+            if key not in allowed:
+                raise ValueError(f"'{key}' isn't one of this server's {'headers' if http else 'settings'}.")
+            if len(value.splitlines()) > 1:
+                raise ValueError(f"Enter a single-line value for '{key}'.")
+        if given:
+            secret = headers_secret(name) if http else f"mcp:{name}"
+            current = (load_json(secret) if http else load_secret_json(secret)) or {}
+            merged = {**{k: v for k, v in current.items() if k in allowed}, **given}
+            if not (save_json(secret, merged) if http else store_secret_json(secret, merged)):
+                raise ValueError("The system keychain is unavailable, so these values can't be stored safely.")
+        stored = dict(spec)
+        if http and given and _auth_of(stored) == "none":
+            stored["auth"] = "headers"
+        if enable:
+            stored["enabled"] = True
+        if stored != spec:
+            cfg.integrations.mcp_servers = {**cfg.integrations.mcp_servers, name: stored}
+            self.app.save_config()
+        old = self.servers.pop(name, None)
+        if old is not None:
+            self._cancel_sign_in(old)
+            await self._shutdown(old)
+        conn = self._launch(name, stored)
+        if stored.get("enabled", True) and wait_s > 0:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(conn.ready.wait(), wait_s)
+        return self.describe(conn)
 
     async def set_enabled(self, name: str, enabled: bool) -> dict:
         """Turn a server on or off without changing anything else."""

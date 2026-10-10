@@ -282,7 +282,7 @@ Routes:
             | {"type": "recurring", "frequency": "daily|weekly", "days": ["Monday"], "time": "09:00", "timezone": "...", "catch_up?": "run|skip"}
             | {"type": "recurring", "frequency": "interval", "interval_minutes": 60, "timezone": "..."}
             | {"type": "triggered", "source": "gmail|gcalendar|webhook|...", "event": "new_email|new_event|<hook id>|...", "filter": {}, "timezone": "..."},
-  "script": {"code": "...", "condition": "alert|changed", "then": "notify|run", "last_result": null, "last_run_at": "...|null", "last_error": "...|null"} | null,
+  "script": {"code": "...", "condition": "alert|changed|every_run", "then": "notify|run", "last_result": null, "last_run_at": "...|null", "last_error": "...|null"} | null,
   "plan": [{"tool": "gmail", "description": "Fetch unread emails from the last 7 days"}],
   "runs": [Run], "chat_history": [{"role": "user|assistant", "content": "...", "timestamp": "..."}],
   "clarifying_questions": [{"question_id": "q1", "text": "...", "answer": null}],
@@ -290,6 +290,7 @@ Routes:
                     "progress_updates": [{"worker_id": "agent-1|aggregator", "timestamp": "...", "status": "processing|completed|error|aggregating", "message": "..."}],
                     "aggregated_results": []} | null,
   "enabled": true, "model": null, "browser_profile": "x-posting|null",
+  "deliver_to": "default" | "desktop" | [{"channel": "telegram|discord|whatsapp", "chat_id": "..."}],
   "original_context": {"source": "manual_creation|chat|proactive|trigger", "...": "..."},
   "error": "...|null",
   "next_execution_at": "...|null", "last_execution_at": "...|null", "created_at": "...", "updated_at": "..."
@@ -297,6 +298,7 @@ Routes:
 ```
 `swarm_details` is `null` for single tasks. `script` is `null` unless `task_type` is `script` (section 16).
 `browser_profile` is the browser profile its runs use (section 12); `null` means `default`.
+`deliver_to` is where the task's notifications go besides the app (see "Where results go" below).
 `error` holds the last planning/run failure message (v2 `task.error`).
 Each run embeds its most recent 200 progress updates; the full log is at the `/events` endpoint.
 `interval` schedules (every `interval_minutes`, minimum 5; `frequency: "hourly"` is normalized to 60) are additive; the
@@ -331,7 +333,7 @@ and an empty `plan`, so they never run as they are. The first Resume (`PATCH {en
 it goes to `planning` and then `approval_pending` like a new task, keeping its schedule. A script task whose script only
 notifies skips the planner and goes straight to `approval_pending` with a one-step plan describing the script (or to
 `active` when `tasks.require_plan_approval` is off). `POST /run-now` on it returns 409 until it has a plan. Backend API:
-`await app.tasks.create_imported(*, name, prompt, schedule, script=None, context=None)` → Task.
+`await app.tasks.create_imported(*, name, prompt, schedule, script=None, context=None, deliver_to=None)` → Task.
 **ProgressUpdate** `{"timestamp": "...", "message": {"type": "info|thought|tool_call|tool_result|final_answer|error", "content": "...", "tool_name": "...", "parameters": {}, "result": "...", "is_error": false}}`
 
 ### Endpoints
@@ -339,8 +341,10 @@ notifies skips the planner and goes straight to `approval_pending` with a one-st
 - `GET /api/tasks/{id}` → `Task`
 - `POST /api/tasks` `{prompt, is_swarm?: bool, assignee?: "ai", model?, browser_profile?}` → `Task` (status `planning`; refinement + planning continue in the background and arrive as `task.updated`)
 - `POST /api/tasks/preview` `{prompt}` → `{name, description, priority, schedule}` (v2 generate-plan)
-- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile}` → `Task`
+- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile, deliver_to}` → `Task`
   (`browser_profile`: a name from `browser.profiles`, 400 for an unknown one; `null`, `""` or `"default"` clear it)
+  (`deliver_to`: `"default"` (or `null`), `"desktop"`, or a list of up to 10 `{channel, chat_id}`; an empty list is
+  `"desktop"`; 400 for anything else, an unknown channel or a missing `chat_id`)
   (`script`: partial `{code?, condition?, then?}` merged into the current script and validated, 400 when the code does not
   compile; changing `code` or `condition` resets `last_result`/`last_run_at`/`last_error`; `script: null` turns a script job back
   into a `single` task; a `script` on a single task makes it a script job)
@@ -391,6 +395,17 @@ Behaviour notes:
 - On restart, runs left `processing` resume from their transcript checkpoint (`tasks.resume_interrupted_runs`), else they end with error `Interrupted by restart`.
   Runs `waiting_for_user` are left alone: they keep waiting, with their question, until answered or cancelled.
 - Disconnecting an integration sets `enabled: false` on tasks whose plan or trigger uses it (instead of v2's delete) and sends a notification.
+
+### Where results go
+A task's `deliver_to` decides which messaging apps (section 14) get its notifications: run results and failures,
+script alerts and failures, questions from its runs, plans waiting for approval and, for the Daily and Evening Brief
+tasks, the brief itself. The app always gets them.
+- `"default"`: paired chats with delivery on, as the `channels.deliver_*` switches say (the behaviour before #227).
+- `"desktop"`: the app only; nothing goes to a messaging app.
+- `[{channel, chat_id}]`: only these paired chats, whatever their own delivery switch and the `channels.deliver_*`
+  switches say. `{"channel": "whatsapp", "chat_id": "self"}` is the WhatsApp "Message yourself" chat of whichever
+  number is linked. A chat that is not paired (or a channel that is not connected) is skipped.
+`rerun` keeps it. Backend API: `await app.tasks.delivery_for(task_id)` → `"default" | "desktop" | [...]`.
 
 ### Tasks that ask you a question
 - Inside a task run (never in chat, subagents, swarm workers or the planner) the executor can call
@@ -542,17 +557,25 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
 - `POST /api/integrations/{id}/test` → `{ok, detail}`
 - `GET /api/integrations/{id}/privacy-filters` → `{keywords: [], emails: [], labels: []}`
 - `PUT /api/integrations/{id}/privacy-filters` same shape → `{ok}`
-- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, auth: "none|headers|oauth", header_keys, signed_in, signing_in, enabled, status: "connecting|connected|needs_sign_in|error|disconnected|disabled", tools: [{name, mcp_name, description, risk}], error}]`
+- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, auth: "none|headers|oauth", header_keys, missing_values, signed_in, signing_in, enabled, status: "connecting|connected|needs_sign_in|error|disconnected|disabled", tools: [{name, mcp_name, description, risk}], error}]`
   (`name` is the Sentient tool name `mcp_<server>_<tool>`; `env` and header values are kept in the keychain, only `env_keys` and `header_keys` are returned)
+  - `missing_values`: the `header_keys` (remote servers) or `env_keys` (local commands) that have no value in the
+    keychain yet, for example on a server imported from Hermes. Never the values themselves.
   - `auth` (remote servers only): `none`, `headers` (static headers such as `Authorization: Bearer ...` sent on every request) or `oauth` (sign-in with the MCP authorization spec). Header values are sent in every mode when `header_keys` is not empty.
   - `signed_in`: an OAuth sign-in is stored (only with `auth: "oauth"`). `signing_in`: a browser sign-in is waiting for the user.
-  - `status: "needs_sign_in"`: the server answered 401, or `auth` is `oauth` with no stored sign-in, or the stored sign-in expired and could not be refreshed. `error` says what to do: `"This server asks you to sign in."` (none), `"The server didn't accept the saved headers. Check them and add the server again."` (headers), `"Sign in to use this server."` (oauth). The engine retries a server in this state every 5 minutes, and at once after a sign-in or a test.
+  - `status: "needs_sign_in"`: the server answered 401, or `auth` is `oauth` with no stored sign-in, or the stored sign-in expired and could not be refreshed. `error` says what to do: `"This server asks you to sign in."` (none), `"The server didn't accept the saved headers. Change their values with the key button on the server."` (headers), `"Sign in to use this server."` (oauth). The engine retries a server in this state every 5 minutes, and at once after a sign-in or a test.
 - `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, headers?, auth?, enabled?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input)
   - `headers`: `{name: value}`; values go to the keychain. `auth` defaults to `headers` when headers are given, else `none`. 400 when `auth` is `headers` without headers, a header name or value is invalid, or a stdio server has headers or `auth` other than `none`.
   - Replacing a server with a different URL drops its stored sign-in. Headers not given are deleted.
 - `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain)
 - `POST /api/integrations/mcp/{name}/test` → `{ok, tools: [mcp tool names], error?}`
 - `POST /api/integrations/mcp/{name}/enabled` `{enabled: bool}` → server object (turns a server on or off and nothing else; `enabled` must be a boolean, 422 otherwise; 404 if missing)
+- `POST /api/integrations/mcp/{name}/values` `{values: {name: value}, enable?: bool}` → server object. Fills in the
+  values of the server's own `header_keys` (remote) or `env_keys` (local command): they are merged into the keychain
+  entry (`mcp:<name>:headers` or `mcp:<name>`), never config; a blank value keeps the saved one. Then the server
+  reconnects (waiting up to 15 s), and `enable: true` also turns it on. A remote server with `auth: "none"` becomes
+  `headers` once it has header values. 400 for a name the server doesn't list or a value with a line break, 404 unknown
+  server, 422 when `enable` is not a boolean.
 - `POST /api/integrations/mcp/{name}/sign-in` → `{auth_url, state}`; the desktop opens `auth_url` in the system browser. The engine
   discovers the server's protected resource metadata and authorization server metadata (RFC 9728, RFC 8414), registers
   a client when needed (RFC 7591, `client_name: "Sentient"`, public client), and uses PKCE (S256) with the `resource`
@@ -1275,9 +1298,10 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   documents are saved to `files/uploads/` and passed as attachments.
 - Approvals arrive as messages with **Allow**, **Allow for this chat** and **Deny** buttons (resolving through
   `app.approvals`); the message is edited to show the answer, also when it was answered on the desktop.
-- Delivery (chats with `deliver: true`, from `notification.new`): task results and failures (`payload.event` in
-  `run_completed`, `run_failed`, `planning_failed`, `clarification_needed`, `disabled`; a completed run adds its result
-  summary), questions from running tasks (`payload.event = "question"`, with `channels.deliver_task_results`; each
+- Delivery (chats with `deliver: true`, from `notification.new`; a task's `deliver_to` can keep its notifications on
+  the desktop or send them only to chosen chats instead, section 4 "Where results go"): task results and failures
+  (`payload.event` in `run_completed`, `run_failed`, `planning_failed`, `clarification_needed`, `disabled`,
+  `script_alert`, `script_failed`; a completed run adds its result summary), questions from running tasks (`payload.event = "question"`, with `channels.deliver_task_results`; each
   option is a quick-reply button, callback `tq:<option index>:<run_id>`, that answers through
   `app.tasks.answer_question`), plans awaiting approval (**Approve plan** / **Decline** → `app.tasks.approve/decline`), pending proactive
   suggestions (**Approve** / **Dismiss** → same as `POST /api/proactivity/suggestions/{id}`), and notifications with
@@ -1451,13 +1475,15 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   integration lists one trigger per hook (section 5).
 
 ### Script jobs (owner: tasks)
-- New `task_type: "script"`. Task field `script` `{code, condition: "changed"|"alert", then: "notify"|"run", last_result, last_run_at, last_error}`.
+- New `task_type: "script"`. Task field `script` `{code, condition: "changed"|"alert"|"every_run", then: "notify"|"run", last_result, last_run_at, last_error}`.
   Runs on the task's schedule (recurring, `interval`, triggered, or a one-off `run_at`) through
   `app.sandbox.run(code, channel="task", allowed_tools=[read-risk tool names])`, with no model calls. A check does not
   create a Run: it updates `script` and the task goes `active → processing → active` (next run computed as usual).
   `alert`: acts when the script calls `result({"alert": true, "message": "..."})`. `changed`: acts when the result differs
   from `last_result`; the first successful result is only the baseline, and an empty (`null`) result is never a change
-  and keeps the baseline.
+  and keeps the baseline. `every_run` ("Report every run"): acts after every successful check that produced a value,
+  even the same one as last time; a check that prints nothing stays quiet. Its `script_alert` message is the script's
+  output itself (up to 3000 characters) when that is text.
   The value is the script's `result(...)`, else its trimmed stdout.
   `then: "notify"` sends a `task` notification (title = task name, message = the alert `message` or a short description of the
   value, `payload: {task_id, event: "script_alert", result}`); `then: "run"` starts a normal model run whose
@@ -1643,15 +1669,17 @@ databases are never read, skill folders are copied without dotfiles or symlinks,
  "jobs": [{"key": "job:<hermes id>", "action": "import|skip", "note": "...", "name": "...", "prompt": "...",
            "schedule_text": "0 8 * * *", "schedule": {"type": "recurring", "frequency": "daily", "time": "08:00"},
            "kind": "task|script", "script": {"path": "scripts/check.py", "code": "..."}, "then": "notify|run",
-           "delivery": "desktop|whatsapp|telegram|discord", "skills": ["..."]}],
+           "condition": "every_run|changed", "delivery": "desktop|whatsapp|telegram|discord",
+           "deliver_to": "default|desktop|[{channel, chat_id}]", "hermes_deliver": "whatsapp:...|null",
+           "skills": ["..."]}],
  "mcp": [{"key": "mcp:<name>", "action": "import|skip", "note": "...", "name": "...", "transport": "stdio|http",
           "url": null, "command": "npx", "args": [], "auth": "none|headers|oauth", "header_keys": [], "env_keys": []}],
  "suggestions": {"wake_word": "hey hermes", "tts_provider": "edge", "tts_voice": "en-US-AriaNeural"},
  "never_read": [".env", "auth.json"]}
 ```
 `note` says in plain words what will happen, or why an item is skipped. `persona` is `null` without a SOUL.md; a job's
-`schedule` is `null` and `script` is `null` when it has none; `then` is only on script jobs; each suggestion may be
-`null`.
+`schedule` is `null` and `script` is `null` when it has none; `then` and `condition` are only on script jobs; each
+suggestion may be `null`.
 
 - **Skills** are copied to `~/.sentient/skills/pending/<target>/` (never active; approve them under Skills). A skill
   listed in `skills/.bundled_manifest` whose folder still has Hermes' hash is skipped; one the user changed is
@@ -1668,12 +1696,17 @@ databases are never read, skill folders are copied without dotfiles or symlinks,
   `interval` → every N minutes, a future `once` → one time. Anything else (days of the month, several times a day,
   more often than every 5 minutes) is skipped with the expression in `note`. A job with `script` or `monitor_script`
   becomes a script task (condition `changed`; `then: run` when it also has a prompt, else `notify`) only when the
-  script is a Python file inside `scripts/` that compiles; otherwise it is skipped with the reason. A job's Hermes
-  skills are named in the task's description. A job already brought over (same Hermes id) is skipped. `deliver: "whatsapp:..."` (or telegram, discord, or `origin` with the
-  job's `origin.platform`) maps to that channel when it has a paired chat (task results reach every paired chat with delivery on, section 14), else to this computer.
+  script is a Python file inside `scripts/` that compiles; otherwise it is skipped with the reason. A `script` job
+  gets condition `every_run` (Hermes reports it on every run that prints something), a `monitor_script` job
+  `changed`. A job's Hermes skills are named in the task's description. A job already brought over (same Hermes id)
+  is skipped. The job's `deliver` (kept as `original_context.hermes_deliver`) becomes the task's `deliver_to`
+  (section 4): `whatsapp:<anything>` → the paired "Message yourself" chat, or `{"channel": "whatsapp", "chat_id":
+  "self"}` with a hint to link WhatsApp when it isn't paired yet; `telegram:<id>` / `discord:<id>` → the paired chat
+  with that id, else every paired chat of that app, else `default` with a hint; `origin` → the same for
+  `origin.platform` and `origin.chat_id`; `local` (or nothing) → `desktop`. Several comma-separated targets add up.
 - **MCP servers** are added turned off (`POST /api/integrations/mcp/{name}/enabled` turns one on), keeping the URL or
   command and arguments, `auth: oauth` (sign in again) and only the names of headers and environment settings; their
-  values are never copied. A name Sentient already has is skipped, and so is a server whose URL or arguments seem to
+  values are never copied (fill them in with `POST /api/integrations/mcp/{name}/values`, section 5). A name Sentient already has is skipped, and so is a server whose URL or arguments seem to
   carry a key (`--api-key abc`, `--token=abc`, `ghp_...`, `?api_key=...`; `${VAR}` references are fine), so that
   key never lands in config.yaml.
 - **Suggestions** (wake phrase and voice) are only shown; nothing changes.

@@ -115,6 +115,9 @@ function McpServerRow({ server: s }: { server: McpServer }) {
   const { test, remove, signIn, signOut, setEnabled } = useMcpActions()
   const [confirm, setConfirm] = useState(false)
   const [open, setOpen] = useState(false)
+  const [editingValues, setEditingValues] = useState(false)
+  const missing = s.missing_values ?? []
+  const valueKeys = s.transport === 'http' ? s.header_keys : s.env_keys
   const status = STATUS[s.status] ?? { tone: 'neutral' as Tone, label: s.status }
   const target = s.transport === 'http' ? s.url : [s.command, ...(s.args ?? [])].filter(Boolean).join(' ')
   const canSignIn = s.transport === 'http' && (s.status === 'needs_sign_in' || (s.auth === 'oauth' && !s.signed_in))
@@ -143,7 +146,14 @@ function McpServerRow({ server: s }: { server: McpServer }) {
             {target}
           </div>
         </div>
-        {!s.enabled && (
+        {missing.length > 0 ? (
+          <Button size="sm" variant="primary" leftIcon={<IconKey size={14} />} onClick={() => setEditingValues(true)}>
+            Add values
+          </Button>
+        ) : (
+          valueKeys.length > 0 && <IconButton size="sm" label="Change saved values" icon={<IconKey size={15} />} onClick={() => setEditingValues(true)} />
+        )}
+        {!s.enabled && missing.length === 0 && (
           <Button
             size="sm"
             variant="primary"
@@ -217,6 +227,14 @@ function McpServerRow({ server: s }: { server: McpServer }) {
         )
       )}
 
+      {missing.length > 0 && (
+        <div className="px-4 pb-3">
+          <Alert tone="warning" icon={<IconKey />} className="py-2.5">
+            {missing.length === 1 ? `${missing[0]} has no value yet.` : `${missing.join(', ')} have no values yet.`} Add {missing.length === 1 ? 'it' : 'them'} so the server can connect.
+          </Alert>
+        </div>
+      )}
+
       {s.status === 'error' && s.error && (
         <div className="px-4 pb-3">
           <Alert tone="danger" icon={<IconAlertTriangle />} className="py-2.5">
@@ -227,12 +245,12 @@ function McpServerRow({ server: s }: { server: McpServer }) {
 
       <div className="flex flex-wrap items-center gap-1.5 border-t border-border bg-sunken/30 px-4 py-2.5">
         {s.env_keys.map((k) => (
-          <Badge key={k} size="xs" icon={<IconKey />}>
+          <Badge key={k} size="xs" icon={<IconKey />} tone={missing.includes(k) ? 'warning' : undefined}>
             {k}
           </Badge>
         ))}
         {s.header_keys.map((k) => (
-          <Badge key={`h-${k}`} size="xs" icon={<IconKey />}>
+          <Badge key={`h-${k}`} size="xs" icon={<IconKey />} tone={missing.includes(k) ? 'warning' : undefined}>
             {k}
           </Badge>
         ))}
@@ -272,6 +290,8 @@ function McpServerRow({ server: s }: { server: McpServer }) {
         )}
       </AnimatePresence>
 
+      <McpValuesDialog server={s} keys={valueKeys} open={editingValues} onOpenChange={setEditingValues} />
+
       <ConfirmDialog
         open={confirm}
         onOpenChange={setConfirm}
@@ -288,6 +308,109 @@ function McpServerRow({ server: s }: { server: McpServer }) {
         }}
       />
     </li>
+  )
+}
+
+/** "Add values": fill in the header or environment values a server lists by name. They go to the keychain. */
+function McpValuesDialog({ server: s, keys, open, onOpenChange }: { server: McpServer; keys: string[]; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const { setValues } = useMcpActions()
+  const [values, setVals] = useState<Record<string, string>>({})
+  const [shown, setShown] = useState<Record<string, boolean>>({})
+  const [error, setError] = useState<string | null>(null)
+  const missing = s.missing_values ?? []
+  const filled = Object.values(values).some((v) => v.trim())
+  const kind = s.transport === 'http' ? 'header' : 'setting'
+
+  const close = (o: boolean) => {
+    if (setValues.isPending) return
+    if (!o) {
+      setVals({})
+      setShown({})
+      setError(null)
+    }
+    onOpenChange(o)
+  }
+
+  const save = () => {
+    setError(null)
+    setValues.mutate(
+      { name: s.name, values, enable: !s.enabled },
+      {
+        onSuccess: (srv) => {
+          if (srv.status === 'connected') toast.success(`${srv.name} is connected`, { description: `${srv.tools.length} tools available` })
+          else if (srv.status === 'needs_sign_in') toast.warning(`${srv.name} didn't accept these values`, { description: srv.error ?? undefined })
+          else if (srv.status === 'error') toast.warning(`Saved, but ${srv.name} couldn't start`, { description: srv.error ?? undefined })
+          else toast.success('Values saved', { description: srv.missing_values?.length ? `Still missing: ${srv.missing_values.join(', ')}` : undefined })
+          close(false)
+        },
+        onError: (e) => setError(errorMessage(e))
+      }
+    )
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={close}
+      size="md"
+      modalLock
+      title={`Values for ${s.name}`}
+      description={`Each ${kind} is saved in your system keychain, never in a settings file. Leave a box empty to keep what is saved.`}
+      footer={
+        <>
+          {setValues.isPending && (
+            <span className="mr-auto flex items-center gap-2 text-xs text-fg-subtle">
+              <Spinner size={12} /> Connecting, this can take up to 15 seconds…
+            </span>
+          )}
+          <Button variant="ghost" disabled={setValues.isPending} onClick={() => close(false)}>
+            Cancel
+          </Button>
+          <Button variant="primary" loading={setValues.isPending} disabled={!filled && s.enabled} onClick={save}>
+            {s.enabled ? 'Save and reconnect' : 'Save and turn on'}
+          </Button>
+        </>
+      }
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(e) => {
+          e.preventDefault()
+          save()
+        }}
+      >
+        {keys.map((k) => (
+          <Field key={k} label={<span className="font-mono text-xs">{k}</span>} htmlFor={`mcp-value-${k}`} description={missing.includes(k) ? 'No value yet' : 'A value is saved'}>
+            <Input
+              id={`mcp-value-${k}`}
+              size="sm"
+              className="font-mono"
+              type={shown[k] ? 'text' : 'password'}
+              autoComplete="off"
+              placeholder={missing.includes(k) ? (s.transport === 'http' && k.toLowerCase() === 'authorization' ? 'Bearer your-token' : 'value') : 'Keep the saved value'}
+              value={values[k] ?? ''}
+              onChange={(e) => setVals((v) => ({ ...v, [k]: e.target.value }))}
+              rightSlot={
+                <button
+                  type="button"
+                  aria-label={shown[k] ? 'Hide value' : 'Show value'}
+                  onClick={() => setShown((x) => ({ ...x, [k]: !x[k] }))}
+                  className="flex size-5 items-center justify-center text-fg-subtle hover:text-fg"
+                >
+                  {shown[k] ? <IconEyeOff size={13} /> : <IconEye size={13} />}
+                </button>
+              }
+            />
+          </Field>
+        ))}
+        {error && (
+          <Alert tone="danger" icon={<IconAlertTriangle />} title="Couldn't save the values">
+            {error}
+          </Alert>
+        )}
+        <button type="submit" hidden />
+      </form>
+    </Dialog>
   )
 }
 

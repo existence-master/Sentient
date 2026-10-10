@@ -286,6 +286,27 @@ async def test_another_chat_can_be_paired_with_a_code(wa, llm):
     assert wa.hub.last(FRIEND) == "Hello Ravi."
 
 
+async def test_a_task_set_to_the_self_chat_reaches_only_it(wa):
+    """``{"channel": "whatsapp", "chat_id": "self"}`` (a Hermes job that delivered to WhatsApp) is the Message
+    yourself chat of whatever number is linked; another paired chat with delivery on gets nothing."""
+    await wa.link()
+    code = await wa.app.channels.create_pairing("whatsapp")
+    await wa.say(f"/pair {code['code']}", chat=FRIEND, push_name="Ravi")
+    await wa.app.channels.set_deliver("whatsapp", FRIEND, True)
+    now = wa.app.tasks.now_iso()
+    task_id = await wa.app.tasks.repo.insert_task({
+        "name": "Morning brief", "description": "Morning brief", "status": "active", "created_at": now, "updated_at": now,
+    })
+    await wa.app.tasks.update(task_id, {"deliver_to": [{"channel": "whatsapp", "chat_id": "self"}]})
+    friend_before = len(wa.hub.screen(FRIEND))
+    await wa.app.notify("task", "Task 'Morning brief' has finished with status: completed.", title="Task completed",
+                        payload={"task_id": task_id, "event": "run_completed"})
+    await until(lambda: "Task completed" in wa.hub.last())
+    await asyncio.sleep(0.2)
+    assert "Morning brief" in wa.hub.last()
+    assert len(wa.hub.screen(FRIEND)) == friend_before
+
+
 async def test_photo_and_document_become_attachments(wa, llm):
     await wa.link()
     wa.hub.files.update({"img": b"\xff\xd8\xff\xe0fakejpeg", "doc": b"hello from a text file"})
