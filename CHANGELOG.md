@@ -6,6 +6,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Push to talk and dictation into any app:** hold Ctrl+Alt+Shift+T (Cmd+Option+Shift+T on a Mac) anywhere, speak,
+  and let go: what you said goes to Sentient as a chat message, and the answer is read aloud. Press Ctrl+Alt+Shift+D,
+  speak, and press it again (or just pause): your words are typed where your cursor is, in any app. A small bar at the
+  bottom of the screen shows the microphone is on, with a level meter; Esc cancels. Speech is turned into text on this
+  computer. Dictation drops "um" and "uh" and fixes punctuation, or keeps exactly what you said, or lets your fast model
+  polish it without ever changing your words (if it does, the tidy version is used). Sentient never types into a
+  password box it can recognize, and puts back what you had copied. Change the shortcuts, turn either one off, and
+  pick the language in Settings > Voice. Stop everything turns the microphone off.
 - **Models sized for your computer:** Sentient checks how much memory and graphics memory this computer has before
   anything is installed and recommends a local model and how much text it reads at once (for example qwen3:8b reading
   8,192 tokens on an 8 GB graphics card, qwen3:14b reading 16,384 on a 16 GB one). A computer with less than 8 GB of

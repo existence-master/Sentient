@@ -15,6 +15,8 @@ export interface TrayHandlers {
   /** §17 Stop everything: undefined until the engine said. */
   stopped(): boolean | undefined
   toggleStopped(): void
+  /** Push to talk or dictation has the microphone on (#169). */
+  micOn(): boolean
 }
 
 export const STOP_ACCELERATOR = 'CommandOrControl+Alt+Shift+S'
@@ -37,6 +39,7 @@ export class AppTray {
 
   /** Privacy: the tooltip always says when the microphone is listening for the wake word. */
   private baseTooltip(): string {
+    if (this.h.micOn()) return 'Sentient (microphone on)'
     return this.h.alwaysListening() ? "Sentient (listening for 'Hey Sentient')" : 'Sentient'
   }
 
@@ -46,7 +49,7 @@ export class AppTray {
     const listening = this.h.alwaysListening()
     const stopped = this.h.stopped() === true
     if (!this.flashTimer) this.tray.setToolTip(this.baseTooltip())
-    if (process.platform === 'darwin') this.tray.setTitle(listening ? ' ●' : '')
+    if (process.platform === 'darwin') this.tray.setTitle(listening || this.h.micOn() ? ' ●' : '')
     this.tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: 'Open Sentient', click: () => this.h.open() },

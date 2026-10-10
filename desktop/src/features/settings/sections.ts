@@ -88,7 +88,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'Voice',
     description: 'Speech recognition and the voice Sentient speaks with.',
     icon: IconMicrophone,
-    keywords: ['speech', 'stt', 'tts', 'whisper', 'dictation', 'wake word', 'hey sentient', 'always listening', 'follow-up']
+    keywords: ['speech', 'stt', 'tts', 'whisper', 'dictation', 'dictate', 'push to talk', 'shortcut', 'hotkey', 'wake word', 'hey sentient', 'always listening', 'follow-up']
   },
   {
     id: 'approvals',

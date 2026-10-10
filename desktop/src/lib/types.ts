@@ -267,7 +267,21 @@ export interface VoiceConfig {
   vad_max_utterance_s: number
   barge_in: boolean
   wake_word: string
+  /** Push to talk and dictation into any app (#169). Optional: older engines don't have it. */
+  dictation?: DictationConfig
   [key: string]: unknown
+}
+
+export interface DictationConfig {
+  push_to_talk: boolean
+  push_to_talk_shortcut: string
+  dictate: boolean
+  dictate_shortcut: string
+  /** raw: as heard; tidy: fillers and punctuation fixed locally; polish: also the fast model, guarded. */
+  cleanup: 'raw' | 'tidy' | 'polish'
+  language: string
+  stop_after_silence_s: number
+  speak_replies: boolean
 }
 
 export interface SentientConfig {
@@ -1880,6 +1894,14 @@ export interface VoiceStatus {
 
 export interface TranscribeResult {
   text: string
+}
+
+/** `POST /api/voice/dictate`: `polished` is true only when the fast model's version was used. */
+export interface DictateResult {
+  text: string
+  raw: string
+  cleanup: DictationConfig['cleanup']
+  polished: boolean
 }
 
 export type VoicePrepareTarget = 'all' | 'stt' | 'tts' | 'wake'

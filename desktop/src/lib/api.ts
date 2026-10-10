@@ -47,6 +47,7 @@ import type {
   ConfigPatchResponse,
   ConnectResponse,
   DeepPartial,
+  DictateResult,
   EmbeddingTestResult,
   EvolutionLogEntry,
   FallbacksResponse,
@@ -646,6 +647,9 @@ export const api = {
     status: () => http.get<VoiceStatus>('/api/voice/status'),
     transcribe: (audio: Blob, filename = 'dictation.webm', opts?: UploadOptions) =>
       upload<TranscribeResult>('/api/voice/transcribe', audio, filename, opts),
+    /** Local speech recognition plus the cleanup in `voice.dictation` (#169). The listening pill calls it directly. */
+    dictate: (audio: Blob, filename = 'dictation.webm', opts?: UploadOptions) =>
+      upload<DictateResult>('/api/voice/dictate', audio, filename, opts),
     speak: (text: string, voice?: string) => http.blob('POST', '/api/voice/speak', { body: { text, voice } }),
     prepare: (target: VoicePrepareTarget = 'all', signal?: AbortSignal) =>
       streamNdjson<VoicePrepareProgress>('POST', '/api/voice/prepare', { body: { target }, signal }),

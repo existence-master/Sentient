@@ -28,6 +28,7 @@ service name `sentient`.
 | Link **WhatsApp** | Sentient becomes a linked device on your account, like WhatsApp Web. Messages in your "Message yourself" chat (and any chat you pair) pass through WhatsApp's servers, end-to-end encrypted as usual. The link's keys are kept in `~/.sentient/whatsapp`; Disconnect removes them and unlinks Sentient. This is not an official WhatsApp product, so WhatsApp could limit an account that uses it. |
 | Pair a **phone or glasses** | Traffic stays on your home network, encrypted. This is off until you turn it on. |
 | Create a **webhook** | Whoever has its secret link can start the tasks you attached to it. |
+| Use **push to talk or dictation** (global shortcuts) | Your speech is turned into text on this computer, even if you chose a cloud service for voice chats. The recording is kept only in memory and is gone once it is transcribed. Push to talk sends the text to Sentient like a typed message. Dictation leaves your computer only when you pick "Polish" in Settings > Voice: then the text goes to your fast model (to the cloud if that model is a cloud one). To type your words, Sentient puts them on the clipboard for a moment, presses paste, and puts back what you had copied; a clipboard history (such as Windows' Win+V) may keep a copy. |
 | Turn on the **terminal** | Commands run on your computer as you, so a command you approve can reach the internet (for example `git push`) or change files outside the folders you allowed. Off until you turn it on. |
 
 ## Safety rails
@@ -58,6 +59,10 @@ service name `sentient`.
   content is remembered as before. Summaries of such chats stay out of your other chats and out of the notes
   Sentient keeps about you (MEMORY.md), though you can still read them under Memory > Conversations.
 - Photos and screenshots from your devices ask first.
+- The microphone is on for push to talk or dictation only while a small bar at the bottom of your screen shows it,
+  for two minutes at most, and Esc or Stop everything turns it off and throws the recording away. Dictation never
+  types into a password box when Windows or macOS can tell one has focus (Linux can't tell, so check where your cursor
+  is). On a Mac, Sentient needs your OK under Privacy & Security > Microphone to listen and > Accessibility to type.
 - One-time codes, sign-in links and password reset links in your email are hidden from the AI, so a tricky email
   can't get them out of Sentient. You still see them when you open the email in your mail app. You can turn this off
   in Settings (Integrations, "Hide one-time codes in email").

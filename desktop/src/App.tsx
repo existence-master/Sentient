@@ -18,6 +18,7 @@ import { SkillsPage } from '@/features/skills/SkillsPage'
 import { TasksPage } from '@/features/tasks/TasksPage'
 import { AboutPage } from '@/features/usermodel/AboutPage'
 import { VoiceMode } from '@/features/voice/VoiceMode'
+import { DictationShellSync, sendPushToTalk } from '@/features/voice/dictation'
 import { installWakeListener, setAlwaysListening, useWakeStore } from '@/features/voice/wake'
 import { useBootstrap } from '@/hooks/core'
 import { useHotkey } from '@/hooks/useHotkey'
@@ -169,6 +170,7 @@ function BootstrapGate() {
   return (
     <>
       <SmokeReporter />
+      <DictationShellSync />
       <Outlet />
     </>
   )
@@ -202,6 +204,9 @@ function GlobalCommands() {
             break
           case 'open-settings':
             navigate(`/settings/${cmd.section ?? ''}`)
+            break
+          case 'push-to-talk':
+            void sendPushToTalk(cmd.text, window.location.hash).then(({ route, state }) => navigate(route, { state }))
             break
         }
       }),

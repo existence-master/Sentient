@@ -21,13 +21,29 @@ import { UserMessage } from './UserMessage'
 export function ChatPage() {
   const { sessionId } = useParams()
   const location = useLocation()
-  const state = location.state as { fresh?: number; prompt?: { text: string; autoSend?: boolean } } | null
-  return <ChatView key={sessionId ?? `new-${state?.fresh ?? ''}`} sessionId={sessionId} initialPrompt={sessionId ? undefined : state?.prompt} />
+  // `pendingKey`: a message already sent from outside the chat view (push to talk) whose new chat this view shows.
+  const state = location.state as { fresh?: number; prompt?: { text: string; autoSend?: boolean }; pendingKey?: string } | null
+  return (
+    <ChatView
+      key={sessionId ?? `new-${state?.fresh ?? ''}`}
+      sessionId={sessionId}
+      initialPrompt={sessionId ? undefined : state?.prompt}
+      initialPendingKey={sessionId ? undefined : state?.pendingKey}
+    />
+  )
 }
 
-function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPrompt?: { text: string; autoSend?: boolean } }) {
+function ChatView({
+  sessionId,
+  initialPrompt,
+  initialPendingKey
+}: {
+  sessionId?: string
+  initialPrompt?: { text: string; autoSend?: boolean }
+  initialPendingKey?: string
+}) {
   const navigate = useNavigate()
-  const [pendingKey, setPendingKey] = useState<string | null>(null)
+  const [pendingKey, setPendingKey] = useState<string | null>(initialPendingKey ?? null)
   const liveKey = sessionId ?? pendingKey
   const liveSession = useChat((s) => (liveKey ? s.live[liveKey] : undefined))
   const resolvedId = useChat((s) => (pendingKey ? s.resolved[pendingKey.replace('pending:', '')] : undefined))

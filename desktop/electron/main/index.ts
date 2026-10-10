@@ -17,10 +17,21 @@ import {
 import { existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
-import type { AppCommand, CaptureNotice, DevicePrivacy, NativeNotification, OpenPathTarget, ShellPrefs } from '../../src/types/bridge'
+import type {
+  AppCommand,
+  CaptureNotice,
+  DevicePrivacy,
+  DictationEvent,
+  DictationShellSettings,
+  DictationStatus,
+  NativeNotification,
+  OpenPathTarget,
+  ShellPrefs
+} from '../../src/types/bridge'
 import notificationIcon from '../../resources/icon.png?asset'
 import { BackendManager } from './backend'
 import { CH } from './channels'
+import { DictationController, dictationSettingsFromConfig } from './dictation'
 import { DesktopNode } from './node'
 import { homePaths, sentientHome } from './paths'
 import { shellState, THEME_BG } from './prefs'
@@ -43,6 +54,7 @@ let tray: AppTray | null = null
 let quitting = false
 let smokeRunner: SmokeRunner | null = null
 let engineStopped: boolean | undefined // §17 Stop everything, as the engine last reported it
+let dictation: DictationController | null = null // #169 push to talk and dictation into any app
 const liveNotifications = new Set<Notification>()
 
 function showWindow(): void {
@@ -103,6 +115,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 interface ConfigSubset {
   ui?: { minimize_to_tray?: boolean; theme?: 'dark' | 'light' | 'system' }
   proactivity?: { enabled?: boolean }
+  voice?: { dictation?: Record<string, unknown> }
 }
 
 async function syncFromBackend(): Promise<void> {
@@ -118,6 +131,7 @@ async function syncFromBackend(): Promise<void> {
       proactivityEnabled: cfg.proactivity?.enabled,
       theme: cfg.ui?.theme ?? shellState.prefs().theme
     })
+    dictation?.apply(dictationSettingsFromConfig(cfg.voice?.dictation))
   } catch {
     /* engine may not expose config yet */
   }
@@ -138,6 +152,7 @@ async function toggleProactivity(): Promise<void> {
 // ------------------------------------------------------------------ stop everything (§17)
 /** Stop or resume from the tray or the global shortcut. Works with the window hidden; never asks the model. */
 async function setStopped(stop: boolean, source: 'tray' | 'hotkey'): Promise<void> {
+  if (stop) dictation?.cancel() // the microphone goes off at once, before the engine answers
   try {
     const state = await api<{ stopped: boolean; cancelled?: number }>(stop ? '/api/stop-all' : '/api/resume', {
       method: 'POST',
@@ -175,6 +190,7 @@ const desktopNode = new DesktopNode({
   },
   onStopState: (stopped) => {
     engineStopped = stopped
+    if (stopped) dictation?.cancel()
     tray?.refresh()
   },
   notice: (kind) => {
@@ -366,6 +382,21 @@ function registerIpc(): void {
   ipcMain.handle(CH.wakeDetected, () => {
     if (!smoke) showWindow()
   })
+  // #169 push to talk and dictation: shortcuts from voice.dictation, events from the listening pill.
+  ipcMain.handle(CH.dictationApply, (_e, settings: DictationShellSettings) =>
+    dictation ? dictation.apply(settings) : DICTATION_OFF
+  )
+  ipcMain.handle(CH.dictationStatus, () => (dictation ? dictation.status() : DICTATION_OFF))
+  ipcMain.handle(CH.dictationCancel, () => dictation?.cancel())
+  ipcMain.handle(CH.dictationPermission, (_e, kind: 'microphone' | 'accessibility') => dictation?.openPermissionSettings(kind))
+  ipcMain.on(CH.dictationEvent, (e, ev: DictationEvent) => dictation?.onPillEvent(e.sender.id, ev))
+}
+
+const DICTATION_OFF: DictationStatus = {
+  talk: { accelerator: '', enabled: false, registered: false },
+  dictate: { accelerator: '', enabled: false, registered: false },
+  accessibility: null,
+  microphone: null
 }
 
 // ------------------------------------------------------------------ lifecycle
@@ -405,7 +436,17 @@ function boot(): void {
       alwaysListening: () => shellState.prefs().alwaysListening === true,
       toggleAlwaysListening: () => setAlwaysListening(shellState.prefs().alwaysListening !== true, true),
       stopped: () => engineStopped,
-      toggleStopped: () => void setStopped(engineStopped !== true, 'tray')
+      toggleStopped: () => void setStopped(engineStopped !== true, 'tray'),
+      micOn: () => dictation?.micOn === true
+    })
+
+    dictation = new DictationController({
+      reserved: { [GLOBAL_SHORTCUT]: 'New chat', [STOP_ACCELERATOR]: 'Stop everything' },
+      talk: (text) => sendCommand({ type: 'push-to-talk', text }),
+      notify: (title, body) => {
+        if (Notification.isSupported()) new Notification({ title, body, silent: true, icon: notificationIcon }).show()
+      },
+      micChanged: () => tray?.refresh()
     })
 
     if (!globalShortcut.register(GLOBAL_SHORTCUT, () => sendCommand({ type: 'new-chat' }))) {
@@ -423,6 +464,7 @@ function boot(): void {
 
   app.on('before-quit', () => {
     quitting = true
+    dictation?.dispose()
     globalShortcut.unregisterAll()
     desktopNode.stop()
     backend.stop()

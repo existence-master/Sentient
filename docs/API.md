@@ -1052,6 +1052,17 @@ Behaviour:
 ### REST
 - `GET /api/voice/status` → `{sessions, stt: {provider, model, ready, device, compute_type?, note?, error?}, tts: {provider, voice, ready, voices: [{id, name, language}], backend?, downloaded?, variant?, error?}, wake: {engine, phrase, ready, model?, error?}}`. Nothing is loaded by this call; `ready` means the model is in memory (local) or a key is set (cloud). `note` explains a CPU fallback.
 - `POST /api/voice/transcribe` multipart `file` (wav/webm/ogg/m4a/mp3/flac) → `{text}` (dictation button). 415 unsupported type, 413 over 50 MB, 503 provider error.
+- `POST /api/voice/dictate` multipart `file`, optional form field `cleanup` (`raw`|`tidy`|`polish`, default
+  `voice.dictation.cleanup`; push to talk sends `tidy`) → `{text, raw, cleanup, polished: bool}` (push to talk
+  and dictation into any app, #169). Speech is always recognized on this computer with faster-whisper (the configured
+  model when `voice.stt_provider` is `faster_whisper`, else `base`), in `voice.dictation.language` (empty follows
+  `voice.stt_language`), even when a cloud STT is chosen for voice chats. Then the cleanup: `raw` returns
+  what was heard; `tidy` (default) drops filler sounds (um, uh, erm), fixes spacing around punctuation, capitalizes
+  sentence starts and ends a sentence of three or more words with a full stop, without the model; `polish` also asks the
+  `fast` role, and uses its answer only when it has exactly the same words and numbers in the same order (punctuation,
+  capitals, fillers and stutters aside), else the tidy text. `polished` is true only when the model's answer was used.
+  Same 400/413/415/503 as `transcribe`; 409 `{detail: "Stopped by Stop everything."}` when Stop everything cancelled it.
+  Engine API: `await app.voice.dictate(data, filename, cleanup=None) -> dict` (raises `DictationStopped`, a `VoiceError`).
 - `POST /api/voice/speak` `{text, voice?}` → `audio/wav` (markdown stripped first). 400 when nothing is speakable, 503 provider error.
 - `POST /api/voice/prepare` `{target?: "all"|"stt"|"tts"|"wake"}` (`all` = stt and tts) → NDJSON progress for local models, one object per line: `{stage: "download"|"loading"|"ready"|"error", component: "stt"|"tts"|"wake", progress: 0..1|null, file?, bytes?, total?, device?, note?, message?}`, ending with `{stage: "done", progress: 1, ok}`. Cloud providers report `ready` immediately. First use downloads and loads on demand too; `prepare` just lets the UI show progress.
 
@@ -1716,6 +1727,8 @@ can ignore it.
 - Engine API: `await app.stop_all(source) -> dict`, `await app.resume(source) -> dict`, `app.stopped -> bool`,
   `app.stop_state`. Services implement `async halt() -> int` (cancel in-flight work) and set `pause_on_stop = True`
   so their `run_every` jobs are skipped while stopped.
+- Push to talk and dictation (#169): Stop everything cancels a `POST /api/voice/dictate` that is still transcribing or
+  cleaning up (409), and the desktop turns the microphone off and drops the recording.
 - Surfaces: the desktop title bar button and banner, the tray menu, the global shortcut `Ctrl+Alt+Shift+S`
   (`Cmd+Alt+Shift+S` on macOS; stop only), `/stopall` and `/resume` in paired Telegram and Discord chats, and the
   `stop_all` / `resume` device messages (the web device app has a button).
