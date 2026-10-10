@@ -373,7 +373,19 @@ export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string
   const fast = models.find((m) => /mini|nano/i.test(m)) ?? main
 
   if (status.isError) {
-    return <Alert tone="danger">{errorMessage(status.error)}</Alert>
+    return (
+      <Alert
+        tone="danger"
+        title="Couldn't check your ChatGPT sign-in"
+        action={
+          <Button size="xs" loading={status.isFetching} onClick={() => void status.refetch()}>
+            Try again
+          </Button>
+        }
+      >
+        {errorMessage(status.error)}
+      </Alert>
+    )
   }
   if (status.data && !status.data.available) {
     return (
@@ -470,7 +482,7 @@ export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string
           )}
         </div>
       ) : (
-        <Button variant="primary" leftIcon={<IconLogin size={15} />} loading={starting || status.isLoading} onClick={() => void start()}>
+        <Button variant="primary" leftIcon={<IconLogin size={15} />} loading={starting} onClick={() => void start()}>
           Continue with ChatGPT
         </Button>
       )}

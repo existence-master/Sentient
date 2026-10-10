@@ -78,7 +78,8 @@ async def plan_models(app: Any) -> list[str] | None:
             saved = json.loads(await app.store.get_meta(PLAN_MODELS_META) or "null")
         except ValueError:
             saved = None
-        return saved if isinstance(saved, list) and saved else None
+        saved = [m for m in saved if isinstance(m, str) and m] if isinstance(saved, list) else []
+        return saved or None
     await app.store.set_meta(PLAN_MODELS_META, json.dumps(models))
     return models
 

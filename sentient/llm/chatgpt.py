@@ -191,7 +191,7 @@ async def _refresh(tokens: dict) -> dict:
                                      "refresh_token": tokens["refresh_token"], "resource": RESOURCE})
     if r.status_code >= 400:
         code, _detail = _oauth_error(r)
-        if code in DEAD_REFRESH or r.status_code == 401:
+        if code in DEAD_REFRESH:  # only a final answer removes the sign-in; invalid_client and outages keep it
             delete_json(SECRET)
             raise ChatGPTError("ChatGPT signed you out. Sign in with ChatGPT again in Settings > Models.")
         raise ChatGPTError(f"ChatGPT couldn't renew the sign-in right now ({r.status_code}). Try again in a moment.")
@@ -294,9 +294,9 @@ async def finish_sign_in(store: Any, flow: dict, params: dict[str, str]) -> str:
     if not has_plan_scope(tok.get("scope") or params.get("scope")):
         raise ChatGPTError("ChatGPT didn't allow Sentient to use your plan. Plan usage needs ChatGPT Plus or Pro; "
                            "try again and allow it.")
-    claims: dict = {}
-    if tok.get("id_token"):
-        claims = await verify_id_token(tok["id_token"], client_id=client_id, nonce=flow["nonce"])
+    if not isinstance(tok.get("id_token"), str) or not tok["id_token"]:
+        raise ChatGPTError("ChatGPT's sign-in reply couldn't be verified. Please try again.")
+    claims = await verify_id_token(tok["id_token"], client_id=client_id, nonce=flow["nonce"])
     if flow["registering"]:
         await store.set_meta(CLIENT_META, client_id)
     record = _record(client_id, {**tok, "scope": tok.get("scope") or params.get("scope")})

@@ -266,11 +266,12 @@ is kept under `chatgpt`.
   computer registers Sentient: `client_id=dynamic_agent_client` with `agent_name_hint=Sentient`; the callback brings
   the issued client id, kept in store meta (`chatgpt.client_id`) and reused afterwards. Every sign-in sends
   `ext_agent_host_id`, a random `urn:uuid:` made once per computer (store meta `chatgpt.host_id`). The callback is
-  refused unless the issued client id matches, the granted scopes include `chatgpt.tokens.use.direct`, and the ID token
-  passes its RS256 signature (OpenAI's published keys), issuer, audience, expiry and nonce checks. Tokens go to the
+  refused unless the issued client id matches, the granted scopes include `chatgpt.tokens.use.direct`, and an ID token is
+  present and passes its RS256 signature (OpenAI's published keys), issuer, audience, expiry and nonce checks. Tokens go to the
   keychain entry `chatgpt` (`{client_id, access_token, refresh_token, expires_at, scope, email}`, split over several
   entries when long). The access token is renewed 5 minutes before it runs out (or once after a 401), one refresh at a
-  time because the refresh token rotates; a refused refresh removes the sign-in. Sign-out revokes the refresh token
+  time because the refresh token rotates; a final refresh error (`invalid_grant`, `refresh_token_reused` and the
+  like) removes the sign-in, anything else keeps it for the next try. Sign-out revokes the refresh token
   (best effort) and removes the entry. `models.chatgpt_client_id` (default `dynamic_agent_client`) can hold a client id
   from OpenAI instead, or be empty to turn the sign-in off.
   Models are `chatgpt/<slug>` from `GET https://api.openai.com/v1/models` (entries with `visibility: "list"`, in

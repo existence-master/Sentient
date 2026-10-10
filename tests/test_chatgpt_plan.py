@@ -187,6 +187,15 @@ async def test_forged_state_and_refusals_store_nothing(app, keychain):
         ok, msg = await app.connections.oauth_callback({"state": started["state"], "code": "c", "client_id": ISSUED})
     assert ok is False and chatgpt.load_tokens() is None and "chatgpt" not in keychain
 
+    # a reply without an ID token can't be checked, so it isn't kept either
+    started = await app.connections.start_chatgpt()
+    q = {k: v[0] for k, v in parse_qs(urlsplit(started["auth_url"]).query).items()}
+    no_id_token = {k: v for k, v in _tokens(q["nonce"]).items() if k != "id_token"}
+    with respx.mock() as router:
+        router.post(chatgpt.TOKEN_URL).mock(return_value=httpx.Response(200, json=no_id_token))
+        ok, msg = await app.connections.oauth_callback({"state": started["state"], "code": "c", "client_id": ISSUED})
+    assert ok is False and "couldn't be verified" in msg and "chatgpt" not in keychain
+
 
 def test_turned_off_without_a_client_id(client):
     status = client.get("/api/models/connect/chatgpt").json()
@@ -220,6 +229,11 @@ async def test_refresh_on_expiry_rotates_tokens_once(config, keychain):
 
 async def test_dead_refresh_signs_out(config, keychain):
     _signed_in(keychain, expires_in=-5)
+    with respx.mock() as router:  # not a final answer: the sign-in stays for the next try
+        router.post(chatgpt.TOKEN_URL).mock(return_value=httpx.Response(401, json={"error": "invalid_client"}))
+        with pytest.raises(chatgpt.ChatGPTError, match="right now"):
+            await chatgpt.access_token(config)
+    assert chatgpt.load_tokens() is not None
     with respx.mock() as router:
         router.post(chatgpt.TOKEN_URL).mock(return_value=httpx.Response(
             400, json={"error": "invalid_grant", "error_description": "refresh token reused"}))
@@ -398,3 +412,9 @@ async def test_plan_models_feed_the_catalog_and_cloud_preset(app, keychain):
         router.get(MODELS).mock(side_effect=httpx.ConnectError("offline"))
         items = {p["name"]: p for p in (await presets.listing(app))["presets"]}
     assert items["Cloud"]["available"] and items["Cloud"]["roles"]["primary"] == "chatgpt/gpt-test"
+
+    await app.store.set_meta(presets.PLAN_MODELS_META, json.dumps([1, None]))  # a damaged list is ignored
+    with respx.mock() as router:
+        router.get(MODELS).mock(side_effect=httpx.ConnectError("offline"))
+        items = {p["name"]: p for p in (await presets.listing(app))["presets"]}
+    assert items["Cloud"]["available"] is False and "Couldn't load" in items["Cloud"]["reason"]
