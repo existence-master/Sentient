@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-
 from tests.channels.conftest import callback, until
 
 
@@ -15,13 +13,28 @@ async def test_task_result_is_delivered(tg):
     assert text.startswith("<b>Task completed</b>") and "Morning digest" in text and "https://" not in text
 
 
-async def test_delivery_respects_deliver_flag_and_kinds(tg):
+def handled_notifications(channels, monkeypatch) -> list[int]:
+    """The number of chats each notification went to, appended once the delivery listener has handled it."""
+    handled: list[int] = []
+    deliver = channels.deliver_notification
+
+    async def spy(note: dict) -> int:
+        sent = await deliver(note)
+        handled.append(sent)
+        return sent
+
+    monkeypatch.setattr(channels, "deliver_notification", spy)
+    return handled
+
+
+async def test_delivery_respects_deliver_flag_and_kinds(tg, monkeypatch):
     await tg.pair(42)
     await tg.app.channels.set_deliver("telegram", "42", False)
+    handled = handled_notifications(tg.app.channels, monkeypatch)
     before = len(tg.api.sent("sendMessage"))
     await tg.app.notify("task", "done", title="Task completed", payload={"task_id": "t1", "event": "run_completed"})
-    await asyncio.sleep(0.3)  # let the delivery listener handle it while delivery is off
-    assert len(tg.api.sent("sendMessage")) == before
+    await until(lambda: handled)  # the delivery listener handled it while delivery was off
+    assert handled == [0] and len(tg.api.sent("sendMessage")) == before
     await tg.app.channels.set_deliver("telegram", "42", True)
     await tg.app.notify("info", "Just so you know", title="FYI")
     await tg.app.notify("task", "second", title="Task failed", payload={"task_id": "t2", "event": "run_failed"})
@@ -102,18 +115,19 @@ async def test_background_subagent_summary_goes_to_its_chat_once(tg):
     assert len(tg.api.sent("sendMessage")) == before + 2  # the subagent notification was not repeated
 
 
-async def test_daily_brief_is_delivered_when_enabled(tg):
+async def test_daily_brief_is_delivered_when_enabled(tg, monkeypatch):
     await tg.pair(42)
     brief = {"day": "2026-10-12", "title": "Your Daily Brief for Monday",
              "sections": [{"id": "calendar", "label": "Calendar", "feedback": None}],
              "items": [{"id": "calendar-1", "section": "calendar", "text": "09:30 Design review",
                         "link": "https://calendar.google.com/event?eid=ev1", "why": "On your calendar today", "feedback": None}],
              "skipped": [], "expires_at": "2026-10-13T00:00:00+00:00"}
+    handled = handled_notifications(tg.app.channels, monkeypatch)
     before = len(tg.api.sent("sendMessage"))
     tg.app.config.channels.deliver_briefs = False
     await tg.app.notify("brief", "- 09:30 Design review", title=brief["title"], payload={"brief": brief, "status": "active"})
-    await asyncio.sleep(0.3)  # let the delivery listener handle it while briefs are off
-    assert len(tg.api.sent("sendMessage")) == before
+    await until(lambda: handled)  # the delivery listener handled it while briefs were off
+    assert handled == [0] and len(tg.api.sent("sendMessage")) == before
     tg.app.config.channels.deliver_briefs = True
     await tg.app.notify("brief", "- 09:30 Design review", title=brief["title"], payload={"brief": brief, "status": "active"})
     await until(lambda: len(tg.api.sent("sendMessage")) > before)

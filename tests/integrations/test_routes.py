@@ -91,4 +91,10 @@ def test_mcp_routes_validation(client):
                                                       "auth": "headers"}).status_code == 400
     local = client.post("/api/integrations/mcp", json={"name": "local", "command": "x", "enabled": False}).json()
     assert local["auth"] == "none" and local["header_keys"] == [] and local["signed_in"] is False
+    assert local["missing_values"] == []
     assert client.post("/api/integrations/mcp/local/sign-in").status_code == 400
+    assert client.post("/api/integrations/mcp/none/values", json={"values": {}}).status_code == 404
+    assert client.post("/api/integrations/mcp/local/values", json={"values": {"API_KEY": "v"}}).status_code == 400
+    assert client.post("/api/integrations/mcp/local/values", json={"enable": "yes"}).status_code == 422
+    kept = client.post("/api/integrations/mcp/local/values", json={"values": {}}).json()
+    assert kept["name"] == "local" and kept["status"] == "disabled"

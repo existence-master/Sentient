@@ -211,6 +211,59 @@ async def test_header_validation(app):
         await app.integrations.mcp.add("x", {"transport": "stdio", "command": "x", "headers": {"A": "b"}})
 
 
+async def test_missing_values_are_filled_in_and_used_on_reconnect(app, ctx, keychain):
+    """An imported server lists header and environment names without values; "Add values" fills them in."""
+    mock = MockServer(oauth=False)
+    app.integrations.mcp.http_transport = mock.transport()
+    mcp = app.integrations.mcp
+    notes = await mcp.import_server("Notes", {"transport": "http", "url": URL.replace("http://", "https://"),
+                                              "auth": "headers", "header_keys": ["Authorization"]})
+    assert notes["missing_values"] == ["Authorization"] and notes["status"] == "disabled"
+    local = await mcp.import_server("Local", {"transport": "stdio", "command": "npx", "args": ["-y", "some-mcp"],
+                                              "env_keys": ["API_TOKEN", "REGION"]})
+    assert local["missing_values"] == ["API_TOKEN", "REGION"]
+
+    with pytest.raises(ValueError, match="isn't one of this server's headers"):
+        await mcp.set_values("Notes", {"X-Other": "v"})
+    with pytest.raises(ValueError, match="single-line"):
+        await mcp.set_values("Notes", {"Authorization": "Bearer a\nb"})
+    with pytest.raises(KeyError):
+        await mcp.set_values("Missing", {})
+    # a key is never sent to a plain http:// address on the network (this computer is fine)
+    await mcp.import_server("Plain", {"transport": "http", "url": URL, "auth": "headers", "header_keys": ["Authorization"]})
+    with pytest.raises(ValueError, match="https://"):
+        await mcp.set_values("Plain", {"Authorization": "Bearer static-secret"})
+    assert "mcp:Plain:headers" not in keychain
+    await mcp.import_server("Here", {"transport": "http", "url": "http://127.0.0.1:9/mcp", "header_keys": ["X-Key"]})
+    assert (await mcp.set_values("Here", {"X-Key": "local-only"}))["missing_values"] == []
+    for url, ok in (("https://a.example/mcp", True), ("http://localhost:8/mcp", True), ("http://[::1]:8/mcp", True),
+                    ("http://127.attacker.example/mcp", False), ("http://10.0.0.5/mcp", False), ("ftp://127.0.0.1/", False)):
+        assert mcp_mod._protected_url(url) is ok, url
+
+    # changes to one server run one at a time: a removal never leaves a relaunched server behind
+    await mcp.import_server("Racy", {"transport": "stdio", "command": "npx", "env_keys": ["API_TOKEN"]})
+    await asyncio.gather(mcp.set_values("Racy", {"API_TOKEN": "t"}), mcp.remove("Racy"), return_exceptions=True)
+    assert "Racy" not in mcp.servers and "Racy" not in app.config.integrations.mcp_servers
+
+    filled = await mcp.set_values("Notes", {"Authorization": "Bearer static-secret"}, enable=True)
+    assert filled["status"] == "connected" and filled["missing_values"] == [] and filled["enabled"] is True
+    assert set(mock.seen_tokens) == {"static-secret"}
+    assert (await app.registry.get("mcp_notes_hello").call(ctx, {}))["content"] == "hi there"
+    assert "static-secret" in keychain["mcp:Notes:headers"]
+    # a blank value keeps the saved one; the server reconnects with it
+    mock.seen_tokens.clear()
+    again = await mcp.set_values("Notes", {"Authorization": "  "})
+    assert again["status"] == "connected" and set(mock.seen_tokens) == {"static-secret"}
+
+    partly = await mcp.set_values("Local", {"API_TOKEN": "tok-123"}, enable=True)  # REGION is still missing: stays off
+    assert partly["missing_values"] == ["REGION"] and partly["status"] == "disabled" and partly["enabled"] is False
+    assert "tok-123" in keychain["mcp:Local"]
+    saved = paths.config_file().read_text(encoding="utf-8")
+    assert "static-secret" not in saved and "tok-123" not in saved
+    assert "headers" not in app.config.integrations.mcp_servers["Notes"]
+    assert "env" not in app.config.integrations.mcp_servers["Local"]
+
+
 # ---------------------------------------------------------------------------- OAuth
 async def test_oauth_sign_in_with_pkce_and_dynamic_registration(app, ctx, keychain):
     mock = MockServer(oauth=True)
@@ -271,9 +324,13 @@ async def test_oauth_refreshes_expired_and_rejected_tokens(app, keychain, monkey
     assert _tokens(keychain, "Notes")["tokens"]["access_token"] == mock.issued[2] == mock.seen_tokens[-1]
 
     # a fresh token the server drops early: one refresh after the 401, then connected again without a browser
+    seen = len(mock.seen_tokens)
     conn.broken.set()
-    await asyncio.sleep(0.1)
-    await _wait(app, "Notes", "connected")
+    for _ in range(400):  # until it has reconnected (it used the token again), not just still connected from before
+        if len(mock.seen_tokens) > seen and conn.status == "connected":
+            break
+        await asyncio.sleep(0.05)
+    assert len(mock.seen_tokens) > seen and conn.status == "connected" and mock.seen_tokens[-1] == mock.issued[2]
     assert len(mock.token_calls) == 3  # still valid: no refresh
     mock.valid.discard(mock.issued[2])
     conn.broken.set()

@@ -2,7 +2,7 @@
 
 A script job is a task with ``task_type: "script"`` and a ``script`` object::
 
-    {code, condition: "changed"|"alert", then: "notify"|"run", last_result, last_run_at, last_error}
+    {code, condition: "changed"|"alert"|"every_run", then: "notify"|"run", last_result, last_run_at, last_error}
 
 The code runs through ``app.sandbox.run`` and may call read-only Sentient tools with
 ``from sentient_tools import tools, result``. This module holds the pure helpers:
@@ -15,10 +15,11 @@ import ast
 import json
 from typing import Any
 
-CONDITIONS = ("alert", "changed")
+CONDITIONS = ("alert", "changed", "every_run")
 THEN = ("notify", "run")
 MAX_CODE_CHARS = 20000
 MAX_RESULT_CHARS = 20000
+REPORT_CHARS = 3000  # an every-run report shows this much of the script's output
 SCRIPT_STATE_FIELDS = ("last_result", "last_run_at", "last_error")
 
 
@@ -49,7 +50,7 @@ def normalize_script(raw: Any, previous: dict | None = None) -> dict:
     code = validate_code(code)
     condition = str(raw.get("condition") or prev.get("condition") or "alert").strip().lower()
     if condition not in CONDITIONS:
-        raise ScriptInvalid("script.condition must be 'alert' or 'changed'.")
+        raise ScriptInvalid("script.condition must be 'alert', 'changed' or 'every_run'.")
     then = str(raw.get("then") or prev.get("then") or "notify").strip().lower()
     if then not in THEN:
         raise ScriptInvalid("script.then must be 'notify' or 'run'.")
@@ -103,7 +104,11 @@ def outcome_error(outcome: dict) -> str | None:
 def should_act(condition: str, value: Any, previous: Any) -> bool:
     """``alert``: the script returned ``{"alert": true, ...}``. ``changed``: the value differs from the
     previous successful result. The first successful result of a ``changed`` job is only the baseline, and an
-    empty (``None``) result is never a change (a page that briefly returns nothing should not alert)."""
+    empty (``None``) result is never a change (a page that briefly returns nothing should not alert).
+    ``every_run``: every successful check that produced something, even when it is the same as last time; a
+    check that prints nothing stays quiet."""
+    if condition == "every_run":
+        return value is not None and not (isinstance(value, str) and not value.strip())
     if condition == "changed":
         return value is not None and previous is not None and canonical(value) != canonical(previous)
     return isinstance(value, dict) and bool(value.get("alert"))
@@ -112,15 +117,21 @@ def should_act(condition: str, value: Any, previous: Any) -> bool:
 def alert_message(task_name: str, condition: str, value: Any) -> str:
     if isinstance(value, dict) and isinstance(value.get("message"), str) and value["message"].strip():
         return value["message"].strip()
+    if condition == "every_run" and isinstance(value, str):
+        return value if len(value) <= REPORT_CHARS else value[: REPORT_CHARS - 3] + "..."  # the output is the report
     shown = value if isinstance(value, str) else canonical(value)
     shown = shown if len(shown) <= 500 else shown[:497] + "..."
     if condition == "changed":
         return f"'{task_name}' noticed a change: {shown}"
+    if condition == "every_run":
+        return f"'{task_name}' reported: {shown}"
     return f"'{task_name}' raised an alert: {shown}"
 
 
 def describe_for_approval(script: dict) -> str:
     """Plain-language summary shown next to the code in a plan card."""
-    when = "the script raises an alert" if script.get("condition") == "alert" else "the result changes"
     action = "send you a notification" if script.get("then") == "notify" else "start a full task run"
+    if script.get("condition") == "every_run":
+        return f"Runs a small check script with no AI calls; after every check that prints something, it will {action}."
+    when = "the script raises an alert" if script.get("condition") == "alert" else "the result changes"
     return f"Runs a small check script with no AI calls; when {when}, it will {action}."

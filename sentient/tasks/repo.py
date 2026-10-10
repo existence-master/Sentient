@@ -9,15 +9,17 @@ import json
 from typing import Any
 
 from sentient.store.db import Store, new_id
+from sentient.tasks.delivery import from_stored
 
 TASK_JSON_FIELDS = {
     "schedule", "plan", "chat_history", "clarifying_questions", "swarm_details", "original_context", "script",
+    "deliver_to",
 }
 TASK_COLUMNS = {
     "name", "description", "status", "priority", "task_type", "schedule", "plan", "original_prompt",
     "source", "enabled", "assignee", "model", "chat_history", "clarifying_questions", "swarm_details",
     "original_context", "script", "error", "next_execution_at", "last_execution_at", "created_at", "updated_at",
-    "browser_profile",
+    "browser_profile", "deliver_to",
 }
 RUN_JSON_FIELDS = {"plan", "trigger_data", "messages", "result", "pending_question", "limits"}
 RUN_COLUMNS = {
@@ -37,6 +39,7 @@ _ADDED_TASK_COLUMNS = {
     "last_execution_at": "TEXT",
     "script": "TEXT",
     "browser_profile": "TEXT",
+    "deliver_to": "TEXT",
 }
 _ADDED_RUN_COLUMNS = {
     "plan": "TEXT", "resume_count": "INTEGER NOT NULL DEFAULT 0", "retry_of": "TEXT", "pending_question": "TEXT",
@@ -353,6 +356,7 @@ class TaskRepo:
             "enabled": bool(task.get("enabled", True)),
             "model": task.get("model"),
             "browser_profile": task.get("browser_profile"),
+            "deliver_to": from_stored(task.get("deliver_to")),
             "original_context": task.get("original_context") or {"source": "manual_creation"},
             "script": task.get("script") if task.get("task_type") == "script" else None,
             "error": task.get("error"),

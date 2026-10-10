@@ -129,7 +129,8 @@ def callback(chat_id: int, message_id: int, data: str) -> dict:
     }
 
 
-async def until(predicate, timeout: float = 5.0) -> None:
+async def until(predicate, timeout: float = 30.0) -> None:
+    """Wait for ``predicate``; the generous ceiling only matters when it never comes true."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while not predicate():

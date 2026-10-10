@@ -91,6 +91,11 @@ export function useMcpActions() {
     setEnabled: useMutation({
       mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) => api.integrations.mcp.setEnabled(name, enabled),
       onSuccess: invalidate
+    }),
+    setValues: useMutation({
+      mutationFn: ({ name, values, enable }: { name: string; values: Record<string, string>; enable?: boolean }) =>
+        api.integrations.mcp.setValues(name, values, enable),
+      onSuccess: invalidate
     })
   }
 }

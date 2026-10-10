@@ -13,6 +13,7 @@ import {
   IconCopy,
   IconPlayerPlay,
   IconRadar,
+  IconRepeat,
   IconRocket,
   IconShieldCheck,
   IconX,
@@ -43,7 +44,8 @@ interface Choice<T extends string> {
 
 const CONDITIONS: Array<Choice<ScriptCondition>> = [
   { value: 'changed', title: 'Tell me when something changes', body: 'Each check is compared with the one before.', icon: IconArrowsDiff },
-  { value: 'alert', title: 'Tell me when the script raises an alert', body: 'The script decides, for example when a price drops below your target.', icon: IconBellRinging }
+  { value: 'alert', title: 'Tell me when the script raises an alert', body: 'The script decides, for example when a price drops below your target.', icon: IconBellRinging },
+  { value: 'every_run', title: 'Report every run', body: 'You hear about each check that prints something, even if it is the same as last time.', icon: IconRepeat }
 ]
 
 const THENS: Array<Choice<ScriptThen>> = [
@@ -340,6 +342,13 @@ export function CodeViewer({
 function describeOutcome(r: SandboxResult, s: TaskScript): { accent: boolean; icon: Icon; title: string; body: string } | null {
   if (!r.ok) return null
   const then = s.then === 'run' ? 'Sentient would run the task' : 'you would get a notification'
+  if (s.condition === 'every_run') {
+    const result = typeof r.result === 'string' ? r.result.trim() || null : r.result
+    const printed = result ?? (r.stdout?.trim() || null)
+    return printed === null
+      ? { accent: false, icon: IconCircleCheck, title: 'Nothing to report this time', body: 'The script printed nothing, so you wouldn’t hear from me.' }
+      : { accent: true, icon: IconRepeat, title: 'This check would report', body: `So ${then}.` }
+  }
   if (s.condition === 'alert') {
     const obj = r.result && typeof r.result === 'object' ? (r.result as Record<string, unknown>) : null
     if (obj?.alert === true) {
