@@ -89,6 +89,21 @@ async def enable_mcp(request: Request, name: str, body: MCPEnabledBody):
         raise HTTPException(404, f"no MCP server named {name}") from exc
 
 
+class MCPValuesBody(BaseModel):
+    values: dict[str, str] = Field(default_factory=dict)
+    enable: StrictBool = False
+
+
+@router.post("/mcp/{name}/values")
+async def mcp_values(request: Request, name: str, body: MCPValuesBody):
+    try:
+        return await _mgr(request).mcp.set_values(name, body.values, enable=body.enable)
+    except KeyError as exc:
+        raise HTTPException(404, f"no MCP server named {name}") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.post("/mcp/{name}/sign-in")
 async def sign_in_mcp(request: Request, name: str):
     try:

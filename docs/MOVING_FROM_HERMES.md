@@ -28,8 +28,8 @@ Hermes folder (usually `~/.hermes`). You see everything before anything changes,
 | Your own skills | Skills waiting for your review (built-in Hermes skills you never changed are skipped) |
 | `MEMORY.md`, `USER.md` | Memories and things Sentient knows about you, marked as imported (one click removes them) |
 | `SOUL.md` | Sentient's personality, only if you switch it on after seeing both side by side |
-| Scheduled jobs | Paused tasks with the same schedule and prompt. Each one plans and asks for your approval the first time you turn it on |
-| MCP servers | MCP servers, turned off until you enable them. Sign in again where needed |
+| Scheduled jobs | Paused tasks with the same schedule, prompt and delivery (a job that went to WhatsApp goes to your "Message yourself" chat). Each one plans and asks for your approval the first time you turn it on |
+| MCP servers | MCP servers, turned off until you enable them. Sign in again, or fill in their keys with **Add values**, where needed |
 
 Keys, tokens, `auth.json` and `.env` are never read.
 
@@ -40,6 +40,9 @@ Keys, tokens, `auth.json` and `.env` are never read.
   and is not WhatsApp's official API, so WhatsApp could limit the account.
 - **Telegram and Discord**: **Channels**, connect a bot and pair your chat with a code.
 - **MCP servers that need sign-in** (for example Composio or Notion): **Integrations > MCP servers > Sign in**.
+  Servers that used headers or environment values show **Add values**: fill them in and the server reconnects.
+- **Where each task's results go**: a task's **Details > Send results to** picks the usual paired chats, this
+  computer only, or specific chats such as WhatsApp's "Message yourself".
 - **Terminal**: off by default. **Settings > Terminal** turns it on, lets you choose the folders it may run in and
   the commands that never need asking (like `git status`). Everything else asks first.
 - **Browser profiles**: **Settings > Browser > Profiles**. Create a profile per identity and sign in once, or attach
@@ -49,7 +52,8 @@ Keys, tokens, `auth.json` and `.env` are never read.
 ## 4. Briefs
 
 **Notifications > Set up my Daily Brief** creates a morning brief, and its menu adds an evening wrap-up. Both are
-normal tasks you can reschedule, and both can be delivered to your paired chats.
+normal tasks you can reschedule, and both can be delivered to your paired chats, or only to the chat you pick in
+their **Send results to**.
 
 ## 5. Approvals: a different habit
 
@@ -66,6 +70,7 @@ a few days, pause the Hermes one. Turn Hermes off when nothing is left on it.
 ## What is different
 
 - Sentient does not use a Claude.ai login; use your plan's API credits or another provider.
-- Script jobs report when their output changes rather than on every run (an option to report every run is planned).
+- Script jobs report every run that prints something, like in Hermes; Hermes monitor jobs report only changes. A
+  script task can switch between the two.
 - Hermes features with no Sentient equivalent yet include named assistants and a skills marketplace; see the
   [issue tracker](https://github.com/existence-master/Sentient/issues) for what is planned.

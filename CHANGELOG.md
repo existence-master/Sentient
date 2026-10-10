@@ -6,6 +6,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Choose where a task's results go** (Details > Send results to): the usual paired chats, this computer only, or
+  just the chats you pick, such as WhatsApp's "Message yourself". Results, failures, questions and plans from that
+  task follow the choice, and so does the Daily Brief. Jobs brought over from Hermes keep their delivery: a job that
+  went to WhatsApp goes to your "Message yourself" chat (once WhatsApp is linked), Telegram and Discord jobs go to the
+  matching paired chat, and `local` jobs stay on this computer.
+- **Add values to an MCP server** (Integrations > Custom MCP servers): a server that lists header or environment
+  names without values, such as one imported from Hermes, shows **Add values**. Fill them in (they go to your system
+  keychain, never to a settings file) and the server reconnects, so there's no need to add it again.
+- **Report every run** for script tasks: besides "Tell me when something changes" and "when the script raises an
+  alert", a script task can now report its output after every run. Hermes script jobs come over this way, and
+  Hermes monitor jobs keep reporting only changes.
 - **Coming from Hermes?** Bring your Hermes setup over in one step, from the last onboarding screen or Settings >
   Advanced. Sentient looks inside your Hermes folder (`~/.hermes`, or one you pick) and shows what it found before
   anything changes: your own skills go to Skills for review (Hermes' built-in ones you never changed are left out),

@@ -128,7 +128,7 @@ async def update_task(
     """Change an existing task directly: rename it, edit its description, turn it on or off (`enabled`),
     change its `schedule` (same shape as in search_tasks results; every N minutes is
     {"type": "recurring", "frequency": "interval", "interval_minutes": N}), or edit a watch job's check
-    script (`script_code`, `script_condition` "alert"|"changed", `script_then` "notify"|"run").
+    script (`script_code`, `script_condition` "alert"|"changed"|"every_run", `script_then` "notify"|"run").
     Changed script code waits for the user's approval before it runs again. To change what a normal
     task does, use request_task_change instead."""
     svc = _service(ctx)
