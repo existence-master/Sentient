@@ -68,7 +68,7 @@ async def test_cloud_and_mixed_are_disabled_without_a_key(app):
     assert items["Local only"]["available"] is True
     for name in ("Cloud", "Mixed"):
         assert items[name]["available"] is False
-        assert items[name]["reason"] == "Needs a key for Anthropic, OpenAI or OpenRouter."
+        assert items[name]["reason"] == "Needs a key for Anthropic, OpenAI or OpenRouter, or a ChatGPT sign-in."
     with pytest.raises(presets.PresetError) as err:
         await presets.apply(app, "Cloud")
     assert err.value.status == 409
