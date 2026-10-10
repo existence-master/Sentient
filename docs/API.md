@@ -56,7 +56,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"\|"declined"`; a task question (`payload.event = "question"`) gains `payload.status = "answered"` with `payload.answer`, or `"cancelled"`) |
 | `notification.read` / `notification.deleted` | `{id}` (`null` = all) |
 | `integration.updated` | **Integration** (§5) |
-| `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?}`; bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count` |
+| `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending"}`; `status: "pending"` means the memory waits in the review inbox (section 7); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE) |
 | `skill.updated` | `{name, state: "active"\|"pending_review"\|"stale"\|"archived"\|"rejected"\|"deleted"}` |
 | `session.updated` | `{session_id, title}` |
 | `config.updated` | `{sections: string[]}` |
@@ -783,19 +783,22 @@ offered to proactive look-ups.
 
 ## 7. Memory
 
-**Memory** `{id: int, content, topics: string[], source, memory_type: "long-term|short-term", created_at, updated_at, expires_at, previous_content: string|null}` (`previous_content` is the text before the last UPDATE)
+**Memory** `{id: int, content, topics: string[], source, memory_type: "long-term|short-term", created_at, updated_at, expires_at, previous_content: string|null, status: "active"|"pending", review: ReviewNote|null}` (`previous_content` is the text before the last UPDATE; `review` says where a held memory came from)
+
+**ReviewNote** `{from, snippet: string|null, session_id: string|null}`: `from` names the source in plain words
+("Gmail", "Hermes", "resume.pdf", "a proactive check"), `snippet` is the text it came from (at most 400 characters).
 
 Topics are the v2 set: Personal Identity, Interests & Lifestyle, Work & Learning, Health & Wellbeing,
 Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
 
-- `GET /api/memories?topic=&q=&source=&limit=&offset=` → `[Memory]` newest first, expired short-term facts excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
+- `GET /api/memories?topic=&q=&source=&limit=&offset=` → `[Memory]` newest first, expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
 - `GET /api/memories/topics` → `[{name, description, count}]`
 - `GET /api/memories/graph` → `{nodes: [{id, label, title, content, topics, memory_type, source, created_at}], links: [{source, target, value}]}` (`label` = content truncated to 25 chars, `title` = full content, as in v2; a link means cosine similarity ≥ `memory.graph_link_similarity`, `value` is that similarity)
-- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone)
+- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone)
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)
 - `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
 - `DELETE /api/memories/source/{source}` → `{deleted: n}`
-- `POST /api/memories/import` multipart `file` (pdf/txt/md/docx) → `{added, updated, skipped, source}` (`source` = `file:<name>`; existing memories are kept; 400 for other types)
+- `POST /api/memories/import` multipart `file` (pdf/txt/md/docx) → `{added, updated, skipped, pending, source}` (`source` = `file:<name>`; the facts wait for review, `pending` counts them, and existing memories are kept; 400 for other types)
 - `GET /api/memories/summaries?limit=` → `[{id, content, start_at, end_at, session_id}]`
 - `GET /api/memories/workspace` → `{soul, user, memory, today, yesterday}` (full file contents, not the prompt-budgeted snapshot)
 - `PUT /api/memories/workspace/{soul|user|memory}` `{content}` → `{saved}`
@@ -804,6 +807,31 @@ Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
 - `GET /api/memories/dreams?limit=`, `POST /api/memories/dreams/run`, `GET /api/memories/dreams/{id}`: see section 15.
 
 When sqlite-vec cannot load, list/topics/graph return empty data and write routes return 503.
+
+### Memories waiting for review (ADR 0021)
+A memory that did not come from the user's own words in a clean chat is held: `status: "pending"` for facts, status
+`pending` for insights (section 15). Held: facts extracted after a turn of a chat marked untrusted (section 10,
+"Outside content") and facts saved when such a chat is compressed; `memory_remember` while `ToolContext.untrusted`
+is set or `ToolContext.origin` is unprompted; document imports; Hermes imports (section 19); insights a refresh draws
+only from outside material (section 15). A held memory is never in a prompt, `memory_recall`,
+`memory_search_by_source`, `GET /api/memories`, topics, the graph, proactivity, a user-model refresh or dreaming, and
+a held fact never updates or deletes another fact (duplicates of any fact are skipped). Only these routes move one
+out of pending; no model output can:
+
+- `GET /api/memories/review` → `{items: [ReviewItem], count, expire_days}` newest first.
+  **ReviewItem** `{kind: "fact"|"insight", id: int|string, text, source, from, snippet, session_id, created_at, expires_at}`
+  (`expires_at` = `created_at` + `memory.review_expire_days`)
+- `POST /api/memories/review/{kind}/{id}/approve` `{content?}` → `{ok: true}`: becomes active (a fact gets its
+  vector; a fact already remembered in the same words is not added twice). With `content` it is saved in the user's
+  words first (a fact keeps the old text as `previous_content`; an insight becomes source `user`, `confirmed`).
+  400 bad `kind` or empty `content`; 404 when it is not waiting for review.
+- `DELETE /api/memories/review/{kind}/{id}` → `{ok: true}` (deleted; 404 when it is not waiting for review)
+- `POST /api/memories/review/approve-all` `{from}` → `{approved: n}` (every held memory with that `from`; 400 without it)
+
+Held memories nobody reviewed are deleted after `memory.review_expire_days` (default 30, checked with the hourly
+expiry purge), with an `info` notification titled "Memory review". `DELETE /api/memories/source/{source}` removes held
+facts of that source too. Engine: `sentient.memory.review` (`for_context(ctx)`, `note(from, snippet, session_id)`,
+`inbox`, `approve`, `discard`, `approve_from`, `expire`); `FactMemory.remember(..., review=note)` holds a fact.
 
 Engine notes: recall used by the system prompt and `memory_recall` is hybrid (same ranking as `q` above) and
 counts each recalled fact (`facts.recall_count`, `last_recalled_at`; dreaming promotes often-recalled short-term
@@ -999,6 +1027,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   `"a tool that is no longer available"`, except the engine's own "unknown tool" refusal). A chat whose
   `sessions.untrusted` is still `NULL` (created before this mark) is classified once from its stored tool results the
   same way and saved (`""` = clean). Subagents inherit it (`delegate(..., untrusted=)`).
+- Memory: while it is set, what the run learns waits for the user's review instead of being remembered (section 7,
+  "Memories waiting for review").
 - `ToolContext.visited: set[str]`: web hosts this run loaded (a call with a `url_fn` that ran). Chats save them on the
   session (`sessions.visited_hosts`, a JSON list) and start every turn with them; task runs keep them for one stretch
   of work (a resumed run starts empty, so it asks more, never less).
@@ -1335,16 +1365,17 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 ## 15. Knowing the user (owner: memory)
 
 ### User model
-- **Insight** `{id, dimension: "preferences"|"communication"|"goals"|"routines"|"relationships"|"values"|"work_style"|"dislikes"|"context", statement, confidence, status: "active"|"confirmed"|"disputed"|"retired", source: "inferred"|"user"|"import:hermes", evidence: [{kind: "fact"|"message"|"summary"|"feedback"|"import", ref, quote, at}], created_at, updated_at}`
+- **Insight** `{id, dimension: "preferences"|"communication"|"goals"|"routines"|"relationships"|"values"|"work_style"|"dislikes"|"context", statement, confidence, status: "active"|"confirmed"|"disputed"|"retired"|"pending", source: "inferred"|"user"|"import:hermes", evidence: [{kind: "fact"|"message"|"summary"|"feedback"|"import", ref, quote, at}], review: ReviewNote|null, created_at, updated_at}`
+  (`pending` insights wait in the review inbox, section 7, and appear nowhere else)
 - `GET /api/user-model` → `{summary, updated_at, insights: [Insight], questions: [{id, question, insight_id, created_at}]}`
   (`summary` is a markdown portrait of at most 180 words, `""` until the first refresh; `updated_at` is `null` until
-  something changes; insights of every status, ordered confirmed, active, disputed, retired, then by confidence;
+  something changes; insights of every status except `pending`, ordered confirmed, active, disputed, retired, then by confidence;
   `questions` are the open ones only)
 - `POST /api/user-model/insights` `{statement, dimension}` → `Insight` (source `user`, status `confirmed`, confidence 1; 400 without statement; unknown dimensions become `context`)
 - `PATCH /api/user-model/insights/{id}` `{statement?, status?}` → `Insight` (a new statement makes it source `user`,
   status `confirmed`; confirming, retiring or rewording closes its open question; 400 bad status, 404 missing);
   `DELETE /api/user-model/insights/{id}` → `{ok}` (404 missing; its questions go too)
-- `POST /api/user-model/refresh` → `{added, updated, disputed, questions}` (runs now, ignoring the daily limit; no model call when there is no new evidence)
+- `POST /api/user-model/refresh` → `{added, updated, disputed, questions, held}` (runs now, ignoring the daily limit; no model call when there is no new evidence; `held` = new insights waiting for review)
 - `POST /api/user-model/questions/{id}` `{answer}` → `{ok, verdict: "confirm"|"retire"|"rewrite", insight: Insight|null}`
   (the insight is confirmed, retired or reworded as source `user`, and a fact with source `user_model` is remembered;
   400 empty answer, 404 when not open); `DELETE /api/user-model/questions/{id}` → `{ok}` (dismiss; 404 when not open)
@@ -1353,6 +1384,10 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   user messages, new or changed facts and conversation summaries. Operations: `add`, `support` (+`support_step`),
   `contradict` (−`contradict_step`; below `dispute_below` → `disputed` plus a question), `retire`.
   Confirmed or user-written insights are never changed automatically: contradict/retire only queue a question.
+  Messages and summaries of a chat with `sessions.untrusted` set are outside material (ADR 0021): a new insight that
+  cites only outside material, or nothing while outside material was offered, is saved `pending` with a review note
+  (`from` = the app, `snippet` = the quote); `support`, `contradict` and `retire` citing only outside material are
+  ignored. Facts waiting for review are never evidence.
 - Engine: `await app.user_model.context_for(text) -> str` (no model call; ≤ `user_model.context_max_chars`, default 600;
   `## What I have learned about <name>` then confirmed insights, then active insights relevant to `text` by embedding
   similarity ≥ `context_min_similarity`, then active insights with confidence ≥ 0.6; low-confidence lines end in
@@ -1659,9 +1694,10 @@ databases are never read, skill folders are copied without dotfiles or symlinks,
   made unique (`<name>-hermes`, `<name>-hermes-2`...) when Sentient already has that name; a skill whose body Sentient
   already has is skipped. The copied SKILL.md gets `name: <target>` and `tags` from `metadata.hermes.tags`.
 - **Memory**: `MEMORY.md` entries (separated by a line holding only `§`) become facts, `USER.md` entries become
-  user-model insights (`active`, confidence 0.6), both with source `import:hermes`; "User" becomes the user's name.
-  Facts are stored without model calls (embeddings only); duplicates are skipped. The memory review inbox (#137) does
-  not exist yet, so they are added directly and can be removed with `DELETE /api/import/hermes/memories`.
+  user-model insights (confidence 0.6), both with source `import:hermes`; "User" becomes the user's name. Both wait
+  in the memory review inbox (section 7, `from: "Hermes"`) until the user approves them. Facts are stored without
+  model calls (embeddings only); duplicates are skipped. `DELETE /api/import/hermes/memories` removes them, approved
+  or not.
 - **Persona**: `SOUL.md` replaces Sentient's SOUL.md (`current` and `proposed` let the window show a diff).
 - **Scheduled jobs** become paused tasks (section 4, "Imported tasks"). Schedules: cron `M H * * *` → daily,
   `M H * * <days>` → weekly, `*/N * * * *` → every N minutes, `M * * * *` → hourly, `M */H * * *` → every H hours,

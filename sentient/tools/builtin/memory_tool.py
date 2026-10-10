@@ -8,8 +8,15 @@ from __future__ import annotations
 
 import re
 
+from sentient.memory import review
 from sentient.memory.episodic import EpisodicMemory
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
+from sentient.tools.rules import brings_untrusted
+
+HELD_NOTE = (
+    "Saved for the user to review first, because this run read outside content or nobody asked for it. "
+    "It is not used until they approve it."
+)
 
 
 def _episodic(ctx: ToolContext) -> EpisodicMemory:
@@ -42,7 +49,31 @@ async def memory_remember(ctx: ToolContext, fact: str) -> dict:
     Existing facts on the same subject are updated instead of duplicated."""
     if ctx.memory is None:
         return {"error": "memory unavailable"}
-    return await ctx.memory.remember(fact, source="conversation", notify=True)
+    held = review.for_context(ctx)  # outside content or unprompted work: the user reviews it first (ADR 0021)
+    if held is not None:
+        held["snippet"] = review.note("", await _last_outside_result(ctx))["snippet"]
+    out = await ctx.memory.remember(fact, source="conversation", notify=True, review=held)
+    return {**out, "note": HELD_NOTE} if out.get("status") == "pending" else out
+
+
+async def _last_outside_result(ctx: ToolContext) -> str | None:
+    """The latest tool result in this chat that brought in outside content (the review card shows it)."""
+    registry = ctx.extra.get("registry")
+    if not ctx.session_id or registry is None or not ctx.untrusted:
+        return None
+    try:
+        rows = await ctx.store.fetchall(
+            "SELECT name, content FROM messages WHERE session_id = ? AND role = 'tool'"
+            " ORDER BY created_at DESC, rowid DESC LIMIT 12",
+            (ctx.session_id,),
+        )
+    except Exception:
+        return None
+    for r in rows:
+        t = registry.get(r["name"] or "")
+        if t is not None and brings_untrusted(t):
+            return r["content"]
+    return None
 
 
 @tool("memory_forget", risk=Risk.send)

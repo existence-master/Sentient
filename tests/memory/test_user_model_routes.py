@@ -30,21 +30,21 @@ def test_user_model_routes(client):
     assert client.post("/api/user-model/insights", json={"statement": ""}).status_code == 400
     ins = client.post("/api/user-model/insights", json={"statement": "Sarthak prefers tea", "dimension": "preferences"}).json()
     assert (ins["status"], ins["source"], ins["dimension"]) == ("confirmed", "user", "preferences")
-    assert set(ins) == {"id", "dimension", "statement", "confidence", "status", "source", "evidence", "created_at", "updated_at"}
+    assert set(ins) == {"id", "dimension", "statement", "confidence", "status", "source", "evidence", "created_at", "updated_at", "review"}
 
     patched = client.patch(f"/api/user-model/insights/{ins['id']}", json={"statement": "Sarthak prefers green tea"}).json()
     assert patched["statement"] == "Sarthak prefers green tea" and patched["status"] == "confirmed"
     assert client.patch(f"/api/user-model/insights/{ins['id']}", json={"status": "sleepy"}).status_code == 400
     assert client.patch("/api/user-model/insights/missing", json={"status": "retired"}).status_code == 404
 
-    assert client.post("/api/user-model/refresh").json() == {"added": 0, "updated": 0, "disputed": 0, "questions": 0}
+    assert client.post("/api/user-model/refresh").json() == {"added": 0, "updated": 0, "disputed": 0, "questions": 0, "held": 0}
     sid = client.portal.call(functools.partial(core.store.create_session))
     client.portal.call(functools.partial(core.store.add_message, sid, "user", "switched to black coffee this month"))
     llm.json_replies.append(
         {"operations": [{"op": "contradict", "id": ins["id"], "evidence": ["m1"], "question": "Coffee over tea now?"}],
          "summary": "Sarthak likes hot drinks."}
     )
-    assert client.post("/api/user-model/refresh").json() == {"added": 0, "updated": 0, "disputed": 0, "questions": 1}
+    assert client.post("/api/user-model/refresh").json() == {"added": 0, "updated": 0, "disputed": 0, "questions": 1, "held": 0}
     state = client.get("/api/user-model").json()
     assert state["summary"] == "Sarthak likes hot drinks." and state["updated_at"]
     [question] = state["questions"]

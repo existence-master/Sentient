@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
 from sentient.gateway.deps import AUTH, get_core
+from sentient.memory import review as memory_review
 from sentient.memory.episodic import EpisodicMemory
 from sentient.memory.personas import PERSONAS, render_persona
 from sentient.memory.topics import TOPICS
@@ -121,6 +122,48 @@ async def import_document(request: Request, file: UploadFile = File(...)):
             return await mem.import_document(path, username=s.config.assistant.user_name, source=f"file:{name}")
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/review")
+async def review_inbox(request: Request):
+    return await memory_review.inbox(get_core(request))
+
+
+@router.post("/review/approve-all")
+async def review_approve_all(request: Request, body: dict):
+    source = str(body.get("from") or "").strip()
+    if not source:
+        raise HTTPException(400, "from is required")
+    return {"approved": await memory_review.approve_from(get_core(request), source)}
+
+
+@router.post("/review/{kind}/{item_id}/approve")
+async def review_approve(request: Request, kind: str, item_id: str, body: dict | None = None):
+    content = (body or {}).get("content")
+    if content is not None and not str(content).strip():
+        raise HTTPException(400, "content is empty")
+    try:
+        ok = await memory_review.approve(get_core(request), kind, item_id, str(content) if content else None)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except KeyError:
+        ok = False
+    if not ok:
+        raise HTTPException(404, f"no {kind} {item_id} is waiting for review")
+    return {"ok": True}
+
+
+@router.delete("/review/{kind}/{item_id}")
+async def review_discard(request: Request, kind: str, item_id: str):
+    try:
+        ok = await memory_review.discard(get_core(request), kind, item_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except KeyError:
+        ok = False
+    if not ok:
+        raise HTTPException(404, f"no {kind} {item_id} is waiting for review")
+    return {"ok": True}
 
 
 @router.delete("/source/{source:path}")

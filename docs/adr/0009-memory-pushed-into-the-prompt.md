@@ -1,6 +1,7 @@
 # 0009. Push memory into every turn and consolidate it nightly
 
-- **Status:** Accepted
+- **Status:** Accepted (narrowed by [ADR 0021](0021-hold-untrusted-memories-for-review.md): memories from outside
+  content, unprompted work and imports wait for the user's review before they reach the prompt)
 - **Date:** 2026-09-15
 
 ## Context

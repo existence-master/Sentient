@@ -30,6 +30,7 @@ from typing import Any
 
 from sentient.evolution import prompts
 from sentient.evolution.log import log_event
+from sentient.memory import review as memory_review
 from sentient.memory.topics import TOPIC_NAMES
 from sentient.memory.vectors import cosine
 from sentient.services import Service, cancel_tasks
@@ -198,6 +199,7 @@ class EvolutionService(Service):
         if self.app.memory is not None:
             if await self._due("memory.purge_last_run", timedelta(minutes=cfg.memory.purge_interval_minutes), now):
                 await self.app.memory.purge_expired()
+                await memory_review.expire(self.app, now)
             if cfg.memory.summaries_enabled and await self._due(
                 "memory.summaries_last_run", timedelta(minutes=cfg.memory.summarize_interval_minutes), now
             ):
@@ -817,7 +819,7 @@ class EvolutionService(Service):
         since = (last or now - timedelta(days=30)).isoformat()
         nowiso = now.isoformat()
         new_facts = await store.fetchall(
-            "SELECT content, topics, source FROM facts WHERE memory_type = 'long-term' AND updated_at > ?"
+            "SELECT content, topics, source FROM facts WHERE status = 'active' AND memory_type = 'long-term' AND updated_at > ?"
             " AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at",
             (since, nowiso),
         )
@@ -836,7 +838,8 @@ class EvolutionService(Service):
 
         budget = cfg.memory.workspace_budget_chars
         all_facts = await store.fetchall(
-            "SELECT content FROM facts WHERE (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC LIMIT 80",
+            "SELECT content FROM facts WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?)"
+            " ORDER BY updated_at DESC LIMIT 80",
             (nowiso,),
         )
         summaries = await store.fetchall("SELECT content FROM summaries ORDER BY end_at DESC LIMIT 8")

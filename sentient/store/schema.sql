@@ -73,7 +73,9 @@ CREATE TABLE IF NOT EXISTS facts (
     updated_at      TEXT NOT NULL,
     expires_at      TEXT,
     embedding_model TEXT,
-    previous_content TEXT                                   -- kept on UPDATE so edits are auditable
+    previous_content TEXT,                                  -- kept on UPDATE so edits are auditable
+    status          TEXT NOT NULL DEFAULT 'active',         -- active | pending (held for the user's review, ADR 0021)
+    review          TEXT                                    -- JSON {from, snippet, session_id}: where a held memory came from
 );
 CREATE INDEX IF NOT EXISTS idx_facts_expires ON facts(expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_facts_source ON facts(source);

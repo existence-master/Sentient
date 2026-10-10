@@ -57,6 +57,7 @@ from sentient.llm.events import (
     tool_progress_event,
 )
 from sentient.llm.provider import LLMProvider, ProviderError, ToolCall
+from sentient.memory import review as memory_review
 from sentient.memory.facts import FactMemory
 from sentient.memory.sources import MemorySources
 from sentient.memory.workspace import Workspace
@@ -1061,7 +1062,8 @@ class Agent:
 
             said = "\n\n".join([user_text, *result.interjections]).strip()
             if self.memory is not None and self.config.memory.extract_after_turn:
-                self._spawn(self._extract(said))
+                # a chat that read outside content holds what it learns for the user's review (ADR 0021)
+                self._spawn(self._extract(said, memory_review.for_context(ctx)))
             if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
                 self._spawn(self._auto_title(session_id, user_text, result.text))
             self._spawn(self._maybe_compress(session_id))
@@ -1166,14 +1168,17 @@ class Agent:
             if isinstance(r, dict) and r.get("action") in {"ADD", "UPDATE", "DELETE"}:
                 self.app.bus.publish("memory.updated", {"action": r["action"], "id": r.get("id"), "content": r.get("content")})
 
-    async def _extract(self, user_text: str) -> None:
+    async def _extract(self, user_text: str, review: dict | None = None) -> None:
         """Only the user's own words are mined for facts; the assistant's reply is
-        mostly restated context (dates, tool output) and produced junk memories."""
+        mostly restated context (dates, tool output) and produced junk memories.
+        With ``review`` (the chat read outside content) the facts are held for the user's review."""
         assert self.memory is not None
         if len(user_text.split()) < 4:
             return
         try:
-            results = await self.memory.extract_and_store(user_text, self.config.assistant.user_name)
+            results = await self.memory.extract_and_store(
+                user_text, self.config.assistant.user_name, **({"review": review} if review else {})
+            )
             self._publish_memory(results)
         except Exception as exc:
             log.warning("background extraction failed: %s", exc)
@@ -1195,13 +1200,15 @@ class Agent:
         except Exception as exc:
             log.debug("auto title failed: %s", exc)
 
-    async def _flush_memory(self, transcript: str) -> None:
-        """Let the memory package keep durable facts from turns about to be folded into a summary."""
+    async def _flush_memory(self, transcript: str, untrusted: str = "", session_id: str | None = None) -> None:
+        """Let the memory package keep durable facts from turns about to be folded into a summary. In a chat that
+        read outside content they are held for the user's review (ADR 0021)."""
         flush = getattr(self.memory, "flush_conversation", None) if self.memory is not None else None
         if not callable(flush):
             return
+        held = {"review": memory_review.note(untrusted, session_id=session_id)} if untrusted else {}
         try:
-            results = await flush(transcript, self.config.assistant.user_name)
+            results = await flush(transcript, self.config.assistant.user_name, **held)
             self._publish_memory(results)
         except Exception as exc:
             log.warning("memory flush before compression failed: %s", exc)
@@ -1225,7 +1232,7 @@ class Agent:
             if len(older) < 10:
                 return
             transcript = "\n".join(f"{r['role']}: {(r['content'] or '')[:800]}" for r in older)
-            await self._flush_memory(transcript)
+            await self._flush_memory(transcript, (session or {}).get("untrusted") or "", session_id)
             prev = (session or {}).get("context_summary") or ""
             summary = await self.llm.complete_text(
                 "fast",

@@ -14,6 +14,10 @@ moves with new evidence:
 - answering a question confirms, retires or rewrites the insight and stores a fact.
 - ``context_for(text)`` is the prompt hook: no model call, a few hundred characters.
   ``context_with_sources(text)`` also returns the insights it used (memory sources).
+- held for review (``pending``, ADR 0021): imported insights, and new insights the model draws only from outside
+  material (messages or summaries of a chat that read outside content). Pending insights are never in a prompt,
+  in a refresh or in ``get_state``; only the user approves or discards one. Support, contradict and retire
+  operations that cite only outside material are ignored.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from sentient.memory import prompts
+from sentient.memory import review as reviews
 from sentient.memory.facts import FactMemory, word_overlap
 from sentient.memory.schema import ensure_memory_schema
 from sentient.memory.vectors import VecTable, cosine
@@ -40,10 +45,11 @@ log = logging.getLogger(__name__)
 
 DIMENSIONS = list(prompts.USER_MODEL_DIMENSIONS)
 STATUSES = ("active", "confirmed", "disputed", "retired")
+PENDING = "pending"  # held for the user's review; never one of STATUSES, so no reader but ``pending_insights`` sees it
 VEC_TABLE = "user_insights_vec"
 MAX_EVIDENCE = 8
 SUMMARY_MAX_WORDS = 180
-_COLUMNS = "rid, id, dimension, statement, confidence, status, source, evidence, created_at, updated_at"
+_COLUMNS = "rid, id, dimension, statement, confidence, status, source, evidence, created_at, updated_at, review"
 
 _DIMENSION_ALIASES = {
     "preference": "preferences", "likes": "preferences", "tastes": "preferences",
@@ -173,6 +179,7 @@ def _row(r: Any) -> dict:
         "evidence": evidence if isinstance(evidence, list) else [],
         "created_at": r["created_at"],
         "updated_at": r["updated_at"],
+        "review": reviews.load(r["review"]),
         "_rid": int(r["rid"]),
     }
 
@@ -316,13 +323,17 @@ class UserModelService(Service):
             await self.vec.upsert(int(r["rid"]), v)
 
     async def _insert(
-        self, statement: str, dimension: str, *, confidence: float, status: str, source: str, evidence: list[dict]
+        self, statement: str, dimension: str, *, confidence: float, status: str, source: str, evidence: list[dict],
+        review: dict | None = None,
     ) -> dict:
         iid, ts = new_id(), now_iso()
         cur = await self.app.store.execute(
-            "INSERT INTO user_insights(id, dimension, statement, confidence, status, source, evidence, created_at, updated_at)"
-            " VALUES(?,?,?,?,?,?,?,?,?)",
-            (iid, dimension, statement, confidence, status, source, json.dumps(evidence[-MAX_EVIDENCE:]), ts, ts),
+            "INSERT INTO user_insights(id, dimension, statement, confidence, status, source, evidence, created_at,"
+            " updated_at, review) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                iid, dimension, statement, confidence, status, source, json.dumps(evidence[-MAX_EVIDENCE:]), ts, ts,
+                reviews.dump(review),
+            ),
         )
         await self._embed_insight(int(cur.lastrowid), statement)
         ins = await self._get(iid)
@@ -377,9 +388,12 @@ class UserModelService(Service):
         await self._touch(changed=1)
         return _public(ins)
 
-    async def import_insight(self, statement: str, *, source: str, dimension: str = "context") -> dict | None:
-        """An insight brought over from another assistant (``source`` like ``import:hermes``): active with medium
-        confidence, so new evidence can still change it. None when the same statement is already there."""
+    async def import_insight(
+        self, statement: str, *, source: str, dimension: str = "context", review: dict | None = None
+    ) -> dict | None:
+        """An insight brought over from another assistant (``source`` like ``import:hermes``): held for the user's
+        review with medium confidence, so once approved new evidence can still change it. None when the same
+        statement is already there."""
         statement = _clean_statement(statement, self.user_name)
         if not statement:
             return None
@@ -389,11 +403,61 @@ class UserModelService(Service):
         ):
             return None
         ins = await self._insert(
-            statement, normalize_dimension(dimension), confidence=0.6, status="active", source=source,
+            statement, normalize_dimension(dimension), confidence=0.6, status=PENDING, source=source,
             evidence=[{"kind": "import", "ref": source, "quote": statement[:160], "at": now_iso()}],
+            review=review or reviews.note(source),
         )
         await self._touch(changed=1)
         return _public(ins)
+
+    # ------------------------------------------------------------------ review (ADR 0021)
+    async def pending_insights(self, limit: int = 500) -> list[dict]:
+        """Insights held for the user's review, newest first."""
+        await ensure_memory_schema(self.app.store)
+        rows = await self.app.store.fetchall(
+            f"SELECT {_COLUMNS} FROM user_insights WHERE status = ? ORDER BY created_at DESC LIMIT ?", (PENDING, limit)
+        )
+        return [_public(_row(r)) for r in rows]
+
+    async def approve_insight(self, insight_id: str, statement: str | None = None) -> dict | None:
+        """The user approved a held insight: it becomes active, or confirmed in their own words when ``statement``
+        rewords it. None when it is not pending."""
+        ins = await self._get(insight_id)
+        if ins is None or ins["status"] != PENDING:
+            return None
+        cleaned = _clean_statement(statement, self.user_name) if statement is not None else ""
+        reembed = bool(cleaned) and cleaned != ins["statement"]
+        if reembed:
+            ins.update(statement=cleaned, source="user", status="confirmed", confidence=1.0)
+        else:
+            ins["status"] = "active"
+        await self._save(ins, reembed=reembed)
+        self._vectors = None
+        await self._touch(changed=1)
+        out = await self._get(insight_id)
+        return _public(out) if out else None
+
+    async def discard_insight(self, insight_id: str) -> bool:
+        """The user turned a held insight down: it is deleted. False when it is not pending."""
+        ins = await self._get(insight_id)
+        if ins is None or ins["status"] != PENDING:
+            return False
+        return await self.delete_insight(insight_id)
+
+    async def expire_pending(self, before: str) -> int:
+        """Delete held insights created before ``before`` (ISO time) that nobody reviewed."""
+        await ensure_memory_schema(self.app.store)
+        rows = await self.app.store.fetchall(
+            "SELECT id, rid FROM user_insights WHERE status = ? AND created_at < ?", (PENDING, before)
+        )
+        for r in rows:
+            await self.app.store.execute("DELETE FROM user_insights WHERE id = ?", (r["id"],))
+            with contextlib.suppress(Exception):
+                await self.vec.delete(int(r["rid"]))
+        if rows:
+            self._vectors = None
+            await self._touch(changed=len(rows))
+        return len(rows)
 
     async def delete_by_source(self, source: str) -> int:
         """Delete every insight with this ``source`` (undo an import)."""
@@ -524,26 +588,31 @@ class UserModelService(Service):
         return {"ok": True, "verdict": verdict, "insight": _public(out) if out else None, "fact": stored}
 
     # ------------------------------------------------------------------ refresh
-    async def _gather(self, since: str) -> tuple[dict[str, dict], dict[str, str]]:
-        """Evidence since the last refresh: aliases (m1, f12, s1) -> evidence dict, plus prompt sections."""
+    async def _gather(self, since: str) -> tuple[dict[str, dict], dict[str, str], dict[str, str]]:
+        """Evidence since the last refresh: aliases (m1, f12, s1) -> evidence dict, prompt sections, and the aliases
+        that are outside material (from a chat that read outside content, ADR 0018) -> where it came from."""
         cfg, store = self.cfg, self.app.store
         evidence: dict[str, dict] = {}
+        outside: dict[str, str] = {}
         sections = {"messages": "", "facts": "", "summaries": ""}
         if cfg.recent_messages:
             rows = await store.fetchall(
-                "SELECT id, content, created_at FROM messages WHERE role = 'user' AND content IS NOT NULL"
-                " AND content != '' AND created_at > ? ORDER BY created_at DESC LIMIT ?",
+                "SELECT m.id, m.content, m.created_at, s.untrusted FROM messages m LEFT JOIN sessions s"
+                " ON s.id = m.session_id WHERE m.role = 'user' AND m.content IS NOT NULL"
+                " AND m.content != '' AND m.created_at > ? ORDER BY m.created_at DESC LIMIT ?",
                 (since, cfg.recent_messages),
             )
             lines = []
             for i, r in enumerate(reversed(rows), 1):
                 text = " ".join(r["content"].split())[:300]
                 evidence[f"m{i}"] = {"kind": "message", "ref": r["id"], "quote": text[:160], "at": r["created_at"]}
+                if r["untrusted"]:
+                    outside[f"m{i}"] = r["untrusted"]
                 lines.append(f"- m{i}: {text}")
             sections["messages"] = "\n".join(lines)
         if cfg.recent_facts:
             rows = await store.fetchall(
-                "SELECT id, content, updated_at FROM facts WHERE updated_at > ?"
+                "SELECT id, content, updated_at FROM facts WHERE status = 'active' AND updated_at > ?"
                 " AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC LIMIT ?",
                 (since, now_iso(), cfg.recent_facts),
             )
@@ -555,16 +624,19 @@ class UserModelService(Service):
             sections["facts"] = "\n".join(lines)
         if cfg.recent_summaries:
             rows = await store.fetchall(
-                "SELECT id, content, end_at FROM summaries WHERE created_at > ? ORDER BY created_at DESC LIMIT ?",
+                "SELECT m.id, m.content, m.end_at, s.untrusted FROM summaries m LEFT JOIN sessions s"
+                " ON s.id = m.session_id WHERE m.created_at > ? ORDER BY m.created_at DESC LIMIT ?",
                 (since, cfg.recent_summaries),
             )
             lines = []
             for i, r in enumerate(reversed(rows), 1):
                 text = " ".join(r["content"].split())[:400]
                 evidence[f"s{i}"] = {"kind": "summary", "ref": r["id"], "quote": text[:160], "at": r["end_at"]}
+                if r["untrusted"]:
+                    outside[f"s{i}"] = r["untrusted"]
                 lines.append(f"- s{i}: {text}")
             sections["summaries"] = "\n".join(lines)
-        return evidence, sections
+        return evidence, sections, outside
 
     @staticmethod
     def _evidence_for(op: dict, evidence: dict[str, dict]) -> list[dict]:
@@ -579,8 +651,8 @@ class UserModelService(Service):
         return out
 
     async def refresh(self, *, trigger: str = "manual", now: datetime | None = None) -> dict:
-        """Run one dialectic refresh. Returns ``{added, updated, disputed, questions}``."""
-        counts = {"added": 0, "updated": 0, "disputed": 0, "questions": 0}
+        """Run one dialectic refresh. Returns ``{added, updated, disputed, questions, held}``."""
+        counts = {"added": 0, "updated": 0, "disputed": 0, "questions": 0, "held": 0}
         if not self.cfg.enabled:
             return counts
         async with self._lock:
@@ -591,9 +663,10 @@ class UserModelService(Service):
         await ensure_memory_schema(store)
         since = await store.get_meta("user_model.last_refresh_at") or ""
         await store.set_meta("user_model.turns_since_refresh", "0")
-        evidence, sections = await self._gather(since)
+        evidence, sections, outside = await self._gather(since)
         if not evidence:
             return counts
+        outside_refs = [evidence[a] for a in outside]
         current = await self._insights(("confirmed", "active", "disputed"), limit=40)
         aliases = {f"i{n}": ins for n, ins in enumerate(current, 1)}
         by_id = {ins["id"]: ins for ins in current}
@@ -629,6 +702,7 @@ class UserModelService(Service):
             return counts
 
         retired = await self._insights(("retired",), limit=200)
+        held = await self.pending_insights()
         active_inferred = sum(1 for i in current if not protected(i))
         changed_ids: set[str] = set()
 
@@ -643,6 +717,10 @@ class UserModelService(Service):
         for op in parse_operations(raw)[: cfg.max_operations]:
             kind = op["op"]
             refs = self._evidence_for(op, evidence)
+            trusted = [e for e in refs if e not in outside_refs]
+            # only outside material behind it (or nothing, while outside material was offered): it may not change
+            # anything the user relies on; a new insight waits for review (ADR 0021)
+            untrusted_only = bool(outside) and not trusted
             aimed = target(op)
             if aimed is not None:
                 if op.get("question"):
@@ -662,6 +740,20 @@ class UserModelService(Service):
                     op, kind = {"op": "support", "id": twin["id"], "evidence": op.get("evidence")}, "support"
                 elif any(word_overlap(i["statement"], statement) >= 0.7 for i in retired):
                     continue  # retired before (often by the user): do not bring it back
+                elif any(word_overlap(i["statement"], statement) >= 0.7 for i in held):
+                    continue  # already waiting for the user's review
+                elif untrusted_only:
+                    conf = min(max(parse_confidence(op.get("confidence"), 0.5), 0.2), 0.8 if refs else 0.4)
+                    first = next((a for a in outside if evidence[a] in refs), next(iter(outside)))
+                    ins = await self._insert(
+                        statement, normalize_dimension(op.get("dimension")), confidence=conf, status=PENDING,
+                        source="inferred", evidence=refs,
+                        review=reviews.note(outside[first], evidence[first]["quote"]),
+                    )
+                    held.append(_public(ins))
+                    counts["held"] += 1
+                    changed_ids.add(ins["id"])
+                    continue
                 else:
                     if active_inferred >= cfg.max_active_insights:
                         continue
@@ -679,8 +771,9 @@ class UserModelService(Service):
                     changed_ids.add(ins["id"])
                     continue
             ins = target(op)
-            if ins is None or ins["status"] == "retired":
+            if ins is None or ins["status"] == "retired" or untrusted_only:
                 continue
+            refs = trusted
             if kind == "support":
                 if protected(ins):
                     continue

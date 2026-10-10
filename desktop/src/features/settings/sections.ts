@@ -56,7 +56,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'Memory',
     description: 'How Sentient learns and recalls facts about you.',
     icon: IconBrain,
-    keywords: ['facts', 'recall', 'similarity', 'summaries', 'workspace'],
+    keywords: ['facts', 'recall', 'similarity', 'summaries', 'workspace', 'review'],
     schemaSections: ['memory']
   },
   {

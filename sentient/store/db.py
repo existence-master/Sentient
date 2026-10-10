@@ -67,6 +67,8 @@ class Store:
         await self.ensure_column("messages", "attachments", "TEXT")
         await self.ensure_column("messages", "interjection", "INTEGER NOT NULL DEFAULT 0")
         await self.ensure_column("messages", "memory_sources", "TEXT")
+        await self.ensure_column("facts", "status", "TEXT NOT NULL DEFAULT 'active'")
+        await self.ensure_column("facts", "review", "TEXT")
         for pkg in PACKAGE_SCHEMAS:
             extra = _PKG_ROOT / pkg / "schema.sql"
             if extra.exists():
