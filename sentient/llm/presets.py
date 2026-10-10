@@ -35,7 +35,7 @@ from sentient.llm.provider import provider_config
 UNDO_META_KEY = "models.preset_undo"
 BUILTIN = (LOCAL_PRESET, CLOUD_PRESET, MIXED_PRESET)
 CLOUD_ORDER = (*PRESET_CLOUD_MODELS, chatgpt.PREFIX)
-PLAN_MODELS_META = "chatgpt.models"  # the plan's model list from last time, for when it can't be loaded
+PLAN_MODELS_META = chatgpt.MODELS_META  # the plan's model list from last time, for when it can't be loaded
 PLAN_MODELS_TIMEOUT_S = 5
 SETUP_FIELDS = ("fallbacks", "reasoning", "context_length", "context_length_per_role")
 MAX_NAME = 40

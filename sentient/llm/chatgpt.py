@@ -44,6 +44,7 @@ SECRET = "chatgpt"
 PREFIX = "chatgpt"
 CLIENT_META = "chatgpt.client_id"  # the issued client id (not a secret), kept after sign-out for the next sign-in
 HOST_META = "chatgpt.host_id"  # a stable random id for this computer (ext_agent_host_id), not a credential
+MODELS_META = "chatgpt.models"  # the plan's model list from last time (presets), cleared when the account changes
 REFRESH_MARGIN_S = 300
 TIMEOUT_S = 15
 # Refresh errors that mean the sign-in is gone for good (https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery)
@@ -208,18 +209,22 @@ async def _refresh(tokens: dict) -> dict:
 
 
 async def sign_out() -> None:
-    """Revoke the refresh token (best effort) and remove the sign-in from the keychain."""
-    tokens = load_json(SECRET)
-    if tokens and tokens.get("refresh_token") and tokens.get("client_id"):
-        for _ in range(2):  # an empty 200 means done, even for a token that was already invalid
-            try:
-                r = await _post_form(REVOKE_URL, {"token": tokens["refresh_token"], "token_type_hint": "refresh_token",
-                                                  "client_id": tokens["client_id"]})
-            except ChatGPTError:
-                continue
-            if r.status_code < 500:
-                break
-    delete_json(SECRET)
+    """Revoke the refresh token (best effort) and remove the sign-in from the keychain.
+
+    Holds the refresh lock so a refresh finishing at the same moment can't save the tokens back."""
+    async with _lock():
+        tokens = load_json(SECRET)
+        if tokens and tokens.get("refresh_token") and tokens.get("client_id"):
+            for _ in range(2):  # an empty 200 means done, even for a token that was already invalid
+                try:
+                    r = await _post_form(REVOKE_URL, {"token": tokens["refresh_token"],
+                                                      "token_type_hint": "refresh_token",
+                                                      "client_id": tokens["client_id"]})
+                except ChatGPTError:
+                    continue
+                if r.status_code < 500:
+                    break
+        delete_json(SECRET)
 
 
 # ---------------------------------------------------------------------------- ID token
@@ -301,8 +306,12 @@ async def finish_sign_in(store: Any, flow: dict, params: dict[str, str]) -> str:
         await store.set_meta(CLIENT_META, client_id)
     record = _record(client_id, {**tok, "scope": tok.get("scope") or params.get("scope")})
     record["email"] = claims.get("email") if isinstance(claims.get("email"), str) else None
-    if not save_json(SECRET, record):
-        raise ChatGPTError("Your system keychain is unavailable, so the sign-in can't be saved.")
+    async with _lock():  # the same lock as sign-out, so a sign-out can't land between this check and the save
+        if flow.get("cancelled"):
+            raise ChatGPTError("You signed out, so this sign-in was not kept.")
+        if not save_json(SECRET, record):
+            raise ChatGPTError("Your system keychain is unavailable, so the sign-in can't be saved.")
+    await store.set_meta(MODELS_META, "")  # a new sign-in can be another account with other models
     return record["email"] or ""
 
 

@@ -197,6 +197,32 @@ async def test_forged_state_and_refusals_store_nothing(app, keychain):
     assert ok is False and "couldn't be verified" in msg and "chatgpt" not in keychain
 
 
+async def test_sign_out_stops_sign_ins_in_flight(app, keychain):
+    await app.store.set_meta(presets.PLAN_MODELS_META, json.dumps(["chatgpt/old-account-model"]))
+    waiting = await app.connections.start_chatgpt()
+    exchanging = await app.connections.start_chatgpt()
+    q = {k: v[0] for k, v in parse_qs(urlsplit(exchanging["auth_url"]).query).items()}
+
+    def sign_out_meanwhile(request: httpx.Request) -> httpx.Response:
+        app.connections._flows[exchanging["state"]]["cancelled"] = True  # what a sign-out does to a flow mid-exchange
+        return httpx.Response(200, json=_tokens(q["nonce"]))
+
+    with respx.mock(assert_all_called=False) as router:  # nothing to revoke: no sign-in was kept yet
+        router.post(chatgpt.REVOKE_URL).mock(return_value=httpx.Response(200))
+        await app.connections.sign_out_chatgpt()
+        ok, _msg = await app.connections.oauth_callback({"state": waiting["state"], "code": "c", "client_id": ISSUED})
+        assert ok is False and app.connections.flow_status(waiting["state"])["status"] == "failed"
+
+        flow = app.connections._flows[exchanging["state"]]
+        flow.update(status="waiting", error=None)  # replay the second one as if the sign-out came mid-exchange
+        flow.pop("cancelled", None)
+        router.post(chatgpt.TOKEN_URL).mock(side_effect=sign_out_meanwhile)
+        router.get(chatgpt.JWKS_URL).mock(return_value=httpx.Response(200, json=_jwks()))
+        ok, msg = await app.connections.oauth_callback({"state": exchanging["state"], "code": "c", "client_id": ISSUED})
+    assert ok is False and "signed out" in msg and "chatgpt" not in keychain
+    assert not await app.store.get_meta(presets.PLAN_MODELS_META)  # the old account's models are forgotten
+
+
 def test_turned_off_without_a_client_id(client):
     status = client.get("/api/models/connect/chatgpt").json()
     assert status == {"available": True, "reason": None, "signed_in": False, "email": None,

@@ -242,7 +242,13 @@ class ProviderConnections:
                 "email": (tokens or {}).get("email"), "manage_usage_url": chatgpt.MANAGE_USAGE_URL}
 
     async def sign_out_chatgpt(self) -> None:
+        for flow in self._flows.values():  # a sign-in still open in the browser must not sign back in
+            if flow["provider"] == "chatgpt" and flow["status"] in {"waiting", "exchanging"}:
+                flow["cancelled"] = True
+                if flow["status"] == "waiting":
+                    self._fail(flow, "You signed out, so this sign-in was stopped.")
         await chatgpt.sign_out()
+        await self.app.store.set_meta(chatgpt.MODELS_META, "")
         self._catalog.pop("chatgpt", None)
         self.app.bus.publish("config.updated", {"sections": ["secrets"]})
 
