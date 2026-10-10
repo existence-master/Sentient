@@ -76,6 +76,7 @@ import type {
   ModelPresetList,
   ModelRoles,
   ModelTestResult,
+  ModelBusy,
   CatalogModel,
   ChatGPTStatus,
   ProviderKeyCheck,
@@ -474,6 +475,8 @@ export const api = {
     test: (model: string, role?: RoleName) => http.post<ModelTestResult>('/api/models/test', { model, role }),
     testEmbedding: (model: string) => http.post<EmbeddingTestResult>('/api/models/test-embedding', { model }),
     claudeCode: () => http.get<ClaudeCodeStatus>('/api/models/claude-code'),
+    /** What the local model is doing now and what waits for it (#149). */
+    busy: () => http.get<ModelBusy>('/api/models/busy'),
     setRoles: (roles: Partial<Record<RoleName, string | null>>) => http.put<ModelRoles>('/api/models/roles', roles),
     setFallbacks: (fallbacks: Partial<Record<RoleName, string[]>>) =>
       http.put<FallbacksResponse>('/api/models/fallbacks', fallbacks),

@@ -6,6 +6,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **One local model job at a time, your chats first:** a local Ollama model now works on one thing at a time, so
+  background work no longer pushes it off the graphics card and slows your chat to a crawl. Your chat always goes
+  next; tasks, suggestions, memory upkeep and chat titles wait while you are chatting (and for 30 seconds after), and
+  while your laptop runs on battery. A small "Model busy" sign in the title bar says what the model is working on and
+  what waits. Change the wait, allow background work on battery or turn the queue off in Settings > Models. Cloud
+  models never wait.
 - **Claude through your own Claude Code (experimental):** if Claude Code is installed and signed in on your computer,
   your chats can use Claude through it (Settings > Models, off until you turn it on). Sentient never reads or keeps
   your Claude login, and leaves API keys and other sign-in settings in your environment out, so Claude Code always

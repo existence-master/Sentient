@@ -32,6 +32,9 @@ log = logging.getLogger(__name__)
 class Service:
     name: str = "service"
     pause_on_stop: bool = False  # skip run_every jobs while Sentient is stopped (app.stop_all)
+    # what the model calls of the loops and listeners started in start() count as (sentient.llm.jobs, #149);
+    # None: whoever asks (a chat, a person pressing a button)
+    model_kind: str | None = None
 
     def __init__(self, app: SentientApp):
         self.app = app

@@ -72,6 +72,7 @@ def _parse_ts(value: str | None) -> datetime | None:
 
 class IntegrationManager(Service):
     name = "integrations"
+    model_kind = "background"
 
     def __init__(self, app: SentientApp):
         super().__init__(app)

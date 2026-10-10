@@ -75,6 +75,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `config.updated` | `{sections: string[]}` |
 | `voice.state` | `{state, session_id}` (mirrors voice socket for other windows) |
 | `stop.updated` | **StopState** (section 17): Stop everything was turned on or off |
+| `model.busy` | **ModelBusy** (section 3, `GET /api/models/busy`): what the local model is doing changed (#149). Quick changes are published once (after 0.2 s), and only when something other than `since` changed |
 
 ---
 
@@ -270,6 +271,23 @@ accept or loosen a rule.
 - `GET /api/models/local` → `{ollama: {reachable, models: [{name, size, family, parameter_size, is_embedding, capabilities: string[]}]}, lm_studio: {reachable, models: [...]}}` (`capabilities` from Ollama, e.g. completion/tools/thinking/vision/embedding — a hint; `POST /api/models/test` is the authoritative tool-support check)
 - `POST /api/models/test` `{model, role?}` → `{ok, latency_ms, reply?, error?, supports_tools?}`
 - `POST /api/models/test-embedding` `{model}` → `{ok, dim?, error?}`
+- `GET /api/models/busy` (#149) → **ModelBusy**, live as the `model.busy` event:
+  ```json
+  {"busy": true, "job": "task", "model": "ollama_chat/qwen3:8b", "since": "2026-10-10T09:00:00+00:00",
+   "waiting": 1, "deferred": 2, "deferred_reason": "chat"}
+  ```
+  A local model (`ollama/`, `ollama_chat/`) does one job at a time: chat, text, JSON and embedding calls queue for it
+  (`models.local_queue`, default on); cloud models never wait. `busy` means a local call is running now; `job` is who
+  it is for: `chat` (a chat reply and everything it runs: tool calls, foreground subagents), `interactive` (anything
+  else a person is waiting for, the default), `task` (task planning and runs, background subagents), `suggestions`,
+  `memory` (memory notes after a reply, compression, the user model, dreams), `skills`, `titles`, `background`. Waiting
+  calls go in that order, then first come first served; a running call is never cut off. `waiting` counts calls that go
+  as soon as the model is free; `deferred` counts background calls (`task` and below) held back although it may be
+  free, with `deferred_reason`: `"chat"` while a chat reply runs or ended less than `models.background_quiet_s`
+  (default 30) seconds ago, `"battery"` while the computer runs on battery (Windows, macOS and Linux power status) and
+  `models.background_on_battery` is off (the default). Work a running chat reply waits on is never held back, and a
+  reply that has not used the model for 60 seconds stops holding background work back, so the queue can't deadlock.
+  A stream holds the model until its last chunk; cancelling (Stop everything) frees it.
 - `GET /api/models/claude-code` → `{enabled, installed, version, detail, models}`: Claude through the user's own
   Claude Code (experimental, ADR 0022). `enabled` is `models.experimental_claude_code` (default false). `installed`
   means a `claude` program is on PATH; `version` is its `claude --version` line, asked only while `enabled` (null

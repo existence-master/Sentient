@@ -176,6 +176,12 @@ async def test_model(request: Request, body: TestBody):
         return {"ok": False, "latency_ms": int((time.perf_counter() - started) * 1000), "error": str(exc)[:500]}
 
 
+@router.get("/models/busy")
+async def model_busy(request: Request):
+    """What the local model is doing now and what waits for it (#149); live as the ``model.busy`` event."""
+    return get_core(request).model_jobs.status()
+
+
 @router.get("/models/claude-code")
 async def claude_code_status(request: Request):
     """Claude through the user's own Claude Code (experimental, ADR 0022): turned on, installed, version. Runs
