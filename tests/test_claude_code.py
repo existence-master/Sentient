@@ -518,8 +518,10 @@ async def test_deltas_without_an_id_cover_only_their_own_message(cc_config, monk
 async def test_claude_code_models_use_the_matching_anthropic_window(monkeypatch, config):
     """LiteLLM's bundled list doesn't know ``claude-code/<model>``, so the meter reads the window of the matching
     Anthropic model instead; an unknown name (or a LiteLLM miss) still degrades to an empty meter."""
-    windows = {"anthropic/claude-sonnet-4-5": {"max_input_tokens": 500_000},
-               "anthropic/claude-opus-4-5": {"max_input_tokens": 200_000}}
+    windows = {"anthropic/claude-sonnet-5-5": {"max_input_tokens": 500_000},
+               "anthropic/claude-opus-5-5": {"max_input_tokens": 200_000},
+               "anthropic/claude-haiku-4-5": {"max_input_tokens": 200_000},
+               "anthropic/claude-fable-4-5": {"max_input_tokens": 200_000}}
 
     def info(model):
         if model not in windows:
@@ -528,12 +530,19 @@ async def test_claude_code_models_use_the_matching_anthropic_window(monkeypatch,
 
     monkeypatch.setattr(litellm, "get_model_info", info)
     prov = LiteLLMProvider(config)
+    # Aliases track the latest model of each family (claude --help: "an alias for the latest model").
     assert claude_code.context_window("claude-code/sonnet") == 500_000
     assert claude_code.context_window("claude-code/opus") == 200_000
+    assert claude_code.context_window("claude-code/haiku") == 200_000
+    assert claude_code.context_window("claude-code/fable") == 200_000
     assert await prov.context_window("primary", "claude-code/sonnet") == 500_000
     assert await prov.context_window("primary", "claude-code/opus") == 200_000
-    assert claude_code.context_window("claude-code/haiku") is None
-    assert await prov.context_window("primary", "claude-code/haiku") is None
+    # Full model names pass through to the Anthropic model.
+    assert claude_code.context_window("claude-code/claude-opus-5-5") == 200_000
+    assert await prov.context_window("primary", "claude-code/claude-sonnet-5-5") == 500_000
+    # Unknown names, and models LiteLLM doesn't know, degrade to an empty meter.
+    assert claude_code.context_window("claude-code/whatever") is None
+    assert await prov.context_window("primary", "claude-code/whatever") is None
     monkeypatch.setattr(litellm, "get_model_info", lambda model: (_ for _ in ()).throw(ValueError("unknown")))
     assert claude_code.context_window("claude-code/sonnet") is None
 
