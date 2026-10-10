@@ -64,6 +64,11 @@ CLOSE_TIMEOUT_S = 20.0
 STORAGE_FLAG = "--enable-aggressive-domstorage-flushing"
 STORAGE_FLUSH_S = 1.5
 PAGE_CLOSE_TIMEOUT_S = 5.0
+DOWNLOAD_APPEAR_GRACE_S = 0.3
+DOWNLOAD_MAX_DURATION_S = 120.0
+DOWNLOAD_CANCEL_TIMEOUT_S = 5.0
+DOWNLOAD_TASK_RETENTION_S = 300.0
+DOWNLOAD_TASK_CLEANUP_INTERVAL_S = 30.0
 # models often pass the whole snapshot line ("[e4] button \"Place order\"") instead of just "e4"
 _REF_RE = re.compile(r"\b(e\d+)\b", re.IGNORECASE)
 
@@ -204,6 +209,8 @@ class BrowserService(Service):
         self._context: Any = None
         self._browser: Any = None  # attach profiles: the user's browser we are connected to
         self._attached = False
+        self._download_pages: set[Any] = set()
+        self._internal_pages: set[Any] = set()
         self._profile = DEFAULT_PROFILE  # the running profile, or the next one to start
         self._for_user = False  # the open window was shown for the user (Open to sign in): don't switch under them
         self._engine: str | None = None
@@ -226,6 +233,11 @@ class BrowserService(Service):
         self._site_seen = False  # a tab of the open browser showed a website (its storage may need writing out)
         self._last_tabs_sig: Any = None
         self.idle_check_s = 30.0
+        self._download_tasks: set[asyncio.Task[str]] = set()
+        self._download_names: dict[asyncio.Task[str], str] = {}
+        self._download_completed_at: dict[asyncio.Task[str], float] = {}
+        self._download_cleanup_task: asyncio.Task | None = None
+        self._download_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -298,12 +310,18 @@ class BrowserService(Service):
         if ctx is None:
             return []
         out = []
-        for i, page in enumerate(list(ctx.pages)):
+        for i, page in enumerate(self._usable_pages(ctx)):
             title = ""
             with contextlib.suppress(Exception):
                 title = await asyncio.wait_for(page.title(), timeout=2)
             out.append({"index": i, "url": page.url, "title": title, "active": page is self._active})
         return out
+
+    def _usable_pages(self, context: Any) -> list[Any]:
+        return [
+            page for page in list(context.pages)
+            if not page.is_closed() and page not in self._internal_pages
+        ]
 
     async def status(self) -> dict:
         running = self._context is not None
@@ -520,10 +538,13 @@ class BrowserService(Service):
         context.on("page", self._on_page)
         for page in context.pages:
             self._wire_page(page)
+            if self._is_downloads_hub(page.url):
+                self._internal_pages.add(page)
         if self._attached:  # work in a tab of our own, never in one the user is using
-            self._active = await context.new_page()
+            self._active = await self._new_page(context)
         else:
-            self._active = context.pages[0] if context.pages else await context.new_page()
+            pages = self._usable_pages(context)
+            self._active = pages[0] if pages else await context.new_page()
         self._last_used = time.monotonic()
         if self._idle_task is None or self._idle_task.done():
             self._idle_task = asyncio.create_task(self._idle_watch(), name="browser:idle")
@@ -538,6 +559,7 @@ class BrowserService(Service):
             kwargs: dict[str, Any] = {
                 "user_data_dir": str(folder),
                 "headless": headless,
+                "accept_downloads": True,
                 "timeout": 45_000,
                 "args": ["--no-first-run", "--no-default-browser-check", "--hide-crash-restore-bubble", STORAGE_FLAG],
             }
@@ -601,9 +623,15 @@ class BrowserService(Service):
     async def _page(self, ctx: Any = None) -> Any:
         c = await self._ensure(ctx)
         if self._active is None or self._active.is_closed():
-            pages = [p for p in c.pages if not p.is_closed()]
-            self._active = pages[-1] if pages and not self._attached else await c.new_page()
+            pages = self._usable_pages(c)
+            self._active = pages[-1] if pages and not self._attached else await self._new_page(c)
         return self._active
+
+    async def _new_page(self, context: Any) -> Any:
+        page = await context.new_page()
+        if self._attached:
+            self._enable_attached_page_downloads(page)
+        return page
 
     async def _close_context(self) -> None:
         """Close the running profile. An attached browser is only disconnected, never closed. Hold ``_life_lock``."""
@@ -627,6 +655,8 @@ class BrowserService(Service):
             self._active = None
             self._snap = None
             self._focused = None
+            self._download_pages.clear()
+            self._internal_pages.clear()
 
     async def _flush_storage(self, ctx: Any) -> None:
         """Let a launched browser write site storage to disk before it closes: close its tabs with their unload
@@ -719,6 +749,7 @@ class BrowserService(Service):
         self._active = None
         self._snap = None
         self._focused = None
+        self._download_pages.clear()
         if not self._closing:  # the user closed the visible window (or their attached browser)
             self._spawn(self._publish_status())
 
@@ -727,30 +758,65 @@ class BrowserService(Service):
         page.on("dialog", self._on_dialog)
         page.on("popup", lambda popup: self._on_popup(page, popup))
         page.on("framenavigated", lambda frame: self._on_navigated(page, frame))
+        if not self._attached:
+            page.on("download", self._on_download)
+
+    def _enable_attached_page_downloads(self, page: Any) -> None:
+        if page not in self._download_pages:
+            self._download_pages.add(page)
+            page.on("download", self._on_download)
 
     def _on_navigated(self, page: Any, frame: Any) -> None:
+        if frame is page.main_frame and self._is_downloads_hub(frame.url):
+            self._mark_internal_page(page)
+            return
         # any website shown, by the assistant or by the user in a visible window
         if frame is page.main_frame and str(frame.url or "").startswith(("http://", "https://")):
             self._site_seen = True
 
+    @staticmethod
+    def _is_downloads_hub(url: Any) -> bool:
+        return str(url or "").lower().startswith("edge://downloads-hub")
+
+    def _mark_internal_page(self, page: Any) -> None:
+        self._internal_pages.add(page)
+        if self._active is page:
+            context = self._context
+            pages = [
+                candidate for candidate in (self._usable_pages(context) if context is not None else [])
+                if not self._attached or candidate in self._download_pages
+            ]
+            self._active = pages[-1] if pages else None
+
     def _on_page(self, page: Any) -> None:
         self._wire_page(page)
-        if not self._attached:  # a link opened a new tab: keep working in it
+        if self._is_downloads_hub(page.url):
+            self._mark_internal_page(page)
+        elif not self._attached:  # a link opened a new tab: keep working in it
             self._active = page
         self._spawn(self._publish_status())
 
     def _on_popup(self, opener: Any, popup: Any) -> None:
-        # attached: follow only tabs our own tab opened, never ones the user opens
-        if self._attached and self._active is opener:
-            self._active = popup
+        if self._is_downloads_hub(popup.url):
+            self._mark_internal_page(popup)
+            return
+        if self._attached and opener in self._download_pages:
+            self._enable_attached_page_downloads(popup)
+            if self._active is opener:
+                self._active = popup
 
     def _on_page_closed(self, page: Any) -> None:
+        self._download_pages.discard(page)
+        self._internal_pages.discard(page)
         if self._snap and self._snap.get("page") is page:
             self._snap = None
         ctx = self._context
         if self._active is page:
-            remaining = [p for p in (ctx.pages if ctx else []) if p is not page and not p.is_closed()]
-            self._active = remaining[-1] if remaining and not self._attached else None
+            remaining = [
+                p for p in (self._usable_pages(ctx) if ctx else [])
+                if p is not page and (not self._attached or p in self._download_pages)
+            ]
+            self._active = remaining[-1] if remaining else None
         if ctx is not None and not self._closing:
             self._spawn(self._publish_status())
 
@@ -761,6 +827,194 @@ class BrowserService(Service):
                 await dialog.accept()
             else:
                 await dialog.dismiss()
+
+    def _on_download(self, download: Any) -> None:
+        task = asyncio.create_task(self._save_download(download), name="browser:download")
+        self._download_tasks.add(task)
+        self._download_names[task] = self._download_filename(download)
+        task.add_done_callback(self._on_download_task_done)
+
+    def _on_download_task_done(self, task: asyncio.Task[str]) -> None:
+        if not task.cancelled():
+            with contextlib.suppress(Exception):
+                task.exception()
+        if task in self._download_tasks:
+            self._download_completed_at[task] = time.monotonic()
+            if self._download_cleanup_task is None or self._download_cleanup_task.done():
+                self._download_cleanup_task = asyncio.create_task(
+                    self._cleanup_download_tasks(), name="browser:download-cleanup"
+                )
+                self._bg.add(self._download_cleanup_task)
+                self._download_cleanup_task.add_done_callback(self._bg.discard)
+
+    async def _cleanup_download_tasks(self) -> None:
+        try:
+            while self._download_completed_at:
+                await asyncio.sleep(DOWNLOAD_TASK_CLEANUP_INTERVAL_S)
+                expired_before = time.monotonic() - DOWNLOAD_TASK_RETENTION_S
+                async with self._lock:
+                    expired = [
+                        task
+                        for task, completed_at in self._download_completed_at.items()
+                        if completed_at <= expired_before and task.done()
+                    ]
+                    for task in expired:
+                        self._download_tasks.discard(task)
+                        self._download_names.pop(task, None)
+                        self._download_completed_at.pop(task, None)
+        finally:
+            self._download_cleanup_task = None
+
+    @staticmethod
+    def _download_filename(download: Any) -> str:
+        raw_name = str(getattr(download, "suggested_filename", None) or "download")
+        name = raw_name.replace("\\", "/").rsplit("/", 1)[-1]
+        return re.sub(r"[^\w.\- ()]+", "_", name).strip(" .")[:160] or "download"
+
+    async def _save_download(self, download: Any) -> str:
+        name = self._download_filename(download)
+
+        def reject_symlinked_folder(folder: Path) -> None:
+            if folder.is_symlink():
+                raise BrowserError("The downloads folder must not be a symbolic link.")
+
+        async def reserve_target() -> Path:
+            async with self._download_lock:
+                folder = paths.files_dir() / "downloads"
+                reject_symlinked_folder(folder)
+                folder.mkdir(parents=True, exist_ok=True)
+                stem = Path(name).stem
+                suffix = Path(name).suffix
+                index = 0
+                while True:
+                    candidate_name = f"{stem}({index}){suffix}" if index else name
+                    candidate = folder / candidate_name
+                    try:
+                        with candidate.open("xb"):
+                            pass
+                    except FileExistsError:
+                        index += 1
+                        continue
+                    return candidate
+
+        async def request_download_cancel() -> str | None:
+            cancel_task = asyncio.create_task(download.cancel())
+            done, _ = await asyncio.wait({cancel_task}, timeout=DOWNLOAD_CANCEL_TIMEOUT_S)
+            if not done:
+                cancel_task.cancel()
+                cancel_task.add_done_callback(
+                    lambda task: task.exception() if not task.cancelled() else None
+                )
+                return f"timed out after {DOWNLOAD_CANCEL_TIMEOUT_S:g} seconds"
+            try:
+                cancel_task.result()
+            except asyncio.CancelledError:
+                return "the cancellation request was cancelled"
+            except Exception as cancel_exc:
+                return str(cancel_exc).strip() or type(cancel_exc).__name__
+            return None
+
+        def save_failure(exc: BaseException) -> str:
+            reason = str(exc).strip().splitlines()[0][:300] or type(exc).__name__
+            return f"Couldn't save downloaded file '{name}': {reason}"
+
+        timeout = asyncio.timeout(DOWNLOAD_MAX_DURATION_S)
+        target: Path | None = None
+        try:
+            async with timeout:
+                target = await reserve_target()
+                await download.save_as(str(target))
+        except asyncio.CancelledError as exc:
+            try:
+                cancel_error = await request_download_cancel()
+            finally:
+                cleanup_error = self._remove_download_reservation(target)
+            if cancel_error:
+                exc.add_note(f"Browser cancellation failed: {cancel_error}")
+            if cleanup_error:
+                exc.add_note(f"Couldn't remove the reserved file: {cleanup_error}")
+            raise
+        except TimeoutError as exc:
+            if timeout.expired():
+                cancel_error = await request_download_cancel()
+                cleanup_error = self._remove_download_reservation(target)
+                message = f"Download '{name}' did not finish within {DOWNLOAD_MAX_DURATION_S:g} seconds."
+                if cancel_error:
+                    message += f" Browser cancellation failed: {cancel_error}"
+                if cleanup_error:
+                    message += f" Couldn't remove the reserved file: {cleanup_error}"
+                raise BrowserError(message) from exc
+            cleanup_error = self._remove_download_reservation(target)
+            message = save_failure(exc)
+            if cleanup_error:
+                message += f"; couldn't remove the reserved file: {cleanup_error}"
+            raise BrowserError(message) from exc
+        except Exception as exc:
+            cleanup_error = self._remove_download_reservation(target)
+            if isinstance(exc, BrowserError):
+                if cleanup_error:
+                    raise BrowserError(f"{exc}; couldn't remove the reserved file: {cleanup_error}") from exc
+                raise
+            message = save_failure(exc)
+            if cleanup_error:
+                message += f"; couldn't remove the reserved file: {cleanup_error}"
+            raise BrowserError(message) from exc
+        assert target is not None
+        return target.relative_to(paths.files_dir()).as_posix()
+
+    @staticmethod
+    def _remove_download_reservation(target: Path | None) -> str | None:
+        if target is None:
+            return None
+        try:
+            target.unlink(missing_ok=True)
+        except OSError as exc:
+            return str(exc).strip() or type(exc).__name__
+        return None
+
+    async def _include_downloads(
+        self,
+        result: dict,
+        before: set[asyncio.Task[str]],
+        wait_for_download_start: bool = False,
+    ) -> dict:
+        if wait_for_download_start:
+            deadline = time.monotonic() + DOWNLOAD_APPEAR_GRACE_S
+            while time.monotonic() < deadline:
+                if self._download_tasks - before or any(task.done() for task in self._download_tasks):
+                    break
+                await asyncio.sleep(0.05)
+
+        # Collect finished downloads, but never wait for a save to complete inside a browser action.
+        tasks = (self._download_tasks - before) | {task for task in self._download_tasks if task.done()}
+        done = {task for task in tasks if task.done()}
+        if done:
+            try:
+                outcomes = await asyncio.gather(*done, return_exceptions=True)
+            finally:
+                self._download_tasks.difference_update(done)
+                for task in done:
+                    self._download_names.pop(task, None)
+                    self._download_completed_at.pop(task, None)
+            names = []
+            errors = []
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    message = str(outcome).strip() or f"{type(outcome).__name__} while saving download"
+                    errors.append(message)
+                else:
+                    names.append(outcome)
+            if names:
+                result["downloads"] = names
+            if errors:
+                result["download_errors"] = errors
+
+        pending = [task for task in self._download_tasks if not task.done()]
+        if pending:
+            result["downloads_in_progress"] = [
+                self._download_names.get(task, "download") for task in pending
+            ]
+        return result
 
     async def _idle_watch(self) -> None:
         while self._context is not None:
@@ -979,20 +1233,34 @@ class BrowserService(Service):
             raise BrowserError(problem)
         self.use_profile(ctx, profile)
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page = await self._page(ctx)
-            await page.goto(target, wait_until="domcontentloaded")
-            await self._settle(page)
+            download_started = False
+            try:
+                await page.goto(target, wait_until="domcontentloaded")
+            except Exception as exc:
+                if "Download is starting" not in str(exc):
+                    raise
+                download_started = True
+            if not download_started:
+                await self._settle(page)
             await self._enforce_domains(page)
             result = await self._snapshot_locked(page)
             result["profile"] = self._profile
             await self._after_action(ctx, page)
+            result = await self._include_downloads(
+                result, downloads_before, wait_for_download_start=True
+            )
             return self._take_dialogs(result)
 
     async def snapshot(self, ctx: Any) -> dict:
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page = await self._page(ctx)
             self._last_used = time.monotonic()
-            return self._take_dialogs(await self._snapshot_locked(page))
+            result = await self._snapshot_locked(page)
+            result = await self._include_downloads(result, downloads_before)
+            return self._take_dialogs(result)
 
     async def _snapshot_locked(self, page: Any) -> dict:
         cfg = self.app.config.browser
@@ -1013,6 +1281,7 @@ class BrowserService(Service):
 
     async def click(self, ctx: Any, ref: str) -> dict:
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page, loc, info = await self._locate(ctx, ref)
             if info.get("disabled"):
                 raise BrowserError(f"{format_element(info)} is disabled. Something else on the page may need to be done first.")
@@ -1020,7 +1289,7 @@ class BrowserService(Service):
             refusal = self._guard("click", info["ref"], live_risk)
             if refusal:
                 return {"error": refusal}
-            pages_before = len(self._context.pages)
+            pages_before = len(self._usable_pages(self._context))
             self._accept_confirm = live_risk >= Risk.send or self.app.config.tools.approvals.mode == "off"
             try:
                 await loc.click(timeout=10_000)
@@ -1030,7 +1299,11 @@ class BrowserService(Service):
             # a new tab arrives as a separate event; links with target=_blank get longer to show up
             limit = 3.0 if str(info.get("target", "")).lower() == "_blank" else 0.3
             waited = 0.0
-            while self._context is not None and len(self._context.pages) <= pages_before and waited < limit:
+            while (
+                self._context is not None
+                and len(self._usable_pages(self._context)) <= pages_before
+                and waited < limit
+            ):
                 await asyncio.sleep(0.05)
                 waited += 0.05
             if self._context is None:
@@ -1044,14 +1317,18 @@ class BrowserService(Service):
                 "url": active.url,
                 "message": "Clicked. Call browser_snapshot to see the page now.",
             }
-            if len(self._context.pages) > pages_before:
+            if len(self._usable_pages(self._context)) > pages_before:
                 out["new_tab"] = True
                 out["message"] = "Clicked; it opened a new tab, which is now active. Call browser_snapshot to see it."
             await self._after_action(ctx, active)
+            out = await self._include_downloads(
+                out, downloads_before, wait_for_download_start=True
+            )
             return self._take_dialogs(out)
 
     async def type(self, ctx: Any, ref: str, text: str, submit: bool = False) -> dict:
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page, loc, info = await self._locate(ctx, ref)
             kind = safety.sensitive_field(info) or safety.sensitive_field(info.get("live"))
             if kind:
@@ -1082,10 +1359,14 @@ class BrowserService(Service):
             described = format_element({k: v for k, v in info.items() if k != "value"})
             out = {"ok": True, "typed_into": described, "submitted": bool(submit), "url": active.url}
             await self._after_action(ctx, active)
+            out = await self._include_downloads(
+                out, downloads_before, wait_for_download_start=True
+            )
             return self._take_dialogs(out)
 
     async def select(self, ctx: Any, ref: str, option: str) -> dict:
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page, loc, info = await self._locate(ctx, ref)
             if str(info.get("tag", "")).lower() != "select":
                 raise BrowserError(
@@ -1108,11 +1389,15 @@ class BrowserService(Service):
             await self._settle(page, 1_000)
             out = {"ok": True, "selected": option, "in": format_element(info), "url": page.url}
             await self._after_action(ctx, page)
+            out = await self._include_downloads(
+                out, downloads_before, wait_for_download_start=True
+            )
             return self._take_dialogs(out)
 
     async def press(self, ctx: Any, key: str) -> dict:
         name = normalize_key(key)
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page = await self._page(ctx)
             focused = None
             with contextlib.suppress(Exception):
@@ -1135,6 +1420,9 @@ class BrowserService(Service):
             await self._enforce_domains(active)
             out = {"ok": True, "pressed": name, "url": active.url}
             await self._after_action(ctx, active)
+            out = await self._include_downloads(
+                out, downloads_before, wait_for_download_start=True
+            )
             return self._take_dialogs(out)
 
     async def scroll(self, ctx: Any, direction: str = "down") -> dict:
@@ -1150,6 +1438,7 @@ class BrowserService(Service):
         if d not in scripts:
             raise BrowserError("direction must be one of: down, up, top, bottom, left, right.")
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page = await self._page(ctx)
             pos = await page.evaluate(
                 "() => { " + scripts[d] + "; return [Math.round(scrollY), Math.round(document.documentElement.scrollHeight"
@@ -1159,10 +1448,11 @@ class BrowserService(Service):
             out = {"ok": True, "scrolled": d, "from_top": pos[0], "more_below": max(0, pos[1]),
                    "message": "Call browser_snapshot to see what is visible now."}
             await self._after_action(ctx, page)
-            return out
+            return await self._include_downloads(out, downloads_before)
 
     async def back(self, ctx: Any) -> dict:
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page = await self._page(ctx)
             resp = await page.go_back(wait_until="domcontentloaded")
             if resp is None and page.url in {"about:blank", ""}:
@@ -1174,19 +1464,24 @@ class BrowserService(Service):
                 title = await page.title()
             out = {"ok": True, "url": page.url, "title": title}
             await self._after_action(ctx, page)
-            return out
+            return await self._include_downloads(
+                out, downloads_before, wait_for_download_start=True
+            )
 
     async def tabs(self, ctx: Any, profile: str = "") -> dict:
         self.use_profile(ctx, profile)
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             await self._ensure(ctx)
             self._last_used = time.monotonic()
-            return {"profile": self._profile, "tabs": await self._tabs()}
+            result = {"profile": self._profile, "tabs": await self._tabs()}
+            return await self._include_downloads(result, downloads_before)
 
     async def switch_tab(self, ctx: Any, index: int) -> dict:
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             c = await self._ensure(ctx)
-            pages = list(c.pages)
+            pages = self._usable_pages(c)
             if not 0 <= index < len(pages):
                 raise BrowserError(f"There is no tab {index}. Open tabs are numbered 0 to {len(pages) - 1}.")
             url = pages[index].url or ""
@@ -1202,11 +1497,12 @@ class BrowserService(Service):
             out = {"ok": True, "index": index, "url": self._active.url, "title": title,
                    "message": "Switched. Call browser_snapshot to see this tab."}
             await self._after_action(ctx, self._active)
-            return out
+            return await self._include_downloads(out, downloads_before)
 
     async def extract(self, ctx: Any, question: str = "") -> dict:
         cfg = self.app.config.browser
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page = await self._page(ctx)
             self._last_used = time.monotonic()
             data = await page.evaluate(EXTRACT_JS, {"maxText": cfg.max_extract_chars * 5})
@@ -1216,10 +1512,11 @@ class BrowserService(Service):
                 out["question"] = question
             if truncated:
                 out["truncated"] = True
-            return out
+            return await self._include_downloads(out, downloads_before)
 
     async def screenshot(self, ctx: Any) -> dict:
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
             page = await self._page(ctx)
             self._last_used = time.monotonic()
             folder = paths.files_dir() / "outputs" / "browser"
@@ -1229,13 +1526,51 @@ class BrowserService(Service):
             title = ""
             with contextlib.suppress(Exception):
                 title = await page.title()
-            return {"file": f"outputs/browser/{name}", "url": page.url, "title": title}
+            result = {"file": f"outputs/browser/{name}", "url": page.url, "title": title}
+            return await self._include_downloads(result, downloads_before)
 
     async def close_tool(self, ctx: Any) -> dict:
-        was_running = self._context is not None
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
+            was_running = self._context is not None
+            shutdown_errors = []
+            download_deadline = time.monotonic() + DOWNLOAD_MAX_DURATION_S
+            shutdown_deadline = download_deadline + DOWNLOAD_CANCEL_TIMEOUT_S
+            while pending := {task for task in self._download_tasks if not task.done()}:
+                _, pending = await asyncio.wait(
+                    pending,
+                    timeout=max(0.0, download_deadline - time.monotonic()),
+                )
+                if not pending:
+                    continue
+
+                interrupted_names = {
+                    task: self._download_names.get(task, "download") for task in pending
+                }
+                for task in pending:
+                    task.cancel()
+                _, still_pending = await asyncio.wait(
+                    pending, timeout=max(0.0, shutdown_deadline - time.monotonic())
+                )
+                for task, name in interrupted_names.items():
+                    if task.cancelled():
+                        self._download_tasks.discard(task)
+                        self._download_names.pop(task, None)
+                        self._download_completed_at.pop(task, None)
+                        shutdown_errors.append(
+                            f"Download '{name}' was cancelled because the browser was closing."
+                        )
+                    elif task in still_pending:
+                        shutdown_errors.append(
+                            f"Download '{name}' did not stop before browser shutdown."
+                        )
+                break
             await self._shutdown()
-        return {"ok": True, "message": "Browser closed." if was_running else "The browser wasn't open."}
+        result = {"ok": True, "message": "Browser closed." if was_running else "The browser wasn't open."}
+        result = await self._include_downloads(result, downloads_before)
+        if shutdown_errors:
+            result.setdefault("download_errors", []).extend(shutdown_errors)
+        return result
 
 
 def _clean_ref(ref: Any) -> str | None:

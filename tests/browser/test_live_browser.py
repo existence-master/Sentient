@@ -57,6 +57,41 @@ async def test_open_type_click_extract_screenshot(browser, site):
     assert jpeg and jpeg[:2] == b"\xff\xd8"
 
 
+async def test_download_is_saved_and_reported(browser, site):
+    ctx = make_ctx(browser.app)
+    snap = await bt.browser_open.call(ctx, {"url": f"{site}/download.html"})
+    link = ref_of(snap["text"], r'link "Download report"')
+    result = await bt.browser_click.call(ctx, {"ref": link})
+    download_paths = result.get("downloads", [])
+    if not download_paths:
+        assert result["downloads_in_progress"] == ["report.txt"]
+        pending = [task for task in browser._download_tasks if not task.done()]
+        assert pending
+        await asyncio.wait_for(asyncio.gather(*pending), timeout=10)
+        later_result = await bt.browser_snapshot.call(ctx, {})
+        download_paths = later_result["downloads"]
+    assert download_paths == ["downloads/report.txt"]
+    saved = paths.files_dir() / download_paths[0]
+    assert saved.read_text(encoding="utf-8") == "Sentient browser download test.\n"
+
+
+async def test_open_direct_download_is_reported_as_normal_result(browser, site):
+    ctx = make_ctx(browser.app)
+    result = await bt.browser_open.call(ctx, {"url": f"{site}/direct-download"})
+
+    download_paths = result.get("downloads", [])
+    if not download_paths:
+        assert result["downloads_in_progress"] == ["direct-report.txt"]
+        pending = [task for task in browser._download_tasks if not task.done()]
+        assert pending
+        await asyncio.wait_for(asyncio.gather(*pending), timeout=10)
+        later_result = await bt.browser_snapshot.call(ctx, {})
+        download_paths = later_result["downloads"]
+    assert download_paths == ["downloads/direct-report.txt"]
+    saved = paths.files_dir() / download_paths[0]
+    assert saved.read_text(encoding="utf-8") == "Direct browser-open download test.\n"
+
+
 async def test_safety_in_real_pages(browser, site):
     app = browser.app
     app.config.tools.approvals.mode = "ask"

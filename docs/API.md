@@ -1439,9 +1439,26 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   idle_minutes, allow_domains, block_domains, max_snapshot_chars, max_extract_chars, confirm_purchases, live_view,
   profiles`. Every safety rule below applies the same in every profile, attached ones included.
 - Tools (plugin `browser`). Failures return `{error}` with a message the model can act on.
+  - Downloads from launched profiles are accepted by Playwright; in an attached profile, only downloads from the tab
+    Sentient opens and popups opened from Sentient-owned tabs are handled (not the user's existing tabs). Every handled
+    download is saved under `downloads/` in Sentient's Files folder. Browser tool results (including `browser_scroll`)
+    may include an optional `downloads` array of relative paths such as `["downloads/report.pdf"]`.
+    `browser_open`, `browser_click`, `browser_type`, `browser_press`, `browser_select` and `browser_back` wait up to
+    0.3 s for a download to start during the action. Opening a URL that directly starts a download returns a normal
+    browser result with its download status rather than a navigation error. Edge's internal downloads hub is excluded
+    from browser tabs and does not replace the active page. If a download starts later, it remains tracked and is
+    reported on a later browser result after saving finishes. Other browser results collect finished downloads
+    immediately without that start wait. Actions do not wait for downloads to finish; unfinished downloads are listed
+    by filename in an optional `downloads_in_progress` array and reported under `downloads` when a later result observes
+    that they have finished. Saves reserve unique filenames under a short lock, then transfer concurrently. Each save
+    is limited to 120 s total; when the limit is reached, Sentient asks the browser to cancel it, with a 5 s limit for
+    that cancellation request. A cancellation failure is included in `download_errors`.
+    Failed saves are reported in an optional `download_errors` array; they don't discard the browser action result or
+    successful downloads from the same batch. Completed downloads that no browser result consumes become eligible for
+    cleanup after 5 minutes, and active browser actions get the chance to report them before cleanup.
   - `browser_open(url, profile="")` read → same as `browser_snapshot` plus `profile` (http/https only; allow/block lists
-    apply, also after redirects). `profile` switches to that profile for this and the following calls of the run;
-    empty uses the run's profile, else `default`.
+    apply, also after redirects). `profile` switches to that profile for this and the following calls of the run; empty
+    uses the run's profile, else `default`.
   - `browser_snapshot()` read → `{url, title, text, truncated?}`. `text` is `Page:`/`URL:`/`Scroll:` header, interactive
     elements one per line (`[e12] button "Sign in"`, `[e4] textbox "Search" value=""`, `[e7] combobox "Country"
     value="India" options: India | Japan`, `[e3] link "Docs" -> /docs`, flags `checked`, `disabled`, `focused`) and the
