@@ -58,6 +58,12 @@ FRAME_QUALITY = 55
 HEADLESS_VIEWPORT = {"width": 1280, "height": 800}
 LAUNCH_TIMEOUT_S = 60.0
 CLOSE_TIMEOUT_S = 20.0
+# Site storage (localStorage, where many sites keep a sign-in) reaches disk on a timer, not at once. Launched browsers
+# use Chromium's short 1 s commit delay (STORAGE_FLAG); before closing one, its tabs are closed and this long is waited
+# so a sign-in made just before a profile switch, idle close or quit isn't lost.
+STORAGE_FLAG = "--enable-aggressive-domstorage-flushing"
+STORAGE_FLUSH_S = 1.5
+PAGE_CLOSE_TIMEOUT_S = 5.0
 # models often pass the whole snapshot line ("[e4] button \"Place order\"") instead of just "e4"
 _REF_RE = re.compile(r"\b(e\d+)\b", re.IGNORECASE)
 
@@ -217,6 +223,7 @@ class BrowserService(Service):
         self._frame_task: asyncio.Task | None = None
         self._bg: set[asyncio.Task] = set()
         self._last_frame_at = 0.0
+        self._site_seen = False  # a tab of the open browser showed a website (its storage may need writing out)
         self._last_tabs_sig: Any = None
         self.idle_check_s = 30.0
 
@@ -504,6 +511,7 @@ class BrowserService(Service):
             context = await self._launch_persistent(prof, headless)
         self._last_error = None
         self._context = context
+        self._site_seen = False
         self._headless = headless
         self._snap = None
         context.set_default_timeout(15_000)
@@ -531,7 +539,7 @@ class BrowserService(Service):
                 "user_data_dir": str(folder),
                 "headless": headless,
                 "timeout": 45_000,
-                "args": ["--no-first-run", "--no-default-browser-check", "--hide-crash-restore-bubble"],
+                "args": ["--no-first-run", "--no-default-browser-check", "--hide-crash-restore-bubble", STORAGE_FLAG],
             }
             if channel != "chromium":
                 kwargs["channel"] = channel
@@ -608,6 +616,7 @@ class BrowserService(Service):
                 if attached:
                     await asyncio.wait_for(browser.close(), timeout=CLOSE_TIMEOUT_S)
                 else:
+                    await self._flush_storage(ctx)
                     await asyncio.wait_for(ctx.close(), timeout=CLOSE_TIMEOUT_S)
         finally:
             self._closing = False
@@ -618,6 +627,31 @@ class BrowserService(Service):
             self._active = None
             self._snap = None
             self._focused = None
+
+    async def _flush_storage(self, ctx: Any) -> None:
+        """Let a launched browser write site storage to disk before it closes: close its tabs with their unload
+        handlers (so their last writes run and reach the browser), then wait out the storage commit delay. Skipped
+        when no website was ever shown in this browser."""
+        pages = [p for p in list(ctx.pages) if not p.is_closed()]
+        if not (self._site_seen or any(str(p.url or "").startswith(("http://", "https://")) for p in pages)):
+            return
+        for page in pages:
+            await self._close_page(page)
+        await asyncio.sleep(STORAGE_FLUSH_S)
+
+    async def _close_page(self, page: Any) -> None:
+        """Close a tab running its beforeunload/unload handlers (a beforeunload prompt is accepted by _on_dialog);
+        a tab that doesn't close in time is closed without them."""
+        closed = asyncio.ensure_future(page.wait_for_event("close", timeout=PAGE_CLOSE_TIMEOUT_S * 1000))
+        closed.add_done_callback(lambda f: f.cancelled() or f.exception())  # never "exception was never retrieved"
+        try:
+            await page.close(run_before_unload=True)
+            await asyncio.wait_for(asyncio.shield(closed), timeout=PAGE_CLOSE_TIMEOUT_S)
+            return
+        except Exception:
+            closed.cancel()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(page.close(), timeout=PAGE_CLOSE_TIMEOUT_S)
 
     async def _shutdown(self, publish: bool = True) -> None:
         async with self._life_lock:
@@ -692,6 +726,12 @@ class BrowserService(Service):
         page.on("close", lambda: self._on_page_closed(page))
         page.on("dialog", self._on_dialog)
         page.on("popup", lambda popup: self._on_popup(page, popup))
+        page.on("framenavigated", lambda frame: self._on_navigated(page, frame))
+
+    def _on_navigated(self, page: Any, frame: Any) -> None:
+        # any website shown, by the assistant or by the user in a visible window
+        if frame is page.main_frame and str(frame.url or "").startswith(("http://", "https://")):
+            self._site_seen = True
 
     def _on_page(self, page: Any) -> None:
         self._wire_page(page)

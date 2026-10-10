@@ -1260,6 +1260,10 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     Chrome). Older versions' `~/.sentient/browser/profile` moves to `profiles/default` on first use (if it can't be
     moved, it keeps being used). Starts on the first tool call, hidden unless `browser.headless` is false, one window
     with tabs, closes itself after `browser.idle_minutes` without use (not while visible).
+    Site storage (localStorage, where many sites keep a sign-in) is made durable before a launched profile closes
+    (switch, idle close, quit): the browser runs with a 1 s storage commit delay
+    (`--enable-aggressive-domstorage-flushing`), and closing one that showed a website first closes its tabs with their
+    beforeunload/unload handlers (a beforeunload prompt is accepted) and waits 1.5 s.
   - `attach`: connects with `connect_over_cdp` to a browser the user started with `--remote-debugging-port`.
     `endpoint` must be on this computer (`localhost`, `127.0.0.0/8`, `::1`; `9333` and `127.0.0.1:9333` are
     normalized to `http://127.0.0.1:9333`); anything else is refused with a plain message, and so is a DevTools port
