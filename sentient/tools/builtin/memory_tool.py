@@ -6,7 +6,6 @@ Ports the v2 memory MCP (search, cud, search by source) and the v2 history MCP
 
 from __future__ import annotations
 
-import json
 import re
 
 from sentient.memory import review
@@ -74,32 +73,30 @@ async def _mark_if_outside(ctx: ToolContext, session_ids: list) -> None:
 
 async def _last_outside_result(ctx: ToolContext) -> str | None:
     """The latest successful tool result in this chat that brought in outside content (the review card shows it).
-    Errors and declined calls are skipped: they say nothing about where a fact came from."""
+    Errors and declined calls are skipped: they say nothing about where a fact came from.
+
+    One query asks SQLite for the newest matching row directly, so any number of failed calls after the real
+    read never buries it (#270). A result is failed when it is a JSON object carrying ``error`` or ``declined``;
+    the ``CASE`` guard keeps non-JSON and non-object results (which are never failures) from raising."""
     registry = ctx.extra.get("registry")
     if not ctx.session_id or registry is None or not ctx.untrusted:
         return None
+    names = [t.name for t in registry.tools(include_hidden=True) if brings_untrusted(t)]
+    if not names:
+        return None
+    placeholders = ",".join("?" * len(names))
     try:
-        rows = await ctx.store.fetchall(
-            "SELECT name, content FROM messages WHERE session_id = ? AND role = 'tool'"
-            " ORDER BY created_at DESC, rowid DESC LIMIT 12",
-            (ctx.session_id,),
+        row = await ctx.store.fetchone(
+            f"SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND name IN ({placeholders})"
+            " AND NOT (CASE WHEN json_valid(content) THEN"
+            "   COALESCE(json_extract(content, '$.error'), '') != ''"
+            "   OR COALESCE(json_extract(content, '$.declined'), 0) ELSE 0 END)"
+            " ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (ctx.session_id, *names),
         )
     except Exception:
         return None
-    for r in rows:
-        t = registry.get(r["name"] or "")
-        if t is not None and brings_untrusted(t) and not _failed(r["content"]):
-            return r["content"]
-    return None
-
-
-def _failed(content: str | None) -> bool:
-    """A stored tool result that is an error or a declined call (``{"error": ...}`` or ``{"declined": true}``)."""
-    try:
-        data = json.loads(content or "")
-    except ValueError:
-        return False
-    return isinstance(data, dict) and bool(data.get("error") or data.get("declined"))
+    return row["content"] if row is not None else None
 
 
 @tool("memory_forget", risk=Risk.send)

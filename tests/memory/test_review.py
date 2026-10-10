@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -175,6 +176,24 @@ async def test_the_review_snippet_is_the_content_read_not_a_later_error_or_decli
     snippet = held["review"]["snippet"]
     assert "flight to Berlin leaves on Friday at 6am" in snippet
     assert "declined" not in snippet and "NOT DONE" not in snippet and "No email" not in snippet
+
+
+async def test_the_snippet_survives_more_than_a_page_of_failures_after_the_read(chat):
+    """#270: the real snippet must survive any number of failed calls after it.
+
+    One SQL query takes the newest non-failed outside result, so no fixed window buries it. A non-JSON
+    result mixed in among the failures must not raise and must not be mistaken for a failure."""
+    from sentient.tools.builtin.memory_tool import _last_outside_result
+
+    sid = await chat.store.create_session(channel="cli")
+    good = json.dumps({"from": "travel@example.com", "body": EMAIL})
+    await chat.store.add_message(sid, "tool", "Not JSON at all.", name="mail_read")  # predicate must not raise on it
+    await chat.store.add_message(sid, "tool", good, name="mail_read")
+    for _ in range(60):  # far past the old fixed 12-row window and any single page
+        await chat.store.add_message(sid, "tool", json.dumps(DECLINED), name="mail_read")
+    ctx = chat.agent.tool_context(sid, "cli")
+    ctx.untrusted = "Mail"
+    assert await _last_outside_result(ctx) == good
 
 
 async def test_work_nobody_asked_for_saves_memories_for_review(chat):
