@@ -251,7 +251,12 @@ export function installDomainEvents(qc: QueryClient): () => void {
   )
 
   // §15 user model and dreams
-  offs.push(live.onDomain('user_model.updated', () => void qc.invalidateQueries({ queryKey: qk.userModel })))
+  offs.push(
+    live.onDomain('user_model.updated', () => {
+      void qc.invalidateQueries({ queryKey: qk.userModel })
+      void qc.invalidateQueries({ queryKey: qk.memories.review }) // insights waiting for review live there
+    })
+  )
   offs.push(
     live.onDomain('dream.updated', (e) => {
       const d = e.data

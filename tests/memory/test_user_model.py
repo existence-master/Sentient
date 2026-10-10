@@ -29,7 +29,7 @@ async def _seed(app) -> dict[str, dict]:
         }
     )
     counts = await app.user_model.refresh()
-    assert counts == {"added": 2, "updated": 0, "disputed": 0, "questions": 0}
+    assert counts == {"added": 2, "updated": 0, "disputed": 0, "questions": 0, "held": 0}
     state = await app.user_model.get_state()
     by = {i["dimension"]: i for i in state["insights"]}
     return {"short": by["communication"], "late": by["routines"]}
@@ -65,7 +65,7 @@ async def test_refresh_adds_insights_with_evidence_and_summary(app):
 
     # nothing new since the last refresh: no model call
     calls = len(app.fake.calls)
-    assert await app.user_model.refresh() == {"added": 0, "updated": 0, "disputed": 0, "questions": 0}
+    assert await app.user_model.refresh() == {"added": 0, "updated": 0, "disputed": 0, "questions": 0, "held": 0}
     assert len(app.fake.calls) == calls
 
 
@@ -197,14 +197,14 @@ async def test_malformed_refresh_replies_are_tolerated(app):
 
     await _say(app, "another message")
     llm.json_replies.append("the model rambled instead of JSON")
-    assert await um.refresh() == {"added": 0, "updated": 0, "disputed": 0, "questions": 0}
+    assert await um.refresh() == {"added": 0, "updated": 0, "disputed": 0, "questions": 0, "held": 0}
 
     async def boom(*a, **k):
         raise ValueError("Model did not return JSON")
 
     llm.complete_json = boom
     await _say(app, "and another")
-    assert await um.refresh() == {"added": 0, "updated": 0, "disputed": 0, "questions": 0}
+    assert await um.refresh() == {"added": 0, "updated": 0, "disputed": 0, "questions": 0, "held": 0}
 
 
 async def test_context_for_budget_and_relevance(app):

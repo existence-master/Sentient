@@ -26,7 +26,7 @@ Hermes folder (usually `~/.hermes`). You see everything before anything changes,
 | From Hermes | Becomes in Sentient |
 |---|---|
 | Your own skills | Skills waiting for your review (built-in Hermes skills you never changed are skipped) |
-| `MEMORY.md`, `USER.md` | Memories and things Sentient knows about you, marked as imported (one click removes them) |
+| `MEMORY.md`, `USER.md` | Memories and things Sentient knows about you, marked as imported. They wait in Memory > Review until you approve them (one click removes them all) |
 | `SOUL.md` | Sentient's personality, only if you switch it on after seeing both side by side |
 | Scheduled jobs | Paused tasks with the same schedule, prompt and delivery (a job that went to WhatsApp goes to your "Message yourself" chat). Each one plans and asks for your approval the first time you turn it on |
 | MCP servers | MCP servers, turned off until you enable them. Sign in again, or fill in their keys with **Add values**, where needed |

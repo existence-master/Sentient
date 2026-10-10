@@ -8,7 +8,7 @@ import { api, errorMessage } from '@/lib/api'
 import type { Memory, MemoryGraph } from '@/lib/types'
 
 export type MemoryView = 'graph' | 'list' | 'timeline'
-export type MemoryTab = 'memories' | 'conversations' | 'profile'
+export type MemoryTab = 'memories' | 'review' | 'conversations' | 'profile'
 export type MemoryTypeFilter = 'all' | 'long-term' | 'short-term'
 
 export function useMemoryParams() {
@@ -32,7 +32,7 @@ export function useMemoryParams() {
   )
 
   const view = (['graph', 'list', 'timeline'].includes(get('view')) ? get('view') : 'graph') as MemoryView
-  const tab = (['memories', 'conversations', 'profile'].includes(get('tab')) ? get('tab') : 'memories') as MemoryTab
+  const tab = (['memories', 'review', 'conversations', 'profile'].includes(get('tab')) ? get('tab') : 'memories') as MemoryTab
   const type = (['long-term', 'short-term'].includes(get('type')) ? get('type') : 'all') as MemoryTypeFilter
   const selected = Number(get('m')) || null
 

@@ -177,7 +177,7 @@ export function ImportDialog({ open, onOpenChange }: { open: boolean; onOpenChan
       open={open}
       onOpenChange={close}
       title="Import a document"
-      description="Sentient reads the document and learns facts about you from it. Your existing memories are kept."
+      description="Sentient reads the document and picks out facts about you for you to review. Your existing memories are kept."
       modalLock={busy}
       footer={
         <>
@@ -251,12 +251,19 @@ export function ImportDialog({ open, onOpenChange }: { open: boolean; onOpenChan
 
         {phase === 'done' && result && (
           <div className="space-y-3">
-            <Alert tone="success" icon={<IconCircleCheck />} title={`Learned from ${sourceMeta(result.source).label}`}>
-              {result.added + result.updated === 0 ? 'Nothing new: Sentient already knew everything in this document.' : 'New memories are tagged with this file as their source.'}
+            <Alert tone="success" icon={<IconCircleCheck />} title={`Read ${sourceMeta(result.source).label}`}>
+              {result.added + result.updated === 0
+                ? 'Nothing new: Sentient already knew everything in this document.'
+                : result.pending
+                  ? 'New memories wait on the Review tab. Sentient uses them once you approve them.'
+                  : 'New memories are tagged with this file as their source.'}
             </Alert>
-            <div className="grid grid-cols-3 gap-2">
-              <Stat label="Added" value={result.added} tone="text-success" />
-              <Stat label="Updated" value={result.updated} tone="text-info" />
+            <div className="grid grid-cols-2 gap-2">
+              {result.pending !== undefined ? (
+                <Stat label="To review" value={result.pending} tone="text-success" />
+              ) : (
+                <Stat label="Added" value={result.added + result.updated} tone="text-success" />
+              )}
               <Stat label="Skipped" value={result.skipped} tone="text-fg-muted" hint="duplicates" />
             </div>
           </div>

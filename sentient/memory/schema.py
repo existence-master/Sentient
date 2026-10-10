@@ -31,6 +31,7 @@ async def ensure_memory_schema(store: Store) -> None:
         await store.db.executescript(_SQL.read_text(encoding="utf-8"))
         await store.ensure_column("facts", "recall_count", "INTEGER NOT NULL DEFAULT 0")
         await store.ensure_column("facts", "last_recalled_at", "TEXT")
+        await store.ensure_column("user_insights", "review", "TEXT")
         await store.db.commit()
         if await store.get_meta("facts_fts_built") != "1":
             try:

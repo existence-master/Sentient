@@ -59,7 +59,9 @@ CREATE TABLE IF NOT EXISTS summaries (
     start_at      TEXT NOT NULL,
     end_at        TEXT NOT NULL,
     message_ids   TEXT NOT NULL,                  -- JSON list
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    untrusted     TEXT                            -- app whose content the chat had read (ADR 0018/0021): kept out of
+                                                  -- other chats, proactivity and MEMORY.md; "" or NULL = clean
 );
 
 -- ---------------------------------------------------------------- semantic memory (atomic facts)
@@ -73,7 +75,9 @@ CREATE TABLE IF NOT EXISTS facts (
     updated_at      TEXT NOT NULL,
     expires_at      TEXT,
     embedding_model TEXT,
-    previous_content TEXT                                   -- kept on UPDATE so edits are auditable
+    previous_content TEXT,                                  -- kept on UPDATE so edits are auditable
+    status          TEXT NOT NULL DEFAULT 'active',         -- active | pending (held for the user's review, ADR 0021)
+    review          TEXT                                    -- JSON {from, snippet, session_id}: where a held memory came from
 );
 CREATE INDEX IF NOT EXISTS idx_facts_expires ON facts(expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_facts_source ON facts(source);

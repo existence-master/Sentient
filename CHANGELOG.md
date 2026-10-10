@@ -12,6 +12,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
   conversation has been summarized, and Settings > Approvals & safety shows it came from your message. Nothing becomes
   a rule without your click, and until you choose, Sentient checks with you before using that tool in the chat.
   Said in Telegram, Discord or WhatsApp, the question comes back there too (on WhatsApp, reply 1 or 2).
+- **Memory review:** memories that come from an email, a web page, a message, a tool's result, work Sentient did on its
+  own, or an imported document wait for you on the new Review tab of the Memory page, with a count in the sidebar.
+  Each one shows where it came from and the text it was taken from; approve it, change the wording and approve, turn
+  it down, or approve everything from one place at once. Until you approve one, Sentient doesn't use it in chats,
+  tasks, suggestions or what it knows about you, and no email or web page can approve it for you. Ones you don't
+  review are let go after 30 days, with a note. Summaries of chats that read outside content stay out of your
+  other chats and out of MEMORY.md. What you say yourself in a chat that hasn't read outside content is remembered as
+  before.
 - **Choose where a task's results go** (Details > Send results to): the usual paired chats, this computer only, or
   just the chats you pick, such as WhatsApp's "Message yourself". Results, failures, questions and plans from that
   task follow the choice, and so does the Daily Brief. Jobs brought over from Hermes keep their delivery: a job that
@@ -26,7 +34,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - **Coming from Hermes?** Bring your Hermes setup over in one step, from the last onboarding screen or Settings >
   Advanced. Sentient looks inside your Hermes folder (`~/.hermes`, or one you pick) and shows what it found before
   anything changes: your own skills go to Skills for review (Hermes' built-in ones you never changed are left out),
-  MEMORY.md and USER.md become memories and things Sentient knows about you (with a button to remove them again),
+  MEMORY.md and USER.md become memories and things Sentient knows about you once you approve them in Memory > Review
+  (with a button to remove them again),
   SOUL.md replaces the personality only if you say so after seeing both side by side, scheduled jobs become paused
   tasks that keep their schedule (resume one and Sentient plans it for you to approve), and MCP servers are added
   turned off. Keys, tokens, sign-ins, `auth.json` and `.env` are never read or copied, so remote servers need a fresh

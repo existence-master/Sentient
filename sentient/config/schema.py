@@ -315,6 +315,11 @@ class MemoryConfig(BaseModel):
         0.15, ge=0.0, le=1.0,
         description="How much keyword matches add to embedding similarity when ranking recalled facts.",
     )
+    review_expire_days: int = Field(
+        30, ge=1, le=365,
+        description="Memories waiting for your review (from emails, web pages, imports or work Sentient did on its "
+        "own) are let go after this many days without an answer.",
+    )
 
 
 # ----------------------------------------------------------------------------- tasks (owner: tasks agent)
