@@ -262,11 +262,14 @@ export class DesktopNode {
         this.host.notice('camera')
         return photo
       }
-      case 'clipboard.read':
+      // Electron 44's clipboard is async: without the await the answer would carry a Promise, sent as {}
+      case 'clipboard.read': {
+        const text = await clipboard.readText()
         this.host.notice('clipboard')
-        return { text: clipboard.readText() }
+        return { text }
+      }
       case 'clipboard.write':
-        clipboard.writeText(String(params.text ?? ''))
+        await clipboard.writeText(String(params.text ?? ''))
         return {}
       case 'notify.show': {
         if (!Notification.isSupported()) throw new Error('Notifications are not supported on this computer.')
