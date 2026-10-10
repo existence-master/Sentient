@@ -174,12 +174,16 @@ class KeychainTokenStorage:
         self.saved = True
 
     def save_metadata(self) -> bool:
-        """Add the context's discovered metadata to the stored record, keeping its tokens."""
+        """Add the context's discovered metadata to the stored record, keeping its tokens. If the larger record
+        can't be written completely, the old one is put back, so a working sign-in is never lost to this."""
         rec = self.record()
         meta = _metadata_of(self.context)
         if not rec or not meta:
             return False
-        return save_json(tokens_secret(self.server), {**rec, **meta})
+        if save_json(tokens_secret(self.server), {**rec, **meta}):
+            return True
+        save_json(tokens_secret(self.server), rec)
+        return False
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
         data = load_json(client_secret(self.server))
@@ -227,8 +231,9 @@ class SentientOAuthProvider(OAuthClientProvider):
         self.context.token_expiry_time = storage.expires_at()
         if self.context.oauth_metadata is not None or not self.context.current_tokens.refresh_token:
             return
-        if not self._restore_metadata(storage.record() or {}) and await self._discover_metadata():
-            storage.save_metadata()
+        if (not self._restore_metadata(storage.record() or {}) and await self._discover_metadata()
+                and not storage.save_metadata()):
+            log.info("mcp sign-in details for %s could not be saved; they are looked up again next time", storage.server)
 
     def _issuer_usable(self, issuer: str) -> bool:
         """SEP-2352: a client registered with one authorization server is never sent to another."""

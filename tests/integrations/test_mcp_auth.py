@@ -481,6 +481,31 @@ async def test_saved_details_are_only_used_for_the_same_server_and_client(keycha
     assert await restored({**good, "auth_server_url": "http://other.test"}) is None
 
 
+def test_saving_looked_up_details_never_loses_the_sign_in(keychain, monkeypatch):
+    """The record grows with the details; if the keychain fails partway, the old record is put back."""
+    from sentient import secrets
+
+    rec = {"tokens": {"access_token": "at", "token_type": "Bearer", "refresh_token": "rt"}, "expires_at": 1.0}
+    mcp_auth.save_json("mcp:T:oauth", rec)
+    meta = {"issuer": BASE, "authorization_endpoint": f"{BASE}/authorize", "token_endpoint": f"{BASE}/oauth2/token",
+            "response_types_supported": ["code"], "scopes_supported": [f"scope-{i}" for i in range(200)]}
+    store = mcp_auth.KeychainTokenStorage("T")
+    provider = mcp_auth.SentientOAuthProvider(URL, mcp_auth.client_metadata("http://127.0.0.1:1/cb"), store)
+    provider._use_metadata(None, None, mcp_auth.OAuthMetadata.model_validate(meta))
+
+    real_set = secrets.set_secret
+
+    def flaky(name: str, value: str) -> bool:
+        return False if name == "mcp:T:oauth:1" else real_set(name, value)
+
+    monkeypatch.setattr(secrets, "set_secret", flaky)
+    assert store.save_metadata() is False
+    assert mcp_auth.load_json("mcp:T:oauth") == rec
+    monkeypatch.setattr(secrets, "set_secret", real_set)
+    assert store.save_metadata() is True
+    assert mcp_auth.load_json("mcp:T:oauth")["oauth_metadata"]["token_endpoint"] == f"{BASE}/oauth2/token"
+
+
 async def test_sign_out_clears_tokens(app, keychain):
     mock = MockServer(oauth=True)
     app.integrations.mcp.http_transport = mock.transport()
