@@ -10,6 +10,7 @@ import type {
   AppCommand,
   BackendStatus,
   Connection,
+  DictationStatus,
   SentientBridge,
   VersionInfo
 } from '@/types/bridge'
@@ -150,10 +151,21 @@ function createBrowserBridge(): SentientBridge {
     notifyWake: async () => {
       window.focus()
     },
+    dictation: {
+      apply: async () => noDictation,
+      status: async () => noDictation,
+      cancel: async () => undefined,
+      openPermissionSettings: async () => undefined,
+      onCommand: () => () => undefined,
+      report: () => undefined
+    },
     getShortcuts: async () => [],
     setShortcut: async () => ({ ok: false, error: 'Available in the desktop app.', shortcuts: [] })
   }
 }
+
+/** In a browser tab there are no global shortcuts. */
+const noDictation: DictationStatus = { accessibility: null, microphone: null }
 
 let cached: SentientBridge | null = null
 

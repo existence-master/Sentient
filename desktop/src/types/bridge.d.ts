@@ -54,6 +54,8 @@ export type AppCommand =
   /** `wake: true` when opened by the wake word, so Voice mode starts listening right away. */
   | { type: 'voice-mode'; wake?: boolean }
   | { type: 'open-settings'; section?: string }
+  /** Push to talk: what the user said, to send as a chat message in the open chat (or a new one). */
+  | { type: 'push-to-talk'; text: string }
   /** Share this window / Share a region: open a new chat with the picture attached (nothing is sent yet). */
   | { type: 'share-screen'; share: ScreenShare }
 
@@ -69,7 +71,7 @@ export interface ScreenShare {
 }
 
 /** Global shortcuts people can change in Settings > General. */
-export type ShortcutId = 'shareWindow' | 'shareRegion'
+export type ShortcutId = 'shareWindow' | 'shareRegion' | 'pushToTalk' | 'dictate'
 
 export interface ShortcutInfo {
   id: ShortcutId
@@ -131,6 +133,57 @@ export interface CaptureNotice {
 /** Connection state of the built-in desktop device (`/ws/node`). */
 export type DesktopNodeState = 'off' | 'connecting' | 'online' | 'offline' | 'unsupported'
 
+/** Push to talk (`talk`) and dictation into any app (`dictate`), #169. */
+export type DictationMode = 'talk' | 'dictate'
+
+/** The shell's part of `voice.dictation` (camelCase), pushed by the window whenever the config changes. The two
+ * shortcuts themselves are in the shortcut table (`pushToTalk`, `dictate`). */
+export interface DictationShellSettings {
+  /** 0 = only the shortcut stops dictation. */
+  stopAfterSilenceS: number
+}
+
+export interface DictationStatus {
+  /** macOS: may Sentient press keys in other apps (Accessibility)? null elsewhere. */
+  accessibility: boolean | null
+  /** macOS microphone permission ('granted', 'denied', 'not-determined'...); null elsewhere. */
+  microphone: string | null
+}
+
+/** Shell -> listening pill. */
+export type DictationCommand =
+  | { type: 'start'; mode: DictationMode; silenceMs: number; maxMs: number }
+  /** Stop by itself after this much silence (push to talk when the shell can't tell the key is held). */
+  | { type: 'auto-stop'; silenceMs: number }
+  | { type: 'stop' }
+  | { type: 'cancel' }
+
+/** Listening pill -> shell. */
+export type DictationEvent =
+  | { type: 'listening' }
+  | { type: 'working' }
+  | { type: 'result'; text: string }
+  | { type: 'empty' }
+  | { type: 'error'; message: string }
+  | { type: 'cancelled' }
+  /** A key was let go while the pill had focus (push to talk). */
+  | { type: 'keyup' }
+  | { type: 'escape' }
+
+export interface DictationBridge {
+  /** Settings from `voice.dictation`; returns the macOS permission state. */
+  apply(settings: DictationShellSettings): Promise<DictationStatus>
+  status(): Promise<DictationStatus>
+  /** Turn the microphone off and drop what was heard (Stop everything). */
+  cancel(): Promise<void>
+  /** macOS: open System Settings at the Microphone or Accessibility list. */
+  openPermissionSettings(kind: 'microphone' | 'accessibility'): Promise<void>
+  /** Listening pill only. */
+  onCommand(cb: (cmd: DictationCommand) => void): () => void
+  /** Listening pill only. */
+  report(event: DictationEvent): void
+}
+
 export interface WindowControls {
   minimize(): Promise<void>
   /** Toggles maximize / restore. */
@@ -182,6 +235,8 @@ export interface SentientBridge {
   onAlwaysListeningChange(cb: (enabled: boolean) => void): () => void
   /** The wake word was heard: show and focus the window. */
   notifyWake(): Promise<void>
+  /** Push to talk and dictation into any app (#169). */
+  dictation: DictationBridge
   /** Global shortcuts that can be changed (Share this window, Share a region). */
   getShortcuts(): Promise<ShortcutInfo[]>
   /** Set a shortcut (an accelerator, `""` to turn it off, `null` for the default). */

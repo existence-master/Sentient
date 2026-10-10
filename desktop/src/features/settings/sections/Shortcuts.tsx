@@ -54,7 +54,7 @@ export function ShortcutSettings() {
   return (
     <FormSection
       title="Keyboard shortcuts"
-      description="These work anywhere, also while Sentient is in the tray. A picture is only taken when you press one, and nothing is sent until you press send."
+      description="These work anywhere, also while Sentient is in the tray. Nothing is captured until you press one: a picture of your screen, or the microphone for talking and dictating."
     >
       {!bridge.isDesktop ? (
         <FormRow label="Share your screen" description="Available in the desktop app.">

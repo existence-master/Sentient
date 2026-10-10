@@ -1,6 +1,7 @@
 /**
  * Every global shortcut Sentient registers, in one place. Fixed ones (New chat, Stop everything) and
- * the ones people can change or turn off in Settings > General (Share this window, Share a region).
+ * the ones people can change or turn off in Settings > General (Share this window, Share a region, Push to talk,
+ * Dictate into any app).
  * Global shortcuts work while Sentient is hidden in the tray, and take the keys away from other apps,
  * so defaults use Ctrl+Alt+Shift (Command+Option+Shift on a Mac), a combination apps rarely use.
  */
@@ -21,6 +22,16 @@ export const SHORTCUTS: Record<ShortcutId, { label: string; description: string;
     label: 'Share a region',
     description: 'Drag over part of your screen to add it to a new chat.',
     default: 'CommandOrControl+Alt+Shift+R'
+  },
+  pushToTalk: {
+    label: 'Push to talk',
+    description: 'Hold it, speak, and let go. What you said goes to Sentient as a chat message.',
+    default: 'CommandOrControl+Alt+Shift+T'
+  },
+  dictate: {
+    label: 'Dictate into any app',
+    description: 'Press it, speak, then press it again or pause. Your words are typed where your cursor is.',
+    default: 'CommandOrControl+Alt+Shift+D'
   }
 }
 

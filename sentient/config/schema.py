@@ -576,6 +576,26 @@ class EvolutionConfig(BaseModel):
 
 
 # ----------------------------------------------------------------------------- voice (owner: voice agent)
+class DictationConfig(BaseModel):
+    """Push to talk and dictation into any app (#169). The two global shortcuts are desktop settings (Settings >
+    General > Keyboard shortcuts). Speech is transcribed on this computer; text goes to the fast model only when
+    ``cleanup`` is ``polish``."""
+
+    cleanup: Literal["raw", "tidy", "polish"] = Field(
+        "tidy",
+        description="raw: exactly what was heard. tidy: drop um and uh, fix spacing, capitals and the final full "
+        "stop, on this computer. polish: also lets the fast model fix punctuation and slips, and keeps the tidy "
+        "text if the model changed the words.",
+    )
+    language: str = Field(
+        "", description="Language you dictate in: empty follows the speech recognition language, 'auto' detects it."
+    )
+    stop_after_silence_s: float = Field(
+        2.5, ge=0.0, le=30.0, description="Dictation stops by itself after this much silence. 0 waits for the shortcut."
+    )
+    speak_replies: bool = Field(True, description="Read Sentient's answer aloud after push to talk.")
+
+
 class VoiceConfig(BaseModel):
     stt_provider: Literal["faster_whisper", "openai", "deepgram", "elevenlabs"] = Field(
         "faster_whisper", description="Speech-to-text engine. faster-whisper runs locally."
@@ -649,6 +669,9 @@ class VoiceConfig(BaseModel):
         ge=0.0,
         le=120.0,
         description="After a spoken reply, keep listening this many seconds for a follow-up without the wake word.",
+    )
+    dictation: DictationConfig = Field(
+        default_factory=DictationConfig, description="Push to talk and dictation into any app."
     )
 
 

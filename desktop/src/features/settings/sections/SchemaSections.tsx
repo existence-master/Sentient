@@ -12,6 +12,7 @@ import { SchemaForm } from '../SchemaForm'
 import type { SectionProps } from '../SettingsPage'
 import { WAKE_KEYS, WakeWordSection } from './AbilitySections'
 import { ApprovalRulesSection } from './ApprovalRules'
+import { DICTATION_KEYS, DictationSection } from './Dictation'
 
 export function MemorySection({ query }: SectionProps) {
   const navigate = useNavigate()
@@ -222,7 +223,8 @@ export function VoiceSection({ query }: SectionProps) {
         </Card>
       )}
       <WakeWordSection query={query} />
-      <SchemaForm section="voice" title="Voice settings" filter={query} exclude={WAKE_KEYS} />
+      <DictationSection query={query} />
+      <SchemaForm section="voice" title="Voice settings" filter={query} exclude={[...WAKE_KEYS, ...DICTATION_KEYS]} />
     </div>
   )
 }

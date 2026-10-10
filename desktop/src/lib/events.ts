@@ -26,7 +26,7 @@
  *   user_model.updated    -> refetch ['user-model']
  *   dream.updated         -> upsert into ['memories', 'dreams'] (and refetch the user model when one completes)
  *   source.items          -> webhook calls refresh ['hooks'] (last called / call count)
- *   stop.updated          -> ['stop'] (Stop everything banner and title bar button)
+ *   stop.updated          -> ['stop'] (Stop everything banner and title bar button; cancels dictation)
  */
 import type { QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -286,7 +286,12 @@ export function installDomainEvents(qc: QueryClient): () => void {
   )
 
   // §17 stop everything
-  offs.push(live.onDomain('stop.updated', (e) => qc.setQueryData(qk.stop, e.data)))
+  offs.push(
+    live.onDomain('stop.updated', (e) => {
+      qc.setQueryData(qk.stop, e.data)
+      if (e.data?.stopped) void getBridge().dictation.cancel() // push to talk or dictation: microphone off now
+    })
+  )
 
   // After a reconnect we may have missed events: refresh lists (not transcripts).
   let prev: SocketState = live.state

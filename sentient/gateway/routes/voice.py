@@ -12,13 +12,14 @@ import json
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile, WebSocket
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, WebSocket
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from sentient.gateway.deps import AUTH, get_core
 from sentient.voice.audio import MAX_AUDIO_BYTES, audio_suffix
 from sentient.voice.base import VoiceError
+from sentient.voice.service import DictationStopped
 from sentient.voice.socket import voice_socket_endpoint
 
 log = logging.getLogger(__name__)
@@ -46,6 +47,29 @@ async def voice_transcribe(request: Request, file: UploadFile = File(...)):
     except VoiceError as exc:
         raise HTTPException(503, str(exc)) from exc
     return {"text": text}
+
+
+@router.post("/api/voice/dictate", dependencies=AUTH)
+async def voice_dictate(
+    request: Request,
+    file: UploadFile = File(...),
+    cleanup: Literal["raw", "tidy", "polish"] | None = Form(None),
+):
+    """Push to talk and dictation (#169): local speech recognition, then ``cleanup`` (default voice.dictation's)."""
+    suffix = audio_suffix(file.filename or "", content_type=file.content_type or "")
+    if not suffix:
+        raise HTTPException(415, "unsupported audio type; send wav, webm, ogg, m4a, mp3 or flac")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty audio file")
+    if len(data) > MAX_AUDIO_BYTES:
+        raise HTTPException(413, "audio file too large (max 50 MB)")
+    try:
+        return await get_core(request).voice.dictate(data, f"dictation{suffix}", cleanup=cleanup)
+    except DictationStopped as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except VoiceError as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 class SpeakBody(BaseModel):
