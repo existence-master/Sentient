@@ -66,6 +66,21 @@ async def test_desktop_only_sends_nothing_to_chats(tg):
     assert any(n["task_id"] == desktop for n in await tg.app.notifications.list())  # the app still has it
 
 
+async def test_a_failed_lookup_keeps_it_on_the_desktop(tg, monkeypatch):
+    await tg.pair(42)
+    task_id = await _task(tg.app)
+
+    async def broken(_task_id: str):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(tg.app.tasks, "delivery_for", broken)
+    before = len(tg.api.sent("sendMessage"))
+    await _finished(tg.app, task_id)
+    await tg.app.notify("info", "unrelated", title="FYI")
+    await asyncio.sleep(0.3)
+    assert len(tg.api.sent("sendMessage")) == before
+
+
 async def test_chosen_chat_gets_it_whatever_the_switches_say(tg):
     await tg.pair(42)
     await tg.pair(43)

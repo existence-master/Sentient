@@ -404,7 +404,8 @@ tasks, the brief itself. The app always gets them.
 - `"desktop"`: the app only; nothing goes to a messaging app.
 - `[{channel, chat_id}]`: only these paired chats, whatever their own delivery switch and the `channels.deliver_*`
   switches say. `{"channel": "whatsapp", "chat_id": "self"}` is the WhatsApp "Message yourself" chat of whichever
-  number is linked. A chat that is not paired (or a channel that is not connected) is skipped.
+  number is linked. A chat that is not paired (or a channel that is not connected) is skipped. If the task's setting
+can't be read, nothing goes to a messaging app.
 `rerun` keeps it. Backend API: `await app.tasks.delivery_for(task_id)` → `"default" | "desktop" | [...]`.
 
 ### Tasks that ask you a question

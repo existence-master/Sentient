@@ -310,9 +310,9 @@ class ChannelService(Service):
             return "default"
         try:
             return await fn(str(task_id))
-        except Exception:
+        except Exception:  # fail closed: never send to chats the task may have left out
             log.exception("could not read where task %s delivers", task_id)
-            return "default"
+            return "desktop"
 
     async def _task_result(self, task_id: str | None) -> str:
         getter = getattr(self.app.tasks, "get", None)
