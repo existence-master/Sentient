@@ -6,6 +6,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Memory sources on tasks:** a task's result now shows "Used 3 memories" too: what Sentient had in mind while it
+  worked, from its instructions and from memory look-ups it read. The list stays with the run when it stops to ask
+  you something, after a restart and on Retry, and each one has **This is wrong** like in chat. A chat reply you
+  stop now shows its memories right away instead of after a reload.
 - **"Never do this" becomes a rule.** When you tell Sentient something like "never delete my emails" or "don't post
   to Slack without asking me", it offers to turn it into a lasting rule: a small card in the chat ("Make this a rule?
   Never: Gmail > Trash") with "Make it a rule" and "Not now". A rule keeps working in every chat, even after a long

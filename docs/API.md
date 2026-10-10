@@ -40,7 +40,7 @@ All carry `session_id` and `turn_id`.
 | `steer_ack` | `session_id`, `queued`, `client_id` (echo; no `turn_id`) |
 | `usage` | `model`, `prompt_tokens`, `completion_tokens` |
 | `error` | `message`, `recoverable` |
-| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent) |
+| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id` and its `memory_sources` too (none when it was stopped before it started) |
 | `approval.ack` | `approval_id`, `resolved` |
 
 ### Server → client: domain events (dotted `type`, payload in `data`)
@@ -192,7 +192,9 @@ accept or loosen a rule.
   (`conversation`, `manual`, `file:<name>`...) or the insight's (`user` | `inferred`); `via: "prompt"` means it was in
   the system prompt (recalled facts, user-model insights), `"tool"` that `memory_recall` or `memory_search_by_source`
   returned it during the turn. Recorded deterministically (the model is never asked which it used); deduplicated,
-  first mention wins, at most 40.
+  first mention wins, at most 40. Only rows of a memory tool's result that fit in `chat.tool_result_max_chars` (the
+  part the model read) count. Pending memories (section 7, review) never appear. Task runs record the same list
+  (section 4, Run `memory_sources`).
 - `GET /api/sessions/search?q=` → `[{session_id, message_id, role, snippet, created_at}]`
 - `POST /api/chat` NDJSON fallback of the WebSocket turn: body `{text, session_id?, attachments?, model?}`; lines are the chat events above, first line `{type: "session", session_id}`.
 - `POST /api/approvals` `{approval_id, decision}` → `{resolved}`
@@ -354,11 +356,16 @@ task-creation prompt still only produces daily/weekly (v2), the planner uses `in
  "error": null, "retry_of": "run id this run retries|null",
  "pending_question": {"question": "Which flight should I book?", "options": ["IndiGo 07:10", "Air India 09:40"], "asked_at": "...",
                       "kind": "question|limit|stuck", "reason": "...|null"} | null,
- "last_activity_at": "...|null"}
+ "last_activity_at": "...|null",
+ "memory_sources": [MemorySource]}
 ```
 `pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question", "Limits on a run"
 and "Stuck runs" below). `kind` says why it waits; `reason` is set for `stuck` only. `last_activity_at` is when the run
 last showed any sign of work (a progress update, or streamed model output; falls back to `execution_start_time`).
+`memory_sources` (section 2, "Memory sources") are the memories the run had in mind: facts recalled into its executor
+prompt (`via: "prompt"`) and facts `memory_recall` / `memory_search_by_source` returned that the model read
+(`via: "tool"`). Saved on the run as they are found, merged across pauses (questions, limits, stuck), resumes and
+restarts, and copied to a Retry that continues the transcript; `[]` when none, and for swarm and one-call runs.
 Already approved one-call tasks (a follow-up's Send, section 6) carry `original_context.fixed_call = {tool, arguments,
 done_text}` and a one-step `plan`. They are created `pending`, start a run at once with no planner and no executor model,
 and the run makes exactly that call with exactly those arguments (`tool_call`, `tool_result`, `final_answer` updates). A
