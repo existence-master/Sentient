@@ -15,6 +15,7 @@
  *   memory.updated        -> invalidate ['memories']
  *   skill.updated         -> invalidate ['skills']
  *   session.updated       -> rename in ['sessions']
+ *   rule_proposal.updated -> refetch that chat's ['rule-proposals'] ("Make this a rule?" cards)
  *   config.updated        -> invalidate config/bootstrap/model presets/ChatGPT sign-in (+ secrets/providers)
  *   voice.state           -> ['voice', 'state']
  *   subagent.updated      -> ['subagents', ...] (+ toast when a background helper finishes)
@@ -167,6 +168,12 @@ export function installDomainEvents(qc: QueryClient): () => void {
         })
       )
       if (!found) void qc.invalidateQueries({ queryKey: qk.sessions })
+    })
+  )
+
+  offs.push(
+    live.onDomain('rule_proposal.updated', (e) => {
+      if (e.data?.session_id) void qc.invalidateQueries({ queryKey: qk.ruleProposals(e.data.session_id) })
     })
   )
 

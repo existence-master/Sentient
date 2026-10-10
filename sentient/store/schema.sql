@@ -148,3 +148,19 @@ CREATE TABLE IF NOT EXISTS subagents (
     finished_at    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_subagents_session ON subagents(session_id, started_at);
+
+-- ---------------------------------------------------------------- rules from chat (owner: core, docs/API.md section 2)
+-- "never delete my emails" said in a chat becomes a proposed lasting rule; only the user's click makes it a rule.
+-- While pending it makes the chat ask before the matched tools (a session rule that only tightens).
+CREATE TABLE IF NOT EXISTS rule_proposals (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    message_id  TEXT,                             -- the user message (or steer message) it came from
+    said        TEXT NOT NULL,                    -- the user's words that matched
+    rule        TEXT NOT NULL,                    -- never | ask
+    keys        TEXT NOT NULL,                    -- JSON list of rule keys (tool names or app ids)
+    status      TEXT NOT NULL DEFAULT 'pending',  -- pending | accepted | declined
+    created_at  TEXT NOT NULL,
+    decided_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rule_proposals_session ON rule_proposals(session_id, status);
