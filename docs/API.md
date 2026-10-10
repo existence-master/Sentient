@@ -734,7 +734,11 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   - `status: "needs_sign_in"`: the server answered 401, or `auth` is `oauth` with no stored sign-in, or the stored sign-in expired and could not be refreshed. `error` says what to do: `"This server asks you to sign in."` (none), `"The server didn't accept the saved headers. Change their values with the key button on the server."` (headers), `"Sign in to use this server."` (oauth). The engine retries a server in this state every 5 minutes, and at once after a sign-in or a test.
 - `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, headers?, auth?, enabled?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input)
   - `headers`: `{name: value}`; values go to the keychain. `auth` defaults to `headers` when headers are given, else `none`. 400 when `auth` is `headers` without headers, a header name or value is invalid, or a stdio server has headers or `auth` other than `none`.
-  - Replacing a server with a different URL drops its stored sign-in. Headers not given are deleted.
+  - Headers not given are deleted. The keychain is shared by every Sentient setup on the computer, so a stored sign-in
+    (tokens and client registration) records the server URL it was made for (`server_url`) and is kept when a
+    server with the same name and URL is added (in this setup or another), then used. It is dropped when the URL
+    differs, and an older record without `server_url` is dropped only when this setup had the server at another
+    URL. Adding a local (stdio) server with the same name leaves a stored sign-in alone.
 - `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain)
 - `POST /api/integrations/mcp/{name}/test` → `{ok, tools: [mcp tool names], error?}`
 - `POST /api/integrations/mcp/{name}/enabled` `{enabled: bool}` → server object (turns a server on or off and nothing else; `enabled` must be a boolean, 422 otherwise; 404 if missing)
