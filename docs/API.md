@@ -574,9 +574,11 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   (change feeds and push watchers, section 16; `note` explains a re-baseline such as expired Gmail history)
 - `POST /api/integrations/feeds/{source}/sync` → `{ok, emitted, rebaselined}` or `{ok: false, error, failures, retry_in_s, emitted: 0}`
   or `{ok: false, skipped: "not connected", emitted: 0}`; 404 when the source has no change feed.
-- `email_imap` ("Email (IMAP)", `auth_type: "manual"`): setup fields `host`, `port` (993), `username`, `password` (app password,
-  secret), optional `smtp_host`, `smtp_port`; connect signs in to IMAP (and SMTP when given) before saving. Tools
-  `email_imap_search` (read), `email_imap_read` (read), `email_imap_send` (send). Privacy filters like Gmail. Trigger `new_email`.
+- `email_imap` ("Email (IMAP)", `auth_type: "manual"`): setup fields `host`, `security` (`ssl` default, port 993, or
+  `starttls`, port 143), `port`, `username`, `password` (app password, secret), `folders` (comma-separated mailbox names
+  to watch for new mail, default `INBOX`), optional `smtp_host`, `smtp_port`; connect signs in to IMAP (selecting every
+  watched folder) and SMTP when given, before saving. Tools `email_imap_search` (read), `email_imap_read` (read),
+  `email_imap_send` (send). Privacy filters like Gmail. Trigger `new_email`.
 - `webhook` ("Webhooks", builtin, no tools): its `triggers` are computed from the user's hooks,
   `[{event: <hook id>, label: "When \"<name>\" is called"}]`; `integration.updated` is sent when hooks are created or deleted.
 - `gcalendar.triggers` are `new_event` ("New event") and `updated_event` ("Changed event").
@@ -1410,8 +1412,10 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   - Calendar: the first sync is a full sync for a sync token (nothing emitted); later syncs emit `new_event` (created
     within 2 minutes of its last update) or `updated_event`, skipping cancelled and already-ended events. HTTP 410
     triggers a full resync without re-emitting.
-  - IMAP: the first check records the highest UID; a changed UIDVALIDITY re-baselines. Wrong app password marks the
-    integration `status: "error"`.
+  - IMAP: each watched folder (`folders`, default `INBOX` alone) has its own cursor; the first check of a folder
+    records its highest UID, and a changed UIDVALIDITY re-baselines that folder. IDLE push only works for the
+    selected folder, so Sentient stays IDLE-subscribed to the first folder in the list and checks the rest right
+    after each wake or NOOP. Wrong app password marks the integration `status: "error"`.
   - Failures back off exponentially (base interval doubling, max 30 minutes) with a readable `last_error`
     (see `GET /api/integrations/feeds`); a failure never moves the cursor. Disconnecting (or connecting a different
     account) forgets the cursor.

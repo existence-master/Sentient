@@ -96,6 +96,12 @@ cancel the app password at any time from your email account's security page.
 
 **Other providers**: search your provider's help pages for "IMAP settings" and "app password".
 
+**Self-hosted or no SSL port?** Set connection security to `starttls` and the port to the one your server gives for
+STARTTLS (often `143`). Leave it as `ssl` for the providers above.
+
+**Watching more than your inbox?** List extra mailbox names in Folders, comma-separated (for example
+`INBOX, Work`), to also get new-mail pushes from them.
+
 Click **Connect**. Sentient checks the sign-in right away. The app password is kept in your system keychain, never
 in a file. New email reaches Sentient within seconds (IMAP push), and watching your inbox uses no AI.
 """
@@ -293,33 +299,81 @@ def _port(value: Any, default: int) -> int:
     return int(s)
 
 
+def _security(value: Any) -> str:
+    s = str(value or "").strip().lower() or "ssl"
+    if s not in ("ssl", "starttls"):
+        raise IntegrationError("Connection security must be 'ssl' or 'starttls'.")
+    return s
+
+
+def parse_folders(value: Any) -> list[str]:
+    """Comma-separated mailbox names, trimmed and de-duplicated in order; ``INBOX`` alone when empty."""
+    seen: dict[str, None] = {}
+    for part in str(value or "").split(","):
+        name = part.strip()
+        if name:
+            seen.setdefault(name, None)
+    return list(seen) or ["INBOX"]
+
+
+async def _starttls(client: aioimaplib.IMAP4, host: str) -> None:
+    """Upgrade a plaintext IMAP connection to TLS in place (RFC 3501 6.2.1).
+
+    aioimaplib has no STARTTLS helper (only ``IMAP4_SSL``, TLS from the first byte), so this sends the
+    command and upgrades the transport by hand. The server sends no new greeting after STARTTLS, so the
+    protocol's state is set back to ``NONAUTH`` directly, and capabilities learned before TLS are discarded
+    and re-fetched, since a pre-TLS CAPABILITY response could have been tampered with in transit.
+    """
+    protocol = client.protocol
+    res = await protocol.execute(aioimaplib.Command("STARTTLS", protocol.new_tag(), loop=protocol.loop))
+    if res.result != "OK":
+        raise IntegrationError("The mail server refused to start TLS (STARTTLS).")
+    loop = asyncio.get_running_loop()
+    # start_tls returns a NEW transport; the protocol must switch to it immediately, or every command
+    # after this point -- including LOGIN -- keeps going out over the raw, unencrypted socket.
+    protocol.transport = await loop.start_tls(
+        protocol.transport, protocol, ssl.create_default_context(), server_hostname=host
+    )
+    protocol.state = aioimaplib.NONAUTH
+    protocol.capabilities = set()
+    await protocol.execute(aioimaplib.Command("CAPABILITY", protocol.new_tag(), loop=protocol.loop))
+
+
 # ---------------------------------------------------------------------------- IMAP session
 class ImapSession:
-    """A small async wrapper over aioimaplib (IMAP over SSL only); tests replace ``open_session``."""
+    """A small async wrapper over aioimaplib, over SSL or STARTTLS; tests replace ``open_session``."""
 
     def __init__(self, c: dict):
         self.host = str(c.get("host") or "")
-        self.port = int(c.get("port") or 993)
+        self.security = _security(c.get("security"))
+        self.port = int(c.get("port") or (993 if self.security == "ssl" else 143))
         self.username = str(c.get("username") or "")
         self.password = str(c.get("password") or "")
-        self.client: aioimaplib.IMAP4_SSL | None = None
+        self.client: aioimaplib.IMAP4 | None = None
         self.uidvalidity: str | None = None
         self.mailbox = "INBOX"
 
     @property
-    def _c(self) -> aioimaplib.IMAP4_SSL:
+    def _c(self) -> aioimaplib.IMAP4:
         if self.client is None:
             raise IntegrationError("The mail server connection is closed.")
         return self.client
 
     async def open(self, mailbox: str = "INBOX") -> None:
         try:
-            self.client = aioimaplib.IMAP4_SSL(host=self.host, port=self.port, timeout=IMAP_TIMEOUT_S)
-            await self.client.wait_hello_from_server()
+            if self.security == "starttls":
+                self.client = aioimaplib.IMAP4(host=self.host, port=self.port, timeout=IMAP_TIMEOUT_S)
+                await self.client.wait_hello_from_server()
+                await _starttls(self.client, self.host)
+            else:
+                self.client = aioimaplib.IMAP4_SSL(host=self.host, port=self.port, timeout=IMAP_TIMEOUT_S)
+                await self.client.wait_hello_from_server()
+        except IntegrationError:
+            raise
         except Exception as exc:
             raise IntegrationError(
-                f"Couldn't reach the mail server {self.host}:{self.port} ({type(exc).__name__}). "
-                "Check the IMAP server name and port (usually 993)."
+                f"Couldn't reach the mail server {self.host}:{self.port} ({type(exc).__name__}). Check the IMAP "
+                f"server name, port and connection security (ssl is usually 993, starttls is usually 143)."
             ) from exc
         res = await self._c.login(self.username, self.password)
         if res.result != "OK":
@@ -688,11 +742,19 @@ class EmailImapPlugin(IntegrationPlugin):
     setup_fields = [
         SetupField("host", "IMAP server", placeholder="imap.gmail.com",
                    help="Your provider's incoming mail server. See the steps for common providers."),
-        SetupField("port", "IMAP port", required=False, placeholder="993", help="Almost always 993."),
+        SetupField("security", "Connection security", required=False, placeholder="ssl",
+                   help="`ssl` (default; connects already encrypted, usually port 993) or `starttls` (connects in "
+                        "plain text, then upgrades; usually port 143). Use starttls for a provider or self-hosted "
+                        "server that offers no SSL port."),
+        SetupField("port", "IMAP port", required=False, placeholder="993",
+                   help="993 for ssl, 143 for starttls, unless your provider says otherwise."),
         SetupField("username", "Email address", placeholder="you@example.com",
                    help="Usually your full email address."),
         SetupField("password", "App password", secret=True,
                    help="An app password made for Sentient (not your normal password). Stored in your system keychain."),
+        SetupField("folders", "Folders to watch", required=False, placeholder="INBOX",
+                   help="Comma-separated mailbox names to watch for new mail, for example `INBOX, Work`. "
+                        "Defaults to INBOX alone; search and read still take any mailbox by name."),
         SetupField("smtp_host", "SMTP server (for sending)", required=False, placeholder="smtp.gmail.com",
                    help="Optional. Needed to send email. Left empty, Sentient guesses it for well-known providers."),
         SetupField("smtp_port", "SMTP port", required=False, placeholder="465",
@@ -706,15 +768,21 @@ class EmailImapPlugin(IntegrationPlugin):
         password = str(fields.get("password", ""))
         if _APP_PASSWORD_GROUPS.match(password.strip()):
             password = password.replace(" ", "")  # Google shows app passwords in groups of four
+        security = _security(fields.get("security"))
+        folders = parse_folders(fields.get("folders"))
         c = {
             "host": host,
-            "port": _port(fields.get("port"), 993),
+            "security": security,
+            "port": _port(fields.get("port"), 993 if security == "ssl" else 143),
             "username": str(fields.get("username", "")).strip(),
             "password": password.strip(),
+            "folders": folders,
             "smtp_host": re.sub(r"^smtps?://", "", str(fields.get("smtp_host", "")).strip().lower()).strip("/"),
             "smtp_port": _port(fields.get("smtp_port"), 0) or None,
         }
-        s = await open_session(c, "INBOX")
+        s = await open_session(c, folders[0])
+        for mailbox in folders[1:]:  # fail setup, not the watcher, if a watched folder doesn't exist
+            await s.select(mailbox)
         await s.close()
         if c["smtp_host"]:
             await asyncio.to_thread(smtp_send, c, None)
@@ -722,7 +790,7 @@ class EmailImapPlugin(IntegrationPlugin):
 
     async def test(self, credentials: dict | None, mgr: IntegrationManager) -> str:
         c = credentials or {}
-        s = await open_session(c, "INBOX")
+        s = await open_session(c, (c.get("folders") or ["INBOX"])[0])  # already a list: validate() parsed it once
         await s.close()
         return f"Signed in to {c.get('host')} as {c.get('username')}."
 
@@ -731,19 +799,23 @@ class EmailImapPlugin(IntegrationPlugin):
         return await imap_recent_threads(mgr, newer_than_days=newer_than_days, idle_days=idle_days, limit=limit)
 
     # ------------------------------------------------------------------ push watcher
-    async def check_new(self, mgr: IntegrationManager, session: Any) -> int:
-        """Emit INBOX messages newer than the stored UID. The first check only records a baseline."""
+    async def check_new(self, mgr: IntegrationManager, session: Any, mailbox: str) -> int:
+        """Emit *mailbox* messages newer than its stored UID. The first check of a mailbox only baselines it."""
         st = await mgr.feeds.state(PID)
         try:
-            cursor = json.loads(st["cursor"]) if st["cursor"] else {}
+            cursors = json.loads(st["cursor"]) if st["cursor"] else {}
         except json.JSONDecodeError:
-            cursor = {}
+            cursors = {}
+        if "uidvalidity" in cursors or "last_uid" in cursors:
+            cursors = {"INBOX": cursors}  # pre-#92 shape: one mailbox, always INBOX; keep its progress
+        cursor = cursors.get(mailbox) or {}
         validity = session.uidvalidity
         if not cursor or cursor.get("uidvalidity") != validity or "last_uid" not in cursor:
             last = max(await session.uid_search("UID", "*"), default=0)
-            await mgr.feeds.record_success(PID, cursor=json.dumps({"uidvalidity": validity, "last_uid": last}),
-                                           note="Watching for new email from now." if not cursor else
-                                           "The mailbox was reset on the server, so watching restarted from now.")
+            cursors[mailbox] = {"uidvalidity": validity, "last_uid": last}
+            await mgr.feeds.record_success(PID, cursor=json.dumps(cursors),
+                                           note=f"Watching {mailbox} for new email from now." if not cursor else
+                                           f"{mailbox} was reset on the server, so watching restarted from now.")
             return 0
         last = int(cursor["last_uid"])
         new = [u for u in await session.uid_search("UID", f"{last + 1}:*") if u > last]
@@ -752,32 +824,48 @@ class EmailImapPlugin(IntegrationPlugin):
             rows = await session.fetch(new[-WATCH_MAX_NEW:])
             items = []
             for r in sorted(rows, key=lambda r: r["uid"]):
-                item = normalize_raw(r["uid"], r["raw"], r["flags"], hide_codes=redact.enabled(mgr))
-                item["_key"] = item.get("message_id") or f"{validity}:{r['uid']}"
+                item = normalize_raw(r["uid"], r["raw"], r["flags"], mailbox=mailbox, hide_codes=redact.enabled(mgr))
+                item["_key"] = item.get("message_id") or f"{mailbox}:{validity}:{r['uid']}"
                 items.append(item)
             kept = await mgr.emit_items(PID, "feed", items, event="new_email")
             last = max(new)
-        await mgr.feeds.record_success(PID, cursor=json.dumps({"uidvalidity": validity, "last_uid": last}),
-                                       emitted=len(kept))
+        cursors[mailbox] = {"uidvalidity": validity, "last_uid": last}
+        await mgr.feeds.record_success(PID, cursor=json.dumps(cursors), emitted=len(kept))
         return len(kept)
 
     async def watch(self, mgr: IntegrationManager) -> None:
-        """IDLE push loop with reconnect and exponential backoff; NOOP checks when IDLE is unsupported."""
+        """IDLE push loop with reconnect and exponential backoff; NOOP checks when IDLE is unsupported.
+
+        IDLE only pushes for the selected mailbox, so the first ``folders`` entry stays selected between
+        waits; the rest are checked right after each wake, by ``select``-ing over to them in turn.
+        """
         while True:
             session = None
             try:
                 c = await mgr.get_credentials(PID)
                 if not c:
                     return
-                session = await open_session(c, "INBOX")
-                await self.check_new(mgr, session)
+                folders = c.get("folders") or ["INBOX"]  # already a list: validate() parsed it once
+                primary = folders[0]
+                session = await open_session(c, primary)
+                for mailbox in folders:
+                    if session.mailbox != mailbox:
+                        await session.select(mailbox)
+                    await self.check_new(mgr, session, mailbox)
+                if session.mailbox != primary:
+                    await session.select(primary)
                 while True:
                     if session.supports_idle:
                         await session.idle_wait(IDLE_SECONDS)
                     else:
                         await asyncio.sleep(float(mgr.app.config.integrations.fast_sync_seconds or 300))
                         await session.noop()
-                    await self.check_new(mgr, session)
+                    for mailbox in folders:
+                        if session.mailbox != mailbox:
+                            await session.select(mailbox)
+                        await self.check_new(mgr, session, mailbox)
+                    if session.mailbox != primary:
+                        await session.select(primary)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
