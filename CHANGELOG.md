@@ -188,6 +188,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
   dropped connection when the computer is busy.
 - What Sentient learns about you reads your messages in the order you sent them, even when two were saved at the
   same instant.
+- The model check-up no longer warns about the graphics card on an 8 GB card running the setup Sentient recommends
+  for it (qwen3:8b reading 8,192 tokens at a time). About 90% of the model fits there, which is expected; the only way
+  to fit all of it is a context below 8,192 tokens, which cuts off long tasks. A bigger spill, a longer context or a
+  different model still gets the warning.
 
 ### Security
 - Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before
