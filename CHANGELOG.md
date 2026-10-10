@@ -6,6 +6,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Models sized for your computer:** Sentient checks how much memory and graphics memory this computer has before
+  anything is installed and recommends a local model and how much text it reads at once (for example qwen3:8b reading
+  8,192 tokens on an 8 GB graphics card, qwen3:14b reading 16,384 on a 16 GB one). Onboarding shows it as "Recommended
+  for this computer" with a one-click download, the "Local only" model setup uses it, and the model check-up names it
+  in its fixes, including a shorter context length when a longer one would push the model onto the processor.
+- **Context meter:** a small "62% of context" meter next to the message box and on running tasks shows how much of
+  what the model reads at once a chat or task is using. From 85% Sentient says so in plain words and suggests a new
+  chat or a longer context length. Nothing is blocked.
 - **Memory review:** memories that come from an email, a web page, a message, a tool's result, work Sentient did on its
   own, or an imported document wait for you on the new Review tab of the Memory page, with a count in the sidebar.
   Each one shows where it came from and the text it was taken from; approve it, change the wording and approve, turn

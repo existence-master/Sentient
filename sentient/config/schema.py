@@ -61,8 +61,8 @@ class ModelRoles(BaseModel):
 MODEL_ROLE_NAMES = ("primary", "fast", "planner", "executor", "embedding", "vision", "voice")
 REQUIRED_MODEL_ROLES = {"primary", "fast", "embedding"}
 
-# Built-in model presets (#212). Their roles are generated: "Local only" uses the ModelRoles defaults above;
-# "Cloud" and "Mixed" use the first provider below with a key set ("main" for chat and planning, "fast" for
+# Built-in model presets (#212). Their roles are generated: "Local only" uses the LOCAL_MODEL_TIERS row for this
+# computer once its hardware is known (the ModelRoles defaults above until then); "Cloud" and "Mixed" use the first provider below with a key set ("main" for chat and planning, "fast" for
 # quick jobs and voice).
 LOCAL_PRESET, CLOUD_PRESET, MIXED_PRESET = "Local only", "Cloud", "Mixed"
 PRESET_CLOUD_MODELS: dict[str, dict[str, str]] = {
@@ -70,6 +70,20 @@ PRESET_CLOUD_MODELS: dict[str, dict[str, str]] = {
     "openai": {"main": "openai/gpt-5", "fast": "openai/gpt-5-mini"},
     "openrouter": {"main": "openrouter/anthropic/claude-sonnet-5.5", "fast": "openrouter/anthropic/claude-haiku-5.5"},
 }
+
+# Local model sizing for this computer (#131), used by onboarding, the "Local only" preset and the model check-up.
+# Rows are tried in order and the first one the computer meets is recommended. ``min_vram_gb`` is graphics memory a
+# local model can use (an NVIDIA or AMD card, or about two thirds of the memory on Apple silicon); ``min_ram_gb`` is
+# total memory, for computers without one. Sizes are GiB as tools report them (an "8 GB" card shows about 8.0).
+# One model does chat and background jobs, so Ollama keeps a single model loaded.
+LOCAL_MODEL_TIERS: tuple[dict, ...] = (
+    {"id": "gpu_24", "min_vram_gb": 22, "model": "ollama_chat/qwen3:30b", "context_length": 16384},
+    {"id": "gpu_16", "min_vram_gb": 15, "model": "ollama_chat/qwen3:14b", "context_length": 16384},
+    {"id": "gpu_12", "min_vram_gb": 11, "model": "ollama_chat/qwen3:8b", "context_length": 16384},
+    {"id": "gpu_8", "min_vram_gb": 7, "model": "ollama_chat/qwen3:8b", "context_length": 8192},
+    {"id": "cpu", "min_ram_gb": 12, "model": "ollama_chat/qwen3:8b", "context_length": 8192},
+    {"id": "small", "min_ram_gb": 0, "model": "ollama_chat/qwen3:4b", "context_length": 8192},
+)
 
 
 class ModelPreset(BaseModel):

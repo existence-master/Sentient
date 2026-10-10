@@ -10,9 +10,9 @@
 import { toast } from 'sonner'
 import { create } from 'zustand'
 import { api, errorMessage } from '@/lib/api'
-import { applyAgentEvent, emptyTurn, type AssistantTurnView, type AttachmentView, type TimelineItem, type UserMessageView } from '@/lib/chatFold'
+import { applyAgentEvent, emptyTurn, meterFrom, type AssistantTurnView, type AttachmentView, type TimelineItem, type UserMessageView } from '@/lib/chatFold'
 import { queryClient } from '@/lib/queryClient'
-import type { AgentEvent, ApprovalDecision, ChatEvent, Session, TranscriptMessage } from '@/lib/types'
+import type { AgentEvent, ApprovalDecision, ChatEvent, ContextMeter, Session, TranscriptMessage } from '@/lib/types'
 import { uid } from '@/lib/utils'
 import { live } from '@/lib/ws'
 import { qk } from '@/hooks/queryKeys'
@@ -47,6 +47,8 @@ interface ChatState {
   live: Record<string, LiveSession>
   /** client_id -> session_id, so a "new chat" view can navigate once the engine assigns an id. */
   resolved: Record<string, string>
+  /** session_id -> how full the model's context was after its latest call (#131). Kept after the turn ends. */
+  context: Record<string, ContextMeter>
   send: (sessionId: string | null, draft: ChatRequestDraft) => Promise<string>
   cancel: (sessionId: string) => void
   retry: (sessionId: string) => Promise<void>
@@ -90,6 +92,7 @@ async function finishTurn(key: string, sessionId: string | null) {
 export const useChat = create<ChatState>((set, get) => ({
   live: {},
   resolved: {},
+  context: {},
 
   send: async (sessionId, draft) => {
     const clientId = uid()
@@ -274,6 +277,10 @@ export const useChat = create<ChatState>((set, get) => ({
           return
         }
         const sid = ev.session_id
+        if (ev.type === 'usage' && sid) {
+          const meter = meterFrom(ev)
+          if (meter) set({ context: { ...get().context, [sid]: meter } })
+        }
         const key = sid && state.live[sid] ? sid : null
         if (!key) {
           if (ev.type === 'error' && !sid) toast.error(ev.message)

@@ -176,7 +176,12 @@ async def _model_checkup(s) -> Table:
     table.add_column("status")
     table.add_column("detail", overflow="fold")
     with console.status("Checking models...") as status:
-        async for event in run_checkup(s.config, s.llm):
+        probe = getattr(s, "hardware", None)
+        hardware = await probe.get() if probe is not None else None
+        if hardware is not None:
+            rec = hardware["recommendation"]
+            console.print(f"This computer: {hardware['summary']}. Suggested local model: {rec['summary']}.")
+        async for event in run_checkup(s.config, s.llm, hardware=hardware):
             if event["type"] == "step":
                 status.update(f"{event['role']}: {event['label']}...")
             elif event["type"] == "role":

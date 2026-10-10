@@ -20,7 +20,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from sentient.agent.loop import Budget, LoopResult, history_to_openai
-from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent
+from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
 from sentient.llm.provider import ToolCall
 from sentient.tasks import ask, limits, stuck
 from sentient.tasks.jsonio import complete_json_object
@@ -160,6 +160,7 @@ class ProgressMapper:
         self.run_id = run_id
         self.thought = ""
         self.text = ""
+        self.warned = False  # the context warning goes into the log once per run
 
     async def _emit(self, message: dict) -> None:
         await self.svc.progress(self.task_id, self.run_id, message)
@@ -192,7 +193,16 @@ class ProgressMapper:
                 "content": json.dumps(event.result, ensure_ascii=False, default=str),
             }
             await self.svc.repo.update_run(self.run_id, {"messages": [*messages, tool_msg]})
-        # Usage is ignored; Error is reported once by the service when the run finishes.
+        elif isinstance(event, Usage) and event.context_length:
+            # context meter (#131): live on the running task; the warning is also kept in the log
+            self.svc.app.bus.publish("task.run_context", {
+                "task_id": self.task_id, "run_id": self.run_id, "used": event.context_used,
+                "length": event.context_length, "percent": event.context_percent, "warning": event.context_warning,
+            })
+            if event.context_warning and not self.warned:
+                self.warned = True
+                await self._emit({"type": "info", "content": event.context_warning})
+        # Error is reported once by the service when the run finishes.
 
 
 async def _executor_system_prompt(

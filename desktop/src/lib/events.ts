@@ -6,6 +6,7 @@
  *   task.deleted          -> remove from ['tasks'] (+ refetch the Daily Brief state)
  *   task.run_progress     -> append progress to the run in cache
  *   task.run_activity     -> update the run's last activity time
+ *   task.run_context      -> the running run's context meter (live only)
  *   notification.new      -> prepend to ['notifications'], badge++, toast, native notification if unfocused
  *   notification.updated  -> replace in place (payload status changed)
  *   (a `brief` notification, new or updated, also refetches ['proactivity', 'brief'])
@@ -86,6 +87,15 @@ export function installDomainEvents(qc: QueryClient): () => void {
     live.onDomain('task.run_activity', (e) => {
       const { task_id, run_id, last_activity_at } = e.data
       const patch = (t: Task): Task => ({ ...t, runs: t.runs.map((r) => (r.run_id === run_id ? { ...r, last_activity_at } : r)) })
+      qc.setQueryData<Task>(qk.tasks.detail(task_id), (old) => (old ? patch(old) : old))
+      qc.setQueryData<Task[]>(qk.tasks.all, (old) => old?.map((t) => (t.task_id === task_id ? patch(t) : t)))
+    })
+  )
+  offs.push(
+    live.onDomain('task.run_context', (e) => {
+      const { task_id, run_id, used, length, percent, warning } = e.data
+      const context = { used, length, percent, warning }
+      const patch = (t: Task): Task => ({ ...t, runs: t.runs.map((r) => (r.run_id === run_id ? { ...r, context } : r)) })
       qc.setQueryData<Task>(qk.tasks.detail(task_id), (old) => (old ? patch(old) : old))
       qc.setQueryData<Task[]>(qk.tasks.all, (old) => old?.map((t) => (t.task_id === task_id ? patch(t) : t)))
     })

@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, errorMessage } from '@/lib/api'
 import { demo, isDemoMode } from '@/lib/demo'
-import type { CheckupRole, CheckupStatus, ModelRoles, OllamaPullProgress, RoleName, SentientConfig } from '@/lib/types'
+import type { CheckupRole, CheckupStatus, Hardware, ModelRoles, OllamaPullProgress, RoleName, SentientConfig } from '@/lib/types'
 import { qk } from './queryKeys'
 
 export function useProviders() {
@@ -12,6 +12,11 @@ export function useProviders() {
 
 export function useLocalModels() {
   return useQuery({ queryKey: qk.localModels, queryFn: api.models.local, staleTime: 15_000 })
+}
+
+/** This computer and the local model that fits it (#131). Hardware doesn't change, so it is asked for once. */
+export function useHardware() {
+  return useQuery({ queryKey: qk.hardware, queryFn: () => api.models.hardware(), staleTime: Infinity, retry: false })
 }
 
 /** A cloud provider's live model list. Only fetched when `enabled`, so nothing is asked of providers you don't use. */
@@ -208,15 +213,17 @@ export interface CheckupState {
   status: CheckupStatus | null
   /** Showing the dev-only example result. */
   example: boolean
+  /** This computer and the local model sized for it, when the engine could tell (#131). */
+  hardware: Hardware | null
 }
 
-const noCheckup: CheckupState = { rows: [], running: false, error: null, status: null, example: false }
+const noCheckup: CheckupState = { rows: [], running: false, error: null, status: null, example: false, hardware: null }
 
 function exampleCheckup(): CheckupState {
   const roles = demo.modelCheckup()
   const rank: Record<CheckupStatus, number> = { skip: 0, pass: 1, warn: 2, fail: 3 }
   const status = roles.reduce<CheckupStatus>((w, r) => (rank[r.status] > rank[w] ? r.status : w), 'skip')
-  return { rows: roles.map((r) => ({ role: r.role, model: r.model, step: null, result: r })), running: false, error: null, status, example: true }
+  return { rows: roles.map((r) => ({ role: r.role, model: r.model, step: null, result: r })), running: false, error: null, status, example: true, hardware: null }
 }
 
 /** `POST /api/models/checkup` with live progress. `roles` limits the check to these models (onboarding). */
@@ -239,7 +246,7 @@ export function useModelCheckup() {
       setState((s) => ({ ...s, rows: s.rows.map((r) => (r.role === role ? { ...r, ...p } : r)) }))
     try {
       for await (const e of api.models.checkup(roles, ctrl.signal)) {
-        if (e.type === 'start') setState((s) => ({ ...s, rows: e.roles.map((r) => ({ ...r, step: null, result: null })) }))
+        if (e.type === 'start') setState((s) => ({ ...s, hardware: e.hardware ?? null, rows: e.roles.map((r) => ({ ...r, step: null, result: null })) }))
         else if (e.type === 'step') patchRow(e.role, { step: e.label })
         else if (e.type === 'role') {
           const { type: _type, ...result } = e

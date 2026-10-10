@@ -56,6 +56,7 @@ from sentient.llm.events import (
     UserInterjection,
     tool_progress_event,
 )
+from sentient.llm.meter import measure
 from sentient.llm.provider import LLMProvider, ProviderError, ToolCall
 from sentient.memory import review as memory_review
 from sentient.memory.facts import FactMemory
@@ -557,7 +558,9 @@ class Agent:
                         if chunk.usage:
                             result.prompt_tokens += chunk.usage.get("prompt_tokens", 0)
                             result.completion_tokens += chunk.usage.get("completion_tokens", 0)
-                            yield Usage(model=chunk.model, **chunk.usage, **ev)
+                            gauge = await measure(self.llm, role, chunk.model or model or self.llm.model_for(role),
+                                                  messages, tools, chunk.usage, source)
+                            yield Usage(model=chunk.model, **chunk.usage, **gauge, **ev)
                             if budget is not None:
                                 budget.add(chunk.model, chunk.usage, getattr(chunk, "cost", None))
                             with contextlib.suppress(Exception):

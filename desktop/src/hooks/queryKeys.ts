@@ -17,6 +17,7 @@ export const qk = {
 
   providers: ['models', 'providers'] as const,
   localModels: ['models', 'local'] as const,
+  hardware: ['models', 'hardware'] as const,
   catalog: (provider: string) => ['models', 'catalog', provider] as const,
   signIn: (state: string) => ['models', 'sign-in', state] as const,
   modelPresets: ['models', 'presets'] as const,

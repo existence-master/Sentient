@@ -1,5 +1,6 @@
 import {
   IconAlertCircle,
+  IconAlertTriangle,
   IconArrowUp,
   IconMicrophone,
   IconPaperclip,
@@ -19,7 +20,9 @@ import { useTaskActions } from '@/hooks/tasks'
 import { useVoiceStatus } from '@/hooks/voice'
 import { errorMessage, isNotImplemented } from '@/lib/api'
 import type { AttachmentView } from '@/lib/chatFold'
+import type { ContextMeter } from '@/lib/types'
 import { cn } from '@/lib/utils'
+import { ContextGauge } from './ContextMeter'
 import { ModelOverride } from './ModelOverride'
 import { filterCommands, parseSlash, slashQuery, SlashMenu, type SlashCommand } from './slash'
 import type { useAttachments } from './useAttachments'
@@ -38,10 +41,12 @@ export interface ComposerProps {
   autoFocus?: boolean
   /** Imperative text injection (suggestions). */
   inject?: { text: string; nonce: number } | null
+  /** How full the model's context was after its latest call in this chat (#131). */
+  context?: ContextMeter | null
   className?: string
 }
 
-export function Composer({ draftKey, assistantName, streaming, attachments, onSend, onStop, autoFocus, inject, className }: ComposerProps) {
+export function Composer({ draftKey, assistantName, streaming, attachments, onSend, onStop, autoFocus, inject, context, className }: ComposerProps) {
   const [text, setText] = useState(() => drafts.get(draftKey) ?? '')
   const [model, setModel] = useState<string | undefined>()
   const [menuIndex, setMenuIndex] = useState(0)
@@ -202,6 +207,12 @@ export function Composer({ draftKey, assistantName, streaming, attachments, onSe
   return (
     <div className={cn('relative w-full', className)}>
       <AnimatePresence>{menuOpen && <SlashMenu items={commands} active={menuIndex} onHover={setMenuIndex} onPick={pickCommand} />}</AnimatePresence>
+      {context?.warning && (
+        <p role="status" className="mb-2 flex items-start gap-1.5 px-1 text-xs leading-relaxed text-warning">
+          <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
+          {context.warning}
+        </p>
+      )}
       <div className="rounded-2xl border border-border-strong bg-elevated shadow-pop transition-[border-color,box-shadow] focus-within:border-accent/45 focus-within:shadow-glow">
         <AnimatePresence initial={false}>
           {attachments.items.length > 0 && (
@@ -297,6 +308,7 @@ export function Composer({ draftKey, assistantName, streaming, attachments, onSe
           <ModelOverride value={model} onChange={setModel} />
 
           <div className="flex-1" />
+          {context && <ContextGauge meter={context} className="mr-1.5" />}
 
           {dictation.state === 'recording' ? (
             <button

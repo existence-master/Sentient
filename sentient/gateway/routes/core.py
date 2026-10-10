@@ -54,6 +54,12 @@ async def bootstrap(request: Request):
     }
 
 
+@router.get("/api/system/hardware", dependencies=_auth)
+async def system_hardware(request: Request, refresh: bool = False):
+    """Memory, graphics cards and the local model that fits this computer (#131). Detected once, then cached."""
+    return await get_core(request).hardware.get(refresh=refresh)
+
+
 # ----------------------------------------------------------------------------- stop everything (section 17)
 class StopBody(BaseModel):
     source: str = "desktop"

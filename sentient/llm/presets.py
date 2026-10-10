@@ -60,21 +60,36 @@ def cloud_provider(config: SentientConfig) -> str | None:
     return next((pid for pid in PRESET_CLOUD_MODELS if key_set(config, pid)), None)
 
 
-def _builtin(config: SentientConfig) -> list[dict[str, Any]]:
+def hardware(app: Any) -> dict[str, Any] | None:
+    """What the app knows about this computer (#131) without detecting now; None until it has been checked."""
+    probe = getattr(app, "hardware", None)
+    return probe.peek() if probe is not None else None
+
+
+def _builtin(config: SentientConfig, hw: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     defaults = ModelRoles()
     current_embedding = config.models.roles.embedding
     # keep a local embedding model the user picked: changing it re-indexes memory
     embedding = current_embedding if _prefix(current_embedding) in LOCAL else defaults.embedding
     optional = {"planner": None, "executor": None, "vision": None}
-    local = {"primary": defaults.primary, "fast": defaults.fast, **optional, "voice": None, "embedding": embedding}
+    rec = (hw or {}).get("recommendation") or {}
+    sized = rec.get("tier") not in (None, "unknown")  # sized for this computer once its hardware is known
+    main = rec["model"] if sized else defaults.primary
+    fast = rec["model"] if sized else defaults.fast
+    local = {"primary": main, "fast": fast, **optional, "voice": None, "embedding": embedding}
+    local_preset: dict[str, Any] = {
+        "name": LOCAL_PRESET, "builtin": True, "available": True, "reason": None, "provider": None,
+        "description": "Everything runs on this computer with Ollama. Private, and works offline.",
+        "roles": local, "fallbacks": {}}
+    if sized:
+        local_preset["context_length"] = rec["context_length"]
+        local_preset["description"] += f" Sized for this computer: {rec['summary']}."
     pid = cloud_provider(config)
     cloud = PRESET_CLOUD_MODELS[pid or next(iter(PRESET_CLOUD_MODELS))]
     label = LABELS.get(pid or "", "")
     reason = None if pid else "Needs a key for Anthropic, OpenAI or OpenRouter."
     return [
-        {"name": LOCAL_PRESET, "builtin": True, "available": True, "reason": None, "provider": None,
-         "description": "Everything runs on this computer with Ollama. Private, and works offline.",
-         "roles": local, "fallbacks": {}},
+        local_preset,
         {"name": CLOUD_PRESET, "builtin": True, "available": pid is not None, "reason": reason, "provider": pid,
          # embedding is left as it is: a cloud embedding model would re-index all of memory
          "description": f"{label or 'A cloud provider'} for every job. Needs the internet.",
@@ -98,16 +113,17 @@ def _custom(name: str, preset: ModelPreset) -> dict[str, Any]:
     return out
 
 
-def presets(config: SentientConfig) -> list[dict[str, Any]]:
-    """Built-in presets first, then the user's own in saved order. A saved preset can't shadow a built-in."""
+def presets(config: SentientConfig, hw: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Built-in presets first, then the user's own in saved order. A saved preset can't shadow a built-in.
+    ``hw`` (:func:`hardware`) sizes "Local only" for this computer."""
     builtin_names = {n.lower() for n in BUILTIN}
     custom = [_custom(n, p) for n, p in config.models.presets.items() if n.lower() not in builtin_names]
-    return _builtin(config) + custom
+    return _builtin(config, hw) + custom
 
 
-def find(config: SentientConfig, name: str) -> dict[str, Any]:
+def find(config: SentientConfig, name: str, hw: dict[str, Any] | None = None) -> dict[str, Any]:
     wanted = name.strip().lower()
-    for p in presets(config):
+    for p in presets(config, hw):
         if p["name"].lower() == wanted:
             return p
     raise PresetError(f"There's no model setup called {name.strip()!r}.", 404)
@@ -133,7 +149,7 @@ def _changes(before: SentientConfig, after: SentientConfig) -> list[dict[str, An
 async def listing(app: Any) -> dict[str, Any]:
     """``GET /api/models/presets``: every preset, which one is active, and whether a switch can be undone."""
     config = app.config
-    items = presets(config)
+    items = presets(config, hardware(app))
     active = config.models.active_preset
     current = next((p for p in items if active and p["name"].lower() == active.lower()), None)
     for p in items:
@@ -152,7 +168,7 @@ async def listing(app: Any) -> dict[str, Any]:
 async def apply(app: Any, name: str) -> dict[str, Any]:
     """Switch every role (and the preset's other settings) at once. Returns what changed and what is missing."""
     before = app.config
-    preset = find(before, name)
+    preset = find(before, name, hardware(app))
     if not preset["available"]:
         raise PresetError(preset["reason"] or f"{preset['name']} can't be used yet.", 409)
     cfg = before.model_copy(deep=True)

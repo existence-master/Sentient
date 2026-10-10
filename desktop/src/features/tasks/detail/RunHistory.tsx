@@ -21,6 +21,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, EmptyState, JsonView, Markdown, Tooltip } from '@/components/ui'
+import { ContextGauge } from '@/features/chat/ContextMeter'
 import { api, errorMessage } from '@/lib/api'
 import { useRetryRun } from '@/hooks/tasks'
 import { getBridge } from '@/lib/bridge'
@@ -162,6 +163,12 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
               <>
                 <span className="text-fg-faint">·</span>
                 <span className="shrink-0 tabular-nums">{live ? `running ${formatDuration(duration)}` : formatDuration(duration)}</span>
+              </>
+            )}
+            {live && run.context && (
+              <>
+                <span className="text-fg-faint">·</span>
+                <ContextGauge meter={run.context} />
               </>
             )}
           </div>
