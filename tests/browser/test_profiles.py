@@ -462,7 +462,7 @@ async def test_failed_download_does_not_discard_action_or_successful_download():
     successful = asyncio.create_task(asyncio.sleep(0, result="downloads/report.pdf"))
     failed = asyncio.create_task(fail_download())
     svc._download_tasks.update((successful, failed))
-    await asyncio.sleep(0)
+    await asyncio.gather(successful, failed, return_exceptions=True)
 
     result = await svc._include_downloads({"ok": True, "clicked": "Download"}, set())
 
