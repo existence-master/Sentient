@@ -424,6 +424,19 @@ class IntegrationsConfig(BaseModel):
         True,
         description="Only show the model tools of integrations that are connected (keeps small local models focused).",
     )
+    read_only: list[str] = Field(
+        default_factory=list,
+        description="Connections set to Read only, by app id (gmail, github, mcp_<server>). Sentient can look things "
+        "up there but never change, send, delete or run anything: those tools are hidden and refused.",
+    )
+
+    @field_validator("read_only", mode="before")
+    @classmethod
+    def _clean_read_only(cls, value: object) -> object:
+        """Trim ids, drop empty ones and duplicates, keep the order."""
+        if not isinstance(value, list | tuple | set):
+            return value
+        return list(dict.fromkeys(s for s in (str(v).strip() for v in value) if s))
     news_country: str = Field(
         "", description="Two-letter country code for top headlines (empty = guess from your location, else US)."
     )

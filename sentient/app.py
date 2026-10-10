@@ -81,7 +81,10 @@ class SentientApp:
         )
         self.registry = ToolRegistry(disabled=self.config.tools.disabled)
         self.approvals = ApprovalBroker(self.config.tools.approvals, timeout_s=self.config.tools.approvals.timeout_s)
-        self.registry.set_blocked(self.approvals.is_never)  # "never" rules hide tools from the model (ADR 0016)
+        # Read only connections (#141) are read from the live config on every check, so a switch applies at once
+        self.approvals.read_only_source = lambda: self.config.integrations.read_only
+        # "never" rules and the write tools of Read only connections are hidden from the model (ADR 0016)
+        self.registry.set_blocked(self.approvals.is_hidden)
         self.chat_rules = ChatRules(self)  # "never delete my emails" in chat -> a proposed rule (#130)
         self.memory: FactMemory | None = None
         self.agent: Agent | None = None
