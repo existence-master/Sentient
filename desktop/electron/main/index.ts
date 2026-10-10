@@ -1,5 +1,5 @@
 /**
- * Sentient desktop shell: window, tray, global shortcut, native notifications,
+ * Sentient desktop shell: window, tray, global shortcuts, native notifications,
  * and supervision of the local Python engine. The renderer talks to the engine
  * directly over HTTP/WebSocket using the connection handed out by the preload bridge.
  */
@@ -7,7 +7,6 @@ import {
   app,
   BrowserWindow,
   dialog,
-  globalShortcut,
   ipcMain,
   nativeTheme,
   Notification,
@@ -17,20 +16,29 @@ import {
 import { existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
-import type { AppCommand, CaptureNotice, DevicePrivacy, NativeNotification, OpenPathTarget, ShellPrefs } from '../../src/types/bridge'
+import type {
+  AppCommand,
+  CaptureNotice,
+  DevicePrivacy,
+  NativeNotification,
+  OpenPathTarget,
+  ShellPrefs,
+  ShortcutId
+} from '../../src/types/bridge'
 import notificationIcon from '../../resources/icon.png?asset'
 import { BackendManager } from './backend'
 import { CH } from './channels'
 import { DesktopNode } from './node'
 import { homePaths, sentientHome } from './paths'
 import { shellState, THEME_BG } from './prefs'
+import { ScreenSharer } from './share'
+import { NEW_CHAT_ACCELERATOR, Shortcuts, STOP_ACCELERATOR } from './shortcuts'
 import { SmokeRunner, smokeConfig } from './smoke'
-import { AppTray, STOP_ACCELERATOR } from './tray'
+import { AppTray } from './tray'
 import { createMainWindow } from './window'
 
 const smoke = smokeConfig()
 const startHidden = process.argv.includes('--hidden')
-const GLOBAL_SHORTCUT = 'CommandOrControl+Shift+Space'
 
 if (smoke) {
   // Isolate smoke runs from the real profile's window state and single-instance lock.
@@ -186,6 +194,18 @@ const desktopNode = new DesktopNode({
       new Notification({ title: text.title, body: text.body, silent: true, icon: notificationIcon }).show()
     }
   }
+})
+
+// ------------------------------------------------------------------ share this window / a region (#172)
+const shortcuts = new Shortcuts(
+  () => shellState.prefs(),
+  (patch) => shellState.setPrefs(patch),
+  () => tray?.refresh()
+)
+
+const sharer = new ScreenSharer({
+  deliver: (share) => sendCommand({ type: 'share-screen', share }),
+  notice: (text) => tray?.flash(text)
 })
 
 // ------------------------------------------------------------------ always listening for the wake word
@@ -366,6 +386,10 @@ function registerIpc(): void {
   ipcMain.handle(CH.wakeDetected, () => {
     if (!smoke) showWindow()
   })
+  ipcMain.handle(CH.getShortcuts, () => shortcuts.list())
+  ipcMain.handle(CH.setShortcut, (_e, id: ShortcutId, accelerator: string | null) =>
+    shortcuts.set(id, accelerator === null ? null : String(accelerator ?? ''))
+  )
 }
 
 // ------------------------------------------------------------------ lifecycle
@@ -405,25 +429,25 @@ function boot(): void {
       alwaysListening: () => shellState.prefs().alwaysListening === true,
       toggleAlwaysListening: () => setAlwaysListening(shellState.prefs().alwaysListening !== true, true),
       stopped: () => engineStopped,
-      toggleStopped: () => void setStopped(engineStopped !== true, 'tray')
+      toggleStopped: () => void setStopped(engineStopped !== true, 'tray'),
+      shareWindow: () => void sharer.shareWindow(),
+      shareRegion: () => void sharer.shareRegion(),
+      shareAccelerators: () => ({ window: shortcuts.accelerator('shareWindow'), region: shortcuts.accelerator('shareRegion') })
     })
 
-    if (!globalShortcut.register(GLOBAL_SHORTCUT, () => sendCommand({ type: 'new-chat' }))) {
-      console.warn(`[shell] global shortcut ${GLOBAL_SHORTCUT} is taken by another app`)
-    }
+    shortcuts.registerFixed(NEW_CHAT_ACCELERATOR, () => sendCommand({ type: 'new-chat' }))
     // Stop only: resuming is always a deliberate click.
-    if (!globalShortcut.register(STOP_ACCELERATOR, () => {
+    shortcuts.registerFixed(STOP_ACCELERATOR, () => {
       if (backend.status.state === 'ready') void setStopped(true, 'hotkey')
-    })) {
-      console.warn(`[shell] global shortcut ${STOP_ACCELERATOR} is taken by another app`)
-    }
+    })
+    shortcuts.start({ shareWindow: () => void sharer.shareWindow(), shareRegion: () => void sharer.shareRegion() })
   })
 
   app.on('activate', () => showWindow())
 
   app.on('before-quit', () => {
     quitting = true
-    globalShortcut.unregisterAll()
+    shortcuts.stopAll()
     desktopNode.stop()
     backend.stop()
   })

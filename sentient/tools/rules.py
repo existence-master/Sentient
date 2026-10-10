@@ -193,6 +193,16 @@ def untrusted_in(messages: list[dict] | None, registry: Any) -> str:
     return ""
 
 
+SCREEN_FOLDER = "screens"  # files/screens: what the user shared from their screen (window or region hotkey)
+SCREEN_SOURCE = "your screen"
+
+
+def is_screen_capture(name: str) -> bool:
+    """True for a Files API name under ``screens/``. A screen can show text someone else wrote (an email, a web
+    page), so a chat with one attached counts as having read outside content."""
+    return str(name or "").replace("\\", "/").lstrip("/").startswith(f"{SCREEN_FOLDER}/")
+
+
 def untrusted_reason(source: str) -> str:
     """Why a chat asks (shown on the approval card)."""
     return f"Sentient read content from {source} in this chat, so it checks with you before sending anything."

@@ -242,7 +242,9 @@ export function Composer({ draftKey, assistantName, streaming, attachments, onSe
                             ? 'Upload failed'
                             : streaming
                               ? 'Sends with your next message'
-                              : 'Ready'}
+                              : a.source === 'screen'
+                                ? 'From your screen'
+                                : 'Ready'}
                       </div>
                     </div>
                     {a.status === 'uploading' && (

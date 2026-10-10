@@ -9,6 +9,7 @@ import { cn, detectTimezone, listTimezones } from '@/lib/utils'
 import { useUI } from '@/stores/ui'
 import { SchemaForm } from '../SchemaForm'
 import type { SectionProps } from '../SettingsPage'
+import { ShortcutSettings } from './Shortcuts'
 
 const LANGUAGES = [
   ['en', 'English'],
@@ -151,6 +152,8 @@ export function GeneralSection({ query }: SectionProps) {
           />
         </FormRow>
       </FormSection>
+
+      <ShortcutSettings />
     </div>
   )
 }
