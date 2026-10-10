@@ -27,6 +27,18 @@ class ProviderError(RuntimeError):
     pass
 
 
+class ModelRefused(ProviderError):
+    """A model that is set up can't do this job (Claude Code in the background, for one). The message is a plain
+    sentence that says what to change, for the user as is."""
+
+
+def _all_failed(role: str, errors: list[Exception]) -> ProviderError:
+    """The error for a role whose every model failed. When every model refused the job, say why and what to do."""
+    if errors and all(isinstance(e, ModelRefused) for e in errors):
+        return ModelRefused(str(errors[0]))
+    return ProviderError(f"All models failed for role '{role}': {errors[-1] if errors else None}")
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -256,7 +268,7 @@ class LiteLLMProvider:
 
         litellm.drop_params = True
         litellm.suppress_debug_info = True
-        last_error: Exception | None = None
+        errors: list[Exception] = []
         override = model
         for model in self._chain(role, override):
             emitted = False
@@ -320,13 +332,13 @@ class LiteLLMProvider:
                 )
                 return
             except Exception as exc:
-                last_error = exc
+                errors.append(exc)
                 log.warning("model %s failed for role %s: %s", model, role, exc)
                 if emitted:
                     # part of a reply already reached the user; switching models would duplicate it
                     raise ProviderError(f"{model} stopped mid-reply: {exc}") from exc
                 continue
-        raise ProviderError(f"All models failed for role '{role}': {last_error}")
+        raise _all_failed(role, errors)
 
     # ------------------------------------------------------------------ ChatGPT plan (Responses API shim)
     async def _chatgpt_stream(
@@ -371,11 +383,11 @@ class LiteLLMProvider:
         import litellm
 
         litellm.drop_params = True
-        last_error: Exception | None = None
+        errors: list[Exception] = []
         override = model
         for model in self._chain(role, override):
             try:
-                _refuse_claude_code(model)
+                _refuse_claude_code(model, role)
                 if _provider_prefix(model) == CHATGPT:
                     text = await self._chatgpt_text(model, role, messages)
                 else:
@@ -385,19 +397,19 @@ class LiteLLMProvider:
                     text = resp.choices[0].message.content or ""
                 return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
             except Exception as exc:
-                last_error = exc
+                errors.append(exc)
                 log.warning("model %s failed for role %s: %s", model, role, exc)
-        raise ProviderError(f"All models failed for role '{role}': {last_error}")
+        raise _all_failed(role, errors)
 
     async def complete_json(self, role: str, messages: list[dict], *, model: str | None = None) -> Any:
         import litellm
 
         litellm.drop_params = True
-        last_error: Exception | None = None
+        errors: list[Exception] = []
         override = model
         for model in self._chain(role, override):
             try:
-                _refuse_claude_code(model)
+                _refuse_claude_code(model, role)
                 if _provider_prefix(model) == CHATGPT:
                     return parse_json_loose(await self._chatgpt_text(model, role, messages))
                 kwargs = await self._call_kwargs(model, role)
@@ -409,9 +421,9 @@ class LiteLLMProvider:
                 text = resp.choices[0].message.content or ""
                 return parse_json_loose(text)
             except Exception as exc:
-                last_error = exc
+                errors.append(exc)
                 log.warning("model %s failed for role %s: %s", model, role, exc)
-        raise ProviderError(f"All models failed for role '{role}': {last_error}")
+        raise _all_failed(role, errors)
 
     # ------------------------------------------------------------------ embeddings
     async def embed(self, texts: list[str], *, model: str | None = None) -> list[list[float]]:
@@ -431,12 +443,12 @@ class LiteLLMProvider:
 
 
 # ---------------------------------------------------------------------- helpers
-def _refuse_claude_code(model: str) -> None:
+def _refuse_claude_code(model: str, role: str) -> None:
     """Claude Code only writes chat replies (ADR 0022): text and JSON jobs run in the background."""
     if _provider_prefix(model) == CLAUDE_CODE:
-        from sentient.llm.claude_code import CHATS_ONLY
+        from sentient.llm.claude_code import background_refusal
 
-        raise ProviderError(CHATS_ONLY)
+        raise ModelRefused(background_refusal(role))
 
 
 def tool_arguments(raw: str | None) -> dict:
