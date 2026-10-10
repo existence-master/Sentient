@@ -169,6 +169,21 @@ async def add_run(
     return run_id
 
 
+async def seeded_sources(repo, texts: list[str]) -> list[dict]:
+    """Memory sources pointing at facts seed-memory-skills.py made (the first as in the prompt, the rest as looked
+    up), so "This is wrong" edits real memories. Facts it has not made are left out."""
+    out = []
+    for n, text in enumerate(texts):
+        try:
+            row = await repo.store.fetchone("SELECT id, source FROM facts WHERE content = ?", (text,))
+        except Exception:  # no memory table yet
+            row = None
+        if row:
+            out.append({"kind": "fact", "id": int(row["id"]), "text": text, "source": row["source"],
+                        "via": "prompt" if n == 0 else "tool"})
+    return out
+
+
 def info(text: str) -> dict:
     return {"type": "info", "content": text}
 
@@ -516,12 +531,10 @@ async def seed(app: SentientApp) -> dict[str, str]:
             "files_created": [],
             "tools_used": ["gcalendar", "memory", "notion"],
         },
-        memory_sources=[
-            {"kind": "fact", "id": 9101, "text": "Maya met Leela at a design meetup in March.", "source": "conversation",
-             "via": "prompt"},
-            {"kind": "fact", "id": 9102, "text": "Paperkite makes a journaling app for students.", "source": "manual",
-             "via": "tool"},
-        ],
+        memory_sources=await seeded_sources(repo, [
+            "Maya is waiting for Paperkite to approve her quote for the website",
+            "Maya chose a warm serif font and soft pastel colours for the Paperkite website",
+        ]),
     )
 
     # 7. running now ------------------------------------------------------------

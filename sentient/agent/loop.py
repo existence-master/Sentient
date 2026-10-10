@@ -1049,9 +1049,12 @@ class Agent:
             release()
             # the user pressed Stop (or the window went away): keep what was shown
             with contextlib.suppress(Exception):
-                stopped = await asyncio.shield(self._persist_stopped(session_id, partial, sources))
-                if on_stopped is not None:
-                    on_stopped(stopped)
+                save = asyncio.ensure_future(self._persist_stopped(session_id, partial, sources))
+                while not save.done():  # a second Stop while saving must not lose what the caller sends on
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.shield(save)
+                if on_stopped is not None and not save.cancelled():
+                    on_stopped(save.result())
             raise
         except BaseException:
             release()

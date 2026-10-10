@@ -6,6 +6,7 @@ import asyncio
 import json
 import threading
 
+import pytest
 from fastapi.testclient import TestClient
 
 from sentient.app import SentientApp
@@ -181,6 +182,55 @@ def test_a_stopped_reply_carries_its_sources_on_the_live_done(config, isolated_h
         assert kept["id"] == done["message_id"] and kept["memory_sources"] == [source]
         assert kept["content"].endswith("_(stopped)_")
 
+
+
+async def test_a_second_stop_while_saving_still_reports_the_kept_reply(app, monkeypatch):
+    """Stop pressed twice: the kept reply is still saved and handed to ``on_stopped``."""
+    ins = await app.user_model.add_insight("Maya prefers morning meetings", "preferences")
+    started, saving, gate = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    @tool("slow_lookup", risk=Risk.read)
+    async def slow_lookup(ctx: ToolContext) -> dict:
+        """Slow lookup."""
+        started.set()
+        await asyncio.Event().wait()
+        return {"ok": True}
+
+    class Slow(ToolPlugin):
+        id = "slow"
+        display_name = "Slow"
+        tools = [slow_lookup]
+
+    app.registry.register(Slow())
+    original = app.agent._persist_stopped
+
+    async def slow_persist(*args):
+        saving.set()
+        await gate.wait()
+        return await original(*args)
+
+    monkeypatch.setattr(app.agent, "_persist_stopped", slow_persist)
+    app.fake.replies.append([tool_call("slow_lookup")])
+    sid = await app.store.create_session(channel="cli")
+    stopped: dict = {}
+
+    async def consume() -> None:
+        async for _ in app.agent.run_turn(sid, "book a call with Aditi", channel="cli", on_stopped=stopped.update):
+            pass
+
+    turn = asyncio.create_task(consume())
+    await asyncio.wait_for(started.wait(), 5)
+    turn.cancel()
+    await asyncio.wait_for(saving.wait(), 5)
+    turn.cancel()  # pressed again while the kept reply is being saved
+    await asyncio.sleep(0)
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+
+    assert [s["id"] for s in stopped["memory_sources"]] == [ins["id"]]
+    kept = (await _assistant_rows(app, sid))[-1]
+    assert kept["id"] == stopped["message_id"] and kept["content"].endswith("_(stopped)_")
 
 def _until(ws, kind: str) -> dict:
     while True:
