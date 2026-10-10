@@ -475,6 +475,93 @@ async def test_unfinished_download_stays_tracked_until_a_later_result(monkeypatc
         await asyncio.gather(svc._download_cleanup_task, return_exceptions=True)
 
 
+async def test_close_tool_waits_for_unfinished_download_before_shutdown(monkeypatch):
+    svc = BrowserService(make_app())
+    svc._context = object()
+    started = asyncio.Event()
+    completion = asyncio.get_running_loop().create_future()
+
+    async def save_download():
+        started.set()
+        return await completion
+
+    task = asyncio.create_task(save_download())
+    svc._download_tasks.add(task)
+    svc._download_names[task] = "stalled.pdf"
+    await started.wait()
+
+    shutdown_started = asyncio.Event()
+
+    async def shutdown():
+        shutdown_started.set()
+        svc._context = None
+
+    monkeypatch.setattr(svc, "_shutdown", shutdown)
+
+    close_task = asyncio.create_task(svc.close_tool(None))
+    await asyncio.sleep(0)
+    assert not close_task.done()
+    assert not shutdown_started.is_set()
+
+    completion.set_result("downloads/stalled.pdf")
+    result = await close_task
+
+    assert shutdown_started.is_set()
+    assert result["downloads"] == ["downloads/stalled.pdf"]
+    assert task not in svc._download_tasks
+
+
+async def test_close_tool_bounds_wait_for_download_that_ignores_cancellation(monkeypatch):
+    svc = BrowserService(make_app())
+    svc._context = object()
+    started = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stubborn_download():
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await release.wait()
+            return "downloads/stalled.pdf"
+
+    task = asyncio.create_task(stubborn_download())
+    svc._download_tasks.add(task)
+    svc._download_names[task] = "stalled.pdf"
+    await started.wait()
+
+    shutdown_started = asyncio.Event()
+
+    async def shutdown():
+        shutdown_started.set()
+        svc._context = None
+
+    monkeypatch.setattr(svc, "_shutdown", shutdown)
+    monkeypatch.setattr(browser_service, "DOWNLOAD_MAX_DURATION_S", 0.01)
+    monkeypatch.setattr(browser_service, "DOWNLOAD_CANCEL_TIMEOUT_S", 0.01)
+
+    result = await asyncio.wait_for(svc.close_tool(None), timeout=0.5)
+
+    assert cancellation_seen.is_set()
+    assert shutdown_started.is_set()
+    assert result["download_errors"] == [
+        "Download 'stalled.pdf' did not stop before browser shutdown."
+    ]
+    assert result["downloads_in_progress"] == ["stalled.pdf"]
+    assert task in svc._download_tasks and not task.done()
+
+    release.set()
+    await task
+    later_result = await svc._include_downloads({"ok": True}, set())
+    assert later_result["downloads"] == ["downloads/stalled.pdf"]
+    assert task not in svc._download_tasks
+    if svc._download_cleanup_task:
+        svc._download_cleanup_task.cancel()
+        await asyncio.gather(svc._download_cleanup_task, return_exceptions=True)
+
+
 async def test_completed_download_is_reported_while_another_download_is_stuck(monkeypatch):
     svc = BrowserService(make_app())
     stalled_started = asyncio.Event()

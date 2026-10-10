@@ -1530,12 +1530,47 @@ class BrowserService(Service):
             return await self._include_downloads(result, downloads_before)
 
     async def close_tool(self, ctx: Any) -> dict:
-        downloads_before = self._download_tasks.copy()
-        was_running = self._context is not None
         async with self._lock:
+            downloads_before = self._download_tasks.copy()
+            was_running = self._context is not None
+            shutdown_errors = []
+            download_deadline = time.monotonic() + DOWNLOAD_MAX_DURATION_S
+            shutdown_deadline = download_deadline + DOWNLOAD_CANCEL_TIMEOUT_S
+            while pending := {task for task in self._download_tasks if not task.done()}:
+                _, pending = await asyncio.wait(
+                    pending,
+                    timeout=max(0.0, download_deadline - time.monotonic()),
+                )
+                if not pending:
+                    continue
+
+                interrupted_names = {
+                    task: self._download_names.get(task, "download") for task in pending
+                }
+                for task in pending:
+                    task.cancel()
+                _, still_pending = await asyncio.wait(
+                    pending, timeout=max(0.0, shutdown_deadline - time.monotonic())
+                )
+                for task, name in interrupted_names.items():
+                    if task.cancelled():
+                        self._download_tasks.discard(task)
+                        self._download_names.pop(task, None)
+                        self._download_completed_at.pop(task, None)
+                        shutdown_errors.append(
+                            f"Download '{name}' was cancelled because the browser was closing."
+                        )
+                    elif task in still_pending:
+                        shutdown_errors.append(
+                            f"Download '{name}' did not stop before browser shutdown."
+                        )
+                break
             await self._shutdown()
         result = {"ok": True, "message": "Browser closed." if was_running else "The browser wasn't open."}
-        return await self._include_downloads(result, downloads_before)
+        result = await self._include_downloads(result, downloads_before)
+        if shutdown_errors:
+            result.setdefault("download_errors", []).extend(shutdown_errors)
+        return result
 
 
 def _clean_ref(ref: Any) -> str | None:
