@@ -419,6 +419,7 @@ async def stream(
                 ev = event.get("event") or {}
                 if ev.get("type") == "message_start":
                     current = (ev.get("message") or {}).get("id")
+                    streamed.discard(None)  # deltas of an earlier message without an id say nothing about this one
                 elif ev.get("type") == "content_block_delta":
                     delta = ev.get("delta") or {}
                     if delta.get("type") == "text_delta" and delta.get("text"):
@@ -429,7 +430,7 @@ async def stream(
                         yield StreamChunk(thinking=delta["thinking"], model=model)
             elif kind == "assistant":
                 msg = event.get("message") or {}
-                seen = msg.get("id") in streamed or None in streamed  # its text already came as deltas
+                seen = msg.get("id") in streamed or None in streamed  # its text came as deltas (None: no id given)
                 for block in msg.get("content") or []:
                     if not isinstance(block, dict):
                         continue

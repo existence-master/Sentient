@@ -369,13 +369,13 @@ async def test_status_and_checkup(cc_config, fake_claude, monkeypatch):
     off = await claude_code.status(cc_config)
     assert off["installed"] and off["version"] is None  # nothing is run while it is off
 
-    monkeypatch.setattr(claude_code, "find_executable", lambda: None)
-    missing = await claude_code.status(cc_config)
+    with monkeypatch.context() as m:  # only this: undoing everything would also drop the fake from PATH
+        m.setattr(claude_code, "find_executable", lambda: None)
+        missing = await claude_code.status(cc_config)
     assert not missing["installed"] and "can't find Claude Code" in missing["detail"]
 
     from sentient.llm.checkup import checkup
 
-    monkeypatch.undo()
     cc_config.models.experimental_claude_code = True
     cc_config.models.roles.fast = MODEL
     report = await checkup(cc_config, Provider(cc_config), {"primary": MODEL, "fast": MODEL})
