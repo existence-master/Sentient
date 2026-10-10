@@ -37,6 +37,7 @@ from sentient.integrations import IntegrationManager
 from sentient.llm import claude_code
 from sentient.llm.connect import ProviderConnections
 from sentient.llm.hardware import HardwareProbe
+from sentient.llm.jobs import ModelJobs, as_kind
 from sentient.llm.provider import LiteLLMProvider, LLMProvider
 from sentient.memory.dreaming import DreamingService
 from sentient.memory.facts import FactMemory
@@ -75,13 +76,20 @@ class SentientApp:
         self.bus = EventBus()
         self.store = Store(db_path)
         self.llm: LLMProvider = llm or LiteLLMProvider(self.config)
+        # one local model job at a time, chats first (#149): the provider's scheduler, or an idle one for status
+        jobs = getattr(self.llm, "jobs", None)
+        self.model_jobs: ModelJobs = jobs if isinstance(jobs, ModelJobs) else ModelJobs(lambda: self.config.models)
+        self.model_jobs.on_change = lambda state: self.bus.publish("model.busy", state)
         self.workspace = Workspace(budget_chars=self.config.memory.workspace_budget_chars)
         self.skills = SkillLibrary(
             [paths.skills_dir(), *[Path(d).expanduser() for d in self.config.skills.extra_dirs]]
         )
         self.registry = ToolRegistry(disabled=self.config.tools.disabled)
         self.approvals = ApprovalBroker(self.config.tools.approvals, timeout_s=self.config.tools.approvals.timeout_s)
-        self.registry.set_blocked(self.approvals.is_never)  # "never" rules hide tools from the model (ADR 0016)
+        # Read only connections (#141) are read from the live config on every check, so a switch applies at once
+        self.approvals.read_only_source = lambda: self.config.integrations.read_only
+        # "never" rules and the write tools of Read only connections are hidden from the model (ADR 0016)
+        self.registry.set_blocked(self.approvals.is_hidden)
         self.chat_rules = ChatRules(self)  # "never delete my emails" in chat -> a proposed rule (#130)
         self.memory: FactMemory | None = None
         self.agent: Agent | None = None
@@ -209,6 +217,7 @@ class SentientApp:
         if self._started:
             return self
         paths.ensure_layout()
+        await asyncio.to_thread(claude_code.sweep_scratch)  # folders an earlier run couldn't remove (ADR 0022)
         await self.store.open()
         await self._load_stop_state()  # before services start: a stopped Sentient starts paused
         self.workspace.ensure_defaults(
@@ -218,8 +227,10 @@ class SentientApp:
         if self.memory is None:
             log.warning("sqlite-vec unavailable: semantic memory disabled")
 
-        await self.notifications.start()
-        await self.integrations.start()  # registers integration plugins into self.registry
+        with as_kind(self.notifications.model_kind):
+            await self.notifications.start()
+        with as_kind(self.integrations.model_kind):
+            await self.integrations.start()  # registers integration plugins into self.registry
         self.registry.load_builtin()
         self.skills.reload(self._available_tools())
         self.agent = Agent(
@@ -236,7 +247,8 @@ class SentientApp:
         await self.registry.setup_all(self.agent.tool_context(None, "system"))
         for svc in self.services[2:]:  # notifications and integrations started above
             try:
-                await svc.start()
+                with as_kind(svc.model_kind):  # the loops and listeners it starts call the model as this kind
+                    await svc.start()
             except Exception:
                 log.exception("service %s failed to start", svc.name)
         # services register plugins in start() (browser, code, devices, channels): re-check skills' requires_tools

@@ -62,6 +62,20 @@ export interface StopState {
   source: string | null
 }
 
+/** What the local model is doing (#149): `GET /api/models/busy`, live as `model.busy`. */
+export type ModelJobKind = 'chat' | 'interactive' | 'task' | 'suggestions' | 'memory' | 'skills' | 'titles' | 'background'
+export interface ModelBusy {
+  busy: boolean
+  job: ModelJobKind | null
+  model: string | null
+  since: ISODate | null
+  /** Jobs that go as soon as the model is free. */
+  waiting: number
+  /** Background jobs held back while you chat or on battery. */
+  deferred: number
+  deferred_reason: 'chat' | 'battery' | null
+}
+
 export interface StopResult extends StopState {
   /** How many running jobs were cancelled. */
   cancelled: number
@@ -121,6 +135,10 @@ export interface ModelsConfig {
   experimental_claude_code?: boolean
   max_tool_rounds: number
   request_timeout_s: number
+  /** #149: one local model job at a time, chats first; background waits after a chat and on battery. */
+  local_queue?: boolean
+  background_quiet_s?: number
+  background_on_battery?: boolean
 }
 
 export interface GatewayConfig {
@@ -224,6 +242,8 @@ export interface IntegrationsConfig {
   searxng_url: string
   weather_provider: 'open_meteo' | 'accuweather'
   mcp_servers: Record<string, McpServerConfig>
+  /** App ids set to Read only (#141). */
+  read_only?: string[]
   [key: string]: unknown
 }
 
@@ -868,6 +888,8 @@ export interface DomainEventMap {
   'source.items': SourceItemsData
   // §17
   'stop.updated': StopState
+  // #149
+  'model.busy': ModelBusy
 }
 
 export type DomainEventType = keyof DomainEventMap
@@ -1402,8 +1424,13 @@ export interface Integration {
    * (`accuweather` -> `weather`, `brave_search` -> `internet_search`...). These have no tools.
    */
   alternative_for: string | null
+  /** Read only (`read`) or Read and write (`read_write`, the default). Older engines leave it out. */
+  access?: ConnectionAccess
   tools: ToolInfo[]
 }
+
+/** #141: a Read only connection hides and refuses its tools that change, send, delete or run something. */
+export type ConnectionAccess = 'read' | 'read_write'
 
 /**
  * `connect` result for OAuth (`{auth_url, state}`) and GitHub device flow (`+ user_code`).
@@ -1437,6 +1464,8 @@ export interface McpToolInfo {
   mcp_name: string
   description: string
   risk: Risk
+  /** The risk is decided per call from the tools it runs (Composio's multi-execute). Older engines leave it out. */
+  per_call?: boolean
 }
 
 export type McpServerStatus = 'connecting' | 'connected' | 'needs_sign_in' | 'error' | 'disconnected' | 'disabled'
@@ -1462,6 +1491,8 @@ export interface McpServer {
   /** A browser sign-in is waiting for the user. */
   signing_in: boolean
   enabled: boolean
+  /** Read only or Read and write. Older engines leave it out. */
+  access?: ConnectionAccess
   status: McpServerStatus | string
   tools: McpToolInfo[]
   error: string | null
@@ -1477,6 +1508,7 @@ export interface McpServerCreate {
   headers?: Record<string, string>
   auth?: McpAuth
   enabled?: boolean
+  access?: ConnectionAccess
 }
 
 /** `POST /api/integrations/mcp/{name}/sign-in`: open `auth_url` in the browser. */

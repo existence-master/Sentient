@@ -61,6 +61,7 @@ from sentient.llm.events import (
     UserInterjection,
     tool_progress_event,
 )
+from sentient.llm.jobs import as_kind, detached
 from sentient.llm.meter import measure
 from sentient.llm.provider import LLMProvider, ProviderError, StreamChunk, ToolCall
 from sentient.memory import review as memory_review
@@ -103,6 +104,10 @@ from sentient.tools.rules import (
 log = logging.getLogger(__name__)
 
 MAX_ATTACHMENT_CHARS = 60_000
+# A tool result may fill at most ``chat.tool_result_context_share`` of the model's context (#264). Characters per
+# token is cautious: JSON, ids and escaped text take more tokens per character than prose.
+CHARS_PER_TOKEN = 3
+MIN_TOOL_RESULT_CHARS = 1500
 EMPTY_ANSWER_NUDGE = (
     "You have not replied yet. If the request still needs a tool call, make it now; "
     "otherwise answer the user now, based on the tool results above."
@@ -227,6 +232,19 @@ def _json_safe(value: Any) -> str:
         return json.dumps(str(value))
 
 
+def _shorten(tool: Tool | None, res: Any) -> str | None:
+    """The tool's own shorter version of a long result (``Tool.shorten_fn``), as text; None without one."""
+    fn = getattr(tool, "shorten_fn", None)
+    if fn is None:
+        return None
+    try:
+        short = fn(res)
+    except Exception as exc:
+        log.debug("shortening a %s result failed: %s", getattr(tool, "name", "?"), exc)
+        return None
+    return None if short is None else _json_safe(short)
+
+
 def _error_text(res: Any) -> str | None:
     if isinstance(res, dict) and res.get("error"):
         return str(res["error"])[:500]
@@ -258,6 +276,8 @@ class LoopResult:
     # the first call held because this run read outside content and nobody could be asked (ADR 0018):
     # {tool, arguments, call_id, question}. A task run stops after that round and asks the question.
     needs_ok: dict | None = None
+    # the longest tool result the model read in this run (``Agent.tool_result_limit``); None before the loop starts
+    tool_result_limit: int | None = None
 
 
 def _hosts(raw: Any) -> set[str]:
@@ -481,10 +501,23 @@ class Agent:
             location=self.config.assistant.location,
             user_context=user_context,
             tool_names=[t.name for t in self.registry.tools()],
+            read_only_apps=self._read_only_apps(),
         )
         if session and session.get("context_summary"):
             prompt += "\n\n## Earlier in this conversation\n" + session["context_summary"]
         return prompt, sources
+
+    def _read_only_apps(self) -> list[str]:
+        """Names of the connected apps set to Read only that have tools Sentient now can't use (#141), so the model
+        can say why instead of looking for another way."""
+        names: list[str] = []
+        for pid in self.approvals.read_only():
+            plugin = self.registry.plugin(pid)
+            if plugin is None or self.registry.is_hidden(pid):
+                continue
+            if any(self.registry.get(t.name) is t and self.registry.is_blocked(t) for t in plugin.tools):
+                names.append(getattr(plugin, "display_name", None) or pid)
+        return names
 
     # ------------------------------------------------------------------ reusable engine
     async def run_loop(
@@ -531,6 +564,7 @@ class Agent:
         if unprompted and not is_unprompted(getattr(ctx, "origin", None)):
             ctx.origin = str(source).strip().lower()  # tools this run starts (a subagent) must see it as unprompted too
         tools = self.registry.openai_schemas(tool_names) or None
+        result.tool_result_limit = await self.tool_result_limit(role, model)
         rounds = max_rounds or self.config.models.max_tool_rounds
         repeat_limit = self.config.tools.repeated_call_limit
         repeats: dict[tuple[str, str], tuple[str, int]] = {}  # (tool, arguments) -> (last result, times it came back)
@@ -566,6 +600,9 @@ class Agent:
                         yield TextDelta(text=chunk.text, **ev)
                     if chunk.done:
                         tool_calls = chunk.tool_calls
+                        if chunk.model and chunk.model != (model or self.llm.model_for(role)):
+                            # a fallback model answered: its results must fit what it reads at once (#264)
+                            result.tool_result_limit = await self.tool_result_limit(role, chunk.model)
                         # the context meter also works when the provider reported no usage (prompt counted here)
                         gauge = await measure(self.llm, role, chunk.model or model or self.llm.model_for(role),
                                               messages, tools, chunk.usage or {}, source)
@@ -750,6 +787,14 @@ class Agent:
             # lasting rule (ADR 0016): the tool is not offered, and a call made anyway is refused without running
             refusal = never_message(self.approvals.label(tool, self.registry))
             return _CallPlan(tc=tc, tool=None, preset=({"error": refusal}, True, 0))
+        risk: Risk | None = None
+        if tool is not None and tool.plugin in self.approvals.read_only():
+            # a Read only connection (#141): a call that would change, send, delete or run something is refused
+            # like a "never" rule, judged on this call's effective risk (Composio's multi-execute can just look up)
+            risk = await effective_risk(tool, tc.arguments, ctx)
+            refusal = self.approvals.read_only_refusal(tool, risk, self.registry)
+            if refusal:
+                return _CallPlan(tc=tc, tool=None, preset=({"error": refusal}, True, 0))
         if tool is None or not (tool_names is None or tc.name in tool_names):
             return _CallPlan(tc=tc, tool=None, preset=({"error": f"unknown tool {tc.name}"}, True, 0))
         if chat_rule == "ask":
@@ -758,7 +803,7 @@ class Agent:
         if "_raw" in tc.arguments and len(tc.arguments) == 1:
             plan.preset = self._raw_arguments_error(tool, tc)
             return plan
-        plan.risk = await effective_risk(tool, tc.arguments, ctx)
+        plan.risk = risk if risk is not None else await effective_risk(tool, tc.arguments, ctx)
         address = call_address(tool, tc.arguments, ctx)
         plan.host = address_host(address)
         if unprompted:  # work nobody asked for: look-ups and Sentient-internal changes only, before any rule
@@ -926,16 +971,35 @@ class Agent:
             result.skills_viewed.append(tc.arguments["name"])
         # record the result before yielding so a checkpoint taken on this event is complete
         p.seen = _json_safe(res)
-        content = await self._tool_content(res, tc.id)
+        content = await self._tool_content(res, tc.id, tool=p.tool, limit=result.tool_result_limit)
         messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": content})
         if persist:
             await persist("tool", content, tool_call_id=tc.id, name=tc.name)
         yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
 
-    def delivered_rows(self, res: Any) -> Any:
-        """The rows of a list result the model actually read: ``_tool_content`` cuts long results, and a
-        memory from the cut part must not be shown as one Sentient had in mind."""
+    async def tool_result_limit(self, role: str, model: str | None = None) -> int:
+        """The longest tool result the model reads in ``role``: ``chat.tool_result_max_chars``, and no more than
+        ``chat.tool_result_context_share`` of what the model reads at once, so one long result (an MCP search) can't
+        fill a small local model's context by itself (#264)."""
         limit = self.config.chat.tool_result_max_chars
+        window = getattr(self.llm, "context_window", None)
+        if not callable(window):
+            return limit
+        try:
+            length = await window(role, model)
+        except Exception as exc:
+            log.debug("context length for %s unknown: %s", model or role, exc)
+            return limit
+        if not length:
+            return limit
+        share = int(int(length) * self.config.chat.tool_result_context_share * CHARS_PER_TOKEN)
+        return min(limit, max(MIN_TOOL_RESULT_CHARS, share))
+
+    def delivered_rows(self, res: Any, limit: int | None = None) -> Any:
+        """The rows of a list result the model actually read: ``_tool_content`` cuts long results, and a
+        memory from the cut part must not be shown as one Sentient had in mind. ``limit`` is the run's
+        ``LoopResult.tool_result_limit`` (default ``chat.tool_result_max_chars``)."""
+        limit = limit or self.config.chat.tool_result_max_chars
         if not limit or not isinstance(res, list) or len(_json_safe(res)) <= limit:
             return res
         keep = 0
@@ -943,12 +1007,15 @@ class Agent:
             keep += 1
         return res[:keep]
 
-    async def _tool_content(self, res: Any, call_id: str) -> str:
-        """The tool message the model reads. Long results are cut; the full text goes to files/outputs/."""
+    async def _tool_content(self, res: Any, call_id: str, *, tool: Tool | None = None, limit: int | None = None) -> str:
+        """The tool message the model reads. A result longer than ``limit`` (default ``chat.tool_result_max_chars``)
+        is shortened by the tool's ``shorten_fn`` when it has one, then cut from the end; the full text goes to
+        files/outputs/ and the model is told plainly."""
         content = _json_safe(res)
-        limit = self.config.chat.tool_result_max_chars
+        limit = limit or self.config.chat.tool_result_max_chars
         if not limit or len(content) <= limit:
             return content
+        short = _shorten(tool, res)
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", call_id or "")[:80] or new_id()
         rel = f"outputs/tool-{safe}.txt"
         full = res if isinstance(res, str) else json.dumps(res, ensure_ascii=False, indent=2, default=str)
@@ -960,14 +1027,15 @@ class Agent:
 
         try:
             await asyncio.to_thread(write)
-            note = (
-                f"\n\n[Result cut to {limit} of {len(content)} characters. The full result is saved as files/{rel}; "
-                f'read it with file_read(name="{rel}") if you need the rest.]'
-            )
+            saved = f' The full result is saved as files/{rel}; read it with file_read(name="{rel}") if you need the rest.'
         except OSError as exc:
             log.warning("could not save long tool result: %s", exc)
-            note = f"\n\n[Result cut to {limit} of {len(content)} characters.]"
-        return content[:limit] + note
+            saved = ""
+        if short is not None and len(short) < len(content):
+            if len(short) <= limit:
+                return short + f"\n\n[Result shortened from {len(content)} characters to its main parts.{saved}]"
+            content = short
+        return content[:limit] + f"\n\n[Result cut: this is only the first {limit} of {len(content)} characters.{saved}]"
 
     # ------------------------------------------------------------------ chat turn
     async def _user_content(self, text: str, attachments: list[str]) -> str | list[dict]:
@@ -1026,8 +1094,13 @@ class Agent:
         turn_task = asyncio.current_task()  # Stop everything cancels this task (halt)
         if turn_task is not None:
             self._turn_tasks.add(turn_task)
+        # the model serves this reply (and what it runs) first; background work waits until it has been quiet (#149)
+        jobs = getattr(self.app, "model_jobs", None)
+        turn_scope = contextlib.ExitStack()
+        turn_scope.enter_context(jobs.chat_turn() if jobs is not None else as_kind("chat"))
 
         def release() -> list[str]:
+            turn_scope.close()
             if turn_task is not None:
                 self._turn_tasks.discard(turn_task)
             if steer is None:
@@ -1114,7 +1187,7 @@ class Agent:
                 elif isinstance(event, ToolResultEvent | UserInterjection):
                     partial = ""  # text before a tool call or a steer was already persisted
                     if isinstance(event, ToolResultEvent) and not event.is_error:
-                        sources.add_tool_result(event.name, self.delivered_rows(event.result))
+                        sources.add_tool_result(event.name, self.delivered_rows(event.result, result.tool_result_limit))
                     if ctx.untrusted and not marked:  # remember it for the rest of this chat, also after a restart
                         marked = True
                         await self.store.execute(
@@ -1153,10 +1226,10 @@ class Agent:
             said = "\n\n".join([user_text, *result.interjections]).strip()
             if self.memory is not None and self.config.memory.extract_after_turn:
                 # a chat that read outside content holds what it learns for the user's review (ADR 0021)
-                self._spawn(self._extract(said, memory_review.for_context(ctx)))
+                self._spawn(self._extract(said, memory_review.for_context(ctx)), "memory")
             if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
-                self._spawn(self._auto_title(session_id, user_text, result.text))
-            self._spawn(self._maybe_compress(session_id))
+                self._spawn(self._auto_title(session_id, user_text, result.text), "titles")
+            self._spawn(self._maybe_compress(session_id), "memory")
             if self.app is not None:
                 self.app.bus.publish(
                     "chat.turn_completed",
@@ -1217,6 +1290,10 @@ class Agent:
             return {"error": f"unknown tool {tc.name}"}, True, 0
         if self.approvals.is_never(tool):  # a "never" rule set while this call waited for approval still wins
             return {"error": never_message(self.approvals.label(tool, self.registry))}, True, 0
+        if tool.plugin in self.approvals.read_only():  # so does a switch to Read only (#141)
+            refusal = self.approvals.read_only_refusal(tool, await effective_risk(tool, tc.arguments, ctx), self.registry)
+            if refusal:
+                return {"error": refusal}, True, 0
         started = time.perf_counter()
         if "_raw" in tc.arguments and len(tc.arguments) == 1:
             return self._raw_arguments_error(tool, tc)
@@ -1239,15 +1316,19 @@ class Agent:
             log.exception("tool %s failed", tc.name)
             return {"error": f"{type(exc).__name__}: {exc}"}, True, int((time.perf_counter() - started) * 1000)
 
-    async def run_tool(self, call: ToolCall, ctx: ToolContext) -> tuple[Any, bool, str]:
+    async def run_tool(
+        self, call: ToolCall, ctx: ToolContext, *, role: str = "primary", model: str | None = None
+    ) -> tuple[Any, bool, str]:
         """Run one call the user approved outside the loop (a task's held call, ADR 0018); lasting rules still apply.
-        Returns ``(result, is_error, content)``, where ``content`` is the tool message the model reads."""
+        Returns ``(result, is_error, content)``, where ``content`` is the tool message the model in ``role`` reads."""
         res, is_error, _ = await self._run_tool(call, ctx)
-        return res, is_error, await self._tool_content(res, call.id)
+        limit = await self.tool_result_limit(role, model)
+        return res, is_error, await self._tool_content(res, call.id, tool=self.registry.get(call.name), limit=limit)
 
     # ------------------------------------------------------------------ background
-    def _spawn(self, coro) -> None:
-        task = asyncio.create_task(coro)
+    def _spawn(self, coro, kind: str = "background") -> None:
+        """Background work after a reply: it calls the model as ``kind`` and waits for a quiet moment (#149)."""
+        task = asyncio.create_task(coro, context=detached(kind))
         self._background.add(task)
         task.add_done_callback(self._background.discard)
 

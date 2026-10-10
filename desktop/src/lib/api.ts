@@ -46,6 +46,7 @@ import type {
   CheckupEvent,
   ClarificationAnswer,
   ConfigPatchResponse,
+  ConnectionAccess,
   ConnectResponse,
   DeepPartial,
   DictateResult,
@@ -76,6 +77,7 @@ import type {
   ModelPresetList,
   ModelRoles,
   ModelTestResult,
+  ModelBusy,
   CatalogModel,
   ChatGPTStatus,
   ProviderKeyCheck,
@@ -474,6 +476,8 @@ export const api = {
     test: (model: string, role?: RoleName) => http.post<ModelTestResult>('/api/models/test', { model, role }),
     testEmbedding: (model: string) => http.post<EmbeddingTestResult>('/api/models/test-embedding', { model }),
     claudeCode: () => http.get<ClaudeCodeStatus>('/api/models/claude-code'),
+    /** What the local model is doing now and what waits for it (#149). */
+    busy: () => http.get<ModelBusy>('/api/models/busy'),
     setRoles: (roles: Partial<Record<RoleName, string | null>>) => http.put<ModelRoles>('/api/models/roles', roles),
     setFallbacks: (fallbacks: Partial<Record<RoleName, string[]>>) =>
       http.put<FallbacksResponse>('/api/models/fallbacks', fallbacks),
@@ -547,8 +551,10 @@ export const api = {
   integrations: {
     list: () => http.get<Integration[]>('/api/integrations'),
     get: (id: string) => http.get<Integration>(`/api/integrations/${enc(id)}`),
-    connect: (id: string, fields: Record<string, string> = {}) =>
-      http.post<ConnectResponse>(`/api/integrations/${enc(id)}/connect`, { fields }),
+    connect: (id: string, fields: Record<string, string> = {}, access?: ConnectionAccess) =>
+      http.post<ConnectResponse>(`/api/integrations/${enc(id)}/connect`, access ? { fields, access } : { fields }),
+    /** Read only or Read and write (#141). Takes effect at once. */
+    setAccess: (id: string, access: ConnectionAccess) => http.put<Integration>(`/api/integrations/${enc(id)}/access`, { access }),
     disconnect: (id: string) => http.post<Integration>(`/api/integrations/${enc(id)}/disconnect`),
     /** Abandon a pending browser sign-in so the integration stops showing "connecting". */
     cancel: (id: string) => http.post<Integration>(`/api/integrations/${enc(id)}/cancel`),
@@ -564,6 +570,7 @@ export const api = {
       signIn: (name: string) => http.post<McpSignInStart>(`/api/integrations/mcp/${enc(name)}/sign-in`),
       signOut: (name: string) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/sign-out`),
       setEnabled: (name: string, enabled: boolean) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/enabled`, { enabled }),
+      setAccess: (name: string, access: ConnectionAccess) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/access`, { access }),
       /** Fill in the server's own header or env values (keychain only), then it reconnects. */
       setValues: (name: string, values: Record<string, string>, enable = false) =>
         http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/values`, { values, enable })

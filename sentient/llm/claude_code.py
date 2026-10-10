@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import zlib
 from collections.abc import AsyncIterator, Iterator
@@ -37,7 +38,7 @@ from typing import Any
 
 from sentient import paths
 from sentient.config.schema import CLAUDE_CODE_MODELS, SentientConfig
-from sentient.llm.provider import ProviderError, StreamChunk, ToolCall
+from sentient.llm.provider import ModelRefused, ProviderError, StreamChunk, ToolCall
 from sentient.sandbox.backends import (
     CREATE_NEW_PROCESS_GROUP,
     CREATE_NO_WINDOW,
@@ -71,10 +72,19 @@ AUTH_ENV_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_USE_", "CLAUDE_CODE_OAUTH_")
 AUTH_ENV = {"CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH"}
 VERSION_TIMEOUT_S = 15
 STDERR_KEEP = 4000
+EXIT_WAIT_S = 5  # how long cleanup waits for Claude Code to exit after it was stopped
+REMOVE_TRIES = 20  # Windows keeps a folder busy for a moment after the processes in it exit
+REMOVE_DELAY_S = 0.25
+SWEEP_AGE_S = 3600  # scratch folders older than this are leftovers from an engine that didn't clean up
 
 OFF = "Claude through your Claude Code is turned off. Turn it on in Settings > Models, or pick another model."
 CHATS_ONLY = ("Claude Code only answers your chats, never work that runs in the background. Pick another model "
               "for this in Settings > Models.")
+ROLE_REFUSALS = {  # background roles the user can point at another model in Settings > Models
+    "planner": "Claude Code only answers your chats, so it can't plan tasks. Pick a planner model in Settings > Models.",
+    "executor": ("Claude Code only answers your chats, so it can't carry out tasks or other background work. Pick an "
+                 "executor model in Settings > Models."),
+}
 NO_EMBEDDINGS = "Claude Code can't make embeddings. Pick a local or API embedding model."
 NOT_INSTALLED = ("Sentient can't find Claude Code on this computer. Install it from claude.com/claude-code and sign "
                  "in once in a terminal, then try again.")
@@ -113,6 +123,55 @@ def attended(on: bool = True) -> Iterator[None]:
 
 def is_attended() -> bool:
     return _attended.get()
+
+
+def scratch_root() -> Path:
+    """Where each reply's scratch folder goes (system prompt, tool list, MCP config). Removed after the reply."""
+    return paths.home() / "tmp" / "claude-code"
+
+
+def remove_folder(folder: Path, tries: int = REMOVE_TRIES, delay: float = REMOVE_DELAY_S) -> bool:
+    """Delete ``folder``, trying again for a few seconds while Windows still holds it (a process that just exited,
+    an antivirus scan). Blocking: call it on a thread. True when the folder is gone."""
+    for attempt in range(max(1, tries)):
+        try:
+            shutil.rmtree(folder)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError as exc:
+            if attempt == tries - 1:
+                log.warning("couldn't remove Claude Code scratch folder %s: %s", folder, exc)
+                return False
+            time.sleep(delay)
+    return not folder.exists()
+
+
+def sweep_scratch(max_age_s: float = SWEEP_AGE_S) -> int:
+    """At start-up: delete scratch folders left by earlier runs (older than ``max_age_s``). Returns how many."""
+    root = scratch_root()
+    if not root.is_dir():
+        return 0
+    cutoff = time.time() - max_age_s
+    removed = 0
+    for folder in root.iterdir():
+        with contextlib.suppress(OSError):
+            if folder.is_dir() and folder.stat().st_mtime < cutoff and remove_folder(folder, tries=1):
+                removed += 1
+    if removed:
+        log.info("removed %d old Claude Code scratch folder(s)", removed)
+    return removed
+
+
+def _finish(tree: ProcessTree | None, workdir: Path) -> None:
+    """After a reply (blocking, on a thread): wait for Claude Code to exit, end what it started, then delete its
+    scratch folder. The folder is only free once nothing runs in it any more."""
+    if tree is not None:
+        with contextlib.suppress(Exception):
+            tree.proc.wait(timeout=EXIT_WAIT_S)
+        with contextlib.suppress(Exception):
+            tree.cleanup()  # ends the tool bridge and anything else still in the job
+    remove_folder(workdir)
 
 
 def kill_all() -> int:
@@ -166,6 +225,11 @@ async def status(config: SentientConfig) -> dict[str, Any]:
         out["detail"] = ("Claude Code is ready to try. Press Test to check that it is signed in." if out["version"]
                          else "Sentient found Claude Code but it didn't answer. Run claude in a terminal to check it.")
     return out
+
+
+def background_refusal(role: str | None) -> str:
+    """Why Claude Code won't do background work in ``role``, and what to change."""
+    return ROLE_REFUSALS.get(role or "", CHATS_ONLY)
 
 
 def refusal(config: SentientConfig, role: str | None = None) -> str | None:
@@ -366,7 +430,7 @@ async def stream(
     if not config.models.experimental_claude_code:
         raise ProviderError(OFF)
     if not is_attended():
-        raise ProviderError(CHATS_ONLY)
+        raise ModelRefused(background_refusal(role))
     model_name = model.split("/", 1)[1] if "/" in model else ""
     if not MODEL_NAME.match(model_name):
         raise ProviderError(f"{model} isn't a Claude Code model. Use {' or '.join(CLAUDE_CODE_MODELS)}.")
@@ -374,7 +438,7 @@ async def stream(
     if exe is None:
         raise ProviderError(NOT_INSTALLED)
 
-    workdir = paths.home() / "tmp" / "claude-code" / uuid.uuid4().hex[:12]
+    workdir = scratch_root() / uuid.uuid4().hex[:12]
     tree: ProcessTree | None = None
     try:
         argv, stdin_data, names = await asyncio.to_thread(
@@ -481,11 +545,13 @@ async def stream(
         if tree is not None:
             _live.discard(tree)
             with contextlib.suppress(Exception):
-                tree.kill()
-                tree.cleanup()
-            with contextlib.suppress(Exception):
-                tree.proc.wait(timeout=2)
-        shutil.rmtree(workdir, ignore_errors=True)
+                tree.kill()  # at once: Stop everything and a finished reply never leave it running
+        # The folder is removed off the event loop: on Windows it stays busy until Claude Code and its tool bridge
+        # have fully exited. The thread finishes even if this wait is cancelled.
+        try:
+            await asyncio.to_thread(_finish, tree, workdir)
+        except RuntimeError:  # the engine is shutting down and has no threads left: one try, the sweep does the rest
+            remove_folder(workdir, tries=1)
 
 
 def _start_threads(proc: subprocess.Popen, stdin_data: bytes, loop: asyncio.AbstractEventLoop,

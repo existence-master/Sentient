@@ -30,7 +30,8 @@ from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sentient.llm.provider import ProviderError
+from sentient.llm.jobs import detached
+from sentient.llm.provider import ModelRefused, ProviderError
 from sentient.services import Service, cancel_tasks
 from sentient.tasks import ask, catchup, executor, limits, scripts, stuck, swarm
 from sentient.tasks.delivery import from_stored, stored
@@ -77,6 +78,14 @@ BUSY = ("processing", "waiting_for_user")
 STOPPED_NOTE = "Run stopped by Stop everything."
 WAITING_CONFLICT = "This task is waiting for your answer. Answer the question or cancel the run first."
 _KEEP: Any = object()
+
+
+def _provider_down(exc: ProviderError, *, detail: bool = False) -> str:
+    """What a task shows when its model failed: the reason itself when a model refused the job (it says what to
+    change), else the general sentence, with the error when ``detail``."""
+    if isinstance(exc, ModelRefused):
+        return str(exc)
+    return f"{PROVIDER_DOWN} ({exc})" if detail else PROVIDER_DOWN
 
 
 class TaskNotFound(LookupError):
@@ -140,6 +149,7 @@ def normalize_questions(raw: Any, start: int = 0) -> list[dict]:
 
 class TaskService(Service):
     name = "tasks"
+    model_kind = "task"
 
     def __init__(self, app: Any):
         super().__init__(app)
@@ -237,7 +247,8 @@ class TaskService(Service):
         return self.now().astimezone(get_tz(tz_name)).strftime("%Y-%m-%d %H:%M:%S %Z (%A)")
 
     def _spawn(self, coro: Coroutine[Any, Any, Any], name: str) -> asyncio.Task:
-        t = asyncio.create_task(coro, name=f"tasks:{name}")
+        # planning and runs are task work even when a chat or a button started them (#149)
+        t = asyncio.create_task(coro, name=f"tasks:{name}", context=detached("task"))
         self._background.add(t)
         t.add_done_callback(self._background.discard)
         return t
@@ -1217,7 +1228,7 @@ class TaskService(Service):
             await self._plan(task_id, auto_approve=auto_approve)
         except ProviderError as exc:
             log.warning("planner unavailable for task %s: %s", task_id, exc)
-            await self._plan_failed(task_id, PROVIDER_DOWN)
+            await self._plan_failed(task_id, _provider_down(exc))
         except Exception as exc:
             log.exception("planning failed for task %s", task_id)
             await self._plan_failed(task_id, f"Planning failed: {exc}")
@@ -1374,7 +1385,7 @@ class TaskService(Service):
             items, configs, used_fallback = await swarm.plan_swarm(self, task)
         except ProviderError as exc:
             log.warning("swarm planning unavailable for %s: %s", task_id, exc)
-            await self._swarm_failed(task, PROVIDER_DOWN)
+            await self._swarm_failed(task, _provider_down(exc))
             return
         except Exception as exc:
             log.exception("swarm orchestration failed for %s", task_id)
@@ -1434,7 +1445,8 @@ class TaskService(Service):
 
     def _dispatch(self, task_id: str, run_id: str, *, resume: bool = False, answered: bool = False) -> None:
         t = asyncio.create_task(
-            self._execute(task_id, run_id, resume=resume, answered=answered), name=f"tasks:run:{run_id}"
+            self._execute(task_id, run_id, resume=resume, answered=answered), name=f"tasks:run:{run_id}",
+            context=detached("task"),
         )
         self._runs[run_id] = t
         t.add_done_callback(lambda _t, rid=run_id: self._runs.pop(rid, None))
@@ -1502,7 +1514,7 @@ class TaskService(Service):
         except RunFailed as exc:
             status, error = "error", str(exc)
         except ProviderError as exc:
-            status, error = "error", f"{PROVIDER_DOWN} ({exc})"
+            status, error = "error", _provider_down(exc, detail=True)
         except Exception as exc:
             log.exception("executor failed for task %s run %s", task_id, run_id)
             status, error = "error", f"Executor agent failed: {exc}"

@@ -30,6 +30,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+from sentient.llm.jobs import detached
 from sentient.memory import prompts
 from sentient.memory.facts import (
     TIME_WORDING_RE,
@@ -119,6 +120,7 @@ def _short(text: str, n: int = 90) -> str:
 
 class DreamingService(Service):
     name = "dreaming"
+    model_kind = "memory"
     pause_on_stop = True  # no dream starts while Sentient is stopped (Stop everything)
 
     def __init__(self, app: SentientApp):
@@ -268,7 +270,8 @@ class DreamingService(Service):
                 if running is not None:
                     return running
             dream = await self._begin(trigger)
-        self._task = asyncio.create_task(self._execute(dream["id"]), name="dreaming:run")
+        # memory upkeep even when a button started it: it waits for a quiet moment like a nightly dream (#149)
+        self._task = asyncio.create_task(self._execute(dream["id"]), name="dreaming:run", context=detached("memory"))
         return dream
 
     async def run(self, trigger: str = "manual") -> dict:

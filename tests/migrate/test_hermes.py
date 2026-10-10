@@ -162,6 +162,16 @@ async def test_jobs_become_paused_tasks_with_schedules(app, hermes_home):
         "job:f6a1b2c3d4e5": "\"0 9 1 * *\" runs on certain days of the month, which Sentient can't do yet.",
         "job:a6b1c2d3e4f5": "It runs every 2 minutes; Sentient runs things at most every 5 minutes.",
     }
+    # every job keeps Hermes' own deliver, skipped or not
+    assert {k: i["hermes_deliver"] for k, i in jobs.items()} == {
+        "job:a1b2c3d4e5f6": "whatsapp:fixture-chat",
+        "job:b2c3d4e5f6a1": "local",
+        "job:c3d4e5f6a1b2": "local",
+        "job:d4e5f6a1b2c3": "local",
+        "job:e5f6a1b2c3d4": "local",
+        "job:f6a1b2c3d4e5": "local",
+        "job:a6b1c2d3e4f5": "telegram:fixture-chat",
+    }
 
     result = await hermes.apply(app, str(hermes_home), ["jobs"])
     assert [c["name"] for c in result["jobs"]["created"]] == ["Morning brief", "Weekday standup notes", "Watch prices"]
@@ -191,6 +201,21 @@ async def test_jobs_become_paused_tasks_with_schedules(app, hermes_home):
     again = await hermes.preview(app, str(hermes_home))
     assert again["counts"]["jobs"] == 0
     assert by_key(again["jobs"])["job:a1b2c3d4e5f6"]["note"] == "Already brought over."
+    assert by_key(again["jobs"])["job:a1b2c3d4e5f6"]["hermes_deliver"] == "whatsapp:fixture-chat"
+    assert all("hermes_deliver" in i for i in again["jobs"])
+
+
+async def test_a_job_without_deliver_has_null_hermes_deliver(app, hermes_home):
+    import json
+
+    jobs = hermes_home / "cron" / "jobs.json"
+    data = json.loads(jobs.read_text(encoding="utf-8"))
+    del data["jobs"][0]["deliver"]  # imported
+    del data["jobs"][5]["deliver"]  # skipped for its schedule
+    jobs.write_text(json.dumps(data), encoding="utf-8")
+    plan = by_key((await hermes.preview(app, str(hermes_home)))["jobs"])
+    assert plan["job:a1b2c3d4e5f6"]["action"] == "import" and plan["job:a1b2c3d4e5f6"]["hermes_deliver"] is None
+    assert plan["job:f6a1b2c3d4e5"]["action"] == "skip" and plan["job:f6a1b2c3d4e5"]["hermes_deliver"] is None
 
 
 async def test_whatsapp_delivery_when_paired(app, hermes_home):

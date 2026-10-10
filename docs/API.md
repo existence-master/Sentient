@@ -75,6 +75,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `config.updated` | `{sections: string[]}` |
 | `voice.state` | `{state, session_id}` (mirrors voice socket for other windows) |
 | `stop.updated` | **StopState** (section 17): Stop everything was turned on or off |
+| `model.busy` | **ModelBusy** (section 3, `GET /api/models/busy`): what the local model is doing changed (#149). Quick changes are published once (after 0.2 s), and only when something other than `since` changed |
 
 ---
 
@@ -138,7 +139,8 @@ applied in code before every call and take effect at once:
 - Purchases ask in every approvals mode, `off` included (only `browser.confirm_purchases: false` turns that off),
   and scripts refuse them in every mode. Rules are read again right before a tool runs and on every script tool call,
   so a rule changed while a call waits for approval, or while a script runs, applies to it.
-Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`,
+Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`, `app.approvals.is_hidden(tool)` (never
+rules plus Read only connections, section 5), `app.approvals.read_only_refusal(tool, risk, registry)`,
 `await app.approvals.decide(tool, session_id, risk, arguments, ctx) -> bool`, pure helpers in `sentient.tools.rules`.
 
 ### Rules from chat (#130)
@@ -204,8 +206,8 @@ accept or loosen a rule.
   (`conversation`, `manual`, `file:<name>`...) or the insight's (`user` | `inferred`); `via: "prompt"` means it was in
   the system prompt (recalled facts, user-model insights), `"tool"` that `memory_recall` or `memory_search_by_source`
   returned it during the turn. Recorded deterministically (the model is never asked which it used); deduplicated,
-  first mention wins, at most 40. Only rows of a memory tool's result that fit in `chat.tool_result_max_chars` (the
-  part the model read) count. Pending memories (section 7, review) never appear. Task runs record the same list
+  first mention wins, at most 40. Only rows of a memory tool's result that fit in the run's tool result limit
+  (`LoopResult.tool_result_limit`, section 10: the part the model read) count. Pending memories (section 7, review) never appear. Task runs record the same list
   (section 4, Run `memory_sources`).
 - `GET /api/sessions/search?q=` → `[{session_id, message_id, role, snippet, created_at}]`
 - `POST /api/chat` NDJSON fallback of the WebSocket turn: body `{text, session_id?, attachments?, model?}`; lines are the chat events above, first line `{type: "session", session_id}`.
@@ -270,12 +272,30 @@ accept or loosen a rule.
 - `GET /api/models/local` → `{ollama: {reachable, models: [{name, size, family, parameter_size, is_embedding, capabilities: string[]}]}, lm_studio: {reachable, models: [...]}}` (`capabilities` from Ollama, e.g. completion/tools/thinking/vision/embedding — a hint; `POST /api/models/test` is the authoritative tool-support check)
 - `POST /api/models/test` `{model, role?}` → `{ok, latency_ms, reply?, error?, supports_tools?}`
 - `POST /api/models/test-embedding` `{model}` → `{ok, dim?, error?}`
+- `GET /api/models/busy` (#149) → **ModelBusy**, live as the `model.busy` event:
+  ```json
+  {"busy": true, "job": "task", "model": "ollama_chat/qwen3:8b", "since": "2026-10-10T09:00:00+00:00",
+   "waiting": 1, "deferred": 2, "deferred_reason": "chat"}
+  ```
+  A local model (`ollama/`, `ollama_chat/`) does one job at a time: chat, text, JSON and embedding calls queue for it
+  (`models.local_queue`, default on); cloud models never wait. `busy` means a local call is running now; `job` is who
+  it is for: `chat` (a chat reply and everything it runs: tool calls, foreground subagents), `interactive` (anything
+  else a person is waiting for, the default), `task` (task planning and runs, background subagents), `suggestions`,
+  `memory` (memory notes after a reply, compression, the user model, dreams), `skills`, `titles`, `background`. Waiting
+  calls go in that order, then first come first served; a running call is never cut off. `waiting` counts calls that go
+  as soon as the model is free; `deferred` counts background calls (`task` and below) held back although it may be
+  free, with `deferred_reason`: `"chat"` while a chat reply runs or ended less than `models.background_quiet_s`
+  (default 30) seconds ago, `"battery"` while the computer runs on battery (Windows, macOS and Linux power status) and
+  `models.background_on_battery` is off (the default). Work a running chat reply waits on is never held back, and a
+  reply that has not used the model for 60 seconds stops holding background work back, so the queue can't deadlock.
+  A stream holds the model until its last chunk; cancelling (Stop everything) frees it.
 - `GET /api/models/claude-code` → `{enabled, installed, version, detail, models}`: Claude through the user's own
   Claude Code (experimental, ADR 0022). `enabled` is `models.experimental_claude_code` (default false). `installed`
   means a `claude` program is on PATH; `version` is its `claude --version` line, asked only while `enabled` (null
   otherwise or when it doesn't answer). `detail` is a plain sentence for Settings. `models` are the model names to
   offer (`CLAUDE_CODE_MODELS` in `config/schema.py`: `claude-code/sonnet`, `claude-code/opus`). It never calls a model
-  and never reads Claude's login; `POST /api/models/test` with a `claude-code/` model is the only dry run.
+  and never reads Claude's login; `POST /api/models/test` with a `claude-code/` model is the only dry run. `enabled`
+  is the saved setting, so a window that has just flipped the switch asks again until it matches.
 - `POST /api/models/checkup` `{roles?: {role: model | null}}` → streams NDJSON while it checks each role's model,
   one role at a time (local models are never loaded side by side). Without `roles` it checks every role in the saved
   config; with `roles` it checks only those, with those models (onboarding checks its picks before saving). It is
@@ -298,8 +318,9 @@ accept or loosen a rule.
   fast and planner), `thinking` (Ollama models that can think: thinking matches the role's reasoning setting),
   `context` (tokens in use vs the model's maximum from `/api/show`; also warns when the role uses the model sized for
   this computer with more tokens than its graphics card holds, with a `set_context_length` fix to the recommended
-  length), `gpu` (from Ollama `/api/ps`: `size_vram` vs `size`, warns when part of the model runs on the processor; its
-  fix names the recommended model and context length and its action shortens to the recommended length when that is
+  length), `gpu` (from Ollama `/api/ps`: `size_vram` vs `size`, warns when part of the model runs on the processor, except
+  that the model sized for this computer at no more than the recommended length passes with 85% or more on the
+  graphics card, since qwen3:8b at 8,192 tokens keeps about 90% there on an 8 GB card; its fix names the recommended model and context length and its action shortens to the recommended length when that is
   shorter, else 8,192), `embedding` (embedding role only). A model that fails the tool checks gets the recommended model
   as its fix (`qwen3:8b` when the computer only fits a small one). Cloud and
   LM Studio models get no Ollama checks. `action` is an optional one-click fix the window may offer:
@@ -345,7 +366,9 @@ accept or loosen a rule.
   --output-format stream-json --verbose --include-partial-messages --model <name> --tools "" --disallowedTools <its
   built-ins> --permission-mode dontAsk --setting-sources= --strict-mcp-config --disable-slash-commands
   --no-session-persistence --max-turns 1 --system-prompt-file <file> [--mcp-config <file>] [--effort <role's
-  reasoning>]` in a scratch folder under `~/.sentient/tmp/claude-code/`, removed afterwards. The environment is the
+  reasoning>]` in a scratch folder under `~/.sentient/tmp/claude-code/`, removed once Claude Code and its tool bridge
+  have exited (retried for a few seconds while Windows still holds it; folders older than an hour are swept when the
+  engine starts). The environment is the
   engine's minus the window token and everything that would make Claude Code use something other than the plan login
   (every `ANTHROPIC_*`, `CLAUDE_CODE_USE_*` and `CLAUDE_CODE_OAUTH_*` variable, `CLAUDE_CODE_SIMPLE`,
   `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH`; `CLAUDE_CONFIG_DIR` is kept), with
@@ -359,7 +382,11 @@ accept or loosen a rule.
   assistant message or `result` (no price: the plan pays). Only a chat reply or `POST /api/models/test` may use it:
   other callers (tasks, subagents, proactivity, follow-ups, dreaming, briefs, memory notes, titles, summaries) get
   "Claude Code only answers your chats..." so the role's fallbacks are tried, and embeddings fail with a plain
-  message. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
+  message. The refusal names the setting to change for the `planner` role ("...so it can't plan tasks. Pick a planner
+  model in Settings > Models.") and the `executor` role ("...Pick an executor model..."). It is a `ModelRefused`
+  (a `ProviderError`); when every model of a role refused, that sentence is the error as is, so a task that fails
+  this way has it as its `error` (instead of "Sorry, the AI model is unavailable right now...") and a task route
+  answers `503` with it as `detail`. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
   and vision). Stop everything kills every running Claude Code process tree.
 - `GET /api/secrets` → `[{name, set: bool, source: "keychain"|"env"|null, kind: "provider"|"integration"}]` for every provider + integration secret name
 - `PUT /api/secrets/{name}` `{value}` → `{ok}` (stored in OS keychain; never echoed back). `chatgpt` → 400: it is a
@@ -699,9 +726,10 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
            "instructions_md": "1. Open ... 2. ...", "docs_url": "https://..."},
  "privacy_filters": {"supported": true, "fields": ["keywords", "emails", "labels"]},
  "triggers": [{"event": "new_email", "label": "New email"}],
- "alternative_for": null,
+ "alternative_for": null, "access": "read_write",
  "tools": [{"name": "gmail_search", "description": "...", "risk": "read"}]}
 ```
+- `access`: `read` (Read only) or `read_write` (Read and write, the default), see "Read only connections" below.
 - `alternative_for`: for optional keyed providers that replace a keyless builtin (`accuweather` → `weather`,
   `newsapi` → `news`, `brave_search`/`google_cse` → `internet_search`, `google_maps` → `maps`); these have no tools
   of their own. `null` otherwise.
@@ -712,26 +740,39 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   always listed here.
 - `GET /api/integrations` → `[Integration]`
 - `GET /api/integrations/{id}` → `Integration`
-- `POST /api/integrations/{id}/connect` `{fields: {...}}` →
+- `POST /api/integrations/{id}/connect` `{fields: {...}, access?: "read"|"read_write"}` → (`access` is saved before
+  anything connects; left out, the current choice is kept)
   - api_key/manual: validates → `Integration`
   - oauth: `{auth_url, state}`; the desktop opens `auth_url` in the system browser; a loopback listener finishes the flow and emits `integration.updated`
   - github with `integrations.github_oauth_client_id` set and no `token` field: device flow, `{auth_url, state, user_code}`; show `user_code` for the user to type at `auth_url`; completion arrives as `integration.updated`
   - validation failures → HTTP 400 `{detail: "friendly message"}`; the integration's `status`/`error` also update
 - `POST /api/integrations/{id}/disconnect` → `Integration` (also disables tasks that depend on it, v2 behaviour)
 - `POST /api/integrations/{id}/test` → `{ok, detail}`
+- `PUT /api/integrations/{id}/access` `{access: "read"|"read_write"}` → `Integration` (also emits `integration.updated`;
+  404 unknown integration, 422 any other value)
 - `GET /api/integrations/{id}/privacy-filters` → `{keywords: [], emails: [], labels: []}`
 - `PUT /api/integrations/{id}/privacy-filters` same shape → `{ok}`
-- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, auth: "none|headers|oauth", header_keys, missing_values, signed_in, signing_in, enabled, status: "connecting|connected|needs_sign_in|error|disconnected|disabled", tools: [{name, mcp_name, description, risk}], error}]`
+- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, auth: "none|headers|oauth", header_keys, missing_values, signed_in, signing_in, enabled, access: "read|read_write", status: "connecting|connected|needs_sign_in|error|disconnected|disabled", tools: [{name, mcp_name, description, risk, per_call}], error}]`
   (`name` is the Sentient tool name `mcp_<server>_<tool>`; `env` and header values are kept in the keychain, only `env_keys` and `header_keys` are returned)
+  - `per_call`: the tool runs other tools named by a slug with their arguments (Composio's `COMPOSIO_MULTI_EXECUTE_TOOL`),
+    so each call's risk comes from those slugs (see "Read only connections"); `risk` is the tool's own risk.
+  - A call of an MCP tool returns `{content: text, structured?}` or `{error}`. `structured` is the server's
+    structured content, left out when it only repeats the text (`{"result": text}` or the text's own JSON).
   - `missing_values`: the `header_keys` (remote servers) or `env_keys` (local commands) that have no value in the
     keychain yet, for example on a server imported from Hermes. Never the values themselves.
   - `auth` (remote servers only): `none`, `headers` (static headers such as `Authorization: Bearer ...` sent on every request) or `oauth` (sign-in with the MCP authorization spec). Header values are sent in every mode when `header_keys` is not empty.
   - `signed_in`: an OAuth sign-in is stored (only with `auth: "oauth"`). `signing_in`: a browser sign-in is waiting for the user.
   - `status: "needs_sign_in"`: the server answered 401, or `auth` is `oauth` with no stored sign-in, or the stored sign-in expired and could not be refreshed. `error` says what to do: `"This server asks you to sign in."` (none), `"The server didn't accept the saved headers. Change their values with the key button on the server."` (headers), `"Sign in to use this server."` (oauth). The engine retries a server in this state every 5 minutes, and at once after a sign-in or a test.
-- `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, headers?, auth?, enabled?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input)
+- `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, headers?, auth?, enabled?, access?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input; `access` is saved before the server starts, and left out keeps the current choice)
   - `headers`: `{name: value}`; values go to the keychain. `auth` defaults to `headers` when headers are given, else `none`. 400 when `auth` is `headers` without headers, a header name or value is invalid, or a stdio server has headers or `auth` other than `none`.
-  - Replacing a server with a different URL drops its stored sign-in. Headers not given are deleted.
-- `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain)
+  - Headers not given are deleted. The keychain is shared by every Sentient setup on the computer, so a stored sign-in
+    (tokens and client registration) records the server URL it was made for (`server_url`) and is kept when a
+    server with the same name and URL is added (in this setup or another), then used. It is dropped when the URL
+    differs, and an older record without `server_url` is dropped only when this setup had the server at another
+    URL. Adding a local (stdio) server with the same name leaves a stored sign-in alone.
+- `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain, and its Read only setting)
+- `POST /api/integrations/mcp/{name}/access` `{access: "read"|"read_write"}` → server object; the server keeps running
+  (404 unknown server, 422 any other value)
 - `POST /api/integrations/mcp/{name}/test` → `{ok, tools: [mcp tool names], error?}`
 - `POST /api/integrations/mcp/{name}/enabled` `{enabled: bool}` → server object (turns a server on or off and nothing else; `enabled` must be a boolean, 422 otherwise; 404 if missing)
 - `POST /api/integrations/mcp/{name}/values` `{values: {name: value}, enable?: bool}` → server object. Fills in the
@@ -754,9 +795,28 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
 - `POST /api/integrations/mcp/{name}/sign-out` → server object; deletes the stored tokens (the client registration is kept)
   and cancels a pending sign-in. A server with `auth: "oauth"` then shows `needs_sign_in`.
 - Tokens are refreshed with the refresh token before they expire (60 s early) and once after a 401 before asking for a
-  new sign-in. Keychain entries: `mcp:<name>` (env), `mcp:<name>:headers`, `mcp:<name>:oauth` (tokens),
+  new sign-in. Keychain entries: `mcp:<name>` (env), `mcp:<name>:headers`, `mcp:<name>:oauth` (tokens, their expiry
+  and the authorization server metadata with the server URL it belongs to, so a refresh after a restart uses the real
+  token endpoint; a record without the metadata looks it up once),
   `mcp:<name>:client` (registration); values too long for one entry continue in `<entry>:1`, `<entry>:2`...
 - `PUT /api/integrations/{id}/privacy-filters` → 400 when the integration has `privacy_filters.supported: false`
+
+**Read only connections (#141, ADR 0016 amendment).** `integrations.read_only` lists the app ids (`gmail`, `github`,
+`mcp_<server>`) set to Read only; the routes above keep it, and it is hidden in Settings. It is read on every check, so a
+switch applies at once, also to a chat waiting for approval and to a running script. For a Read only connection, every
+tool whose effective risk is above `read` works like a `never` rule: tools whose risk can't be `read` are not offered
+on any surface or listed for planners (`GET /api/tools` still lists them), and a call made anyway does not run, even
+with an `allow` rule, approvals mode `off` or "Allow for this chat". Its `tool_result` is
+`{error: "<App> is set to Read only, so Sentient can look things up there but can't change, send or delete anything. \"<Tool>\" was not done. Change this in Integrations."}`;
+a task run with one fixed call fails with that text, and a script gets it as a refusal. A tool whose risk depends on its
+arguments (`per_call`, browser-like `risk_fn`) stays offered and only calls above `read` are refused. For an MCP tool
+that runs other tools by slug (`tool_slug`, `action_slug` or `slug` next to `arguments`), each slug's verb sets the
+risk: `GET`, `LIST`, `FETCH`, `SEARCH`, `FIND`, `READ`, `RETRIEVE`, `QUERY`, `VIEW`, `DESCRIBE`, `LOOKUP`, `COUNT` read;
+`SEND`, `REPLY`, `FORWARD`, `POST`, `DELETE`, `REMOVE`, `TRASH`, `SHARE`, `INVITE`... send; `EXECUTE`, `RUN` exec; other
+known changes write; a slug with no known verb counts as `write`. The first verb after the app name decides, a later
+verb that changes things raises it, whatever the server's own hints say, and a call is `read` only when every slug is a look-up (then approvals mode "ask"
+no longer asks for it). The chat's system prompt names the connected Read only apps so the model can say why it
+can't act.
 
 - `GET /api/integrations/feeds` → `[{source, display_name, kind: "gmail_history"|"calendar_sync_token"|"imap_idle", connected, active,
   status: "disconnected"|"off"|"starting"|"ok"|"error", last_sync_at, last_success_at, last_error, note, failures, next_attempt_at, emitted}]`
@@ -983,7 +1043,7 @@ Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
 - `GET /api/memories?topic=&q=&source=&limit=&offset=` → `[Memory]` newest first, expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
 - `GET /api/memories/topics` → `[{name, description, count}]`
 - `GET /api/memories/graph` → `{nodes: [{id, label, title, content, topics, memory_type, source, created_at}], links: [{source, target, value}]}` (`label` = content truncated to 25 chars, `title` = full content, as in v2; a link means cosine similarity ≥ `memory.graph_link_similarity`, `value` is that similarity)
-- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone)
+- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. An UPDATE only replaces a fact about the same person and the same action on the same thing ("doesn't want files written" or "doesn't want emails deleted" never replaces "doesn't want files deleted"; it is added instead), and a new fact that an existing one already says in full, with no new name, place or number ("sister lives in a city" next to "sister Meera lives in Lisbon"), returns `SKIP` with that fact)
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)
 - `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
 - `DELETE /api/memories/source/{source}` → `{deleted: n}`
@@ -1194,8 +1254,17 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - Consecutive tool calls of effective risk `read` that need no approval run concurrently (`chat.parallel_read_tools`,
   default on); others run in order. Their `tool_call` events come first, `tool_progress` may interleave, and
   `tool_result` events, tool messages and persisted rows keep the order the model asked for.
-- A tool result longer than `chat.tool_result_max_chars` (default 16000) is cut, the full text is saved under
-  `files/outputs/tool-<call_id>.txt`, and the model is told where it is. The `tool_result` event still carries the full result.
+- A tool result longer than the run's limit is cut, the full text is saved under `files/outputs/tool-<call_id>.txt`,
+  and the model is told plainly (`[Result cut: this is only the first N of M characters. The full result is saved as
+  ...]`). The limit (`await app.agent.tool_result_limit(role, model)`, kept on `LoopResult.tool_result_limit` and worked out again for a fallback model that answered) is
+  `chat.tool_result_max_chars` (default 16000), and at most `chat.tool_result_context_share` (default 0.25) of the
+  model's context length at 3 characters per token, never below 1500: 6144 characters on an 8,192-token local model.
+  A tool can give a shorter version of a long result with `Tool.shorten_fn(result) -> result | None`; the model then
+  reads that (`[Result shortened from M characters to its main parts. ...]`), still cut if it is longer than the limit.
+  MCP tools get one by their own tool name (`sentient.integrations.mcp_shorten`): `COMPOSIO_SEARCH_TOOLS` keeps the
+  connection statuses, the session id, the time and the next steps first, then the recommended plan, known pitfalls
+  (first 3) and tool slugs, then the main tools' parameters and at most 8 other tools by description. The
+  `tool_result` event still carries the full result.
 - Anthropic models (`anthropic/*`) get prompt caching (`cache_control`) on the system prompt and the tool list.
 - Tool arguments that fail validation return `{error: "Invalid arguments for <tool>: ...", schema}` so the model can retry.
 

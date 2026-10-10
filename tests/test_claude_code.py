@@ -13,6 +13,7 @@ import os
 import shutil
 import stat
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ from sentient.app import SentientApp
 from sentient.llm import claude_code
 from sentient.llm.claude_code_tools import NOT_HERE, handle
 from sentient.llm.events import ApprovalRequest, Done, TextDelta, ToolResultEvent
-from sentient.llm.provider import LiteLLMProvider, ProviderError
+from sentient.llm.provider import LiteLLMProvider, ModelRefused, ProviderError
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from tests.conftest import FakeProvider
 
@@ -282,6 +283,54 @@ async def test_refuses_background_work(make_app, fake_claude, cc_config):
     assert fake_claude.runs() == []
 
 
+async def test_a_task_says_why_claude_code_cannot_plan_it(make_app, fake_claude):
+    """#253: with Claude Code as the main model and no planner, the task says why it failed and what to change."""
+    app = await make_app()
+    task = await app.tasks.create_task("Write a haiku about the monsoon")
+    await app.tasks.drain()
+    task = await app.tasks.get(task["task_id"])
+    assert task["status"] == "error"
+    assert task["error"] == claude_code.ROLE_REFUSALS["planner"]
+    assert "Pick a planner model in Settings > Models" in task["error"] and "unavailable" not in task["error"]
+    assert fake_claude.runs() == []
+
+
+async def test_refusals_name_the_role_to_change(make_app, fake_claude):
+    app = await make_app()
+    hi = [{"role": "user", "content": "hi"}]
+    with pytest.raises(ModelRefused) as planner:
+        await app.llm.complete_json("planner", hi)
+    assert str(planner.value) == claude_code.ROLE_REFUSALS["planner"]
+
+    from sentient.agent.loop import LoopResult
+
+    result = LoopResult()
+    ctx = app.agent.tool_context(None, "background", origin="user")
+    async for _ in app.agent.run_loop(list(hi), ctx, result=result, role="executor", source="task"):
+        pass
+    assert result.error == claude_code.ROLE_REFUSALS["executor"]
+    assert fake_claude.runs() == []
+
+
+async def test_a_fallback_that_fails_keeps_the_general_error(cc_config, fake_claude):
+    cc_config.models.fallbacks["planner"] = ["fake/next"]
+    llm = Provider(cc_config)
+
+    async def down(model, messages, **kwargs):
+        raise ConnectionError("connection refused")
+
+    import litellm
+
+    orig = litellm.acompletion
+    litellm.acompletion = down
+    try:
+        with pytest.raises(ProviderError, match="All models failed for role 'planner': connection refused") as err:
+            await LiteLLMProvider.complete_json(llm, "planner", [{"role": "user", "content": "hi"}])
+    finally:
+        litellm.acompletion = orig
+    assert not isinstance(err.value, ModelRefused)
+
+
 async def test_background_role_falls_back_to_the_next_model(cc_config, fake_claude):
     cc_config.models.roles.fast = MODEL
     cc_config.models.fallbacks["fast"] = ["fake/next"]
@@ -372,6 +421,64 @@ async def test_stop_everything_kills_the_process_tree(make_app, fake_claude):
         await asyncio.sleep(0.1)
     assert not _alive(pids["claude"]) and not _alive(pids["child"])  # Claude Code and what it started
     assert not claude_code._live
+    for _ in range(100):  # its scratch folder goes too, once nothing runs in it any more (#259)
+        if not _scratch_folders():
+            break
+        await asyncio.sleep(0.1)
+    assert _scratch_folders() == []
+
+
+# ---------------------------------------------------------------------------- scratch folders (#259)
+def _scratch_folders() -> list[Path]:
+    root = claude_code.scratch_root()
+    return sorted(root.iterdir()) if root.is_dir() else []
+
+
+async def test_repeated_replies_leave_no_scratch_folders(make_app, fake_claude):
+    fake_claude.scenario("linger")  # a process it started is still in the folder when the reply ends
+    app = await make_app()
+    for n in range(3):
+        events = await _turn(app, f"say hello {n}")
+        assert next(e for e in events if isinstance(e, Done)).content == "Hello from Claude"
+    assert len(fake_claude.runs()) == 3
+    assert _scratch_folders() == []
+
+
+def test_removing_a_busy_folder_tries_again(tmp_path, monkeypatch):
+    folder = tmp_path / "busy"
+    folder.mkdir()
+    real = shutil.rmtree
+    calls: list[Path] = []
+
+    def busy_twice(path, *args, **kwargs):
+        calls.append(path)
+        if len(calls) < 3:
+            raise PermissionError(32, "The process cannot access the file because it is being used")
+        real(path, *args, **kwargs)
+
+    monkeypatch.setattr(claude_code.shutil, "rmtree", busy_twice)
+    assert claude_code.remove_folder(folder, delay=0) and not folder.exists() and len(calls) == 3
+    assert claude_code.remove_folder(folder, delay=0)  # already gone is fine
+    folder.mkdir()
+    calls.clear()
+    monkeypatch.setattr(claude_code.shutil, "rmtree", lambda *a, **k: (_ for _ in ()).throw(PermissionError(32, "busy")))
+    assert not claude_code.remove_folder(folder, tries=3, delay=0) and folder.exists()  # gives up, never raises
+
+
+async def test_startup_sweeps_old_scratch_folders(make_app, isolated_home):
+    root = claude_code.scratch_root()
+    old, fresh = root / "0123456789ab", root / "ba9876543210"
+    for folder in (old, fresh):
+        folder.mkdir(parents=True)
+        (folder / "system.txt").write_text("x", encoding="utf-8")
+    two_hours_ago = time.time() - 7200
+    os.utime(old, (two_hours_ago, two_hours_ago))
+    await make_app()
+    assert not old.exists()
+    assert fresh.exists()  # could belong to a reply running right now
+    assert claude_code.sweep_scratch(max_age_s=0) == 1 and not fresh.exists()
+    shutil.rmtree(root)
+    assert claude_code.sweep_scratch() == 0  # no folder at all is fine
 
 
 # ---------------------------------------------------------------------------- status, check-up, pieces
