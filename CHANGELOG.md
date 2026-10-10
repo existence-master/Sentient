@@ -14,6 +14,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
   review are let go after 30 days, with a note. Summaries of chats that read outside content stay out of your
   other chats and out of MEMORY.md. What you say yourself in a chat that hasn't read outside content is remembered as
   before.
+- **Choose where a task's results go** (Details > Send results to): the usual paired chats, this computer only, or
+  just the chats you pick, such as WhatsApp's "Message yourself". Results, failures, questions and plans from that
+  task follow the choice, and so does the Daily Brief. Jobs brought over from Hermes keep their delivery: a job that
+  went to WhatsApp goes to your "Message yourself" chat (once WhatsApp is linked), Telegram and Discord jobs go to the
+  matching paired chat, and `local` jobs stay on this computer.
+- **Add values to an MCP server** (Integrations > Custom MCP servers): a server that lists header or environment
+  names without values, such as one imported from Hermes, shows **Add values**. Fill them in (they go to your system
+  keychain, never to a settings file) and the server reconnects, so there's no need to add it again.
+- **Report every run** for script tasks: besides "Tell me when something changes" and "when the script raises an
+  alert", a script task can now report its output after every run. Hermes script jobs come over this way, and
+  Hermes monitor jobs keep reporting only changes.
 - **Coming from Hermes?** Bring your Hermes setup over in one step, from the last onboarding screen or Settings >
   Advanced. Sentient looks inside your Hermes folder (`~/.hermes`, or one you pick) and shows what it found before
   anything changes: your own skills go to Skills for review (Hermes' built-in ones you never changed are left out),
@@ -120,6 +131,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
   and many tools are no longer cut off without warning. Change it with `models.context_length`, per role with
   `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.
+- A script that Sentient runs now always gets a clear answer when one of its tool requests is refused, instead of a
+  dropped connection when the computer is busy.
+- What Sentient learns about you reads your messages in the order you sent them, even when two were saved at the
+  same instant.
 
 ### Security
 - Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before

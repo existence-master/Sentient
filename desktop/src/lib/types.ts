@@ -1065,7 +1065,7 @@ export interface RecurringSchedule {
 }
 
 // §16 script jobs
-export type ScriptCondition = 'changed' | 'alert'
+export type ScriptCondition = 'changed' | 'alert' | 'every_run'
 export type ScriptThen = 'notify' | 'run'
 
 export interface TaskScript {
@@ -1198,6 +1198,8 @@ export interface Task {
   model: string | null
   /** Named browser profile its browser steps use (§12); `null` is the default one. */
   browser_profile?: string | null
+  /** Where its notifications go besides the app (§4 "Where results go"). Older engines leave it out (default). */
+  deliver_to?: TaskDeliverTo
   original_context: { source: 'manual_creation' | 'chat' | 'proactive' | 'trigger' | string; [k: string]: unknown }
   /** Last planning/run failure message (v2 `task.error`). */
   error: string | null
@@ -1233,7 +1235,15 @@ export interface IntervalSchedule {
   timezone?: string
 }
 
-export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile'>>
+/** A paired chat a task sends to. `{channel: 'whatsapp', chat_id: 'self'}` is WhatsApp's "Message yourself" chat. */
+export interface DeliveryChat {
+  channel: 'telegram' | 'discord' | 'whatsapp' | string
+  chat_id: string
+}
+/** `default`: paired chats with delivery on; `desktop`: the app only; a list: only those chats. */
+export type TaskDeliverTo = 'default' | 'desktop' | DeliveryChat[]
+
+export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'deliver_to'>>
 
 export interface ClarificationAnswer {
   question_id: string
@@ -1325,6 +1335,8 @@ export interface McpServer {
   auth: McpAuth
   /** Header values live in the keychain and are never returned. */
   header_keys: string[]
+  /** Header or env names with no saved value yet (an imported server, for example). Older engines leave it out. */
+  missing_values?: string[]
   /** An OAuth sign-in is stored. */
   signed_in: boolean
   /** A browser sign-in is waiting for the user. */
@@ -1989,7 +2001,10 @@ export interface HermesJobItem extends HermesItem {
   kind: 'task' | 'script'
   script: { path: string; code: string } | null
   then?: ScriptThen
+  condition?: ScriptCondition
   delivery: 'desktop' | 'whatsapp' | 'telegram' | 'discord' | string
+  deliver_to?: TaskDeliverTo
+  hermes_deliver?: string | null
   skills: string[]
 }
 export interface HermesMcpItem extends HermesItem {

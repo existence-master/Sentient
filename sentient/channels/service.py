@@ -6,7 +6,9 @@ WhatsApp linked to the user's own account (their "Message yourself" chat).
 - A paired chat is a normal Sentient chat whose session has ``channel`` = the channel id.
 - Delivery: ``notification.new`` events (task results, plans awaiting approval, questions from running
   tasks, proactive suggestions, subagent completions) are forwarded to paired chats with ``deliver`` on,
-  with action buttons. A reply to a delivered task question message is the answer to that question.
+  with action buttons. A reply to a delivered task question message is the answer to that question. A task's
+  own ``deliver_to`` (``tasks/delivery.py``) can keep its notifications on the desktop or send them only to
+  chosen chats instead.
 """
 
 from __future__ import annotations
@@ -26,11 +28,15 @@ from sentient.channels.telegram import TelegramChannel
 from sentient.channels.whatsapp import WhatsAppChannel
 from sentient.proactivity.brief import DailyBrief
 from sentient.services import Service
+from sentient.tasks.delivery import WHATSAPP_SELF
 
 log = logging.getLogger(__name__)
 
 _UNSET: Any = object()
-TASK_RESULT_EVENTS = {"run_completed", "run_failed", "planning_failed", "clarification_needed", "disabled"}
+TASK_RESULT_EVENTS = {
+    "run_completed", "run_failed", "planning_failed", "clarification_needed", "disabled",
+    "script_alert", "script_failed", "script_recovered",
+}
 STATUS_LABELS = {
     "approved": "Approved", "declined": "Declined", "dismissed": "Dismissed", "answered": "Answered", "cancelled": "Cancelled",
 }
@@ -280,6 +286,34 @@ class ChannelService(Service):
                     targets.append((ch, chat))
         return targets
 
+    async def _chosen_targets(self, chosen: list[dict]) -> list[tuple[Channel, dict]]:
+        """The paired chats a task picked (its ``deliver_to`` list), whatever their own delivery switch says.
+        ``whatsapp`` / ``self`` is the "Message yourself" chat of the linked number."""
+        targets: list[tuple[Channel, dict]] = []
+        for item in chosen:
+            ch = self.channels.get(str(item.get("channel")))
+            if ch is None or not await self.is_connected(ch.id):
+                continue
+            chat_id = str(item.get("chat_id") or "")
+            if ch.id == "whatsapp" and chat_id == WHATSAPP_SELF:
+                chat_id = getattr(ch, "self_chat", None) or ""
+            chat = await self.store.chat(ch.id, chat_id) if chat_id else None
+            if chat is not None and not any(c.id == ch.id and t["chat_id"] == chat["chat_id"] for c, t in targets):
+                targets.append((ch, chat))
+        return targets
+
+    async def _task_delivery(self, note: dict) -> str | list[dict]:
+        """``deliver_to`` of the task a notification belongs to (task results, questions, plans, briefs)."""
+        task_id = (note.get("payload") or {}).get("task_id") or note.get("task_id")
+        fn = getattr(self.app.tasks, "delivery_for", None)
+        if not task_id or fn is None:
+            return "default"
+        try:
+            return await fn(str(task_id))
+        except Exception:  # fail closed: never send to chats the task may have left out
+            log.exception("could not read where task %s delivers", task_id)
+            return "desktop"
+
     async def _task_result(self, task_id: str | None) -> str:
         getter = getattr(self.app.tasks, "get", None)
         if not task_id or getter is None:
@@ -292,8 +326,14 @@ class ChannelService(Service):
                 return str(result.get("summary") or "")
         return ""
 
-    async def format_notification(self, note: dict) -> tuple[str, list[list[Button]] | None] | None:
+    async def format_notification(self, note: dict, *, chosen: bool = False) -> tuple[str, list[list[Button]] | None] | None:
+        """The message for a notification, or None when it isn't sent. ``chosen``: the task picked its chats, so
+        the ``channels.deliver_*`` switches don't apply."""
         cfg = self.app.config.channels
+        if chosen:
+            cfg = cfg.model_copy(update={
+                "deliver_plans": True, "deliver_task_results": True, "deliver_briefs": True, "deliver_suggestions": True,
+            })
         kind = note.get("kind")
         payload = note.get("payload") or {}
         title = (note.get("title") or "").strip()
@@ -348,13 +388,18 @@ class ChannelService(Service):
         return md, [buttons[i:i + QUESTION_ROW] for i in range(0, len(buttons), QUESTION_ROW)]
 
     async def deliver_notification(self, note: dict) -> int:
-        formatted = await self.format_notification(note)
+        where = await self._task_delivery(note) if note.get("kind") in {"task", "brief"} else "default"
+        if where == "desktop":
+            return 0
+        chosen = isinstance(where, list)
+        formatted = await self.format_notification(note, chosen=chosen)
         if formatted is None:
             return 0
         md, buttons = formatted
         subagent_id = (note.get("payload") or {}).get("subagent_id")
         sent = 0
-        for ch, chat in await self._delivery_targets():
+        targets = await self._chosen_targets(where) if isinstance(where, list) else await self._delivery_targets()
+        for ch, chat in targets:
             if subagent_id:
                 key = (str(subagent_id), ch.id, chat["chat_id"])
                 if key in self._subagents_sent:

@@ -147,8 +147,12 @@ async def test_soul_changes_only_when_persona_is_picked(app, hermes_home):
 async def test_jobs_become_paused_tasks_with_schedules(app, hermes_home):
     plan = await hermes.preview(app, str(hermes_home))
     jobs = by_key(plan["jobs"])
-    assert jobs["job:a1b2c3d4e5f6"]["delivery"] == "desktop"
-    assert "WhatsApp isn't set up in Sentient yet" in jobs["job:a1b2c3d4e5f6"]["note"]
+    # WhatsApp isn't linked yet: the job keeps pointing at the "Message yourself" chat and says how to link it
+    assert jobs["job:a1b2c3d4e5f6"]["delivery"] == "whatsapp"
+    assert jobs["job:a1b2c3d4e5f6"]["deliver_to"] == [{"channel": "whatsapp", "chat_id": "self"}]
+    assert "WhatsApp isn't linked in Sentient yet" in jobs["job:a1b2c3d4e5f6"]["note"]
+    assert jobs["job:b2c3d4e5f6a1"]["deliver_to"] == "desktop"  # Hermes "local"
+    assert jobs["job:c3d4e5f6a1b2"]["condition"] == "every_run"  # a plain Hermes script job reports every run
     assert jobs["job:c3d4e5f6a1b2"]["script"]["path"] == "scripts/check_prices.py"
     assert "print(json.dumps" in jobs["job:c3d4e5f6a1b2"]["script"]["code"]
     skipped = {k: i["note"] for k, i in jobs.items() if i["action"] == "skip"}
@@ -177,7 +181,10 @@ async def test_jobs_become_paused_tasks_with_schedules(app, hermes_home):
     assert "weekly-review" in standup["description"]
     assert watch["task_type"] == "script"
     assert watch["schedule"] == {**watch["schedule"], "frequency": "interval", "interval_minutes": 30}
-    assert watch["script"]["then"] == "notify" and watch["script"]["condition"] == "changed"
+    assert watch["script"]["then"] == "notify" and watch["script"]["condition"] == "every_run"
+    assert brief["deliver_to"] == [{"channel": "whatsapp", "chat_id": "self"}]
+    assert brief["original_context"]["hermes_deliver"] == "whatsapp:fixture-chat"
+    assert standup["deliver_to"] == "desktop" and watch["deliver_to"] == "desktop"
     # nothing runs on its own
     assert await app.tasks.tick() == []
     # importing again does not add the same jobs twice
@@ -187,11 +194,56 @@ async def test_jobs_become_paused_tasks_with_schedules(app, hermes_home):
 
 
 async def test_whatsapp_delivery_when_paired(app, hermes_home):
-    await app.channels.store.add_chat("whatsapp", "self", "Me", deliver=True, session_id=None)
+    await app.channels.store.set_state("whatsapp", account_label="+15550100")
+    await app.channels.store.add_chat("whatsapp", "15550199@s.whatsapp.net", "A friend", deliver=True, session_id=None)
+    await app.channels.store.add_chat("whatsapp", "15550100@s.whatsapp.net", "Message yourself", deliver=False,
+                                      session_id=None)
     plan = await hermes.preview(app, str(hermes_home))
     brief = by_key(plan["jobs"])["job:a1b2c3d4e5f6"]
     assert brief["delivery"] == "whatsapp"
-    assert "paired WhatsApp chat" in brief["note"]
+    assert brief["deliver_to"] == [{"channel": "whatsapp", "chat_id": "15550100@s.whatsapp.net"}]
+    assert "WhatsApp: Message yourself" in brief["note"] and "isn't linked" not in brief["note"]
+    await hermes.apply(app, str(hermes_home), ["jobs"])
+    task = next(t for t in await app.tasks.list() if t["name"] == "Morning brief")
+    assert task["deliver_to"] == [{"channel": "whatsapp", "chat_id": "15550100@s.whatsapp.net"}]
+
+
+async def test_telegram_and_local_delivery(app, hermes_home):
+    import json
+
+    jobs = hermes_home / "cron" / "jobs.json"
+    data = json.loads(jobs.read_text(encoding="utf-8"))
+    data["jobs"][0]["deliver"] = "telegram:42"
+    data["jobs"][1]["deliver"] = "discord"
+    jobs.write_text(json.dumps(data), encoding="utf-8")
+    await app.channels.store.add_chat("telegram", "7", "Someone else", deliver=True, session_id=None)
+    await app.channels.store.add_chat("telegram", "42", "Me", deliver=True, session_id=None)
+    plan = by_key((await hermes.preview(app, str(hermes_home)))["jobs"])
+    assert plan["job:a1b2c3d4e5f6"]["deliver_to"] == [{"channel": "telegram", "chat_id": "42"}]
+    assert "Telegram: Me" in plan["job:a1b2c3d4e5f6"]["note"]
+    # Discord isn't paired: the default for now, with a hint
+    assert plan["job:b2c3d4e5f6a1"]["deliver_to"] == "default"
+    assert "Discord isn't set up in Sentient yet" in plan["job:b2c3d4e5f6a1"]["note"]
+    assert plan["job:c3d4e5f6a1b2"]["deliver_to"] == "desktop"
+    # more paired chats than a task can name: the usual delivery instead of a list the task would refuse
+    for n in range(11):
+        await app.channels.store.add_chat("discord", f"d{n}", f"Chat {n}", deliver=True, session_id=None)
+    many = by_key((await hermes.preview(app, str(hermes_home)))["jobs"])["job:b2c3d4e5f6a1"]
+    assert many["deliver_to"] == "default" and "more than 10" in many["note"]
+
+
+async def test_monitor_script_jobs_report_only_changes(app, hermes_home):
+    import json
+
+    jobs = hermes_home / "cron" / "jobs.json"
+    data = json.loads(jobs.read_text(encoding="utf-8"))
+    data["jobs"][2]["monitor_script"] = data["jobs"][2].pop("script")
+    jobs.write_text(json.dumps(data), encoding="utf-8")
+    item = by_key((await hermes.preview(app, str(hermes_home)))["jobs"])["job:c3d4e5f6a1b2"]
+    assert item["condition"] == "changed" and "when its output changes" in item["note"]
+    await hermes.apply(app, str(hermes_home), ["jobs"])
+    watch = next(t for t in await app.tasks.list() if t["name"] == "Watch prices")
+    assert watch["script"]["condition"] == "changed"
 
 
 async def test_resuming_an_imported_task_plans_it_for_approval(app, hermes_home):
@@ -207,7 +259,7 @@ async def test_resuming_an_imported_task_plans_it_for_approval(app, hermes_home)
     })
     out = await app.tasks.update(brief["task_id"], {"enabled": True, "plan": [{"tool": "files", "description": "x"}]})
     assert out["status"] == "planning"  # a plan sent with the resume can't skip planning and approval
-    for _ in range(100):
+    for _ in range(1000):  # a 20 s ceiling; planning with the scripted model takes moments
         task = await app.tasks.get(brief["task_id"])
         if task["status"] != "planning":
             break
@@ -358,3 +410,4 @@ async def test_origin_delivery_uses_the_chat_the_job_came_from(app, hermes_home)
     await app.channels.store.add_chat("telegram", "1", "Me", deliver=True, session_id=None)
     plan = await hermes.preview(app, str(hermes_home))
     assert by_key(plan["jobs"])["job:a1b2c3d4e5f6"]["delivery"] == "telegram"
+    assert by_key(plan["jobs"])["job:a1b2c3d4e5f6"]["deliver_to"] == [{"channel": "telegram", "chat_id": "1"}]

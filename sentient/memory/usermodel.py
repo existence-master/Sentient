@@ -604,7 +604,7 @@ class UserModelService(Service):
             rows = await store.fetchall(
                 "SELECT m.id, m.content, m.created_at, s.untrusted FROM messages m LEFT JOIN sessions s"
                 " ON s.id = m.session_id WHERE m.role = 'user' AND m.content IS NOT NULL"
-                " AND m.content != '' AND m.created_at > ? ORDER BY m.created_at DESC LIMIT ?",
+                " AND m.content != '' AND m.created_at > ? ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
                 (since, cfg.recent_messages),
             )
             lines = []

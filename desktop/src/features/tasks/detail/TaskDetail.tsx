@@ -58,6 +58,7 @@ import { useTaskOps } from '../useTaskOps'
 import { HookName } from '@/features/automations/HookLabel'
 import { useBrowserProfiles } from '@/features/browser/state'
 import { ScriptJobSection } from './ScriptJob'
+import { DeliverToRow } from './DeliverTo'
 import { Clarifications } from './Clarifications'
 import { RunQuestion } from './RunQuestion'
 import { PlanSection } from './PlanSection'
@@ -699,6 +700,7 @@ function PropertiesCard({ task, tz, ops, compact }: { task: Task; tz: string; op
           </span>
         ))}
         <BrowserProfileRow task={task} ops={ops} compact />
+        <DeliverToRow task={task} ops={ops} compact />
         {toggleable && (
           <label className="ml-auto flex items-center gap-2 text-fg-muted">
             {task.enabled ? 'Enabled' : 'Paused'}
@@ -728,6 +730,7 @@ function PropertiesCard({ task, tz, ops, compact }: { task: Task; tz: string; op
           </div>
         ))}
         <BrowserProfileRow task={task} ops={ops} />
+        <DeliverToRow task={task} ops={ops} />
         <div className="flex items-center justify-between gap-3 px-4 py-2.5">
           <dt className="shrink-0 text-fg-subtle">ID</dt>
           <dd className="min-w-0">

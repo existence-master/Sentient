@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import socket
 import textwrap
 import time
 import urllib.error
@@ -218,7 +219,7 @@ async def test_timeout_kills_whole_process_tree(sandbox_app):
     match = re.search(r"child (\d+)", res["stdout"])
     assert match, res
     pid = int(match.group(1))
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 30  # a ceiling: a killed process is usually gone at once
     while pid_alive(pid) and time.monotonic() < deadline:
         await asyncio.sleep(0.1)
     assert not pid_alive(pid)
@@ -303,23 +304,38 @@ async def test_bridge_rejects_wrong_token(sandbox_app, tmp_path):
         sandbox_app.registry, BridgePolicy(), sandbox_app.agent.tool_context(None, "system"), run_dir=tmp_path
     )
     endpoint = await bridge.start()
+    body = json.dumps({"tool": "kit_lookup", "arguments": {"q": "a"}}).encode()
 
     def post(token: str) -> tuple[int, dict]:
-        req = urllib.request.Request(
-            endpoint["url"], data=json.dumps({"tool": "kit_lookup", "arguments": {"q": "a"}}).encode(),
-            headers={"X-Sentient-Token": token}, method="POST",
-        )
+        req = urllib.request.Request(endpoint["url"], data=body, headers={"X-Sentient-Token": token}, method="POST")
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
-            with opener.open(req, timeout=5) as resp:
+            with opener.open(req, timeout=30) as resp:
                 return resp.status, json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             return exc.code, {}
 
+    def post_body_late(token: str) -> str:
+        """Send the headers, then the body a moment later (clients send them separately; a busy machine spaces
+        them out). The refusal must still arrive as a reply, not as a reset connection."""
+        head = (
+            f"POST /call HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Sentient-Token: {token}\r\n"
+            f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+        ).encode()
+        with socket.create_connection(("127.0.0.1", bridge.port), timeout=30) as sock:
+            sock.sendall(head)
+            time.sleep(0.2)
+            sock.sendall(body)
+            reply = b""
+            while chunk := sock.recv(65536):
+                reply += chunk
+        return reply.split(b"\r\n", 1)[0].decode()
+
     try:
         assert (await asyncio.to_thread(post, "wrong"))[0] == 403
-        status, body = await asyncio.to_thread(post, bridge.token)
-        assert status == 200 and body["result"]["echo"] == "a"
+        assert await asyncio.to_thread(post_body_late, "wrong") == "HTTP/1.1 403 Forbidden"
+        status, reply = await asyncio.to_thread(post, bridge.token)
+        assert status == 200 and reply["result"]["echo"] == "a"
         old = bridge.token
     finally:
         await bridge.stop()

@@ -30,15 +30,18 @@ async def _wait_status(app, name: str, status: str, timeout: float = 60) -> dict
 
 
 async def test_mcp_stdio_server_lifecycle(config, isolated_home, keychain):
+    gate = isolated_home / "echo-may-start"
     config.integrations.mcp_servers = {
-        "Echo Test": {"transport": "stdio", "command": sys.executable, "args": [str(SERVER)], "enabled": True},
+        "Echo Test": {"transport": "stdio", "command": sys.executable, "args": [str(SERVER), "--wait-for", str(gate)],
+                      "enabled": True},
     }
     app = SentientApp(config, llm=FakeProvider(), db_path=isolated_home / "mcp.db", enable_background=False)
-    loop = asyncio.get_running_loop()
-    t0 = loop.time()
-    await app.start()
+    # the server can't answer until the gate opens, so start-up only returns if it doesn't wait for MCP servers
+    await asyncio.wait_for(app.start(), 120)
     try:
-        assert loop.time() - t0 < 5, "startup must not wait for MCP servers"
+        waiting = next(s for s in app.integrations.mcp.list() if s["name"] == "Echo Test")
+        assert waiting["status"] in {"disconnected", "connecting"}
+        gate.touch()
         server = await _wait_status(app, "Echo Test", "connected")
         risks = {t["name"]: t["risk"] for t in server["tools"]}
         assert risks == {"mcp_echo_test_echo": "read", "mcp_echo_test_add_numbers": "write",

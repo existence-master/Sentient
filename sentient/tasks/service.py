@@ -33,6 +33,7 @@ from typing import Any
 from sentient.llm.provider import ProviderError
 from sentient.services import Service, cancel_tasks
 from sentient.tasks import ask, catchup, executor, limits, scripts, stuck, swarm
+from sentient.tasks.delivery import from_stored, stored
 from sentient.tasks.executor import RunFailed, RunPaused
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
@@ -64,7 +65,7 @@ STATUSES = {
 }
 UPDATABLE_FIELDS = {
     "name", "description", "priority", "schedule", "plan", "enabled", "status", "model", "assignee", "script",
-    "browser_profile",
+    "browser_profile", "deliver_to",
 }
 SANDBOX_RESULT = {
     "ok": False, "backend": None, "stdout": "", "stderr": "", "result": None, "files_created": [],
@@ -400,7 +401,8 @@ class TaskService(Service):
         return data
 
     async def create_imported(
-        self, *, name: str, prompt: str, schedule: dict, script: dict | None = None, context: dict | None = None
+        self, *, name: str, prompt: str, schedule: dict, script: dict | None = None, context: dict | None = None,
+        deliver_to: Any = None,
     ) -> dict:
         """A paused task brought over from another assistant (Hermes' scheduled jobs, ``sentient/migrate``).
 
@@ -427,6 +429,7 @@ class TaskService(Service):
             "clarifying_questions": [],
             "task_type": "script" if script else "single",
             "script": normalize_script(script) if script else None,
+            "deliver_to": stored(deliver_to),
             "schedule": sched,
             "next_execution_at": None,
             "created_at": now,
@@ -463,6 +466,11 @@ class TaskService(Service):
         await self.publish(task_id)
         self._spawn(self._plan_job(task_id), f"plan:{task_id}")
         return await self.get(task_id)
+
+    async def delivery_for(self, task_id: str) -> str | list[dict]:
+        """Where this task's notifications go besides the app (``tasks/delivery.py``); the default when unknown."""
+        task = await self.repo.get_task(task_id)
+        return from_stored((task or {}).get("deliver_to"))
 
     async def preview(self, prompt: str) -> dict:
         """v2 generate-plan: ``{name, description, priority, schedule}`` without creating a task."""
@@ -525,6 +533,8 @@ class TaskService(Service):
             changes["model"] = data["model"] or None
         if "browser_profile" in data:
             changes["browser_profile"] = self._browser_profile(data["browser_profile"])
+        if "deliver_to" in data:
+            changes["deliver_to"] = stored(data["deliver_to"])
         if "assignee" in data:
             changes["assignee"] = data["assignee"] or "ai"
         if "plan" in data:
@@ -653,7 +663,7 @@ class TaskService(Service):
         task = await self._require(task_id)
         now = self.now_iso()
         keep = ("name", "description", "priority", "task_type", "schedule", "original_prompt", "source",
-                "assignee", "model", "browser_profile", "original_context", "chat_history")
+                "assignee", "model", "browser_profile", "deliver_to", "original_context", "chat_history")
         fields = {k: task.get(k) for k in keep}
         fields.update(status="planning", enabled=True, plan=[], clarifying_questions=[], error=None,
                       created_at=now, updated_at=now)
