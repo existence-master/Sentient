@@ -10,6 +10,8 @@ Other packages use only these methods (signatures are stable):
 - ``feed_active(source) -> bool``                      a change feed / push watcher keeps ``source`` current
 - ``await feed_status() -> list[dict]``                change feed status per feed-capable source
 - ``await emit_items(source, origin, items, event=None) -> list[dict]``  shared seen record + ``source.items``
+- ``access(plugin_id) -> "read" | "read_write"`` and ``await set_access(plugin_id, access)``: Read only connections
+  (``integrations.read_only``, #141). The approvals broker hides and refuses their write, send and exec tools.
 
 Every new item from poll, feed or webhook is published once as ``source.items`` (docs/API.md section 16).
 
@@ -54,6 +56,7 @@ log = logging.getLogger(__name__)
 OAUTH_FLOW_TTL_S = 15 * 60
 DEFAULT_POLL_LOOKBACK = timedelta(hours=1)
 SEEN_CAP = 500
+ACCESS_LEVELS = ("read", "read_write")
 
 
 def secret_name(plugin_id: str) -> str:
@@ -223,6 +226,34 @@ class IntegrationManager(Service):
         if self.plugin(plugin_id) is not None:
             self.app.bus.publish("integration.updated", await self.integration(plugin_id))
 
+    # ------------------------------------------------------------------ access level (#141)
+    def access(self, plugin_id: str) -> str:
+        """``read`` when the connection is set to Read only, else ``read_write``."""
+        return "read" if plugin_id in self.app.config.integrations.read_only else "read_write"
+
+    def save_access(self, plugin_id: str, access: str) -> bool:
+        """Record the access level in config (no event). Returns True when it changed. Takes effect at once: the
+        approvals broker and the registry read ``integrations.read_only`` on every check."""
+        if access not in ACCESS_LEVELS:
+            raise IntegrationError("Choose Read only or Read and write.")
+        cfg = self.app.config.integrations
+        current = list(cfg.read_only)
+        wanted = [*current, plugin_id] if access == "read" and plugin_id not in current else (
+            [p for p in current if p != plugin_id] if access == "read_write" else current)
+        if wanted == current:
+            return False
+        cfg.read_only = wanted
+        self.app.save_config()
+        return True
+
+    async def set_access(self, plugin_id: str, access: str) -> dict:
+        """Set an integration to Read only (``read``) or Read and write (``read_write``). Returns the Integration."""
+        if self.plugin(plugin_id) is None:
+            raise KeyError(plugin_id)
+        if self.save_access(plugin_id, access):
+            await self.publish(plugin_id)
+        return await self.integration(plugin_id)
+
     # ------------------------------------------------------------------ public API
     async def connected_plugins(self) -> set[str]:
         ids = {pid for pid in self._plugins if self._connected_sync(pid)}
@@ -284,16 +315,22 @@ class IntegrationManager(Service):
             "privacy_filters": {"supported": bool(p.privacy_fields), "fields": list(p.privacy_fields)},
             "triggers": await self._triggers(p),
             "alternative_for": p.optional_alternative_for,
+            "access": self.access(plugin_id),
             "tools": [{"name": t.name, "description": t.description, "risk": t.risk.name} for t in p.tools],
         }
 
     # ------------------------------------------------------------------ connect / disconnect / test
-    async def connect(self, plugin_id: str, fields: dict[str, Any] | None = None) -> dict:
+    async def connect(self, plugin_id: str, fields: dict[str, Any] | None = None, access: str | None = None) -> dict:
+        """``access`` (``read`` or ``read_write``) is saved first, so the connection never starts with more than the
+        user chose."""
         p = self.plugin(plugin_id)
         if p is None:
             raise KeyError(plugin_id)
+        changed = access is not None and self.save_access(plugin_id, access)
         fields = {k: ("" if v is None else str(v)) for k, v in (fields or {}).items()}
         if p.is_builtin:
+            if changed:
+                await self.publish(plugin_id)
             return await self.integration(plugin_id)
         started = await p.begin_oauth(fields, self)
         if started is not None:

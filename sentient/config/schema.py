@@ -80,7 +80,10 @@ CLAUDE_CODE_MODELS: tuple[str, ...] = ("claude-code/sonnet", "claude-code/opus")
 # local model can use (an NVIDIA or AMD card, or about two thirds of the memory on Apple silicon); ``min_ram_gb`` is
 # total memory, for computers without one. Sizes are GiB as tools report them (an "8 GB" card or computer shows about
 # 7.8 to 8.0). One model does chat and background jobs, so Ollama keeps a single model loaded. Only the 8 GB row is
-# measured (qwen3:8b on an RTX 4060 laptop); the 12, 16 and 24 GB rows are estimates from model and cache sizes.
+# measured (qwen3:8b on an RTX 4060 laptop, Ollama 0.9, 2026-10-10): at 8,192 tokens about 89 to 91% of the model is on
+# the graphics card (24 tokens/s); only 5,120 tokens or fewer fit fully (42 tokens/s), which is below the 8,192 that
+# long tasks need, so the row keeps 8,192 and the check-up accepts the small spill. The 12, 16 and 24 GB rows are
+# estimates from model and cache sizes.
 # ``cloud_first``: too little memory for a local model that can do tasks, so a cloud model is recommended and the row's
 # model is only a labelled chat-only fallback (qwen3:4b can't call tools reliably).
 LOCAL_MODEL_TIERS: tuple[dict, ...] = (
@@ -149,8 +152,8 @@ class ModelsConfig(BaseModel):
         le=1_048_576,
         description="How much text (in tokens) a local Ollama model reads at once: instructions, the conversation "
         "and tool results. Ollama's own default is only 4096 on most computers, which quietly cuts off long tasks. "
-        "Bigger values let the model see more but need more graphics memory: 8192 keeps qwen3:8b fully on an "
-        "8 GB graphics card, while 16384 or more can push part of it onto the processor and make replies much "
+        "Bigger values let the model see more but need more graphics memory: 8192 keeps most of qwen3:8b on an "
+        "8 GB graphics card, while 16384 or more pushes much more of it onto the processor and makes replies much "
         "slower. Never goes above the model's own maximum. Cloud models ignore this.",
     )
     context_length_per_role: dict[str, Annotated[int, Field(ge=2048, le=1_048_576)]] = Field(
@@ -436,6 +439,19 @@ class IntegrationsConfig(BaseModel):
         True,
         description="Only show the model tools of integrations that are connected (keeps small local models focused).",
     )
+    read_only: list[str] = Field(
+        default_factory=list,
+        description="Connections set to Read only, by app id (gmail, github, mcp_<server>). Sentient can look things "
+        "up there but never change, send, delete or run anything: those tools are hidden and refused.",
+    )
+
+    @field_validator("read_only", mode="before")
+    @classmethod
+    def _clean_read_only(cls, value: object) -> object:
+        """Trim ids, drop empty ones and duplicates, keep the order."""
+        if not isinstance(value, list | tuple | set):
+            return value
+        return list(dict.fromkeys(s for s in (str(v).strip() for v in value) if s))
     news_country: str = Field(
         "", description="Two-letter country code for top headlines (empty = guess from your location, else US)."
     )

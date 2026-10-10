@@ -7,6 +7,9 @@ A rule key is a tool name (``gmail_send_email``, ``mcp_files_delete``) or a plug
 - ``ask``: always ask first, even when approvals are off, after "Allow for this chat" and for look-ups.
 - ``never``: the tool is not offered to the model, and a call made anyway is refused without running.
 
+A connection set to Read only (``integrations.read_only``, #141) works like a "never" rule on every tool of that app
+that can change, send, delete or run something: ``read_only_hides`` and ``read_only_blocks``.
+
 Rules are applied in code by the approvals broker, the agent loop and the sandbox bridge; a model never
 decides them. These helpers are pure so every one of those places can share them without import cycles.
 They also hold the outside-content helpers (ADR 0018): which tools bring in content someone else wrote,
@@ -15,7 +18,7 @@ which calls can send data out, and the plain wording for the questions that foll
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -58,6 +61,30 @@ def rule_label(tool: Tool, rules: Mapping[str, str] | None = None, registry: Any
 
 def never_message(label: str) -> str:
     return f"You've set Sentient to never use {label}. {SETTINGS_HINT}"
+
+
+# ----------------------------------------------------------------------------- read-only connections (#141)
+READ_ONLY_HINT = "Change this in Integrations."
+
+
+def read_only_hides(read_only: Collection[str] | None, tool: Tool) -> bool:
+    """True when ``tool`` belongs to a connection set to Read only and can never be a look-up: its risk is above
+    ``read`` and does not depend on the call. A tool whose risk depends on its arguments (``risk_fn``) stays offered
+    and each call is checked with ``read_only_blocks``. Like a "never" rule on the app's other tools (ADR 0016)."""
+    return bool(read_only) and tool.plugin in read_only and Risk(tool.risk) > Risk.read and tool.risk_fn is None
+
+
+def read_only_blocks(read_only: Collection[str] | None, tool: Tool, risk: Risk) -> bool:
+    """True when a call with effective risk ``risk`` must not run because its connection is Read only."""
+    return bool(read_only) and tool.plugin in read_only and Risk(risk) > Risk.read
+
+
+def read_only_message(tool: Tool, registry: Any = None) -> str:
+    """What the model is told when a call to a Read only connection is refused."""
+    plugin = registry.plugin(tool.plugin) if registry is not None else None
+    app = getattr(plugin, "display_name", None) or tool.plugin
+    return (f"{app} is set to Read only, so Sentient can look things up there but can't change, send or delete "
+            f'anything. "{tool_title(tool)}" was not done. {READ_ONLY_HINT}')
 
 
 def unattended_ask_message(label: str) -> str:

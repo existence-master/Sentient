@@ -105,6 +105,7 @@ def build_system_prompt(
     location: str = "",
     user_context: str = "",
     tool_names: Iterable[str] | None = None,
+    read_only_apps: Iterable[str] | None = None,
 ) -> str:
     tz = resolve_tz(timezone)
     now = datetime.now(tz)
@@ -142,6 +143,13 @@ def build_system_prompt(
         f"- Channel: {channel}\n"
         f"- Assistant name: {assistant_name}"
     )
+    read_only = [a for a in (read_only_apps or ()) if a]
+    if read_only:
+        parts.append(
+            "## Read only apps\n"
+            f"The user set these to read only: {', '.join(read_only)}. You can look things up there, but you can't "
+            "change, send or delete anything in them. If asked to, say so and that they can change it in Integrations."
+        )
     rules = TOOL_RULES
     extra = capability_rules(tool_names)
     if extra:
