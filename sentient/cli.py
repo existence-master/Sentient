@@ -145,6 +145,18 @@ async def _doctor(models: bool = False) -> None:
         row("tools", True, f"{len(s.registry.tools())} tools from {len(s.registry.plugins())} plugins")
         row("skills", True, f"{len(s.skills.list())} active, {len(s.skills.list_pending())} pending review")
         try:
+            lan = s.nodes.lan_status()
+            if lan["enabled"]:
+                row(
+                    "lan listener",
+                    not lan["bind_all"],
+                    f"port {lan['port']}, bound to all interfaces (nodes.lan_bind_all) — any host on the network can reach it, pairing required"
+                    if lan["bind_all"]
+                    else f"port {lan['port']}, this computer only (loopback)",
+                )
+        except Exception as exc:
+            row("lan listener", False, str(exc))
+        try:
             text = ""
             async for chunk in s.llm.stream("primary", [{"role": "user", "content": "Reply with the single word: ready"}]):
                 text += chunk.text

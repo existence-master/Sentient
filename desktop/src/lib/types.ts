@@ -297,6 +297,15 @@ export interface SentientConfig {
   proactivity: ProactivityConfig
   voice: VoiceConfig
   ui: UIConfig
+  nodes?: NodesConfig
+}
+
+export interface NodesConfig {
+  enabled: boolean
+  lan_enabled: boolean
+  lan_port: number
+  /** Bind the LAN listener to 0.0.0.0 instead of loopback. */
+  lan_bind_all?: boolean
 }
 
 export type ConfigSection = keyof SentientConfig

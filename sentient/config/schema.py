@@ -813,6 +813,11 @@ class NodesConfig(BaseModel):
         False, description="Accept devices on your local network (encrypted, pairing code required)."
     )
     lan_port: int = Field(7778, ge=1024, le=65535, description="Port devices on your network connect to.")
+    lan_bind_all: bool = Field(
+        False,
+        description="Bind the device listener to every network interface (0.0.0.0) instead of this computer only "
+        "(loopback). Off by default: enable it only if devices cannot reach Sentient, and keep pairing on.",
+    )
     mdns_enabled: bool = Field(
         True,
         description="Announce Sentient on your network (mDNS) so glasses and phones find it without typing an address.",
