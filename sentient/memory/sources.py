@@ -1,8 +1,10 @@
 """Memory sources: which memories a reply had in mind.
 
 Deterministic attribution (issue #136). A chat turn records every fact and user-model insight that
-was put into its system prompt, plus every fact a memory tool returned while it ran. The model is
-never asked which ones it used: small models answer that unreliably, so the UI shows what it was given.
+was put into its system prompt, plus every fact a memory tool returned while it ran. A task run does the
+same for the facts in its executor prompt and its memory tool calls, kept on the run across pauses and
+restarts. The model is never asked which ones it used: small models answer that unreliably, so the UI
+shows what it was given.
 
 A source is ``{kind: "fact"|"insight", id, text, source, via: "prompt"|"tool"}``: ``id`` is the fact id
 (int) or insight id (str), ``source`` is where the memory came from (a fact's ``source`` such as
@@ -20,11 +22,15 @@ MAX_SOURCES = 40
 
 
 class MemorySources:
-    """Collects the memories one turn had in mind, first mention wins, in order."""
+    """Collects the memories one turn had in mind, first mention wins, in order. ``stored`` is a list saved
+    earlier (a task run that paused or restarted), merged in first."""
 
-    def __init__(self) -> None:
+    def __init__(self, stored: list[dict] | None = None) -> None:
         self._items: list[dict] = []
         self._seen: set[tuple[str, str]] = set()
+        for s in stored if isinstance(stored, list) else []:
+            if isinstance(s, dict) and s.get("kind") in {"fact", "insight"}:
+                self._add(s["kind"], s.get("id"), s.get("text"), s.get("source"), str(s.get("via") or "prompt"))
 
     def _add(self, kind: str, mid: Any, text: Any, source: Any, via: str) -> None:
         if mid is None or not isinstance(text, str) or not text.strip() or len(self._items) >= MAX_SOURCES:

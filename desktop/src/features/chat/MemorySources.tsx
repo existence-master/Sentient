@@ -1,5 +1,6 @@
 /**
- * "Used 3 memories" under a reply: what Sentient had in mind when it answered (docs/API.md §2 "Memory sources").
+ * "Used 3 memories" under a reply or a task result: what Sentient had in mind when it answered or did the task
+ * (docs/API.md §2 "Memory sources", §4 Run).
  * The list is what the engine put in front of the model or what a memory look-up returned, never the model's own
  * claim. Each item can be fixed or forgotten in place, with the same calls the Memory and About you pages use.
  */
@@ -25,7 +26,7 @@ function sourceLabel(s: MemorySource): string {
   return sourceMeta(s.source || 'conversation').label
 }
 
-export function MemorySources({ sources, assistantName }: { sources: MemorySource[]; assistantName: string }) {
+export function MemorySources({ sources, assistantName, task = false }: { sources: MemorySource[]; assistantName: string; task?: boolean }) {
   const [open, setOpen] = useState(false)
   const [changes, setChanges] = useState<Record<string, Change>>({})
   if (!sources.length) return null
@@ -53,13 +54,16 @@ export function MemorySources({ sources, assistantName }: { sources: MemorySourc
           >
             <div className="mt-1 rounded-xl border border-border bg-sunken/35">
               <p className="border-b border-border px-3.5 py-2 text-xs text-fg-subtle">
-                {assistantName} had these in mind when it replied. If one is wrong, fix it and the next reply will use the change.
+                {task
+                  ? `${assistantName} had these in mind while doing this task. If one is wrong, fix it and the next run will use the change.`
+                  : `${assistantName} had these in mind when it replied. If one is wrong, fix it and the next reply will use the change.`}
               </p>
               <ul className="divide-y divide-border">
                 {sources.map((s) => (
                   <SourceRow
                     key={keyOf(s)}
                     source={s}
+                    task={task}
                     change={changes[keyOf(s)]}
                     onChange={(c) => setChanges((prev) => ({ ...prev, [keyOf(s)]: c }))}
                   />
@@ -73,7 +77,7 @@ export function MemorySources({ sources, assistantName }: { sources: MemorySourc
   )
 }
 
-function SourceRow({ source, change, onChange }: { source: MemorySource; change?: Change; onChange: (c: Change) => void }) {
+function SourceRow({ source, task, change, onChange }: { source: MemorySource; task: boolean; change?: Change; onChange: (c: Change) => void }) {
   const navigate = useNavigate()
   const [fixing, setFixing] = useState(false)
   const forgotten = change?.kind === 'forgotten'
@@ -87,7 +91,7 @@ function SourceRow({ source, change, onChange }: { source: MemorySource; change?
         <p className={cn('selectable break-words leading-snug', forgotten ? 'text-fg-subtle line-through decoration-fg-faint' : 'text-fg')}>{text}</p>
         <p className="mt-0.5 text-2xs text-fg-subtle">
           {forgotten ? 'Forgotten' : change?.kind === 'fixed' ? 'Fixed' : sourceLabel(source)}
-          {!change && source.via === 'tool' && ' · Looked up while replying'}
+          {!change && source.via === 'tool' && (task ? ' · Looked up while working' : ' · Looked up while replying')}
         </p>
       </div>
       {!forgotten && (

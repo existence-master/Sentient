@@ -21,10 +21,10 @@ TASK_COLUMNS = {
     "original_context", "script", "error", "next_execution_at", "last_execution_at", "created_at", "updated_at",
     "browser_profile", "deliver_to",
 }
-RUN_JSON_FIELDS = {"plan", "trigger_data", "messages", "result", "pending_question", "limits"}
+RUN_JSON_FIELDS = {"plan", "trigger_data", "messages", "result", "pending_question", "limits", "memory_sources"}
 RUN_COLUMNS = {
     "status", "plan", "trigger_data", "messages", "result", "error", "resume_count", "retry_of",
-    "pending_question", "limits", "last_activity_at", "started_at", "finished_at", "created_at",
+    "pending_question", "limits", "last_activity_at", "started_at", "finished_at", "created_at", "memory_sources",
 }
 # Columns added after the first stub schema; ensured on start for older databases.
 _ADDED_TASK_COLUMNS = {
@@ -43,7 +43,7 @@ _ADDED_TASK_COLUMNS = {
 }
 _ADDED_RUN_COLUMNS = {
     "plan": "TEXT", "resume_count": "INTEGER NOT NULL DEFAULT 0", "retry_of": "TEXT", "pending_question": "TEXT",
-    "limits": "TEXT", "last_activity_at": "TEXT",
+    "limits": "TEXT", "last_activity_at": "TEXT", "memory_sources": "TEXT",
 }
 
 # Progress updates embedded in each run of a serialized Task; the full log is at
@@ -335,6 +335,7 @@ class TaskRepo:
             "retry_of": run.get("retry_of"),
             "pending_question": _question_to_api(run.get("pending_question")) if run["status"] == "waiting_for_user" else None,
             "last_activity_at": run.get("last_activity_at") or run.get("started_at"),
+            "memory_sources": run.get("memory_sources") or [],
         }
 
     @staticmethod

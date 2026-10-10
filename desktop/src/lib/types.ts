@@ -1179,6 +1179,8 @@ export interface Run {
   pending_question?: RunQuestion | null
   /** When the run last showed any sign of work (a step, a model reply). */
   last_activity_at?: ISODate | null
+  /** Memories the run had in mind: facts in its instructions or found by a memory look-up (docs/API.md §4). */
+  memory_sources?: MemorySource[]
 }
 
 export interface TaskChatMessage {

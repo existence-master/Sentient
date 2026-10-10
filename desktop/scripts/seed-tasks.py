@@ -152,6 +152,7 @@ async def add_run(
     result: dict | None = None,
     error: str | None = None,
     duration_s: int | None = None,
+    memory_sources: list[dict] | None = None,
 ) -> str:
     run_id = await repo.insert_run(task_id, now=iso(started), plan=plan or [], trigger_data=trigger)
     for offset_s, message in events:
@@ -162,8 +163,25 @@ async def add_run(
         fields["finished_at"] = iso(started + timedelta(seconds=duration_s or last + 4))
     if result is not None:
         fields["result"] = result
+    if memory_sources:
+        fields["memory_sources"] = memory_sources
     await repo.update_run(run_id, fields)
     return run_id
+
+
+async def seeded_sources(repo, texts: list[str]) -> list[dict]:
+    """Memory sources pointing at facts seed-memory-skills.py made (the first as in the prompt, the rest as looked
+    up), so "This is wrong" edits real memories. Facts it has not made are left out."""
+    out = []
+    for n, text in enumerate(texts):
+        try:
+            row = await repo.store.fetchone("SELECT id, source FROM facts WHERE content = ?", (text,))
+        except Exception:  # no memory table yet
+            row = None
+        if row:
+            out.append({"kind": "fact", "id": int(row["id"]), "text": text, "source": row["source"],
+                        "via": "prompt" if n == 0 else "tool"})
+    return out
 
 
 def info(text: str) -> dict:
@@ -513,6 +531,10 @@ async def seed(app: SentientApp) -> dict[str, str]:
             "files_created": [],
             "tools_used": ["gcalendar", "memory", "notion"],
         },
+        memory_sources=await seeded_sources(repo, [
+            "Maya is waiting for Paperkite to approve her quote for the website",
+            "Maya chose a warm serif font and soft pastel colours for the Paperkite website",
+        ]),
     )
 
     # 7. running now ------------------------------------------------------------
