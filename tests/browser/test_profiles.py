@@ -6,6 +6,7 @@ import asyncio
 import http.server
 import json
 import threading
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -421,6 +422,27 @@ async def test_finished_download_is_reported_on_the_next_result():
     assert task not in svc._download_tasks
 
 
+async def test_download_collection_without_start_wait_returns_immediately(monkeypatch):
+    svc = BrowserService(make_app())
+    monkeypatch.setattr(browser_service, "DOWNLOAD_APPEAR_GRACE_S", 0.01)
+    original_sleep = asyncio.sleep
+    sleeps = []
+
+    async def unexpected_sleep(delay):
+        sleeps.append(delay)
+        await original_sleep(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", unexpected_sleep)
+
+    assert await svc._include_downloads({"ok": True}, set()) == {"ok": True}
+    assert sleeps == []
+
+    assert await svc._include_downloads(
+        {"ok": True}, set(), wait_for_download_start=True
+    ) == {"ok": True}
+    assert sleeps
+
+
 async def test_unfinished_download_stays_tracked_until_a_later_result(monkeypatch):
     svc = BrowserService(make_app())
     completion = asyncio.get_running_loop().create_future()
@@ -453,6 +475,115 @@ async def test_unfinished_download_stays_tracked_until_a_later_result(monkeypatc
         await asyncio.gather(svc._download_cleanup_task, return_exceptions=True)
 
 
+async def test_completed_download_is_reported_while_another_download_is_stuck(monkeypatch):
+    svc = BrowserService(make_app())
+    stalled_started = asyncio.Event()
+    finish_stalled = asyncio.Event()
+
+    class Download:
+        def __init__(self, suggested_filename):
+            self.suggested_filename = suggested_filename
+
+    async def save_download(download):
+        if download.suggested_filename == "stalled.pdf":
+            stalled_started.set()
+            await finish_stalled.wait()
+            return "downloads/stalled.pdf"
+        return "downloads/ready.pdf"
+
+    monkeypatch.setattr(svc, "_save_download", save_download)
+    svc._on_download(Download("stalled.pdf"))
+    stalled_task = next(iter(svc._download_tasks))
+    await stalled_started.wait()
+    svc._on_download(Download("ready.pdf"))
+    ready_task = next(task for task in svc._download_tasks if task is not stalled_task)
+    await ready_task
+
+    result = await asyncio.wait_for(svc._include_downloads({"ok": True}, set()), timeout=0.5)
+
+    assert result == {
+        "ok": True,
+        "downloads": ["downloads/ready.pdf"],
+        "downloads_in_progress": ["stalled.pdf"],
+    }
+    assert stalled_task in svc._download_tasks
+
+    finish_stalled.set()
+    await stalled_task
+    later_result = await svc._include_downloads({"ok": True}, set())
+    assert later_result == {"ok": True, "downloads": ["downloads/stalled.pdf"]}
+    if svc._download_cleanup_task:
+        svc._download_cleanup_task.cancel()
+        await asyncio.gather(svc._download_cleanup_task, return_exceptions=True)
+
+
+async def test_attached_downloads_are_wired_only_for_sentient_pages_and_their_popups():
+    svc = BrowserService(make_app())
+    svc._attached = True
+
+    class Page:
+        def __init__(self):
+            self.url = "about:blank"
+            self.handlers = {}
+
+        def on(self, event, handler):
+            self.handlers.setdefault(event, []).append(handler)
+
+    class Context:
+        async def new_page(self):
+            return sentient_page
+
+    user_page = Page()
+    sentient_page = Page()
+    user_popup = Page()
+    sentient_popup = Page()
+    nested_popup = Page()
+
+    svc._wire_page(user_page)
+    svc._wire_page(sentient_page)
+    svc._active = await svc._new_page(Context())
+    svc._wire_page(user_popup)
+    user_page.handlers["popup"][0](user_popup)
+    svc._wire_page(sentient_popup)
+    sentient_page.handlers["popup"][0](sentient_popup)
+    assert svc._active is sentient_popup
+    svc._wire_page(nested_popup)
+    sentient_popup.handlers["popup"][0](nested_popup)
+
+    assert "download" not in user_page.handlers
+    assert "download" not in user_popup.handlers
+    assert sentient_page.handlers["download"] == [svc._on_download]
+    assert sentient_popup.handlers["download"] == [svc._on_download]
+    assert nested_popup.handlers["download"] == [svc._on_download]
+    assert nested_popup in svc._download_pages
+
+
+def test_edge_downloads_hub_is_ignored_and_active_page_is_restored():
+    svc = BrowserService(make_app())
+
+    class Page:
+        def __init__(self, url):
+            self.url = url
+
+        @property
+        def main_frame(self):
+            return self
+
+        def is_closed(self):
+            return False
+
+    original = Page("https://example.com/")
+    downloads_hub = Page("edge://downloads-hub/")
+    context = type("Context", (), {"pages": [original, downloads_hub]})()
+    svc._context = context
+    svc._active = downloads_hub
+
+    svc._on_navigated(downloads_hub, downloads_hub)
+
+    assert svc._active is original
+    assert svc._usable_pages(context) == [original]
+
+
 async def test_failed_download_does_not_discard_action_or_successful_download():
     svc = BrowserService(make_app())
 
@@ -481,17 +612,26 @@ async def test_stalled_download_is_timed_out_and_reported(tmp_path, monkeypatch)
 
     class StalledDownload:
         suggested_filename = "stalled.pdf"
+        cancelled = False
 
         async def save_as(self, target):
+            Path(target).write_text("partial", encoding="utf-8")
             await asyncio.Future()
+
+        async def cancel(self):
+            self.cancelled = True
+
+    download = StalledDownload()
 
     monkeypatch.setattr(browser_service.paths, "files_dir", lambda: tmp_path)
     monkeypatch.setattr(browser_service, "DOWNLOAD_MAX_DURATION_S", 0.01)
-    task = asyncio.create_task(svc._save_download(StalledDownload()))
+    task = asyncio.create_task(svc._save_download(download))
     svc._download_tasks.add(task)
 
     with pytest.raises(BrowserError, match="did not finish within"):
         await task
+    assert download.cancelled
+    assert not (tmp_path / "downloads" / "stalled.pdf").exists()
     result = await svc._include_downloads({"ok": True}, set())
 
     assert result == {
@@ -499,6 +639,123 @@ async def test_stalled_download_is_timed_out_and_reported(tmp_path, monkeypatch)
         "download_errors": ["Download 'stalled.pdf' did not finish within 0.01 seconds."],
     }
     assert task not in svc._download_tasks
+
+
+async def test_download_save_error_includes_underlying_reason(tmp_path, monkeypatch):
+    svc = BrowserService(make_app())
+
+    class FailedDownload:
+        suggested_filename = "broken.pdf"
+
+        async def save_as(self, target):
+            raise OSError("The connection was lost")
+
+        async def cancel(self):
+            raise AssertionError("a failed save should not be cancelled")
+
+    monkeypatch.setattr(browser_service.paths, "files_dir", lambda: tmp_path)
+
+    with pytest.raises(
+        BrowserError,
+        match=r"Couldn't save downloaded file 'broken\.pdf': The connection was lost",
+    ):
+        await svc._save_download(FailedDownload())
+
+    assert not (tmp_path / "downloads" / "broken.pdf").exists()
+
+
+async def test_stalled_download_cancel_is_bounded_and_partial_file_is_removed(tmp_path, monkeypatch):
+    svc = BrowserService(make_app())
+    cancel_started = asyncio.Event()
+
+    class StalledDownload:
+        suggested_filename = "stalled.pdf"
+
+        async def save_as(self, target):
+            Path(target).write_text("partial", encoding="utf-8")
+            await asyncio.Future()
+
+        async def cancel(self):
+            cancel_started.set()
+            await asyncio.Future()
+
+    monkeypatch.setattr(browser_service.paths, "files_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser_service, "DOWNLOAD_MAX_DURATION_S", 0.01)
+    monkeypatch.setattr(browser_service, "DOWNLOAD_CANCEL_TIMEOUT_S", 0.01)
+
+    with pytest.raises(BrowserError, match=r"Browser cancellation failed: timed out after 0.01 seconds"):
+        await asyncio.wait_for(svc._save_download(StalledDownload()), timeout=0.5)
+
+    assert cancel_started.is_set()
+    assert not (tmp_path / "downloads" / "stalled.pdf").exists()
+
+
+async def test_cancelled_save_cancels_download_and_removes_partial_file(tmp_path, monkeypatch):
+    svc = BrowserService(make_app())
+    save_started = asyncio.Event()
+
+    class StalledDownload:
+        suggested_filename = "cancelled.pdf"
+        cancelled = False
+
+        async def save_as(self, target):
+            Path(target).write_text("partial", encoding="utf-8")
+            save_started.set()
+            await asyncio.Future()
+
+        async def cancel(self):
+            self.cancelled = True
+
+    download = StalledDownload()
+    monkeypatch.setattr(browser_service.paths, "files_dir", lambda: tmp_path)
+    task = asyncio.create_task(svc._save_download(download))
+    await save_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert download.cancelled
+    assert not (tmp_path / "downloads" / "cancelled.pdf").exists()
+
+
+async def test_stalled_download_does_not_block_another_save(tmp_path, monkeypatch):
+    svc = BrowserService(make_app())
+    stalled_started = asyncio.Event()
+    finish_stalled = asyncio.Event()
+
+    class StalledDownload:
+        suggested_filename = "report.txt"
+
+        async def save_as(self, target):
+            stalled_started.set()
+            await finish_stalled.wait()
+            Path(target).write_text("first", encoding="utf-8")
+
+        async def cancel(self):
+            finish_stalled.set()
+
+    class QuickDownload:
+        suggested_filename = "report.txt"
+
+        async def save_as(self, target):
+            Path(target).write_text("second", encoding="utf-8")
+
+        async def cancel(self):
+            raise AssertionError("a completed download should not be cancelled")
+
+    monkeypatch.setattr(browser_service.paths, "files_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser_service, "DOWNLOAD_MAX_DURATION_S", 1)
+
+    stalled = asyncio.create_task(svc._save_download(StalledDownload()))
+    await stalled_started.wait()
+    quick = asyncio.create_task(svc._save_download(QuickDownload()))
+
+    assert await asyncio.wait_for(quick, timeout=0.2) == "downloads/report(1).txt"
+    finish_stalled.set()
+    assert await stalled == "downloads/report.txt"
+    assert (tmp_path / "downloads" / "report.txt").read_text(encoding="utf-8") == "first"
+    assert (tmp_path / "downloads" / "report(1).txt").read_text(encoding="utf-8") == "second"
 
 
 async def test_unreported_completed_download_expires_after_reporting_window(monkeypatch):

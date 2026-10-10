@@ -165,6 +165,16 @@ async def test_attach_to_a_running_browser_and_detach_leaves_it_running(browser,
     assert status["attached"] and status["profile"] == "mine" and status["engine"] is None
     assert len(status["tabs"]) >= 2  # the user's own tab plus the one Sentient opened for itself
 
+    user_page = next(page for page in browser._context.pages if page is not browser._active)
+    await user_page.goto(f"{site}/download.html")
+    downloads_before = browser._download_tasks.copy()
+    async with user_page.expect_download(timeout=10_000) as download_info:
+        await user_page.get_by_role("link", name="Download report").click()
+    user_download = await download_info.value
+    assert user_download.suggested_filename == "report.txt"
+    assert browser._download_tasks == downloads_before
+    await user_download.cancel()
+
     download_page = await bt.browser_open.call(ctx, {"url": f"{site}/download.html", "profile": "mine"})
     download_ref = next(
         line.split("]")[0][1:]

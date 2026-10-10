@@ -64,9 +64,15 @@ async def test_download_is_saved_and_reported(browser, site):
     result = await bt.browser_click.call(ctx, {"ref": link})
     assert result["downloads"] == ["downloads/report.txt"]
     saved = paths.files_dir() / result["downloads"][0]
-    print(saved)
-    print(saved.exists())
     assert saved.read_text(encoding="utf-8") == "Sentient browser download test.\n"
+
+
+async def test_open_direct_download_is_reported_as_normal_result(browser, site):
+    result = await bt.browser_open.call(make_ctx(browser.app), {"url": f"{site}/direct-download"})
+
+    assert result.get("downloads") == ["downloads/direct-report.txt"]
+    saved = paths.files_dir() / result["downloads"][0]
+    assert saved.read_text(encoding="utf-8") == "Direct browser-open download test.\n"
 
 
 async def test_safety_in_real_pages(browser, site):

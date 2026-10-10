@@ -56,6 +56,18 @@ class _Quiet(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):  # keep test output clean
         return
 
+    def do_GET(self):
+        if self.path == "/direct-download":
+            body = b"Direct browser-open download test.\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", 'attachment; filename="direct-report.txt"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
+
 
 @pytest.fixture(scope="session")
 def site(tmp_path_factory):
