@@ -163,6 +163,10 @@ async def test_jobs_become_paused_tasks_with_schedules(app, hermes_home):
         "job:a6b1c2d3e4f5": "It runs every 2 minutes; Sentient runs things at most every 5 minutes.",
     }
 
+    assert all("hermes_deliver" in j for j in plan["jobs"])
+    assert jobs["job:a6b1c2d3e4f5"]["hermes_deliver"] == "telegram:fixture-chat"
+    assert jobs["job:f6a1b2c3d4e5"]["hermes_deliver"] == "local"
+
     result = await hermes.apply(app, str(hermes_home), ["jobs"])
     assert [c["name"] for c in result["jobs"]["created"]] == ["Morning brief", "Weekday standup notes", "Watch prices"]
     assert len(result["jobs"]["skipped"]) == 4

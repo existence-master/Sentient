@@ -589,7 +589,14 @@ async def _plan_jobs(app: Any, home: Path) -> list[dict]:
         skills = [str(s) for s in (job.get("skills") or ([job["skill"]] if job.get("skill") else [])) if str(s).strip()]
         name = str(job.get("name") or "").strip() or (prompt or (skills[0] if skills else "Hermes job"))[:50]
         schedule, shown, reason = _job_schedule(job.get("schedule"))
-        info: dict[str, Any] = {"name": name, "prompt": prompt, "schedule_text": shown, "skills": skills, "script": None}
+        info: dict[str, Any] = {
+            "name": name,
+            "prompt": prompt,
+            "schedule_text": shown,
+            "skills": skills,
+            "script": None,
+            "hermes_deliver": str(job.get("deliver") or "").strip() or None,
+        }
         if key.split(":", 1)[1] in done:
             items.append(_item(key, "skip", "Already brought over.", schedule=None, kind="task", delivery="desktop",
                                deliver_to="desktop", **info))
@@ -600,8 +607,7 @@ async def _plan_jobs(app: Any, home: Path) -> list[dict]:
             continue
         schedule = normalize_schedule(schedule, tz)
         delivery, deliver_to, delivery_note = await _delivery(app, job.get("deliver"), job.get("origin"))
-        info.update(schedule=schedule, delivery=delivery, deliver_to=deliver_to,
-                    hermes_deliver=str(job.get("deliver") or "").strip() or None)
+        info.update(schedule=schedule, delivery=delivery, deliver_to=deliver_to)
         monitor = str(job.get("monitor_script") or "").strip()
         raw_script = monitor or str(job.get("script") or "").strip()
         kind = "task"
