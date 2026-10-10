@@ -58,6 +58,12 @@ FRAME_QUALITY = 55
 HEADLESS_VIEWPORT = {"width": 1280, "height": 800}
 LAUNCH_TIMEOUT_S = 60.0
 CLOSE_TIMEOUT_S = 20.0
+# Site storage (localStorage, where many sites keep a sign-in) reaches disk on a timer, not at once. Launched browsers
+# use Chromium's short 1 s commit delay (STORAGE_FLAG); before closing one, its tabs are closed and this long is waited
+# so a sign-in made just before a profile switch, idle close or quit isn't lost.
+STORAGE_FLAG = "--enable-aggressive-domstorage-flushing"
+STORAGE_FLUSH_S = 1.5
+PAGE_CLOSE_TIMEOUT_S = 5.0
 # models often pass the whole snapshot line ("[e4] button \"Place order\"") instead of just "e4"
 _REF_RE = re.compile(r"\b(e\d+)\b", re.IGNORECASE)
 
@@ -531,7 +537,7 @@ class BrowserService(Service):
                 "user_data_dir": str(folder),
                 "headless": headless,
                 "timeout": 45_000,
-                "args": ["--no-first-run", "--no-default-browser-check", "--hide-crash-restore-bubble"],
+                "args": ["--no-first-run", "--no-default-browser-check", "--hide-crash-restore-bubble", STORAGE_FLAG],
             }
             if channel != "chromium":
                 kwargs["channel"] = channel
@@ -608,6 +614,7 @@ class BrowserService(Service):
                 if attached:
                     await asyncio.wait_for(browser.close(), timeout=CLOSE_TIMEOUT_S)
                 else:
+                    await self._flush_storage(ctx)
                     await asyncio.wait_for(ctx.close(), timeout=CLOSE_TIMEOUT_S)
         finally:
             self._closing = False
@@ -618,6 +625,20 @@ class BrowserService(Service):
             self._active = None
             self._snap = None
             self._focused = None
+
+    async def _flush_storage(self, ctx: Any) -> None:
+        """Let a launched browser write site storage to disk before it closes: close its tabs (their last writes
+        reach the browser, pagehide handlers run), then wait out the storage commit delay. Skipped when no site was
+        open and nothing happened lately."""
+        pages = [p for p in list(ctx.pages) if not p.is_closed()]
+        visited = any(str(p.url or "").startswith(("http://", "https://")) for p in pages)
+        recent = time.monotonic() - self._last_used < STORAGE_FLUSH_S
+        if not (visited or recent):
+            return
+        for page in pages:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(page.close(), timeout=PAGE_CLOSE_TIMEOUT_S)
+        await asyncio.sleep(STORAGE_FLUSH_S)
 
     async def _shutdown(self, publish: bool = True) -> None:
         async with self._life_lock:
