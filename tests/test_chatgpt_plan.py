@@ -142,6 +142,20 @@ async def test_first_sign_in_registers_and_stores_tokens(app, keychain):
     assert ok2 is False and "different app" in msg
 
 
+async def test_a_failed_first_exchange_keeps_the_issued_client_for_the_next_try(app, keychain):
+    """OpenAI's guidance for invalid_grant: discard the code, sign in again with the client id it just issued."""
+    started = await app.connections.start_chatgpt()
+    q = {k: v[0] for k, v in parse_qs(urlsplit(started["auth_url"]).query).items()}
+    with respx.mock(assert_all_called=True) as router:
+        router.post(chatgpt.TOKEN_URL).mock(return_value=httpx.Response(400, json={"error": "invalid_grant"}))
+        ok, msg = await app.connections.oauth_callback({"state": q["state"], "code": "c", "client_id": ISSUED,
+                                                       "scope": chatgpt.SCOPES})
+    assert ok is False and "Plus or Pro" in msg and chatgpt.load_tokens() is None
+    assert await app.store.get_meta(chatgpt.CLIENT_META) == ISSUED
+    retry = {k: v[0] for k, v in parse_qs(urlsplit((await app.connections.start_chatgpt())["auth_url"]).query).items()}
+    assert retry["client_id"] == ISSUED and "agent_name_hint" not in retry
+
+
 async def test_forged_state_and_refusals_store_nothing(app, keychain):
     started = await app.connections.start_chatgpt()
     q = {k: v[0] for k, v in parse_qs(urlsplit(started["auth_url"]).query).items()}

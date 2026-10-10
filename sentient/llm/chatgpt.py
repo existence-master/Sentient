@@ -153,7 +153,14 @@ async def exchange_code(*, client_id: str, code: str, verifier: str, redirect_ur
                                      "code_verifier": verifier, "redirect_uri": redirect_uri, "resource": RESOURCE})
     if r.status_code >= 400:
         code_, detail = _oauth_error(r)
-        err = ChatGPTError(f"ChatGPT turned down the sign-in ({detail or code_ or r.status_code}). Please try again.")
+        if code_ == "invalid_grant":
+            # seen in real use when the account can't grant plan usage ("A required permission is unavailable")
+            msg = ("ChatGPT turned down the sign-in. This usually means your ChatGPT plan can't share its usage with "
+                   "apps: it needs ChatGPT Plus or Pro on a personal account (not Free, Go or a work workspace). "
+                   "If you have Plus or Pro, try again.")
+        else:
+            msg = f"ChatGPT turned down the sign-in ({detail or code_ or r.status_code}). Please try again."
+        err = ChatGPTError(msg)
         err.code = code_  # type: ignore[attr-defined]
         raise err
     try:
@@ -296,6 +303,10 @@ async def finish_sign_in(store: Any, flow: dict, params: dict[str, str]) -> str:
     except ChatGPTError as exc:
         if getattr(exc, "code", "") == "invalid_client" and not flow["registering"]:
             await store.set_meta(CLIENT_META, "")  # the saved registration is gone: register again next time
+        elif flow["registering"]:
+            # OpenAI issued this install's client id on the callback even though the exchange failed: keep it, so
+            # the next attempt signs in with it instead of registering again (OpenAI's guidance for invalid_grant)
+            await store.set_meta(CLIENT_META, client_id)
         raise
     if not has_plan_scope(tok.get("scope") or params.get("scope")):
         raise ChatGPTError("ChatGPT didn't allow Sentient to use your plan. Plan usage needs ChatGPT Plus or Pro; "
