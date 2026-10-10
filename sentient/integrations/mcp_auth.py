@@ -8,6 +8,10 @@ token expires, so a token loaded after a restart is refreshed instead of sent st
 Keychain entries per server (never in config): ``mcp:<name>:headers`` (header values),
 ``mcp:<name>:oauth`` (tokens) and ``mcp:<name>:client`` (the registered OAuth client).
 Values longer than one keychain entry allows are split over ``<entry>:1``, ``<entry>:2``... (``sentient.secrets``).
+
+The keychain is shared by every Sentient setup on the computer, so the token and client records also carry the
+server address they belong to (``server_url``). A setup that adds a server with the same name only clears a sign-in
+made for another address (``stale_sign_in``).
 """
 
 from __future__ import annotations
@@ -58,6 +62,25 @@ def client_secret(server: str) -> str:
 
 # Chunked keychain JSON lives in sentient.secrets; these names stay for existing callers.
 
+SERVER_URL_KEY = "server_url"
+
+
+def stale_sign_in(server: str, url: str | None, *, changed_here: bool) -> list[str]:
+    """The sign-in entries (tokens, registered client) that belong to another address than ``url``.
+
+    A record names its address and is stale when ``url`` is another one (a local server, ``url=None``, leaves it to
+    the setup that uses it). An older record without an address counts as stale only when this setup had the server
+    at another address (``changed_here``), since another setup may be using it."""
+    stale = []
+    for name in (tokens_secret(server), client_secret(server)):
+        rec = load_json(name)
+        if not isinstance(rec, dict):
+            continue
+        saved = rec.get(SERVER_URL_KEY)
+        if (url is not None and saved != url) if saved else changed_here:
+            stale.append(name)
+    return stale
+
 
 def forget_server(server: str) -> None:
     for name in (headers_secret(server), tokens_secret(server), client_secret(server)):
@@ -72,10 +95,14 @@ class KeychainTokenStorage:
     without deleting a working sign-in until a new one has replaced it.
     """
 
-    def __init__(self, server: str, *, fresh: bool = False):
+    def __init__(self, server: str, *, fresh: bool = False, url: str | None = None):
         self.server = server
         self.fresh = fresh
+        self.url = url
         self.saved = False
+
+    def _tag(self, rec: dict) -> dict:
+        return {**rec, SERVER_URL_KEY: self.url} if self.url else rec
 
     def record(self) -> dict | None:
         return load_json(tokens_secret(self.server))
@@ -112,7 +139,7 @@ class KeychainTokenStorage:
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
         expires_at = time.time() + int(tokens.expires_in) - EXPIRY_MARGIN_S if tokens.expires_in is not None else None
-        rec = {"tokens": tokens.model_dump(mode="json", exclude_none=True), "expires_at": expires_at}
+        rec = self._tag({"tokens": tokens.model_dump(mode="json", exclude_none=True), "expires_at": expires_at})
         if not save_json(tokens_secret(self.server), rec):
             raise SignInFailed("The system keychain is unavailable, so the sign-in can't be saved.")
         self.saved = True
@@ -122,12 +149,12 @@ class KeychainTokenStorage:
         if not data:
             return None
         try:
-            return OAuthClientInformationFull.model_validate(data)
+            return OAuthClientInformationFull.model_validate({k: v for k, v in data.items() if k != SERVER_URL_KEY})
         except Exception:
             return None
 
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
-        if not save_json(client_secret(self.server), client_info.model_dump(mode="json", exclude_none=True)):
+        if not save_json(client_secret(self.server), self._tag(client_info.model_dump(mode="json", exclude_none=True))):
             raise SignInFailed("The system keychain is unavailable, so the sign-in can't be saved.")
 
 

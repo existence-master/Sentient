@@ -176,6 +176,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- Adding a server (MCP) that you already signed in to from another Sentient setup on the same computer, such as a
+  fresh install or a test setup, no longer signs you out of it. The sign-in now remembers the server's address, so it
+  is kept and reused for the same address and only cleared when the address changes.
 - Local models can now use large MCP servers such as Composio, Notion or GitHub. Naming the server in your message
   ("using Composio...") always offers its tools, and a server with more tools than fit offers its most relevant ones,
   keeping its "search" and "run" tools together, instead of none at all.
