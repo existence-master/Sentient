@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from sentient.gateway.deps import AUTH, get_core
-from sentient.llm.provider import ProviderError
+from sentient.llm.provider import ModelRefused, ProviderError
 from sentient.tasks.service import TaskConflict, TaskNotFound
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"], dependencies=AUTH)
@@ -47,6 +47,8 @@ async def _guard[T](awaitable: Awaitable[T]) -> T:
         raise HTTPException(status_code=404, detail="Task not found") from exc
     except TaskConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ModelRefused as exc:  # a model that is set up can't do this job: say why and what to change
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ProviderError as exc:
         raise HTTPException(status_code=503, detail=f"The AI model is unavailable: {exc}") from exc
     except TypeError as exc:  # the model returned the wrong JSON shape

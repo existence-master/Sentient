@@ -176,6 +176,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- A task that can't be planned because Claude Code is your main model now says so and what to do ("Pick a
+  planner model in Settings > Models"), instead of saying the AI model is unavailable.
+- A memory waiting for your review now shows the page or message it came from, not the error from a later action
+  you declined or that failed.
 - Adding a server (MCP) that you already signed in to from another Sentient setup on the same computer, such as a
   fresh install or a test setup, no longer signs you out of it. The sign-in now remembers the server's address, so it
   is kept and reused for the same address and only cleared when the address changes.
@@ -194,6 +198,18 @@ and versions follow [Semantic Versioning](https://semver.org/).
   dropped connection when the computer is busy.
 - What Sentient learns about you reads your messages in the order you sent them, even when two were saved at the
   same instant.
+- The model check-up no longer warns about the graphics card on an 8 GB card running the setup Sentient recommends
+  for it (qwen3:8b reading 8,192 tokens at a time). About 90% of the model fits there, which is expected; the only way
+  to fit all of it is a context below 8,192 tokens, which cuts off long tasks. A bigger spill, a longer context or a
+  different model still gets the warning.
+- Saving something new about you no longer overwrites a different memory: "doesn't want files written" is kept next
+  to "doesn't want files deleted" instead of replacing it, and so is "doesn't want emails deleted". A memory is only
+  changed when the new one is about the same person and the same thing. A vaguer memory that an existing one already
+  covers ("your sister lives in a city", "you have a sister") is no longer added, and neither are gaps like "your
+  sister's job is unknown".
+- Everyday phrases like "If you don't know, say so" no longer make Sentient suggest a Never rule for unrelated
+  tools. A suggested rule for a single tool now needs your words to name an action, the app or the tool, so
+  "Never write files for me" still suggests blocking file writing.
 
 ### Security
 - Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before

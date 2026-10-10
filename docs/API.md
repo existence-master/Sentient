@@ -298,8 +298,9 @@ accept or loosen a rule.
   fast and planner), `thinking` (Ollama models that can think: thinking matches the role's reasoning setting),
   `context` (tokens in use vs the model's maximum from `/api/show`; also warns when the role uses the model sized for
   this computer with more tokens than its graphics card holds, with a `set_context_length` fix to the recommended
-  length), `gpu` (from Ollama `/api/ps`: `size_vram` vs `size`, warns when part of the model runs on the processor; its
-  fix names the recommended model and context length and its action shortens to the recommended length when that is
+  length), `gpu` (from Ollama `/api/ps`: `size_vram` vs `size`, warns when part of the model runs on the processor, except
+  that the model sized for this computer at no more than the recommended length passes with 85% or more on the
+  graphics card, since qwen3:8b at 8,192 tokens keeps about 90% there on an 8 GB card; its fix names the recommended model and context length and its action shortens to the recommended length when that is
   shorter, else 8,192), `embedding` (embedding role only). A model that fails the tool checks gets the recommended model
   as its fix (`qwen3:8b` when the computer only fits a small one). Cloud and
   LM Studio models get no Ollama checks. `action` is an optional one-click fix the window may offer:
@@ -359,7 +360,11 @@ accept or loosen a rule.
   assistant message or `result` (no price: the plan pays). Only a chat reply or `POST /api/models/test` may use it:
   other callers (tasks, subagents, proactivity, follow-ups, dreaming, briefs, memory notes, titles, summaries) get
   "Claude Code only answers your chats..." so the role's fallbacks are tried, and embeddings fail with a plain
-  message. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
+  message. The refusal names the setting to change for the `planner` role ("...so it can't plan tasks. Pick a planner
+  model in Settings > Models.") and the `executor` role ("...Pick an executor model..."). It is a `ModelRefused`
+  (a `ProviderError`); when every model of a role refused, that sentence is the error as is, so a task that fails
+  this way has it as its `error` (instead of "Sorry, the AI model is unavailable right now...") and a task route
+  answers `503` with it as `detail`. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
   and vision). Stop everything kills every running Claude Code process tree.
 - `GET /api/secrets` → `[{name, set: bool, source: "keychain"|"env"|null, kind: "provider"|"integration"}]` for every provider + integration secret name
 - `PUT /api/secrets/{name}` `{value}` → `{ok}` (stored in OS keychain; never echoed back). `chatgpt` → 400: it is a
@@ -989,7 +994,7 @@ Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
 - `GET /api/memories?topic=&q=&source=&limit=&offset=` → `[Memory]` newest first, expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
 - `GET /api/memories/topics` → `[{name, description, count}]`
 - `GET /api/memories/graph` → `{nodes: [{id, label, title, content, topics, memory_type, source, created_at}], links: [{source, target, value}]}` (`label` = content truncated to 25 chars, `title` = full content, as in v2; a link means cosine similarity ≥ `memory.graph_link_similarity`, `value` is that similarity)
-- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone)
+- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. An UPDATE only replaces a fact about the same person and the same action on the same thing ("doesn't want files written" or "doesn't want emails deleted" never replaces "doesn't want files deleted"; it is added instead), and a new fact that an existing one already says in full, with no new name, place or number ("sister lives in a city" next to "sister Meera lives in Lisbon"), returns `SKIP` with that fact)
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)
 - `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
 - `DELETE /api/memories/source/{source}` → `{deleted: n}`
