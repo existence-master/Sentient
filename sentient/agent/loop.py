@@ -881,7 +881,7 @@ class Agent:
             await persist("tool", content, tool_call_id=tc.id, name=tc.name)
         yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
 
-    def _delivered_rows(self, res: Any) -> Any:
+    def delivered_rows(self, res: Any) -> Any:
         """The rows of a list result the model actually read: ``_tool_content`` cuts long results, and a
         memory from the cut part must not be shown as one Sentient had in mind."""
         limit = self.config.chat.tool_result_max_chars
@@ -954,7 +954,10 @@ class Agent:
         channel: str = "desktop",
         attachments: list[str] | None = None,
         model: str | None = None,
+        on_stopped: Callable[[dict], Any] | None = None,
     ) -> AsyncIterator[AgentEvent]:
+        """One chat turn. ``on_stopped`` is called with ``{message_id, memory_sources}`` of the reply kept when the
+        turn is stopped, so the caller can send them with its own ``done`` event."""
         turn_id = new_id()
         ev = {"session_id": session_id, "turn_id": turn_id}
         attachments = attachments or []
@@ -1029,7 +1032,7 @@ class Agent:
                 elif isinstance(event, ToolResultEvent | UserInterjection):
                     partial = ""  # text before a tool call or a steer was already persisted
                     if isinstance(event, ToolResultEvent) and not event.is_error:
-                        sources.add_tool_result(event.name, self._delivered_rows(event.result))
+                        sources.add_tool_result(event.name, self.delivered_rows(event.result))
                     if ctx.untrusted and not marked:  # remember it for the rest of this chat, also after a restart
                         marked = True
                         await self.store.execute(
@@ -1046,7 +1049,9 @@ class Agent:
             release()
             # the user pressed Stop (or the window went away): keep what was shown
             with contextlib.suppress(Exception):
-                await asyncio.shield(self._persist_stopped(session_id, partial, sources))
+                stopped = await asyncio.shield(self._persist_stopped(session_id, partial, sources))
+                if on_stopped is not None:
+                    on_stopped(stopped)
             raise
         except BaseException:
             release()
@@ -1100,11 +1105,11 @@ class Agent:
         await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
         return source
 
-    async def _persist_stopped(self, session_id: str, partial: str, sources: MemorySources) -> None:
+    async def _persist_stopped(self, session_id: str, partial: str, sources: MemorySources) -> dict:
         content = (partial.rstrip() + "\n\n_(stopped)_").strip()
-        await self.store.add_message(
-            session_id, "assistant", content, memory_sources=await sources.resolve(self.store)
-        )
+        memory_sources = await sources.resolve(self.store)
+        message_id = await self.store.add_message(session_id, "assistant", content, memory_sources=memory_sources)
+        return {"message_id": message_id, "memory_sources": memory_sources}
 
     # ------------------------------------------------------------------ tools
     @staticmethod

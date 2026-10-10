@@ -152,6 +152,7 @@ async def add_run(
     result: dict | None = None,
     error: str | None = None,
     duration_s: int | None = None,
+    memory_sources: list[dict] | None = None,
 ) -> str:
     run_id = await repo.insert_run(task_id, now=iso(started), plan=plan or [], trigger_data=trigger)
     for offset_s, message in events:
@@ -162,6 +163,8 @@ async def add_run(
         fields["finished_at"] = iso(started + timedelta(seconds=duration_s or last + 4))
     if result is not None:
         fields["result"] = result
+    if memory_sources:
+        fields["memory_sources"] = memory_sources
     await repo.update_run(run_id, fields)
     return run_id
 
@@ -513,6 +516,12 @@ async def seed(app: SentientApp) -> dict[str, str]:
             "files_created": [],
             "tools_used": ["gcalendar", "memory", "notion"],
         },
+        memory_sources=[
+            {"kind": "fact", "id": 9101, "text": "Maya met Leela at a design meetup in March.", "source": "conversation",
+             "via": "prompt"},
+            {"kind": "fact", "id": 9102, "text": "Paperkite makes a journaling app for students.", "source": "manual",
+             "via": "tool"},
+        ],
     )
 
     # 7. running now ------------------------------------------------------------

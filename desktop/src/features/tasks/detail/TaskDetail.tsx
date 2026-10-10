@@ -544,7 +544,7 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
             </Button>
           </div>
           {last.result ? (
-            <RunResult result={last.result} />
+            <RunResult result={last.result} memorySources={last.memory_sources} />
           ) : last.error ? (
             <Alert tone="danger" icon={<IconAlertCircle />}>
               {last.error}

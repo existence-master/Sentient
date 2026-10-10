@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 
 from fastapi.testclient import TestClient
 
@@ -10,6 +12,7 @@ from sentient.app import SentientApp
 from sentient.gateway.app import create_app
 from sentient.llm.events import Done
 from sentient.memory.sources import MemorySources
+from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from tests.conftest import FakeProvider, tool_call
 from tests.memory.helpers import add_fact
 
@@ -138,3 +141,49 @@ def test_messages_api_and_stream_carry_sources(config, isolated_home, monkeypatc
         assert done["memory_sources"] == [source]
         rows = c.get(f"/api/sessions/{sid}/messages").json()
         assert [r["memory_sources"] for r in rows] == [[], [source]]
+
+
+def test_a_stopped_reply_carries_its_sources_on_the_live_done(config, isolated_home, monkeypatch):
+    """Stop while a tool runs: the live ``done`` has the kept reply's id and memory sources, no reload needed."""
+    monkeypatch.setenv("SENTIENT_GATEWAY_TOKEN", "test-token")
+    started = threading.Event()
+
+    @tool("slow_lookup", risk=Risk.read)
+    async def slow_lookup(ctx: ToolContext) -> dict:
+        """Slow lookup."""
+        started.set()
+        await asyncio.Event().wait()
+        return {"ok": True}
+
+    class Slow(ToolPlugin):
+        id = "slow"
+        display_name = "Slow"
+        tools = [slow_lookup]
+
+    llm = FakeProvider(replies=[[tool_call("slow_lookup")]])
+    core = SentientApp(config, llm=llm, db_path=isolated_home / "stop.db", enable_background=False)
+    with TestClient(create_app(core)) as c:
+        core.registry.register(Slow())
+        c.headers.update({"Authorization": "Bearer test-token"})
+        ins = c.post("/api/user-model/insights", json={"statement": "Maya prefers morning meetings",
+                                                        "dimension": "preferences"}).json()
+        with c.websocket_connect("/ws?token=test-token") as ws:
+            assert ws.receive_json()["type"] == "hello"
+            ws.send_json({"type": "chat.send", "text": "book a call with Aditi"})
+            sid = _until(ws, "session")["session_id"]
+            assert started.wait(5)
+            ws.send_json({"type": "chat.cancel", "session_id": sid})
+            done = _until(ws, "done")
+        source = {"kind": "insight", "id": ins["id"], "text": "Maya prefers morning meetings", "source": "user",
+                  "via": "prompt"}
+        assert done["cancelled"] is True and done["memory_sources"] == [source]
+        kept = c.get(f"/api/sessions/{sid}/messages").json()[-1]
+        assert kept["id"] == done["message_id"] and kept["memory_sources"] == [source]
+        assert kept["content"].endswith("_(stopped)_")
+
+
+def _until(ws, kind: str) -> dict:
+    while True:
+        msg = ws.receive_json()
+        if msg.get("type") == kind:
+            return msg

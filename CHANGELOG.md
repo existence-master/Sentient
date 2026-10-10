@@ -6,6 +6,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Memory sources on tasks:** a task's result now shows "Used 3 memories" too: what Sentient had in mind while it
+  worked, from its instructions and from memory look-ups it read. The list stays with the run when it stops to ask
+  you something, after a restart and on Retry, and each one has **This is wrong** like in chat. A chat reply you
+  stop now shows its memories right away instead of after a reload.
 - **Memory review:** memories that come from an email, a web page, a message, a tool's result, work Sentient did on its
   own, or an imported document wait for you on the new Review tab of the Memory page, with a count in the sidebar.
   Each one shows where it came from and the text it was taken from; approve it, change the wording and approve, turn
