@@ -14,6 +14,7 @@ import { liveItems, useChat } from '@/stores/chat'
 import { AssistantTurn } from './AssistantTurn'
 import { Composer } from './Composer'
 import { RuleProposalCard } from './RuleProposalCard'
+import { takeScreenShare } from './screenShare'
 import { EmptyChat, type Suggestion } from './EmptyChat'
 import { useAttachments } from './useAttachments'
 import { UserMessage } from './UserMessage'
@@ -79,6 +80,14 @@ function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPro
     if (s.autoSend) void onSend(s.prompt, [], undefined)
     else setInject({ text: s.prompt, nonce: Date.now() })
   }
+
+  // A picture from Share this window / Share a region (#172): attach it to this new chat and wait for the question.
+  useEffect(() => {
+    if (sessionId) return
+    const shot = takeScreenShare()
+    if (shot) attachments.add([shot], { source: 'screen' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Prompt handed over from onboarding ("Try: Plan my week").
   const handedOver = useRef(false)

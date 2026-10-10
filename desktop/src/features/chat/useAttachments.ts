@@ -16,6 +16,8 @@ export interface PendingAttachment {
   previewUrl?: string
   error?: string
   abort?: AbortController
+  /** `screen`: shared with Share this window / Share a region; kept in files/screens and marks the chat (ADR 0018). */
+  source?: 'screen'
 }
 
 const MAX_BYTES = 50 * 1024 * 1024
@@ -35,6 +37,7 @@ export function useAttachments() {
     api.files
       .upload(item.file, item.file.name || `pasted-${Date.now()}.png`, {
         signal: abort.signal,
+        extra: item.source ? { source: item.source } : undefined,
         onProgress: (p) => update(item.id, { progress: p })
       })
       .then((res) => update(item.id, { status: 'done', progress: 1, name: res.name, size: res.size, mime: res.mime }))
@@ -45,7 +48,7 @@ export function useAttachments() {
   }, [])
 
   const add = useCallback(
-    (files: FileList | File[]) => {
+    (files: FileList | File[], opts?: { source?: 'screen' }) => {
       const next: PendingAttachment[] = []
       for (const file of Array.from(files)) {
         if (file.size > MAX_BYTES) {
@@ -59,6 +62,7 @@ export function useAttachments() {
           progress: 0,
           size: file.size,
           mime: file.type,
+          source: opts?.source,
           previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
         })
       }
@@ -73,6 +77,8 @@ export function useAttachments() {
     const item = itemsRef.current.find((x) => x.id === id)
     item?.abort?.abort()
     if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl)
+    // a screen capture the user took back is deleted, not left behind in the files folder
+    if (item?.source === 'screen' && item.name) void api.files.delete(item.name).catch(() => undefined)
     setItems((list) => list.filter((x) => x.id !== id))
   }, [])
 

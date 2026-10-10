@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -23,6 +23,7 @@ from sentient.config.schema import SentientConfig
 from sentient.gateway.auth import require_token
 from sentient.gateway.deps import get_core
 from sentient.memory.personas import render_persona
+from sentient.tools.rules import SCREEN_FOLDER
 
 open_router = APIRouter(tags=["core"])
 router = APIRouter(tags=["core"])
@@ -359,8 +360,8 @@ async def approve(request: Request, body: ApprovalBody):
 
 
 # ----------------------------------------------------------------------------- files
-def uploads_dir() -> Path:
-    d = paths.files_dir() / "uploads"
+def uploads_dir(folder: str = "uploads") -> Path:
+    d = paths.files_dir() / folder
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -381,13 +382,17 @@ def resolve_file(name: str) -> Path:
 
 
 @router.post("/api/files", dependencies=_auth)
-async def upload_file(request: Request, file: UploadFile = File(...)):
+async def upload_file(
+    request: Request, file: UploadFile = File(...), source: Literal["upload", "screen"] = Form("upload")
+):
+    # what the user shared from their screen goes to screens/ and marks the chat it is sent in (ADR 0018)
+    folder = uploads_dir(SCREEN_FOLDER if source == "screen" else "uploads")
     name = _safe_name(file.filename or "upload")
-    target = uploads_dir() / name
+    target = folder / name
     stem, suffix = target.stem, target.suffix
     i = 1
     while target.exists():
-        target = uploads_dir() / f"{stem} ({i}){suffix}"
+        target = folder / f"{stem} ({i}){suffix}"
         i += 1
     size = 0
     with target.open("wb") as fh:

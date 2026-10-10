@@ -14,6 +14,8 @@ import type {
   OpenPathTarget,
   SentientBridge,
   ShellPrefs,
+  ShortcutInfo,
+  ShortcutResult,
   VersionInfo
 } from '../../src/types/bridge'
 import { CH } from '../main/channels'
@@ -62,7 +64,9 @@ const bridge: SentientBridge = {
   setAlwaysListening: (enabled: boolean) => ipcRenderer.invoke(CH.setAlwaysListening, enabled),
   getAlwaysListening: () => ipcRenderer.invoke(CH.getAlwaysListening) as Promise<boolean | null>,
   onAlwaysListeningChange: (cb) => subscribe<boolean>(CH.alwaysListeningChanged, cb),
-  notifyWake: () => ipcRenderer.invoke(CH.wakeDetected)
+  notifyWake: () => ipcRenderer.invoke(CH.wakeDetected),
+  getShortcuts: () => ipcRenderer.invoke(CH.getShortcuts) as Promise<ShortcutInfo[]>,
+  setShortcut: (id, accelerator) => ipcRenderer.invoke(CH.setShortcut, id, accelerator) as Promise<ShortcutResult>
 }
 
 contextBridge.exposeInMainWorld('sentient', bridge)

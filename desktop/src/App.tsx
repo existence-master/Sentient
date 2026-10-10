@@ -8,6 +8,7 @@ import { EngineError, Splash } from '@/components/shell/EngineScreens'
 import { TooltipProvider } from '@/components/ui'
 import { ChannelsPage } from '@/features/channels/ChannelsPage'
 import { ChatPage } from '@/features/chat/ChatPage'
+import { holdScreenShare } from '@/features/chat/screenShare'
 import { DevicesPage } from '@/features/devices/DevicesPage'
 import { IntegrationsPage } from '@/features/integrations/IntegrationsPage'
 import { MemoryPage } from '@/features/memory/MemoryPage'
@@ -202,6 +203,11 @@ function GlobalCommands() {
             break
           case 'open-settings':
             navigate(`/settings/${cmd.section ?? ''}`)
+            break
+          case 'share-screen':
+            // a new chat with the picture attached; the user asks and sends (nothing is sent before that)
+            holdScreenShare(cmd.share)
+            navigate('/chat', { state: { fresh: Date.now() } })
             break
         }
       }),
