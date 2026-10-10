@@ -20,13 +20,18 @@ from typing import Any
 from sentient.config.schema import SentientConfig
 from sentient.llm.provider import LLMProvider
 from sentient.memory import prompts
-from sentient.memory.vectors import VecTable
+from sentient.memory.vectors import VecTable, pack
 from sentient.store.db import Store, new_id, now_iso
 
 log = logging.getLogger(__name__)
 
 MAX_MESSAGE_CHARS = 1500
-CLEAN = "COALESCE(untrusted, '') = ''"  # summaries of chats that never read outside content
+# summaries of chats that never read outside content: the summary's own mark and its chat's current one (a chat from
+# before the mark is classified later, ADR 0018). Self-contained, for queries on ``summaries`` without an alias.
+CLEAN = (
+    "COALESCE(summaries.untrusted, '') = '' AND NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.id ="
+    " summaries.session_id AND COALESCE(sessions.untrusted, '') != '')"
+)
 
 
 def parse_when(value: str, *, end: bool = False) -> datetime:
@@ -159,8 +164,9 @@ class EpisodicMemory:
     async def list(self, limit: int = 50) -> list[dict]:
         """Every summary for the user, with ``untrusted`` (the app whose content that chat read, else null)."""
         rows = await self.store.fetchall(
-            "SELECT id, content, start_at, end_at, session_id, NULLIF(untrusted, '') AS untrusted FROM summaries"
-            " ORDER BY end_at DESC LIMIT ?",
+            "SELECT id, content, start_at, end_at, session_id, COALESCE(NULLIF(untrusted, ''),"
+            " (SELECT NULLIF(s.untrusted, '') FROM sessions s WHERE s.id = summaries.session_id)) AS untrusted"
+            " FROM summaries ORDER BY end_at DESC LIMIT ?",
             (limit,),
         )
         return [dict(r) for r in rows]
@@ -170,28 +176,26 @@ class EpisodicMemory:
         left out (ADR 0021): this is what other chats, proactivity and profile upkeep see."""
         if not query.strip():
             return []
+        rows = None
         try:
-            indexed = self.vec.ready or await self.vec.exists()
-            hits = await self.vec.knn((await self._embed([query]))[0], limit * 3) if indexed else None
-            if hits is not None and not hits:
-                return []
+            if self.vec.ready or await self.vec.exists():
+                # nearest clean summaries, filtered before the limit so marked ones can't crowd them out
+                [qvec] = await self._embed([query])
+                rows = await self.store.fetchall(
+                    "SELECT summaries.id, summaries.content, summaries.start_at, summaries.end_at, summaries.session_id,"
+                    " vec_distance_cosine(v.embedding, ?) AS distance FROM summaries"
+                    f" JOIN {self.vec.name} v ON v.rowid = summaries.rowid WHERE {CLEAN} ORDER BY distance LIMIT ?",
+                    (pack(qvec), limit),
+                )
         except Exception as exc:
             log.debug("summary vector search failed: %s", exc)
-            hits = None
-        if hits:
-            sims = dict(hits)
-            marks = ",".join("?" * len(sims))
-            rows = await self.store.fetchall(
-                f"SELECT rowid AS rid, id, content, start_at, end_at, session_id FROM summaries WHERE rowid IN ({marks})"
-                f" AND {CLEAN}",
-                list(sims),
-            )
-            out = [
+            rows = None
+        if rows is not None:
+            return [
                 {k: r[k] for k in ("id", "content", "start_at", "end_at", "session_id")}
-                | {"similarity": round(sims[int(r["rid"])], 4)}
+                | {"similarity": round(1.0 - float(r["distance"]), 4)}
                 for r in rows
             ]
-            return sorted(out, key=lambda x: -x["similarity"])[:limit]
         # no vector index (or embeddings failing): keyword fallback
         words = [w for w in query.split() if len(w) > 2][:6] or [query]
         clause = " OR ".join("content LIKE ?" for _ in words)

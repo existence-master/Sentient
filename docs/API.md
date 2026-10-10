@@ -832,8 +832,9 @@ out of pending; no model output can:
 
 Chats that read outside content reach no other chat in other ways either:
 - conversation summaries carry the chat's mark (`summaries.untrusted`, set from `sessions.untrusted` when written;
-  older rows take it from their chat at startup). `EpisodicMemory.search`, used by `history_semantic_search` and
-  proactive look-ups, leaves them out; the user still sees them in `GET /api/memories/summaries`.
+  older rows take it from their chat at startup), and a summary also counts as marked while its chat is marked now.
+  `EpisodicMemory.search`, used by `history_semantic_search` and proactive look-ups, leaves them out (before ranking,
+  so they never crowd out clean ones); the user still sees them in `GET /api/memories/summaries`.
 - profile upkeep (MEMORY.md and USER.md) reads only active facts and unmarked summaries.
 - `memory_search_history` and `history_time_search` still find the messages, but when a result comes from another
   chat with `sessions.untrusted` set they set `ToolContext.untrusted` to that app, so the run is marked as if it had
