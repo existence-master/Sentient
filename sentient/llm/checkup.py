@@ -20,6 +20,7 @@ import httpx
 
 from sentient import secrets
 from sentient.config.schema import ModelRoles, SentientConfig
+from sentient.llm import chatgpt
 from sentient.llm.provider import ToolCall, provider_config
 
 ROLES = ("primary", "fast", "planner", "executor", "vision", "voice", "embedding")
@@ -35,7 +36,7 @@ SMALL_QWEN = re.compile(r"^qwen3:(0\.6|1\.7|4)b")
 LABELS = {
     "ollama": "Ollama", "ollama_chat": "Ollama", "lm_studio": "LM Studio", "anthropic": "Anthropic",
     "openai": "OpenAI", "gemini": "Google Gemini", "openrouter": "OpenRouter", "groq": "Groq",
-    "mistral": "Mistral", "deepseek": "DeepSeek", "xai": "xAI", "nous": "Nous Portal",
+    "mistral": "Mistral", "deepseek": "DeepSeek", "xai": "xAI", "nous": "Nous Portal", "chatgpt": "ChatGPT",
 }
 ORDER = {"fail": 3, "warn": 2, "pass": 1, "skip": 0}
 
@@ -249,6 +250,13 @@ class _RoleCheck:
                          {"kind": "pull_model", "name": self.name, "label": f"Download {self.name}"})
                 return False
             self.add("connection", "Connection", "pass", f"Ollama is running and {self.name} is downloaded.")
+            return True
+        if self.prefix == "chatgpt":
+            if not chatgpt.signed_in():
+                self.add("connection", "Connection", "fail", "You're not signed in with ChatGPT.",
+                         "Sign in with ChatGPT under Settings > Models > Use a plan you already have.")
+                return False
+            self.add("connection", "Connection", "pass", "You're signed in with ChatGPT.")
             return True
         pc = provider_config(self.run.config, self.prefix)
         if self.prefix not in LOCAL and pc and pc.api_key_env:

@@ -26,13 +26,15 @@ export function ModelPicker({ value, onChange, embedding, noneLabel, provider, c
   const connected = (id: string) => !!providers.data?.find((p) => p.id === id)?.key_set && (!provider || provider === id)
   const openrouter = useModelCatalog('openrouter', connected('openrouter'))
   const nous = useModelCatalog('nous', connected('nous'))
+  const chatgpt = useModelCatalog('chatgpt', connected('chatgpt'))
 
   const groups = useMemo(() => {
     let all = buildModelOptions(local.data, providers.data, { embedding })
     all = withCatalog(all, { id: 'openrouter', label: providerLabel('openrouter') }, openrouter.data, { embedding })
     all = withCatalog(all, { id: 'nous', label: providerLabel('nous') }, nous.data, { embedding })
+    all = withCatalog(all, { id: 'chatgpt', label: 'Using your ChatGPT plan' }, chatgpt.data, { embedding })
     return provider ? all.filter((g) => g.id === provider || (provider === 'ollama_chat' && g.id === 'ollama')) : all
-  }, [local.data, providers.data, embedding, provider, openrouter.data, nous.data])
+  }, [local.data, providers.data, embedding, provider, openrouter.data, nous.data, chatgpt.data])
 
   return (
     <Combobox

@@ -456,6 +456,8 @@ export interface Provider {
   api_base: string | null
   docs_url: string
   suggested: string[]
+  /** Connected by signing in (ChatGPT plan), never by pasting a key. `key_set` means signed in. */
+  sign_in?: boolean
 }
 
 export interface LocalModel {
@@ -482,7 +484,16 @@ export interface ProviderSignIn {
   state: string
 }
 
-/** `GET /api/models/connect/openrouter/{state}`. */
+/** `GET /api/models/connect/chatgpt` (docs/API.md §3). `available` is false when the sign-in is turned off. */
+export interface ChatGPTStatus {
+  available: boolean
+  reason: string | null
+  signed_in: boolean
+  email: string | null
+  manage_usage_url: string
+}
+
+/** `GET /api/models/connect/{openrouter|chatgpt}/{state}`. */
 export interface ProviderSignInStatus {
   status: 'waiting' | 'exchanging' | 'connected' | 'failed'
   error: string | null
@@ -543,7 +554,7 @@ export interface ModelPresetList {
 export type PresetMissingAction = { kind: 'pull_model'; name: string; label: string } | { kind: 'add_key'; provider: string; label: string }
 
 export interface PresetMissing {
-  kind: 'pull_model' | 'add_key' | 'start_ollama'
+  kind: 'pull_model' | 'add_key' | 'start_ollama' | 'sign_in'
   roles: RoleName[]
   model: string | null
   provider?: string

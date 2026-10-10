@@ -120,7 +120,7 @@ export function ModelsSection({ query }: SectionProps) {
           <RoleCard key={r} role={r} config={config} />
         ))}
       </section>
-      {(!q || 'plan claude max anthropic credits openrouter nous portal connect sign in subscription'.includes(q)) && <ConnectPlansSection />}
+      {(!q || 'plan claude max anthropic credits chatgpt openai plus pro openrouter nous portal connect sign in subscription'.includes(q)) && <ConnectPlansSection />}
       <ProvidersPanel />
       <OllamaPanel />
     </div>
@@ -501,6 +501,10 @@ function ProviderRow({ provider: p, source, onKey, onRemove }: { provider: Provi
               <Badge size="xs" tone="success">
                 Local
               </Badge>
+            ) : p.sign_in ? (
+              <Badge size="xs" tone={p.key_set ? 'success' : 'neutral'}>
+                {p.key_set ? 'Signed in' : 'Not signed in'}
+              </Badge>
             ) : p.key_set ? (
               <Badge size="xs" tone="success">
                 Key set{source ? ` · ${source}` : ''}
@@ -514,12 +518,12 @@ function ProviderRow({ provider: p, source, onKey, onRemove }: { provider: Provi
           <div className="truncate font-mono text-2xs text-fg-subtle">{local ? base || 'default address' : p.suggested.slice(0, 3).map(modelShortName).join(' · ')}</div>
         </div>
         <IconButton size="sm" label="Docs" icon={<IconExternalLink size={14} />} onClick={() => void getBridge().openExternal(p.docs_url)} />
-        {!local && (
+        {!local && !p.sign_in && (
           <Button size="sm" variant={p.key_set ? 'ghost' : 'secondary'} leftIcon={<IconKey size={13} />} onClick={onKey}>
             {p.key_set ? 'Replace key' : 'Add key'}
           </Button>
         )}
-        {!local && source === 'keychain' && <IconButton size="sm" label="Remove key" icon={<IconTrash size={14} />} onClick={onRemove} />}
+        {!local && !p.sign_in && source === 'keychain' && <IconButton size="sm" label="Remove key" icon={<IconTrash size={14} />} onClick={onRemove} />}
         <IconButton size="sm" label="Base URL" active={open} icon={<IconChevronRight size={14} className={cn('transition-transform', open && 'rotate-90')} />} onClick={() => setOpen((o) => !o)} />
       </div>
       <AnimatePresence initial={false}>

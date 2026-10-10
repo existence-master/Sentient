@@ -19,6 +19,7 @@ service name `sentient`.
 | Use a **cloud model** | The conversation, relevant memories and tool results for each request go to that provider (for example Anthropic or OpenAI) under their terms. |
 | Use your **Claude plan's API credits** | The same as any Claude model: requests go to Anthropic with your API key. Sentient never asks for your Claude account login. |
 | **Connect OpenRouter** | You sign in on openrouter.ai in your browser and OpenRouter hands Sentient a key for your account, kept in your keychain. Requests then go to OpenRouter, which passes them to the company that runs the model you picked. The model list is fetched from openrouter.ai once connected. |
+| **Sign in with ChatGPT** | You sign in on chatgpt.com in your browser and allow Sentient to use your ChatGPT Plus or Pro plan. The first time, OpenAI registers Sentient for your account with a random id for this computer (not your name or email). The sign-in is kept in your keychain and renews on its own. Requests then go to OpenAI (`api.openai.com`) and are not stored there (`store: false`). Usage counts against your plan; see or limit it at chatgpt.com/settings/usage. Sign out removes the sign-in and asks OpenAI to cancel it. |
 | Use **Nous Portal** | Requests go to Nous Research with your Nous Portal key. |
 | **Connect an app** (Gmail, Slack, Notion...) | Sentient talks directly to that app's servers with your own login. |
 | Use **web search, weather, maps or news** | Your query goes to that service. Web search uses DuckDuckGo by default. |
