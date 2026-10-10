@@ -249,10 +249,17 @@ async def test_a_slow_device_never_holds_up_stop_or_resume(make, monkeypatch):
     monkeypatch.setattr(nodes_service, "STOP_STATE_SEND_S", 0.2)
     app = await make()
     heard: list[dict] = []
+    waited: list[tuple[bool, float]] = []  # (stopped, seconds) for each send to the slow device that was given up on
 
     class Stuck:  # e.g. busy receiving a long audio frame
         async def send(self, obj, payload=None):
-            await asyncio.Event().wait()
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                waited.append((obj["stopped"], loop.time() - started))
+                raise
 
     class Fast:
         async def send(self, obj, payload=None):
@@ -260,11 +267,12 @@ async def test_a_slow_device_never_holds_up_stop_or_resume(make, monkeypatch):
 
     app.nodes._conns = {"stuck": Stuck(), "fast": Fast()}
     try:
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        await asyncio.wait_for(app.stop_all(), 2)
-        await asyncio.wait_for(app.resume(), 2)
-        assert loop.time() - started < 1.5
+        # the slow device never answers, so stopping and resuming only return because its sends are given up on;
+        # the ceilings are generous, and each give-up is timed on its own so the rest of a busy stop doesn't count
+        await asyncio.wait_for(app.stop_all(), 30)
+        await asyncio.wait_for(app.resume(), 30)
+        assert [stopped for stopped, _ in waited] == [True, False]
+        assert all(seconds < 1.5 for _, seconds in waited), waited  # its 0.2 s deadline, not the default 2 s
         assert [m["stopped"] for m in heard] == [True, False]
     finally:
         app.nodes._conns = {}

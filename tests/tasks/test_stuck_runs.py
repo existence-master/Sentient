@@ -10,16 +10,9 @@ import asyncio
 
 from sentient.llm.provider import StreamChunk, ToolCall
 from sentient.tasks import executor, stuck
-from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
+from sentient.tools.base import Risk, Tool, ToolContext, ToolPlugin, tool
 from tests.conftest import FakeProvider
-from tests.tasks.conftest import RESULT, GatedProvider, stream_calls
-
-
-@tool("slow_lookup", risk=Risk.read)
-async def slow_lookup(ctx: ToolContext) -> str:
-    """Look something up (it hangs)."""
-    await asyncio.sleep(30)
-    return "late"
+from tests.tasks.conftest import RESULT, GatedProvider, SkipClock, stream_calls
 
 
 @tool("book_table", risk=Risk.write)
@@ -34,35 +27,39 @@ async def open_site(ctx: ToolContext) -> dict:
     return {"error": "This looks like a password field.", "needs_user": "the page asks for your password"}
 
 
-@tool("long_search", risk=Risk.read)
-async def long_search(ctx: ToolContext) -> str:
-    """Search every table (slow, but it reports progress)."""
-    for i in range(8):
-        await asyncio.sleep(0.2)
-        await ctx.progress({"kind": "status", "text": f"Checked {i + 1} of 8"})
-    return "found a table at 8pm"
-
-
 class Restaurant(ToolPlugin):
     id = "restaurant"
     display_name = "Restaurant"
-    tools = [slow_lookup, book_table, open_site, long_search]
+    tools = [book_table, open_site]
+
+
+# The no-activity tests skip time (``skip_clock``) instead of sleeping: 30 s without activity is stuck, and the slow
+# model and tool report something every 10 s, so a busy machine would have to stall the loop for 20 s of real time
+# to change the outcome.
+STALL_MINUTES = 0.5
+STEP_S = 10.0
+# drain() bounds its wait on the loop's clock, which the slow-model test moves forward by about 250 s
+DRAIN_S = 600.0
 
 
 class SlowStreamingProvider(FakeProvider):
-    """A slow CPU model: thinks, then writes, one small chunk every 0.2 s, well past the no-activity limit."""
+    """A slow CPU model: thinks, then writes, one small chunk every ``STEP_S``, well past the no-activity limit."""
+
+    def __init__(self, clock: SkipClock, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.clock = clock
 
     async def stream(self, role, messages, tools=None, *, model=None):
         self.calls.append({"role": role, "messages": messages, "tools": tools, "model": model})
         reply = self.replies.pop(0) if self.replies else "ok"
         for _ in range(5):
-            await asyncio.sleep(0.2)
+            await self.clock.sleep(STEP_S)
             yield StreamChunk(thinking="hmm ", model="fake")
         if isinstance(reply, list):
             yield StreamChunk(done=True, tool_calls=[ToolCall(**tc) for tc in reply], model="fake")
             return
         for word in reply.split():
-            await asyncio.sleep(0.2)
+            await self.clock.sleep(STEP_S)
             yield StreamChunk(text=word + " ", model="fake")
         yield StreamChunk(done=True, model="fake")
 
@@ -71,8 +68,10 @@ def call(name: str, n: int, **arguments) -> list[dict]:
     return [{"id": f"call_{n}", "name": name, "arguments": arguments}]
 
 
-async def start_task(app) -> str:
-    app.registry.register(Restaurant())
+async def start_task(app, *tools: Tool) -> str:
+    restaurant = Restaurant()
+    restaurant.tools = [*restaurant.tools, *tools]
+    app.registry.register(restaurant)
     now = app.tasks.now_iso()
     task_id = await app.tasks.repo.insert_task({
         "name": "Book the table", "description": "Book a table for two at 8pm", "status": "approval_pending",
@@ -81,7 +80,7 @@ async def start_task(app) -> str:
         "created_at": now, "updated_at": now,
     })
     await app.tasks.approve(task_id)
-    await app.tasks.drain()
+    await app.tasks.drain(DRAIN_S)
     return task_id
 
 
@@ -102,16 +101,24 @@ async def stuck_run(app, task_id: str, reason: str) -> str:
 
 async def answer(app, task_id: str, run_id: str, text: str) -> dict:
     await app.tasks.answer_question(task_id, run_id, text)
-    await app.tasks.drain()
+    await app.tasks.drain(DRAIN_S)
     return await app.tasks.get(task_id)
 
 
-async def test_a_hung_step_gets_stuck_and_try_again_carries_on(make_app, config):
-    config.tasks.stuck_after_minutes = 0.01  # 0.6 s without any activity
+async def test_a_hung_step_gets_stuck_and_try_again_carries_on(make_app, config, skip_clock):
+    config.tasks.stuck_after_minutes = STALL_MINUTES
+
+    @tool("slow_lookup", risk=Risk.read)
+    async def slow_lookup(ctx: ToolContext) -> str:
+        """Look something up (it hangs)."""
+        await skip_clock.sleep(STALL_MINUTES * 60 + 1)  # no sign of life for longer than the limit
+        await asyncio.Event().wait()
+        return "late"
+
     llm = FakeProvider(replies=[call("slow_lookup", 1), "Booked a table for 8pm."], json_replies=[dict(RESULT)])
     app = await make_app(llm)
-    task_id = await start_task(app)
-    run_id = await stuck_run(app, task_id, "Restaurant hasn't responded for 0.01 minutes")
+    task_id = await start_task(app, slow_lookup)
+    run_id = await stuck_run(app, task_id, "Restaurant hasn't responded for 0.5 minutes")
     assert len(stream_calls(llm)) == 1
 
     task = await answer(app, task_id, run_id, "Try again")
@@ -122,13 +129,34 @@ async def test_a_hung_step_gets_stuck_and_try_again_carries_on(make_app, config)
     assert "Restaurant hasn't responded" in resumed[-1]["content"]
 
 
-async def test_a_slow_model_that_keeps_thinking_and_writing_is_never_stuck(make_app, config):
-    config.tasks.stuck_after_minutes = 0.01  # 0.6 s; each model reply and the tool take 1.6 s or more
+async def test_a_slow_model_that_keeps_thinking_and_writing_is_never_stuck(make_app, config, skip_clock, monkeypatch):
+    config.tasks.stuck_after_minutes = STALL_MINUTES  # 30 s; each model reply and the tool take 50 s or more
+    seen = asyncio.Event()  # the run's stuck check saw an event
+    see = stuck.Watch.see
+
+    def watch_see(self, event) -> None:
+        see(self, event)
+        seen.set()
+
+    monkeypatch.setattr(stuck.Watch, "see", watch_see)
+
+    @tool("long_search", risk=Risk.read)
+    async def long_search(ctx: ToolContext) -> str:
+        """Search every table (slow, but it reports progress)."""
+        for i in range(8):
+            await skip_clock.sleep(STEP_S)
+            seen.clear()
+            await ctx.progress({"kind": "status", "text": f"Checked {i + 1} of 8"})
+            # progress reaches the run long before 10 real seconds pass; with skipped time, wait until it has
+            await seen.wait()
+        return "found a table at 8pm"
+
     llm = SlowStreamingProvider(
-        replies=[call("long_search", 1), "Booked a table for two at 8pm tonight."], json_replies=[dict(RESULT)]
+        skip_clock, replies=[call("long_search", 1), "Booked a table for two at 8pm tonight."],
+        json_replies=[dict(RESULT)],
     )
     app = await make_app(llm)
-    task_id = await start_task(app)
+    task_id = await start_task(app, long_search)
     task = await app.tasks.get(task_id)
     run = task["runs"][-1]
     assert task["status"] == "completed" and run["status"] == "completed", run["error"]

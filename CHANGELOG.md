@@ -111,6 +111,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
   and many tools are no longer cut off without warning. Change it with `models.context_length`, per role with
   `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.
+- A script that Sentient runs now always gets a clear answer when one of its tool requests is refused, instead of a
+  dropped connection when the computer is busy.
+- What Sentient learns about you reads your messages in the order you sent them, even when two were saved at the
+  same instant.
 
 ### Security
 - Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before

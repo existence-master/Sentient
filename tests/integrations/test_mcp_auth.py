@@ -271,9 +271,13 @@ async def test_oauth_refreshes_expired_and_rejected_tokens(app, keychain, monkey
     assert _tokens(keychain, "Notes")["tokens"]["access_token"] == mock.issued[2] == mock.seen_tokens[-1]
 
     # a fresh token the server drops early: one refresh after the 401, then connected again without a browser
+    seen = len(mock.seen_tokens)
     conn.broken.set()
-    await asyncio.sleep(0.1)
-    await _wait(app, "Notes", "connected")
+    for _ in range(400):  # until it has reconnected (it used the token again), not just still connected from before
+        if len(mock.seen_tokens) > seen and conn.status == "connected":
+            break
+        await asyncio.sleep(0.05)
+    assert conn.status == "connected" and mock.seen_tokens[-1] == mock.issued[2]
     assert len(mock.token_calls) == 3  # still valid: no refresh
     mock.valid.discard(mock.issued[2])
     conn.broken.set()

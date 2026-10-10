@@ -143,20 +143,25 @@ class ToolBridge:
             if ":" in line:
                 key, value = line.split(":", 1)
                 headers[key.strip().lower()] = value.strip()
-        if len(parts) < 2 or parts[0] != "POST" or parts[1] != "/call":
-            return "404 Not Found", self.encode({"ok": False, "error": "not found"})
-        if not hmac.compare_digest(headers.get("x-sentient-token", ""), self.token):
-            return "403 Forbidden", self.encode({"ok": False, "error": "forbidden"})
         try:
             length = int(headers.get("content-length", "0"))
         except ValueError:
             length = -1
         if length < 0 or length > MAX_BODY:
             return "413 Payload Too Large", self.encode({"ok": False, "error": "request too large"})
+        # Read the whole request before answering, refusals included: closing with the body unread (or still on
+        # its way, as clients send it separately from the headers) resets the connection instead of answering.
         try:
             body = await asyncio.wait_for(reader.readexactly(length), 30)
+        except (asyncio.IncompleteReadError, TimeoutError):
+            return "400 Bad Request", self.encode({"ok": False, "error": "bad request"})
+        if len(parts) < 2 or parts[0] != "POST" or parts[1] != "/call":
+            return "404 Not Found", self.encode({"ok": False, "error": "not found"})
+        if not hmac.compare_digest(headers.get("x-sentient-token", ""), self.token):
+            return "403 Forbidden", self.encode({"ok": False, "error": "forbidden"})
+        try:
             payload = json.loads(body.decode("utf-8") or "{}")
-        except (asyncio.IncompleteReadError, TimeoutError, ValueError):
+        except ValueError:
             return "400 Bad Request", self.encode({"ok": False, "error": "invalid JSON"})
         if not isinstance(payload, dict):
             return "400 Bad Request", self.encode({"ok": False, "error": "invalid request"})

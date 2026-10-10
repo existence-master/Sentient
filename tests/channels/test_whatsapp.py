@@ -429,6 +429,17 @@ async def test_stopall_and_resume_from_whatsapp(wa):
 # ---------------------------------------------------------------------------- connection
 
 
+async def channel_updates(q, enough) -> list[dict]:
+    """``channel.updated`` payloads from ``q``, read until ``enough(payloads)`` is true."""
+    updates: list[dict] = []
+    async with asyncio.timeout(30):
+        while not enough(updates):
+            event = await q.get()
+            if event["type"] == "channel.updated":
+                updates.append(event["data"])
+    return updates
+
+
 async def test_reconnects_after_a_dropped_connection(wa):
     waits: list[float] = []
 
@@ -438,17 +449,15 @@ async def test_reconnects_after_a_dropped_connection(wa):
 
     wa.ch.sleep = fake_sleep
     await wa.link()
-    statuses: list[str] = []
     async with wa.app.bus.subscribe() as q:
         await wa.hub.bridge.inbox.put(None)  # dropped
         await until(lambda: len(wa.hub.bridges) == 2)
         await wa.hub.bridge.inbox.put(("connected", {"jid": ME, "lid": MY_LID, "name": "Maya"}))
         await until(lambda: wa.hub.bridge.connected)
-        await asyncio.sleep(0.05)
-        while not q.empty():
-            e = q.get_nowait()
-            if e["type"] == "channel.updated":
-                statuses.append(e["data"]["status"])
+        updates = await channel_updates(  # until it shows as connected again after reconnecting
+            q, lambda ups: "connecting" in [u["status"] for u in ups] and ups[-1]["status"] == "connected"
+        )
+    statuses = [u["status"] for u in updates]
     assert waits == [1.0]
     assert "connecting" in statuses and statuses[-1] == "connected"
     assert wa.hub.bridges[0].closed
@@ -520,7 +529,6 @@ async def test_a_crash_inside_the_whatsapp_library_never_stops_the_engine(wa, ll
     await wa.app.channels.store.set_state("whatsapp", enabled=1, account_label="+15550001111")
     wa.ch.session_dir().mkdir(parents=True)
     assert await wa.ch.restore()
-    statuses: list[dict] = []
     retries: list[float] = []
 
     async def slow_sleep(seconds: float) -> None:
@@ -530,12 +538,8 @@ async def test_a_crash_inside_the_whatsapp_library_never_stops_the_engine(wa, ll
     wa.ch.sleep = slow_sleep
     async with wa.app.bus.subscribe() as q:
         wa.ch.start_runtime()
-        await until(lambda: not q.empty())
-        await asyncio.sleep(0.05)
-        while not q.empty():
-            e = q.get_nowait()
-            if e["type"] == "channel.updated":
-                statuses.append(e["data"])
+        statuses = await channel_updates(q, bool)
+        await until(lambda: len(retries) >= 2)
     assert statuses[0]["status"] == "error" and "stopped working unexpectedly" in statuses[0]["error"]
     assert "whatsapp bridge failed" in caplog.text
     assert wa.ch.running and retries[:2] == [1.0, 2.0]  # still trying, with backoff; the engine carries on
