@@ -8,7 +8,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ### Added
 - **Models sized for your computer:** Sentient checks how much memory and graphics memory this computer has before
   anything is installed and recommends a local model and how much text it reads at once (for example qwen3:8b reading
-  8,192 tokens on an 8 GB graphics card, qwen3:14b reading 16,384 on a 16 GB one). Onboarding shows it as "Recommended
+  8,192 tokens on an 8 GB graphics card, qwen3:14b reading 16,384 on a 16 GB one). A computer with less than 8 GB of
+  memory is pointed to a cloud model, with a small local model offered only for chat. Onboarding shows it as "Recommended
   for this computer" with a one-click download, the "Local only" model setup uses it, and the model check-up names it
   in its fixes, including a shorter context length when a longer one would push the model onto the processor.
 - **Context meter:** a small "62% of context" meter next to the message box and on running tasks shows how much of

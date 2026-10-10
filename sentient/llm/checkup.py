@@ -460,10 +460,10 @@ class CheckupRun:
         self.shared: dict[tuple, dict[str, tuple[str, list[dict], bool]]] = {}  # settings key -> group -> result
         rec = (hardware or {}).get("recommendation")
         self.recommendation: dict | None = rec if rec and rec.get("tier") != "unknown" else None
-        # the local model the fix hints point to: the one sized for this computer, unless that is a small one
-        self.suggested_local = SUGGESTED_LOCAL
-        if self.recommendation and not SMALL_QWEN.match(self.recommendation["name"]):
-            self.suggested_local = self.recommendation["name"]
+        if self.recommendation and self.recommendation.get("cloud_first"):
+            self.recommendation = None  # only a chat-only model fits: the usual local hints apply
+        # the local model the fix hints point to: the one sized for this computer
+        self.suggested_local = self.recommendation["name"] if self.recommendation else SUGGESTED_LOCAL
 
     def fitting_context(self, name: str) -> int | None:
         """The context length that keeps ``name`` on this computer's graphics card, when it is the model sized for

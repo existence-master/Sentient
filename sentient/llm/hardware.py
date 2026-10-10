@@ -252,8 +252,9 @@ NOTES = {
     "graphics": "Fits on the graphics card, so replies stay quick.",
     "processor": "No graphics card a local model can use was found, so it runs on the processor. Replies will be "
     "slow; a cloud model is much faster.",
-    "small": "This computer has less than 12 GB of memory, so only a small model fits, and it can't use tools "
-    "reliably. A cloud model is the better choice here.",
+    "small": "This computer has less than 8 GB of memory, too little for a local model that can do tasks. A cloud "
+    "model is the better choice: use the Cloud setup or connect a plan you already pay for. A small local model "
+    "fits for chat only; it can't do tasks reliably.",
     "unknown": "Sentient couldn't check this computer's memory, so this is the usual starting point.",
 }
 
@@ -275,14 +276,18 @@ def recommend(hw: dict[str, Any] | None) -> dict[str, Any]:
         )
         runs_on = "graphics" if "min_vram_gb" in row else "processor"
     name = row["model"].split("/", 1)[1]
-    note_key = "small" if row["id"] == "small" else runs_on
+    cloud_first = bool(row.get("cloud_first"))
+    note_key = "small" if cloud_first else runs_on
+    summary = f"{name}, reading {row['context_length']:,} tokens at a time"
     return {
         "tier": row["id"],
         "model": row["model"],
         "name": name,
         "context_length": row["context_length"],
         "runs_on": runs_on,
-        "summary": f"{name}, reading {row['context_length']:,} tokens at a time",
+        # a cloud model comes first; ``model`` is then only a fallback for chat, never for tasks
+        "cloud_first": cloud_first,
+        "summary": f"a cloud model ({summary} for chat only)" if cloud_first else summary,
         "note": NOTES[note_key],
     }
 

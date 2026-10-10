@@ -73,7 +73,8 @@ def _builtin(config: SentientConfig, hw: dict[str, Any] | None = None) -> list[d
     embedding = current_embedding if _prefix(current_embedding) in LOCAL else defaults.embedding
     optional = {"planner": None, "executor": None, "vision": None}
     rec = (hw or {}).get("recommendation") or {}
-    sized = rec.get("tier") not in (None, "unknown")  # sized for this computer once its hardware is known
+    # sized for this computer once its hardware is known; never to a chat-only model (cloud_first)
+    sized = rec.get("tier") not in (None, "unknown") and not rec.get("cloud_first")
     main = rec["model"] if sized else defaults.primary
     fast = rec["model"] if sized else defaults.fast
     local = {"primary": main, "fast": fast, **optional, "voice": None, "embedding": embedding}
@@ -84,6 +85,8 @@ def _builtin(config: SentientConfig, hw: dict[str, Any] | None = None) -> list[d
     if sized:
         local_preset["context_length"] = rec["context_length"]
         local_preset["description"] += f" Sized for this computer: {rec['summary']}."
+    elif rec.get("cloud_first"):
+        local_preset["description"] += " This computer has little memory, so local models will struggle with tasks."
     pid = cloud_provider(config)
     cloud = PRESET_CLOUD_MODELS[pid or next(iter(PRESET_CLOUD_MODELS))]
     label = LABELS.get(pid or "", "")

@@ -89,7 +89,8 @@ export function ModelCheckup({
         <div className="flex items-start gap-3 border-t border-border px-4 py-3 text-xs text-fg-subtle">
           <IconCpu size={16} className="mt-px shrink-0 text-fg-faint" />
           <span>
-            This computer: {c.hardware.summary}. For a local model Sentient suggests {c.hardware.recommendation.summary}.
+            This computer: {c.hardware.summary}.{' '}
+            {c.hardware.recommendation.cloud_first ? c.hardware.recommendation.note : `For a local model Sentient suggests ${c.hardware.recommendation.summary}.`}
           </span>
         </div>
       )}

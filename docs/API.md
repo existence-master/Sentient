@@ -240,7 +240,8 @@ accept or loosen a rule.
    "gpus": [{"name": "NVIDIA GeForce RTX 4060 Laptop GPU", "vendor": "nvidia|amd|intel|apple|other", "vram_gb": 8.0, "usable": true}],
    "summary": "NVIDIA GeForce RTX 4060 Laptop GPU with 8 GB of graphics memory, 15.3 GB of memory",
    "recommendation": {"tier": "gpu_8", "model": "ollama_chat/qwen3:8b", "name": "qwen3:8b", "context_length": 8192,
-                      "runs_on": "graphics|processor|unknown", "summary": "qwen3:8b, reading 8,192 tokens at a time",
+                      "runs_on": "graphics|processor|unknown", "cloud_first": false,
+                      "summary": "qwen3:8b, reading 8,192 tokens at a time",
                       "note": "Fits on the graphics card, so replies stay quick."}}
   ```
   Memory comes from the operating system (psutil when installed, otherwise Windows, macOS or Linux APIs). NVIDIA cards
@@ -249,7 +250,9 @@ accept or loosen a rule.
   graphics and AMD chips with under 2 GB of their own memory are `usable: false`. `ollama_vram_gb` is what models
   loaded in Ollama use right now (`/api/ps`), a lower bound when no card was found. `recommendation` is the first row of
   `LOCAL_MODEL_TIERS` in `config/schema.py` the computer meets: by usable graphics memory (24 GB and up, 16, 12, 8), else
-  by memory (12 GB and up runs on the processor, below that a small model); `tier: "unknown"` with today's defaults
+  by memory (8 GB and up: qwen3:8b on the processor, with a note that it is slow and a cloud model is faster; below
+  that `cloud_first: true`: a cloud model is the recommendation and `model` is qwen3:4b only as a labelled chat-only
+  fallback, never picked for the user, never used by "Local only" or the check-up's fixes); `tier: "unknown"` with today's defaults
   when nothing could be read. Onboarding shows it as "Recommended for this computer" and saves its context length with a
   local brain; the "Local only" preset and the check-up use it too.
 - `GET /api/models/local` → `{ollama: {reachable, models: [{name, size, family, parameter_size, is_embedding, capabilities: string[]}]}, lm_studio: {reachable, models: [...]}}` (`capabilities` from Ollama, e.g. completion/tools/thinking/vision/embedding — a hint; `POST /api/models/test` is the authoritative tool-support check)

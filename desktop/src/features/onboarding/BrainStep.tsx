@@ -29,13 +29,14 @@ export function BrainStep() {
     if (!local.data || d.primary || hardware.isLoading) return
     const roles = config.data?.models.roles
     const rec = hardware.data?.recommendation
-    const fits = rec && isInstalled(rec.name, local.data.ollama.models.map((m) => m.name)) ? rec : null
+    // a chat-only fallback (cloud_first) is never picked for the user
+    const fits = rec && !rec.cloud_first && isInstalled(rec.name, local.data.ollama.models.map((m) => m.name)) ? rec : null
     const primary = fits?.model ?? recommendLocal(local.data) ?? roles?.primary ?? ''
     d.set({
       primary,
       fast: fits?.model ?? recommendFastLocal(local.data) ?? primary,
       embedding: recommendLocal(local.data, true) ?? roles?.embedding ?? '',
-      context_length: rec && rec.tier !== 'unknown' ? rec.context_length : null
+      context_length: rec && rec.tier !== 'unknown' && !rec.cloud_first ? rec.context_length : null
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [local.data, config.data, hardware.isLoading])
@@ -64,6 +65,7 @@ export function BrainStep() {
 function LocalBrain() {
   const d = useOnboardingDraft()
   const local = useLocalModels()
+  const hardware = useHardware()
   const ollama = local.data?.ollama
   const chatModels = (ollama?.models ?? []).filter((m) => !(m.is_embedding ?? looksLikeEmbedding(m.name)))
   const embedModels = (ollama?.models ?? []).filter((m) => m.is_embedding ?? looksLikeEmbedding(m.name))
@@ -109,7 +111,9 @@ function LocalBrain() {
           <div className="flex items-center gap-2 text-sm font-medium text-fg">
             <IconCircleCheck size={17} className="text-success" /> Ollama is running
           </div>
-          <p className="mt-1 text-sm text-fg-muted">Now download a model. The one recommended above fits this computer.</p>
+          <p className="mt-1 text-sm text-fg-muted">
+            {hardware.data?.recommendation.cloud_first ? 'Now download a model, or use a cloud provider as recommended above.' : 'Now download a model. The one recommended above fits this computer.'}
+          </p>
           <OllamaPull className="mt-4" installed={(ollama.models ?? []).map((m) => m.name)} />
         </Card>
       </div>
@@ -188,6 +192,55 @@ function RecommendedForThisComputer({ installed }: { installed: string[] | null 
   const summary = hardware.data.summary
   const have = installed !== null && isInstalled(rec.name, installed)
   const chosen = d.primary === rec.model && (rec.tier === 'unknown' || d.context_length === rec.context_length)
+  const local =
+    installed !== null &&
+    (chosen ? (
+      <Badge size="xs" tone="success">
+        In use
+      </Badge>
+    ) : have ? (
+      <Button size="sm" variant={rec.cloud_first ? 'ghost' : 'secondary'} onClick={use}>
+        {rec.cloud_first ? 'Use for chat only' : 'Use this'}
+      </Button>
+    ) : (
+      <Button size="sm" variant={rec.cloud_first ? 'ghost' : 'primary'} leftIcon={<IconDownload size={14} />} loading={pull.running} onClick={() => void pull.pull(rec.name)}>
+        {rec.cloud_first ? 'Download for chat only' : 'Download'}
+      </Button>
+    ))
+
+  if (rec.cloud_first) {
+    // too little memory for a local model that can do tasks: a cloud model first, the small one only as a labelled fallback
+    return (
+      <Card className="p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-elevated text-accent-text">
+            <IconCloud size={18} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-fg">Recommended for this computer: a cloud model</div>
+            <p className="mt-0.5 text-xs text-fg-subtle">This computer: {summary}.</p>
+            <p className="mt-1.5 text-xs leading-relaxed text-fg-muted">{rec.note}</p>
+            <Button size="sm" variant="primary" className="mt-3" leftIcon={<IconCloud size={14} />} onClick={() => d.set({ brainMode: 'cloud' })}>
+              Use a cloud provider
+            </Button>
+            <div className="mt-4 flex items-center gap-3 border-t border-border pt-3">
+              <div className="min-w-0 flex-1 text-xs text-fg-subtle">
+                <span className="font-medium text-fg-muted">Chat only:</span> <span className="font-mono">{rec.name}</span> runs here but can&apos;t do tasks
+                reliably.
+              </div>
+              {local}
+            </div>
+            {(pull.running || pull.error) && (
+              <div className="mt-3 space-y-1.5">
+                <div className={cn('text-xs', pull.error ? 'text-danger' : 'text-fg-subtle')}>{pull.error ?? pull.status}</div>
+                {!pull.error && <ProgressBar value={pull.progress} />}
+              </div>
+            )}
+          </div>
+        </div>
+      </Card>
+    )
+  }
 
   return (
     <Card className="p-4">
@@ -212,20 +265,7 @@ function RecommendedForThisComputer({ installed }: { installed: string[] | null 
             </div>
           )}
         </div>
-        {installed !== null &&
-          (chosen ? (
-            <Badge size="xs" tone="success">
-              In use
-            </Badge>
-          ) : have ? (
-            <Button size="sm" variant="secondary" onClick={use}>
-              Use this
-            </Button>
-          ) : (
-            <Button size="sm" variant="primary" leftIcon={<IconDownload size={14} />} loading={pull.running} onClick={() => void pull.pull(rec.name)}>
-              Download
-            </Button>
-          ))}
+        {local}
       </div>
     </Card>
   )

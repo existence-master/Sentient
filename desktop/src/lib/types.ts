@@ -589,6 +589,8 @@ export interface HardwareRecommendation {
   name: string
   context_length: number
   runs_on: 'graphics' | 'processor' | 'unknown'
+  /** Too little memory for a local model that can do tasks: a cloud model comes first and `model` is chat only. */
+  cloud_first: boolean
   /** "qwen3:8b, reading 8,192 tokens at a time" */
   summary: string
   note: string

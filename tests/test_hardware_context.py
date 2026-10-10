@@ -113,7 +113,8 @@ def test_built_in_intel_graphics_is_not_counted():
         (8.0, 16.0, "gpu_8", "graphics"),  # qwen3:8b at 8,192 on an 8 GB card, as before
         (6.0, 32.0, "cpu", "processor"),  # too little graphics memory: sized by total memory
         (None, 32.0, "cpu", "processor"),
-        (None, 7.8, "small", "processor"),
+        (None, 7.8, "cpu", "processor"),  # an "8 GB" computer still runs qwen3:8b, slowly
+        (None, 3.8, "small", "processor"),
         (12.0, 32.0, "gpu_12", "graphics"),
         (16.0, 32.0, "gpu_16", "graphics"),
         (24.0, 64.0, "gpu_24", "graphics"),
@@ -127,6 +128,29 @@ def test_tier_selection(vram, ram, tier, runs_on):
         assert rec["model"] == TIER[tier]["model"] and rec["context_length"] == TIER[tier]["context_length"]
     else:  # today's defaults
         assert rec["model"] == "ollama_chat/qwen3:8b" and rec["context_length"] == 8192
+
+
+def test_little_memory_recommends_a_cloud_model_and_never_a_chat_only_one_as_main():
+    rec = hardware.recommend(fake_hw(None, 3.8))
+    assert rec["cloud_first"] is True and rec["name"] == "qwen3:4b"
+    assert rec["summary"] == "a cloud model (qwen3:4b, reading 8,192 tokens at a time for chat only)"
+    assert "cloud model is the better choice" in rec["note"] and "chat only" in rec["note"]
+    assert all(not hardware.recommend(fake_hw(v, r))["cloud_first"] for v, r in ((8.0, 16.0), (None, 7.8), (None, 32.0)))
+    slow = hardware.recommend(fake_hw(None, 16.0))
+    assert slow["name"] == "qwen3:8b" and "slow" in slow["note"] and "cloud model is much faster" in slow["note"]
+
+
+async def test_chat_only_fallback_never_reaches_presets_or_check_up_fixes(config):
+    hw = with_rec(fake_hw(None, 3.8))
+    local = presets.presets(config, hw)[0]
+    assert local["roles"]["primary"] == "ollama_chat/qwen3:8b" and "context_length" not in local
+    assert "struggle with tasks" in local["description"]
+    llm = FakeProvider(replies=["ready", "It is sunny in Paris."])
+    with respx.mock(assert_all_called=False) as mock:
+        ollama_api(mock, tags=("llama3.2:1b",))
+        done = await checkup(config, llm, {"primary": "ollama_chat/llama3.2:1b"}, hardware=hw)
+    tools = {c["id"]: c for c in done["roles"][0]["checks"]}["tools"]
+    assert tools["action"] == {"kind": "pull_model", "name": "qwen3:8b", "label": "Download qwen3:8b"}
 
 
 def test_eight_gb_card_keeps_qwen3_8b_at_8192():
