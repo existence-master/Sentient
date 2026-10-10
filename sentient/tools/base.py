@@ -174,6 +174,9 @@ class Tool:
     url_fn: UrlFn | None = None
     # False when every call must ask again: "Allow for this chat" never covers this tool (commands on the host)
     allow_for_chat: bool = True
+    # Optional shorter version of a result too long for the model (``shorten_fn(result) -> result | None``), read
+    # instead of a plain cut; the full result is still saved and shown (#264).
+    shorten_fn: Callable[[Any], Any] | None = None
 
     def openai_schema(self) -> dict:
         schema = self.params_model.model_json_schema()

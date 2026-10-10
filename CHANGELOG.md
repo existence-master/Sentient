@@ -6,6 +6,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **One local model job at a time, your chats first:** a local Ollama model now works on one thing at a time, so
+  background work no longer pushes it off the graphics card and slows your chat to a crawl. Your chat always goes
+  next; tasks, suggestions, memory upkeep and chat titles wait while you are chatting (and for 30 seconds after), and
+  while your laptop runs on battery. A small "Model busy" sign in the title bar says what the model is working on and
+  what waits. Change the wait, allow background work on battery or turn the queue off in Settings > Models. Cloud
+  models never wait.
 - **Read only or Read and write for each connection:** when you connect Gmail, Calendar, GitHub or any other app,
   and on every custom MCP server, pick **Read only** or **Read and write**. Read only lets Sentient look things up
   there but never change, send, delete or run anything: those abilities are hidden from the model and refused if
@@ -188,6 +194,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
   openrouter.ai, wait until tomorrow, or pick another model in Settings > Models." This covers rate limits, an
   account out of credits, a key that was mistyped or revoked, a free model OpenRouter keeps for coding tools, a model
   that doesn't exist or isn't downloaded, and a provider that is down or too slow. The raw reply stays in the log.
+- One long tool result no longer fills a local model's whole context. A result may now take about a quarter of what
+  the model reads at once (Settings > General > Conversations), so on an 8,192-token model a 13,000-character Composio
+  search no longer triggers "This chat is getting long" after a single step. The model is told plainly when a result
+  was cut, and the full result is still saved. Composio's tool search keeps its useful part instead of its first
+  characters: the recommended plan, the tool names, which apps are connected and the main tool's settings. A connected
+  tool server that sends its answer twice (as text and as data) is now read once.
 - Turning on "Use my Claude Code for chats" now shows the Claude Code version straight away, instead of sometimes
   showing nothing until you came back to the page. Settings also says that its replies take a few seconds to start
   and arrive in larger pieces than with your other models.

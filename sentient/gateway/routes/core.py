@@ -141,7 +141,7 @@ async def onboarding(request: Request, body: OnboardingBody):
                 pass
 
         assert s.agent is not None
-        s.agent._spawn(_seed())
+        s.agent._spawn(_seed(), "memory")
     if body.daily_brief:  # the first opt-in: a recurring task the user can edit, pause or delete later
         await s.proactivity.brief.setup({})
     return {"ok": True}

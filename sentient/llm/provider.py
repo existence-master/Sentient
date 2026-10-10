@@ -10,6 +10,7 @@ to a model string plus a fallback chain from config.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import uuid
@@ -21,6 +22,7 @@ from sentient import secrets
 from sentient.config.schema import ProviderConfig, SentientConfig
 from sentient.llm.chatgpt import ChatGPTError
 from sentient.llm.errors import is_tool_support_error, plain_error
+from sentient.llm.jobs import ModelJobs
 from sentient.llm.responses import ResponsesError
 
 log = logging.getLogger(__name__)
@@ -184,6 +186,8 @@ class LiteLLMProvider:
     def __init__(self, config: SentientConfig):
         self.config = config
         self._max_context: dict[str, int | None] = {}
+        # one local model call at a time, chats first (#149); reads the config live, so Settings changes apply
+        self.jobs = ModelJobs(lambda: self.config.models)
 
     # ------------------------------------------------------------------ resolution
     def model_for(self, role: str) -> str:
@@ -317,31 +321,43 @@ class LiteLLMProvider:
                 if sent_tools:
                     kwargs["tools"] = sent_tools
                     kwargs["tool_choice"] = "auto"
-                response = await litellm.acompletion(
-                    model=litellm_model(model), messages=sent_messages, stream=True, **kwargs
-                )
-                chunks: list[Any] = []
-                in_think = False
-                async for chunk in response:
-                    chunks.append(chunk)
-                    delta = chunk.choices[0].delta if chunk.choices else None
-                    if delta is None:
-                        continue
-                    reasoning = getattr(delta, "reasoning_content", None)
-                    if reasoning:
-                        emitted = True
-                        yield StreamChunk(thinking=reasoning, model=model)
-                    text = delta.content or ""
-                    if not text:
-                        continue
-                    # Models like qwen3 emit <think>...</think> inline; route it to the thinking stream.
-                    pieces, in_think = split_think(text, in_think)
-                    emitted = True
-                    for piece, is_think in pieces:
-                        if is_think:
-                            yield StreamChunk(thinking=piece, model=model)
-                        else:
-                            yield StreamChunk(text=piece, model=model)
+                # a local model is held for the whole stream; cancelling the caller (Stop) lets it go
+                async with self.jobs.slot(model):
+                    response = await litellm.acompletion(
+                        model=litellm_model(model), messages=sent_messages, stream=True, **kwargs
+                    )
+                    chunks: list[Any] = []
+                    in_think = False
+                    finished = False
+                    try:
+                        async for chunk in response:
+                            chunks.append(chunk)
+                            delta = chunk.choices[0].delta if chunk.choices else None
+                            if delta is None:
+                                continue
+                            reasoning = getattr(delta, "reasoning_content", None)
+                            if reasoning:
+                                emitted = True
+                                yield StreamChunk(thinking=reasoning, model=model)
+                            text = delta.content or ""
+                            if not text:
+                                continue
+                            # Models like qwen3 emit <think>...</think> inline; route it to the thinking stream.
+                            pieces, in_think = split_think(text, in_think)
+                            emitted = True
+                            for piece, is_think in pieces:
+                                if is_think:
+                                    yield StreamChunk(thinking=piece, model=model)
+                                else:
+                                    yield StreamChunk(text=piece, model=model)
+                        finished = True
+                    finally:
+                        aclose = getattr(response, "aclose", None)
+                        if not finished and aclose is not None:
+                            # stopped early (Stop, an error): end the request so the model really is free for the next
+                            with contextlib.suppress(Exception):
+                                await aclose()
+                # the slot is free again before the last chunk: its caller runs tools that may call the model again
                 full = litellm.stream_chunk_builder(chunks, messages=messages)
                 tool_calls: list[ToolCall] = []
                 msg = full.choices[0].message if full and full.choices else None
@@ -423,7 +439,8 @@ class LiteLLMProvider:
                 else:
                     kwargs = await self._call_kwargs(model, role)
                     sent, _ = apply_prompt_cache(model, messages)
-                    resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
+                    async with self.jobs.slot(model):
+                        resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
                     text = resp.choices[0].message.content or ""
                 return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
             except Exception as exc:
@@ -447,7 +464,8 @@ class LiteLLMProvider:
                 if _provider_prefix(model) not in {"ollama", "ollama_chat"}:
                     kwargs["response_format"] = {"type": "json_object"}
                 sent, _ = apply_prompt_cache(model, messages)
-                resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
+                async with self.jobs.slot(model):
+                    resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
                 text = resp.choices[0].message.content or ""
                 return parse_json_loose(text)
             except Exception as exc:
@@ -469,7 +487,8 @@ class LiteLLMProvider:
         kwargs = self._kwargs_for(model)
         kwargs.pop("timeout", None)
         try:
-            resp = await litellm.aembedding(model=litellm_model(model), input=texts, **kwargs)
+            async with self.jobs.slot(model):
+                resp = await litellm.aembedding(model=litellm_model(model), input=texts, **kwargs)
         except Exception as exc:
             plain = plain_error(exc, model)
             if plain is None:

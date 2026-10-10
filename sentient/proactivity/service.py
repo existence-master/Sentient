@@ -154,6 +154,7 @@ def part_of_day(local: datetime) -> str:
 
 class ProactiveEngine(Service):
     name = "proactivity"
+    model_kind = "suggestions"
     pause_on_stop = True  # Stop everything pauses polls, heartbeats and follow-ups until resume
 
     def __init__(self, app):

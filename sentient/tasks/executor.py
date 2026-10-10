@@ -251,7 +251,9 @@ def _trigger_source(app: Any, task: dict, run: dict) -> str:
     return getattr(plugin, "display_name", None) or source or "the event that started it"
 
 
-async def _run_approved_call(svc: TaskService, task_id: str, run_id: str, ctx: Any, checkpoint: list[dict]) -> list[dict]:
+async def _run_approved_call(
+    svc: TaskService, task_id: str, run_id: str, ctx: Any, checkpoint: list[dict], model: str | None = None
+) -> list[dict]:
     """Run the held call the user said yes to (ADR 0018), once: the mark is saved away before the call starts, so a
     restart in the middle never repeats it, and the saved placeholder then says the outcome is unknown
     (``ask.INTERRUPTED_NOTE``). The call's result replaces that placeholder."""
@@ -263,7 +265,7 @@ async def _run_approved_call(svc: TaskService, task_id: str, run_id: str, ctx: A
     if call is None:
         return messages
     await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": call["name"], "parameters": call["arguments"]})
-    res, is_error, content = await svc.app.agent.run_tool(ToolCall(**call), ctx)
+    res, is_error, content = await svc.app.agent.run_tool(ToolCall(**call), ctx, role="executor", model=model)
     await svc.progress(
         task_id, run_id, {"type": "tool_result", "tool_name": call["name"], "result": truncate(res), "is_error": is_error}
     )
@@ -343,7 +345,9 @@ async def execute_single(
                 ctx.extra["browser_profile"] = task["browser_profile"]
             checkpoint = run.get("messages") if resume else None
             if isinstance(checkpoint, list) and checkpoint:
-                checkpoint = await _run_approved_call(svc, task_id, run_id, ctx, checkpoint)
+                checkpoint = await _run_approved_call(
+                    svc, task_id, run_id, ctx, checkpoint, model=task.get("model") or None
+                )
                 messages = history_to_openai(checkpoint)
                 if not answered and not is_first_retry_attempt(run):  # a retry's checkpoint already has its note
                     messages.append({"role": "user", "content": RESUME_NOTE})
@@ -385,7 +389,9 @@ async def execute_single(
                     await mapper.handle(event, messages)
                     if isinstance(event, ToolResultEvent) and not event.is_error:
                         seen = len(sources)
-                        sources.add_tool_result(event.name, app.agent.delivered_rows(event.result))
+                        sources.add_tool_result(
+                            event.name, app.agent.delivered_rows(event.result, result.tool_result_limit)
+                        )
                         if len(sources) > seen:  # saved at once, so a restart keeps it
                             await svc.repo.update_run(run_id, {"memory_sources": await sources.resolve(app.store)})
                 await mapper.flush_thought()

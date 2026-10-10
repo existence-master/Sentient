@@ -194,6 +194,7 @@ def protected(ins: dict) -> bool:
 
 class UserModelService(Service):
     name = "user_model"
+    model_kind = "memory"
 
     def __init__(self, app: SentientApp):
         super().__init__(app)

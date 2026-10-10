@@ -83,6 +83,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `config.updated` | `{sections: string[]}` |
 | `voice.state` | `{state, session_id}` (mirrors voice socket for other windows) |
 | `stop.updated` | **StopState** (section 17): Stop everything was turned on or off |
+| `model.busy` | **ModelBusy** (section 3, `GET /api/models/busy`): what the local model is doing changed (#149). Quick changes are published once (after 0.2 s), and only when something other than `since` changed |
 
 ---
 
@@ -213,8 +214,8 @@ accept or loosen a rule.
   (`conversation`, `manual`, `file:<name>`...) or the insight's (`user` | `inferred`); `via: "prompt"` means it was in
   the system prompt (recalled facts, user-model insights), `"tool"` that `memory_recall` or `memory_search_by_source`
   returned it during the turn. Recorded deterministically (the model is never asked which it used); deduplicated,
-  first mention wins, at most 40. Only rows of a memory tool's result that fit in `chat.tool_result_max_chars` (the
-  part the model read) count. Pending memories (section 7, review) never appear. Task runs record the same list
+  first mention wins, at most 40. Only rows of a memory tool's result that fit in the run's tool result limit
+  (`LoopResult.tool_result_limit`, section 10: the part the model read) count. Pending memories (section 7, review) never appear. Task runs record the same list
   (section 4, Run `memory_sources`).
 - `GET /api/sessions/search?q=` → `[{session_id, message_id, role, snippet, created_at}]`
 - `POST /api/chat` NDJSON fallback of the WebSocket turn: body `{text, session_id?, attachments?, model?}`; lines are the chat events above, first line `{type: "session", session_id}`.
@@ -279,6 +280,23 @@ accept or loosen a rule.
 - `GET /api/models/local` → `{ollama: {reachable, models: [{name, size, family, parameter_size, is_embedding, capabilities: string[]}]}, lm_studio: {reachable, models: [...]}}` (`capabilities` from Ollama, e.g. completion/tools/thinking/vision/embedding — a hint; `POST /api/models/test` is the authoritative tool-support check)
 - `POST /api/models/test` `{model, role?}` → `{ok, latency_ms, reply?, error?, supports_tools?}`
 - `POST /api/models/test-embedding` `{model}` → `{ok, dim?, error?}`
+- `GET /api/models/busy` (#149) → **ModelBusy**, live as the `model.busy` event:
+  ```json
+  {"busy": true, "job": "task", "model": "ollama_chat/qwen3:8b", "since": "2026-10-10T09:00:00+00:00",
+   "waiting": 1, "deferred": 2, "deferred_reason": "chat"}
+  ```
+  A local model (`ollama/`, `ollama_chat/`) does one job at a time: chat, text, JSON and embedding calls queue for it
+  (`models.local_queue`, default on); cloud models never wait. `busy` means a local call is running now; `job` is who
+  it is for: `chat` (a chat reply and everything it runs: tool calls, foreground subagents), `interactive` (anything
+  else a person is waiting for, the default), `task` (task planning and runs, background subagents), `suggestions`,
+  `memory` (memory notes after a reply, compression, the user model, dreams), `skills`, `titles`, `background`. Waiting
+  calls go in that order, then first come first served; a running call is never cut off. `waiting` counts calls that go
+  as soon as the model is free; `deferred` counts background calls (`task` and below) held back although it may be
+  free, with `deferred_reason`: `"chat"` while a chat reply runs or ended less than `models.background_quiet_s`
+  (default 30) seconds ago, `"battery"` while the computer runs on battery (Windows, macOS and Linux power status) and
+  `models.background_on_battery` is off (the default). Work a running chat reply waits on is never held back, and a
+  reply that has not used the model for 60 seconds stops holding background work back, so the queue can't deadlock.
+  A stream holds the model until its last chunk; cancelling (Stop everything) frees it.
 - `GET /api/models/claude-code` → `{enabled, installed, version, detail, models}`: Claude through the user's own
   Claude Code (experimental, ADR 0022). `enabled` is `models.experimental_claude_code` (default false). `installed`
   means a `claude` program is on PATH; `version` is its `claude --version` line, asked only while `enabled` (null
@@ -746,6 +764,8 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   (`name` is the Sentient tool name `mcp_<server>_<tool>`; `env` and header values are kept in the keychain, only `env_keys` and `header_keys` are returned)
   - `per_call`: the tool runs other tools named by a slug with their arguments (Composio's `COMPOSIO_MULTI_EXECUTE_TOOL`),
     so each call's risk comes from those slugs (see "Read only connections"); `risk` is the tool's own risk.
+  - A call of an MCP tool returns `{content: text, structured?}` or `{error}`. `structured` is the server's
+    structured content, left out when it only repeats the text (`{"result": text}` or the text's own JSON).
   - `missing_values`: the `header_keys` (remote servers) or `env_keys` (local commands) that have no value in the
     keychain yet, for example on a server imported from Hermes. Never the values themselves.
   - `auth` (remote servers only): `none`, `headers` (static headers such as `Authorization: Bearer ...` sent on every request) or `oauth` (sign-in with the MCP authorization spec). Header values are sent in every mode when `header_keys` is not empty.
@@ -1242,8 +1262,17 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - Consecutive tool calls of effective risk `read` that need no approval run concurrently (`chat.parallel_read_tools`,
   default on); others run in order. Their `tool_call` events come first, `tool_progress` may interleave, and
   `tool_result` events, tool messages and persisted rows keep the order the model asked for.
-- A tool result longer than `chat.tool_result_max_chars` (default 16000) is cut, the full text is saved under
-  `files/outputs/tool-<call_id>.txt`, and the model is told where it is. The `tool_result` event still carries the full result.
+- A tool result longer than the run's limit is cut, the full text is saved under `files/outputs/tool-<call_id>.txt`,
+  and the model is told plainly (`[Result cut: this is only the first N of M characters. The full result is saved as
+  ...]`). The limit (`await app.agent.tool_result_limit(role, model)`, kept on `LoopResult.tool_result_limit` and worked out again for a fallback model that answered) is
+  `chat.tool_result_max_chars` (default 16000), and at most `chat.tool_result_context_share` (default 0.25) of the
+  model's context length at 3 characters per token, never below 1500: 6144 characters on an 8,192-token local model.
+  A tool can give a shorter version of a long result with `Tool.shorten_fn(result) -> result | None`; the model then
+  reads that (`[Result shortened from M characters to its main parts. ...]`), still cut if it is longer than the limit.
+  MCP tools get one by their own tool name (`sentient.integrations.mcp_shorten`): `COMPOSIO_SEARCH_TOOLS` keeps the
+  connection statuses, the session id, the time and the next steps first, then the recommended plan, known pitfalls
+  (first 3) and tool slugs, then the main tools' parameters and at most 8 other tools by description. The
+  `tool_result` event still carries the full result.
 - Anthropic models (`anthropic/*`) get prompt caching (`cache_control`) on the system prompt and the tool list.
 - Tool arguments that fail validation return `{error: "Invalid arguments for <tool>: ...", schema}` so the model can retry.
 

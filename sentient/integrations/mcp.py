@@ -21,6 +21,7 @@ import contextlib
 import functools
 import hashlib
 import ipaddress
+import json
 import logging
 import re
 import time
@@ -45,6 +46,7 @@ from sentient.integrations.mcp_auth import (
     stale_sign_in,
     tokens_secret,
 )
+from sentient.integrations.mcp_shorten import shortener_for
 from sentient.tools.base import Risk, ToolContext, ToolPlugin
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -223,9 +225,23 @@ def _result_to_json(result: Any) -> dict:
         return {"error": text or "The MCP tool reported an error."}
     out: dict[str, Any] = {"content": text}
     structured = getattr(result, "structured_content", None)
-    if structured:
+    if structured and not _repeats(structured, text):
         out["structured"] = structured
     return out
+
+
+def _repeats(structured: Any, text: str) -> bool:
+    """True when a result's structured content only repeats its text (a server returning a plain string gives
+    ``{"result": text}``), so the model doesn't read the same result twice (#264)."""
+    same = [structured]
+    if isinstance(structured, dict) and list(structured) == ["result"]:
+        same.append(structured["result"])
+    if text in same:
+        return True
+    try:
+        return json.loads(text) in same
+    except ValueError:
+        return False
 
 
 class MCPManager:
@@ -785,6 +801,7 @@ class MCPManager:
             # another program's tools: results are outside content, and any change may send data out (ADR 0018)
             jt.untrusted_output = True
             jt.exfiltrates = risk != Risk.read
+            jt.shorten_fn = shortener_for(t.name)  # known long results keep their useful part (#264)
             if _runs_slugs(jt.input_schema):  # runs other tools: judged per call, whatever its hints say (#141)
                 jt.risk_fn = functools.partial(_slug_call_risk, risk)
                 jt.exfiltrates = True

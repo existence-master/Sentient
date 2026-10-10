@@ -193,6 +193,21 @@ class ModelsConfig(BaseModel):
     )
     max_tool_rounds: int = Field(12, ge=1, le=100, description="Max tool-call rounds per chat turn.")
     request_timeout_s: int = Field(180, ge=10, description="Per-request timeout in seconds.")
+    local_queue: bool = Field(
+        True,
+        description="Give a local Ollama model one job at a time, your chats first. Two jobs at once can push the "
+        "model off the graphics card and make both slow. Cloud models never wait.",
+    )
+    background_quiet_s: int = Field(
+        30, ge=0, le=3600,
+        description="Background work (tasks, suggestions, memory upkeep, chat titles) waits to use a local model "
+        "until you have not chatted for this many seconds.",
+    )
+    background_on_battery: bool = Field(
+        False,
+        description="Let background work use a local model while this computer runs on battery. When off, it waits "
+        "until you plug in. Your chats always run.",
+    )
 
 
 class GatewayConfig(BaseModel):
@@ -220,6 +235,13 @@ class ChatConfig(BaseModel):
         le=1_000_000,
         description="Longest tool result the model reads. Longer results are cut and the full text is saved "
         "under files/outputs/ so the assistant can open it if needed.",
+    )
+    tool_result_context_share: float = Field(
+        0.25,
+        ge=0.05,
+        le=1.0,
+        description="Largest share of what the model reads at once that one tool result may fill. Keeps a single "
+        "long result from crowding out the chat on models with a short context length.",
     )
     parallel_read_tools: bool = Field(
         True, description="Run look-up tools the model asks for in the same step at the same time."
