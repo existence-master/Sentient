@@ -195,6 +195,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   dropped connection when the computer is busy.
 - What Sentient learns about you reads your messages in the order you sent them, even when two were saved at the
   same instant.
+- Saving something new about you no longer overwrites a different memory: "doesn't want files written" is kept next
+  to "doesn't want files deleted" instead of replacing it, and so is "doesn't want emails deleted". A memory is only
+  changed when the new one is about the same person and the same thing. A vaguer memory that an existing one already
+  covers ("your sister lives in a city", "you have a sister") is no longer added, and neither are gaps like "your
+  sister's job is unknown".
 - Everyday phrases like "If you don't know, say so" no longer make Sentient suggest a Never rule for unrelated
   tools. A suggested rule for a single tool now needs your words to name an action, the app or the tool, so
   "Never write files for me" still suggests blocking file writing.
