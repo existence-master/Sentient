@@ -30,7 +30,7 @@ from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sentient.llm.provider import ProviderError
+from sentient.llm.provider import ModelRefused, ProviderError
 from sentient.services import Service, cancel_tasks
 from sentient.tasks import ask, catchup, executor, limits, scripts, stuck, swarm
 from sentient.tasks.delivery import from_stored, stored
@@ -77,6 +77,14 @@ BUSY = ("processing", "waiting_for_user")
 STOPPED_NOTE = "Run stopped by Stop everything."
 WAITING_CONFLICT = "This task is waiting for your answer. Answer the question or cancel the run first."
 _KEEP: Any = object()
+
+
+def _provider_down(exc: ProviderError, *, detail: bool = False) -> str:
+    """What a task shows when its model failed: the reason itself when a model refused the job (it says what to
+    change), else the general sentence, with the error when ``detail``."""
+    if isinstance(exc, ModelRefused):
+        return str(exc)
+    return f"{PROVIDER_DOWN} ({exc})" if detail else PROVIDER_DOWN
 
 
 class TaskNotFound(LookupError):
@@ -1217,7 +1225,7 @@ class TaskService(Service):
             await self._plan(task_id, auto_approve=auto_approve)
         except ProviderError as exc:
             log.warning("planner unavailable for task %s: %s", task_id, exc)
-            await self._plan_failed(task_id, PROVIDER_DOWN)
+            await self._plan_failed(task_id, _provider_down(exc))
         except Exception as exc:
             log.exception("planning failed for task %s", task_id)
             await self._plan_failed(task_id, f"Planning failed: {exc}")
@@ -1374,7 +1382,7 @@ class TaskService(Service):
             items, configs, used_fallback = await swarm.plan_swarm(self, task)
         except ProviderError as exc:
             log.warning("swarm planning unavailable for %s: %s", task_id, exc)
-            await self._swarm_failed(task, PROVIDER_DOWN)
+            await self._swarm_failed(task, _provider_down(exc))
             return
         except Exception as exc:
             log.exception("swarm orchestration failed for %s", task_id)
@@ -1502,7 +1510,7 @@ class TaskService(Service):
         except RunFailed as exc:
             status, error = "error", str(exc)
         except ProviderError as exc:
-            status, error = "error", f"{PROVIDER_DOWN} ({exc})"
+            status, error = "error", _provider_down(exc, detail=True)
         except Exception as exc:
             log.exception("executor failed for task %s run %s", task_id, run_id)
             status, error = "error", f"Executor agent failed: {exc}"

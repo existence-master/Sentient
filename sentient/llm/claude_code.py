@@ -37,7 +37,7 @@ from typing import Any
 
 from sentient import paths
 from sentient.config.schema import CLAUDE_CODE_MODELS, SentientConfig
-from sentient.llm.provider import ProviderError, StreamChunk, ToolCall
+from sentient.llm.provider import ModelRefused, ProviderError, StreamChunk, ToolCall
 from sentient.sandbox.backends import (
     CREATE_NEW_PROCESS_GROUP,
     CREATE_NO_WINDOW,
@@ -75,6 +75,11 @@ STDERR_KEEP = 4000
 OFF = "Claude through your Claude Code is turned off. Turn it on in Settings > Models, or pick another model."
 CHATS_ONLY = ("Claude Code only answers your chats, never work that runs in the background. Pick another model "
               "for this in Settings > Models.")
+ROLE_REFUSALS = {  # background roles the user can point at another model in Settings > Models
+    "planner": "Claude Code only answers your chats, so it can't plan tasks. Pick a planner model in Settings > Models.",
+    "executor": ("Claude Code only answers your chats, so it can't carry out tasks or other background work. Pick an "
+                 "executor model in Settings > Models."),
+}
 NO_EMBEDDINGS = "Claude Code can't make embeddings. Pick a local or API embedding model."
 NOT_INSTALLED = ("Sentient can't find Claude Code on this computer. Install it from claude.com/claude-code and sign "
                  "in once in a terminal, then try again.")
@@ -166,6 +171,11 @@ async def status(config: SentientConfig) -> dict[str, Any]:
         out["detail"] = ("Claude Code is ready to try. Press Test to check that it is signed in." if out["version"]
                          else "Sentient found Claude Code but it didn't answer. Run claude in a terminal to check it.")
     return out
+
+
+def background_refusal(role: str | None) -> str:
+    """Why Claude Code won't do background work in ``role``, and what to change."""
+    return ROLE_REFUSALS.get(role or "", CHATS_ONLY)
 
 
 def refusal(config: SentientConfig, role: str | None = None) -> str | None:
@@ -366,7 +376,7 @@ async def stream(
     if not config.models.experimental_claude_code:
         raise ProviderError(OFF)
     if not is_attended():
-        raise ProviderError(CHATS_ONLY)
+        raise ModelRefused(background_refusal(role))
     model_name = model.split("/", 1)[1] if "/" in model else ""
     if not MODEL_NAME.match(model_name):
         raise ProviderError(f"{model} isn't a Claude Code model. Use {' or '.join(CLAUDE_CODE_MODELS)}.")
