@@ -48,7 +48,7 @@ from typing import Any
 import yaml
 
 from sentient.skills.loader import slugify, valid_name
-from sentient.tasks.delivery import WHATSAPP_SELF
+from sentient.tasks.delivery import MAX_CHATS, WHATSAPP_SELF
 from sentient.tasks.schedule import DAY_NAMES, MIN_INTERVAL_MINUTES, normalize_schedule, parse_iso
 from sentient.tasks.scripts import ScriptInvalid, validate_code
 
@@ -564,6 +564,9 @@ async def _delivery(app: Any, deliver: Any, origin: Any = None) -> tuple[str, An
     unique = [c for i, c in enumerate(chats) if c not in chats[:i]]
     if not unique:
         return "desktop", "default", " ".join(["Results show on this computer.", *hints])
+    if len(unique) > MAX_CHATS:
+        return unique[0]["channel"], "default", (f"Results go to your paired chats with delivery on (more than {MAX_CHATS} "
+                                                  "chats match). Pick fewer on the task if you like.")
     lead = [f"Results go to {', '.join(dict.fromkeys(labels))} and this computer."] if labels else []
     return unique[0]["channel"], unique, " ".join([*lead, *hints])
 

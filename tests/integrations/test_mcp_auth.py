@@ -255,8 +255,8 @@ async def test_missing_values_are_filled_in_and_used_on_reconnect(app, ctx, keyc
     again = await mcp.set_values("Notes", {"Authorization": "  "})
     assert again["status"] == "connected" and set(mock.seen_tokens) == {"static-secret"}
 
-    partly = await mcp.set_values("Local", {"API_TOKEN": "tok-123"})
-    assert partly["missing_values"] == ["REGION"] and partly["status"] == "disabled"
+    partly = await mcp.set_values("Local", {"API_TOKEN": "tok-123"}, enable=True)  # REGION is still missing: stays off
+    assert partly["missing_values"] == ["REGION"] and partly["status"] == "disabled" and partly["enabled"] is False
     assert "tok-123" in keychain["mcp:Local"]
     saved = paths.config_file().read_text(encoding="utf-8")
     assert "static-secret" not in saved and "tok-123" not in saved

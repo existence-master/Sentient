@@ -354,7 +354,7 @@ class MCPManager:
             stored = dict(spec)
             if http and given and _auth_of(stored) == "none":
                 stored["auth"] = "headers"
-            if enable:
+            if enable and not self._missing_values(name, stored):  # turned on only once nothing is missing
                 stored["enabled"] = True
             if stored != spec:
                 cfg.integrations.mcp_servers = {**cfg.integrations.mcp_servers, name: stored}

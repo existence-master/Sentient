@@ -574,7 +574,7 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
 - `POST /api/integrations/mcp/{name}/values` `{values: {name: value}, enable?: bool}` → server object. Fills in the
   values of the server's own `header_keys` (remote) or `env_keys` (local command): they are merged into the keychain
   entry (`mcp:<name>:headers` or `mcp:<name>`), never config; a blank value keeps the saved one. Then the server
-  reconnects (waiting up to 15 s), and `enable: true` also turns it on. A remote server with `auth: "none"` becomes
+  reconnects (waiting up to 15 s), and `enable: true` also turns it on once no value is missing. A remote server with `auth: "none"` becomes
   `headers` once it has header values. 400 for a name the server doesn't list, a value with a line break, or header
   values for a plain `http://` address that isn't this computer (`localhost` or a loopback IP such as `127.0.0.1` or
   `::1`; a name like `127.example.com` doesn't count); 404 unknown server, 422 when `enable` is not a boolean. Changes
@@ -1705,7 +1705,8 @@ suggestion may be `null`.
   is skipped. The job's `deliver` (kept as `original_context.hermes_deliver`) becomes the task's `deliver_to`
   (section 4): `whatsapp:<anything>` → the paired "Message yourself" chat, or `{"channel": "whatsapp", "chat_id":
   "self"}` with a hint to link WhatsApp when it isn't paired yet; `telegram:<id>` / `discord:<id>` → the paired chat
-  with that id, else every paired chat of that app, else `default` with a hint; `origin` → the same for
+  with that id, else every paired chat of that app (`default` when that is more than 10 chats), else `default`
+  with a hint; `origin` → the same for
   `origin.platform` and `origin.chat_id`; `local` (or nothing) → `desktop`. Several comma-separated targets add up.
 - **MCP servers** are added turned off (`POST /api/integrations/mcp/{name}/enabled` turns one on), keeping the URL or
   command and arguments, `auth: oauth` (sign in again) and only the names of headers and environment settings; their

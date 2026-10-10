@@ -207,6 +207,11 @@ async def test_telegram_and_local_delivery(app, hermes_home):
     assert plan["job:b2c3d4e5f6a1"]["deliver_to"] == "default"
     assert "Discord isn't set up in Sentient yet" in plan["job:b2c3d4e5f6a1"]["note"]
     assert plan["job:c3d4e5f6a1b2"]["deliver_to"] == "desktop"
+    # more paired chats than a task can name: the usual delivery instead of a list the task would refuse
+    for n in range(11):
+        await app.channels.store.add_chat("discord", f"d{n}", f"Chat {n}", deliver=True, session_id=None)
+    many = by_key((await hermes.preview(app, str(hermes_home)))["jobs"])["job:b2c3d4e5f6a1"]
+    assert many["deliver_to"] == "default" and "more than 10" in many["note"]
 
 
 async def test_monitor_script_jobs_report_only_changes(app, hermes_home):

@@ -11,6 +11,7 @@ type Ops = ReturnType<typeof useTaskOps>
 
 const NAMES: Record<string, string> = { telegram: 'Telegram', discord: 'Discord', whatsapp: 'WhatsApp' }
 const SELF = 'self'
+const MAX_CHATS = 10 // the engine's limit (tasks/delivery.py)
 
 interface ChatOption {
   chat: DeliveryChat
@@ -65,6 +66,7 @@ export function DeliverToRow({ task, ops, compact }: { task: Task; ops: Ops; com
 
   const save = (next: TaskDeliverTo) => void ops.update(task.task_id, { deliver_to: next }, 'Delivery updated')
   const toggle = (chat: DeliveryChat) => {
+    if (!isOn(chat) && chosen.length >= MAX_CHATS) return
     const next = isOn(chat) ? chosen.filter((c) => !same(normalize(c, selfId), chat)) : [...chosen, chat]
     save(next.length ? next : 'desktop')
   }
@@ -101,8 +103,9 @@ export function DeliverToRow({ task, ops, compact }: { task: Task; ops: Ops; com
                 type="button"
                 role="menuitemcheckbox"
                 aria-checked={on}
+                disabled={!on && chosen.length >= MAX_CHATS}
                 onClick={() => toggle(o.chat)}
-                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left hover:bg-hover"
+                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left hover:bg-hover disabled:opacity-50"
               >
                 <span className={cn('flex size-4 shrink-0 items-center justify-center rounded border', on ? 'border-accent bg-accent text-accent-fg' : 'border-border-strong')}>
                   {on && <IconCheck size={10} stroke={3} />}
