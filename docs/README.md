@@ -3,6 +3,7 @@
 ## For people using Sentient
 
 - [Getting started](GETTING_STARTED.md): install, choose a model, first things to try, troubleshooting.
+- [Moving from Hermes Agent](MOVING_FROM_HERMES.md): bring your skills, memory, jobs and servers over.
 - [Privacy](PRIVACY.md): what stays on your computer and what leaves it.
 - [Verified on a real PC](VERIFICATION.md): exactly what has been tested, and what has not.
 
