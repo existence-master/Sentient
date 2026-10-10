@@ -20,20 +20,23 @@ import { cn, relativeTime } from '@/lib/utils'
 import { previewMode } from '@/features/devices/preview'
 import { useChannelActions, useChannels } from './hooks'
 import { ChannelTile } from './meta'
+import { WhatsAppLinkDialog } from './WhatsAppLink'
 
 const STATUS: Record<Channel['status'], { label: string; tone: Tone }> = {
   connected: { label: 'Connected', tone: 'success' },
   connecting: { label: 'Connecting', tone: 'warning' },
+  linking: { label: 'Waiting for scan', tone: 'warning' },
   disconnected: { label: 'Not connected', tone: 'neutral' },
   error: { label: 'Needs attention', tone: 'danger' }
 }
 
 const BLURB: Record<string, string> = {
   telegram: 'Chat with Sentient from Telegram on any phone, get task results and approve actions with a tap.',
-  discord: 'Talk to Sentient from a Discord server or direct messages, and get updates there.'
+  discord: 'Talk to Sentient from a Discord server or direct messages, and get updates there.',
+  whatsapp: 'Talk to Sentient in your own WhatsApp "Message yourself" chat, with voice notes and updates.'
 }
 
-/** "Messaging apps" tab: Telegram and Discord bots (§14). */
+/** "Messaging apps" tab: Telegram and Discord bots, and WhatsApp linked to your own account (§14). */
 export function MessagingApps() {
   const { data, isLoading, error } = useChannels()
   const [connect, setConnect] = useState<Channel | null>(null)
@@ -65,15 +68,16 @@ export function MessagingApps() {
   return (
     <>
       <p className="mb-4 max-w-2xl text-sm text-fg-muted">
-        Connect a bot you own, then pair your chat with a code. Only paired chats can talk to Sentient. Anyone else gets a polite no.
+        Connect an app, then pair your chat. Only your paired chats can talk to Sentient. Anyone else gets a polite no, and on WhatsApp your other chats are simply left alone.
       </p>
       <div className="grid items-start gap-4 xl:grid-cols-2">
         {channels.map((c) => (
           <ChannelCard key={c.id} channel={c} onConnect={() => setConnect(c)} onPair={() => setPair(c)} />
         ))}
       </div>
+      <WhatsAppLinkDialog channel={connect?.id === 'whatsapp' ? connect : null} onClose={() => setConnect(null)} />
       <ConnectChannelDialog
-        channel={connect}
+        channel={connect?.id === 'whatsapp' ? null : connect}
         onClose={() => setConnect(null)}
         onConnected={(c) => {
           setConnect(null)
@@ -90,6 +94,8 @@ function ChannelCard({ channel, onConnect, onPair }: { channel: Channel; onConne
   const [confirm, setConfirm] = useState(false)
   const status = STATUS[channel.status] ?? STATUS.disconnected
   const connected = channel.status === 'connected'
+  const whatsapp = channel.id === 'whatsapp'
+  const account = whatsapp ? `Linked to ${channel.account_label}` : `Your bot: ${channel.account_label}`
 
   return (
     <motion.div layout initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-border bg-surface">
@@ -102,7 +108,7 @@ function ChannelCard({ channel, onConnect, onPair }: { channel: Channel; onConne
               {status.label}
             </Badge>
           </div>
-          <div className="mt-0.5 text-sm text-fg-subtle">{connected && channel.account_label ? `Your bot: ${channel.account_label}` : BLURB[channel.id] ?? ''}</div>
+          <div className="mt-0.5 text-sm text-fg-subtle">{connected && channel.account_label ? account : BLURB[channel.id] ?? ''}</div>
         </div>
         {connected ? (
           <Button size="sm" variant="ghost" onClick={() => setConfirm(true)}>
@@ -110,7 +116,7 @@ function ChannelCard({ channel, onConnect, onPair }: { channel: Channel; onConne
           </Button>
         ) : (
           <Button size="sm" variant="primary" onClick={onConnect} loading={channel.status === 'connecting'}>
-            {channel.status === 'error' ? 'Reconnect' : 'Connect'}
+            {channel.status === 'linking' ? 'Show code' : channel.status === 'error' ? 'Reconnect' : 'Connect'}
           </Button>
         )}
       </div>
@@ -126,7 +132,7 @@ function ChannelCard({ channel, onConnect, onPair }: { channel: Channel; onConne
           <div className="mb-2 flex items-center">
             <span className="flex-1 text-2xs font-medium uppercase tracking-wide text-fg-subtle">Paired chats</span>
             <Button size="xs" variant="ghost" leftIcon={<IconPlus size={13} />} onClick={onPair}>
-              Pair a chat
+              {whatsapp ? 'Pair another chat' : 'Pair a chat'}
             </Button>
           </div>
           {channel.paired.length ? (
@@ -152,7 +158,11 @@ function ChannelCard({ channel, onConnect, onPair }: { channel: Channel; onConne
         open={confirm}
         onOpenChange={setConfirm}
         title={`Disconnect ${channel.display_name}?`}
-        description="Sentient stops answering messages there. Your paired chats and their history stay, and come back if you reconnect the same bot."
+        description={
+          whatsapp
+            ? 'Sentient is removed from Linked devices on your phone and stops answering. Your chats and their history stay here. To use WhatsApp again, scan a new code.'
+            : 'Sentient stops answering messages there. Your paired chats and their history stay, and come back if you reconnect the same bot.'
+        }
         confirmLabel="Disconnect"
         onConfirm={async () => {
           try {
@@ -350,7 +360,8 @@ function PairChatDialog({ channel, onClose }: { channel: Channel | null; onClose
   const newest = live && live.paired.length > startCount.current ? live.paired[live.paired.length - 1] : null
   const remaining = pairing ? Math.max(0, new Date(pairing.expires_at).getTime() - now) : 0
   const expired = !!pairing && remaining <= 0
-  const bot = live?.account_label ?? 'your bot'
+  const whatsapp = channel?.id === 'whatsapp'
+  const bot = live?.account_label ?? (whatsapp ? 'your number' : 'your bot')
   const command = pairing ? `/pair ${pairing.code}` : ''
 
   return (
@@ -360,7 +371,9 @@ function PairChatDialog({ channel, onClose }: { channel: Channel | null; onClose
           <div className="flex flex-col items-center gap-3 py-8 text-center">
             <IconCircleCheckFilled size={48} className="text-success" />
             <div className="text-md font-semibold text-fg">{newest.label} is paired</div>
-            <p className="max-w-xs text-sm text-fg-muted">Say hi to {bot}. Sentient answers there, and you&apos;ll see the chat in your list here too.</p>
+            <p className="max-w-xs text-sm text-fg-muted">
+              {whatsapp ? 'Sentient answers that chat now' : `Say hi to ${bot}. Sentient answers there`}, and you&apos;ll see the chat in your list here too.
+            </p>
             <Button className="mt-2" variant="secondary" onClick={onClose}>
               Done
             </Button>
@@ -368,7 +381,8 @@ function PairChatDialog({ channel, onClose }: { channel: Channel | null; onClose
         ) : (
           <div className="space-y-4 pb-2">
             <p className="text-sm text-fg-muted">
-              Open {channel.display_name}, find <span className="font-medium text-fg">{bot}</span> and send it this message:
+              {whatsapp ? 'From the other WhatsApp account, open the chat with ' : `Open ${channel.display_name}, find `}
+              <span className="font-medium text-fg">{bot}</span> and send this message:
             </p>
             <div className="flex flex-col items-center gap-2 rounded-xl border border-border bg-sunken/60 px-4 py-5">
               {pairing ? (

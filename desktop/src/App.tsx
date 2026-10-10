@@ -2,12 +2,13 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { MotionConfig } from 'motion/react'
 import { useEffect } from 'react'
 import { HashRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router'
-import { Toaster } from 'sonner'
+import { toast, Toaster } from 'sonner'
 import { AppShell } from '@/components/shell/AppShell'
 import { EngineError, Splash } from '@/components/shell/EngineScreens'
 import { TooltipProvider } from '@/components/ui'
 import { ChannelsPage } from '@/features/channels/ChannelsPage'
 import { ChatPage } from '@/features/chat/ChatPage'
+import { holdScreenShare } from '@/features/chat/screenShare'
 import { DevicesPage } from '@/features/devices/DevicesPage'
 import { IntegrationsPage } from '@/features/integrations/IntegrationsPage'
 import { MemoryPage } from '@/features/memory/MemoryPage'
@@ -18,10 +19,12 @@ import { SkillsPage } from '@/features/skills/SkillsPage'
 import { TasksPage } from '@/features/tasks/TasksPage'
 import { AboutPage } from '@/features/usermodel/AboutPage'
 import { VoiceMode } from '@/features/voice/VoiceMode'
+import { DictationShellSync, sendPushToTalk } from '@/features/voice/dictation'
 import { installWakeListener, setAlwaysListening, useWakeStore } from '@/features/voice/wake'
 import { useBootstrap } from '@/hooks/core'
 import { useHotkey } from '@/hooks/useHotkey'
 import { useSmokeReady } from '@/hooks/useSmokeReady'
+import { errorMessage } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
 import { installDemoData } from '@/lib/demo'
 import { installDomainEvents } from '@/lib/events'
@@ -169,6 +172,7 @@ function BootstrapGate() {
   return (
     <>
       <SmokeReporter />
+      <DictationShellSync />
       <Outlet />
     </>
   )
@@ -202,6 +206,16 @@ function GlobalCommands() {
             break
           case 'open-settings':
             navigate(`/settings/${cmd.section ?? ''}`)
+            break
+          case 'push-to-talk':
+            sendPushToTalk(cmd.text, window.location.hash)
+              .then(({ route, state }) => navigate(route, { state }))
+              .catch((err) => toast.error("Couldn't send what you said", { description: errorMessage(err) }))
+            break
+          case 'share-screen':
+            // a new chat with the picture attached; the user asks and sends (nothing is sent before that)
+            holdScreenShare(cmd.share)
+            navigate('/chat', { state: { fresh: Date.now() } })
             break
         }
       }),

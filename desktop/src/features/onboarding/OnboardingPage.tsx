@@ -7,7 +7,7 @@ import { TitleBar } from '@/components/shell/TitleBar'
 import { Button } from '@/components/ui'
 import { useConfig, useOnboarding } from '@/hooks/core'
 import { useSetRoles } from '@/hooks/models'
-import { errorMessage } from '@/lib/api'
+import { api, errorMessage } from '@/lib/api'
 import type { RoleName } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { BrainStep } from './BrainStep'
@@ -42,6 +42,8 @@ export function OnboardingPage() {
       if (v && v !== roles?.[r]) patch[r] = v
     }
     if (Object.keys(patch).length) await setRoles.mutateAsync(patch)
+    const ctx = draft.brainMode === 'local' ? draft.context_length : null
+    if (ctx && ctx !== config.data?.models.context_length) await api.config.patch({ models: { context_length: ctx } })
   }
 
   const finish = async () => {
@@ -59,7 +61,8 @@ export function OnboardingPage() {
         location: draft.location.trim(),
         professional_context: draft.professional_context.trim(),
         personal_context: draft.personal_context.trim(),
-        persona: draft.persona
+        persona: draft.persona,
+        daily_brief: draft.daily_brief
       })
       go('done')
     } catch (err) {

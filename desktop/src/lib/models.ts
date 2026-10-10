@@ -1,5 +1,5 @@
 /** Helpers for presenting and choosing LiteLLM model strings (`provider/model`). */
-import type { LocalModel, LocalModels, Provider, RoleName } from './types'
+import type { CatalogModel, LocalModel, LocalModels, Provider, RoleName } from './types'
 
 export interface RoleMeta {
   role: RoleName
@@ -74,7 +74,10 @@ const PROVIDER_LABELS: Record<string, string> = {
   groq: 'Groq',
   mistral: 'Mistral',
   deepseek: 'DeepSeek',
-  xai: 'xAI'
+  xai: 'xAI',
+  nous: 'Nous Portal',
+  'claude-code': 'Claude Code',
+  chatgpt: 'ChatGPT plan'
 }
 
 export function providerOf(model: string | null | undefined): string {
@@ -161,6 +164,27 @@ export function buildModelOptions(
     if (options.length) groups.push({ id: p.id, label: p.label, options })
   }
   return groups.filter((g) => g.options.length)
+}
+
+/** Adds a provider's live model list (OpenRouter, Nous Portal, a ChatGPT plan) to its group, after the suggestions. Free models say so. */
+export function withCatalog(
+  groups: ModelOptionGroup[],
+  provider: Pick<Provider, 'id' | 'label'>,
+  models: CatalogModel[] | undefined,
+  opts: { embedding?: boolean } = {}
+): ModelOptionGroup[] {
+  if (!models?.length) return groups
+  const wanted = models.filter((m) => looksLikeEmbedding(m.id) === !!opts.embedding)
+  if (!wanted.length) return groups
+  const existing = groups.find((g) => g.id === provider.id)
+  const seen = new Set(existing?.options.map((o) => o.value))
+  const options = [...(existing?.options ?? [])]
+  for (const m of wanted) {
+    if (seen.has(m.id)) continue
+    options.push({ value: m.id, label: modelShortName(m.id), hint: m.free ? 'Free' : undefined })
+  }
+  const group = { id: provider.id, label: provider.label, options }
+  return existing ? groups.map((g) => (g === existing ? group : g)) : [...groups, group]
 }
 
 const CHAT_PREFERENCE = [/^qwen3:8b/, /^qwen3:14b/, /^qwen3/, /^llama3\.1:8b/, /^qwen2\.5:7b/, /^gpt-oss/, /^llama/, /^qwen/, /^mistral/]

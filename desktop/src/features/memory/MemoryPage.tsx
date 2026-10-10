@@ -5,6 +5,7 @@ import {
   IconFileImport,
   IconFilterOff,
   IconHourglassHigh,
+  IconInbox,
   IconLayoutGrid,
   IconMessages,
   IconPlus,
@@ -47,7 +48,8 @@ import { MemoryDetail } from '@/features/memory/MemoryDetail'
 import { MemoryList, MemoryTimeline } from '@/features/memory/MemoryList'
 import { EXPIRING_SOON_MS, countdown, expiresInMs, sourceMeta, TOPIC_META, TOPIC_ORDER, topicMeta, topicText, topicTint, type MemoryWithHistory } from '@/features/memory/meta'
 import { ProfileTab } from '@/features/memory/ProfileTab'
-import { useMemories, useMemoryGraph, useMemorySummaries, useMemoryTopics } from '@/hooks/memory'
+import { ReviewTab } from '@/features/memory/ReviewTab'
+import { useMemories, useMemoryGraph, useMemoryReview, useMemorySummaries, useMemoryTopics } from '@/hooks/memory'
 import { qk } from '@/hooks/queryKeys'
 import { api, errorMessage } from '@/lib/api'
 import type { Memory } from '@/lib/types'
@@ -79,6 +81,7 @@ export function MemoryPage() {
   const topics = useMemoryTopics()
   const summaries = useMemorySummaries(100)
   const graph = useMemoryGraph()
+  const review = useMemoryReview()
   const now = useNow()
 
   const memories = useMemo(() => all.data ?? [], [all.data])
@@ -120,9 +123,19 @@ export function MemoryPage() {
   useEffect(
     () =>
       live.onDomain('memory.updated', (e) => {
-        const d = e.data as { action: string; content?: string | null; count?: number }
+        const d = e.data as { action: string; content?: string | null; count?: number; status?: string }
         const text =
-          d.action === 'ADD' && d.content ? `Just learned: ${d.content}` : d.action === 'UPDATE' && d.content ? `Updated: ${d.content}` : d.count ? `${d.count} memories changed` : null
+          d.status === 'pending'
+            ? d.content
+              ? `Waiting for your review: ${d.content}`
+              : `${d.count ?? 'New'} memories are waiting for your review`
+            : d.action === 'ADD' && d.content
+              ? `Just learned: ${d.content}`
+              : d.action === 'UPDATE' && d.content
+                ? `Updated: ${d.content}`
+                : d.count
+                  ? `${d.count} memories changed`
+                  : null
         if (text) setFlash(text)
       }),
     []
@@ -174,6 +187,9 @@ export function MemoryPage() {
         <TabsList className="mb-5">
           <TabsTrigger value="memories">
             <IconBrain size={15} /> Memories {all.data && <Count n={memories.length} />}
+          </TabsTrigger>
+          <TabsTrigger value="review">
+            <IconInbox size={15} /> Review {!!review.data?.count && <Count n={review.data.count} highlight />}
           </TabsTrigger>
           <TabsTrigger value="conversations">
             <IconMessages size={15} /> Conversations {summaries.data && <Count n={summaries.data.length} />}
@@ -334,6 +350,9 @@ export function MemoryPage() {
           )}
         </TabsContent>
 
+        <TabsContent value="review">
+          <ReviewTab />
+        </TabsContent>
         <TabsContent value="conversations">
           <ConversationsTab />
         </TabsContent>
@@ -358,8 +377,8 @@ export function MemoryPage() {
   )
 }
 
-function Count({ n }: { n: number }) {
-  return <span className="rounded-full bg-active px-1.5 text-2xs tabular-nums text-fg-muted">{n}</span>
+function Count({ n, highlight }: { n: number; highlight?: boolean }) {
+  return <span className={cn('rounded-full px-1.5 text-2xs tabular-nums', highlight ? 'bg-accent text-accent-fg' : 'bg-active text-fg-muted')}>{n}</span>
 }
 
 function Chip({ active, color, disabled, onClick, children, title }: { active: boolean; color?: string; disabled?: boolean; onClick: () => void; children: ReactNode; title?: string }) {

@@ -1,8 +1,10 @@
-"""Fixtures for the tasks package: a started SentientApp, a frozen clock, a gated fake LLM."""
+"""Fixtures for the tasks package: a started SentientApp, a frozen clock, a clock to skip, a gated fake LLM."""
 
 from __future__ import annotations
 
 import asyncio
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 import pytest
@@ -68,6 +70,32 @@ class GatedProvider(FakeProvider):
             await self.gate.wait()
         async for chunk in super().stream(role, messages, tools, model=model):
             yield chunk
+
+
+class SkipClock:
+    """``time.monotonic``, and with it the event loop's clock, made to jump forward on demand: ``asyncio`` timeouts
+    and sleeps, run time limits and the stuck check see the time pass at once. Real time still flows underneath,
+    so a busy machine only adds to it."""
+
+    def __init__(self, real: Callable[[], float]):
+        self._real = real
+        self.skipped = 0.0
+
+    def monotonic(self) -> float:
+        return self._real() + self.skipped
+
+    async def sleep(self, seconds: float) -> None:
+        """Let ``seconds`` pass without waiting for them, then give the loop a turn."""
+        self.skipped += seconds
+        await asyncio.sleep(0)
+
+
+@pytest.fixture
+def skip_clock(monkeypatch) -> SkipClock:
+    """Timing tests skip time instead of sleeping, so they don't depend on how busy the machine is."""
+    clock = SkipClock(time.monotonic)
+    monkeypatch.setattr(time, "monotonic", clock.monotonic)
+    return clock
 
 
 @pytest.fixture

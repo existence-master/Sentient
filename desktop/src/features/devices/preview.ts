@@ -102,6 +102,14 @@ const DISCORD_SETUP = `1. Open the Discord Developer Portal (https://discord.com
 
 Only chats you pair with a code can talk to Sentient through your bot.`
 
+const WHATSAPP_SETUP = `Sentient joins your WhatsApp as a linked device. You talk to it in your own **Message yourself** chat.
+
+1. Click **Show QR code** below.
+2. On your phone, open WhatsApp, go to **Linked devices** and tap **Link a device**.
+3. Point your phone at the code.
+
+**Good to know:** this is an unofficial way in, so WhatsApp could limit an account that uses it.`
+
 export const previewChannels = (): Channel[] => [
   {
     id: 'telegram',
@@ -120,6 +128,16 @@ export const previewChannels = (): Channel[] => [
     error: null,
     paired: [],
     setup: { fields: [{ key: 'bot_token', label: 'Bot token', secret: true, required: true }], instructions_md: DISCORD_SETUP }
+  },
+  {
+    id: 'whatsapp',
+    display_name: 'WhatsApp',
+    status: 'disconnected',
+    account_label: null,
+    error: null,
+    qr: null,
+    paired: [],
+    setup: { fields: [], instructions_md: WHATSAPP_SETUP }
   }
 ]
 
@@ -193,7 +211,9 @@ export const previewBrowser = (): BrowserStatus => ({
     { index: 0, url: 'https://tablefinder.example/bengaluru/the-flour-works/book', title: 'Book a table - The Flour Works', active: true },
     { index: 1, url: 'https://maps.example/place/indiranagar-metro', title: 'Indiranagar metro - Maps', active: false }
   ],
-  error: null
+  error: null,
+  profile: 'default',
+  attached: false
 })
 
 export const previewFrame = (): BrowserFrame => ({

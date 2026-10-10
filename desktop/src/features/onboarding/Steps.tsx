@@ -16,6 +16,7 @@ import {
   IconMapPin,
   IconMoodSmile,
   IconPlugConnected,
+  IconSunrise,
   IconTrophy,
   type Icon
 } from '@tabler/icons-react'
@@ -23,11 +24,12 @@ import { motion } from 'motion/react'
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { Logo } from '@/components/brand/Logo'
-import { Button, Combobox, Field, Input, Skeleton, Textarea } from '@/components/ui'
+import { Button, Combobox, Field, Input, Skeleton, Switch, Textarea } from '@/components/ui'
 import { SUGGESTIONS } from '@/features/chat/EmptyChat'
 import { usePersonas } from '@/hooks/memory'
 import { cn, listTimezones } from '@/lib/utils'
 import { useOnboardingDraft } from './draft'
+import { HermesImportCard } from './HermesImport'
 
 export function StepHeader({ title, subtitle, eyebrow }: { title: ReactNode; subtitle?: ReactNode; eyebrow?: ReactNode }) {
   return (
@@ -225,6 +227,7 @@ const APPS: Array<{ icon: Icon; name: string }> = [
 ]
 
 export function AppsStep() {
+  const d = useOnboardingDraft()
   return (
     <div>
       <StepHeader
@@ -251,6 +254,14 @@ export function AppsStep() {
           You can connect apps any time from <span className="font-medium text-fg">Integrations</span> in the sidebar. Sign-in happens in your browser and keys stay in your system keychain.
         </p>
       </div>
+      <label className="mt-3 flex cursor-pointer items-center gap-3 rounded-xl border border-border bg-surface/70 p-4">
+        <IconSunrise size={18} className="shrink-0 text-accent-text" />
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium text-fg">Daily Brief</span>
+          <span className="block text-sm text-fg-muted">Weekday mornings at 07:30: today&apos;s meetings, emails that need you, tasks and the weather in a few lines.</span>
+        </span>
+        <Switch checked={d.daily_brief} onCheckedChange={(v) => d.set({ daily_brief: v })} aria-label="Send me a Daily Brief" />
+      </label>
     </div>
   )
 }
@@ -288,6 +299,7 @@ export function DoneStep() {
           </button>
         ))}
       </div>
+      <HermesImportCard className="mt-6 max-w-md" />
       <Button autoFocus variant="primary" size="lg" className="mt-8 px-7" rightIcon={<IconArrowRight size={16} />} onClick={() => start()}>
         Start chatting
       </Button>

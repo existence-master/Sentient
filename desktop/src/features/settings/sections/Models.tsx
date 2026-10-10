@@ -1,16 +1,21 @@
 import {
+  IconAdjustments,
+  IconArrowBackUp,
   IconArrowDown,
   IconArrowUp,
   IconBrain,
+  IconCheck,
   IconChevronRight,
   IconCloud,
   IconCpu,
   IconDeviceDesktop,
+  IconDeviceFloppy,
   IconDots,
   IconExternalLink,
   IconEye,
   IconKey,
   IconListCheck,
+  IconPencil,
   IconMicrophone,
   IconPlus,
   IconRefresh,
@@ -22,6 +27,7 @@ import {
 import { useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import {
   Alert,
@@ -29,11 +35,13 @@ import {
   Button,
   Card,
   ConfirmDialog,
+  Dialog,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
+  Field,
   IconButton,
   Input,
   SegmentedControl,
@@ -42,12 +50,28 @@ import {
   StatusDot,
   Switch
 } from '@/components/ui'
+import { ClaudeCodeSection } from '@/features/models/ClaudeCodeSection'
+import { ConnectPlansSection } from '@/features/models/ConnectPlans'
+import { ModelCheckup } from '@/features/models/ModelCheckup'
 import { ModelPicker } from '@/features/models/ModelPicker'
 import { ModelTest } from '@/features/models/ModelTest'
 import { OllamaPull } from '@/features/models/OllamaPull'
+import { PresetFixes } from '@/features/models/PresetFixes'
 import { ProviderKeyDialog } from '@/features/models/ProviderKeyDialog'
+import { usePresetSwitch } from '@/features/models/usePresetSwitch'
 import { useConfigEditor } from '@/hooks/config'
-import { useDeleteSecret, useLocalModels, useProviders, useSecrets, useSetFallbacks, useSetRoles } from '@/hooks/models'
+import {
+  useDeletePreset,
+  useDeleteSecret,
+  useLocalModels,
+  useModelPresets,
+  useProviders,
+  useRenamePreset,
+  useSavePreset,
+  useSecrets,
+  useSetFallbacks,
+  useSetRoles
+} from '@/hooks/models'
 import { qk } from '@/hooks/queryKeys'
 import { api, errorMessage } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
@@ -68,6 +92,12 @@ const ROLE_ICON: Record<RoleName, Icon> = {
 
 export function ModelsSection({ query }: SectionProps) {
   const { config } = useConfigEditor()
+  const [params, setParams] = useSearchParams()
+  const [autoCheck] = useState(() => params.get('check') === '1')
+  useEffect(() => {
+    // "Check my models" from the title bar: start once, then drop the flag so coming back doesn't re-run it
+    if (params.has('check')) setParams((p) => (p.delete('check'), p), { replace: true })
+  }, [params, setParams])
   const q = query.trim().toLowerCase()
   const roles = ROLE_NAMES.filter((r) => !q || `${ROLE_META[r].label} ${ROLE_META[r].description} ${r} model role`.toLowerCase().includes(q))
 
@@ -83,12 +113,16 @@ export function ModelsSection({ query }: SectionProps) {
 
   return (
     <div className="space-y-10">
+      {(!q || 'presets preset local cloud mixed switch setup'.includes(q)) && <PresetsPanel />}
+      {(!q || 'check my models check-up checkup test tools gpu graphics card'.includes(q)) && <ModelCheckup autoStart={autoCheck} />}
       <section className="space-y-3">
         <SectionTitle title="Roles" description="Sentient uses different models for different jobs. Mix local and cloud freely." />
         {roles.map((r) => (
           <RoleCard key={r} role={r} config={config} />
         ))}
       </section>
+      {(!q || 'plan claude max anthropic credits chatgpt openai plus pro openrouter nous portal connect sign in subscription'.includes(q)) && <ConnectPlansSection />}
+      {(!q || 'claude code experimental subscription plan sign in'.includes(q)) && <ClaudeCodeSection />}
       <ProvidersPanel />
       <OllamaPanel />
     </div>
@@ -105,6 +139,146 @@ function SectionTitle({ title, description, actions }: { title: string; descript
       {actions}
     </div>
   )
+}
+
+// ---------------------------------------------------------------------------- presets
+function PresetsPanel() {
+  const presets = useModelPresets()
+  const sw = usePresetSwitch()
+  const save = useSavePreset()
+  const rename = useRenamePreset()
+  const remove = useDeletePreset()
+  const [naming, setNaming] = useState<{ from: string | null; value: string } | null>(null)
+  const [removeFor, setRemoveFor] = useState<string | null>(null)
+  const list = presets.data
+
+  const submitName = () => {
+    const value = naming?.value.trim()
+    if (!naming || !value) return
+    const onError = (e: unknown) => toast.error("Couldn't save the preset", { description: errorMessage(e) })
+    if (naming.from) {
+      rename.mutate({ name: naming.from, to: value }, { onError, onSuccess: () => (setNaming(null), toast.success('Preset renamed')) })
+    } else {
+      save.mutate({ name: value }, { onError, onSuccess: (p) => (setNaming(null), toast.success(`Saved as ${p.name}`)) })
+    }
+  }
+
+  return (
+    <section className="space-y-3">
+      <SectionTitle
+        title="Presets"
+        description="Switch every model at once, here or from the model name at the top of the window."
+        actions={
+          <div className="flex gap-1.5">
+            {list?.can_undo && (
+              <Button size="xs" variant="ghost" leftIcon={<IconArrowBackUp size={13} />} disabled={sw.busy} onClick={sw.undo}>
+                Undo last switch
+              </Button>
+            )}
+            <Button size="xs" variant="secondary" leftIcon={<IconDeviceFloppy size={13} />} onClick={() => setNaming({ from: null, value: '' })}>
+              Save current as preset
+            </Button>
+          </div>
+        }
+      />
+      {presets.isLoading ? (
+        <Skeleton className="h-40 rounded-xl" />
+      ) : presets.isError ? (
+        <Alert tone="danger" title="Couldn't load presets">
+          {errorMessage(presets.error)}
+        </Alert>
+      ) : (
+        <Card className="divide-y divide-border">
+          {(list?.presets ?? []).map((p) => (
+            <div key={p.name} className="flex items-center gap-3 px-4 py-3">
+              <div className={cn('flex size-8 shrink-0 items-center justify-center rounded-lg border border-border', p.active ? 'text-accent-text' : 'text-fg-subtle')}>
+                {p.active ? <IconCheck size={16} /> : p.provider ? <IconCloud size={16} /> : p.builtin ? <IconDeviceDesktop size={16} /> : <IconAdjustments size={16} />}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 text-sm font-medium text-fg">
+                  {p.name}
+                  {p.active && (
+                    <Badge size="xs" tone={list?.modified ? 'warning' : 'success'}>
+                      {list?.modified ? 'In use, changed since' : 'In use'}
+                    </Badge>
+                  )}
+                  {!p.builtin && <Badge size="xs">Yours</Badge>}
+                </div>
+                <div className="truncate text-xs text-fg-subtle">{!p.available ? p.reason : (p.description ?? roleSummary(p.roles))}</div>
+              </div>
+              {!p.builtin && (
+                <>
+                  <IconButton size="sm" label="Rename" icon={<IconPencil size={14} />} onClick={() => setNaming({ from: p.name, value: p.name })} />
+                  <IconButton size="sm" label="Delete" icon={<IconTrash size={14} />} onClick={() => setRemoveFor(p.name)} />
+                </>
+              )}
+              <Button size="sm" variant={p.active ? 'ghost' : 'secondary'} disabled={!p.available || sw.busy} loading={sw.pending === p.name} onClick={() => sw.apply(p.name)}>
+                {p.active ? 'Apply again' : 'Use'}
+              </Button>
+            </div>
+          ))}
+        </Card>
+      )}
+      {sw.missing.length > 0 && (
+        <Card className="space-y-2 p-4">
+          <div className="text-xs font-medium text-fg-muted">Still needed for these models</div>
+          <PresetFixes missing={sw.missing} pull={sw.pull} onPull={(n) => void sw.pull.pull(n)} onAddKey={sw.addKey} />
+        </Card>
+      )}
+      <ProviderKeyDialog provider={sw.keyFor} open={!!sw.keyFor} onOpenChange={(o) => !o && sw.setKeyFor(null)} />
+      <Dialog
+        open={!!naming}
+        onOpenChange={(o) => !o && setNaming(null)}
+        size="sm"
+        title={naming?.from ? 'Rename preset' : 'Save current models as a preset'}
+        description={naming?.from ? undefined : 'Keeps every role, fallbacks, reasoning and context length so you can switch back in one click.'}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setNaming(null)}>
+              Cancel
+            </Button>
+            <Button variant="primary" loading={save.isPending || rename.isPending} disabled={!naming?.value.trim()} onClick={submitName}>
+              {naming?.from ? 'Rename' : 'Save'}
+            </Button>
+          </>
+        }
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            submitName()
+          }}
+        >
+          <Field label="Name" htmlFor="preset-name">
+            <Input
+              id="preset-name"
+              autoFocus
+              maxLength={40}
+              value={naming?.value ?? ''}
+              placeholder="e.g. Travel"
+              onChange={(e) => setNaming((n) => (n ? { ...n, value: e.target.value } : n))}
+            />
+          </Field>
+        </form>
+      </Dialog>
+      <ConfirmDialog
+        open={!!removeFor}
+        onOpenChange={(o) => !o && setRemoveFor(null)}
+        title={`Delete ${removeFor}?`}
+        description="Your models stay as they are. Only the saved preset goes away."
+        confirmLabel="Delete preset"
+        onConfirm={async () => {
+          if (removeFor) await remove.mutateAsync(removeFor)
+          toast.success('Preset deleted')
+        }}
+      />
+    </section>
+  )
+}
+
+function roleSummary(roles: Partial<Record<RoleName, string | null>>): string {
+  const parts = [roles.primary && `Chat: ${modelShortName(roles.primary)}`, roles.fast && `Background: ${modelShortName(roles.fast)}`]
+  return parts.filter(Boolean).join(' · ')
 }
 
 // ---------------------------------------------------------------------------- role card
@@ -329,6 +503,10 @@ function ProviderRow({ provider: p, source, onKey, onRemove }: { provider: Provi
               <Badge size="xs" tone="success">
                 Local
               </Badge>
+            ) : p.sign_in ? (
+              <Badge size="xs" tone={p.key_set ? 'success' : 'neutral'}>
+                {p.key_set ? 'Signed in' : 'Not signed in'}
+              </Badge>
             ) : p.key_set ? (
               <Badge size="xs" tone="success">
                 Key set{source ? ` · ${source}` : ''}
@@ -342,12 +520,12 @@ function ProviderRow({ provider: p, source, onKey, onRemove }: { provider: Provi
           <div className="truncate font-mono text-2xs text-fg-subtle">{local ? base || 'default address' : p.suggested.slice(0, 3).map(modelShortName).join(' · ')}</div>
         </div>
         <IconButton size="sm" label="Docs" icon={<IconExternalLink size={14} />} onClick={() => void getBridge().openExternal(p.docs_url)} />
-        {!local && (
+        {!local && !p.sign_in && (
           <Button size="sm" variant={p.key_set ? 'ghost' : 'secondary'} leftIcon={<IconKey size={13} />} onClick={onKey}>
             {p.key_set ? 'Replace key' : 'Add key'}
           </Button>
         )}
-        {!local && source === 'keychain' && <IconButton size="sm" label="Remove key" icon={<IconTrash size={14} />} onClick={onRemove} />}
+        {!local && !p.sign_in && source === 'keychain' && <IconButton size="sm" label="Remove key" icon={<IconTrash size={14} />} onClick={onRemove} />}
         <IconButton size="sm" label="Base URL" active={open} icon={<IconChevronRight size={14} className={cn('transition-transform', open && 'rotate-90')} />} onClick={() => setOpen((o) => !o)} />
       </div>
       <AnimatePresence initial={false}>

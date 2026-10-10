@@ -10,6 +10,7 @@ import {
   IconSettings,
   IconShieldCheck,
   IconSparkles,
+  IconTerminal2,
   IconTool,
   IconUserHeart,
   IconUsersGroup,
@@ -32,9 +33,9 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   {
     id: 'general',
     label: 'General',
-    description: 'Names, timezone, language, appearance and startup.',
+    description: 'Names, timezone, language, appearance, startup and shortcuts.',
     icon: IconSettings,
-    keywords: ['name', 'timezone', 'location', 'language', 'theme', 'dark', 'light', 'accent', 'color', 'login', 'startup', 'tray']
+    keywords: ['name', 'timezone', 'location', 'language', 'theme', 'dark', 'light', 'accent', 'color', 'login', 'startup', 'tray', 'shortcut', 'hotkey', 'keyboard', 'screen', 'share', 'screenshot', 'window', 'region']
   },
   {
     id: 'models',
@@ -55,7 +56,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'Memory',
     description: 'How Sentient learns and recalls facts about you.',
     icon: IconBrain,
-    keywords: ['facts', 'recall', 'similarity', 'summaries', 'workspace'],
+    keywords: ['facts', 'recall', 'similarity', 'summaries', 'workspace', 'review'],
     schemaSections: ['memory']
   },
   {
@@ -87,7 +88,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'Voice',
     description: 'Speech recognition and the voice Sentient speaks with.',
     icon: IconMicrophone,
-    keywords: ['speech', 'stt', 'tts', 'whisper', 'dictation', 'wake word', 'hey sentient', 'always listening', 'follow-up']
+    keywords: ['speech', 'stt', 'tts', 'whisper', 'dictation', 'dictate', 'push to talk', 'shortcut', 'hotkey', 'wake word', 'hey sentient', 'always listening', 'follow-up']
   },
   {
     id: 'approvals',
@@ -106,11 +107,19 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     schemaSections: ['sandbox']
   },
   {
+    id: 'terminal',
+    label: 'Terminal',
+    description: 'Commands Sentient can run on this computer, with your OK.',
+    icon: IconTerminal2,
+    keywords: ['terminal', 'shell', 'command', 'commands', 'powershell', 'bash', 'git', 'folders', 'allowed commands', 'blocked'],
+    schemaSections: ['terminal']
+  },
+  {
     id: 'browser',
     label: 'Browser',
     description: 'The web browser Sentient uses for sites without an integration.',
     icon: IconWorldWww,
-    keywords: ['browser', 'chrome', 'edge', 'websites', 'shopping', 'purchases', 'live view'],
+    keywords: ['browser', 'chrome', 'edge', 'websites', 'shopping', 'purchases', 'live view', 'profiles', 'sign in', 'brave', 'attach'],
     schemaSections: ['browser']
   },
   {
@@ -141,7 +150,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'Advanced',
     description: 'Data folder, logs, engine and raw configuration.',
     icon: IconTool,
-    keywords: ['logs', 'folder', 'restart', 'version', 'json', 'debug', 'gateway', 'integrations']
+    keywords: ['logs', 'folder', 'restart', 'version', 'json', 'debug', 'gateway', 'integrations', 'hermes', 'import', 'migrate', 'move']
   }
 ]
 

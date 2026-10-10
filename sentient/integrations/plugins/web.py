@@ -92,7 +92,7 @@ def _check_url(url: str) -> str:
     return parts.geturl()
 
 
-@itool("web", "web_fetch")
+@itool("web", "web_fetch", url_fn=lambda args, ctx: str(args.get("url") or ""))
 async def web_fetch(ctx: ToolContext, url: str, max_chars: int | None = None) -> dict:
     """Open a web page (or an online PDF/text file) and return its readable text without menus, ads and scripts.
     Use after web_search to read a result, or when the user gives you a link."""

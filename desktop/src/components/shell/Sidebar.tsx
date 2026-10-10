@@ -40,6 +40,7 @@ import {
 import { ChannelBadge } from '@/features/channels/meta'
 import { TasksNavBadge } from '@/features/tasks/TasksNavBadge'
 import { SkillsNavBadge } from '@/features/skills/SkillsNavBadge'
+import { MemoryNavBadge } from '@/features/memory/MemoryNavBadge'
 import { useBootstrap, useDeleteSession, useRenameSession, useSessionSearch, useSessions } from '@/hooks/core'
 import { errorMessage } from '@/lib/api'
 import { modelShortName } from '@/lib/models'
@@ -126,6 +127,7 @@ function NavItem({ to, label, icon: IconCmp, collapsed, active }: { to: string; 
       {!collapsed && <span className="truncate">{label}</span>}
       {to === '/tasks' && <TasksNavBadge collapsed={collapsed} />}
       {to === '/skills' && <SkillsNavBadge collapsed={collapsed} />}
+      {to === '/memory' && <MemoryNavBadge collapsed={collapsed} />}
     </NavLink>
   )
   return collapsed ? (

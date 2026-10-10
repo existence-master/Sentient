@@ -1,6 +1,6 @@
 """Channel base class: everything a messaging app does that is not transport.
 
-A concrete channel (Telegram, Discord) implements a handful of transport primitives
+A concrete channel (Telegram, Discord, WhatsApp) implements a handful of transport primitives
 (``validate``, ``run``, ``render``, ``send_chunk``, ``edit_chunk``, ``delete_message``,
 ``send_typing``, ``clear_buttons``, ``send_audio``) and turns inbound updates into
 ``Incoming`` objects. This class handles pairing, commands, running chat turns with
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import inspect
 import json
 import logging
@@ -24,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from sentient import paths
 from sentient.channels.store import PairingResult
+from sentient.llm import presets as model_presets
 from sentient.llm.events import (
     ApprovalRequest,
     Done,
@@ -244,6 +246,9 @@ class Channel:
     message_limit: int = 4000
     setup_fields: list[dict] = []
     instructions_md: str = ""
+    uses_token = True  # False: the channel keeps its own session (WhatsApp) instead of a keychain token
+    status_lines = True  # short "Searching the web..." messages that are deleted again
+    choice_hint = "tap an option"  # how a person picks one of a message's options
 
     def __init__(self, service: ChannelService):
         self.service = service
@@ -255,11 +260,17 @@ class Channel:
         self._tasks: set[asyncio.Task] = set()
         self._runtime: asyncio.Task | None = None
         self._button_text: dict[tuple[str, str], str] = {}
+        self.qr: str | None = None  # a code to scan while linking (WhatsApp), else None
 
     # ------------------------------------------------------------------ config
     @property
     def cfg(self):
         return getattr(self.app.config.channels, self.id)
+
+    @property
+    def ready(self) -> bool:
+        """Connected by the user and able to send (a token, or a linked session)."""
+        return bool(self.token)
 
     # ------------------------------------------------------------------ transport (override)
     async def validate(self, fields: dict[str, Any]) -> tuple[str, str]:
@@ -456,6 +467,9 @@ class Channel:
             await self.app.resume(source=self.id)
             await self.reply(chat_id, "Resumed. Scheduled tasks and suggestions are back on.")
             return
+        if cmd == "model":
+            await self._model_command(chat_id, arg)
+            return
         if cmd == "stop":
             rt.queued.clear()
             if await self.cancel_turn(chat_id):
@@ -591,11 +605,12 @@ class Channel:
             "/stop - stop the reply in progress",
             "/stopall - stop everything Sentient is doing, on every device",
             "/resume - start scheduled tasks and suggestions again after /stopall",
+            "/model - switch between local and cloud models",
             "/help - show this message",
         ]
         if chat and chat.get("deliver"):
             lines += ["", "Task results, plans to approve, questions from your tasks and suggestions are also sent here. "
-                          "To answer a task's question, tap an option or reply to its message. "
+                          f"To answer a task's question, {self.choice_hint} or reply to its message. "
                           "You can turn that off in Sentient under Channels."]
         return "\n".join(lines)
 
@@ -680,7 +695,7 @@ class Channel:
                     if part := await stream.finish():
                         replies.append(part)
                     stream = ReplyStream(self, chat_id, streaming=cfg.stream_edits, interval=cfg.edit_interval_s)
-                    if cfg.show_tool_activity:
+                    if cfg.show_tool_activity and self.status_lines:
                         await status.show(self.activity_label(event.name))
                 elif isinstance(event, ApprovalRequest):
                     await status.clear()
@@ -756,11 +771,12 @@ class Channel:
             f"**Approval needed**\n{self.app.config.assistant.name} wants to use **{humanize_tool(event.name)}** "
             f"(risk: {event.risk}).\n```json\n{args}\n```"
         )
-        buttons = [
-            [Button("Allow", f"ap:a:{event.approval_id}", "success"),
-             Button("Allow for this chat", f"ap:s:{event.approval_id}", "primary")],
-            [Button("Deny", f"ap:d:{event.approval_id}", "danger")],
-        ]
+        first = [Button("Allow", f"ap:a:{event.approval_id}", "success")]
+        if event.untrusted:  # it read outside content: say why; "for this chat" would not cover the next one anyway
+            md += f"\n{event.untrusted}"
+        else:
+            first.append(Button("Allow for this chat", f"ap:s:{event.approval_id}", "primary"))
+        buttons = [first, [Button("Deny", f"ap:d:{event.approval_id}", "danger")]]
         try:
             ids = await self.send_markdown(chat_id, md, buttons)
             return ids[-1] if ids else None
@@ -793,4 +809,77 @@ class Channel:
             return await self.service.act_on_suggestion(self, chat_id, message_id, ref, approve=code == "a")
         if kind == "tq":
             return await self.service.act_on_question(self, chat_id, message_id, ref, code)
+        if kind == "rp":  # "Make this a rule?" (#130)
+            if code not in {"a", "d"}:
+                return "Unknown button."
+            return await self.service.act_on_rule_proposal(self, chat_id, message_id, ref, accept=code == "a")
+        if kind == "mp":
+            return await self._preset_button(chat_id, message_id, ref)
         return "Unknown button."
+
+    # ------------------------------------------------------------------ /model
+    @staticmethod
+    def preset_ref(name: str) -> str:
+        """Short, stable button data for a preset (Telegram allows 64 bytes)."""
+        return hashlib.sha1(name.encode("utf-8")).hexdigest()[:12]
+
+    async def _model_command(self, chat_id: str, arg: str) -> None:
+        """``/model`` lists the model setups as buttons; ``/model <number or name>`` and ``/model undo`` act directly."""
+        listing = await model_presets.listing(self.app)
+        usable = [p for p in listing["presets"] if p["available"]]
+        arg = arg.strip()
+        if arg.lower() == "undo":
+            await self.reply(chat_id, await self._preset_outcome(None))
+            return
+        if arg:
+            pick = usable[int(arg) - 1] if arg.isdigit() and 1 <= int(arg) <= len(usable) else None
+            if pick is None:
+                pick = next((p for p in listing["presets"] if p["name"].lower() == arg.lower()), None)
+            if pick is None:
+                await self.reply(chat_id, f"I don't have a model setup called {arg!r}. Send /model to see them.")
+                return
+            await self.reply(chat_id, await self._preset_outcome(pick["name"]))
+            return
+        primary = self.app.config.models.roles.primary
+        if listing["active"]:
+            changed = " (changed since)" if listing["modified"] else ""
+            lines = [f"Models: **{listing['active']}**{changed}, chatting with {primary}."]
+        else:
+            lines = [f"Models: your own setup, chatting with {primary}."]
+        for p in listing["presets"]:
+            if not p["available"]:
+                lines.append(f"{p['name']}: {p['reason']} Add one in Sentient under Settings, Models.")
+        lines.append("Pick a setup to switch every model at once." + (" Send /model undo to go back." if listing["can_undo"] else ""))
+        buttons = [[Button(p["name"] + (" (current)" if p["active"] else ""), f"mp:a:{self.preset_ref(p['name'])}",
+                           "success" if p["active"] else "primary")] for p in usable]
+        try:
+            await self.send_markdown(chat_id, "\n\n".join(lines), buttons)
+        except Exception as exc:
+            log.warning("%s: /model failed: %s", self.id, self.redact(str(exc)))
+
+    async def _preset_outcome(self, name: str | None) -> str:
+        """Apply a preset (None = undo the last switch) and describe the result in plain words."""
+        try:
+            result = await (model_presets.undo(self.app) if name is None else model_presets.apply(self.app, name))
+        except model_presets.PresetError as exc:
+            return exc.message
+        if name is None:
+            head = f"Back to {result['preset']}." if result["preset"] else "Back to your previous models."
+        else:
+            head = f"Switched to {result['preset']}." if result["changed"] else f"Already using {result['preset']}."
+        lines = [head] + [f"Still needed: {item['detail']} {item['fix']}" for item in result["missing"]]
+        if result["missing"]:
+            lines.append("You can do that in Sentient on your computer.")
+        return "\n".join(lines)
+
+    async def _preset_button(self, chat_id: str, message_id: str, ref: str) -> str:
+        name = next((p["name"] for p in model_presets.presets(self.app.config, model_presets.hardware(self.app)) if self.preset_ref(p["name"]) == ref), None)
+        if name is None:
+            await self.settle_buttons(chat_id, message_id, "That setup no longer exists")
+            return "That setup no longer exists."
+        text = await self._preset_outcome(name)
+        head, _, rest = text.partition("\n")
+        await self.settle_buttons(chat_id, message_id, head.rstrip("."))
+        if rest:
+            await self.reply(chat_id, rest)
+        return head

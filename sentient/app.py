@@ -6,11 +6,11 @@ LLM provider and a temporary database.
 
 Start order (stop runs in reverse):
     store -> memory -> notifications -> integrations (registers plugins)
-    -> builtin tools -> skills -> agent -> subagents -> sandbox -> browser -> nodes
+    -> builtin tools -> skills -> agent -> subagents -> sandbox -> terminal -> browser -> nodes
     -> tasks -> proactivity -> evolution -> user_model -> dreaming -> voice -> channels
 
 Stop everything (``stop_all`` / ``resume``, docs/API.md section 17) is deterministic: it never
-asks the model. It cancels running chat replies, task runs, helpers, scripts and browser
+asks the model. It cancels running chat replies, task runs, helpers, scripts, commands and browser
 actions, and pauses scheduled and triggered tasks, proactivity, learning and dreaming until
 the user resumes. The stopped state is kept in the ``meta`` table, so it survives a restart.
 """
@@ -25,6 +25,7 @@ from typing import Any
 
 from sentient import paths
 from sentient.agent.approvals import ApprovalBroker
+from sentient.agent.chat_rules import ChatRules
 from sentient.agent.loop import Agent
 from sentient.agent.subagents import SubagentManager
 from sentient.browser import BrowserService
@@ -33,6 +34,9 @@ from sentient.config import SentientConfig, load_config, save_config
 from sentient.events import EventBus
 from sentient.evolution import EvolutionService
 from sentient.integrations import IntegrationManager
+from sentient.llm import claude_code
+from sentient.llm.connect import ProviderConnections
+from sentient.llm.hardware import HardwareProbe
 from sentient.llm.provider import LiteLLMProvider, LLMProvider
 from sentient.memory.dreaming import DreamingService
 from sentient.memory.facts import FactMemory
@@ -46,6 +50,7 @@ from sentient.services import Service
 from sentient.skills.loader import SkillLibrary
 from sentient.store.db import Store, now_iso
 from sentient.tasks import TaskService
+from sentient.terminal import TerminalService
 from sentient.tools.registry import ToolRegistry
 from sentient.voice import VoiceService
 
@@ -77,18 +82,24 @@ class SentientApp:
         self.registry = ToolRegistry(disabled=self.config.tools.disabled)
         self.approvals = ApprovalBroker(self.config.tools.approvals, timeout_s=self.config.tools.approvals.timeout_s)
         self.registry.set_blocked(self.approvals.is_never)  # "never" rules hide tools from the model (ADR 0016)
+        self.chat_rules = ChatRules(self)  # "never delete my emails" in chat -> a proposed rule (#130)
         self.memory: FactMemory | None = None
         self.agent: Agent | None = None
 
         # feature services
         self.notifications = NotificationService(self)
         self.integrations = IntegrationManager(self)
+        self.connections = ProviderConnections(self)  # OpenRouter sign-in, provider key checks
+        self.hardware = HardwareProbe(self)  # memory and graphics card, for sizing local models (#131)
+        self._hardware_warmup: asyncio.Task | None = None
+        self.integrations.oauth_owners.append(self.connections)
         self.tasks = TaskService(self)
         self.proactivity = ProactiveEngine(self)
         self.evolution = EvolutionService(self)
         self.voice = VoiceService(self)
         self.subagents = SubagentManager(self)
         self.sandbox = SandboxService(self)
+        self.terminal = TerminalService(self)
         self.browser = BrowserService(self)
         self.nodes = NodeService(self)
         self.channels = ChannelService(self)
@@ -106,7 +117,7 @@ class SentientApp:
     @property
     def services(self) -> list[Service]:
         return [
-            self.notifications, self.integrations, self.subagents, self.sandbox, self.browser, self.nodes,
+            self.notifications, self.integrations, self.subagents, self.sandbox, self.terminal, self.browser, self.nodes,
             self.tasks, self.proactivity, self.evolution, self.user_model, self.dreaming, self.voice, self.channels,
         ]
 
@@ -171,6 +182,7 @@ class SentientApp:
                     cancelled += await svc.halt()
                 except Exception:
                     log.exception("service %s failed to halt", svc.name)
+            claude_code.kill_all()  # a Claude Code reply left running by anything above (ADR 0022)
             if changed:  # devices hear about it after the work is cancelled, never before
                 await self._tell_devices()
             return {**self.stop_state, "cancelled": cancelled}
@@ -229,6 +241,8 @@ class SentientApp:
                 log.exception("service %s failed to start", svc.name)
         # services register plugins in start() (browser, code, devices, channels): re-check skills' requires_tools
         self.skills.reload(self._available_tools())
+        if self.enable_background:  # the "Local only" preset and the check-up size models from it
+            self._hardware_warmup = asyncio.create_task(self.hardware.get())
         self._started = True
         return self
 
@@ -237,6 +251,8 @@ class SentientApp:
         return {p.id for p in self.registry.plugins()} | {t.name for t in self.registry.tools(include_hidden=True)}
 
     async def stop(self) -> None:
+        if self._hardware_warmup is not None and not self._hardware_warmup.done():
+            self._hardware_warmup.cancel()
         for svc in reversed(self.services):
             try:
                 await svc.stop()
@@ -244,5 +260,6 @@ class SentientApp:
                 log.exception("service %s failed to stop", svc.name)
         if self.agent is not None:
             await self.agent.drain(timeout=SHUTDOWN_GRACE_S)
+        claude_code.kill_all()
         await self.store.close()
         self._started = False

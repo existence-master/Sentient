@@ -12,15 +12,22 @@
  *   engine does not have them yet; whenever the engine answers, its data is used.
  */
 import type {
+  BrowserProfileCreate,
+  BrowserProfilePatch,
+  BrowserProfiles,
   BrowserStatus,
   Channel,
   ChannelPairing,
+  ClaudeCodeStatus,
   DeviceInvokeResult,
   DeviceLanInfo,
   DeviceNode,
   DevicePairing,
   Dream,
   FeedStatus,
+  HermesPart,
+  HermesPreview,
+  HermesResult,
   Hook,
   HookCreated,
   Insight,
@@ -29,20 +36,24 @@ import type {
   SandboxResult,
   SandboxStatus,
   Subagent,
+  TerminalStatus,
   ApprovalDecision,
   Bootstrap,
   StopResult,
   StopState,
   ChatRequest,
   AgentEvent,
+  CheckupEvent,
   ClarificationAnswer,
   ConfigPatchResponse,
   ConnectResponse,
   DeepPartial,
+  DictateResult,
   EmbeddingTestResult,
   EvolutionLogEntry,
   FallbacksResponse,
   FileEntry,
+  Hardware,
   Health,
   Integration,
   IntegrationTestResult,
@@ -50,28 +61,45 @@ import type {
   LocalModels,
   McpServer,
   McpServerCreate,
+  McpSignInStart,
   McpTestResult,
   Memory,
   MemoryGraph,
   MemoryImportResult,
   MemoryQuery,
+  MemoryReviewInbox,
   MemorySummary,
   MemoryTopic,
   MemoryWriteResult,
   MessageSearchHit,
+  ModelPreset,
+  ModelPresetList,
   ModelRoles,
   ModelTestResult,
+  CatalogModel,
+  ChatGPTStatus,
+  ProviderKeyCheck,
+  ProviderSignIn,
+  ProviderSignInStatus,
   NotificationList,
   OkResponse,
+  PresetApplyResult,
   OllamaPullProgress,
   OnboardingRequest,
   Persona,
   PrivacyFilters,
   ProactivityPreference,
+  Brief,
+  BriefFeedback,
+  BriefKind,
+  BriefSectionId,
+  BriefSetup,
+  BriefState,
   ProactivityStatus,
   ProgressUpdate,
   Provider,
   RoleName,
+  RuleProposal,
   SecretStatus,
   SentientConfig,
   Session,
@@ -402,6 +430,13 @@ export const api = {
     search: (q: string) => http.get<MessageSearchHit[]>('/api/sessions/search', { query: { q } })
   },
 
+  /** "Make this a rule?" cards from what was said in a chat (#130). Only `decide` creates a rule. */
+  ruleProposals: {
+    list: (sessionId: string) => http.get<RuleProposal[]>(`/api/sessions/${enc(sessionId)}/rule-proposals`),
+    decide: (id: string, decision: 'accept' | 'decline') =>
+      http.post<RuleProposal>(`/api/rule-proposals/${enc(id)}`, { decision })
+  },
+
   chat: {
     /** NDJSON fallback of a WebSocket turn. First line is `{type:"session", session_id}`. */
     stream: (body: ChatRequest, signal?: AbortSignal) =>
@@ -434,13 +469,40 @@ export const api = {
   models: {
     providers: () => http.get<Provider[]>('/api/models/providers'),
     local: () => http.get<LocalModels>('/api/models/local'),
+    /** This computer's memory and graphics card, and the local model that fits it (cached by the engine). */
+    hardware: (refresh = false) => http.get<Hardware>('/api/system/hardware', { query: refresh ? { refresh: true } : undefined }),
     test: (model: string, role?: RoleName) => http.post<ModelTestResult>('/api/models/test', { model, role }),
     testEmbedding: (model: string) => http.post<EmbeddingTestResult>('/api/models/test-embedding', { model }),
+    claudeCode: () => http.get<ClaudeCodeStatus>('/api/models/claude-code'),
     setRoles: (roles: Partial<Record<RoleName, string | null>>) => http.put<ModelRoles>('/api/models/roles', roles),
     setFallbacks: (fallbacks: Partial<Record<RoleName, string[]>>) =>
       http.put<FallbacksResponse>('/api/models/fallbacks', fallbacks),
     pullOllama: (name: string, signal?: AbortSignal) =>
-      streamNdjson<OllamaPullProgress>('POST', '/api/models/ollama/pull', { body: { name }, signal })
+      streamNdjson<OllamaPullProgress>('POST', '/api/models/ollama/pull', { body: { name }, signal }),
+    /** Check each role's model (or only `roles`); never changes config. */
+    checkup: (roles?: Partial<Record<RoleName, string | null>>, signal?: AbortSignal) =>
+      streamNdjson<CheckupEvent>('POST', '/api/models/checkup', { body: roles ? { roles } : {}, signal }),
+    /** Start OpenRouter's browser sign-in; open `auth_url`, then poll `signInStatus(state)`. */
+    connectOpenRouter: () => http.post<ProviderSignIn>('/api/models/connect/openrouter'),
+    signInStatus: (state: string, provider: 'openrouter' | 'chatgpt' = 'openrouter') =>
+      http.get<ProviderSignInStatus>(`/api/models/connect/${provider}/${enc(state)}`),
+    /** Sign in with ChatGPT to use a ChatGPT plan: status, start (open `auth_url`, poll `signInStatus`), sign out. */
+    chatgpt: {
+      status: () => http.get<ChatGPTStatus>('/api/models/connect/chatgpt'),
+      connect: () => http.post<ProviderSignIn>('/api/models/connect/chatgpt'),
+      signOut: () => http.delete<OkResponse>('/api/models/connect/chatgpt')
+    },
+    checkKey: (provider: string) => http.post<ProviderKeyCheck>(`/api/models/connect/${enc(provider)}/check`),
+    catalog: (provider: string) => http.get<CatalogModel[]>(`/api/models/catalog/${enc(provider)}`),
+    /** Model presets: switch every role at once, save your own, undo the last switch. */
+    presets: {
+      list: () => http.get<ModelPresetList>('/api/models/presets'),
+      apply: (name: string) => http.post<PresetApplyResult>(`/api/models/presets/${enc(name)}/apply`),
+      undo: () => http.post<PresetApplyResult>('/api/models/presets/undo'),
+      save: (name: string, overwrite = false) => http.post<ModelPreset>('/api/models/presets', { name, overwrite }),
+      rename: (name: string, to: string) => http.patch<ModelPreset>(`/api/models/presets/${enc(name)}`, { name: to }),
+      delete: (name: string) => http.delete<OkResponse>(`/api/models/presets/${enc(name)}`)
+    }
   },
 
   secrets: {
@@ -498,7 +560,13 @@ export const api = {
       list: () => http.get<McpServer[]>('/api/integrations/mcp'),
       add: (body: McpServerCreate) => http.post<McpServer>('/api/integrations/mcp', body),
       remove: (name: string) => http.delete<OkResponse>(`/api/integrations/mcp/${enc(name)}`),
-      test: (name: string) => http.post<McpTestResult>(`/api/integrations/mcp/${enc(name)}/test`)
+      test: (name: string) => http.post<McpTestResult>(`/api/integrations/mcp/${enc(name)}/test`),
+      signIn: (name: string) => http.post<McpSignInStart>(`/api/integrations/mcp/${enc(name)}/sign-in`),
+      signOut: (name: string) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/sign-out`),
+      setEnabled: (name: string, enabled: boolean) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/enabled`, { enabled }),
+      /** Fill in the server's own header or env values (keychain only), then it reconnects. */
+      setValues: (name: string, values: Record<string, string>, enable = false) =>
+        http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/values`, { values, enable })
     },
     /** §16 change feeds (Gmail, Calendar) and IMAP push watchers. */
     feeds: {
@@ -524,7 +592,16 @@ export const api = {
     pollNow: () => http.post<{ ok: boolean; events: number }>('/api/proactivity/poll-now'),
     preferences: () => http.get<ProactivityPreference[]>('/api/proactivity/preferences'),
     resetPreference: (suggestionType: string) =>
-      http.delete<OkResponse>(`/api/proactivity/preferences/${enc(suggestionType)}`)
+      http.delete<OkResponse>(`/api/proactivity/preferences/${enc(suggestionType)}`),
+    /** Daily Brief: a recurring task the user can edit, pause or delete in Tasks. */
+    brief: {
+      get: () => http.get<BriefState>('/api/proactivity/brief'),
+      /** Set it up (creates the task once) or change time, days, sections and topics. */
+      setup: (body: BriefSetup = {}) => http.post<BriefState>('/api/proactivity/brief', body),
+      runNow: (kind: BriefKind = 'morning') => http.post<{ ok: boolean; task_id: string }>('/api/proactivity/brief/run', { kind }),
+      feedback: (body: { brief_id: string; value: BriefFeedback; item_id?: string; section?: BriefSectionId }) =>
+        http.post<Brief>('/api/proactivity/brief/feedback', body)
+    }
   },
 
   // §7 memory ------------------------------------------------------------------
@@ -543,6 +620,14 @@ export const api = {
     writeWorkspace: (which: WorkspaceFileId, content: string) =>
       http.put<{ saved: boolean }>(`/api/memories/workspace/${which}`, { content }),
     personas: () => http.get<Persona[]>('/api/memories/personas'),
+    /** §7 memories waiting for the user's review (ADR 0021). */
+    review: {
+      list: () => http.get<MemoryReviewInbox>('/api/memories/review'),
+      approve: (kind: 'fact' | 'insight', id: number | string, content?: string) =>
+        http.post<OkResponse>(`/api/memories/review/${kind}/${enc(String(id))}/approve`, content === undefined ? {} : { content }),
+      discard: (kind: 'fact' | 'insight', id: number | string) => http.delete<OkResponse>(`/api/memories/review/${kind}/${enc(String(id))}`),
+      approveAll: (from: string) => http.post<{ approved: number }>('/api/memories/review/approve-all', { from })
+    },
     /** §15 dreams: overnight memory consolidation. */
     dreams: {
       list: (limit = 30) => withDemoFallback(() => http.get<Dream[]>('/api/memories/dreams', { query: { limit } }), () => demo.dreams()),
@@ -572,6 +657,9 @@ export const api = {
     status: () => http.get<VoiceStatus>('/api/voice/status'),
     transcribe: (audio: Blob, filename = 'dictation.webm', opts?: UploadOptions) =>
       upload<TranscribeResult>('/api/voice/transcribe', audio, filename, opts),
+    /** Local speech recognition plus the cleanup in `voice.dictation` (#169). The listening pill calls it directly. */
+    dictate: (audio: Blob, filename = 'dictation.webm', opts?: UploadOptions) =>
+      upload<DictateResult>('/api/voice/dictate', audio, filename, opts),
     speak: (text: string, voice?: string) => http.blob('POST', '/api/voice/speak', { body: { text, voice } }),
     prepare: (target: VoicePrepareTarget = 'all', signal?: AbortSignal) =>
       streamNdjson<VoicePrepareProgress>('POST', '/api/voice/prepare', { body: { target }, signal }),
@@ -599,11 +687,22 @@ export const api = {
     run: (code: string) => http.post<SandboxResult>('/api/sandbox/run', { code })
   },
 
+  // §18 terminal ------------------------------------------------------------------------
+  terminal: {
+    status: () => http.get<TerminalStatus>('/api/terminal/status'),
+    /** Kills one running command; `id` is the tool call id. */
+    stop: (id: string) => http.post<{ stopped: boolean }>('/api/terminal/stop', { id })
+  },
+
   // §12 browser -------------------------------------------------------------------------
   browser: {
     status: () => http.get<BrowserStatus>('/api/browser/status'),
-    /** Shows a visible window on Sentient's browser profile so the user can sign in themselves. */
-    open: (url?: string) => http.post<BrowserStatus>('/api/browser/open', url ? { url } : {}),
+    /** Shows a visible window on a browser profile so the user can sign in themselves (attach profiles: a new tab). */
+    open: (url?: string, profile?: string) => http.post<BrowserStatus>('/api/browser/open', { ...(url ? { url } : {}), ...(profile ? { profile } : {}) }),
+    profiles: () => http.get<BrowserProfiles>('/api/browser/profiles'),
+    createProfile: (body: BrowserProfileCreate) => http.post<BrowserProfiles>('/api/browser/profiles', body),
+    updateProfile: (name: string, patch: BrowserProfilePatch) => http.patch<BrowserProfiles>(`/api/browser/profiles/${enc(name)}`, patch),
+    deleteProfile: (name: string) => http.delete<BrowserProfiles>(`/api/browser/profiles/${enc(name)}`),
     close: () => http.post<BrowserStatus>('/api/browser/close'),
     screenshotUrl: (bust?: number) => authedUrl('/api/browser/screenshot', { t: bust })
   },
@@ -647,6 +746,16 @@ export const api = {
       withDemoFallback(() => http.post<{ ok: boolean }>(`/api/user-model/questions/${enc(id)}`, { answer }), () => demo.dropQuestion(id)),
     dismissQuestion: (id: string) =>
       withDemoFallback(() => http.delete<{ ok: boolean }>(`/api/user-model/questions/${enc(id)}`), () => demo.dropQuestion(id))
+  },
+
+  // §19 moving from Hermes ------------------------------------------------------------------
+  imports: {
+    hermes: {
+      info: () => http.get<{ path: string; exists: boolean }>('/api/import/hermes'),
+      preview: (path?: string) => http.post<HermesPreview>('/api/import/hermes/preview', { path: path || null }),
+      apply: (body: { path?: string; parts: HermesPart[]; skip?: string[] }) => http.post<HermesResult>('/api/import/hermes/apply', body),
+      removeMemories: () => http.delete<{ facts: number; insights: number }>('/api/import/hermes/memories')
+    }
   },
 
   // §16 webhooks --------------------------------------------------------------------------

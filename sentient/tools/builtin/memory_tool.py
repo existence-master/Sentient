@@ -8,8 +8,15 @@ from __future__ import annotations
 
 import re
 
+from sentient.memory import review
 from sentient.memory.episodic import EpisodicMemory
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
+from sentient.tools.rules import brings_untrusted
+
+HELD_NOTE = (
+    "Saved for the user to review first, because this run read outside content or nobody asked for it. "
+    "It is not used until they approve it."
+)
 
 
 def _episodic(ctx: ToolContext) -> EpisodicMemory:
@@ -42,7 +49,46 @@ async def memory_remember(ctx: ToolContext, fact: str) -> dict:
     Existing facts on the same subject are updated instead of duplicated."""
     if ctx.memory is None:
         return {"error": "memory unavailable"}
-    return await ctx.memory.remember(fact, source="conversation", notify=True)
+    held = review.for_context(ctx)  # outside content or unprompted work: the user reviews it first (ADR 0021)
+    if held is not None:
+        held["snippet"] = review.note("", await _last_outside_result(ctx))["snippet"]
+    out = await ctx.memory.remember(fact, source="conversation", notify=True, review=held)
+    return {**out, "note": HELD_NOTE} if out.get("status") == "pending" else out
+
+
+async def _mark_if_outside(ctx: ToolContext, session_ids: list) -> None:
+    """Messages from a chat that read outside content bring that content into this run too (ADR 0018, 0021): mark it,
+    so sends ask and what it learns waits for review. Summaries of such chats are not searchable here at all."""
+    ids = sorted({str(s) for s in session_ids if s and s != ctx.session_id})
+    if ctx.untrusted or not ids:
+        return
+    row = await ctx.store.fetchone(
+        f"SELECT untrusted FROM sessions WHERE id IN ({','.join('?' * len(ids))}) AND COALESCE(untrusted, '') != ''"
+        " LIMIT 1",
+        ids,
+    )
+    if row is not None:
+        ctx.untrusted = str(row["untrusted"])
+
+
+async def _last_outside_result(ctx: ToolContext) -> str | None:
+    """The latest tool result in this chat that brought in outside content (the review card shows it)."""
+    registry = ctx.extra.get("registry")
+    if not ctx.session_id or registry is None or not ctx.untrusted:
+        return None
+    try:
+        rows = await ctx.store.fetchall(
+            "SELECT name, content FROM messages WHERE session_id = ? AND role = 'tool'"
+            " ORDER BY created_at DESC, rowid DESC LIMIT 12",
+            (ctx.session_id,),
+        )
+    except Exception:
+        return None
+    for r in rows:
+        t = registry.get(r["name"] or "")
+        if t is not None and brings_untrusted(t):
+            return r["content"]
+    return None
 
 
 @tool("memory_forget", risk=Risk.send)
@@ -76,6 +122,7 @@ async def memory_search_history(ctx: ToolContext, query: str, limit: int = 8) ->
         rows = await ctx.store.search_messages(q, limit=limit)
         if rows:
             break
+    await _mark_if_outside(ctx, [r.get("session_id") for r in rows])
     return [
         {"when": r["created_at"], "role": r["role"], "session_id": r["session_id"], "text": (r["content"] or "")[:500]}
         for r in rows
@@ -108,6 +155,7 @@ async def history_time_search(ctx: ToolContext, start_date: str, end_date: str, 
         return {"error": "Invalid date format. Use ISO 8601, e.g. 2026-09-14T00:00:00Z."}
     if not rows:
         return {"result": "No messages found in that time period."}
+    await _mark_if_outside(ctx, [r.get("session_id") for r in rows])
     log = "\n".join(f"[{r['created_at'][:16].replace('T', ' ')}] {r['role']}: {(r['content'] or '')[:600]}" for r in rows)
     return {"conversation": log, "count": len(rows)}
 

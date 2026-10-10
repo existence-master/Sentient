@@ -7,6 +7,7 @@ import json
 import smtplib
 from datetime import UTC, datetime
 
+import aioimaplib
 import pytest
 
 from sentient.integrations import feeds as feeds_mod
@@ -18,13 +19,14 @@ from sentient.integrations.plugins.email_imap import (
     imap_date,
     normalize_raw,
     parse_fetch,
+    parse_folders,
     parse_search,
     parse_uidvalidity,
 )
 
 GOOD_PASSWORD = "abcdefghijklmnop"
-CREDS = {"host": "imap.gmail.com", "port": 993, "username": "me@gmail.com", "password": GOOD_PASSWORD,
-         "smtp_host": "smtp.gmail.com", "smtp_port": 465}
+CREDS = {"host": "imap.gmail.com", "security": "ssl", "port": 993, "username": "me@gmail.com", "password": GOOD_PASSWORD,
+         "folders": ["INBOX"], "smtp_host": "smtp.gmail.com", "smtp_port": 465}
 GMAIL_KEYS = {"id", "thread_id", "from", "sender_email", "to", "subject", "snippet", "body", "date", "labels", "url"}
 
 
@@ -50,6 +52,7 @@ class FakeMailbox:
 class FakeSession:
     def __init__(self, box: FakeMailbox):
         self.box = box
+        self.mailbox = "INBOX"  # a single-mailbox fake: select() is a no-op, like one folder's own session
 
     @property
     def uidvalidity(self) -> str:
@@ -58,6 +61,9 @@ class FakeSession:
     @property
     def supports_idle(self) -> bool:
         return self.box.idle
+
+    async def select(self, mailbox: str) -> None:
+        self.mailbox = mailbox
 
     async def uid_search(self, *criteria: str) -> list[int]:
         self.box.searches.append(criteria)
@@ -95,6 +101,70 @@ def install_fake_imap(monkeypatch, box: FakeMailbox) -> None:
             raise IntegrationError("Couldn't reach the mail server imap.gmail.com:993 (ConnectionResetError).")
         box.opened += 1
         return FakeSession(box)
+
+    monkeypatch.setattr(email_imap, "open_session", open_session)
+
+
+class FakeMultiMailbox:
+    """Like FakeMailbox, but one message set and UIDVALIDITY per folder, for the `folders` tests."""
+
+    def __init__(self, folders: dict[str, dict[int, bytes]], *, idle: bool = True,
+                uidvalidity: dict[str, str] | None = None):
+        self.folders = {name: dict(messages) for name, messages in folders.items()}
+        self.uidvalidity = {name: (uidvalidity or {}).get(name, "7") for name in self.folders}
+        self.idle = idle
+        self.pushes: asyncio.Queue = asyncio.Queue()
+        self.selected: list[str] = []
+        self.flags: dict[str, dict[int, list[str]]] = {name: {} for name in self.folders}
+
+
+class FakeMultiSession:
+    def __init__(self, box: FakeMultiMailbox, mailbox: str):
+        self.box = box
+        self.mailbox = mailbox
+
+    @property
+    def uidvalidity(self) -> str:
+        return self.box.uidvalidity[self.mailbox]
+
+    @property
+    def supports_idle(self) -> bool:
+        return self.box.idle
+
+    async def select(self, mailbox: str) -> None:
+        self.box.selected.append(mailbox)
+        self.mailbox = mailbox
+
+    async def uid_search(self, *criteria: str) -> list[int]:
+        uids = sorted(self.box.folders[self.mailbox])
+        if criteria == ("UID", "*"):
+            return uids[-1:]
+        if criteria and criteria[0] == "UID":
+            low = int(criteria[1].split(":")[0])
+            return [u for u in uids if u >= low] or uids[-1:]
+        return uids
+
+    async def fetch(self, uids: list[int]) -> list[dict]:
+        messages, flags = self.box.folders[self.mailbox], self.box.flags[self.mailbox]
+        return [{"uid": u, "flags": flags.get(u, []), "raw": messages[u]} for u in uids if u in messages]
+
+    async def idle_wait(self, timeout: float) -> bool:
+        push = await self.box.pushes.get()
+        if isinstance(push, BaseException):
+            raise push
+        return bool(push)
+
+    async def noop(self) -> None:
+        pass
+
+    async def close(self) -> None:
+        pass
+
+
+def install_fake_multi_imap(monkeypatch, box: FakeMultiMailbox) -> None:
+    async def open_session(c: dict, mailbox: str = "INBOX"):
+        box.selected.append(mailbox)
+        return FakeMultiSession(box, mailbox)
 
     monkeypatch.setattr(email_imap, "open_session", open_session)
 
@@ -171,7 +241,8 @@ async def test_connect_validates_imap_and_smtp(app, keychain, monkeypatch, smtp)
     assert integ["auth_type"] == "manual" and integ["triggers"] == [{"event": "new_email", "label": "New email"}]
     assert {t["name"]: t["risk"] for t in integ["tools"]} == {
         "email_imap_search": "read", "email_imap_read": "read", "email_imap_send": "send"}
-    assert {f["key"] for f in integ["setup"]["fields"]} == {"host", "port", "username", "password", "smtp_host", "smtp_port"}
+    assert {f["key"] for f in integ["setup"]["fields"]} == {
+        "host", "security", "port", "username", "password", "folders", "smtp_host", "smtp_port"}
     assert next(f for f in integ["setup"]["fields"] if f["key"] == "password")["secret"] is True
     assert "apppasswords" in integ["setup"]["instructions_md"] and "iCloud" in integ["setup"]["instructions_md"]
     assert (await mgr.test("email_imap"))["ok"] is True
@@ -213,7 +284,7 @@ async def test_idle_loop_baseline_push_privacy_and_reconnect(app, keychain, monk
     async with app.bus.subscribe() as q:
         mgr.feeds.start_watch("email_imap")
         try:
-            assert await wait_for_cursor(mgr, "email_imap") == {"uidvalidity": "7", "last_uid": 1}
+            assert await wait_for_cursor(mgr, "email_imap") == {"INBOX": {"uidvalidity": "7", "last_uid": 1}}
             assert mgr.feed_active("email_imap") is True
             box.messages[2] = raw_email("Jane Doe <jane@y.com>", "Lunch?", "Want lunch at 1?", "m2")
             box.messages[3] = raw_email("Boss <boss@x.com>", "Review", "About your salary", "m3")
@@ -236,14 +307,14 @@ async def test_idle_loop_baseline_push_privacy_and_reconnect(app, keychain, monk
             assert [i["id"] for i in batch["items"]] == ["4"]
             for _ in range(500):  # the cursor is saved right after publishing
                 st = await mgr.feeds.state("email_imap")
-                if st["failures"] == 0 and json.loads(st["cursor"])["last_uid"] == 4:
+                if st["failures"] == 0 and json.loads(st["cursor"])["INBOX"]["last_uid"] == 4:
                     break
                 await asyncio.sleep(0.01)
         finally:
             await mgr.feeds.stop_watch("email_imap")
     assert len(failures) == 2 and "connection lost" in failures[0] and "Couldn't reach the mail server" in failures[1]
     st = await mgr.feeds.state("email_imap")
-    assert st["failures"] == 0 and st["status"] == "ok" and json.loads(st["cursor"])["last_uid"] == 4
+    assert st["failures"] == 0 and st["status"] == "ok" and json.loads(st["cursor"])["INBOX"]["last_uid"] == 4
     assert st["emitted"] == 2 and box.opened == 2 and box.closed >= 2
     assert mgr.feed_active("email_imap") is False  # the watcher stopped
 
@@ -265,7 +336,7 @@ async def test_noop_fallback_when_idle_unsupported_and_uidvalidity_reset(app, mo
             box.uidvalidity = "8"
             for _ in range(500):
                 st = await mgr.feeds.state("email_imap")
-                if json.loads(st["cursor"])["uidvalidity"] == "8":
+                if json.loads(st["cursor"])["INBOX"]["uidvalidity"] == "8":
                     break
                 await asyncio.sleep(0.01)
             assert "reset" in st["note"]
@@ -390,10 +461,211 @@ async def test_imap_hides_codes_and_magic_links(app, ctx, monkeypatch):
         assert "415-555-0134" in m["body"] and "Invoice 2026-0042" in m["body"]
 
     # pushed new mail is masked before it is published to proactivity and triggered tasks
-    session = await email_imap.open_session(CREDS)
-    await email_imap.PLUGIN.check_new(mgr, session)  # baseline
+    session = await email_imap.open_session(CREDS, "INBOX")
+    await email_imap.PLUGIN.check_new(mgr, session, "INBOX")  # baseline
     box.messages[3] = raw_email("Acme <hello@acme.example>", "Code", "Your verification code is 118822", "m3")
     async with app.bus.subscribe() as q:
-        await email_imap.PLUGIN.check_new(mgr, session)
+        await email_imap.PLUGIN.check_new(mgr, session, "INBOX")
         batch = await next_items(q)
     assert batch["items"][0]["body"] == "Your verification code is [one-time code hidden]"
+
+
+# ----------------------------------------------------------------------------- security (SSL / STARTTLS, #92)
+def test_parse_folders_trims_dedupes_and_defaults_to_inbox():
+    assert parse_folders("") == ["INBOX"]
+    assert parse_folders("   ") == ["INBOX"]
+    assert parse_folders("INBOX, Work, , Work") == ["INBOX", "Work"]
+    assert parse_folders("Alpha,Beta,Alpha") == ["Alpha", "Beta"]
+
+
+async def test_security_field_defaults_to_ssl_and_rejects_an_unknown_value(app, monkeypatch, smtp):
+    install_fake_imap(monkeypatch, FakeMailbox({}))
+    with pytest.raises(IntegrationError, match="security must be 'ssl' or 'starttls'"):
+        await app.integrations.connect("email_imap", {"host": "imap.gmail.com", "username": "me@gmail.com",
+                                                       "password": GOOD_PASSWORD, "security": "tls1.2"})
+    integ = await app.integrations.connect("email_imap", {"host": "imap.gmail.com", "username": "me@gmail.com",
+                                                           "password": GOOD_PASSWORD})
+    assert integ["connected"] is True  # security left blank: defaults to ssl, same as before #92
+
+
+class FakeProtocol:
+    """Stands in for aioimaplib's IMAP4ClientProtocol, just enough for _starttls to run against."""
+
+    def __init__(self):
+        self.transport = object()
+        self.loop = asyncio.get_event_loop()
+        self.state = aioimaplib.CONNECTED
+        self.capabilities = {"IMAP4rev1"}
+        self.calls: list[str] = []
+        self._tag = 0
+
+    def new_tag(self) -> str:
+        self._tag += 1
+        return f"A{self._tag}"
+
+    async def execute(self, command) -> aioimaplib.Response:
+        self.calls.append(command.name)
+        return aioimaplib.Response("OK", [])
+
+
+class FakeLowClient:
+    """Stands in for aioimaplib.IMAP4 / IMAP4_SSL, just enough for ImapSession.open to run against."""
+
+    def __init__(self, kind: str, recorder: list[FakeLowClient], host: str, port: int, timeout: float):
+        self.kind, self.host, self.port = kind, host, port
+        self.protocol = FakeProtocol()
+        recorder.append(self)
+
+    async def wait_hello_from_server(self) -> None:
+        pass
+
+    async def login(self, user: str, password: str) -> aioimaplib.Response:
+        return aioimaplib.Response("OK" if password == GOOD_PASSWORD else "NO", [])
+
+    async def select(self, mailbox: str) -> aioimaplib.Response:
+        return aioimaplib.Response("OK", [b"OK [UIDVALIDITY 9] UIDs valid"])
+
+    def has_capability(self, name: str) -> bool:
+        return False
+
+    async def logout(self) -> aioimaplib.Response:
+        return aioimaplib.Response("OK", [])
+
+
+async def test_open_uses_imap4_ssl_by_default_and_plain_imap4_plus_starttls_when_asked(monkeypatch):
+    created: list[FakeLowClient] = []
+    starttls_calls: list[tuple] = []
+
+    monkeypatch.setattr(email_imap.aioimaplib, "IMAP4_SSL", lambda host, port, timeout: FakeLowClient("ssl", created, host, port, timeout))
+    monkeypatch.setattr(email_imap.aioimaplib, "IMAP4", lambda host, port, timeout: FakeLowClient("plain", created, host, port, timeout))
+
+    async def fake_starttls(client, host):
+        starttls_calls.append((client, host))
+
+    monkeypatch.setattr(email_imap, "_starttls", fake_starttls)
+
+    s = email_imap.ImapSession({"host": "imap.example.com", "username": "me@example.com", "password": GOOD_PASSWORD})
+    assert s.security == "ssl" and s.port == 993  # the default, unchanged from before #92
+    await s.open("INBOX")
+    assert created[-1].kind == "ssl" and created[-1].port == 993 and starttls_calls == []
+    await s.close()
+
+    created.clear()
+    s = email_imap.ImapSession({"host": "imap.example.com", "username": "me@example.com", "password": GOOD_PASSWORD,
+                                "security": "starttls"})
+    assert s.port == 143  # the STARTTLS default, distinct from the SSL default
+    await s.open("INBOX")
+    assert created[-1].kind == "plain" and created[-1].port == 143
+    assert starttls_calls == [(s.client, "imap.example.com")]
+    await s.close()
+
+    created.clear()
+    s = email_imap.ImapSession({"host": "imap.example.com", "port": 1143, "username": "me@example.com",
+                                "password": GOOD_PASSWORD, "security": "STARTTLS"})  # case-insensitive, explicit port kept
+    assert s.port == 1143
+    await s.open("INBOX")
+    assert created[-1].kind == "plain" and created[-1].port == 1143
+    await s.close()
+
+
+async def test_starttls_sends_the_command_upgrades_the_transport_and_refreshes_capabilities(monkeypatch):
+    protocol = FakeProtocol()
+    original_transport = protocol.transport
+    tls_transport = object()  # a distinct object: start_tls returns a NEW transport, never the old one
+    captured: dict = {}
+
+    async def fake_start_tls(transport, proto, ssl_context, server_hostname=None):
+        captured["args"] = (transport, proto, server_hostname)
+        return tls_transport
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "start_tls", fake_start_tls)
+    client = type("Client", (), {"protocol": protocol})()
+
+    await email_imap._starttls(client, "imap.example.com")
+
+    assert protocol.calls == ["STARTTLS", "CAPABILITY"]  # STARTTLS first, then a fresh CAPABILITY over the upgraded link
+    assert protocol.state == aioimaplib.NONAUTH  # the server sends no new greeting after STARTTLS
+    assert protocol.capabilities == set()  # pre-TLS capabilities are discarded, not trusted
+    assert captured["args"] == (original_transport, protocol, "imap.example.com")
+    assert protocol.transport is tls_transport  # every command after this must go out over the upgraded transport
+
+
+async def test_starttls_raises_when_the_server_refuses(monkeypatch):
+    protocol = FakeProtocol()
+
+    async def refuse(command) -> aioimaplib.Response:
+        protocol.calls.append(command.name)
+        return aioimaplib.Response("NO", [b"STARTTLS not supported"])
+
+    protocol.execute = refuse
+    client = type("Client", (), {"protocol": protocol})()
+    with pytest.raises(IntegrationError, match="refused to start TLS"):
+        await email_imap._starttls(client, "imap.example.com")
+
+
+# ----------------------------------------------------------------------------- folders (watch other mailboxes, #92)
+async def test_connect_fails_fast_when_a_watched_folder_does_not_exist(app, monkeypatch, smtp):
+    box = FakeMailbox({})
+    real_select = FakeSession.select
+
+    async def select(self, mailbox: str) -> None:
+        if mailbox == "Ghost":
+            raise IntegrationError("There is no mailbox called 'Ghost'.")
+        await real_select(self, mailbox)
+
+    monkeypatch.setattr(FakeSession, "select", select)
+    install_fake_imap(monkeypatch, box)
+    with pytest.raises(IntegrationError, match="no mailbox called 'Ghost'"):
+        await app.integrations.connect("email_imap", {"host": "imap.gmail.com", "username": "me@gmail.com",
+                                                       "password": GOOD_PASSWORD, "folders": "INBOX, Ghost"})
+
+
+async def test_watch_checks_every_configured_folder_with_its_own_cursor(app, monkeypatch):
+    mgr = app.integrations
+    box = FakeMultiMailbox(
+        {"INBOX": {1: raw_email("a@b.com", "Hi", "x", "m1")}, "Work": {5: raw_email("c@d.com", "Job", "y", "m5")}},
+        uidvalidity={"INBOX": "7", "Work": "9"},
+    )
+    install_fake_multi_imap(monkeypatch, box)
+    await connect_imap(app, {**CREDS, "folders": ["INBOX", "Work"]})
+    async with app.bus.subscribe() as q:
+        mgr.feeds.start_watch("email_imap")
+        try:
+            cursor = await wait_for_cursor(mgr, "email_imap")
+            for _ in range(500):
+                cursor = json.loads((await mgr.feeds.state("email_imap"))["cursor"])
+                if "Work" in cursor:
+                    break
+                await asyncio.sleep(0.01)
+            assert cursor == {"INBOX": {"uidvalidity": "7", "last_uid": 1}, "Work": {"uidvalidity": "9", "last_uid": 5}}
+            assert box.selected[:2] == ["INBOX", "Work"]  # the baseline pass visits both, primary first
+
+            box.folders["Work"][6] = raw_email("e@f.com", "Second", "z", "m6")
+            box.pushes.put_nowait(True)
+            batch = await next_items(q)
+            assert batch["source"] == "email_imap" and batch["event"] == "new_email"
+            item = batch["items"][0]
+            assert item["subject"] == "Second" and "Work" in item["labels"]
+            for _ in range(500):  # the IDLE wait is on INBOX; Work's wake-check is right after
+                cursor = json.loads((await mgr.feeds.state("email_imap"))["cursor"])
+                if cursor.get("Work", {}).get("last_uid") == 6:
+                    break
+                await asyncio.sleep(0.01)
+            assert cursor["Work"] == {"uidvalidity": "9", "last_uid": 6}
+            assert cursor["INBOX"] == {"uidvalidity": "7", "last_uid": 1}  # untouched by the other folder's new mail
+        finally:
+            await mgr.feeds.stop_watch("email_imap")
+
+
+async def test_check_new_migrates_the_pre_folders_flat_cursor_shape(app, monkeypatch):
+    mgr = app.integrations
+    box = FakeMailbox({3: raw_email("a@b.com", "Hi", "x", "m1")})
+    install_fake_imap(monkeypatch, box)
+    await connect_imap(app)
+    await mgr.feeds.record_success("email_imap", cursor=json.dumps({"uidvalidity": "7", "last_uid": 2}))
+
+    n = await email_imap.PLUGIN.check_new(mgr, FakeSession(box), "INBOX")
+
+    assert n == 1  # continues from the old last_uid=2: uid 3 is new, not re-baselined
+    cursor = json.loads((await mgr.feeds.state("email_imap"))["cursor"])
+    assert cursor == {"INBOX": {"uidvalidity": "7", "last_uid": 3}}

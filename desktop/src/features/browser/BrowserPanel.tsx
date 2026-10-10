@@ -10,12 +10,12 @@ import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 import { toast } from 'sonner'
-import { Alert, Button, EmptyState, IconButton, Input, Skeleton, StatusDot } from '@/components/ui'
+import { Alert, Button, EmptyState, IconButton, Input, Select, Skeleton, StatusDot } from '@/components/ui'
 import { api, errorMessage, isNotImplemented } from '@/lib/api'
 import { cn, relativeTime } from '@/lib/utils'
 import { previewMode } from '@/features/devices/preview'
 import { hostOf, prettyUrl } from '@/features/chat/cards/bits'
-import { useBrowserActions, useBrowserStatus, useBrowserView } from './state'
+import { useBrowserActions, useBrowserProfiles, useBrowserStatus, useBrowserView } from './state'
 
 export const BROWSER_PANEL_WIDTH = 420
 
@@ -67,7 +67,9 @@ function PanelBody({ onClose }: { onClose: () => void }) {
   const status = useBrowserStatus()
   const frame = useBrowserView((s) => s.frame)
   const actions = useBrowserActions()
+  const profiles = useBrowserProfiles()
   const [url, setUrl] = useState('')
+  const [picked, setPicked] = useState<string | null>(null)
   const [shotFailed, setShotFailed] = useState(false)
   const now = useNow()
   const s = status.data
@@ -79,10 +81,15 @@ function PanelBody({ onClose }: { onClose: () => void }) {
   const shownUrl = frame?.url ?? activeTab?.url
   const imageSrc = frame?.image ?? (running && !shotFailed ? api.browser.screenshotUrl(Math.floor(now / 15000)) : undefined)
 
+  const profileList = profiles.data?.profiles ?? []
+  // a picked profile that was deleted or renamed meanwhile falls back to the open one
+  const profile = (picked && profileList.some((p) => p.name === picked) ? picked : null) ?? s?.profile ?? 'default'
+  const pickedProfile = profileList.find((p) => p.name === profile)
+
   const openForSignIn = () => {
     const raw = url.trim()
     const target = raw ? (/^https?:\/\//i.test(raw) ? raw : `https://${raw}`) : undefined
-    actions.open.mutate(target, {
+    actions.open.mutate({ url: target, profile: profileList.length > 1 ? profile : undefined }, {
       onSuccess: () => toast.success('The browser is open', { description: 'Sign in yourself in the window that opened, then close it when you are done.' }),
       onError: (e) => toast.error("Couldn't open the browser", { description: errorMessage(e) })
     })
@@ -194,6 +201,16 @@ function PanelBody({ onClose }: { onClose: () => void }) {
                 </div>
               </div>
               <div className="mt-3 space-y-2">
+                {profileList.length > 1 && (
+                  <Select
+                    size="sm"
+                    aria-label="Browser profile"
+                    value={profile}
+                    onValueChange={setPicked}
+                    options={profileList.map((p) => ({ value: p.name, label: p.notes ? `${p.name} (${p.notes})` : p.name }))}
+                    className="w-full"
+                  />
+                )}
                 <Input
                   size="sm"
                   value={url}
@@ -211,7 +228,7 @@ function PanelBody({ onClose }: { onClose: () => void }) {
                   leftIcon={<IconLogin2 size={14} />}
                   onClick={openForSignIn}
                 >
-                  Open browser to sign in
+                  {pickedProfile?.kind === 'attach' ? 'Open in your browser' : 'Open browser to sign in'}
                 </Button>
               </div>
             </section>
@@ -221,7 +238,9 @@ function PanelBody({ onClose }: { onClose: () => void }) {
 
       {!missing && (
         <div className="flex h-12 shrink-0 items-center gap-2 border-t border-border px-4">
-          <span className="min-w-0 flex-1 truncate text-2xs text-fg-subtle">{s?.engine ? `Using ${s.engine}` : ''}</span>
+          <span className="min-w-0 flex-1 truncate text-2xs text-fg-subtle">
+            {s?.attached ? `Connected to your browser (${s.profile})` : s?.engine ? `Using ${s.engine}${s.profile && s.profile !== 'default' ? `, profile ${s.profile}` : ''}` : ''}
+          </span>
           <Button
             size="sm"
             variant="ghost"
@@ -229,7 +248,7 @@ function PanelBody({ onClose }: { onClose: () => void }) {
             loading={actions.close.isPending}
             onClick={() => actions.close.mutate(undefined, { onError: (e) => toast.error("Couldn't close the browser", { description: errorMessage(e) }) })}
           >
-            Close browser
+            {s?.attached ? 'Disconnect' : 'Close browser'}
           </Button>
         </div>
       )}

@@ -77,6 +77,9 @@ export function ConversationsTab() {
                 )}
               </div>
               <p className="selectable mt-3 border-l-2 border-accent/30 pl-3 text-sm leading-relaxed text-fg-muted">{s.content}</p>
+              {s.untrusted && (
+                <p className="mt-2 text-xs text-fg-subtle">This chat read content from {s.untrusted}, so Sentient keeps this summary out of your other chats.</p>
+              )}
             </li>
           )
         })}

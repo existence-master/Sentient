@@ -37,7 +37,7 @@ process with one database file.
 ┌────────────────────────── Sentient.app (Electron) ──────────────────────────┐
 │ main process                                                                │
 │  • picks a free port + random token, spawns the engine, restarts on crash   │
-│  • window, tray, global shortcut, native notifications, launch at login     │
+│  • window, tray, global shortcuts, screen sharing, notifications, autostart │
 │  • preload bridge window.sentient {getConnection, openExternal, ...}        │
 │                                                                             │
 │ renderer (React + TypeScript)                                               │
@@ -54,8 +54,8 @@ process with one database file.
 │ SentientApp (composition root)                                              │
 │   Agent.run_loop ── LLM roles (LiteLLM) ── Ollama / OpenAI / Anthropic / …  │
 │   ToolRegistry ── builtin tools · integration plugins · MCP servers         │
-│   services: notifications · integrations · subagents · sandbox · browser ·  │
-│             nodes · tasks · proactivity · evolution · user model ·          │
+│   services: notifications · integrations · subagents · sandbox · terminal · │
+│             browser · nodes · tasks · proactivity · evolution · user model ·│
 │             dreaming · voice · channels          EventBus → /ws             │
 │   FactMemory (sqlite-vec) · Workspace markdown · SkillLibrary               │
 │ Store: ~/.sentient/sentient.db (SQLite WAL, FTS5, sqlite-vec)               │
@@ -99,6 +99,7 @@ never shown to the user.
 | `sentient/evolution`, `sentient/skills` | skill reviewer, curator, profile upkeep, SKILL.md library | new (Hermes Agent) |
 | `sentient/voice` | STT/TTS providers, VAD, wake word and talk mode, device audio (pcm16), `/ws/voice` loop | `main/voice` (FastRTC) |
 | `sentient/sandbox` | `execute_code`: Python scripts calling tools over a one-time loopback bridge; process or Docker backend | new (Hermes programmatic tool calling) |
+| `sentient/terminal` | `terminal_run`: approved commands on the host in allowed folders, built-in blocklist, secrets kept out, off by default (ADR 0019) | new (Hermes local terminal) |
 | `sentient/browser` | Playwright on the installed Edge/Chrome, snapshot refs, risk heuristics, headed sign-in, live frames | new (OpenClaw, Hermes) |
 | `sentient/nodes` | device pairing, invoke/result protocol, LAN TLS listener, mDNS, device tools, web device app, reference node | new (OpenClaw nodes) |
 | `sentient/channels` | Telegram and Discord bots with pairing codes, streaming replies, approvals as buttons, delivery | new (OpenClaw, Hermes gateway) |
@@ -117,7 +118,10 @@ Ollama roles get an explicit context length (`num_ctx`). An
 explicit pick (per chat message, per task) is strict: no silent fallback.
 Settings → Models lists installed Ollama models, provider suggestions, key status
 and a one-click test that also reports tool-calling support. Keys go to the OS
-keychain.
+keychain. One experimental provider sits outside LiteLLM: `claude-code/<model>`
+runs the user's own Claude Code for chat replies only, with its own tools off and
+Sentient's tools offered through a bridge that runs nothing
+([ADR 0022](adr/0022-claude-through-your-own-claude-code.md)).
 
 Local-model note: Ollama's `think` flag must be passed (as `reasoning_effort`)
 or qwen3's reasoning leaks into visible text through LiteLLM streaming; the
@@ -161,7 +165,9 @@ Each turn the system prompt carries SOUL.md (persona), USER.md, MEMORY.md,
 recent daily notes, recalled facts, the skill index, the clock and a running
 summary of long conversations. v2 relied on the model deciding to call a memory
 tool before it knew anything about you. Tools remain for explicit recall,
-remembering, forgetting and history search.
+remembering, forgetting and history search. Memories learned from outside
+content (an email, a web page), from work nobody asked for, or from an import
+wait in a review inbox and reach no prompt until you approve them (ADR 0021).
 
 ### Tasks keep v2 semantics, lose Celery
 Same statuses, JSON field names and stages as v2 (so the task UI ports

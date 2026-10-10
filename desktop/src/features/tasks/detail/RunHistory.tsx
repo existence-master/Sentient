@@ -21,10 +21,13 @@ import { AnimatePresence, motion } from 'motion/react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, EmptyState, JsonView, Markdown, Tooltip } from '@/components/ui'
+import { ContextGauge } from '@/features/chat/ContextMeter'
+import { MemorySources } from '@/features/chat/MemorySources'
+import { useBootstrap } from '@/hooks/core'
 import { api, errorMessage } from '@/lib/api'
 import { useRetryRun } from '@/hooks/tasks'
 import { getBridge } from '@/lib/bridge'
-import type { Run, Task, TaskRunResult } from '@/lib/types'
+import type { MemorySource, Run, Task, TaskRunResult } from '@/lib/types'
 import { cn, formatDuration, parseDate, relativeTime, truncate } from '@/lib/utils'
 import { useNow } from '../hooks'
 import { retryOf, runDurationMs } from '../meta'
@@ -91,6 +94,22 @@ function triggerSummary(task: Task, run: Run): { icon: typeof IconBolt; text: st
   return { icon: IconHandFinger, text: task.schedule?.type === 'once' && task.schedule.run_at ? 'Scheduled run' : 'Started on approval' }
 }
 
+/** When the run last did something: its heartbeat, or its newest progress update. */
+function lastActivity(run: Run): string | null {
+  const latest = run.progress_updates.length ? run.progress_updates[run.progress_updates.length - 1].timestamp : null
+  const beat = run.last_activity_at ?? null
+  if (!beat || !latest) return beat || latest
+  return (parseDate(beat)?.getTime() ?? 0) >= (parseDate(latest)?.getTime() ?? 0) ? beat : latest
+}
+
+function activityAgo(iso: string | null, now: number): string {
+  const d = parseDate(iso)
+  if (!d) return ''
+  const s = Math.max(0, Math.round((now - d.getTime()) / 1000))
+  if (s < 60) return `${s} second${s === 1 ? '' : 's'} ago`
+  return relativeTime(iso, now)
+}
+
 function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: { task: Task; run: Run; number: number; tz: string; defaultOpen: boolean; onCancel: () => void; cancelling: boolean }) {
   const [open, setOpen] = useState(defaultOpen)
   const live = run.status === 'processing'
@@ -148,6 +167,12 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
                 <span className="shrink-0 tabular-nums">{live ? `running ${formatDuration(duration)}` : formatDuration(duration)}</span>
               </>
             )}
+            {live && run.context && (
+              <>
+                <span className="text-fg-faint">·</span>
+                <ContextGauge meter={run.context} />
+              </>
+            )}
           </div>
         </div>
         {run.result?.tools_used?.length ? (
@@ -168,6 +193,7 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
                 <div className="flex items-center gap-2 rounded-lg border border-info/20 bg-info/6 px-3 py-2 text-sm">
                   <span className="min-w-0 flex-1 text-fg-muted">
                     Started {relativeTime(run.execution_start_time ?? run.created_at, now.getTime())}. Updates stream in as Sentient works.
+                    {lastActivity(run) && <span className="tabular-nums"> Last activity {activityAgo(lastActivity(run), now.getTime())}.</span>}
                   </span>
                   <Button size="xs" variant="danger" leftIcon={<IconPlayerStop size={12} />} loading={cancelling} onClick={onCancel}>
                     Cancel run
@@ -189,7 +215,7 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
                   {retryButton}
                 </div>
               )}
-              {run.result && <RunResult result={run.result} />}
+              {run.result && <RunResult result={run.result} memorySources={run.memory_sources} />}
               <div>
                 <div className="mb-2 flex items-center gap-2 text-2xs font-semibold uppercase tracking-wider text-fg-subtle">Execution log</div>
                 <RunLog taskId={task.task_id} run={run} live={live} tz={tz} />
@@ -323,8 +349,9 @@ export function TriggerEventCard({ source, data, tz }: { source?: string; data: 
 }
 
 // ---------------------------------------------------------------------------- result
-export function RunResult({ result }: { result: TaskRunResult }) {
+export function RunResult({ result, memorySources }: { result: TaskRunResult; memorySources?: MemorySource[] }) {
   const { names } = useToolNames()
+  const { data: boot } = useBootstrap()
   const open = (url: string) => /^https?:/.test(url) && void getBridge().openExternal(url)
   const links = [...(result.links_created ?? []).map((l) => ({ ...l, created: true })), ...(result.links_found ?? []).map((l) => ({ ...l, created: false }))]
   return (
@@ -392,6 +419,7 @@ export function RunResult({ result }: { result: TaskRunResult }) {
           ))}
         </div>
       )}
+      {!!memorySources?.length && <MemorySources sources={memorySources} assistantName={boot?.assistant.name || 'Sentient'} task />}
     </div>
   )
 }

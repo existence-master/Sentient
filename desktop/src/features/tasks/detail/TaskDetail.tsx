@@ -56,7 +56,9 @@ import { KindTile, TaskStatusBadge } from '../parts'
 import { describeSchedule, filterRules, nextRunDate, upcomingPhrase } from '../schedule'
 import { useTaskOps } from '../useTaskOps'
 import { HookName } from '@/features/automations/HookLabel'
+import { useBrowserProfiles } from '@/features/browser/state'
 import { ScriptJobSection } from './ScriptJob'
+import { DeliverToRow } from './DeliverTo'
 import { Clarifications } from './Clarifications'
 import { RunQuestion } from './RunQuestion'
 import { PlanSection } from './PlanSection'
@@ -495,7 +497,9 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
             </Button>
           }
         >
-          It won't run on its schedule or triggers until you resume it.
+          {task.original_context?.imported_from && !task.plan.length
+            ? 'Brought over from Hermes. Resume it and Sentient makes a plan for you to approve before it runs.'
+            : "It won't run on its schedule or triggers until you resume it."}
         </Alert>
       )}
 
@@ -540,7 +544,7 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
             </Button>
           </div>
           {last.result ? (
-            <RunResult result={last.result} />
+            <RunResult result={last.result} memorySources={last.memory_sources} />
           ) : last.error ? (
             <Alert tone="danger" icon={<IconAlertCircle />}>
               {last.error}
@@ -695,6 +699,8 @@ function PropertiesCard({ task, tz, ops, compact }: { task: Task; tz: string; op
             {k} <span className="font-medium text-fg-muted">{v}</span>
           </span>
         ))}
+        <BrowserProfileRow task={task} ops={ops} compact />
+        <DeliverToRow task={task} ops={ops} compact />
         {toggleable && (
           <label className="ml-auto flex items-center gap-2 text-fg-muted">
             {task.enabled ? 'Enabled' : 'Paused'}
@@ -723,6 +729,8 @@ function PropertiesCard({ task, tz, ops, compact }: { task: Task; tz: string; op
             <dd className="min-w-0 truncate text-right text-fg-muted">{v}</dd>
           </div>
         ))}
+        <BrowserProfileRow task={task} ops={ops} />
+        <DeliverToRow task={task} ops={ops} />
         <div className="flex items-center justify-between gap-3 px-4 py-2.5">
           <dt className="shrink-0 text-fg-subtle">ID</dt>
           <dd className="min-w-0">
@@ -733,6 +741,39 @@ function PropertiesCard({ task, tz, ops, compact }: { task: Task; tz: string; op
           </dd>
         </div>
       </dl>
+    </div>
+  )
+}
+
+/** Which browser profile the task's browser steps use (§12). Shown once there is more than one profile. */
+function BrowserProfileRow({ task, ops, compact }: { task: Task; ops: Ops; compact?: boolean }) {
+  const profiles = useBrowserProfiles()
+  const list = profiles.data?.profiles ?? []
+  const current = task.browser_profile || 'default'
+  if (list.length < 2 && current === 'default') return null
+  const options = list.map((p) => ({ value: p.name, label: p.name === 'default' ? 'Default' : p.name }))
+  if (!options.some((o) => o.value === current)) options.push({ value: current, label: `${current} (deleted)` })
+  const picker = (
+    <Select
+      size="sm"
+      aria-label="Browser profile"
+      value={current}
+      onValueChange={(v) => void ops.update(task.task_id, { browser_profile: v === 'default' ? null : v }, 'Browser profile updated')}
+      options={options}
+      className={compact ? 'h-6 w-36 text-xs' : 'w-44'}
+    />
+  )
+  if (compact) {
+    return (
+      <span className="flex items-center gap-1.5 text-fg-subtle">
+        Browser profile {picker}
+      </span>
+    )
+  }
+  return (
+    <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+      <dt className="shrink-0 text-fg-subtle">Browser profile</dt>
+      <dd className="min-w-0">{picker}</dd>
     </div>
   )
 }

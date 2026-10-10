@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ----------------------------------------------------------------------------- core (owner: core)
@@ -58,8 +58,79 @@ class ModelRoles(BaseModel):
     )
 
 
+MODEL_ROLE_NAMES = ("primary", "fast", "planner", "executor", "embedding", "vision", "voice")
+REQUIRED_MODEL_ROLES = {"primary", "fast", "embedding"}
+
+# Built-in model presets (#212). Their roles are generated: "Local only" uses the LOCAL_MODEL_TIERS row for this
+# computer once its hardware is known (the ModelRoles defaults above until then, and for a "cloud_first" row); "Cloud"
+# and "Mixed" use the first provider below with a key set ("main" for chat and planning, "fast" for quick jobs and
+# voice).
+LOCAL_PRESET, CLOUD_PRESET, MIXED_PRESET = "Local only", "Cloud", "Mixed"
+PRESET_CLOUD_MODELS: dict[str, dict[str, str]] = {
+    "anthropic": {"main": "anthropic/claude-sonnet-5-5", "fast": "anthropic/claude-haiku-5-5"},
+    "openai": {"main": "openai/gpt-5", "fast": "openai/gpt-5-mini"},
+    "openrouter": {"main": "openrouter/anthropic/claude-sonnet-5.5", "fast": "openrouter/anthropic/claude-haiku-5.5"},
+}
+
+# Models offered for Claude through the user's own Claude Code (#206, ADR 0022): Claude Code's model aliases.
+CLAUDE_CODE_MODELS: tuple[str, ...] = ("claude-code/sonnet", "claude-code/opus")
+
+# Local model sizing for this computer (#131), used by onboarding, the "Local only" preset and the model check-up.
+# Rows are tried in order and the first one the computer meets is recommended. ``min_vram_gb`` is graphics memory a
+# local model can use (an NVIDIA or AMD card, or about two thirds of the memory on Apple silicon); ``min_ram_gb`` is
+# total memory, for computers without one. Sizes are GiB as tools report them (an "8 GB" card or computer shows about
+# 7.8 to 8.0). One model does chat and background jobs, so Ollama keeps a single model loaded. Only the 8 GB row is
+# measured (qwen3:8b on an RTX 4060 laptop); the 12, 16 and 24 GB rows are estimates from model and cache sizes.
+# ``cloud_first``: too little memory for a local model that can do tasks, so a cloud model is recommended and the row's
+# model is only a labelled chat-only fallback (qwen3:4b can't call tools reliably).
+LOCAL_MODEL_TIERS: tuple[dict, ...] = (
+    {"id": "gpu_24", "min_vram_gb": 22, "model": "ollama_chat/qwen3:30b", "context_length": 16384},  # estimate
+    {"id": "gpu_16", "min_vram_gb": 15, "model": "ollama_chat/qwen3:14b", "context_length": 16384},  # estimate
+    {"id": "gpu_12", "min_vram_gb": 11, "model": "ollama_chat/qwen3:8b", "context_length": 16384},  # estimate
+    {"id": "gpu_8", "min_vram_gb": 7, "model": "ollama_chat/qwen3:8b", "context_length": 8192},
+    {"id": "cpu", "min_ram_gb": 7, "model": "ollama_chat/qwen3:8b", "context_length": 8192},
+    {"id": "small", "min_ram_gb": 0, "model": "ollama_chat/qwen3:4b", "context_length": 8192, "cloud_first": True},
+)
+
+
+class ModelPreset(BaseModel):
+    """A saved model setup the user can switch to in one step. Fields left out keep their current value."""
+
+    roles: dict[str, str | None] = Field(
+        default_factory=dict,
+        description="Model per role, like models.roles. A role left out keeps its model; null uses the primary model.",
+    )
+    fallbacks: dict[str, list[str]] | None = Field(None, description="Replaces models.fallbacks when set.")
+    reasoning: dict[str, str] | None = Field(None, description="Replaces models.reasoning when set.")
+    context_length: int | None = Field(None, ge=2048, le=1_048_576, description="Replaces models.context_length.")
+    context_length_per_role: dict[str, Annotated[int, Field(ge=2048, le=1_048_576)]] | None = Field(
+        None, description="Replaces models.context_length_per_role when set."
+    )
+
+    @field_validator("roles")
+    @classmethod
+    def _check_roles(cls, value: dict[str, str | None]) -> dict[str, str | None]:
+        out: dict[str, str | None] = {}
+        for role, model in value.items():
+            if role not in MODEL_ROLE_NAMES:
+                raise ValueError(f"unknown role {role}")
+            model = (model or "").strip() or None
+            if model is None and role in REQUIRED_MODEL_ROLES:
+                raise ValueError(f"role {role} cannot be empty")
+            out[role] = model
+        return out
+
+
 class ModelsConfig(BaseModel):
     roles: ModelRoles = Field(default_factory=ModelRoles)
+    presets: dict[str, ModelPreset] = Field(
+        default_factory=dict,
+        description="Your own saved model setups, by name, switched from the model menu in the title bar or with "
+        "/model in a messaging app. The built-in Local only, Cloud and Mixed setups are not stored here.",
+    )
+    active_preset: str | None = Field(
+        None, description="The model setup chosen last, shown with a check in the model menu."
+    )
     fallbacks: dict[str, list[str]] = Field(
         default_factory=dict,
         description="Per-role ordered fallback models tried when the role's model fails.",
@@ -104,6 +175,19 @@ class ModelsConfig(BaseModel):
         },
         description="Provider connection settings keyed by LiteLLM provider prefix.",
     )
+    experimental_claude_code: bool = Field(
+        False,
+        description="Experimental. Uses your own Claude Code install and login. Anthropic may change how this is "
+        "counted or allowed. When on, models named claude-code/<model> (claude-code/sonnet, claude-code/opus) answer "
+        "your chats through the claude program on this computer, with Sentient's tools and approvals. Never used for "
+        "work that runs in the background, and it can't make embeddings. Sentient never reads your Claude login.",
+    )
+    chatgpt_client_id: str = Field(
+        "dynamic_agent_client",
+        description="How Sentient signs in with ChatGPT to use a ChatGPT plan. The default lets this computer "
+        "register Sentient on the first sign-in, which OpenAI offers to open-source apps. Put a client id from "
+        "OpenAI here to use that instead, or leave it empty to turn Sign in with ChatGPT off.",
+    )
     max_tool_rounds: int = Field(12, ge=1, le=100, description="Max tool-call rounds per chat turn.")
     request_timeout_s: int = Field(180, ge=10, description="Per-request timeout in seconds.")
 
@@ -139,6 +223,15 @@ class ChatConfig(BaseModel):
     )
 
 
+class RuleOrigin(BaseModel):
+    """Where a lasting rule came from when the user made it from a chat message (#130)."""
+
+    rule: Literal["ask", "never"] = Field(description="The rule the user accepted.")
+    said: str = Field("", description="The user's own words, shortened.")
+    at: str = Field("", description="When the user accepted it (ISO time).")
+    session_id: str | None = Field(None, description="The chat it was said in.")
+
+
 class ApprovalsConfig(BaseModel):
     mode: Literal["off", "ask", "always"] = Field(
         "ask",
@@ -152,6 +245,11 @@ class ApprovalsConfig(BaseModel):
         description="Lasting rules for apps and tools. The key is a tool name (gmail_send_email) or an app id "
         "(gmail, meaning all of its tools); a tool's own rule beats its app's rule. allow: go ahead without asking "
         "(purchases still ask). ask: always ask first, whatever the setting above says. never: Sentient can't use it.",
+    )
+    rule_origins: dict[str, RuleOrigin] = Field(
+        default_factory=dict,
+        description="Rules you made from a chat message, by rule key, so Settings can say where they came from. "
+        "An entry goes away when its rule is changed or removed.",
     )
 
     @field_validator("rules", mode="before")
@@ -168,10 +266,23 @@ class ApprovalsConfig(BaseModel):
             out[name] = rule.strip().lower() if isinstance(rule, str) else rule
         return out
 
+    @model_validator(mode="after")
+    def _drop_stale_origins(self) -> ApprovalsConfig:
+        """An origin note only describes the rule it was made with: changing or removing that rule drops it."""
+        self.rule_origins = {k: o for k, o in self.rule_origins.items() if self.rules.get(k) == o.rule}
+        return self
+
 
 class ToolsConfig(BaseModel):
     approvals: ApprovalsConfig = Field(default_factory=ApprovalsConfig)
     disabled: list[str] = Field(default_factory=list, description="Tool or plugin ids to hide.")
+    repeated_call_limit: int = Field(
+        3,
+        ge=0,
+        le=20,
+        description="Stop when the assistant uses the same tool with the same details and gets the same result "
+        "this many times. In chat it is first asked to try something else. 0 turns this off.",
+    )
 
 
 class SubagentsConfig(BaseModel):
@@ -182,6 +293,14 @@ class SubagentsConfig(BaseModel):
     max_rounds: int = Field(24, ge=1, le=200, description="Tool rounds per subagent.")
     role: Literal["executor", "primary", "fast"] = Field("executor", description="Model role subagents use.")
     timeout_minutes: int = Field(20, ge=1, description="A subagent is stopped after this long.")
+    max_tokens: int = Field(
+        1_000_000, ge=0, description="A subagent is stopped after using this many tokens on a cloud model "
+        "(local models are not counted). 0 means no limit.",
+    )
+    max_cost_usd: float = Field(
+        2.0, ge=0, description="A subagent is stopped after spending about this many US dollars on a cloud model, "
+        "when the model's price is known. 0 means no limit.",
+    )
 
 
 class UIConfig(BaseModel):
@@ -230,20 +349,52 @@ class MemoryConfig(BaseModel):
         0.15, ge=0.0, le=1.0,
         description="How much keyword matches add to embedding similarity when ranking recalled facts.",
     )
+    review_expire_days: int = Field(
+        30, ge=1, le=365,
+        description="Memories waiting for your review (from emails, web pages, imports or work Sentient did on its "
+        "own) are let go after this many days without an answer.",
+    )
 
 
 # ----------------------------------------------------------------------------- tasks (owner: tasks agent)
 class TasksConfig(BaseModel):
     tick_seconds: int = Field(30, ge=5, description="Scheduler poll interval.")
     max_concurrent_runs: int = Field(2, ge=1, le=16, description="Task runs allowed at the same time.")
-    run_timeout_minutes: int = Field(30, ge=1, description="A single run is stopped after this long.")
-    max_tool_rounds: int = Field(40, ge=1, le=200, description="Max tool-call rounds per task run.")
+    run_timeout_minutes: int = Field(
+        30, ge=1, description="Minutes of work after which a run asks whether to keep going (time spent waiting for "
+        "your answer doesn't count). A swarm is stopped instead.",
+    )
+    max_tool_rounds: int = Field(
+        40, ge=1, le=200, description="Steps after which a run asks whether to keep going (a swarm worker stops)."
+    )
+    max_tokens_per_run: int = Field(
+        2_000_000, ge=0, description="Tokens on a cloud model after which a run asks whether to keep going "
+        "(local models are not counted). A swarm shares one limit and stops. 0 means no limit.",
+    )
+    max_cost_per_run_usd: float = Field(
+        5.0, ge=0, description="US dollars spent on a cloud model after which a run asks whether to keep going, "
+        "when the model's price is known. A swarm shares one limit and stops. 0 means no limit.",
+    )
     require_plan_approval: bool = Field(True, description="Plans wait for your approval before running.")
     swarm_max_agents: int = Field(5, ge=1, le=50, description="Parallel sub-agents per swarm task.")
     resume_interrupted_runs: bool = Field(
         True,
         description="When Sentient restarts, continue runs that were in progress from their last checkpoint "
         "instead of marking them failed.",
+    )
+    stuck_after_minutes: int = Field(
+        10, ge=0, description="A run that shows no sign of work for this many minutes (the AI model writes or thinks nothing, "
+        "and no step reports progress or finishes) stops and asks you what to do: try again, skip the step or cancel. "
+        "0 turns this off.",
+    )
+    stuck_after_repeated_errors: int = Field(
+        5, ge=0, le=50, description="A run whose step keeps failing with the same error this many times in a row "
+        "stops and asks you what to do. 0 turns this off.",
+    )
+    catch_up_window_hours: int = Field(
+        12, ge=0, le=168, description="When the computer was off or asleep at a task's scheduled time, run it once "
+        "when Sentient is back if it is less than this many hours late. Later ones are skipped and you're told. "
+        "A task never runs more than once to catch up. 0 always skips.",
     )
 
 
@@ -261,7 +412,10 @@ class IntegrationsConfig(BaseModel):
     )
     mcp_servers: dict[str, dict] = Field(
         default_factory=dict,
-        description="External MCP servers: {name: {transport: stdio|http, command, args, url, env, enabled}}.",
+        description=(
+            "External MCP servers: {name: {transport: stdio|http, command, args, url, env, enabled, "
+            "auth: none|headers|oauth, header_keys}}. Header values and sign-ins live in the keychain."
+        ),
     )
     hide_disconnected_tools: bool = Field(
         True,
@@ -329,6 +483,29 @@ class FollowUpsConfig(BaseModel):
     max_suggestions: int = Field(3, ge=1, le=20, description="At most this many follow-up suggestions per check.")
 
 
+class DailyBriefConfig(BaseModel):
+    """A short morning digest. It is an ordinary recurring task you can edit, pause or delete in Tasks."""
+
+    sections: list[str] = Field(
+        default_factory=lambda: ["calendar", "email", "tasks", "weather"],
+        description="What the brief includes: calendar, email, tasks, weather, news. Leave one out to turn it off.",
+    )
+    evening_sections: list[str] = Field(
+        default_factory=lambda: ["done", "sent", "files", "waiting", "tomorrow"],
+        description="What the Evening Brief includes: done (tasks finished or failed today), sent (emails sent today), "
+        "files (files made today), waiting (still waiting for you), tomorrow (tomorrow's first events).",
+    )
+    max_items: int = Field(7, ge=1, le=20, description="At most this many lines in one brief.")
+    news_topics: list[str] = Field(
+        default_factory=list,
+        description="Topics for the news section, for example 'climate' or 'cricket'. No topics means no news.",
+    )
+    summarize_emails: bool = Field(
+        True,
+        description="Let the fast model write one short line for each unread email. Off: show the sender and subject.",
+    )
+
+
 class ProactivityConfig(BaseModel):
     enabled: bool = Field(True, description="Let Sentient watch connected apps and suggest actions.")
     poll_interval_minutes: int = Field(10, ge=1, description="How often Gmail/Calendar are checked.")
@@ -366,6 +543,10 @@ class ProactivityConfig(BaseModel):
     followups: FollowUpsConfig = Field(
         default_factory=FollowUpsConfig,
         description="Notice emails waiting on a reply (from you or to you) and offer a draft. Gmail and IMAP email.",
+    )
+    brief: DailyBriefConfig = Field(
+        default_factory=DailyBriefConfig,
+        description="Your Daily Brief: today's calendar, emails that need you, tasks and the weather in a few lines.",
     )
 
 
@@ -405,6 +586,26 @@ class EvolutionConfig(BaseModel):
 
 
 # ----------------------------------------------------------------------------- voice (owner: voice agent)
+class DictationConfig(BaseModel):
+    """Push to talk and dictation into any app (#169). The two global shortcuts are desktop settings (Settings >
+    General > Keyboard shortcuts). Speech is transcribed on this computer; text goes to the fast model only when
+    ``cleanup`` is ``polish``."""
+
+    cleanup: Literal["raw", "tidy", "polish"] = Field(
+        "tidy",
+        description="raw: exactly what was heard. tidy: drop um and uh, fix spacing, capitals and the final full "
+        "stop, on this computer. polish: also lets the fast model fix punctuation and slips, and keeps the tidy "
+        "text if the model changed the words.",
+    )
+    language: str = Field(
+        "", description="Language you dictate in: empty follows the speech recognition language, 'auto' detects it."
+    )
+    stop_after_silence_s: float = Field(
+        2.5, ge=0.0, le=30.0, description="Dictation stops by itself after this much silence. 0 waits for the shortcut."
+    )
+    speak_replies: bool = Field(True, description="Read Sentient's answer aloud after push to talk.")
+
+
 class VoiceConfig(BaseModel):
     stt_provider: Literal["faster_whisper", "openai", "deepgram", "elevenlabs"] = Field(
         "faster_whisper", description="Speech-to-text engine. faster-whisper runs locally."
@@ -479,6 +680,9 @@ class VoiceConfig(BaseModel):
         le=120.0,
         description="After a spoken reply, keep listening this many seconds for a follow-up without the wake word.",
     )
+    dictation: DictationConfig = Field(
+        default_factory=DictationConfig, description="Push to talk and dictation into any app."
+    )
 
 
 # ----------------------------------------------------------------------------- sandbox (owner: sandbox agent)
@@ -510,7 +714,55 @@ class SandboxConfig(BaseModel):
     )
 
 
+# ----------------------------------------------------------------------------- terminal (owner: terminal)
+class TerminalConfig(BaseModel):
+    """Commands on this computer (ADR 0019). Off until the user turns it on and adds a folder."""
+
+    enabled: bool = Field(
+        False,
+        description="Let Sentient run commands on this computer, like git or a build script. It asks first unless "
+        "the command is in the list below or you set an Allow rule.",
+    )
+    allowed_folders: list[str] = Field(
+        default_factory=list,
+        description="Folders commands may start in (and the folders inside them). Nothing runs until you add one.",
+    )
+    default_folder: str = Field(
+        "",
+        description="Where commands start when Sentient doesn't pick a folder. Empty uses the first allowed folder.",
+    )
+    allowed_commands: list[str] = Field(
+        default_factory=lambda: ["git status", "git diff", "git log", "ls", "dir", "pwd"],
+        description="Commands that never need asking. A command matches when it is exactly one of these or starts "
+        "with one followed by a space, and has no ; & | < > ` $ ( ) { } or line breaks.",
+    )
+    timeout_s: int = Field(180, ge=5, le=3600, description="A command is stopped after this long.")
+    max_output_chars: int = Field(
+        8_000,
+        ge=1_000,
+        le=1_000_000,
+        description="Output kept for the answer (each of output and errors). Longer output is saved to a file.",
+    )
+
+
 # ----------------------------------------------------------------------------- browser (owner: browser agent)
+class BrowserProfileConfig(BaseModel):
+    """One named browser profile (docs/API.md section 12)."""
+
+    kind: Literal["launch", "attach"] = Field(
+        "launch",
+        description="launch: Sentient starts its own browser with this profile's sign-ins. attach: Sentient connects "
+        "to a browser you started yourself with a DevTools port.",
+    )
+    engine: Literal["", "auto", "msedge", "chrome", "chromium"] = Field(
+        "", description="Browser for this profile. Empty uses the main Browser setting."
+    )
+    endpoint: str = Field(
+        "", description="attach only: the DevTools address on this computer, for example http://127.0.0.1:9333."
+    )
+    notes: str = Field("", description="What this profile is for, for example the account it is signed in to.")
+
+
 class BrowserConfig(BaseModel):
     enabled: bool = Field(True, description="Let the assistant use a web browser for sites without an integration.")
     engine: Literal["auto", "msedge", "chrome", "chromium"] = Field(
@@ -538,6 +790,20 @@ class BrowserConfig(BaseModel):
         description="Ask before clicking anything that looks like buying, paying, sending, posting or deleting.",
     )
     live_view: bool = Field(True, description="Stream small pictures of the page while the assistant uses the browser.")
+    profiles: dict[str, BrowserProfileConfig] = Field(
+        default_factory=lambda: {"default": BrowserProfileConfig()},
+        description="Named browser profiles, each with its own sign-ins. 'default' always exists. Edited in "
+        "Settings > Browser.",
+    )
+
+    @field_validator("profiles")
+    @classmethod
+    def _keep_default_profile(cls, v: dict[str, BrowserProfileConfig]) -> dict[str, BrowserProfileConfig]:
+        out = dict(v)
+        default = out.get("default")
+        if default is None or default.kind != "launch":
+            out["default"] = BrowserProfileConfig(notes=default.notes if default else "")
+        return out
 
 
 # ----------------------------------------------------------------------------- devices (owner: nodes agent)
@@ -569,7 +835,7 @@ class NodesConfig(BaseModel):
 
 # ----------------------------------------------------------------------------- channels (owner: channels agent)
 class ChannelAppConfig(BaseModel):
-    """Settings for one messaging app (Telegram, Discord)."""
+    """Settings for one messaging app (Telegram, Discord, WhatsApp)."""
 
     enabled: bool = Field(True, description="Allow this messaging app to be connected and used.")
     deliver_default: bool = Field(
@@ -593,6 +859,10 @@ class ChannelsConfig(BaseModel):
     enabled: bool = Field(True, description="Let paired messaging apps talk to Sentient.")
     telegram: ChannelAppConfig = Field(default_factory=ChannelAppConfig, description="Telegram bot settings.")
     discord: ChannelAppConfig = Field(default_factory=ChannelAppConfig, description="Discord bot (direct messages).")
+    whatsapp: ChannelAppConfig = Field(
+        default_factory=lambda: ChannelAppConfig(edit_interval_s=2.0),
+        description="WhatsApp, linked to your own account (your 'Message yourself' chat).",
+    )
     pairing_code_minutes: int = Field(
         10, ge=1, le=60, description="How long a pairing code stays valid after it is shown."
     )
@@ -603,6 +873,7 @@ class ChannelsConfig(BaseModel):
     deliver_plans: bool = Field(True, description="Send task plans that wait for approval, with Approve buttons.")
     deliver_suggestions: bool = Field(True, description="Send proactive suggestions, with Approve and Dismiss buttons.")
     deliver_subagents: bool = Field(True, description="Send summaries when background work finishes.")
+    deliver_briefs: bool = Field(True, description="Send your Daily Brief to delivery chats.")
 
 
 # ----------------------------------------------------------------------------- know you (owner: memory agent)
@@ -685,6 +956,7 @@ class SentientConfig(BaseModel):
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     subagents: SubagentsConfig = Field(default_factory=SubagentsConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    terminal: TerminalConfig = Field(default_factory=TerminalConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     nodes: NodesConfig = Field(default_factory=NodesConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)

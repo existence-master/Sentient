@@ -5,6 +5,7 @@
 - :func:`sensitive_field` recognises password, card, one-time-code and similar fields the
   assistant must never type into; the user signs in or pays themselves.
 - :func:`url_problem` applies the allow/block domain lists.
+- :func:`devtools_endpoint` accepts a DevTools address to attach to only when it is on this computer (loopback).
 
 Element descriptors are the dicts produced by the snapshot script (``snapshot.py``):
 ``{role, name, tag, type, value, href, autocomplete, id, name_attr, label, placeholder,
@@ -13,6 +14,7 @@ aria_label, title, in_form, form_payment, form_submit_text, is_submit}``. Missin
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from urllib.parse import urlsplit
 
@@ -180,6 +182,13 @@ def looks_like_card_number(text: str) -> bool:
     return False
 
 
+def needs_user(kind: str) -> dict:
+    """The tool result for a field only the user may fill: the refusal, plus ``needs_user`` so a task run stops and
+    tells the user why it is stuck (tasks/stuck.py)."""
+    thing = "card details" if kind.startswith("card") else kind
+    return {"error": sensitive_refusal(kind), "needs_user": f"the page asks for your {thing}, which only you should enter"}
+
+
 def sensitive_refusal(kind: str) -> str:
     return (
         f"This looks like a {kind} field. For the user's safety you never type {kind}s or other secrets. "
@@ -228,3 +237,50 @@ def url_problem(url: str, allow: list[str], block: list[str]) -> str | None:
     if allow and not any(host_matches(host, a) for a in allow):
         return f"{host} isn't on the allowed sites list in Settings, so the browser won't open it."
     return None
+
+
+# ----------------------------------------------------------------------------- attaching to a running browser
+NOT_LOCAL = (
+    "Sentient only attaches to a browser on this computer. Use an address like http://127.0.0.1:9333 "
+    "(the port you started the browser with)."
+)
+
+
+def is_loopback_host(host: str) -> bool:
+    """True for this computer only: localhost, 127.0.0.0/8 and ::1."""
+    h = (host or "").strip().strip("[]").lower()
+    if h == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
+def devtools_endpoint(raw: str) -> tuple[str, str | None]:
+    """Normalize a DevTools address (``9333``, ``127.0.0.1:9333``, ``http://localhost:9333``) and say why it can't
+    be used, or ``(address, None)``. Only loopback is allowed: a DevTools port gives full control of the browser."""
+    text = str(raw or "").strip()
+    if not text:
+        return "", "Add the DevTools address, for example http://127.0.0.1:9333."
+    if text.isdigit():
+        text = f"http://127.0.0.1:{text}"
+    elif "://" not in text:
+        text = "http://" + text
+    try:
+        parts = urlsplit(text)
+        port = parts.port
+    except ValueError:
+        return "", "That DevTools address isn't valid. Use one like http://127.0.0.1:9333."
+    scheme = parts.scheme.lower()
+    if scheme not in {"http", "https", "ws", "wss"}:
+        return "", "That DevTools address isn't valid. Use one like http://127.0.0.1:9333."
+    if not is_loopback_host(parts.hostname or ""):
+        return "", NOT_LOCAL
+    if not port:
+        return "", "Add the port to the DevTools address, for example http://127.0.0.1:9333."
+    host = parts.hostname or ""
+    host = f"[{host}]" if ":" in host else host
+    if scheme in {"ws", "wss"}:
+        return f"{scheme}://{host}:{port}{parts.path}", None
+    return f"{scheme}://{host}:{port}", None

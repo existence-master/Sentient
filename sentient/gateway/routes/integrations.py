@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 
 from sentient.gateway.deps import AUTH, get_core
 from sentient.integrations.base import IntegrationError
@@ -37,6 +37,8 @@ class MCPServerBody(BaseModel):
     args: list[str] = Field(default_factory=list)
     url: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
+    auth: Literal["none", "headers", "oauth"] | None = None
     enabled: bool = True
 
 
@@ -71,6 +73,51 @@ async def delete_mcp(request: Request, name: str):
 async def test_mcp(request: Request, name: str):
     try:
         return await _mgr(request).mcp.test(name)
+    except KeyError as exc:
+        raise HTTPException(404, f"no MCP server named {name}") from exc
+
+
+class MCPEnabledBody(BaseModel):
+    enabled: StrictBool = True
+
+
+@router.post("/mcp/{name}/enabled")
+async def enable_mcp(request: Request, name: str, body: MCPEnabledBody):
+    try:
+        return await _mgr(request).mcp.set_enabled(name, body.enabled)
+    except KeyError as exc:
+        raise HTTPException(404, f"no MCP server named {name}") from exc
+
+
+class MCPValuesBody(BaseModel):
+    values: dict[str, str] = Field(default_factory=dict)
+    enable: StrictBool = False
+
+
+@router.post("/mcp/{name}/values")
+async def mcp_values(request: Request, name: str, body: MCPValuesBody):
+    try:
+        return await _mgr(request).mcp.set_values(name, body.values, enable=body.enable)
+    except KeyError as exc:
+        raise HTTPException(404, f"no MCP server named {name}") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/mcp/{name}/sign-in")
+async def sign_in_mcp(request: Request, name: str):
+    try:
+        return await _mgr(request).mcp.sign_in(name)
+    except KeyError as exc:
+        raise HTTPException(404, f"no MCP server named {name}") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/mcp/{name}/sign-out")
+async def sign_out_mcp(request: Request, name: str):
+    try:
+        return await _mgr(request).mcp.sign_out(name)
     except KeyError as exc:
         raise HTTPException(404, f"no MCP server named {name}") from exc
 

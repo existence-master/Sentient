@@ -65,6 +65,11 @@ voice = [
 node = [
     "opencv-python-headless>=5.0.0.93",
 ]
+# optional: WhatsApp as a messaging channel (a linked device on your own account, ADR 0020).
+# neonize wraps whatsmeow and ships it as a shared library in its wheel: nothing else to install.
+whatsapp = [
+    "neonize>=0.5.2",
+]
 # optional: run faster-whisper on an NVIDIA GPU without a system CUDA install
 voice-gpu = [
     "nvidia-cublas-cu12>=12.9.2.10",

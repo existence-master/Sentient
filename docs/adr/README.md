@@ -22,6 +22,11 @@ proposing a change to one of them.
 | [0015](0015-archive-v2-on-a-branch.md) | Archive v2 on a branch instead of keeping it in main | Accepted | 2026-10-08 |
 | [0016](0016-lasting-approval-rules.md) | Let people set lasting Allow, Ask or Never rules per app and tool | Accepted | 2026-10-09 |
 | [0017](0017-unprompted-work-reads-only.md) | Work nobody asked for can only read | Accepted | 2026-10-09 |
+| [0018](0018-untrusted-content-gates-sending.md) | Ask before sending anything once untrusted content is in play | Accepted | 2026-10-09 |
+| [0019](0019-host-terminal.md) | Run commands on the host only when turned on, in allowed folders, with approval | Accepted | 2026-10-09 |
+| [0020](0020-whatsapp-web-bridge.md) | Link WhatsApp as a device with an in-process WhatsApp Web bridge | Accepted | 2026-10-09 |
+| [0021](0021-hold-untrusted-memories-for-review.md) | Hold memories from untrusted sources for the user's review | Accepted | 2026-10-10 |
+| [0022](0022-claude-through-your-own-claude-code.md) | Let chats use Claude through the user's own Claude Code, off by default | Accepted | 2026-10-10 |
 
 ## Adding a record
 

@@ -9,19 +9,22 @@ import json
 from typing import Any
 
 from sentient.store.db import Store, new_id
+from sentient.tasks.delivery import from_stored
 
 TASK_JSON_FIELDS = {
     "schedule", "plan", "chat_history", "clarifying_questions", "swarm_details", "original_context", "script",
+    "deliver_to",
 }
 TASK_COLUMNS = {
     "name", "description", "status", "priority", "task_type", "schedule", "plan", "original_prompt",
     "source", "enabled", "assignee", "model", "chat_history", "clarifying_questions", "swarm_details",
     "original_context", "script", "error", "next_execution_at", "last_execution_at", "created_at", "updated_at",
+    "browser_profile", "deliver_to",
 }
-RUN_JSON_FIELDS = {"plan", "trigger_data", "messages", "result", "pending_question"}
+RUN_JSON_FIELDS = {"plan", "trigger_data", "messages", "result", "pending_question", "limits", "memory_sources"}
 RUN_COLUMNS = {
     "status", "plan", "trigger_data", "messages", "result", "error", "resume_count", "retry_of",
-    "pending_question", "started_at", "finished_at", "created_at",
+    "pending_question", "limits", "last_activity_at", "started_at", "finished_at", "created_at", "memory_sources",
 }
 # Columns added after the first stub schema; ensured on start for older databases.
 _ADDED_TASK_COLUMNS = {
@@ -35,9 +38,12 @@ _ADDED_TASK_COLUMNS = {
     "next_execution_at": "TEXT",
     "last_execution_at": "TEXT",
     "script": "TEXT",
+    "browser_profile": "TEXT",
+    "deliver_to": "TEXT",
 }
 _ADDED_RUN_COLUMNS = {
     "plan": "TEXT", "resume_count": "INTEGER NOT NULL DEFAULT 0", "retry_of": "TEXT", "pending_question": "TEXT",
+    "limits": "TEXT", "last_activity_at": "TEXT", "memory_sources": "TEXT",
 }
 
 # Progress updates embedded in each run of a serialized Task; the full log is at
@@ -62,10 +68,13 @@ def _question_to_api(question: Any) -> dict | None:
     if not isinstance(question, dict) or not question.get("question"):
         return None
     options = question.get("options")
+    kind = "stuck" if question.get("stuck") else "limit" if question.get("limit") else "question"
     return {
         "question": str(question["question"]),
         "options": [str(o) for o in options] if isinstance(options, list) else [],
         "asked_at": question.get("asked_at"),
+        "kind": kind,
+        "reason": (str(question.get("reason") or "") or None) if kind == "stuck" else None,
     }
 
 
@@ -160,6 +169,14 @@ class TaskRepo:
         await self.store.execute("DELETE FROM task_trigger_seen WHERE task_id = ?", (task_id,))
         await self.store.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
+    async def missed(self, cutoff: str) -> list[dict]:
+        """Scheduled tasks that were due at or before ``cutoff`` and have not started (the computer was off or asleep)."""
+        return await self.list_tasks(
+            "status IN ('active', 'pending') AND enabled = 1 AND next_execution_at IS NOT NULL"
+            " AND next_execution_at <= ?",
+            (cutoff,),
+        )
+
     async def claim_due(self, now: str) -> list[str]:
         """Atomically move due active/pending tasks to processing and return their ids."""
         db = self.store.db
@@ -238,12 +255,13 @@ class TaskRepo:
         )
         return (cur.rowcount or 0) > 0
 
-    async def resume_run(self, run_id: str, messages: list[dict]) -> bool:
-        """Compare-and-set a waiting run back to processing with the answered transcript. False if not waiting."""
+    async def resume_run(self, run_id: str, messages: list[dict], *, limits: dict | None = None) -> bool:
+        """Compare-and-set a waiting run back to processing with the answered transcript (and, for "Keep going",
+        its raised ``limits``, in the same write). False if not waiting."""
         cur = await self.store.execute(
-            "UPDATE task_runs SET status = 'processing', pending_question = NULL, messages = ?"
-            " WHERE id = ? AND status = 'waiting_for_user'",
-            (_dumps(messages), run_id),
+            "UPDATE task_runs SET status = 'processing', pending_question = NULL, messages = ?,"
+            " limits = COALESCE(?, limits) WHERE id = ? AND status = 'waiting_for_user'",
+            (_dumps(messages), _dumps(limits), run_id),
         )
         return (cur.rowcount or 0) > 0
 
@@ -316,6 +334,8 @@ class TaskRepo:
             "error": run.get("error"),
             "retry_of": run.get("retry_of"),
             "pending_question": _question_to_api(run.get("pending_question")) if run["status"] == "waiting_for_user" else None,
+            "last_activity_at": run.get("last_activity_at") or run.get("started_at"),
+            "memory_sources": run.get("memory_sources") or [],
         }
 
     @staticmethod
@@ -336,6 +356,8 @@ class TaskRepo:
             "swarm_details": task.get("swarm_details"),
             "enabled": bool(task.get("enabled", True)),
             "model": task.get("model"),
+            "browser_profile": task.get("browser_profile"),
+            "deliver_to": from_stored(task.get("deliver_to")),
             "original_context": task.get("original_context") or {"source": "manual_creation"},
             "script": task.get("script") if task.get("task_type") == "script" else None,
             "error": task.get("error"),

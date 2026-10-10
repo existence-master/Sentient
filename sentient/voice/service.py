@@ -18,9 +18,10 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sentient.services import Service
+from sentient.services import Service, cancel_tasks
 from sentient.voice.audio import MAX_AUDIO_BYTES, audio_suffix
 from sentient.voice.base import STTProvider, TTSProvider, VoiceError
+from sentient.voice.dictation import Cleanup, clean_dictation
 from sentient.voice.session import SendBytes, SendJSON, VoiceSession
 from sentient.voice.stt import FasterWhisperSTT, build_stt, stt_language
 from sentient.voice.text import clean_for_speech, is_speakable
@@ -32,6 +33,10 @@ if TYPE_CHECKING:  # pragma: no cover
     from sentient.config.schema import VoiceConfig
 
 log = logging.getLogger(__name__)
+
+
+class DictationStopped(VoiceError):
+    """Stop everything cancelled a dictation that was still being transcribed or cleaned up."""
 
 
 class VoiceService(Service):
@@ -47,6 +52,9 @@ class VoiceService(Service):
         self._tts_override: TTSProvider | None = None
         self._wake_stt: STTProvider | None = None
         self._wake_stt_sig: tuple | None = None
+        self._dictation_stt: STTProvider | None = None
+        self._dictation_stt_sig: tuple | None = None
+        self._dictations: set[asyncio.Task] = set()
         self._wake_factory: Callable[[], WakeDetector] | None = None
         self._warm_task: asyncio.Task | None = None
         self._warmed: tuple[int, int] | None = None
@@ -129,6 +137,35 @@ class VoiceService(Service):
             self._wake_stt, self._wake_stt_sig = FasterWhisperSTT(v.wake_whisper_model, "cpu", language), sig
         return self._wake_stt
 
+    def _dictation_language(self) -> str | None:
+        cfg = self.app.config
+        return stt_language(cfg.voice.dictation.language or cfg.voice.stt_language or cfg.assistant.language)
+
+    def _dictation_stt_signature(self) -> tuple:
+        v = self.config
+        model = v.stt_model if v.stt_provider == "faster_whisper" else "base"
+        return (model, v.stt_device, self._dictation_language())
+
+    @property
+    def dictation_stt(self) -> STTProvider:
+        """Speech recognition for push to talk and dictation: always faster-whisper on this computer, so dictated
+        speech never leaves the machine even when a cloud STT is chosen for voice chats."""
+        if self._stt_override is not None:
+            return self._stt_override
+        v = self.config
+        sig = self._dictation_stt_signature()
+        chat_language = stt_language(v.stt_language or self.app.config.assistant.language)
+        if v.stt_provider == "faster_whisper" and sig == (v.stt_model, v.stt_device, chat_language):
+            if self._dictation_stt is not None:  # settings now match voice chats: free the second model
+                self._dictation_stt.close()
+                self._dictation_stt = self._dictation_stt_sig = None
+            return self.stt  # same local model and language as voice chats: load it once
+        if self._dictation_stt is None or sig != self._dictation_stt_sig:
+            if self._dictation_stt is not None:
+                self._dictation_stt.close()
+            self._dictation_stt, self._dictation_stt_sig = FasterWhisperSTT(*sig), sig
+        return self._dictation_stt
+
     def make_wake_detector(self) -> WakeDetector:
         if self._wake_factory is not None:
             return self._wake_factory()
@@ -148,6 +185,9 @@ class VoiceService(Service):
         if self._wake_stt is not None and self._wake_stt_signature() != self._wake_stt_sig:
             self._wake_stt.close()
             self._wake_stt = self._wake_stt_sig = None
+        if self._dictation_stt is not None and self._dictation_stt_signature() != self._dictation_stt_sig:
+            self._dictation_stt.close()
+            self._dictation_stt = self._dictation_stt_sig = None
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -176,16 +216,16 @@ class VoiceService(Service):
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await t
         await super().stop()
-        for provider in (self._stt, self._tts, self._wake_stt):
+        for provider in (self._stt, self._tts, self._wake_stt, self._dictation_stt):
             if provider is not None:
                 with contextlib.suppress(Exception):
                     provider.close()
-        self._stt = self._tts = self._wake_stt = None
-        self._stt_sig = self._tts_sig = self._wake_stt_sig = None
+        self._stt = self._tts = self._wake_stt = self._dictation_stt = None
+        self._stt_sig = self._tts_sig = self._wake_stt_sig = self._dictation_stt_sig = None
 
     async def halt(self) -> int:
-        """Stop everything: cancel every voice reply in progress (sessions stay open)."""
-        stopped = 0
+        """Stop everything: cancel every voice reply and dictation in progress (sessions stay open)."""
+        stopped = await cancel_tasks(self._dictations)
         for session in list(self.sessions):
             with contextlib.suppress(Exception):
                 stopped += int(await session.stop_turn())
@@ -282,9 +322,9 @@ class VoiceService(Service):
         except Exception as exc:
             raise VoiceError(f"transcription failed: {exc}") from exc
 
-    async def transcribe_file(self, path: str | Path) -> str:
+    async def transcribe_file(self, path: str | Path, *, stt: STTProvider | None = None) -> str:
         try:
-            return await self.stt.transcribe_file(path)
+            return await (stt or self.stt).transcribe_file(path)
         except VoiceError:
             raise
         except Exception as exc:
@@ -292,7 +332,7 @@ class VoiceService(Service):
                 raise VoiceError(f"could not decode the audio file: {exc}") from exc
             raise VoiceError(f"transcription failed: {exc}") from exc
 
-    async def transcribe_bytes(self, data: bytes, filename: str = "") -> str:
+    async def transcribe_bytes(self, data: bytes, filename: str = "", *, stt: STTProvider | None = None) -> str:
         """Transcribe a complete audio file held in memory (ogg/opus voice notes, webm, m4a, mp3, wav, flac).
 
         The container is taken from ``filename``'s extension, or sniffed from the bytes. Raises
@@ -309,10 +349,33 @@ class VoiceService(Service):
         os.close(fd)
         try:
             await asyncio.to_thread(Path(tmp).write_bytes, data)
-            return await self.transcribe_file(tmp)
+            return await self.transcribe_file(tmp, stt=stt)
         finally:
             with contextlib.suppress(OSError):
                 os.remove(tmp)
+
+    async def dictate(self, data: bytes, filename: str = "", *, cleanup: Cleanup | None = None) -> dict[str, Any]:
+        """Push to talk and dictation: transcribe on this computer, then clean up per ``cleanup`` (default
+        ``voice.dictation.cleanup``).
+
+        Returns ``{text, raw, cleanup, polished}``. Raises ``DictationStopped`` when Stop everything cancels it and
+        ``VoiceError`` for audio or recognition problems."""
+        mode: Cleanup = cleanup or self.config.dictation.cleanup
+        job = asyncio.get_running_loop().create_task(self._dictate(data, filename, mode), name="voice:dictate")
+        self._dictations.add(job)
+        job.add_done_callback(self._dictations.discard)
+        try:
+            await asyncio.wait({job})
+        except asyncio.CancelledError:  # the caller went away (window closed the request)
+            job.cancel()
+            raise
+        if job.cancelled():
+            raise DictationStopped("Stopped by Stop everything.")
+        return job.result()
+
+    async def _dictate(self, data: bytes, filename: str, cleanup: Cleanup) -> dict[str, Any]:
+        raw = await self.transcribe_bytes(data, filename, stt=self.dictation_stt)
+        return await clean_dictation(self.app.llm, raw, cleanup)
 
     async def synthesize(self, sentence: str, voice: str | None = None) -> bytes:
         """Synthesize text that is already speech-clean (one sentence from the splitter)."""

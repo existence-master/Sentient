@@ -1,6 +1,7 @@
 import { Menu, nativeImage, Tray } from 'electron'
 import trayIconPng from '../../resources/icon.png?asset'
 import trayIconIco from '../../resources/icon.ico?asset'
+import { NEW_CHAT_ACCELERATOR, STOP_ACCELERATOR } from './shortcuts'
 
 export interface TrayHandlers {
   open(): void
@@ -15,9 +16,13 @@ export interface TrayHandlers {
   /** §17 Stop everything: undefined until the engine said. */
   stopped(): boolean | undefined
   toggleStopped(): void
+  /** Push to talk or dictation has the microphone on (#169). */
+  micOn(): boolean
+  shareWindow(): void
+  shareRegion(): void
+  /** Current shortcut for a share item, "" when turned off. */
+  shareAccelerators(): { window: string; region: string }
 }
-
-export const STOP_ACCELERATOR = 'CommandOrControl+Alt+Shift+S'
 
 const WAKE_LABEL = "Listen for 'Hey Sentient'"
 
@@ -37,6 +42,7 @@ export class AppTray {
 
   /** Privacy: the tooltip always says when the microphone is listening for the wake word. */
   private baseTooltip(): string {
+    if (this.h.micOn()) return 'Sentient (microphone on)'
     return this.h.alwaysListening() ? "Sentient (listening for 'Hey Sentient')" : 'Sentient'
   }
 
@@ -45,13 +51,16 @@ export class AppTray {
     const ready = this.h.backendReady()
     const listening = this.h.alwaysListening()
     const stopped = this.h.stopped() === true
+    const share = this.h.shareAccelerators()
     if (!this.flashTimer) this.tray.setToolTip(this.baseTooltip())
-    if (process.platform === 'darwin') this.tray.setTitle(listening ? ' ●' : '')
+    if (process.platform === 'darwin') this.tray.setTitle(listening || this.h.micOn() ? ' ●' : '')
     this.tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: 'Open Sentient', click: () => this.h.open() },
-        { label: 'New chat', accelerator: 'CommandOrControl+Shift+Space', click: () => this.h.newChat() },
+        { label: 'New chat', accelerator: NEW_CHAT_ACCELERATOR, click: () => this.h.newChat() },
         { label: 'Voice mode', click: () => this.h.voiceMode() },
+        { label: 'Share this window', accelerator: share.window || undefined, click: () => this.h.shareWindow() },
+        { label: 'Share a region', accelerator: share.region || undefined, click: () => this.h.shareRegion() },
         { label: WAKE_LABEL, type: 'checkbox', checked: listening, click: () => this.h.toggleAlwaysListening() },
         { type: 'separator' },
         {

@@ -14,10 +14,19 @@ export const qk = {
   /** Kept outside `sessions` so invalidating the list doesn't refetch transcripts mid-stream. */
   messages: (sessionId: string) => ['messages', sessionId] as const,
   sessionSearch: (q: string) => ['session-search', q] as const,
+  ruleProposals: (sessionId: string) => ['rule-proposals', sessionId] as const,
 
   providers: ['models', 'providers'] as const,
   localModels: ['models', 'local'] as const,
+  hardware: ['models', 'hardware'] as const,
+  catalog: (provider: string) => ['models', 'catalog', provider] as const,
+  signIn: (state: string) => ['models', 'sign-in', state] as const,
+  chatgpt: ['models', 'chatgpt'] as const,
+  modelPresets: ['models', 'presets'] as const,
+  claudeCode: (enabled: boolean) => ['models', 'claude-code', enabled] as const,
   secrets: ['secrets'] as const,
+  /** How many times a secret was saved in this window (see `useSecretSaves`). Never fetched. */
+  secretSaves: (name: string) => ['secret-saves', name] as const,
 
   tasks: {
     all: ['tasks'] as const,
@@ -37,7 +46,8 @@ export const qk = {
   notifications: ['notifications'] as const,
   proactivity: {
     status: ['proactivity', 'status'] as const,
-    preferences: ['proactivity', 'preferences'] as const
+    preferences: ['proactivity', 'preferences'] as const,
+    brief: ['proactivity', 'brief'] as const
   },
 
   memories: {
@@ -48,6 +58,7 @@ export const qk = {
     summaries: ['memories', 'summaries'] as const,
     workspace: ['memories', 'workspace'] as const,
     personas: ['memories', 'personas'] as const,
+    review: ['memories', 'review'] as const,
     dreams: ['memories', 'dreams'] as const
   },
   userModel: ['user-model'] as const,
@@ -61,6 +72,7 @@ export const qk = {
 
   voiceStatus: ['voice', 'status'] as const,
   sandboxStatus: ['sandbox', 'status'] as const,
+  terminalStatus: ['terminal', 'status'] as const,
   usage: (days: number) => ['usage', days] as const,
   files: ['files'] as const,
   tools: ['tools'] as const

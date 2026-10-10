@@ -5,7 +5,7 @@
  *   assistant rows (with tool_calls) + their tool rows becomes ONE assistant turn.
  * - `applyAgentEvent` reduces live events into the same `AssistantTurnView`.
  */
-import type { AgentEvent, ApprovalDecision, MemorySource, Risk, TranscriptMessage } from './types'
+import type { AgentEvent, ApprovalDecision, ContextMeter, MemorySource, Risk, TranscriptMessage, UsageEvent } from './types'
 import { safeJsonParse } from './utils'
 
 export type ToolStatus = 'running' | 'awaiting_approval' | 'done' | 'error' | 'denied'
@@ -45,6 +45,8 @@ export interface ApprovalView {
   /** Engine label of what is acted on ("Place order"), live only. */
   target?: string | null
   riskLabel?: string | null
+  /** Why this asks although rules would let it run: the chat read outside content (ADR 0018), live only. */
+  untrusted?: string | null
 }
 
 export type TurnSegment =
@@ -271,6 +273,7 @@ export function applyAgentEvent(turn: AssistantTurnView, ev: AgentEvent): Assist
             reason: ev.reason,
             target: ev.target ?? null,
             riskLabel: ev.risk_label ?? null,
+            untrusted: ev.untrusted ?? null,
             status: 'pending'
           }
         ]
@@ -329,6 +332,12 @@ export function applyAgentEvent(turn: AssistantTurnView, ev: AgentEvent): Assist
 }
 
 /** Plain text of a turn (for copy). */
+/** A `usage` event's context fields as a meter, or null when the model's context length is unknown (#131). */
+export function meterFrom(ev: UsageEvent): ContextMeter | null {
+  if (!ev.context_length) return null
+  return { used: ev.context_used ?? 0, length: ev.context_length, percent: ev.context_percent ?? 0, warning: ev.context_warning ?? null }
+}
+
 export function turnText(turn: AssistantTurnView): string {
   return turn.segments
     .filter((s): s is { kind: 'text'; text: string } => s.kind === 'text')

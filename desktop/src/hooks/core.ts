@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import { api, isNotImplemented } from '@/lib/api'
 import { useConnection } from '@/stores/connection'
-import type { OnboardingRequest, Session, StopState } from '@/lib/types'
+import type { OnboardingRequest, RuleProposal, Session, StopState } from '@/lib/types'
 import { qk } from './queryKeys'
 
 export function useBootstrap() {
@@ -81,6 +81,28 @@ export function useMessages(sessionId: string | undefined) {
     queryFn: () => api.sessions.messages(sessionId as string),
     enabled: !!sessionId,
     staleTime: Infinity
+  })
+}
+
+/** Undecided "Make this a rule?" cards for a chat. Kept fresh by `rule_proposal.updated` (lib/events.ts). */
+export function useRuleProposals(sessionId: string | undefined) {
+  return useQuery({
+    queryKey: qk.ruleProposals(sessionId ?? ''),
+    queryFn: () => api.ruleProposals.list(sessionId as string),
+    enabled: !!sessionId,
+    retry: false
+  })
+}
+
+export function useDecideRuleProposal() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, decision }: { id: string; decision: 'accept' | 'decline'; sessionId: string }) =>
+      api.ruleProposals.decide(id, decision),
+    onSuccess: (p, { sessionId }) => {
+      qc.setQueryData<RuleProposal[]>(qk.ruleProposals(sessionId), (old) => old?.filter((x) => x.id !== p.id))
+      if (p.status === 'accepted') void qc.invalidateQueries({ queryKey: qk.config })
+    }
   })
 }
 

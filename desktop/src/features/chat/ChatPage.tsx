@@ -6,13 +6,15 @@ import { Button, EmptyState, IconButton, Skeleton } from '@/components/ui'
 import { useBrowserView } from '@/features/browser/state'
 import { ChannelBadge } from '@/features/channels/meta'
 import { HelpersTray } from './HelpersTray'
-import { useBootstrap, useConfig, useMessages, useSessions } from '@/hooks/core'
+import { useBootstrap, useConfig, useMessages, useRuleProposals, useSessions } from '@/hooks/core'
 import { isApiError } from '@/lib/api'
 import { foldTranscript, type AttachmentView, type TimelineItem } from '@/lib/chatFold'
 import { cn } from '@/lib/utils'
 import { liveItems, useChat } from '@/stores/chat'
 import { AssistantTurn } from './AssistantTurn'
 import { Composer } from './Composer'
+import { RuleProposalCard } from './RuleProposalCard'
+import { takeScreenShare } from './screenShare'
 import { EmptyChat, type Suggestion } from './EmptyChat'
 import { useAttachments } from './useAttachments'
 import { UserMessage } from './UserMessage'
@@ -20,16 +22,33 @@ import { UserMessage } from './UserMessage'
 export function ChatPage() {
   const { sessionId } = useParams()
   const location = useLocation()
-  const state = location.state as { fresh?: number; prompt?: { text: string; autoSend?: boolean } } | null
-  return <ChatView key={sessionId ?? `new-${state?.fresh ?? ''}`} sessionId={sessionId} initialPrompt={sessionId ? undefined : state?.prompt} />
+  // `pendingKey`: a message already sent from outside the chat view (push to talk) whose new chat this view shows.
+  const state = location.state as { fresh?: number; prompt?: { text: string; autoSend?: boolean }; pendingKey?: string } | null
+  return (
+    <ChatView
+      key={sessionId ?? `new-${state?.fresh ?? ''}`}
+      sessionId={sessionId}
+      initialPrompt={sessionId ? undefined : state?.prompt}
+      initialPendingKey={sessionId ? undefined : state?.pendingKey}
+    />
+  )
 }
 
-function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPrompt?: { text: string; autoSend?: boolean } }) {
+function ChatView({
+  sessionId,
+  initialPrompt,
+  initialPendingKey
+}: {
+  sessionId?: string
+  initialPrompt?: { text: string; autoSend?: boolean }
+  initialPendingKey?: string
+}) {
   const navigate = useNavigate()
-  const [pendingKey, setPendingKey] = useState<string | null>(null)
+  const [pendingKey, setPendingKey] = useState<string | null>(initialPendingKey ?? null)
   const liveKey = sessionId ?? pendingKey
   const liveSession = useChat((s) => (liveKey ? s.live[liveKey] : undefined))
   const resolvedId = useChat((s) => (pendingKey ? s.resolved[pendingKey.replace('pending:', '')] : undefined))
+  const context = useChat((s) => (sessionId ? s.context[sessionId] : undefined))
   const send = useChat((s) => s.send)
   const cancel = useChat((s) => s.cancel)
   const retry = useChat((s) => s.retry)
@@ -41,6 +60,7 @@ function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPro
   const config = useConfig()
   const sessions = useSessions()
   const messages = useMessages(sessionId)
+  const proposals = useRuleProposals(sessionId)
   const attachments = useAttachments()
   const [inject, setInject] = useState<{ text: string; nonce: number } | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -76,6 +96,14 @@ function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPro
     if (s.autoSend) void onSend(s.prompt, [], undefined)
     else setInject({ text: s.prompt, nonce: Date.now() })
   }
+
+  // A picture from Share this window / Share a region (#172): attach it to this new chat and wait for the question.
+  useEffect(() => {
+    if (sessionId) return
+    const shot = takeScreenShare()
+    if (shot) attachments.add([shot], { source: 'screen' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Prompt handed over from onboarding ("Try: Plan my week").
   const handedOver = useRef(false)
@@ -187,6 +215,8 @@ function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPro
                 />
               )
             )}
+            {/* "Make this a rule?" for something the user said in this chat (#130) */}
+            {!loadingHistory && proposals.data?.map((p) => <RuleProposalCard key={p.id} proposal={p} />)}
           </Timeline>
           <div className="shrink-0 px-6 pb-4 pt-2">
             <div className="mx-auto w-full max-w-[760px]">
@@ -194,6 +224,7 @@ function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPro
                 draftKey={sessionId ?? 'pending'}
                 assistantName={assistantName}
                 streaming={streaming}
+                context={context}
                 attachments={attachments}
                 onSend={onSend}
                 onStop={() => liveSession && cancel(liveSession.key)}

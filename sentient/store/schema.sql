@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at  TEXT NOT NULL,
     archived    INTEGER NOT NULL DEFAULT 0,
     context_summary TEXT,                         -- running summary of turns older than the history window
-    context_upto    TEXT                          -- created_at of the last message folded into the summary
+    context_upto    TEXT,                         -- created_at of the last message folded into the summary
+    untrusted       TEXT,                         -- app whose content this chat read ("Gmail"); sends then ask (ADR 0018)
+    visited_hosts   TEXT                          -- JSON list of web hosts this chat loaded (ADR 0018)
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -57,7 +59,9 @@ CREATE TABLE IF NOT EXISTS summaries (
     start_at      TEXT NOT NULL,
     end_at        TEXT NOT NULL,
     message_ids   TEXT NOT NULL,                  -- JSON list
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    untrusted     TEXT                            -- app whose content the chat had read (ADR 0018/0021): kept out of
+                                                  -- other chats, proactivity and MEMORY.md; "" or NULL = clean
 );
 
 -- ---------------------------------------------------------------- semantic memory (atomic facts)
@@ -71,7 +75,9 @@ CREATE TABLE IF NOT EXISTS facts (
     updated_at      TEXT NOT NULL,
     expires_at      TEXT,
     embedding_model TEXT,
-    previous_content TEXT                                   -- kept on UPDATE so edits are auditable
+    previous_content TEXT,                                  -- kept on UPDATE so edits are auditable
+    status          TEXT NOT NULL DEFAULT 'active',         -- active | pending (held for the user's review, ADR 0021)
+    review          TEXT                                    -- JSON {from, snippet, session_id}: where a held memory came from
 );
 CREATE INDEX IF NOT EXISTS idx_facts_expires ON facts(expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_facts_source ON facts(source);
@@ -142,3 +148,19 @@ CREATE TABLE IF NOT EXISTS subagents (
     finished_at    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_subagents_session ON subagents(session_id, started_at);
+
+-- ---------------------------------------------------------------- rules from chat (owner: core, docs/API.md section 2)
+-- "never delete my emails" said in a chat becomes a proposed lasting rule; only the user's click makes it a rule.
+-- While pending it makes the chat ask before the matched tools (a session rule that only tightens).
+CREATE TABLE IF NOT EXISTS rule_proposals (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    message_id  TEXT,                             -- the user message (or steer message) it came from
+    said        TEXT NOT NULL,                    -- the user's words that matched
+    rule        TEXT NOT NULL,                    -- never | ask
+    keys        TEXT NOT NULL,                    -- JSON list of rule keys (tool names or app ids)
+    status      TEXT NOT NULL DEFAULT 'pending',  -- pending | accepted | declined
+    created_at  TEXT NOT NULL,
+    decided_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rule_proposals_session ON rule_proposals(session_id, status);

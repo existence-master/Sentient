@@ -13,6 +13,9 @@ Status flow (single tasks)::
     processing -> recurring/triggered: active (next run computed)
                -> once: completed | error | cancelled
     processing --ask_user--> waiting_for_user --answer--> processing   (the run pauses; survives restarts)
+    processing --stuck--> waiting_for_user   (no progress, the same error again and again, or a step only the user
+               can do: Try again / Skip this step / Cancel, tasks/stuck.py)
+    active|pending, missed while the computer was off or asleep --> run once now or skipped (tasks/catchup.py)
     decline -> declined, archive -> archived
 
 Swarm tasks skip approval (v2): planning -> processing -> completed | completed_with_errors | error.
@@ -24,12 +27,13 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable, Coroutine
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sentient.llm.provider import ProviderError
 from sentient.services import Service, cancel_tasks
-from sentient.tasks import ask, executor, scripts, swarm
+from sentient.tasks import ask, catchup, executor, limits, scripts, stuck, swarm
+from sentient.tasks.delivery import from_stored, stored
 from sentient.tasks.executor import RunFailed, RunPaused
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
@@ -45,6 +49,7 @@ from sentient.tasks.schedule import (
     get_tz,
     iso,
     normalize_schedule,
+    parse_iso,
     parse_run_at,
     user_timezone_name,
 )
@@ -60,6 +65,7 @@ STATUSES = {
 }
 UPDATABLE_FIELDS = {
     "name", "description", "priority", "schedule", "plan", "enabled", "status", "model", "assignee", "script",
+    "browser_profile", "deliver_to",
 }
 SANDBOX_RESULT = {
     "ok": False, "backend": None, "stdout": "", "stderr": "", "result": None, "files_created": [],
@@ -147,6 +153,8 @@ class TaskService(Service):
         self._sem: asyncio.Semaphore | None = None
         self._bus_subscription: Any = None
         self._items: asyncio.Queue[dict] = asyncio.Queue()
+        self._last_tick: datetime | None = None  # wall clock of the last scheduler tick (a big jump means sleep)
+        self._catch_up_reason: str | None = "start"  # what the next catch-up notice says it caught up after
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -196,6 +204,7 @@ class TaskService(Service):
         """Stop everything: cancel running runs (waiting questions keep waiting), planning and checks.
 
         Cancelled runs can be retried from where they stopped; tasks left planning are planned again on resume."""
+        self._catch_up_reason = "resume"
         runs = [t for t in self._runs.values() if not t.done()]
         cancelled = 0
         for run in await self.repo.processing_runs():
@@ -254,8 +263,15 @@ class TaskService(Service):
     async def progress(self, task_id: str, run_id: str, message: dict) -> dict:
         clean = {k: v for k, v in message.items() if v is not None}
         update = await self.repo.add_event(run_id, clean, self.now_iso())
+        await self.repo.update_run(run_id, {"last_activity_at": update["timestamp"]})
         self.app.bus.publish("task.run_progress", {"task_id": task_id, "run_id": run_id, "update": update})
         return update
+
+    async def heartbeat(self, task_id: str, run_id: str) -> None:
+        """A working run is alive (the model is writing): save and publish ``last_activity_at``."""
+        now = self.now_iso()
+        await self.repo.update_run(run_id, {"last_activity_at": now})
+        self.app.bus.publish("task.run_activity", {"task_id": task_id, "run_id": run_id, "last_activity_at": now})
 
     @staticmethod
     def _runnable(task: dict) -> bool:
@@ -280,10 +296,12 @@ class TaskService(Service):
         original_context: dict | None = None,
         model: str | None = None,
         auto_approve: bool = False,
+        browser_profile: str | None = None,
     ) -> dict:
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("A prompt is required.")
+        browser_profile = self._browser_profile(browser_profile)
         context = dict(original_context or {})
         context.setdefault("source", "manual_creation" if source == "user" else source)
         now = self.now_iso()
@@ -297,6 +315,7 @@ class TaskService(Service):
             "source": source,
             "enabled": True,
             "model": model or None,
+            "browser_profile": browser_profile,
             "original_context": context,
             "plan": [],
             "chat_history": [],
@@ -332,12 +351,16 @@ class TaskService(Service):
         source: str = "user",
         original_context: dict | None = None,
         done_text: str = "Done.",
+        schedule: dict | None = None,
+        quiet: bool = False,
     ) -> dict:
-        """A one-off task the user has already approved as one exact tool call (a follow-up's "Send reply").
+        """A task the user has already approved as one exact tool call (a follow-up's "Send reply").
 
         No planner and no executor model: the run calls ``tool`` with exactly ``arguments`` right away, whatever
         ``tasks.require_plan_approval`` says, because the user approved this exact call. Lasting "never" rules
-        still stop it (the run fails with the rule's message)."""
+        still stop it (the run fails with the rule's message). With a recurring ``schedule`` the task is active
+        and runs at its times instead of now (the Daily Brief). ``quiet`` skips the "Task completed" notification
+        for a tool that sends its own."""
         prompt = (prompt or "").strip()
         t = self.app.registry.get(tool)
         if not prompt or t is None:
@@ -345,11 +368,17 @@ class TaskService(Service):
         context = dict(original_context or {})
         context.setdefault("source", source)
         context["fixed_call"] = {"tool": tool, "arguments": dict(arguments), "done_text": done_text}
+        if quiet:
+            context["fixed_call"]["quiet"] = True
+        recurring = normalize_schedule(schedule, self.tz_name(), override_timezone=False) if schedule else None
+        if recurring is not None and recurring["type"] != "recurring":
+            raise ValueError("Only a recurring schedule can be given here.")
         now = self.now_iso()
         task_id = await self.repo.insert_task({
             "name": _title(prompt),
             "description": (description or prompt).strip(),
-            "status": "pending",
+            "status": "active" if recurring else "pending",
+            "next_execution_at": iso(calculate_next_run(recurring, self.now())) if recurring else None,
             "priority": 1,
             "assignee": "ai",
             "original_prompt": prompt,
@@ -361,15 +390,87 @@ class TaskService(Service):
             "chat_history": [],
             "clarifying_questions": [],
             "task_type": "single",
-            "schedule": None,
+            "schedule": recurring,
             "created_at": now,
             "updated_at": now,
         })
-        task = await self._require(task_id)
-        await self._start_run(task)
+        if recurring is None:
+            await self._start_run(await self._require(task_id))
         data = await self.publish(task_id)
         assert data is not None
         return data
+
+    async def create_imported(
+        self, *, name: str, prompt: str, schedule: dict, script: dict | None = None, context: dict | None = None,
+        deliver_to: Any = None,
+    ) -> dict:
+        """A paused task brought over from another assistant (Hermes' scheduled jobs, ``sentient/migrate``).
+
+        It has a schedule but no plan, so it never runs as it is: resuming it plans it and asks for approval like
+        any new task (``_start_imported``). ``script`` makes it a script task (code checked, not yet approved)."""
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise ValueError("A prompt is required.")
+        sched = normalize_schedule(schedule, self.tz_name(), override_timezone=False)
+        now = self.now_iso()
+        fields: dict[str, Any] = {
+            "name": (name or "").strip()[:200] or _title(prompt),
+            "description": prompt,
+            "status": "active" if sched["type"] == "recurring" else "pending",
+            "priority": 1,
+            "assignee": "ai",
+            "original_prompt": prompt,
+            "source": "import",
+            "enabled": False,
+            "model": None,
+            "original_context": {**(context or {}), "imported_from": (context or {}).get("imported_from") or "import"},
+            "plan": [],
+            "chat_history": [],
+            "clarifying_questions": [],
+            "task_type": "script" if script else "single",
+            "script": normalize_script(script) if script else None,
+            "deliver_to": stored(deliver_to),
+            "schedule": sched,
+            "next_execution_at": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        task_id = await self.repo.insert_task(fields)
+        data = await self.publish(task_id)
+        assert data is not None
+        return data
+
+    @staticmethod
+    def _unplanned_import(task: dict) -> bool:
+        return bool((task.get("original_context") or {}).get("imported_from")) and not task.get("plan")
+
+    async def _start_imported(self, task: dict, changes: dict) -> dict:
+        """First Resume of an imported task: a script that only notifies goes straight to approval (its code is the
+        plan); anything else is planned now and then waits for approval, like a new task."""
+        task_id = task["id"]
+        script = task.get("script") if task.get("task_type") == "script" else None
+        base = {**changes, "enabled": True, "next_execution_at": None, "error": None}
+        if script and script.get("then") == "notify":
+            plan = [{"tool": "", "description": scripts.describe_for_approval(script)}]
+            if not self.app.config.tasks.require_plan_approval:
+                await self._set(task_id, {**base, "plan": plan})
+                return await self.approve(task_id)
+            await self._set(task_id, {**base, "plan": plan, "status": "approval_pending"})
+            await self.publish(task_id)
+            await self._notify(
+                task, f"Check the script for '{task.get('name')}' and approve it to turn the job on.",
+                "Plan ready for approval", "approval_needed",
+            )
+            return await self.get(task_id)
+        await self._set(task_id, {**base, "status": "planning"})
+        await self.publish(task_id)
+        self._spawn(self._plan_job(task_id), f"plan:{task_id}")
+        return await self.get(task_id)
+
+    async def delivery_for(self, task_id: str) -> str | list[dict]:
+        """Where this task's notifications go besides the app (``tasks/delivery.py``); the default when unknown."""
+        task = await self.repo.get_task(task_id)
+        return from_stored((task or {}).get("deliver_to"))
 
     async def preview(self, prompt: str) -> dict:
         """v2 generate-plan: ``{name, description, priority, schedule}`` without creating a task."""
@@ -430,6 +531,10 @@ class TaskService(Service):
             changes["priority"] = _priority(data["priority"])
         if "model" in data:
             changes["model"] = data["model"] or None
+        if "browser_profile" in data:
+            changes["browser_profile"] = self._browser_profile(data["browser_profile"])
+        if "deliver_to" in data:
+            changes["deliver_to"] = stored(data["deliver_to"])
         if "assignee" in data:
             changes["assignee"] = data["assignee"] or "ai"
         if "plan" in data:
@@ -449,6 +554,9 @@ class TaskService(Service):
             changes["schedule"] = schedule
         status = changes.get("status", task["status"])
         enabled = changes.get("enabled", task["enabled"])
+        if enabled and not task["enabled"] and status in {"active", "pending"} and self._unplanned_import(task):
+            changes.pop("plan", None)  # an imported task's plan only comes from the planner or its own script
+            return await self._start_imported(task, changes)
         reschedule = "schedule" in changes or "status" in changes or (enabled and not task["enabled"])
         if reschedule and status in {"active", "pending"}:
             kind = (schedule or {}).get("type")
@@ -529,6 +637,22 @@ class TaskService(Service):
         await self._resolve_plan_notifications(task_id, "declined")
         return await self.get_and_publish(task_id)
 
+    def _browser_profile(self, value: Any) -> str | None:
+        """A task's browser profile (``None``: the default one); it must be a profile in Settings > Browser."""
+        name = str(value or "").strip()
+        if not name or name == "default":
+            return None
+        if name not in self.app.config.browser.profiles:
+            raise ValueError(f"There is no browser profile named '{name}'. Add it in Settings > Browser first.")
+        return name
+
+    async def rename_browser_profile(self, old: str, new: str) -> None:
+        """Keep tasks on a renamed browser profile (called by the browser service)."""
+        rows = await self.repo.store.fetchall("SELECT id FROM tasks WHERE browser_profile = ?", (old,))
+        await self.repo.store.execute("UPDATE tasks SET browser_profile = ? WHERE browser_profile = ?", (new, old))
+        for row in rows:
+            await self.publish(row["id"])
+
     async def archive(self, task_id: str) -> dict:
         await self._require(task_id)
         await self._set(task_id, {"status": "archived"})
@@ -539,7 +663,7 @@ class TaskService(Service):
         task = await self._require(task_id)
         now = self.now_iso()
         keep = ("name", "description", "priority", "task_type", "schedule", "original_prompt", "source",
-                "assignee", "model", "original_context", "chat_history")
+                "assignee", "model", "browser_profile", "deliver_to", "original_context", "chat_history")
         fields = {k: task.get(k) for k in keep}
         fields.update(status="planning", enabled=True, plan=[], clarifying_questions=[], error=None,
                       created_at=now, updated_at=now)
@@ -563,6 +687,8 @@ class TaskService(Service):
         task = await self._require(task_id)
         if task["status"] in {"planning", "clarification_pending"}:
             raise TaskConflict("This task is still being planned.")
+        if self._unplanned_import(task):
+            raise TaskConflict("Resume this task first, so Sentient can plan it and you can approve the plan.")
         kind = (task.get("schedule") or {}).get("type")
         if task.get("task_type") == "swarm":
             if task["status"] == "processing":
@@ -683,6 +809,7 @@ class TaskService(Service):
         if checkpoint:
             problem = run.get("error") or "the run was cancelled before it finished"
             fields["messages"] = [*checkpoint, {"role": "user", "content": RETRY_NOTE.format(error=problem)}]
+            fields["memory_sources"] = run.get("memory_sources")  # the transcript it continues had these in mind
         await self.repo.update_run(new_run_id, fields)
         await self._set(task_id, {"status": "processing", "last_execution_at": now, "error": None})
         self._dispatch(task_id, new_run_id, resume=bool(checkpoint))
@@ -699,8 +826,57 @@ class TaskService(Service):
             raise TaskNotFound(run_id)
         if run["status"] != "waiting_for_user":
             raise TaskConflict("This run is not waiting for an answer.")
-        call_id = (run.get("pending_question") or {}).get("tool_call_id")
-        messages = ask.fill_result(run.get("messages") or [], call_id, ask.answer_content(text))
+        pending = run.get("pending_question") or {}
+        if pending.get("limit") in limits.KINDS:
+            return await self._answer_limit(task_id, run, pending, text)
+        if pending.get("stuck"):
+            return await self._answer_stuck(task_id, run, pending, text)
+        call_id = pending.get("tool_call_id")
+        if pending.get("untrusted_call"):  # a held call after outside content (ADR 0018): only a clear yes runs it
+            if not ask.approves(text):
+                return await self._stop_at_question(task_id, run_id, pending, text)
+            messages = ask.approve_call(run.get("messages") or [], call_id)
+        else:
+            messages = ask.fill_result(run.get("messages") or [], call_id, ask.answer_content(text))
+        if not await self.repo.resume_run(run_id, messages):
+            raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
+        await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
+        await self._set(task_id, {"status": "processing", "error": None})
+        await self._resolve_question_notifications(run_id, "answered", answer=text)
+        self._dispatch(task_id, run_id, resume=True, answered=True)
+        return await self.get_and_publish(task_id)
+
+    async def _answer_limit(self, task_id: str, run: dict, pending: dict, text: str) -> dict:
+        """A run waiting at a limit: "Keep going" raises that limit for this run; anything else fails the run."""
+        run_id = run["id"]
+        if not limits.keeps_going(text):
+            return await self._stop_at_question(task_id, run_id, pending, text)
+        state = limits.raise_limit(limits.load(run, self.app.config), pending["limit"])
+        # one guarded write: a run cancelled meanwhile keeps its limits; the raised one survives a restart
+        if not await self.repo.resume_run(run_id, run.get("messages") or [], limits=state):
+            raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
+        await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
+        await self._set(task_id, {"status": "processing", "error": None})
+        await self._resolve_question_notifications(run_id, "answered", answer=text)
+        self._dispatch(task_id, run_id, resume=True, answered=True)
+        return await self.get_and_publish(task_id)
+
+    async def _stop_at_question(self, task_id: str, run_id: str, pending: dict, text: str) -> dict:
+        """The answer ends a waiting run: it fails with the question's ``stop_error``."""
+        await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
+        await self._resolve_question_notifications(run_id, "answered", answer=text)
+        error = str(pending.get("stop_error") or "Stopped at a limit without finishing.")
+        await self._finish_run(task_id, run_id, "error", error=error, from_statuses=("waiting_for_user",))
+        return await self.get_and_publish(task_id)
+
+    async def _answer_stuck(self, task_id: str, run: dict, pending: dict, text: str) -> dict:
+        """A stuck run: "Cancel" cancels it; "Try again", "Skip this step" or the user's own words carry it on."""
+        run_id = run["id"]
+        if stuck.choice(text) == "cancel":
+            await self._resolve_question_notifications(run_id, "answered", answer=text)
+            return await self.cancel_run(task_id, run_id, note="Cancelled after getting stuck.")
+        reason = str(pending.get("reason") or "something went wrong")
+        messages = [*(run.get("messages") or []), {"role": "user", "content": stuck.note(reason, text)}]
         if not await self.repo.resume_run(run_id, messages):
             raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
         await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
@@ -856,7 +1032,9 @@ class TaskService(Service):
         While Sentient is stopped nothing is claimed; due tasks start on the first tick after resume."""
         run_ids: list[str] = []
         if self.app.stopped:
+            self._catch_up_reason = "resume"  # missed runs are caught up on the first tick after Resume
             return run_ids
+        await self._catch_up()
         for task_id in await self.repo.claim_due(self.now_iso()):
             task = await self.repo.get_task(task_id)
             if task is None:
@@ -885,6 +1063,61 @@ class TaskService(Service):
 
     async def _tick_job(self) -> None:
         await self.tick()
+
+    async def _catch_up(self) -> dict[str, list[dict]]:
+        """Handle scheduled runs missed while the computer was off or asleep (tasks/catchup.py).
+
+        Runs every tick, so it covers startup, waking from sleep (a big jump of the wall clock between ticks) and
+        Resume. A missed task either stays due, so this tick's claim starts it once, or moves on without running."""
+        cfg = self.app.config.tasks
+        now = self.now()
+        reason = self._catch_up_reason
+        gap = (now - self._last_tick).total_seconds() if self._last_tick is not None else 0.0
+        if reason is None and gap > cfg.tick_seconds + catchup.WAKE_GAP_S:
+            reason = "sleep"
+        self._last_tick, self._catch_up_reason = now, None
+        report: dict[str, list[dict]] = {"ran": [], "skipped": []}
+        cutoff = now - timedelta(seconds=catchup.grace_seconds(cfg.tick_seconds))
+        for task in await self.repo.missed(iso(cutoff) or ""):
+            schedule = task.get("schedule") or {}
+            due = parse_iso(task.get("next_execution_at")) or now
+            action = catchup.decide(schedule, (now - due).total_seconds(), cfg.catch_up_window_hours)
+            if action == "quiet":
+                continue  # an interval check: this tick's claim runs it once
+            # a brief (quiet fixed call) reports for itself and is about its own day: never in the notice, and
+            # a missed one from an earlier day is skipped
+            silent = bool((executor.fixed_call_of(task) or {}).get("quiet"))
+            if silent and action == "run" and catchup.day_over(due, now, get_tz(schedule.get("timezone") or self.tz_name())):
+                action = "skip"
+            entry = catchup.item(task, task.get("next_execution_at"))
+            if action == "run":
+                if not silent:
+                    report["ran"].append(entry)
+                continue
+            if schedule.get("type") == "recurring":
+                fields: dict[str, Any] = {"next_execution_at": iso(calculate_next_run(schedule, now))}
+            else:
+                local = due.astimezone(get_tz(schedule.get("timezone") or self.tz_name())).strftime("%b %d, %H:%M")
+                fields = {
+                    "status": "error", "next_execution_at": None,
+                    "error": f"Skipped: it was due {local}, while the computer was off or asleep. "
+                    "Choose Run now if you still want it.",
+                }
+            if await self.repo.update_task_if_status(task["id"], {"active", "pending"}, {**fields, "updated_at": self.now_iso()}):
+                if not silent:
+                    report["skipped"].append(entry)
+                await self.publish(task["id"])
+        if report["ran"] or report["skipped"]:
+            title, message = catchup.summary(reason or "start", report["ran"], report["skipped"])
+            items = [*report["ran"], *report["skipped"]]
+            payload: dict[str, Any] = {"event": "caught_up", "reason": reason or "start", **report}
+            if len(items) == 1:
+                payload["task_id"] = items[0]["task_id"]
+            try:
+                await self.app.notify("task", message, title=title, payload=payload)
+            except Exception:
+                log.exception("catch-up notification failed")
+        return report
 
     async def recover_interrupted(self) -> dict:
         """Resume runs left 'processing' by a crash or restart (or fail them), and restart planning."""
@@ -1225,6 +1458,12 @@ class TaskService(Service):
                 await self.publish(task_id)
         except Exception:
             log.exception("task run %s crashed", run_id)
+            try:  # never fail silently: end the run with a message and the usual notification
+                await self._finish_run(
+                    task_id, run_id, "error", error="Something went wrong inside Sentient while running this task."
+                )
+            except Exception:
+                log.exception("could not record the crash of task run %s", run_id)
 
     async def _execute_locked(self, task_id: str, run_id: str, *, resume: bool, answered: bool = False) -> None:
         run = await self.repo.get_run(run_id)
@@ -1245,8 +1484,10 @@ class TaskService(Service):
         status, error = "completed", None
         loop_result = None
         aggregated: list | None = None
+        # a single run keeps its own clock of active time and asks before going over (tasks/limits.py)
+        single = task.get("task_type") != "swarm" and executor.fixed_call_of(task) is None
         try:
-            async with asyncio.timeout(cfg.run_timeout_minutes * 60):
+            async with asyncio.timeout(None if single else cfg.run_timeout_minutes * 60):
                 if task.get("task_type") == "swarm":
                     status, aggregated = await swarm.execute_swarm(self, task, run)
                 elif executor.fixed_call_of(task) is not None:
@@ -1257,7 +1498,7 @@ class TaskService(Service):
             await self._pause_run(task_id, run_id, paused.question)
             return
         except TimeoutError:
-            status, error = "error", f"The run was stopped after {cfg.run_timeout_minutes} minutes (tasks.run_timeout_minutes)."
+            status, error = "error", f"Stopped after {cfg.run_timeout_minutes} minutes without finishing. {limits.LIMITS_HINT}"
         except RunFailed as exc:
             status, error = "error", str(exc)
         except ProviderError as exc:
@@ -1269,9 +1510,9 @@ class TaskService(Service):
 
     async def _finish_run(
         self, task_id: str, run_id: str, status: str, *, error: str | None,
-        loop_result: Any = None, aggregated: list | None = None,
+        loop_result: Any = None, aggregated: list | None = None, from_statuses: tuple[str, ...] = ("processing",),
     ) -> None:
-        if not await self.repo.finish_run(run_id, status, error=error, now=self.now_iso()):
+        if not await self.repo.finish_run(run_id, status, error=error, now=self.now_iso(), from_statuses=from_statuses):
             return  # cancelled meanwhile
         task = await self.repo.get_task(task_id)
         if task is None:
@@ -1286,14 +1527,23 @@ class TaskService(Service):
         await self._after_run(task_id, status, error)
         await self.publish(task_id)
         await self._publish_run_finished(task_id, run_id, status)
+        quiet = bool((executor.fixed_call_of(task) or {}).get("quiet"))
         if succeeded:
-            result = await executor.generate_result(self, task, run_id, loop_result=loop_result, aggregated=aggregated)
+            if quiet:  # the tool reported for itself (the Daily Brief): no model call for a report
+                result = executor.normalize_result(
+                    {"tools_used": loop_result.tools_used if loop_result else []},
+                    (loop_result.text if loop_result else "") or "Done.",
+                )
+            else:
+                result = await executor.generate_result(self, task, run_id, loop_result=loop_result, aggregated=aggregated)
             await self.repo.update_run(run_id, {"result": result})
             await self.publish(task_id)
         name = task.get("name") or "Untitled task"
         if is_swarm and status in {"completed", "completed_with_errors"}:
             await self._notify(task, f"Swarm task '{name}' has completed.", "Swarm task completed", "run_completed")
         elif status in {"completed", "completed_with_errors"}:
+            if quiet:
+                return  # the tool delivered its own notification (the Daily Brief)
             await self._notify(task, f"Task '{name}' has finished with status: {status}.", "Task completed", "run_completed")
         elif status == "error":
             detail = f"\n\n{error}" if error else ""
@@ -1310,6 +1560,7 @@ class TaskService(Service):
         if not await self.repo.pause_run(run_id, asked):
             return  # cancelled while the last round was running
         text = str(question.get("question") or "")
+        reason = str(question.get("reason") or "") if question.get("stuck") else ""
         await self.progress(task_id, run_id, {"type": "info", "content": f"Waiting for your answer: {text}"})
         await self._after_run(task_id, "waiting_for_user", None)
         task = await self.repo.get_task(task_id)
@@ -1318,10 +1569,12 @@ class TaskService(Service):
             return
         name = task.get("name") or "Untitled task"
         short = name[:60] + ("..." if len(name) > 60 else "")
-        await self._notify(
-            task, text, f"{short} needs your answer", "question",
-            {"run_id": run_id, "question": text, "options": list(question.get("options") or [])},
-        )
+        extra: dict[str, Any] = {"run_id": run_id, "question": text, "options": list(question.get("options") or [])}
+        if reason:  # stuck (tasks/stuck.py): the same answerable question, with the reason up front
+            extra.update(stuck=True, reason=reason)
+            await self._notify(task, stuck.notice(name, reason), f"{short} is stuck", "question", extra)
+            return
+        await self._notify(task, text, f"{short} needs your answer", "question", extra)
 
     async def _resolve_question_notifications(self, run_id: str, status: str, *, answer: str | None = None) -> None:
         """Mark the 'needs your answer' notification of a run as answered or cancelled (channels settle their buttons)."""

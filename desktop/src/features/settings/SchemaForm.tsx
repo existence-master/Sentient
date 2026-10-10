@@ -42,6 +42,8 @@ export const LABELS: Record<string, FieldLabel> = {
   'tasks.max_concurrent_runs': { label: 'Runs at the same time' },
   'tasks.run_timeout_minutes': { label: 'Stop a run after', unit: 'min' },
   'tasks.max_tool_rounds': { label: 'Max tool steps per run', unit: 'steps' },
+  'tasks.max_tokens_per_run': { label: 'Most tokens per run', unit: 'tokens' },
+  'tasks.max_cost_per_run_usd': { label: 'Most spending per run', unit: 'USD' },
   'tasks.require_plan_approval': { label: 'Approve plans before they run' },
   'tasks.swarm_max_agents': { label: 'Parallel agents per swarm', unit: 'agents' },
   // proactivity
@@ -68,8 +70,10 @@ export const LABELS: Record<string, FieldLabel> = {
     description: "After you allow a tool for a chat, Sentient won't ask again for that tool in the same chat."
   },
   'tools.approvals.timeout_s': { label: 'Deny unanswered requests after', unit: 's' },
+  'tools.repeated_call_limit': { label: 'Stop when the same step repeats', unit: 'times' },
   'tools.disabled': { label: 'Disabled tools', hidden: true },
   'tools.approvals.rules': { label: 'Rules for apps and tools', hidden: true },
+  'tools.approvals.rule_origins': { label: 'Where rules came from', hidden: true },
   // evolution & skills
   'evolution.review_enabled': { label: 'Learn skills from finished work' },
   'evolution.review_idle_minutes': { label: 'Review a chat once idle for', unit: 'min' },
@@ -112,6 +116,16 @@ export const LABELS: Record<string, FieldLabel> = {
   'voice.wake_whisper_model': { label: 'Listening model', options: { tiny: 'Tiny (fastest)', 'tiny.en': 'Tiny, English only', base: 'Base (more accurate)', 'base.en': 'Base, English only' } },
   'voice.wake_earcon': { label: 'Play a chime when I hear you' },
   'voice.follow_up_seconds': { label: 'Keep listening after a reply for', unit: 's', description: 'Ask a follow-up without saying the phrase again.' },
+  // push to talk and dictation (#169); the shortcuts are in Settings > General > Keyboard shortcuts
+  'voice.dictation': { label: 'Dictation' },
+  'voice.dictation.cleanup': {
+    label: 'Clean up what I say',
+    description: 'Tidy runs on this computer. Polish also sends the text to your fast model, and keeps the tidy version if the model changed any words.',
+    options: { raw: 'Exactly as heard', tidy: 'Tidy: drop um and uh, fix punctuation', polish: 'Polish with the fast model' }
+  },
+  'voice.dictation.language': { label: 'Language I dictate in', placeholder: 'Same as speech recognition', description: "A language code such as en or de, or 'auto' to detect it." },
+  'voice.dictation.stop_after_silence_s': { label: 'Stop dictating after a pause of', unit: 's', description: '0 waits for you to press the shortcut again.' },
+  'voice.dictation.speak_replies': { label: 'Read answers aloud after push to talk' },
   // knowing you
   'user_model.enabled': { label: 'Build a picture of me', description: 'Sentient notices your preferences, goals and style over time. You can see and correct all of it on the About you page.' },
   'user_model.refresh_after_turns': { label: 'Look for new things about me every', unit: 'messages' },
@@ -155,6 +169,24 @@ export const LABELS: Record<string, FieldLabel> = {
   'sandbox.docker_memory_mb': { label: 'Memory limit in Docker', unit: 'MB' },
   'sandbox.docker_cpus': { label: 'Processor limit in Docker', unit: ' CPUs' },
   'sandbox.allow_network_in_docker': { label: 'Let Docker scripts use the internet' },
+  // terminal
+  'terminal.enabled': {
+    label: 'Let Sentient run commands on this computer',
+    description: 'For git, builds, scripts and file chores. It asks you first, unless the command is in the list below or you set an Allow rule.'
+  },
+  'terminal.allowed_folders': {
+    label: 'Folders it may work in',
+    placeholder: 'Add a folder path and press Enter',
+    description: 'Commands start in one of these folders or a folder inside them. Nothing runs until you add one.'
+  },
+  'terminal.default_folder': { label: 'Start in', placeholder: 'The first folder above' },
+  'terminal.allowed_commands': {
+    label: 'Commands that never need asking',
+    placeholder: 'e.g. git status, then press Enter',
+    description: 'Only simple commands match: “git status --short” does, “git status && something else” does not.'
+  },
+  'terminal.timeout_s': { label: 'Stop a command after', unit: 's' },
+  'terminal.max_output_chars': { label: 'Longest output kept', unit: 'chars', description: 'Longer output is saved to a file Sentient can open.' },
   // browser
   'browser.enabled': { label: 'Let Sentient use a web browser', description: 'For websites without an integration. It never types passwords or card numbers.' },
   'browser.engine': { label: 'Browser', options: { auto: 'Automatic', msedge: 'Microsoft Edge', chrome: 'Google Chrome', chromium: 'Chromium' } },
@@ -166,12 +198,15 @@ export const LABELS: Record<string, FieldLabel> = {
   'browser.max_extract_chars': { label: 'Page text size', unit: 'chars' },
   'browser.confirm_purchases': { label: 'Ask before buying, sending or deleting' },
   'browser.live_view': { label: 'Show a live view' },
+  'browser.profiles': { hidden: true },
   // helpers
   'subagents.enabled': { label: 'Let Sentient use helpers', description: 'Sentient can hand parts of a bigger job to helpers that work alongside the chat, then report back.' },
   'subagents.max_concurrent': { label: 'Helpers at the same time' },
   'subagents.max_rounds': { label: 'Most steps per helper', unit: 'steps' },
   'subagents.role': { label: 'Model helpers use', options: { executor: 'Task model', primary: 'Main model', fast: 'Fast model' } },
   'subagents.timeout_minutes': { label: 'Stop a helper after', unit: 'min' },
+  'subagents.max_tokens': { label: 'Most tokens per helper', unit: 'tokens' },
+  'subagents.max_cost_usd': { label: 'Most spending per helper', unit: 'USD' },
   // integrations
   'integrations.oauth_redirect_port': { label: 'OAuth callback port', description: '0 picks a free port each time.' },
   'integrations.search_provider': {

@@ -402,7 +402,8 @@ async def test_memory_flush_runs_before_compression(config, isolated_home):
             published = [q.get_nowait() for _ in range(q.qsize())]
         assert order == ["flush", "summary"]
         assert "message number 0" in flushed[0][0] and flushed[0][1] == "Sarthak"
-        assert any(e["type"] == "memory.updated" and e["data"]["action"] == "ADD" for e in published)
+        # flush_conversation publishes its own changes; the agent does not send them a second time
+        assert not any(e["type"] == "memory.updated" for e in published)
         assert (await s.store.get_session(sid))["context_summary"] == "Running summary."
 
         async def broken(transcript, user_name):

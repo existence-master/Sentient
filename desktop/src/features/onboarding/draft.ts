@@ -15,6 +15,10 @@ export interface OnboardingDraft {
   fast: string
   embedding: string
   cloudProvider: string
+  /** Context length sized for this computer (#131), saved with a local brain; null keeps the current one. */
+  context_length: number | null
+  /** Opt in to the Daily Brief (off until the user turns it on). */
+  daily_brief: boolean
 }
 
 interface DraftState extends OnboardingDraft {
@@ -34,7 +38,9 @@ const initial = (): OnboardingDraft => ({
   primary: '',
   fast: '',
   embedding: '',
-  cloudProvider: ''
+  cloudProvider: '',
+  context_length: null,
+  daily_brief: false
 })
 
 /** Onboarding answers survive a reload (sessionStorage) until setup finishes. */

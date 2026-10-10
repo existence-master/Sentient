@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     swarm_details         TEXT,                       -- JSON (swarm tasks only)
     original_context      TEXT,                       -- JSON
     script                TEXT,                       -- JSON (script jobs only): {code, condition, then, last_result, last_run_at, last_error}
+    browser_profile       TEXT,                       -- named browser profile the task's browser calls use (NULL: default)
+    deliver_to            TEXT,                       -- JSON (tasks/delivery.py): "desktop" or [{channel, chat_id}]; NULL: default
     error                 TEXT,
     next_execution_at     TEXT,                       -- UTC ISO-8601, seconds precision (lexicographically comparable)
     last_execution_at     TEXT,
@@ -41,7 +43,9 @@ CREATE TABLE IF NOT EXISTS task_runs (
     error         TEXT,
     resume_count  INTEGER NOT NULL DEFAULT 0,
     retry_of      TEXT,                           -- run id this run retries (continues from its transcript)
-    pending_question TEXT,                        -- JSON {question, options, tool_call_id, asked_at} while waiting_for_user
+    pending_question TEXT,                        -- JSON {question, options, tool_call_id, asked_at, limit?, stop_error?} while waiting_for_user
+    limits        TEXT,                           -- JSON {base, max, used} of steps, seconds, tokens, cost_usd (tasks/limits.py)
+    memory_sources TEXT,                          -- JSON list: memories the run had in mind (sentient/memory/sources.py)
     started_at    TEXT,
     finished_at   TEXT,
     created_at    TEXT NOT NULL

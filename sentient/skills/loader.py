@@ -11,6 +11,7 @@
     author: user | assistant | community
     tags: [productivity]
     requires_tools: [gcalendar]     # optional: skill is hidden if a tool plugin is missing
+    browser_profile: x-growth       # optional: browser tools use this profile once the skill is read
     created_by_review: false
     ---
     # Weekly review
@@ -63,6 +64,7 @@ class Skill:
     author: str = "user"      # user | assistant | community
     state: str = "active"     # active | pending_review | archived  (stale comes from skill_stats)
     created_by_review: bool = False
+    browser_profile: str | None = None
 
     @property
     def dir(self) -> Path:
@@ -99,6 +101,7 @@ class Skill:
             "failure_count": int(stats.get("failure_count") or 0),
             "last_failure_at": stats.get("last_failure_at"),
             "created_by_review": self.created_by_review,
+            "browser_profile": self.browser_profile,
         }
         if body:
             d["body"] = self.body
@@ -132,6 +135,7 @@ def parse_skill_file(path: Path) -> Skill | None:
         author=str(meta.get("author", "user")),
         state=state,
         created_by_review=bool(meta.get("created_by_review", False)),
+        browser_profile=str(meta.get("browser_profile") or "").strip() or None,
     )
 
 
@@ -145,6 +149,7 @@ def render_skill(
     tags: list[str] | None,
     requires_tools: list[str] | None,
     created_by_review: bool = False,
+    browser_profile: str | None = None,
 ) -> str:
     meta: dict[str, Any] = {
         "name": name,
@@ -154,6 +159,8 @@ def render_skill(
         "tags": tags or [],
         "requires_tools": requires_tools or [],
     }
+    if browser_profile:
+        meta["browser_profile"] = browser_profile
     if created_by_review:
         meta["created_by_review"] = True
     front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
@@ -274,6 +281,7 @@ class SkillLibrary:
             render_skill(
                 name, description, body, author=author, version=version, tags=tags,
                 requires_tools=requires_tools, created_by_review=created_by_review,
+                browser_profile=current.browser_profile if current else None,
             ),
             encoding="utf-8",
         )
@@ -336,6 +344,7 @@ class SkillLibrary:
                 tags=tags if tags is not None else skill.tags,
                 requires_tools=requires_tools if requires_tools is not None else skill.requires_tools,
                 created_by_review=skill.created_by_review,
+                browser_profile=skill.browser_profile,
             ),
             encoding="utf-8",
         )

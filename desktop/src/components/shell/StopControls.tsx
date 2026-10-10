@@ -18,6 +18,7 @@ const SOURCE_LABEL: Record<string, string> = {
   hotkey: 'with the shortcut',
   telegram: 'from Telegram',
   discord: 'from Discord',
+  whatsapp: 'from WhatsApp',
   device: 'from a paired device'
 }
 

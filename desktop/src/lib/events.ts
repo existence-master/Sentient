@@ -2,27 +2,31 @@
  * THE place where domain events from `/ws` update the React Query cache.
  * Feature code should not subscribe to domain events for cache purposes; add a case here.
  *
- *   task.updated          -> upsert into ['tasks'] and ['tasks', id]
- *   task.deleted          -> remove from ['tasks']
+ *   task.updated          -> upsert into ['tasks'] and ['tasks', id] (+ refetch the Daily Brief state)
+ *   task.deleted          -> remove from ['tasks'] (+ refetch the Daily Brief state)
  *   task.run_progress     -> append progress to the run in cache
+ *   task.run_activity     -> update the run's last activity time
+ *   task.run_context      -> the running run's context meter (live only)
  *   notification.new      -> prepend to ['notifications'], badge++, toast, native notification if unfocused
  *   notification.updated  -> replace in place (payload status changed)
+ *   (a `brief` notification, new or updated, also refetches ['proactivity', 'brief'])
  *   notification.read     -> mark read (id null = all)
  *   notification.deleted  -> remove (id null = all)
  *   integration.updated   -> upsert into ['integrations'], refetch change feeds (+ ['hooks'] for the webhook integration)
  *   memory.updated        -> invalidate ['memories']
  *   skill.updated         -> invalidate ['skills']
  *   session.updated       -> rename in ['sessions']
- *   config.updated        -> invalidate config/bootstrap (+ secrets/providers)
+ *   rule_proposal.updated -> refetch that chat's ['rule-proposals'] ("Make this a rule?" cards)
+ *   config.updated        -> invalidate config/bootstrap/model presets/ChatGPT sign-in (+ secrets/providers)
  *   voice.state           -> ['voice', 'state']
  *   subagent.updated      -> ['subagents', ...] (+ toast when a background helper finishes)
- *   browser.updated       -> ['browser', 'status']; browser.frame -> useBrowserView (live view)
+ *   browser.updated       -> ['browser', 'status'] (+ refetch ['browser', 'profiles']); browser.frame -> useBrowserView (live view)
  *   node.updated/deleted  -> ['nodes']; node.event battery -> node battery
  *   channel.updated       -> ['channels']; channel.message -> refresh sessions (+ that transcript)
  *   user_model.updated    -> refetch ['user-model']
  *   dream.updated         -> upsert into ['memories', 'dreams'] (and refetch the user model when one completes)
  *   source.items          -> webhook calls refresh ['hooks'] (last called / call count)
- *   stop.updated          -> ['stop'] (Stop everything banner and title bar button)
+ *   stop.updated          -> ['stop'] (Stop everything banner and title bar button; cancels dictation)
  */
 import type { QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -55,18 +59,47 @@ function plain(md: string, max = 180): string {
 export function installDomainEvents(qc: QueryClient): () => void {
   const offs: Array<() => void> = []
 
-  offs.push(live.onDomain('task.updated', (e) => upsertTask(qc, e.data)))
-  offs.push(live.onDomain('task.deleted', (e) => removeTask(qc, e.data.task_id)))
+  const refreshBrief = () => void qc.invalidateQueries({ queryKey: qk.proactivity.brief })
+  offs.push(
+    live.onDomain('task.updated', (e) => {
+      upsertTask(qc, e.data)
+      if (e.data.original_context?.source === 'brief') refreshBrief()
+    })
+  )
+  offs.push(
+    live.onDomain('task.deleted', (e) => {
+      removeTask(qc, e.data.task_id)
+      refreshBrief()
+    })
+  )
   offs.push(
     live.onDomain('task.run_progress', (e) => {
       const { task_id, run_id, update } = e.data
       const patch = (t: Task): Task => ({
         ...t,
-        runs: t.runs.map((r) => (r.run_id === run_id ? { ...r, progress_updates: [...r.progress_updates, update] } : r))
+        runs: t.runs.map((r) => (r.run_id === run_id ? { ...r, progress_updates: [...r.progress_updates, update], last_activity_at: update.timestamp } : r))
       })
       qc.setQueryData<Task>(qk.tasks.detail(task_id), (old) => (old ? patch(old) : old))
       qc.setQueryData<Task[]>(qk.tasks.all, (old) => old?.map((t) => (t.task_id === task_id ? patch(t) : t)))
       qc.setQueryData<unknown[]>(qk.tasks.runEvents(task_id, run_id), (old) => (old ? [...old, update] : old))
+    })
+  )
+  offs.push(
+    live.onDomain('task.run_activity', (e) => {
+      const { task_id, run_id, last_activity_at } = e.data
+      const patch = (t: Task): Task => ({ ...t, runs: t.runs.map((r) => (r.run_id === run_id ? { ...r, last_activity_at } : r)) })
+      qc.setQueryData<Task>(qk.tasks.detail(task_id), (old) => (old ? patch(old) : old))
+      qc.setQueryData<Task[]>(qk.tasks.all, (old) => old?.map((t) => (t.task_id === task_id ? patch(t) : t)))
+    })
+  )
+  offs.push(
+    live.onDomain('task.run_context', (e) => {
+      const { task_id, run_id, used, length, percent, warning } = e.data
+      // no length: this model's context length is unknown, so an older meter is cleared
+      const context = length ? { used: used ?? 0, length, percent: percent ?? 0, warning } : null
+      const patch = (t: Task): Task => ({ ...t, runs: t.runs.map((r) => (r.run_id === run_id ? { ...r, context } : r)) })
+      qc.setQueryData<Task>(qk.tasks.detail(task_id), (old) => (old ? patch(old) : old))
+      qc.setQueryData<Task[]>(qk.tasks.all, (old) => old?.map((t) => (t.task_id === task_id ? patch(t) : t)))
     })
   )
 
@@ -77,6 +110,7 @@ export function installDomainEvents(qc: QueryClient): () => void {
         old ? { notifications: [n, ...old.notifications.filter((x) => x.id !== n.id)], unread: old.unread + (n.read ? 0 : 1) } : old
       )
       useNotificationStore.getState().push(n)
+      if (n.kind === 'brief') refreshBrief()
       const title = n.title || 'Sentient'
       toast(title, {
         description: plain(n.message),
@@ -109,6 +143,7 @@ export function installDomainEvents(qc: QueryClient): () => void {
         old ? { ...old, notifications: old.notifications.map((x) => (x.id === n.id ? n : x)) } : old
       )
       useNotificationStore.getState().update(n)
+      if (n.kind === 'brief') refreshBrief()
     })
   )
   offs.push(
@@ -148,8 +183,16 @@ export function installDomainEvents(qc: QueryClient): () => void {
   )
 
   offs.push(
+    live.onDomain('rule_proposal.updated', (e) => {
+      if (e.data?.session_id) void qc.invalidateQueries({ queryKey: qk.ruleProposals(e.data.session_id) })
+    })
+  )
+
+  offs.push(
     live.onDomain('config.updated', (e) => {
       const sections = e.data?.sections ?? []
+      void qc.invalidateQueries({ queryKey: qk.modelPresets })
+      void qc.invalidateQueries({ queryKey: qk.chatgpt })
       if (sections.includes('secrets')) {
         void qc.invalidateQueries({ queryKey: qk.secrets })
         void qc.invalidateQueries({ queryKey: qk.providers })
@@ -181,7 +224,12 @@ export function installDomainEvents(qc: QueryClient): () => void {
   )
 
   // §12 browser
-  offs.push(live.onDomain('browser.updated', (e) => qc.setQueryData(browserKeys.status, e.data)))
+  offs.push(
+    live.onDomain('browser.updated', (e) => {
+      qc.setQueryData(browserKeys.status, e.data)
+      void qc.invalidateQueries({ queryKey: browserKeys.profiles })
+    })
+  )
   offs.push(live.onDomain('browser.frame', (e) => useBrowserView.getState().setFrame(e.data)))
 
   // §13 devices
@@ -215,7 +263,12 @@ export function installDomainEvents(qc: QueryClient): () => void {
   )
 
   // §15 user model and dreams
-  offs.push(live.onDomain('user_model.updated', () => void qc.invalidateQueries({ queryKey: qk.userModel })))
+  offs.push(
+    live.onDomain('user_model.updated', () => {
+      void qc.invalidateQueries({ queryKey: qk.userModel })
+      void qc.invalidateQueries({ queryKey: qk.memories.review }) // insights waiting for review live there
+    })
+  )
   offs.push(
     live.onDomain('dream.updated', (e) => {
       const d = e.data
@@ -233,14 +286,19 @@ export function installDomainEvents(qc: QueryClient): () => void {
   )
 
   // §17 stop everything
-  offs.push(live.onDomain('stop.updated', (e) => qc.setQueryData(qk.stop, e.data)))
+  offs.push(
+    live.onDomain('stop.updated', (e) => {
+      qc.setQueryData(qk.stop, e.data)
+      if (e.data?.stopped) void getBridge().dictation.cancel() // push to talk or dictation: microphone off now
+    })
+  )
 
   // After a reconnect we may have missed events: refresh lists (not transcripts).
   let prev: SocketState = live.state
   offs.push(
     live.onState((s) => {
       if (s === 'open' && prev === 'reconnecting') {
-        for (const key of [qk.sessions, qk.notifications, qk.tasks.all, qk.integrations.all, qk.bootstrap, qk.stop, deviceKeys.all, channelKeys.all, browserKeys.status]) {
+        for (const key of [qk.sessions, qk.notifications, qk.tasks.all, qk.integrations.all, qk.bootstrap, qk.stop, deviceKeys.all, channelKeys.all, browserKeys.status, browserKeys.profiles]) {
           void qc.invalidateQueries({ queryKey: key })
         }
       }

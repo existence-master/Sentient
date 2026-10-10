@@ -98,13 +98,25 @@ def node(
     )
 
 
+@app.command("claude-code-tools", hidden=True)
+def claude_code_tools(tools_file: str):
+    """Sentient's tool list for Claude Code (started by Claude Code itself; see sentient/llm/claude_code_tools.py)."""
+    from sentient.llm.claude_code_tools import main
+
+    raise typer.Exit(main([tools_file]))
+
+
 @app.command()
-def doctor():
+def doctor(
+    models: bool = typer.Option(
+        False, "--models", help="Also run the model check-up: a reply, a tool call, JSON, context and GPU per role."
+    ),
+):
     """Check that everything needed to run is in place."""
-    asyncio.run(_doctor())
+    asyncio.run(_doctor(models))
 
 
-async def _doctor() -> None:
+async def _doctor(models: bool = False) -> None:
     from sentient.app import SentientApp
 
     table = Table(title="sentient doctor")
@@ -125,6 +137,7 @@ async def _doctor() -> None:
         console.print(table)
         return
     s = SentientApp(cfg, enable_background=False)
+    checkup_table: Table | None = None
     try:
         await s.start()
         row("database", True, str(s.store.path))
@@ -150,11 +163,45 @@ async def _doctor() -> None:
             row("embedding model", True, f"{s.llm.model_for('embedding')} (dim {len(vec)})")
         except Exception as exc:
             row("embedding model", False, f"{s.llm.model_for('embedding')}: {exc}")
+        if models:
+            checkup_table = await _model_checkup(s)
     except Exception as exc:
         row("startup", False, str(exc))
     finally:
         await s.stop()
     console.print(table)
+    if checkup_table is not None:
+        console.print(checkup_table)
+
+
+async def _model_checkup(s) -> Table:
+    from sentient.llm.checkup import run_checkup
+
+    marks = {"pass": "[green]ok[/green]", "warn": "[yellow]warn[/yellow]", "fail": "[red]fail[/red]", "skip": "skip"}
+    table = Table(title="model check-up")
+    table.add_column("role")
+    table.add_column("check")
+    table.add_column("status")
+    table.add_column("detail", overflow="fold")
+    with console.status("Checking models...") as status:
+        probe = getattr(s, "hardware", None)
+        hardware = await probe.get() if probe is not None else None
+        if hardware is not None:
+            rec = hardware["recommendation"]
+            suggestion = rec["note"] if rec.get("cloud_first") else f"Suggested local model: {rec['summary']}."
+            console.print(f"This computer: {hardware['summary']}. {suggestion}")
+        async for event in run_checkup(s.config, s.llm, hardware=hardware):
+            if event["type"] == "step":
+                status.update(f"{event['role']}: {event['label']}...")
+            elif event["type"] == "role":
+                name = f"{event['role']}\n[dim]{event['model'] or 'uses primary'}[/dim]"
+                if not event["checks"]:
+                    table.add_row(name, "", marks["skip"], "Uses the primary model.")
+                for i, c in enumerate(event["checks"]):
+                    detail = c["detail"] + (f"\n[bold]Fix:[/bold] {c['fix']}" if c.get("fix") else "")
+                    table.add_row(name if i == 0 else "", c["label"], marks[c["status"]], detail)
+                table.add_section()
+    return table
 
 
 @config_app.command("path")

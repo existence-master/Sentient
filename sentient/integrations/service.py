@@ -82,6 +82,9 @@ class IntegrationManager(Service):
         self._pending_oauth: dict[str, dict] = {}
         self._background: set[asyncio.Task] = set()
         self.listener = google.LoopbackListener(self._oauth_callback)
+        # Others that share the loopback listener (for example the OpenRouter sign-in): each has
+        # ``owns_state(state)`` and ``oauth_callback(params)``, like ``self.mcp``.
+        self.oauth_owners: list = []
         self.feeds = FeedEngine(self)
         self.hooks = HookStore(self)
         from sentient.integrations.mcp import MCPManager
@@ -408,6 +411,9 @@ class IntegrationManager(Service):
         return {"auth_url": auth_url, "state": state}
 
     async def _oauth_callback(self, params: dict[str, str]) -> tuple[bool, str]:
+        for owner in (self.mcp, *self.oauth_owners):
+            if owner.owns_state(params.get("state", "")):
+                return await owner.oauth_callback(params)
         flow = self._pending_oauth.pop(params.get("state", ""), None)
         if flow is None or time.time() - flow["created"] > OAUTH_FLOW_TTL_S:
             return False, "This sign-in link has expired."

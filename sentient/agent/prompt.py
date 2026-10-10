@@ -79,6 +79,7 @@ _MESSAGING_GUIDANCE = (
 )
 CHANNEL_GUIDANCE["telegram"] = _MESSAGING_GUIDANCE.format(app="Telegram")
 CHANNEL_GUIDANCE["discord"] = _MESSAGING_GUIDANCE.format(app="Discord")
+CHANNEL_GUIDANCE["whatsapp"] = _MESSAGING_GUIDANCE.format(app="WhatsApp")
 
 
 def capability_rules(tool_names: Iterable[str] | None) -> str:

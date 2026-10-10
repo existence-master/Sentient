@@ -10,10 +10,16 @@ import type {
   Connection,
   DesktopNodeState,
   DevicePrivacy,
+  DictationCommand,
+  DictationEvent,
+  DictationShellSettings,
+  DictationStatus,
   NativeNotification,
   OpenPathTarget,
   SentientBridge,
   ShellPrefs,
+  ShortcutInfo,
+  ShortcutResult,
   VersionInfo
 } from '../../src/types/bridge'
 import { CH } from '../main/channels'
@@ -62,7 +68,17 @@ const bridge: SentientBridge = {
   setAlwaysListening: (enabled: boolean) => ipcRenderer.invoke(CH.setAlwaysListening, enabled),
   getAlwaysListening: () => ipcRenderer.invoke(CH.getAlwaysListening) as Promise<boolean | null>,
   onAlwaysListeningChange: (cb) => subscribe<boolean>(CH.alwaysListeningChanged, cb),
-  notifyWake: () => ipcRenderer.invoke(CH.wakeDetected)
+  notifyWake: () => ipcRenderer.invoke(CH.wakeDetected),
+  dictation: {
+    apply: (settings: DictationShellSettings) => ipcRenderer.invoke(CH.dictationApply, settings) as Promise<DictationStatus>,
+    status: () => ipcRenderer.invoke(CH.dictationStatus) as Promise<DictationStatus>,
+    cancel: () => ipcRenderer.invoke(CH.dictationCancel),
+    openPermissionSettings: (kind) => ipcRenderer.invoke(CH.dictationPermission, kind),
+    onCommand: (cb) => subscribe<DictationCommand>(CH.dictationCommand, cb),
+    report: (event: DictationEvent) => ipcRenderer.send(CH.dictationEvent, event)
+  },
+  getShortcuts: () => ipcRenderer.invoke(CH.getShortcuts) as Promise<ShortcutInfo[]>,
+  setShortcut: (id, accelerator) => ipcRenderer.invoke(CH.setShortcut, id, accelerator) as Promise<ShortcutResult>
 }
 
 contextBridge.exposeInMainWorld('sentient', bridge)

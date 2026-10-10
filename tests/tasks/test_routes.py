@@ -11,11 +11,12 @@ from tests.tasks.conftest import PLAN_FILES, REFINE_ONCE, RESULT
 TASK_KEYS = {
     "task_id", "name", "description", "status", "priority", "assignee", "task_type", "schedule", "plan", "runs",
     "chat_history", "clarifying_questions", "swarm_details", "enabled", "model", "original_context", "error",
-    "next_execution_at", "last_execution_at", "created_at", "updated_at", "script",
+    "next_execution_at", "last_execution_at", "created_at", "updated_at", "script", "browser_profile", "deliver_to",
 }
 RUN_KEYS = {
     "run_id", "status", "created_at", "execution_start_time", "finished_at", "plan", "trigger_event_data",
-    "progress_updates", "result", "error", "retry_of", "pending_question",
+    "progress_updates", "result", "error", "retry_of", "pending_question", "last_activity_at",
+    "memory_sources",
 }
 
 

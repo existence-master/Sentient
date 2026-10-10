@@ -5,18 +5,27 @@ and maps its typed events to v2 ProgressUpdates. The transcript is checkpointed 
 ``task_runs.messages`` after every tool result so a run can resume after a restart.
 A run that calls ``ask_user`` stops after that round and raises ``RunPaused``; the
 service parks it as ``waiting_for_user`` until the answer arrives (``tasks/ask.py``).
+A run that read outside content (a tool result, or the event that started it) and then tries
+to send something pauses the same way and asks first (ADR 0018).
+A run that gets stuck (``tasks/stuck.py``) pauses the same way with a plain reason.
+The memories a run had in mind (facts in its prompt, facts memory tools returned that the model read) are kept on
+the run as ``memory_sources``, merged across pauses, resumes and restarts (``sentient/memory/sources.py``).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 from typing import TYPE_CHECKING, Any
 
-from sentient.agent.loop import LoopResult, history_to_openai
-from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent
-from sentient.tasks import ask
+from sentient.agent.loop import Budget, LoopResult, history_to_openai
+from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
+from sentient.llm.provider import ToolCall
+from sentient.memory.sources import MemorySources
+from sentient.tasks import ask, limits, stuck
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
     CORE_HELPER_PLUGINS,
@@ -28,7 +37,7 @@ from sentient.tasks.prompts import (
 )
 from sentient.tasks.schedule import get_tz
 from sentient.tools.base import Risk
-from sentient.tools.rules import never_message
+from sentient.tools.rules import never_message, untrusted_in
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.tasks.service import TaskService
@@ -36,9 +45,12 @@ if TYPE_CHECKING:  # pragma: no cover
 
 log = logging.getLogger(__name__)
 
-# Literal fallback text Agent.run_loop leaves when it runs out of rounds.
-STEP_LIMIT_TEXT = "I reached the step limit before finishing. Tell me how to continue."
 MAX_PROGRESS_RESULT_CHARS = 6000
+# A run's time limit is checked before each model call. A tool or model call still running this long after the
+# limit is cancelled (a hung call must not run forever) and the run asks whether to keep going, as at the limit.
+HARD_DEADLINE_GRACE_S = 120.0
+# While a run works, its ``last_activity_at`` is saved (and ``task.run_activity`` published) at most this often.
+HEARTBEAT_S = 10.0
 # Writing skills is the evolution reviewer's job; inside a run it only distracts small models.
 EXECUTOR_EXCLUDED_TOOLS = {"skill_save"}
 MAX_CONTINUE_NUDGES = 2
@@ -66,6 +78,11 @@ def announces_unfinished_work(text: str) -> bool:
 
 class RunFailed(RuntimeError):
     """A run ended without a usable final answer."""
+
+
+def run_budget(config: Any) -> Budget:
+    """The token and cost limits of one swarm run (``tasks.max_tokens_per_run``, ``tasks.max_cost_per_run_usd``)."""
+    return Budget(max_tokens=config.tasks.max_tokens_per_run, max_cost_usd=config.tasks.max_cost_per_run_usd)
 
 
 class RunPaused(Exception):
@@ -146,6 +163,7 @@ class ProgressMapper:
         self.run_id = run_id
         self.thought = ""
         self.text = ""
+        self.warned = False  # the context warning goes into the log once per run
 
     async def _emit(self, message: dict) -> None:
         await self.svc.progress(self.task_id, self.run_id, message)
@@ -178,23 +196,33 @@ class ProgressMapper:
                 "content": json.dumps(event.result, ensure_ascii=False, default=str),
             }
             await self.svc.repo.update_run(self.run_id, {"messages": [*messages, tool_msg]})
-        # Usage is ignored; Error is reported once by the service when the run finishes.
+        elif isinstance(event, Usage):
+            # context meter (#131): live on the running task (all null when this model's context length is unknown,
+            # e.g. after a fallback, so the window clears an older meter); the warning is also kept in the log
+            self.svc.app.bus.publish("task.run_context", {
+                "task_id": self.task_id, "run_id": self.run_id, "used": event.context_used,
+                "length": event.context_length, "percent": event.context_percent, "warning": event.context_warning,
+            })
+            if event.context_warning and not self.warned:
+                self.warned = True
+                await self._emit({"type": "info", "content": event.context_warning})
+        # Error is reported once by the service when the run finishes.
 
 
 async def _executor_system_prompt(
     svc: TaskService, task: dict, run: dict, plan: list[dict], tool_map: dict[str, list[str]]
-) -> str:
+) -> tuple[str, list[dict]]:
+    """The executor's system prompt and the recalled facts put into it."""
     app = svc.app
     cfg = app.config.assistant
     tz = get_tz(svc.tz_name())
-    memories: list[str] = []
+    facts: list[dict] = []
     if app.memory is not None:
         query = " ".join(
             str(x) for x in (task.get("name"), task.get("description"), (run.get("trigger_data") or {}).get("subject")) if x
         )[:500]
         try:
-            facts = await app.memory.recall(query)
-            memories = [f["content"] for f in facts if f.get("content")]
+            facts = [f for f in await app.memory.recall(query) if f.get("content")]
         except Exception as exc:
             log.debug("memory recall for task %s skipped: %s", task["id"], exc)
     return build_executor_prompt(
@@ -209,85 +237,220 @@ async def _executor_system_prompt(
         plan=plan,
         original_context=task.get("original_context"),
         trigger_event_data=run.get("trigger_data"),
-        memories=memories,
+        memories=[f["content"] for f in facts],
         tool_map=tool_map,
+    ), facts
+
+
+def _trigger_source(app: Any, task: dict, run: dict) -> str:
+    """The app whose event started this run ("Gmail"), or "" for runs nobody outside started (ADR 0018)."""
+    if not run.get("trigger_data"):
+        return ""
+    source = str((task.get("schedule") or {}).get("source") or "")
+    plugin = app.registry.plugin(source) if source else None
+    return getattr(plugin, "display_name", None) or source or "the event that started it"
+
+
+async def _run_approved_call(svc: TaskService, task_id: str, run_id: str, ctx: Any, checkpoint: list[dict]) -> list[dict]:
+    """Run the held call the user said yes to (ADR 0018), once: the mark is saved away before the call starts, so a
+    restart in the middle never repeats it, and the saved placeholder then says the outcome is unknown
+    (``ask.INTERRUPTED_NOTE``). The call's result replaces that placeholder."""
+    taken = ask.take_approved(checkpoint)
+    if taken is None:
+        return checkpoint
+    messages, call = taken
+    await svc.repo.update_run(run_id, {"messages": messages})
+    if call is None:
+        return messages
+    await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": call["name"], "parameters": call["arguments"]})
+    res, is_error, content = await svc.app.agent.run_tool(ToolCall(**call), ctx)
+    await svc.progress(
+        task_id, run_id, {"type": "tool_result", "tool_name": call["name"], "result": truncate(res), "is_error": is_error}
     )
+    messages = ask.fill_result(messages, call["id"], content)
+    await svc.repo.update_run(run_id, {"messages": messages})
+    return messages
+
+
+def _spent(state: dict, budget: Budget, started: float) -> dict:
+    """Add this segment's steps, tokens, cost and active seconds to the run's stored limits."""
+    used = state["used"]
+    used.update(
+        steps=budget.steps, tokens=budget.tokens, cost_usd=budget.cost_usd,
+        seconds=used["seconds"] + (time.monotonic() - started),
+    )
+    return state
 
 
 async def execute_single(
     svc: TaskService, task: dict, run: dict, *, resume: bool = False, answered: bool = False
 ) -> LoopResult:
     """Run (or continue) one task run. ``answered``: the checkpoint already holds the user's answer to
-    ``ask_user``, so it continues without the restart note. Raises ``RunPaused`` when the run asks a question."""
+    ``ask_user`` (or to a limit question), so it continues without the restart note. Raises ``RunPaused``
+    when the run asks a question or reaches one of its limits (``tasks/limits.py``)."""
     app = svc.app
     assert app.agent is not None
-    max_rounds = app.config.tasks.max_tool_rounds
     task_id, run_id = task["id"], run["id"]
-    plan = run.get("plan") or task.get("plan") or []
-    requested = [str(s.get("tool", "")) for s in plan if isinstance(s, dict)]
-    tool_names, tool_map, missing = select_tools(app.registry, requested)
-    if missing:
-        await svc.progress(task_id, run_id, {
-            "type": "info",
-            "content": f"The plan mentions tools that are not available: {', '.join(missing)}. The executor will work around them.",
-        })
-
-    checkpoint = run.get("messages") if resume else None
-    if isinstance(checkpoint, list) and checkpoint:
-        messages = history_to_openai(checkpoint)
-        if not answered and not is_first_retry_attempt(run):  # a retry's checkpoint already ends with the retry note
-            messages.append({"role": "user", "content": RESUME_NOTE})
-    else:
-        system = await _executor_system_prompt(svc, task, run, plan, tool_map)
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": EXECUTOR_KICKOFF}]
-        await svc.repo.update_run(run_id, {"messages": messages})
-
-    ctx = app.agent.tool_context(None, "task")
-    asking: dict[str, Any] = {"asked": ask.count_questions(messages)}
-    ctx.extra.update({"task_id": task_id, "run_id": run_id, ask.STATE_KEY: asking})
-    if app.registry.get(ask.ASK_TOOL) is not None:
-        tool_names = [*tool_names, ask.ASK_TOOL]
+    state = limits.load(run, app.config)
+    used, limit = state["used"], state["max"]
+    started = time.monotonic()
+    remaining_s = max(limit["seconds"] - used["seconds"], 0)
+    # One budget for the whole run (continue nudges included), carried across pauses in ``state``. Its deadline is
+    # checked before each model call, so a call in flight may finish; the hard deadline below catches a hung one.
+    budget = Budget(
+        max_tokens=int(limit["tokens"]), max_cost_usd=float(limit["cost_usd"]),
+        tokens=int(used["tokens"]), cost_usd=float(used["cost_usd"]), steps=int(used["steps"]),
+        deadline=started + remaining_s,
+    )
     result = LoopResult()
-    mapper = ProgressMapper(svc, task_id, run_id)
-    rounds = max_rounds
-    for attempt in range(MAX_CONTINUE_NUDGES + 1):
-        async for event in app.agent.run_loop(
-            messages,
-            ctx,
-            result=result,
-            role="executor",
-            model=task.get("model") or None,
-            tool_names=tool_names,
-            max_rounds=rounds,
-            use_approvals=False,  # v2: approving the plan is the approval
-            source="task",
-            stop=lambda: bool(asking.get("question")),
-        ):
-            await mapper.handle(event, messages)
-        await mapper.flush_thought()
-        if result.paused:
-            break
-        announced = (result.text or "").strip()
-        if attempt >= MAX_CONTINUE_NUDGES or result.error or result.hit_step_limit or not announces_unfinished_work(announced):
-            break
-        # small local models sometimes stop after announcing the next step: ask once more to actually do it
-        messages.append({"role": "assistant", "content": announced})
-        messages.append({"role": "user", "content": CONTINUE_NUDGE})
-        await svc.progress(task_id, run_id, {
-            "type": "info",
-            "content": "The executor described its next step without doing it, so I asked it to carry on.",
-        })
-        rounds = max(4, max_rounds // 2)
-    await svc.repo.update_run(run_id, {"messages": messages})
+    messages: list[dict] = []
+    asking: dict[str, Any] = {}
+    sources = MemorySources(run.get("memory_sources"))  # what the run had in mind so far (before a pause or restart)
+    # active time only (waiting for an answer is not counted), plus a grace so a slow call can finish first
+    hard = asyncio.timeout(remaining_s + HARD_DEADLINE_GRACE_S)
+    cfg = app.config.tasks
+    watch = stuck.Watch(
+        app.registry, stall_s=float(cfg.stuck_after_minutes) * 60, error_limit=int(cfg.stuck_after_repeated_errors)
+    )
+    # no activity for stall_s cancels the call in flight and the run pauses as stuck; every streamed event resets it
+    stall = asyncio.timeout(watch.stall_s or None)
+    clock = asyncio.get_running_loop()
+    beat = {"at": time.monotonic()}
+
+    async def alive(event: Any) -> None:
+        watch.see(event)
+        if watch.stall_s:
+            stall.reschedule(clock.time() + watch.stall_s)
+        if time.monotonic() - beat["at"] >= HEARTBEAT_S:
+            beat["at"] = time.monotonic()
+            await svc.heartbeat(task_id, run_id)
+
+    try:
+        async with hard, stall:
+            plan = run.get("plan") or task.get("plan") or []
+            requested = [str(s.get("tool", "")) for s in plan if isinstance(s, dict)]
+            tool_names, tool_map, missing = select_tools(app.registry, requested)
+            if missing:
+                await svc.progress(task_id, run_id, {
+                    "type": "info",
+                    "content": f"The plan mentions tools that are not available: {', '.join(missing)}. "
+                    "The executor will work around them.",
+                })
+
+            ctx = app.agent.tool_context(None, "task")
+            ctx.extra.update({"task_id": task_id, "run_id": run_id, ask.STATE_KEY: asking})
+            if task.get("browser_profile"):  # the browser tools use the task's profile (docs/API.md section 12)
+                ctx.extra["browser_profile"] = task["browser_profile"]
+            checkpoint = run.get("messages") if resume else None
+            if isinstance(checkpoint, list) and checkpoint:
+                checkpoint = await _run_approved_call(svc, task_id, run_id, ctx, checkpoint)
+                messages = history_to_openai(checkpoint)
+                if not answered and not is_first_retry_attempt(run):  # a retry's checkpoint already has its note
+                    messages.append({"role": "user", "content": RESUME_NOTE})
+            else:
+                system, facts = await _executor_system_prompt(svc, task, run, plan, tool_map)
+                sources.add_facts(facts)
+                messages = [{"role": "system", "content": system}, {"role": "user", "content": EXECUTOR_KICKOFF}]
+                await svc.repo.update_run(run_id, {
+                    "messages": messages, "memory_sources": await sources.resolve(app.store),
+                })
+
+            asking["asked"] = ask.count_questions(messages)
+            # outside content in play: the event that started the run, or a tool result earlier in it (ADR 0018)
+            ctx.untrusted = _trigger_source(app, task, run) or untrusted_in(messages, app.registry)
+            if app.registry.get(ask.ASK_TOOL) is not None:
+                tool_names = [*tool_names, ask.ASK_TOOL]
+            mapper = ProgressMapper(svc, task_id, run_id)
+            for attempt in range(MAX_CONTINUE_NUDGES + 1):
+                rounds = int(limit["steps"]) - budget.steps
+                if rounds <= 0:  # every step of this run is used
+                    result.hit_step_limit = True
+                    break
+                async for event in app.agent.run_loop(
+                    messages,
+                    ctx,
+                    result=result,
+                    role="executor",
+                    model=task.get("model") or None,
+                    tool_names=tool_names,
+                    max_rounds=rounds,
+                    use_approvals=False,  # v2: approving the plan is the approval
+                    source="task",
+                    stop=lambda: (
+                        bool(asking.get("question")) or result.needs_ok is not None or watch.reason is not None
+                    ),
+                    budget=budget,
+                ):
+                    await alive(event)
+                    await mapper.handle(event, messages)
+                    if isinstance(event, ToolResultEvent) and not event.is_error:
+                        seen = len(sources)
+                        sources.add_tool_result(event.name, app.agent.delivered_rows(event.result))
+                        if len(sources) > seen:  # saved at once, so a restart keeps it
+                            await svc.repo.update_run(run_id, {"memory_sources": await sources.resolve(app.store)})
+                await mapper.flush_thought()
+                if result.paused or result.stopped_by_budget:
+                    break
+                announced = (result.text or "").strip()
+                if (
+                    attempt >= MAX_CONTINUE_NUDGES or result.error or result.hit_step_limit
+                    or not announces_unfinished_work(announced)
+                ):
+                    break
+                # small local models sometimes stop after announcing the next step: ask once more to actually do it
+                messages.append({"role": "assistant", "content": announced})
+                messages.append({"role": "user", "content": CONTINUE_NUDGE})
+                await svc.progress(task_id, run_id, {
+                    "type": "info",
+                    "content": "The executor described its next step without doing it, so I asked it to carry on.",
+                })
+    except TimeoutError:
+        if stall.expired():
+            watch.stalled()
+            log.warning("task run %s made no progress for %ss; the call in flight was cancelled", run_id, watch.stall_s)
+        elif not hard.expired():
+            raise
+        else:
+            log.warning("task run %s passed its hard time limit; the call in flight was cancelled", run_id)
+        # The transcript keeps every finished step; a tool call left without its result is dropped when the run
+        # resumes (history_to_openai), so the model simply makes it again.
+    except asyncio.CancelledError:
+        # shutdown or Cancel: keep what this segment used so a resumed run still counts it. The write is shielded
+        # and awaited, so it lands before the run's task ends even if it is cancelled again.
+        save = asyncio.ensure_future(svc.repo.update_run(run_id, {"limits": _spent(state, budget, started)}))
+        try:
+            await asyncio.shield(save)
+        except asyncio.CancelledError:
+            await save
+        raise
+    _spent(state, budget, started)
+    await svc.repo.update_run(run_id, {"limits": state, **({"messages": messages} if messages else {})})
 
     if result.stopped_by_rule:  # an "ask" rule stopped the run; say which and how to change it (ADR 0016)
         raise RunFailed(result.stopped_by_rule)
+    # the loop breaker: the same call kept getting the same result. A repeated error is stuck; anything else fails.
+    if result.stopped_by_repeat and not watch.repeated():
+        raise RunFailed(f"{result.stopped_by_repeat} Edit the task to add what it needs, or retry it.")
+    # One question at a time, each with its own pending_question keys: ask_user's own question first, then a call
+    # held after outside content (its yes runs that exact call), then stuck (seen again later if it still is).
+    if result.paused and result.needs_ok is not None and not asking.get("question"):
+        raise RunPaused(ask.untrusted_pending(result.needs_ok))  # it read outside content: ask before sending
+    if watch.reason and not asking.get("question"):  # stuck: ask what to do (tasks/stuck.py)
+        raise RunPaused(stuck.pending(watch.kind or "stalled", watch.reason))
     if result.paused:
         raise RunPaused({
             "question": asking["question"],
             "options": asking.get("options") or [],
             "tool_call_id": asking.get("tool_call_id") or ask.last_call_id(messages),
         })
+    reached = (
+        "seconds" if hard.expired()
+        else budget.over() if result.stopped_by_budget
+        else "steps" if result.hit_step_limit
+        else None
+    )
+    if reached:  # a limit: ask whether to keep going (tasks/limits.py)
+        raise RunPaused(limits.pending(state, reached))
     if result.error:
         raise RunFailed(f"Executor agent failed: {result.error}")
     final = (result.text or "").strip()
@@ -296,8 +459,6 @@ async def execute_single(
             "Agent finished execution without providing a final answer as required by its instructions. "
             "The task may be incomplete."
         )
-    if final == STEP_LIMIT_TEXT:
-        raise RunFailed(f"The executor used all {max_rounds} tool rounds (tasks.max_tool_rounds) before finishing.")
     await svc.progress(task_id, run_id, {"type": "final_answer", "content": final})
     return result
 
@@ -328,6 +489,8 @@ async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume:
     ctx = app.agent.tool_context(None, "task") if app.agent is not None else None
     if ctx is not None:
         ctx.extra.update({"task_id": task_id, "run_id": run_id})
+        if task.get("browser_profile"):
+            ctx.extra["browser_profile"] = task["browser_profile"]
     try:
         result = await tool.call(ctx, arguments)
     except Exception as exc:

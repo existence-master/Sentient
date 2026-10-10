@@ -18,6 +18,9 @@ from pydantic import BaseModel
 
 from sentient import secrets
 from sentient.gateway.deps import AUTH, get_core
+from sentient.llm import claude_code, connect, presets
+from sentient.llm.presets import PresetError
+from sentient.llm.provider import provider_config
 
 router = APIRouter(prefix="/api", tags=["models"], dependencies=AUTH)
 
@@ -27,13 +30,13 @@ PROVIDERS: list[dict[str, Any]] = [
     {"id": "lm_studio", "label": "LM Studio (local)", "kind": "local", "key_required": False,
      "docs_url": "https://lmstudio.ai/", "suggested": []},
     {"id": "anthropic", "label": "Anthropic", "kind": "cloud", "key_required": True,
-     "docs_url": "https://console.anthropic.com/settings/keys", "suggested": ["anthropic/claude-sonnet-5", "anthropic/claude-opus-5", "anthropic/claude-haiku-4-5"]},
+     "docs_url": "https://console.anthropic.com/settings/keys", "suggested": ["anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5", "anthropic/claude-haiku-5-5"]},
     {"id": "openai", "label": "OpenAI", "kind": "cloud", "key_required": True,
      "docs_url": "https://platform.openai.com/api-keys", "suggested": ["openai/gpt-5", "openai/gpt-5-mini", "openai/text-embedding-3-small"]},
     {"id": "gemini", "label": "Google Gemini", "kind": "cloud", "key_required": True,
      "docs_url": "https://aistudio.google.com/apikey", "suggested": ["gemini/gemini-2.5-pro", "gemini/gemini-2.5-flash", "gemini/gemini-embedding-001"]},
     {"id": "openrouter", "label": "OpenRouter", "kind": "cloud", "key_required": True,
-     "docs_url": "https://openrouter.ai/keys", "suggested": ["openrouter/anthropic/claude-sonnet-5", "openrouter/meta-llama/llama-4-maverick"]},
+     "docs_url": "https://openrouter.ai/keys", "suggested": ["openrouter/anthropic/claude-sonnet-5.5", "openrouter/meta-llama/llama-4-maverick"]},
     {"id": "groq", "label": "Groq", "kind": "cloud", "key_required": True,
      "docs_url": "https://console.groq.com/keys", "suggested": ["groq/llama-3.3-70b-versatile"]},
     {"id": "mistral", "label": "Mistral", "kind": "cloud", "key_required": True,
@@ -42,11 +45,16 @@ PROVIDERS: list[dict[str, Any]] = [
      "docs_url": "https://platform.deepseek.com/api_keys", "suggested": ["deepseek/deepseek-chat"]},
     {"id": "xai", "label": "xAI", "kind": "cloud", "key_required": True,
      "docs_url": "https://console.x.ai/", "suggested": ["xai/grok-4"]},
+    {"id": "nous", "label": "Nous Portal", "kind": "cloud", "key_required": True,
+     "docs_url": "https://portal.nousresearch.com/", "suggested": []},
+    # signed in from Settings > Models, never a pasted key; its models come from the plan's own list
+    {"id": "chatgpt", "label": "ChatGPT plan", "kind": "cloud", "key_required": True, "sign_in": True,
+     "docs_url": "https://developers.openai.com/siwc/quickstart", "suggested": []},
 ]
 
 
 def _provider_key_status(s, pid: str) -> tuple[bool, str | None]:
-    pc = s.config.models.providers.get(pid)
+    pc = provider_config(s.config, pid)
     env = pc.api_key_env if pc else None
     import os
 
@@ -65,7 +73,8 @@ async def providers(request: Request):
     for p in PROVIDERS:
         key_set, _ = _provider_key_status(s, p["id"])
         pc = s.config.models.providers.get(p["id"])
-        out.append({**p, "key_set": key_set if p["key_required"] else True, "api_base": pc.api_base if pc else None})
+        out.append({**p, "key_set": key_set if p["key_required"] else True, "api_base": pc.api_base if pc else None,
+                    "sign_in": p.get("sign_in", False)})
     return out
 
 
@@ -147,15 +156,16 @@ async def test_model(request: Request, body: TestBody):
     }
     try:
         tool_called = False
-        async for chunk in s.llm.stream(
-            body.role or "fast",
-            [{"role": "user", "content": "Call the report_ready tool with status 'ready'."}],
-            [probe_tool],
-            model=body.model,
-        ):
-            text += chunk.text
-            if chunk.done and chunk.tool_calls:
-                tool_called = True
+        with claude_code.attended():  # the user pressed Test: the only dry run Claude Code gets (ADR 0022)
+            async for chunk in s.llm.stream(
+                body.role or "fast",
+                [{"role": "user", "content": "Call the report_ready tool with status 'ready'."}],
+                [probe_tool],
+                model=body.model,
+            ):
+                text += chunk.text
+                if chunk.done and chunk.tool_calls:
+                    tool_called = True
         return {
             "ok": True,
             "latency_ms": int((time.perf_counter() - started) * 1000),
@@ -164,6 +174,15 @@ async def test_model(request: Request, body: TestBody):
         }
     except Exception as exc:
         return {"ok": False, "latency_ms": int((time.perf_counter() - started) * 1000), "error": str(exc)[:500]}
+
+
+@router.get("/models/claude-code")
+async def claude_code_status(request: Request):
+    """Claude through the user's own Claude Code (experimental, ADR 0022): turned on, installed, version. Runs
+    ``claude --version`` only while it is turned on; never a model call, never reads Claude's login."""
+    from sentient.config.schema import CLAUDE_CODE_MODELS
+
+    return {**await claude_code.status(get_core(request).config), "models": list(CLAUDE_CODE_MODELS)}
 
 
 class EmbedTestBody(BaseModel):
@@ -181,6 +200,28 @@ async def test_embedding(request: Request, body: EmbedTestBody):
 
 
 ROLE_KEYS = {"primary", "fast", "planner", "executor", "embedding", "vision", "voice"}
+
+
+class CheckupBody(BaseModel):
+    roles: dict[str, str | None] | None = None
+
+
+@router.post("/models/checkup")
+async def model_checkup(request: Request, body: CheckupBody | None = None):
+    """Check every role's model (or only ``roles``) and stream NDJSON progress. Never changes config."""
+    from sentient.llm.checkup import run_checkup
+
+    s = get_core(request)
+    roles = body.roles if body else None
+    if roles and set(roles) - ROLE_KEYS:
+        raise HTTPException(400, f"unknown role {sorted(set(roles) - ROLE_KEYS)[0]}")
+
+    async def gen():
+        hardware = await s.hardware.get()
+        async for event in run_checkup(s.config, s.llm, roles, hardware=hardware):
+            yield json.dumps(event) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 @router.put("/models/roles")
@@ -211,6 +252,62 @@ async def set_fallbacks(request: Request, body: dict[str, list[str]]):
     return {"ok": True, "fallbacks": cfg.models.fallbacks}
 
 
+# ----------------------------------------------------------------------------- presets (#212)
+class PresetBody(BaseModel):
+    name: str
+    overwrite: bool = False
+
+
+class RenameBody(BaseModel):
+    name: str
+
+
+def _preset_call(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except PresetError as exc:
+        raise HTTPException(exc.status, exc.message) from None
+
+
+async def _preset_await(coro):
+    try:
+        return await coro
+    except PresetError as exc:
+        raise HTTPException(exc.status, exc.message) from None
+
+
+@router.get("/models/presets")
+async def list_presets(request: Request):
+    return await presets.listing(get_core(request))
+
+
+@router.post("/models/presets")
+async def save_preset(request: Request, body: PresetBody):
+    """Save the current models as a preset of your own."""
+    return _preset_call(presets.save_current, get_core(request), body.name, overwrite=body.overwrite)
+
+
+@router.post("/models/presets/undo")
+async def undo_preset(request: Request):
+    return await _preset_await(presets.undo(get_core(request)))
+
+
+@router.post("/models/presets/{name}/apply")
+async def apply_preset(request: Request, name: str):
+    return await _preset_await(presets.apply(get_core(request), name))
+
+
+@router.patch("/models/presets/{name}")
+async def rename_preset(request: Request, name: str, body: RenameBody):
+    return _preset_call(presets.rename, get_core(request), name, body.name)
+
+
+@router.delete("/models/presets/{name}")
+async def delete_preset(request: Request, name: str):
+    _preset_call(presets.delete, get_core(request), name)
+    return {"ok": True}
+
+
 class PullBody(BaseModel):
     name: str
 
@@ -232,6 +329,65 @@ async def pull_ollama(request: Request, body: PullBody):
             yield json.dumps({"status": "error", "error": str(exc)}) + "\n"
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
+# ----------------------------------------------------------------------------- connecting plans
+@router.post("/models/connect/openrouter")
+async def connect_openrouter(request: Request):
+    """Start OpenRouter's browser sign-in. The window opens ``auth_url``; the key lands in the keychain."""
+    return await get_core(request).connections.start_openrouter()
+
+
+@router.get("/models/connect/openrouter/{state}")
+async def connect_openrouter_status(request: Request, state: str):
+    status = get_core(request).connections.flow_status(state)
+    if status is None:
+        raise HTTPException(404, "unknown sign-in")
+    return status
+
+
+@router.get("/models/connect/chatgpt")
+async def chatgpt_status(request: Request):
+    """Whether Sign in with ChatGPT can be used here, and whether someone is signed in."""
+    return get_core(request).connections.chatgpt_status()
+
+
+@router.post("/models/connect/chatgpt")
+async def connect_chatgpt(request: Request):
+    """Start Sign in with ChatGPT. The window opens ``auth_url``; the tokens land in the keychain."""
+    try:
+        return await get_core(request).connections.start_chatgpt()
+    except connect.ConnectError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/models/connect/chatgpt/{state}")
+async def connect_chatgpt_status(request: Request, state: str):
+    return await connect_openrouter_status(request, state)
+
+
+@router.delete("/models/connect/chatgpt")
+async def sign_out_chatgpt(request: Request):
+    """Sign out: revoke the sign-in with OpenAI and remove the tokens from the keychain."""
+    await get_core(request).connections.sign_out_chatgpt()
+    return {"ok": True}
+
+
+@router.post("/models/connect/{provider}/check")
+async def check_provider_key(request: Request, provider: str):
+    if provider not in connect.CHECKABLE:
+        raise HTTPException(404, f"no key check for {provider}")
+    return await connect.check_key(get_core(request).config, provider)
+
+
+@router.get("/models/catalog/{provider}")
+async def provider_catalog(request: Request, provider: str):
+    if provider not in connect.CATALOGS:
+        raise HTTPException(404, f"no model list for {provider}")
+    try:
+        return await get_core(request).connections.catalog(provider)
+    except connect.ConnectError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 # ----------------------------------------------------------------------------- secrets
@@ -260,14 +416,21 @@ class SecretBody(BaseModel):
 async def put_secret(request: Request, name: str, body: SecretBody):
     if not body.value.strip():
         raise HTTPException(400, "empty value")
+    if name == "chatgpt":
+        raise HTTPException(400, "ChatGPT plans use Sign in with ChatGPT in Settings > Models, not a key.")
     if not secrets.set_secret(name, body.value.strip()):
         raise HTTPException(500, "the OS keychain is unavailable")
+    get_core(request).connections.forget(name)  # a new key can mean a different account's models
     get_core(request).bus.publish("config.updated", {"sections": ["secrets"]})
     return {"ok": True}
 
 
 @router.delete("/secrets/{name}")
 async def delete_secret(request: Request, name: str):
+    if name == "chatgpt":  # a sign-in, not a key: revoke it and remove every part of it
+        await get_core(request).connections.sign_out_chatgpt()
+        return {"ok": True}
     secrets.delete_secret(name)
+    get_core(request).connections.forget(name)
     get_core(request).bus.publish("config.updated", {"sections": ["secrets"]})
     return {"ok": True}

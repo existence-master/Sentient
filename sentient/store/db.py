@@ -62,9 +62,19 @@ class Store:
         # additive migrations for databases created by older builds
         await self.ensure_column("sessions", "context_summary", "TEXT")
         await self.ensure_column("sessions", "context_upto", "TEXT")
+        await self.ensure_column("sessions", "untrusted", "TEXT")
+        await self.ensure_column("sessions", "visited_hosts", "TEXT")
         await self.ensure_column("messages", "attachments", "TEXT")
         await self.ensure_column("messages", "interjection", "INTEGER NOT NULL DEFAULT 0")
         await self.ensure_column("messages", "memory_sources", "TEXT")
+        await self.ensure_column("facts", "status", "TEXT NOT NULL DEFAULT 'active'")
+        await self.ensure_column("facts", "review", "TEXT")
+        await self.ensure_column("summaries", "untrusted", "TEXT")
+        # summaries written before the mark existed take it from their chat (ADR 0021)
+        await self.db.execute(
+            "UPDATE summaries SET untrusted = (SELECT s.untrusted FROM sessions s WHERE s.id = summaries.session_id)"
+            " WHERE untrusted IS NULL AND session_id IS NOT NULL"
+        )
         for pkg in PACKAGE_SCHEMAS:
             extra = _PKG_ROOT / pkg / "schema.sql"
             if extra.exists():

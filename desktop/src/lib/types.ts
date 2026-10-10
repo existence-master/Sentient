@@ -90,6 +90,8 @@ export interface OnboardingRequest {
   professional_context?: string
   personal_context?: string
   persona?: PersonaId | string
+  /** Set up the Daily Brief (a recurring task) as part of onboarding. */
+  daily_brief?: boolean
 }
 
 export interface OkResponse {
@@ -112,6 +114,11 @@ export interface ModelsConfig {
   context_length: number
   context_length_per_role: Record<string, number>
   providers: Record<string, ProviderConfig>
+  /** The user's own saved model setups (built-ins are not stored). */
+  presets: Record<string, Omit<ModelPreset, 'name' | 'builtin' | 'available' | 'reason' | 'provider' | 'description' | 'active'>>
+  active_preset: string | null
+  /** Experimental: claude-code/<model> answers chats through the user's own Claude Code (ADR 0022). */
+  experimental_claude_code?: boolean
   max_tool_rounds: number
   request_timeout_s: number
 }
@@ -139,6 +146,38 @@ export interface ApprovalsConfig {
   timeout_s: number
   /** Key: a tool name (`gmail_send_email`) or an app id (`gmail`). A tool's own rule beats its app's rule. */
   rules: Record<string, ApprovalRule>
+  /** Rules made from a chat message, by rule key (#130). Dropped by the engine when the rule changes. */
+  rule_origins?: Record<string, RuleOrigin>
+}
+
+export interface RuleOrigin {
+  rule: 'ask' | 'never'
+  /** The user's own words, shortened. */
+  said: string
+  at: ISODate | ''
+  session_id: string | null
+}
+
+/** One app or tool a rule proposal covers: `label` is "Gmail > Trash", or just "Gmail" for the whole app. */
+export interface RuleProposalTarget {
+  key: string
+  app: string | null
+  tool: string | null
+  label: string
+}
+
+/** "Make this a rule?" from something the user said in a chat (docs/API.md section 2, #130). */
+export interface RuleProposal {
+  id: string
+  session_id: string
+  message_id: string | null
+  said: string
+  rule: 'ask' | 'never'
+  keys: string[]
+  targets: RuleProposalTarget[]
+  status: 'pending' | 'accepted' | 'declined'
+  created_at: ISODate
+  decided_at: ISODate | null
 }
 
 export interface ToolsConfig {
@@ -174,6 +213,8 @@ export interface McpServerConfig {
   args?: string[]
   url?: string
   env?: Record<string, string>
+  auth?: McpAuth
+  header_keys?: string[]
   enabled?: boolean
 }
 
@@ -228,7 +269,18 @@ export interface VoiceConfig {
   vad_max_utterance_s: number
   barge_in: boolean
   wake_word: string
+  /** Push to talk and dictation into any app (#169). Optional: older engines don't have it. */
+  dictation?: DictationConfig
   [key: string]: unknown
+}
+
+/** The shortcuts are desktop settings (bridge `getShortcuts`: `pushToTalk`, `dictate`). */
+export interface DictationConfig {
+  /** raw: as heard; tidy: fillers and punctuation fixed locally; polish: also the fast model, guarded. */
+  cleanup: 'raw' | 'tidy' | 'polish'
+  language: string
+  stop_after_silence_s: number
+  speak_replies: boolean
 }
 
 export interface SentientConfig {
@@ -403,6 +455,8 @@ export interface Provider {
   api_base: string | null
   docs_url: string
   suggested: string[]
+  /** Connected by signing in (ChatGPT plan), never by pasting a key. `key_set` means signed in. */
+  sign_in?: boolean
 }
 
 export interface LocalModel {
@@ -423,6 +477,53 @@ export interface LocalModels {
   lm_studio: LocalRuntime
 }
 
+/** `POST /api/models/connect/openrouter` (docs/API.md §3). */
+export interface ProviderSignIn {
+  auth_url: string
+  state: string
+}
+
+/** `GET /api/models/connect/chatgpt` (docs/API.md §3). `available` is false when the sign-in is turned off. */
+export interface ChatGPTStatus {
+  available: boolean
+  reason: string | null
+  signed_in: boolean
+  email: string | null
+  manage_usage_url: string
+}
+
+/** `GET /api/models/connect/{openrouter|chatgpt}/{state}`. */
+export interface ProviderSignInStatus {
+  status: 'waiting' | 'exchanging' | 'connected' | 'failed'
+  error: string | null
+}
+
+/** `POST /api/models/connect/{provider}/check`: a free request with the saved key. */
+export interface ProviderKeyCheck {
+  ok: boolean
+  detail?: string
+  error?: string
+}
+
+/** One entry of `GET /api/models/catalog/{provider}`. `id` is a full model string, e.g. `openrouter/x/y:free`. */
+export interface CatalogModel {
+  id: string
+  label: string
+  free: boolean
+  tools: boolean | null
+  context_length: number | null
+}
+
+/** `GET /api/models/claude-code`: Claude through the user's own Claude Code (experimental, ADR 0022). */
+export interface ClaudeCodeStatus {
+  enabled: boolean
+  installed: boolean
+  /** From `claude --version`, only asked while it is turned on. */
+  version: string | null
+  detail: string
+  models: string[]
+}
+
 export interface ModelTestResult {
   ok: boolean
   latency_ms: number
@@ -430,6 +531,123 @@ export interface ModelTestResult {
   error?: string
   supports_tools?: boolean
 }
+
+/** A model setup switched in one step (`GET /api/models/presets`, docs/API.md §3). */
+export interface ModelPreset {
+  name: string
+  builtin: boolean
+  /** False for Cloud and Mixed until a cloud key is set; `reason` says why. */
+  available: boolean
+  reason: string | null
+  /** The cloud provider a built-in uses. */
+  provider: string | null
+  description: string | null
+  /** Roles this preset sets; null = use the primary model. Roles left out keep their model. */
+  roles: Partial<Record<RoleName, string | null>>
+  fallbacks?: Record<string, string[]>
+  reasoning?: Record<string, string>
+  context_length?: number
+  context_length_per_role?: Record<string, number>
+  active: boolean
+}
+
+export interface ModelPresetList {
+  active: string | null
+  /** A role was changed by hand since the active preset was applied. */
+  modified: boolean
+  can_undo: boolean
+  undo_preset: string | null
+  presets: ModelPreset[]
+}
+
+export type PresetMissingAction = { kind: 'pull_model'; name: string; label: string } | { kind: 'add_key'; provider: string; label: string }
+
+export interface PresetMissing {
+  kind: 'pull_model' | 'add_key' | 'start_ollama' | 'sign_in'
+  roles: RoleName[]
+  model: string | null
+  provider?: string
+  detail: string
+  fix: string
+  action: PresetMissingAction | null
+}
+
+export interface PresetApplyResult {
+  preset: string | null
+  changed: { role: RoleName; from: string | null; to: string | null }[]
+  missing: PresetMissing[]
+  can_undo: boolean
+}
+
+/** `POST /api/models/checkup` (docs/API.md §3). */
+export type CheckupStatus = 'pass' | 'warn' | 'fail' | 'skip'
+
+export type CheckupAction =
+  | { kind: 'use_model'; role: RoleName; model: string; label: string }
+  | { kind: 'pull_model'; name: string; label: string }
+  | { kind: 'set_reasoning'; role: RoleName; value: string; label: string }
+  | { kind: 'set_context_length'; value: number; role: RoleName | null; label: string }
+
+export interface CheckupCheck {
+  id: string
+  label: string
+  status: CheckupStatus
+  detail: string
+  fix?: string
+  action?: CheckupAction
+}
+
+export interface CheckupRole {
+  role: RoleName
+  model: string | null
+  provider: string | null
+  local: boolean | null
+  /** Set for an optional role with no model of its own. */
+  inherits: RoleName | null
+  status: CheckupStatus
+  checks: CheckupCheck[]
+}
+
+/** `GET /api/system/hardware` (docs/API.md §3, #131): this computer and the local model that fits it. */
+export interface HardwareGpu {
+  name: string
+  vendor: 'nvidia' | 'amd' | 'intel' | 'apple' | 'other'
+  vram_gb: number | null
+  /** Ollama can run models on it (NVIDIA, AMD with its own memory, Apple silicon). */
+  usable: boolean
+}
+
+export interface HardwareRecommendation {
+  tier: string
+  model: string
+  name: string
+  context_length: number
+  runs_on: 'graphics' | 'processor' | 'unknown'
+  /** Too little memory for a local model that can do tasks: a cloud model comes first and `model` is chat only. */
+  cloud_first: boolean
+  /** "qwen3:8b, reading 8,192 tokens at a time" */
+  summary: string
+  note: string
+}
+
+export interface Hardware {
+  os: string | null
+  ram_gb: number | null
+  gpus: HardwareGpu[]
+  unified_memory: boolean
+  usable_vram_gb: number | null
+  ollama_vram_gb: number | null
+  /** Plain description, or "unknown" when nothing could be checked. */
+  summary: string
+  recommendation: HardwareRecommendation
+}
+
+/** One NDJSON line of `POST /api/models/checkup`. */
+export type CheckupEvent =
+  | { type: 'start'; roles: { role: RoleName; model: string | null }[]; hardware?: Hardware }
+  | { type: 'step'; role: RoleName; label: string }
+  | ({ type: 'role' } & CheckupRole)
+  | { type: 'done'; status: CheckupStatus; roles: CheckupRole[] }
 
 export interface EmbeddingTestResult {
   ok: boolean
@@ -509,12 +727,28 @@ export interface ApprovalRequestEvent extends TurnScoped {
   risk_label?: string | null
   /** Short label of what is acted on, e.g. "Place order". */
   target?: string | null
+  /** Why this asks although rules would let it run: the chat read outside content (ADR 0018). */
+  untrusted?: string | null
 }
 export interface UsageEvent extends TurnScoped {
   type: 'usage'
   model: string
   prompt_tokens: number
   completion_tokens: number
+  /** Context meter (#131), null when the model's context length is unknown. */
+  context_used?: number | null
+  context_length?: number | null
+  context_percent?: number | null
+  /** Plain warning from 85%. */
+  context_warning?: string | null
+}
+
+/** How full the model's context was after its latest call (chat `usage`, task `task.run_context`). */
+export interface ContextMeter {
+  used: number
+  length: number
+  percent: number
+  warning: string | null
 }
 export interface ErrorEvent extends TurnScoped {
   type: 'error'
@@ -595,14 +829,19 @@ export interface MemoryUpdatedData {
   id: number | null
   content?: string
   source?: string
+  /** `merged` | `contradicted` | `promoted` | `expired` | `approved` | `discarded` | `review_expired` */
   reason?: string
   count?: number
+  /** `pending`: the memory waits in the review inbox (ADR 0021). */
+  status?: 'pending'
 }
 
 export interface DomainEventMap {
   'task.updated': Task
   'task.deleted': { task_id: string }
   'task.run_progress': { task_id: string; run_id: string; update: ProgressUpdate }
+  'task.run_activity': { task_id: string; run_id: string; last_activity_at: ISODate }
+  'task.run_context': { task_id: string; run_id: string; used: number | null; length: number | null; percent: number | null; warning: string | null }
   'notification.new': Notification
   'notification.updated': Notification
   'notification.read': { id: string | null }
@@ -611,6 +850,7 @@ export interface DomainEventMap {
   'memory.updated': MemoryUpdatedData
   'skill.updated': { name: string; state: SkillState }
   'session.updated': { session_id: string; title: string }
+  'rule_proposal.updated': RuleProposal
   'config.updated': { sections: string[] }
   'voice.state': { state: VoiceState }
   // §10-14
@@ -704,6 +944,36 @@ export interface SandboxStatus {
   python_version: string
 }
 
+// ============================================================================ §18 Terminal
+/** Result of `terminal_run` (§18). */
+export interface TerminalResult {
+  ok: boolean
+  command: string
+  cwd: string | null
+  shell: string | null
+  exit_code: number | null
+  stdout: string
+  stderr: string
+  timed_out: boolean
+  stopped: boolean
+  duration_ms: number
+  /** Full output under `files/` when it was too long to keep, e.g. `outputs/terminal-<id>.txt`. */
+  output_file: string | null
+  error: string | null
+}
+
+export interface TerminalStatus {
+  enabled: boolean
+  /** `pwsh`, `powershell`, `bash`, `zsh` or `sh`; null when no shell was found. */
+  shell: string | null
+  shell_path: string | null
+  allowed_folders: string[]
+  default_folder: string | null
+  /** Plain descriptions of what the built-in blocklist refuses. */
+  blocked: string[]
+  running: { id: string; command: string; cwd: string; started_at: string }[]
+}
+
 // ============================================================================ §12 Browser
 export interface BrowserTab {
   index: number
@@ -719,7 +989,39 @@ export interface BrowserStatus {
   headless: boolean
   tabs: BrowserTab[]
   error: string | null
+  /** The running profile, or `default` when closed. */
+  profile?: string
+  /** True while connected to a browser the user started (an `attach` profile). */
+  attached?: boolean
 }
+
+export type BrowserProfileKind = 'launch' | 'attach'
+
+export interface BrowserProfile {
+  name: string
+  kind: BrowserProfileKind
+  /** `''` uses the main Browser setting. */
+  engine: string
+  /** `attach` only: `http://127.0.0.1:<port>`. */
+  endpoint: string
+  notes: string
+  running: boolean
+}
+
+export interface BrowserProfiles {
+  active: string | null
+  profiles: BrowserProfile[]
+}
+
+export interface BrowserProfileCreate {
+  name: string
+  kind?: BrowserProfileKind
+  engine?: string
+  endpoint?: string
+  notes?: string
+}
+
+export type BrowserProfilePatch = Partial<Pick<BrowserProfile, 'name' | 'engine' | 'endpoint' | 'notes'>>
 
 export interface BrowserFrame {
   url: string
@@ -801,8 +1103,9 @@ export interface DeviceInvokeResult {
 }
 
 // ============================================================================ §14 Messaging channels
-export type ChannelId = 'telegram' | 'discord'
-export type ChannelStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+export type ChannelId = 'telegram' | 'discord' | 'whatsapp'
+/** `linking`: WhatsApp is waiting for its QR code (`qr`) to be scanned. */
+export type ChannelStatus = 'disconnected' | 'connecting' | 'linking' | 'connected' | 'error'
 
 export interface PairedChat {
   chat_id: string
@@ -818,6 +1121,8 @@ export interface Channel {
   status: ChannelStatus
   account_label: string | null
   error: string | null
+  /** WhatsApp while linking: the text to show as a QR code. Changes every 20 seconds or so. */
+  qr?: string | null
   paired: PairedChat[]
   setup: { fields: IntegrationSetupField[]; instructions_md: string }
 }
@@ -855,10 +1160,14 @@ export type TaskStatus =
 
 export type Weekday = 'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday' | 'Saturday' | 'Sunday'
 
+/** What happens to a run missed while the computer was off or asleep (§4). Absent: run once if it isn't too late. */
+export type CatchUpPolicy = 'run' | 'skip'
+
 export interface OnceSchedule {
   type: 'once'
   run_at: string | null
   timezone?: string
+  catch_up?: CatchUpPolicy
 }
 export interface RecurringSchedule {
   type: 'recurring'
@@ -868,10 +1177,11 @@ export interface RecurringSchedule {
   time: string
   interval_minutes?: number
   timezone?: string
+  catch_up?: CatchUpPolicy
 }
 
 // §16 script jobs
-export type ScriptCondition = 'changed' | 'alert'
+export type ScriptCondition = 'changed' | 'alert' | 'every_run'
 export type ScriptThen = 'notify' | 'run'
 
 export interface TaskScript {
@@ -930,6 +1240,9 @@ export interface RunQuestion {
   /** Suggested answers (0 to 6). A free-text answer is always allowed. */
   options: string[]
   asked_at: ISODate | null
+  /** `stuck`: the run stopped getting anywhere and asks what to do (`reason` says why); `limit`: it reached a limit. */
+  kind?: 'question' | 'limit' | 'stuck'
+  reason?: string | null
 }
 
 export interface Run {
@@ -947,6 +1260,12 @@ export interface Run {
   retry_of?: string | null
   /** Set while `status` is `waiting_for_user`, otherwise `null`. */
   pending_question?: RunQuestion | null
+  /** When the run last showed any sign of work (a step, a model reply). */
+  last_activity_at?: ISODate | null
+  /** Live only (never sent by the engine): how full the model's context is, from `task.run_context` (#131). */
+  context?: ContextMeter | null
+  /** Memories the run had in mind: facts in its instructions or found by a memory look-up (docs/API.md §4). */
+  memory_sources?: MemorySource[]
 }
 
 export interface TaskChatMessage {
@@ -997,6 +1316,10 @@ export interface Task {
   swarm_details: SwarmDetails | null
   enabled: boolean
   model: string | null
+  /** Named browser profile its browser steps use (§12); `null` is the default one. */
+  browser_profile?: string | null
+  /** Where its notifications go besides the app (§4 "Where results go"). Older engines leave it out (default). */
+  deliver_to?: TaskDeliverTo
   original_context: { source: 'manual_creation' | 'chat' | 'proactive' | 'trigger' | string; [k: string]: unknown }
   /** Last planning/run failure message (v2 `task.error`). */
   error: string | null
@@ -1011,6 +1334,7 @@ export interface TaskCreateRequest {
   is_swarm?: boolean
   assignee?: 'ai'
   model?: string
+  browser_profile?: string
 }
 
 export interface TaskPreview {
@@ -1031,7 +1355,15 @@ export interface IntervalSchedule {
   timezone?: string
 }
 
-export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model'>>
+/** A paired chat a task sends to. `{channel: 'whatsapp', chat_id: 'self'}` is WhatsApp's "Message yourself" chat. */
+export interface DeliveryChat {
+  channel: 'telegram' | 'discord' | 'whatsapp' | string
+  chat_id: string
+}
+/** `default`: paired chats with delivery on; `desktop`: the app only; a list: only those chats. */
+export type TaskDeliverTo = 'default' | 'desktop' | DeliveryChat[]
+
+export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'deliver_to'>>
 
 export interface ClarificationAnswer {
   question_id: string
@@ -1107,7 +1439,10 @@ export interface McpToolInfo {
   risk: Risk
 }
 
-export type McpServerStatus = 'connecting' | 'connected' | 'error' | 'disconnected' | 'disabled'
+export type McpServerStatus = 'connecting' | 'connected' | 'needs_sign_in' | 'error' | 'disconnected' | 'disabled'
+
+/** How a remote server is signed in to: nothing, static headers, or the MCP OAuth sign-in. */
+export type McpAuth = 'none' | 'headers' | 'oauth'
 
 export interface McpServer {
   name: string
@@ -1117,6 +1452,15 @@ export interface McpServer {
   url: string | null
   /** Env values live in the keychain and are never returned. */
   env_keys: string[]
+  auth: McpAuth
+  /** Header values live in the keychain and are never returned. */
+  header_keys: string[]
+  /** Header or env names with no saved value yet (an imported server, for example). Older engines leave it out. */
+  missing_values?: string[]
+  /** An OAuth sign-in is stored. */
+  signed_in: boolean
+  /** A browser sign-in is waiting for the user. */
+  signing_in: boolean
   enabled: boolean
   status: McpServerStatus | string
   tools: McpToolInfo[]
@@ -1130,7 +1474,15 @@ export interface McpServerCreate {
   args?: string[]
   url?: string
   env?: Record<string, string>
+  headers?: Record<string, string>
+  auth?: McpAuth
   enabled?: boolean
+}
+
+/** `POST /api/integrations/mcp/{name}/sign-in`: open `auth_url` in the browser. */
+export interface McpSignInStart {
+  auth_url: string
+  state: string
 }
 
 export interface McpTestResult {
@@ -1141,7 +1493,87 @@ export interface McpTestResult {
 }
 
 // ============================================================================ §6 Notifications & proactivity
-export type NotificationKind = 'info' | 'task' | 'approval' | 'proactive' | 'skill' | 'error'
+export type NotificationKind = 'info' | 'task' | 'approval' | 'proactive' | 'skill' | 'error' | 'brief'
+
+/** Daily Brief (docs/API.md section 6). */
+export type BriefKind = 'morning' | 'evening'
+/** Morning sections, then the Evening Brief's wrap-up sections. */
+export type BriefSectionId = 'calendar' | 'email' | 'tasks' | 'weather' | 'news' | 'done' | 'sent' | 'files' | 'waiting' | 'tomorrow'
+export type BriefFeedback = 'up' | 'down'
+
+export interface BriefItem {
+  id: string
+  section: BriefSectionId
+  /** One line. */
+  text: string
+  /** `https://...` opens the source; `/tasks/<id>` opens a task in the app; null when there is nothing to open. */
+  link: string | null
+  /** Why am I seeing this. */
+  why: string
+  feedback: BriefFeedback | null
+  /** Email items that came from a suggestion card. */
+  notification_id?: string
+}
+
+export interface Brief {
+  /** The notification id. */
+  id: string
+  kind: BriefKind
+  day: string
+  title: string
+  status: 'active' | 'expired'
+  task_id: string | null
+  created_at: ISODate
+  expires_at: ISODate
+  sections: Array<{ id: BriefSectionId; label: string; feedback: BriefFeedback | null }>
+  items: BriefItem[]
+  /** Sections that found nothing, with a plain reason ("Connect Google Calendar to see today's events."). */
+  skipped: Array<{ section: BriefSectionId; label: string; reason: string }>
+}
+
+/** One brief's task: its schedule and sections. */
+export interface BriefTaskState {
+  set_up: boolean
+  task_id: string | null
+  /** False while the task is paused. */
+  enabled: boolean
+  /** 'HH:MM' local time. */
+  time: string | null
+  days: string[] | null
+  next_at: ISODate | null
+  sections: BriefSectionId[]
+}
+
+/** The morning brief's fields at the top level, the Evening Brief's under `evening`. */
+export interface BriefState {
+  set_up: boolean
+  task_id: string | null
+  /** False while the task is paused. */
+  enabled: boolean
+  /** 'HH:MM' local time. */
+  time: string | null
+  days: string[] | null
+  next_at: ISODate | null
+  sections: BriefSectionId[]
+  news_topics: string[]
+  max_items: number
+  available: Record<BriefSectionId, boolean>
+  /** The brief showing now (one at a time, morning or evening). */
+  today: Brief | null
+  evening: BriefTaskState
+}
+
+export interface BriefSetup {
+  /** Which brief: morning (default) or evening. */
+  kind?: BriefKind
+  /** 'HH:MM' or a word: early, morning, midday, afternoon, evening. */
+  time?: string
+  /** Day names, 'weekdays' or 'daily'. */
+  days?: string[] | string
+  sections?: BriefSectionId[]
+  news_topics?: string[]
+  max_items?: number
+}
 
 export interface ProactiveSuggestion {
   suggestion_type: string
@@ -1246,6 +1678,37 @@ export interface Memory {
   expires_at: ISODate | null
   /** Present on semantic search results (`q`). */
   similarity?: number
+  /** Listed memories are always `active`; `pending` ones are only in the review inbox. */
+  status?: 'active' | 'pending'
+  review?: ReviewNote | null
+}
+
+/** Where a memory waiting for review came from (ADR 0021). */
+export interface ReviewNote {
+  /** Plain name of the source: "Gmail", "Hermes", "resume.pdf", "a proactive check". */
+  from: string
+  /** The text it was taken from, at most 400 characters. */
+  snippet: string | null
+  session_id: string | null
+}
+
+export interface MemoryReviewItem {
+  kind: 'fact' | 'insight'
+  id: number | string
+  text: string
+  source: string
+  from: string
+  snippet: string | null
+  session_id: string | null
+  created_at: ISODate
+  /** When it is let go if nobody reviews it. */
+  expires_at: ISODate | null
+}
+
+export interface MemoryReviewInbox {
+  items: MemoryReviewItem[]
+  count: number
+  expire_days: number
 }
 
 export interface MemoryQuery {
@@ -1286,12 +1749,15 @@ export interface MemoryWriteResult {
   action: 'ADD' | 'UPDATE' | 'DELETE' | 'SKIP'
   id: number | null
   content: string
+  status?: 'pending'
 }
 
 export interface MemoryImportResult {
   added: number
   updated: number
   skipped: number
+  /** How many wait for review (older engines leave it out). */
+  pending?: number
   source: string
 }
 
@@ -1301,6 +1767,8 @@ export interface MemorySummary {
   start_at: ISODate
   end_at: ISODate
   session_id: string | null
+  /** The app whose content that chat read; such summaries are kept out of other chats (ADR 0021). */
+  untrusted?: string | null
 }
 
 export type WorkspaceFileId = 'soul' | 'user' | 'memory'
@@ -1337,6 +1805,8 @@ export interface Skill {
   patch_count: number
   last_used_at: ISODate | null
   created_by_review: boolean
+  /** Browser profile named in the skill's frontmatter (§12). */
+  browser_profile?: string | null
   /** Pending proposals only: why Sentient proposed it and where it came from. */
   reason?: string | null
   origin?: { session_id?: string; task_id?: string; run_id?: string; curator?: boolean; merged_from?: string } | null
@@ -1446,6 +1916,14 @@ export interface TranscribeResult {
   text: string
 }
 
+/** `POST /api/voice/dictate`: `polished` is true only when the fast model's version was used. */
+export interface DictateResult {
+  text: string
+  raw: string
+  cleanup: DictationConfig['cleanup']
+  polished: boolean
+}
+
 export type VoicePrepareTarget = 'all' | 'stt' | 'tts' | 'wake'
 
 /** One NDJSON line of `POST /api/voice/prepare`; the stream ends with `{stage: "done", progress: 1, ok}`. */
@@ -1522,8 +2000,9 @@ export interface Insight {
   /** 0..1 */
   confidence: number
   status: InsightStatus
-  source: 'inferred' | 'user'
+  source: 'inferred' | 'user' | 'import:hermes' | string
   evidence: InsightEvidence[]
+  review?: ReviewNote | null
   created_at: ISODate
   updated_at: ISODate
 }
@@ -1547,6 +2026,8 @@ export interface UserModelRefreshResult {
   updated: number
   disputed: number
   questions: number
+  /** New insights waiting for review. */
+  held?: number
 }
 
 export interface UserModelUpdatedData {
@@ -1613,4 +2094,78 @@ export interface FeedStatus {
   failures: number
   next_attempt_at: ISODate | null
   emitted: number
+}
+
+// §19 moving from Hermes ------------------------------------------------------------------
+export type HermesPart = 'skills' | 'memory' | 'persona' | 'jobs' | 'mcp'
+
+/** One thing found in the Hermes folder, with what will happen to it (`note`, plain words). */
+export interface HermesItem {
+  key: string
+  action: 'import' | 'skip'
+  note: string
+}
+export interface HermesSkillItem extends HermesItem {
+  name: string
+  folder: string
+  description?: string
+  /** The name it gets in Sentient (made unique). */
+  target?: string
+  changed_builtin?: boolean
+}
+export interface HermesMemoryItem extends HermesItem {
+  kind: 'fact' | 'insight'
+  text: string
+}
+export interface HermesPersona extends HermesItem {
+  current: string
+  proposed: string
+}
+export interface HermesJobItem extends HermesItem {
+  name: string
+  prompt: string
+  schedule_text: string
+  schedule: TaskSchedule | null
+  kind: 'task' | 'script'
+  script: { path: string; code: string } | null
+  then?: ScriptThen
+  condition?: ScriptCondition
+  delivery: 'desktop' | 'whatsapp' | 'telegram' | 'discord' | string
+  deliver_to?: TaskDeliverTo
+  hermes_deliver?: string | null
+  skills: string[]
+}
+export interface HermesMcpItem extends HermesItem {
+  name: string
+  transport: 'stdio' | 'http'
+  url: string | null
+  command: string | null
+  args: string[]
+  auth: McpAuth
+  header_keys: string[]
+  env_keys: string[]
+}
+export interface HermesPreview {
+  path: string
+  counts: Record<HermesPart, number>
+  skills: HermesSkillItem[]
+  memory: HermesMemoryItem[]
+  persona: HermesPersona | null
+  jobs: HermesJobItem[]
+  mcp: HermesMcpItem[]
+  suggestions: { wake_word: string | null; tts_provider: string | null; tts_voice: string | null }
+  never_read: string[]
+}
+export interface HermesSkipped {
+  key: string
+  name: string
+  note: string
+}
+export interface HermesResult {
+  path: string
+  skills?: { imported: string[]; skipped: HermesSkipped[] }
+  memory?: { facts: number; insights: number; skipped: HermesSkipped[] }
+  persona?: { updated: boolean }
+  jobs?: { created: Array<{ task_id: string; name: string }>; skipped: HermesSkipped[] }
+  mcp?: { added: string[]; skipped: HermesSkipped[] }
 }

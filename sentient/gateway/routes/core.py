@@ -11,9 +11,9 @@ import mimetypes
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -23,6 +23,7 @@ from sentient.config.schema import SentientConfig
 from sentient.gateway.auth import require_token
 from sentient.gateway.deps import get_core
 from sentient.memory.personas import render_persona
+from sentient.tools.rules import SCREEN_FOLDER
 
 open_router = APIRouter(tags=["core"])
 router = APIRouter(tags=["core"])
@@ -52,6 +53,12 @@ async def bootstrap(request: Request):
         "features": {"voice": True, "proactivity": cfg.proactivity.enabled},
         "stop": dict(s.stop_state),
     }
+
+
+@router.get("/api/system/hardware", dependencies=_auth)
+async def system_hardware(request: Request, refresh: bool = False):
+    """Memory, graphics cards and the local model that fits this computer (#131). Detected once, then cached."""
+    return await get_core(request).hardware.get(refresh=refresh)
 
 
 # ----------------------------------------------------------------------------- stop everything (section 17)
@@ -86,6 +93,7 @@ class OnboardingBody(BaseModel):
     professional_context: str = ""
     personal_context: str = ""
     persona: str = "friendly"
+    daily_brief: bool = False
 
 
 @router.post("/api/onboarding", dependencies=_auth)
@@ -134,6 +142,8 @@ async def onboarding(request: Request, body: OnboardingBody):
 
         assert s.agent is not None
         s.agent._spawn(_seed())
+    if body.daily_brief:  # the first opt-in: a recurring task the user can edit, pause or delete later
+        await s.proactivity.brief.setup({})
     return {"ok": True}
 
 
@@ -224,7 +234,14 @@ async def patch_config(request: Request, body: dict):
 # ----------------------------------------------------------------------------- sessions
 @router.get("/api/sessions", dependencies=_auth)
 async def sessions(request: Request, limit: int = 100):
-    return await get_core(request).store.list_sessions(limit)
+    rows = await get_core(request).store.list_sessions(limit)
+    for row in rows:  # stored as JSON text; the API gives a list (or null)
+        raw = row.get("visited_hosts")
+        try:
+            row["visited_hosts"] = json.loads(raw) if raw else None
+        except (TypeError, ValueError):
+            row["visited_hosts"] = None
+    return rows
 
 
 @router.post("/api/sessions", dependencies=_auth)
@@ -276,6 +293,30 @@ async def session_messages(request: Request, session_id: str, limit: int = 500):
     return await get_core(request).store.recent_messages(session_id, limit)
 
 
+# ----------------------------------------------------------------------------- rules from chat (#130)
+@router.get("/api/sessions/{session_id}/rule-proposals", dependencies=_auth)
+async def rule_proposals(request: Request, session_id: str, status: str = "pending"):
+    """Rules Sentient proposed from what was said in this chat; ``status=all`` includes answered ones."""
+    if status not in {"pending", "accepted", "declined", "all"}:
+        raise HTTPException(422, "status must be pending, accepted, declined or all")
+    return await get_core(request).chat_rules.list(session_id, None if status == "all" else status)
+
+
+class RuleDecisionBody(BaseModel):
+    decision: Literal["accept", "decline"]
+
+
+@router.post("/api/rule-proposals/{proposal_id}", dependencies=_auth)
+async def decide_rule_proposal(request: Request, proposal_id: str, body: RuleDecisionBody):
+    """The user's click on "Make it a rule" or "Not now". Nothing else creates a rule from chat."""
+    try:
+        return await get_core(request).chat_rules.decide(proposal_id, body.decision)
+    except LookupError as exc:
+        raise HTTPException(404, "no such rule proposal") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 # ----------------------------------------------------------------------------- chat fallback + approvals
 class ChatBody(BaseModel):
     text: str = ""
@@ -319,8 +360,8 @@ async def approve(request: Request, body: ApprovalBody):
 
 
 # ----------------------------------------------------------------------------- files
-def uploads_dir() -> Path:
-    d = paths.files_dir() / "uploads"
+def uploads_dir(folder: str = "uploads") -> Path:
+    d = paths.files_dir() / folder
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -341,13 +382,17 @@ def resolve_file(name: str) -> Path:
 
 
 @router.post("/api/files", dependencies=_auth)
-async def upload_file(request: Request, file: UploadFile = File(...)):
+async def upload_file(
+    request: Request, file: UploadFile = File(...), source: Literal["upload", "screen"] = Form("upload")
+):
+    # what the user shared from their screen goes to screens/ and marks the chat it is sent in (ADR 0018)
+    folder = uploads_dir(SCREEN_FOLDER if source == "screen" else "uploads")
     name = _safe_name(file.filename or "upload")
-    target = uploads_dir() / name
+    target = folder / name
     stem, suffix = target.stem, target.suffix
     i = 1
     while target.exists():
-        target = uploads_dir() / f"{stem} ({i}){suffix}"
+        target = folder / f"{stem} ({i}){suffix}"
         i += 1
     size = 0
     with target.open("wb") as fh:

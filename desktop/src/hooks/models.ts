@@ -1,8 +1,9 @@
 /** React Query hooks for §3 models & secrets. */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, errorMessage } from '@/lib/api'
-import type { ModelRoles, OllamaPullProgress, RoleName, SentientConfig } from '@/lib/types'
+import { demo, isDemoMode } from '@/lib/demo'
+import type { CheckupRole, CheckupStatus, Hardware, ModelRoles, OllamaPullProgress, RoleName, SentientConfig } from '@/lib/types'
 import { qk } from './queryKeys'
 
 export function useProviders() {
@@ -13,8 +14,56 @@ export function useLocalModels() {
   return useQuery({ queryKey: qk.localModels, queryFn: api.models.local, staleTime: 15_000 })
 }
 
+/** This computer and the local model that fits it (#131). Hardware doesn't change, so it is asked for once. */
+export function useHardware() {
+  return useQuery({ queryKey: qk.hardware, queryFn: () => api.models.hardware(), staleTime: Infinity, retry: false })
+}
+
+/** A cloud provider's live model list. Only fetched when `enabled`, so nothing is asked of providers you don't use. */
+export function useModelCatalog(provider: string, enabled: boolean) {
+  return useQuery({ queryKey: qk.catalog(provider), queryFn: () => api.models.catalog(provider), enabled, staleTime: 10 * 60_000, retry: false })
+}
+
+/** Polls an OpenRouter or ChatGPT sign-in until it is connected or failed. */
+export function useSignInStatus(state: string | null, provider: 'openrouter' | 'chatgpt' = 'openrouter') {
+  return useQuery({
+    queryKey: qk.signIn(state ?? ''),
+    queryFn: () => api.models.signInStatus(state ?? '', provider),
+    enabled: !!state,
+    refetchInterval: (q) => (q.state.data && ['connected', 'failed'].includes(q.state.data.status) ? false : 1500)
+  })
+}
+
+/** Whether Sign in with ChatGPT can be used here, and who is signed in. */
+export function useChatGPTStatus() {
+  return useQuery({ queryKey: qk.chatgpt, queryFn: api.models.chatgpt.status, staleTime: 30_000 })
+}
+
+export function useSignOutChatGPT() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.models.chatgpt.signOut(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.chatgpt })
+      void qc.invalidateQueries({ queryKey: qk.providers })
+      void qc.invalidateQueries({ queryKey: qk.secrets })
+      qc.removeQueries({ queryKey: qk.catalog('chatgpt') })
+      void qc.invalidateQueries({ queryKey: qk.modelPresets })
+    }
+  })
+}
+
+export function useCheckKey() {
+  return useMutation({ mutationFn: (provider: string) => api.models.checkKey(provider) })
+}
+
 export function useSecrets() {
   return useQuery({ queryKey: qk.secrets, queryFn: api.secrets.list })
+}
+
+/** Claude through your own Claude Code: on, installed, version. Asked again when the switch changes. */
+export function useClaudeCodeStatus(enabled: boolean) {
+  return useQuery({ queryKey: qk.claudeCode(enabled), queryFn: api.models.claudeCode, staleTime: 60_000, retry: false })
 }
 
 export function useTestModel() {
@@ -36,6 +85,45 @@ export function useSetRoles() {
   })
 }
 
+export function useModelPresets() {
+  return useQuery({ queryKey: qk.modelPresets, queryFn: api.models.presets.list, staleTime: 10_000 })
+}
+
+/** After a preset changes the models: refresh everything that shows them. */
+function useInvalidateModels() {
+  const qc = useQueryClient()
+  return () => {
+    void qc.invalidateQueries({ queryKey: qk.modelPresets })
+    void qc.invalidateQueries({ queryKey: qk.config })
+    void qc.invalidateQueries({ queryKey: qk.bootstrap })
+  }
+}
+
+export function useApplyPreset() {
+  const refresh = useInvalidateModels()
+  return useMutation({ mutationFn: (name: string) => api.models.presets.apply(name), onSuccess: refresh })
+}
+
+export function useUndoPreset() {
+  const refresh = useInvalidateModels()
+  return useMutation({ mutationFn: () => api.models.presets.undo(), onSuccess: refresh })
+}
+
+export function useSavePreset() {
+  const refresh = useInvalidateModels()
+  return useMutation({ mutationFn: ({ name, overwrite }: { name: string; overwrite?: boolean }) => api.models.presets.save(name, overwrite), onSuccess: refresh })
+}
+
+export function useRenamePreset() {
+  const refresh = useInvalidateModels()
+  return useMutation({ mutationFn: ({ name, to }: { name: string; to: string }) => api.models.presets.rename(name, to), onSuccess: refresh })
+}
+
+export function useDeletePreset() {
+  const refresh = useInvalidateModels()
+  return useMutation({ mutationFn: (name: string) => api.models.presets.delete(name), onSuccess: refresh })
+}
+
 export function useSetFallbacks() {
   const qc = useQueryClient()
   return useMutation({
@@ -48,20 +136,32 @@ export function useSetSecret() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ name, value }: { name: string; value: string }) => api.secrets.set(name, value),
-    onSuccess: () => {
+    onSuccess: (_res, { name }) => {
       void qc.invalidateQueries({ queryKey: qk.secrets })
       void qc.invalidateQueries({ queryKey: qk.providers })
+      void qc.invalidateQueries({ queryKey: qk.catalog(name) }) // a new key can mean a different account's models
+      void qc.invalidateQueries({ queryKey: qk.modelPresets })
+      qc.setQueryData<number>(qk.secretSaves(name), (n) => (n ?? 0) + 1)
     }
   })
+}
+
+/** How many times this secret was saved since the window opened. It changes when a key is replaced. */
+export function useSecretSaves(name: string) {
+  // A counter kept in the query cache for the life of the window: never fetched, never stale, never collected.
+  const saves = useQuery({ queryKey: qk.secretSaves(name), queryFn: () => 0, initialData: 0, staleTime: Infinity, gcTime: Infinity })
+  return saves.data
 }
 
 export function useDeleteSecret() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (name: string) => api.secrets.delete(name),
-    onSuccess: () => {
+    onSuccess: (_res, name) => {
       void qc.invalidateQueries({ queryKey: qk.secrets })
       void qc.invalidateQueries({ queryKey: qk.providers })
+      qc.removeQueries({ queryKey: qk.catalog(name) })
+      void qc.invalidateQueries({ queryKey: qk.modelPresets })
     }
   })
 }
@@ -119,4 +219,73 @@ export function useOllamaPull() {
   const cancel = useCallback(() => abort.current?.abort(), [])
   const reset = useCallback(() => setState(idle), [])
   return { ...state, pull, cancel, reset }
+}
+
+export interface CheckupRow {
+  role: RoleName
+  model: string | null
+  /** What is being tried right now, while this role is being checked. */
+  step: string | null
+  result: CheckupRole | null
+}
+
+export interface CheckupState {
+  rows: CheckupRow[]
+  running: boolean
+  error: string | null
+  /** Worst result once finished. */
+  status: CheckupStatus | null
+  /** Showing the dev-only example result. */
+  example: boolean
+  /** This computer and the local model sized for it, when the engine could tell (#131). */
+  hardware: Hardware | null
+}
+
+const noCheckup: CheckupState = { rows: [], running: false, error: null, status: null, example: false, hardware: null }
+
+function exampleCheckup(): CheckupState {
+  const roles = demo.modelCheckup()
+  const rank: Record<CheckupStatus, number> = { skip: 0, pass: 1, warn: 2, fail: 3 }
+  const status = roles.reduce<CheckupStatus>((w, r) => (rank[r.status] > rank[w] ? r.status : w), 'skip')
+  return { rows: roles.map((r) => ({ role: r.role, model: r.model, step: null, result: r })), running: false, error: null, status, example: true, hardware: null }
+}
+
+/** `POST /api/models/checkup` with live progress. `roles` limits the check to these models (onboarding). */
+export function useModelCheckup() {
+  const [state, setRunState] = useState<CheckupState>(() => (isDemoMode() ? exampleCheckup() : noCheckup))
+  const abort = useRef<AbortController | null>(null)
+  const current = useRef(0)
+
+  const run = useCallback(async (roles?: Partial<Record<RoleName, string | null>>) => {
+    abort.current?.abort()
+    const ctrl = new AbortController()
+    abort.current = ctrl
+    // A stopped run settles later; only the latest run may touch the state.
+    const id = ++current.current
+    const setState = (next: CheckupState | ((s: CheckupState) => CheckupState)) => {
+      if (current.current === id) setRunState(next)
+    }
+    setState({ ...noCheckup, running: true })
+    const patchRow = (role: RoleName, p: Partial<CheckupRow>) =>
+      setState((s) => ({ ...s, rows: s.rows.map((r) => (r.role === role ? { ...r, ...p } : r)) }))
+    try {
+      for await (const e of api.models.checkup(roles, ctrl.signal)) {
+        if (e.type === 'start') setState((s) => ({ ...s, hardware: e.hardware ?? null, rows: e.roles.map((r) => ({ ...r, step: null, result: null })) }))
+        else if (e.type === 'step') patchRow(e.role, { step: e.label })
+        else if (e.type === 'role') {
+          const { type: _type, ...result } = e
+          void _type
+          patchRow(e.role, { step: null, result })
+        } else if (e.type === 'done') setState((s) => ({ ...s, status: e.status }))
+      }
+      setState((s) => ({ ...s, running: false, error: s.status ? null : "The check-up stopped before it finished. Try again." }))
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') setState((s) => ({ ...s, running: false }))
+      else setState((s) => ({ ...s, running: false, error: errorMessage(err) }))
+    }
+  }, [])
+
+  const cancel = useCallback(() => abort.current?.abort(), [])
+  useEffect(() => () => abort.current?.abort(), [])
+  return { ...state, run, cancel }
 }

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from sentient import secrets
-from sentient.config.schema import SentientConfig
+from sentient.config.schema import ProviderConfig, SentientConfig
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +51,7 @@ class StreamChunk:
     tool_calls: list[ToolCall] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
     model: str = ""
+    cost: float | None = None  # US dollars for this call when the provider knows the model's price
 
 
 class LLMProvider(Protocol):
@@ -73,7 +74,44 @@ def _provider_prefix(model: str) -> str:
     return model.split("/", 1)[0] if "/" in model else ""
 
 
+# Providers LiteLLM has no prefix for, reached through its OpenAI-compatible client. ``nous/<model>`` is sent
+# as ``openai/<model>`` to the provider's own address, with the key stored under ``nous``.
+OPENAI_COMPATIBLE: dict[str, ProviderConfig] = {
+    "nous": ProviderConfig(api_base="https://inference-api.nousresearch.com/v1", api_key_env="NOUS_API_KEY"),
+}
+
+
+def provider_config(config: SentientConfig, prefix: str) -> ProviderConfig | None:
+    """The provider's settings from config, filled in with built-in defaults for OpenAI-compatible providers."""
+    pc = config.models.providers.get(prefix)
+    default = OPENAI_COMPATIBLE.get(prefix)
+    if default is None or pc is None:
+        return pc or default
+    return ProviderConfig(api_base=pc.api_base or default.api_base, api_key_env=pc.api_key_env or default.api_key_env)
+
+
+def litellm_model(model: str) -> str:
+    """The model string LiteLLM understands: ``nous/x`` becomes ``openai/x``; everything else is unchanged."""
+    prefix = _provider_prefix(model)
+    return f"openai/{model.split('/', 1)[1]}" if prefix in OPENAI_COMPATIBLE else model
+
+
+def _response_cost(litellm: Any, response: Any, model: str) -> float | None:
+    """Price of one completion from LiteLLM's bundled price list; None when the model's price is unknown."""
+    if response is None or not getattr(response, "usage", None):
+        return None
+    try:
+        cost = litellm.completion_cost(completion_response=response, model=model)
+    except Exception:  # unknown or local model: no price
+        return None
+    return float(cost) if cost else None
+
+
 CACHE_PREFIXES = {"anthropic"}
+CLAUDE_CODE = "claude-code"  # Claude through the user's own Claude Code (``claude-code/<model>``), not LiteLLM (#206)
+CHATGPT = "chatgpt"  # ChatGPT plan models (``chatgpt/<model>``) go through the Responses API shim, not LiteLLM
+# local servers whose context length Sentient can't know (LiteLLM's list has no entry for them)
+UNLISTED_PREFIXES = {"lm_studio", "llamafile", "vllm", "hosted_vllm"}
 
 
 def apply_prompt_cache(model: str, messages: list[dict], tools: list[dict] | None = None) -> tuple[list[dict], list[dict] | None]:
@@ -127,7 +165,7 @@ class LiteLLMProvider:
 
     def _kwargs_for(self, model: str, role: str | None = None) -> dict:
         prefix = _provider_prefix(model)
-        pc = self.config.models.providers.get(prefix)
+        pc = provider_config(self.config, prefix)
         kwargs: dict[str, Any] = {"timeout": self.config.models.request_timeout_s}
         effort = self.config.models.reasoning.get(role or "")
         temp = self.config.models.temperature.get(role or "")
@@ -184,6 +222,32 @@ class LiteLLMProvider:
         """The context length sent with this role's calls, or None when its model is not an Ollama model."""
         return (await self._call_kwargs(self.model_for(role), role)).get("num_ctx")
 
+    async def context_window(self, role: str, model: str | None = None) -> int | None:
+        """How many tokens ``model`` (default: the role's) reads at once in this role: the ``num_ctx`` sent to an
+        Ollama model, or a cloud model's input window from LiteLLM's bundled list. None when unknown."""
+        model = model or self.model_for(role)
+        prefix = _provider_prefix(model)
+        if prefix in {"ollama", "ollama_chat"}:
+            models = self.config.models
+            num_ctx = models.context_length_per_role.get(role) or models.context_length
+            pc = provider_config(self.config, prefix)
+            limit = await self._model_max_context(model, pc.api_base if pc else None)
+            return min(num_ctx, limit) if limit else num_ctx
+        if prefix == CHATGPT:  # from the plan's own model list when it gave one; LiteLLM's list doesn't apply
+            from sentient.llm import chatgpt
+
+            return chatgpt.context_window(model)
+        if prefix in UNLISTED_PREFIXES or prefix == CLAUDE_CODE:
+            return None
+        import litellm
+
+        try:
+            info = litellm.get_model_info(litellm_model(model))
+        except Exception:  # not in LiteLLM's list
+            return None
+        window = info.get("max_input_tokens") or info.get("max_tokens")
+        return int(window) if window else None
+
     # ------------------------------------------------------------------ streaming chat
     async def stream(
         self, role: str, messages: list[dict], tools: list[dict] | None = None, *, model: str | None = None
@@ -195,18 +259,30 @@ class LiteLLMProvider:
         last_error: Exception | None = None
         override = model
         for model in self._chain(role, override):
+            emitted = False
             try:
+                if _provider_prefix(model) in {CHATGPT, CLAUDE_CODE}:
+                    from sentient.llm import claude_code
+
+                    other = (self._chatgpt_stream(model, role, messages, tools) if _provider_prefix(model) == CHATGPT
+                             else claude_code.stream(self.config, model, role, messages, tools))
+                    async for chunk in other:
+                        emitted = emitted or bool(chunk.text or chunk.thinking)
+                        yield chunk
+                    return
                 kwargs = await self._call_kwargs(model, role)
+                if _provider_prefix(model) not in {"ollama", "ollama_chat"}:
+                    # OpenAI-style streams leave out token usage unless asked; budgets and prices need it
+                    kwargs["stream_options"] = {"include_usage": True}
                 sent_messages, sent_tools = apply_prompt_cache(model, messages, tools)
                 if sent_tools:
                     kwargs["tools"] = sent_tools
                     kwargs["tool_choice"] = "auto"
                 response = await litellm.acompletion(
-                    model=model, messages=sent_messages, stream=True, **kwargs
+                    model=litellm_model(model), messages=sent_messages, stream=True, **kwargs
                 )
                 chunks: list[Any] = []
                 in_think = False
-                emitted = False
                 async for chunk in response:
                     chunks.append(chunk)
                     delta = chunk.choices[0].delta if chunk.choices else None
@@ -231,32 +307,62 @@ class LiteLLMProvider:
                 tool_calls: list[ToolCall] = []
                 msg = full.choices[0].message if full and full.choices else None
                 for tc in (getattr(msg, "tool_calls", None) or []):
-                    try:
-                        args = json.loads(tc.function.arguments or "{}")
-                    except json.JSONDecodeError:
-                        try:
-                            args = parse_json_loose(tc.function.arguments or "")
-                        except ValueError:
-                            args = {"_raw": tc.function.arguments}
-                    if not isinstance(args, dict):
-                        args = {"_raw": tc.function.arguments}
-                    tool_calls.append(ToolCall(id=tc.id or f"call_{uuid.uuid4().hex[:12]}", name=tc.function.name, arguments=args))
+                    tool_calls.append(ToolCall(id=tc.id or f"call_{uuid.uuid4().hex[:12]}", name=tc.function.name,
+                                               arguments=tool_arguments(tc.function.arguments)))
                 usage = {}
                 if full is not None and getattr(full, "usage", None):
                     usage = {
                         "prompt_tokens": full.usage.prompt_tokens or 0,
                         "completion_tokens": full.usage.completion_tokens or 0,
                     }
-                yield StreamChunk(done=True, tool_calls=tool_calls, usage=usage, model=model)
+                yield StreamChunk(
+                    done=True, tool_calls=tool_calls, usage=usage, model=model, cost=_response_cost(litellm, full, model)
+                )
                 return
             except Exception as exc:
                 last_error = exc
                 log.warning("model %s failed for role %s: %s", model, role, exc)
-                if "emitted" in locals() and emitted:
+                if emitted:
                     # part of a reply already reached the user; switching models would duplicate it
                     raise ProviderError(f"{model} stopped mid-reply: {exc}") from exc
                 continue
         raise ProviderError(f"All models failed for role '{role}': {last_error}")
+
+    # ------------------------------------------------------------------ ChatGPT plan (Responses API shim)
+    async def _chatgpt_stream(
+        self, model: str, role: str, messages: list[dict], tools: list[dict] | None
+    ) -> AsyncIterator[StreamChunk]:
+        """A ChatGPT plan model through the Responses API with the signed-in user's token (issue #205)."""
+        from sentient.llm import chatgpt, responses
+
+        body = responses.request_body(model.split("/", 1)[1], messages, tools,
+                                      reasoning_effort=self.config.models.reasoning.get(role))
+        url, timeout = chatgpt.responses_url(self.config), self.config.models.request_timeout_s
+        try:
+            token = await chatgpt.access_token(self.config)
+            events = await responses.open_stream(url, chatgpt.request_headers(token), body, timeout=timeout)
+        except responses.ResponsesError as exc:
+            if exc.status != 401:
+                raise
+            # the token stopped working early (signed out elsewhere, a new password): renew it once and retry
+            token = await chatgpt.access_token(self.config, force_refresh=True)
+            events = await responses.open_stream(url, chatgpt.request_headers(token), body, timeout=timeout)
+        async for ev in events:
+            if ev.get("done"):
+                calls = [ToolCall(id=tc["id"] or f"call_{uuid.uuid4().hex[:12]}", name=tc["name"],
+                                  arguments=tool_arguments(tc["arguments"])) for tc in ev["tool_calls"]]
+                yield StreamChunk(done=True, tool_calls=calls, usage=ev["usage"], model=model)
+            elif ev.get("thinking"):
+                yield StreamChunk(thinking=ev["thinking"], model=model)
+            elif ev.get("text"):
+                yield StreamChunk(text=ev["text"], model=model)
+
+    async def _chatgpt_text(self, model: str, role: str, messages: list[dict]) -> str:
+        """Plan usage only streams, so text and JSON jobs collect the stream."""
+        text = ""
+        async for chunk in self._chatgpt_stream(model, role, messages, None):
+            text += chunk.text
+        return text
 
     # ------------------------------------------------------------------ non-streaming JSON
     async def complete_text(self, role: str, messages: list[dict], *, model: str | None = None) -> str:
@@ -269,10 +375,14 @@ class LiteLLMProvider:
         override = model
         for model in self._chain(role, override):
             try:
-                kwargs = await self._call_kwargs(model, role)
-                sent, _ = apply_prompt_cache(model, messages)
-                resp = await litellm.acompletion(model=model, messages=sent, **kwargs)
-                text = resp.choices[0].message.content or ""
+                _refuse_claude_code(model)
+                if _provider_prefix(model) == CHATGPT:
+                    text = await self._chatgpt_text(model, role, messages)
+                else:
+                    kwargs = await self._call_kwargs(model, role)
+                    sent, _ = apply_prompt_cache(model, messages)
+                    resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
+                    text = resp.choices[0].message.content or ""
                 return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
             except Exception as exc:
                 last_error = exc
@@ -287,12 +397,15 @@ class LiteLLMProvider:
         override = model
         for model in self._chain(role, override):
             try:
+                _refuse_claude_code(model)
+                if _provider_prefix(model) == CHATGPT:
+                    return parse_json_loose(await self._chatgpt_text(model, role, messages))
                 kwargs = await self._call_kwargs(model, role)
                 # Ollama's JSON mode corrupts qwen3 output ({"{"name": ...); ask for plain text and parse loosely
                 if _provider_prefix(model) not in {"ollama", "ollama_chat"}:
                     kwargs["response_format"] = {"type": "json_object"}
                 sent, _ = apply_prompt_cache(model, messages)
-                resp = await litellm.acompletion(model=model, messages=sent, **kwargs)
+                resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
                 text = resp.choices[0].message.content or ""
                 return parse_json_loose(text)
             except Exception as exc:
@@ -305,13 +418,39 @@ class LiteLLMProvider:
         import litellm
 
         model = model or self.model_for("embedding")
+        if _provider_prefix(model) == CLAUDE_CODE:
+            from sentient.llm.claude_code import NO_EMBEDDINGS
+
+            raise ProviderError(NO_EMBEDDINGS)
+        if _provider_prefix(model) == CHATGPT:
+            raise ProviderError("ChatGPT plans don't include embedding models. Pick a local or API embedding model.")
         kwargs = self._kwargs_for(model)
         kwargs.pop("timeout", None)
-        resp = await litellm.aembedding(model=model, input=texts, **kwargs)
+        resp = await litellm.aembedding(model=litellm_model(model), input=texts, **kwargs)
         return [d["embedding"] for d in resp.data]
 
 
 # ---------------------------------------------------------------------- helpers
+def _refuse_claude_code(model: str) -> None:
+    """Claude Code only writes chat replies (ADR 0022): text and JSON jobs run in the background."""
+    if _provider_prefix(model) == CLAUDE_CODE:
+        from sentient.llm.claude_code import CHATS_ONLY
+
+        raise ProviderError(CHATS_ONLY)
+
+
+def tool_arguments(raw: str | None) -> dict:
+    """A tool call's JSON arguments, parsed loosely; ``{"_raw": ...}`` when they aren't an object."""
+    try:
+        args = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        try:
+            args = parse_json_loose(raw or "")
+        except ValueError:
+            args = {"_raw": raw}
+    return args if isinstance(args, dict) else {"_raw": raw}
+
+
 def split_think(text: str, in_think: bool) -> tuple[list[tuple[str, bool]], bool]:
     """Split a text delta on <think> / </think> boundaries.
 
