@@ -176,6 +176,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- Local models can now use large MCP servers such as Composio, Notion or GitHub. Naming the server in your message
+  ("using Composio...") always offers its tools, and a server with more tools than fit offers its most relevant ones,
+  keeping its "search" and "run" tools together, instead of none at all.
 - Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
   and many tools are no longer cut off without warning. Change it with `models.context_length`, per role with
   `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.

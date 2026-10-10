@@ -83,3 +83,121 @@ async def test_small_talk_offers_only_core_tools():
     o = owner(budget_local=9)
     names = await ToolSelector(o).select("hello there, how are you", model="ollama_chat/qwen3:8b")
     assert names == list(ALWAYS_TOOLS)
+
+
+# ---------------------------------------------------------------------------- large MCP servers
+COMPOSIO = {
+    "COMPOSIO_SEARCH_TOOLS": "Discover the right tools across 500+ apps for a use case before executing them.",
+    "COMPOSIO_MULTI_EXECUTE_TOOL": "Execute one or more app tools in parallel with their arguments.",
+    "COMPOSIO_GET_TOOL_SCHEMAS": "Get the input schemas of tools by their slugs.",
+    "COMPOSIO_MANAGE_CONNECTIONS": "Create or check the user's connections to apps.",
+    "COMPOSIO_REMOTE_BASH_TOOL": "Run bash commands in a remote sandbox.",
+    "COMPOSIO_REMOTE_WORKBENCH": "Run Python in a remote workbench for bulk processing.",
+    "COMPOSIO_SUBMIT_FEEDBACK": "Send feedback about tools to Composio.",
+    "COMPOSIO_WAIT_FOR_CONNECTIONS": "Wait until the user finishes connecting apps.",
+    "COMPOSIO_MANAGE_SKILL": "Save or delete a reusable skill.",
+    "COMPOSIO_SEARCH_SKILLS": "Find saved skills for a task.",
+    "COMPOSIO_USE_SKILL": "Run a saved skill.",
+}
+
+
+def mcp_plugin(server: str, tools: dict[str, str]) -> ToolPlugin:
+    """Like MCPServerPlugin: tools named mcp_<server>_<tool>, the server name as display name."""
+    from sentient.integrations.mcp import mcp_tool_name, plugin_id_for
+
+    made = []
+    for name, desc in tools.items():
+
+        @tool(mcp_tool_name(server, name), risk=Risk.write)
+        async def _fn(ctx: ToolContext) -> str:
+            return ""
+
+        _fn.description = desc
+        made.append(_fn)
+
+    class P(ToolPlugin):
+        id = plugin_id_for(server)
+        display_name = server
+        description = f"Tools from the external MCP server '{server}'."
+        selection_hint = f"tools provided by the {server} MCP server"
+        category = "utilities"
+
+    P.tools = made
+    return P()
+
+
+def owner_with_composio(budget_local: int = 12) -> SimpleNamespace:
+    o = owner(budget_local)
+    o.registry.register(mcp_plugin("composio", COMPOSIO))
+    return o
+
+
+def composio_names(names: list[str]) -> set[str]:
+    return {n.removeprefix("mcp_composio_composio_") for n in names if n.startswith("mcp_composio_")}
+
+
+async def test_named_large_mcp_server_offers_its_entry_points():
+    o = owner_with_composio(12)
+    names = await ToolSelector(o).select(
+        "Using Composio, list the events on my Google Calendar for today", model="ollama_chat/qwen3:8b"
+    )
+    assert names is not None and len(names) <= 12
+    assert set(ALWAYS_TOOLS) <= set(names)
+    picked = composio_names(names)
+    assert {"search_tools", "multi_execute_tool"} <= picked
+    assert len(picked) == 12 - len(ALWAYS_TOOLS)  # fills the room, not all 11
+
+
+async def test_relevant_large_mcp_server_offers_best_tools_without_naming_it():
+    o = owner_with_composio(10)
+    names = await ToolSelector(o).select("search for the right tools to execute", model="ollama_chat/qwen3:8b")
+    picked = composio_names(names)
+    assert {"search_tools", "multi_execute_tool"} <= picked
+    assert len(names) <= 10
+
+
+async def test_large_mcp_server_leaves_room_for_other_relevant_plugins():
+    o = owner_with_composio(12)
+    names = await ToolSelector(o).select(
+        "with composio, and also check the weather forecast", model="ollama_chat/qwen3:8b"
+    )
+    assert {"weather_current", "weather_forecast"} <= set(names)
+    assert {"search_tools", "multi_execute_tool"} <= composio_names(names)
+    assert len(names) <= 12
+
+
+async def test_large_mcp_server_does_not_crowd_out_unrelated_turns():
+    o = owner_with_composio(12)
+    model = "ollama_chat/qwen3:8b"
+    weather = await ToolSelector(o).select("will it rain tomorrow? check the weather forecast", model=model)
+    assert {"weather_current", "weather_forecast"} <= set(weather)
+    assert not composio_names(weather)
+    assert await ToolSelector(o).select("hello there, how are you", model=model) == list(ALWAYS_TOOLS)
+
+
+def test_search_and_execute_tools_stay_together():
+    from sentient.agent.toolselect import _best_tools, _tool_scores
+
+    p = mcp_plugin("composio", COMPOSIO)
+    entry = {
+        "id": p.id, "display_name": p.display_name,
+        "tools": [{"name": t.name, "description": t.description} for t in p.tools],
+    }
+    # the message matches two discovery tools and no action tool: the execute tool still comes along
+    scored = _tool_scores(entry, {"discover", "saved"})
+    assert [round(s[0], 2) for s in scored[:1]] == [0.1] and round(scored[9][0], 2) == 0.1
+    picked = _best_tools(entry["tools"], scored, 2)
+    assert {n.removeprefix("mcp_composio_composio_") for n in picked} == {"search_tools", "multi_execute_tool"}
+
+
+def test_named_plugins_match_display_and_server_names():
+    from sentient.agent.toolselect import named_plugins
+
+    catalog = [
+        {"id": "mcp_composio", "display_name": "composio", "category": "utilities"},
+        {"id": "gcalendar", "display_name": "Google Calendar", "category": "productivity"},
+        {"id": "memory", "display_name": "Memory", "category": "core"},
+    ]
+    assert named_plugins("Using Composio, list my events", catalog) == {"mcp_composio"}
+    assert named_plugins("what's on my google calendar? check memory", catalog) == {"gcalendar"}
+    assert named_plugins("compositions of music", catalog) == set()

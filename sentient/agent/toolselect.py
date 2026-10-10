@@ -12,7 +12,12 @@ without an LLM call:
 - plugins used recently in the same conversation stay available;
 - a few capabilities that embeddings match poorly (browser, code, devices,
   subagents, messaging channels, the terminal) get a boost when trigger phrases appear;
-- the best plugins are added until the tool budget is reached.
+- a plugin the user names ("using Composio", "in Notion") comes first;
+- the best plugins are added until the tool budget is reached. A plugin with
+  more tools than the room left (a large MCP server) offers its best tools,
+  scored one by one from their names and descriptions, keeping a server's
+  "search/list" and "execute/run" tools together, and leaves room for the
+  smaller relevant plugins after it.
 
 Cloud models get a large budget (effectively all tools); local models a small
 one. ``chat.tool_selection = "all"`` turns selection off.
@@ -71,6 +76,11 @@ TOOL_TRIGGERS: dict[str, tuple[str, ...]] = {
     ),
 }
 TRIGGER_BOOST = 0.45
+# A plugin with more tools than the room left keeps at least this many slots when it is offered partially.
+MIN_PARTIAL = 4
+# Words that mark a server's discovery tools and its action tools (search-then-execute MCP servers).
+DISCOVER_WORDS = frozenset({"search", "list", "schema", "find", "discover"})
+ACT_WORDS = frozenset({"execute", "run", "call", "invoke"})
 
 
 def _compile_triggers() -> dict[str, re.Pattern]:
@@ -95,6 +105,76 @@ def is_local_model(model: str) -> bool:
 
 def _words(text: str) -> set[str]:
     return {w for w in _WORD.findall(text.lower()) if w not in _STOP and len(w) > 2}
+
+
+def _stem(word: str) -> str:
+    return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+
+
+def _stems(text: str) -> set[str]:
+    return {_stem(w) for w in _words(text)}
+
+
+def _name_pattern(name: str) -> re.Pattern | None:
+    parts = _WORD.findall(name.lower())
+    if not parts or len("".join(parts)) < 3:
+        return None
+    return re.compile(r"(?<![a-z0-9])" + r"[\s_-]*".join(re.escape(x) for x in parts) + r"(?![a-z0-9])")
+
+
+def named_plugins(text: str, plugins: list[dict]) -> set[str]:
+    """Ids of the apps and MCP servers the message names ("using Composio", "in Notion").
+    Built-in core plugins (memory, files...) are matched by keywords instead: their names are everyday words."""
+    low = text.lower()
+    out = set()
+    for p in plugins:
+        if p.get("category", "core") == "core":
+            continue
+        candidates = {p["display_name"], p["id"].removeprefix("mcp_")}
+        if any((rx := _name_pattern(c)) is not None and rx.search(low) for c in candidates):
+            out.add(p["id"])
+    return out
+
+
+def _tool_scores(plugin: dict, words: set[str]) -> list[tuple[float, float, str]]:
+    """(keyword score, order key, kind) per tool. The keyword score counts the message's words in the tool's
+    name and the start of its description; the order key adds a tie-break that puts entry points first."""
+    own = _stems(f"{plugin['id']} {plugin['display_name']}")
+    out = []
+    for t in plugin["tools"]:
+        name = t["name"].removeprefix(plugin["id"] + "_")
+        name_words = _stems(name.replace("_", " ")) - own
+        desc_words = _stems((t.get("description") or "")[:300]) - own - name_words
+        score = 0.3 * len(words & name_words) + 0.1 * min(len(words & desc_words), 3)
+        kind = "discover" if name_words & DISCOVER_WORDS else "act" if name_words & ACT_WORDS else ""
+        out.append((score, score + (0.05 if kind else 0.0), kind))
+    return out
+
+
+def _best_tools(tools: list[dict], scored: list[tuple[float, float, str]], k: int) -> list[str]:
+    """The ``k`` best tools in score order. A server's discovery tool (search/list/schema) is useless without its
+    action tool (execute/run/call) and vice versa, so when one kind is picked the best of the other comes too."""
+    order = sorted(range(len(tools)), key=lambda i: (-scored[i][1], i))
+    picked = order[:k]
+    if k >= 2:
+        for need, have in (("act", "discover"), ("discover", "act")):
+            kinds = {scored[i][2] for i in picked}
+            if have in kinds and need not in kinds:
+                extra = next((i for i in order if scored[i][2] == need), None)
+                if extra is None:
+                    continue
+                if len(picked) >= k:
+                    # drop the weakest pick that is not the last of its kind
+                    for j in reversed(range(len(picked))):
+                        kind = scored[picked[j]][2]
+                        if not kind or sum(scored[i][2] == kind for i in picked) > 1:
+                            picked.pop(j)
+                            break
+                    else:
+                        continue
+                picked.append(extra)
+    picked.sort(key=lambda i: (-scored[i][1], i))
+    return [tools[i]["name"] for i in picked]
 
 
 def _cos(a: list[float], b: list[float]) -> float:
@@ -158,6 +238,7 @@ class ToolSelector:
             except Exception:
                 qvec = None
 
+        named = named_plugins(text, plugins) if text.strip() else set()
         scores: dict[str, float] = {}
         for p in plugins:
             score = _cos(qvec, self._plugin_vecs[p["id"]]) if qvec is not None and p["id"] in self._plugin_vecs else 0.0
@@ -171,23 +252,34 @@ class ToolSelector:
                 score += TRIGGER_BOOST
             scores[p["id"]] = score
 
-        ranked = sorted(plugins, key=lambda p: scores[p["id"]], reverse=True)
-        top = scores[ranked[0]["id"]] if ranked else 0.0
-        # only plugins that are plausibly relevant: close to the best match, or used recently
+        top = max(scores.values(), default=0.0)
+        # only plugins that are plausibly relevant: named, close to the best match, or used recently
         floor = max(0.15, top * 0.6)
-        for p in ranked:
-            relevant = scores[p["id"]] >= floor or bool(recent_plugins and p["id"] in recent_plugins)
-            if not relevant:
-                continue
-            names = [t["name"] for t in p["tools"] if t["name"] not in chosen]
-            if not names:
-                continue
+        relevant = [
+            p for p in sorted(plugins, key=lambda p: (p["id"] not in named, -scores[p["id"]]))
+            if p["id"] in named or scores[p["id"]] >= floor or bool(recent_plugins and p["id"] in recent_plugins)
+        ]
+        stems = {_stem(w) for w in words}
+        for i, p in enumerate(relevant):
             room = budget - len(chosen)
             if room <= 0:
                 break
-            if len(names) > room:
-                if room >= 2 and p is ranked[0]:
-                    chosen.extend(names[:room])  # the best match may be offered partially
+            tools = [t for t in p["tools"] if t["name"] not in chosen]
+            if not tools:
                 continue
-            chosen.extend(names)
+            if len(tools) <= room:
+                chosen.extend(t["name"] for t in tools)
+                continue
+            # too big for the room left: offer its best tools when it was named, is the best match, or some
+            # of its tools match the message by name or description
+            scored = _tool_scores({**p, "tools": tools}, stems)
+            if room < 2 or not (p["id"] in named or i == 0 or any(s[0] > 0 for s in scored)):
+                continue
+            keep = min(room, MIN_PARTIAL)
+            reserve = 0
+            for q in relevant[i + 1:]:
+                n = sum(1 for t in q["tools"] if t["name"] not in chosen)
+                if n and reserve + n <= room - keep:
+                    reserve += n
+            chosen.extend(_best_tools(tools, scored, room - reserve))
         return chosen
