@@ -275,7 +275,8 @@ accept or loosen a rule.
   means a `claude` program is on PATH; `version` is its `claude --version` line, asked only while `enabled` (null
   otherwise or when it doesn't answer). `detail` is a plain sentence for Settings. `models` are the model names to
   offer (`CLAUDE_CODE_MODELS` in `config/schema.py`: `claude-code/sonnet`, `claude-code/opus`). It never calls a model
-  and never reads Claude's login; `POST /api/models/test` with a `claude-code/` model is the only dry run.
+  and never reads Claude's login; `POST /api/models/test` with a `claude-code/` model is the only dry run. `enabled`
+  is the saved setting, so a window that has just flipped the switch asks again until it matches.
 - `POST /api/models/checkup` `{roles?: {role: model | null}}` → streams NDJSON while it checks each role's model,
   one role at a time (local models are never loaded side by side). Without `roles` it checks every role in the saved
   config; with `roles` it checks only those, with those models (onboarding checks its picks before saving). It is
@@ -298,8 +299,9 @@ accept or loosen a rule.
   fast and planner), `thinking` (Ollama models that can think: thinking matches the role's reasoning setting),
   `context` (tokens in use vs the model's maximum from `/api/show`; also warns when the role uses the model sized for
   this computer with more tokens than its graphics card holds, with a `set_context_length` fix to the recommended
-  length), `gpu` (from Ollama `/api/ps`: `size_vram` vs `size`, warns when part of the model runs on the processor; its
-  fix names the recommended model and context length and its action shortens to the recommended length when that is
+  length), `gpu` (from Ollama `/api/ps`: `size_vram` vs `size`, warns when part of the model runs on the processor, except
+  that the model sized for this computer at no more than the recommended length passes with 85% or more on the
+  graphics card, since qwen3:8b at 8,192 tokens keeps about 90% there on an 8 GB card; its fix names the recommended model and context length and its action shortens to the recommended length when that is
   shorter, else 8,192), `embedding` (embedding role only). A model that fails the tool checks gets the recommended model
   as its fix (`qwen3:8b` when the computer only fits a small one). Cloud and
   LM Studio models get no Ollama checks. `action` is an optional one-click fix the window may offer:
@@ -345,7 +347,9 @@ accept or loosen a rule.
   --output-format stream-json --verbose --include-partial-messages --model <name> --tools "" --disallowedTools <its
   built-ins> --permission-mode dontAsk --setting-sources= --strict-mcp-config --disable-slash-commands
   --no-session-persistence --max-turns 1 --system-prompt-file <file> [--mcp-config <file>] [--effort <role's
-  reasoning>]` in a scratch folder under `~/.sentient/tmp/claude-code/`, removed afterwards. The environment is the
+  reasoning>]` in a scratch folder under `~/.sentient/tmp/claude-code/`, removed once Claude Code and its tool bridge
+  have exited (retried for a few seconds while Windows still holds it; folders older than an hour are swept when the
+  engine starts). The environment is the
   engine's minus the window token and everything that would make Claude Code use something other than the plan login
   (every `ANTHROPIC_*`, `CLAUDE_CODE_USE_*` and `CLAUDE_CODE_OAUTH_*` variable, `CLAUDE_CODE_SIMPLE`,
   `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH`; `CLAUDE_CONFIG_DIR` is kept), with
@@ -764,7 +768,9 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
 - `POST /api/integrations/mcp/{name}/sign-out` → server object; deletes the stored tokens (the client registration is kept)
   and cancels a pending sign-in. A server with `auth: "oauth"` then shows `needs_sign_in`.
 - Tokens are refreshed with the refresh token before they expire (60 s early) and once after a 401 before asking for a
-  new sign-in. Keychain entries: `mcp:<name>` (env), `mcp:<name>:headers`, `mcp:<name>:oauth` (tokens),
+  new sign-in. Keychain entries: `mcp:<name>` (env), `mcp:<name>:headers`, `mcp:<name>:oauth` (tokens, their expiry
+  and the authorization server metadata with the server URL it belongs to, so a refresh after a restart uses the real
+  token endpoint; a record without the metadata looks it up once),
   `mcp:<name>:client` (registration); values too long for one entry continue in `<entry>:1`, `<entry>:2`...
 - `PUT /api/integrations/{id}/privacy-filters` → 400 when the integration has `privacy_filters.supported: false`
 
@@ -993,7 +999,7 @@ Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
 - `GET /api/memories?topic=&q=&source=&limit=&offset=` → `[Memory]` newest first, expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
 - `GET /api/memories/topics` → `[{name, description, count}]`
 - `GET /api/memories/graph` → `{nodes: [{id, label, title, content, topics, memory_type, source, created_at}], links: [{source, target, value}]}` (`label` = content truncated to 25 chars, `title` = full content, as in v2; a link means cosine similarity ≥ `memory.graph_link_similarity`, `value` is that similarity)
-- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone)
+- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. An UPDATE only replaces a fact about the same person and the same action on the same thing ("doesn't want files written" or "doesn't want emails deleted" never replaces "doesn't want files deleted"; it is added instead), and a new fact that an existing one already says in full, with no new name, place or number ("sister lives in a city" next to "sister Meera lives in Lisbon"), returns `SKIP` with that fact)
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)
 - `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
 - `DELETE /api/memories/source/{source}` → `{deleted: n}`
