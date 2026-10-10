@@ -237,8 +237,12 @@ class LiteLLMProvider:
             from sentient.llm import chatgpt
 
             return chatgpt.context_window(model)
-        if prefix in UNLISTED_PREFIXES or prefix == CLAUDE_CODE:
+        if prefix in UNLISTED_PREFIXES:
             return None
+        if prefix == CLAUDE_CODE:  # LiteLLM's list has no claude-code/<model>: map to the matching Anthropic one (#258)
+            from sentient.llm import claude_code
+
+            return claude_code.context_window(model)
         import litellm
 
         try:

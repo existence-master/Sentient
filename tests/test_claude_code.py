@@ -15,10 +15,11 @@ import stat
 import sys
 from pathlib import Path
 
+import litellm
 import pytest
 
 from sentient.app import SentientApp
-from sentient.llm import claude_code
+from sentient.llm import claude_code, meter
 from sentient.llm.claude_code_tools import NOT_HERE, handle
 from sentient.llm.events import ApprovalRequest, Done, TextDelta, ToolResultEvent
 from sentient.llm.provider import LiteLLMProvider, ProviderError
@@ -511,3 +512,45 @@ async def test_deltas_without_an_id_cover_only_their_own_message(cc_config, monk
     with claude_code.attended():
         chunks = [c async for c in claude_code.stream(cc_config, MODEL, "primary", [{"role": "user", "content": "hi"}], None)]
     assert "".join(c.text for c in chunks) == "One. Two."
+
+
+# ----------------------------------------------------------------------------- context meter (#258)
+async def test_claude_code_models_use_the_matching_anthropic_window(monkeypatch, config):
+    """LiteLLM's bundled list doesn't know ``claude-code/<model>``, so the meter reads the window of the matching
+    Anthropic model instead; an unknown name (or a LiteLLM miss) still degrades to an empty meter."""
+    windows = {"anthropic/claude-sonnet-4-5": {"max_input_tokens": 500_000},
+               "anthropic/claude-opus-4-5": {"max_input_tokens": 200_000}}
+
+    def info(model):
+        if model not in windows:
+            raise ValueError("This model isn't mapped yet.")
+        return windows[model]
+
+    monkeypatch.setattr(litellm, "get_model_info", info)
+    prov = LiteLLMProvider(config)
+    assert claude_code.context_window("claude-code/sonnet") == 500_000
+    assert claude_code.context_window("claude-code/opus") == 200_000
+    assert await prov.context_window("primary", "claude-code/sonnet") == 500_000
+    assert await prov.context_window("primary", "claude-code/opus") == 200_000
+    assert claude_code.context_window("claude-code/haiku") is None
+    assert await prov.context_window("primary", "claude-code/haiku") is None
+    monkeypatch.setattr(litellm, "get_model_info", lambda model: (_ for _ in ()).throw(ValueError("unknown")))
+    assert claude_code.context_window("claude-code/sonnet") is None
+
+
+async def test_meter_marks_usage_for_claude_code_models(monkeypatch, config):
+    """The chat ``usage`` event's context fields are filled in for ``claude-code/<model>`` and warn at 85%."""
+    monkeypatch.setattr(litellm, "get_model_info", lambda model: {"max_input_tokens": 200_000})
+    prov = LiteLLMProvider(config)
+
+    class Window:
+        async def context_window(self, role, model=None):
+            return await prov.context_window(role, model)
+
+    gauge = await meter.measure(Window(), "primary", "claude-code/opus", [{"role": "user", "content": "hi"}],
+                                None, {"prompt_tokens": 10, "completion_tokens": 5}, "chat")
+    assert gauge == {"context_used": 15, "context_length": 200_000, "context_percent": 0, "context_warning": None}
+    long_chat = await meter.measure(Window(), "primary", "claude-code/opus", [{"role": "user", "content": "x"}],
+                                    None, {"prompt_tokens": 180_000, "completion_tokens": 0}, "chat")
+    assert long_chat["context_percent"] == 90
+    assert long_chat["context_warning"] and "90%" in long_chat["context_warning"]
