@@ -43,6 +43,14 @@ All carry `session_id` and `turn_id`.
 | `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id` and its `memory_sources` too (none when it was stopped before it started) |
 | `approval.ack` | `approval_id`, `resolved` |
 
+**Model errors** (#280). When a provider turns a request down for a known reason, `error.message` (and a task's
+`error`, section 4) is one plain sentence that says what to do, e.g. `OpenRouter's free models have reached today's
+limit. Add credits on openrouter.ai, wait until tomorrow, or pick another model in Settings > Models.` This covers rate
+limits (OpenRouter's free models per day and per minute), no credits (402), a key the provider rejects (401), a model
+the provider keeps for coding tools, a model it doesn't have (an Ollama model that isn't downloaded), and a provider
+that is down, slow or unreachable. The provider's raw reply only goes to the engine log; other failures keep their
+text.
+
 **Context meter** (#131). After every model call `usage` says how full the model's context is: `context_used` is the
 prompt (the larger of what the provider reported and a local count with LiteLLM's bundled tokenizer, because Ollama
 reports only the part of a prompt it had not cached) plus the reply, `context_length` what the model reads at once in
