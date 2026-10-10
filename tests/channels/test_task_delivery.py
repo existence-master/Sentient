@@ -56,6 +56,8 @@ async def test_desktop_only_sends_nothing_to_chats(tg):
     before = len(tg.api.sent("sendMessage"))
     await _finished(tg.app, desktop)
     await tg.app.notify("task", "It failed.", title="Task failed", payload={"task_id": desktop, "event": "run_failed"})
+    await tg.app.notify("task", "Working again.", title="Check recovered",
+                        payload={"task_id": desktop, "event": "script_recovered"})
     await _finished(tg.app, other, "Other task")  # delivered in order after the two above
     await until(lambda: len(tg.api.sent("sendMessage")) > before)
     await asyncio.sleep(0.2)
@@ -72,9 +74,11 @@ async def test_chosen_chat_gets_it_whatever_the_switches_say(tg):
     task_id = await _task(tg.app, [{"channel": "telegram", "chat_id": "43"}, {"channel": "discord", "chat_id": "9"}])
     before = len(tg.api.sent("sendMessage"))
     await _finished(tg.app, task_id)
-    await until(lambda: len(tg.api.sent("sendMessage")) > before)
+    await tg.app.notify("task", "The check is working again.", title="Check recovered",
+                        payload={"task_id": task_id, "event": "script_recovered"})
+    await until(lambda: len(tg.api.sent("sendMessage")) > before + 1)
     await asyncio.sleep(0.2)
-    assert _chats(tg, before) == ["43"]  # Discord isn't connected, chat 42 wasn't picked
+    assert _chats(tg, before) == ["43", "43"]  # Discord isn't connected, chat 42 wasn't picked
 
 
 async def test_task_question_goes_to_the_chosen_chat_and_a_reply_answers_it(tg):

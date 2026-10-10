@@ -1303,7 +1303,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 - Delivery (chats with `deliver: true`, from `notification.new`; a task's `deliver_to` can keep its notifications on
   the desktop or send them only to chosen chats instead, section 4 "Where results go"): task results and failures
   (`payload.event` in `run_completed`, `run_failed`, `planning_failed`, `clarification_needed`, `disabled`,
-  `script_alert`, `script_failed`; a completed run adds its result summary), questions from running tasks (`payload.event = "question"`, with `channels.deliver_task_results`; each
+  `script_alert`, `script_failed`, `script_recovered`; a completed run adds its result summary), questions from running tasks (`payload.event = "question"`, with `channels.deliver_task_results`; each
   option is a quick-reply button, callback `tq:<option index>:<run_id>`, that answers through
   `app.tasks.answer_question`), plans awaiting approval (**Approve plan** / **Decline** → `app.tasks.approve/decline`), pending proactive
   suggestions (**Approve** / **Dismiss** → same as `POST /api/proactivity/suggestions/{id}`), and notifications with
