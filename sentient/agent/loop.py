@@ -12,7 +12,8 @@ Two layers:
 - ``Agent.run_turn`` is a chat turn: persists the user message (with
   attachments), builds the system prompt (persona, profile, recalled memory,
   user model, skills, running conversation summary), runs the loop,
-  persists the transcript, then kicks off background work (fact extraction,
+  persists the transcript (the final reply carries its memory sources: the facts and
+  insights in its prompt and the facts memory tools returned), then kicks off background work (fact extraction,
   auto title, context compression). Messages the user sends while a reply runs
   (``Agent.steer``) are fed to the model at the next round. A message that reads like a standing "never" or
   "ask me first" is checked for a rule proposal (``sentient.agent.chat_rules``, #130) before the model runs, so an
@@ -69,8 +70,6 @@ from sentient.memory.workspace import Workspace
 from sentient.services import cancel_tasks
 from sentient.skills.loader import SkillLibrary
 from sentient.store.db import Store, new_id
-from sentient.tools.base import Risk, Tool, ToolContext, bind_call, describe_call, effective_risk
-from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.base import (
     UNPROMPTED_ORIGINS,
     Risk,
@@ -81,6 +80,7 @@ from sentient.tools.base import (
     effective_risk,
     is_unprompted,
 )
+from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import (
     SCREEN_SOURCE,

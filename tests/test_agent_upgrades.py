@@ -349,7 +349,7 @@ def test_system_prompt_does_not_depend_on_current_time():
         "facts": [],
         "skills_index": "",
         "assistant_name": "Sentient",
-        "user_name": "Sarthak",
+        "user_name": "Maya",
         "timezone": "UTC",
         "channel": "desktop",
     }
