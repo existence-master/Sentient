@@ -782,7 +782,10 @@ class BrowserService(Service):
         self._internal_pages.add(page)
         if self._active is page:
             context = self._context
-            pages = self._usable_pages(context) if context is not None else []
+            pages = [
+                candidate for candidate in (self._usable_pages(context) if context is not None else [])
+                if not self._attached or candidate in self._download_pages
+            ]
             self._active = pages[-1] if pages else None
 
     def _on_page(self, page: Any) -> None:

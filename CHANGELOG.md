@@ -26,6 +26,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   approvals and rules, and Stop everything stops it. It only answers your chats: tasks, suggestions and other
   background work keep using your other models, and it can't be the memory search model. Anthropic may change how
   this is counted or allowed.
+- **Browser downloads:** files Sentient downloads while using a website are saved to `downloads/` in your Files
+  folder, and the browser result says where. In an attached browser, only downloads from Sentient's own tabs are
+  saved.
 - **Push to talk and dictation into any app:** hold Ctrl+Alt+Shift+T (Cmd+Option+Shift+T on a Mac) anywhere, speak,
   and let go: what you said goes to Sentient as a chat message, and the answer is read aloud. Press Ctrl+Alt+Shift+D,
   speak, and press it again (or just pause): your words are typed where your cursor is, in any app. A small bar at the
@@ -222,7 +225,6 @@ and versions follow [Semantic Versioning](https://semver.org/).
   dropped connection when the computer is busy.
 - What Sentient learns about you reads your messages in the order you sent them, even when two were saved at the
   same instant.
-<<<<<<< HEAD
 - The model check-up no longer warns about the graphics card on an 8 GB card running the setup Sentient recommends
   for it (qwen3:8b reading 8,192 tokens at a time). About 90% of the model fits there, which is expected; the only way
   to fit all of it is a context below 8,192 tokens, which cuts off long tasks. A bigger spill, a longer context or a
@@ -235,9 +237,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Everyday phrases like "If you don't know, say so" no longer make Sentient suggest a Never rule for unrelated
   tools. A suggested rule for a single tool now needs your words to name an action, the app or the tool, so
   "Never write files for me" still suggests blocking file writing.
-=======
 - Edge's downloads hub no longer replaces the active page or appears as a browser tab when a download starts.
->>>>>>> d6f3231d (implementing final steps and fixing browser download issues)
 
 ### Security
 - Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before

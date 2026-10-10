@@ -584,6 +584,34 @@ def test_edge_downloads_hub_is_ignored_and_active_page_is_restored():
     assert svc._usable_pages(context) == [original]
 
 
+def test_attached_downloads_hub_fallback_stays_on_sentient_owned_tab():
+    svc = BrowserService(make_app())
+    svc._attached = True
+
+    class Page:
+        def __init__(self, url):
+            self.url = url
+
+        @property
+        def main_frame(self):
+            return self
+
+        def is_closed(self):
+            return False
+
+    sentient_page = Page("https://sentient.example/")
+    user_page = Page("https://user.example/")
+    downloads_hub = Page("edge://downloads-hub/")
+    context = type("Context", (), {"pages": [sentient_page, user_page, downloads_hub]})()
+    svc._context = context
+    svc._active = downloads_hub
+    svc._download_pages.update((sentient_page, downloads_hub))
+
+    svc._on_navigated(downloads_hub, downloads_hub)
+
+    assert svc._active is sentient_page
+
+
 async def test_failed_download_does_not_discard_action_or_successful_download():
     svc = BrowserService(make_app())
 
