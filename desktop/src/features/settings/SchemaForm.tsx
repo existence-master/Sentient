@@ -73,6 +73,7 @@ export const LABELS: Record<string, FieldLabel> = {
   'tools.repeated_call_limit': { label: 'Stop when the same step repeats', unit: 'times' },
   'tools.disabled': { label: 'Disabled tools', hidden: true },
   'tools.approvals.rules': { label: 'Rules for apps and tools', hidden: true },
+  'tools.approvals.rule_origins': { label: 'Where rules came from', hidden: true },
   // evolution & skills
   'evolution.review_enabled': { label: 'Learn skills from finished work' },
   'evolution.review_idle_minutes': { label: 'Review a chat once idle for', unit: 'min' },

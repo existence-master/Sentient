@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ----------------------------------------------------------------------------- core (owner: core)
@@ -189,6 +189,15 @@ class ChatConfig(BaseModel):
     )
 
 
+class RuleOrigin(BaseModel):
+    """Where a lasting rule came from when the user made it from a chat message (#130)."""
+
+    rule: Literal["ask", "never"] = Field(description="The rule the user accepted.")
+    said: str = Field("", description="The user's own words, shortened.")
+    at: str = Field("", description="When the user accepted it (ISO time).")
+    session_id: str | None = Field(None, description="The chat it was said in.")
+
+
 class ApprovalsConfig(BaseModel):
     mode: Literal["off", "ask", "always"] = Field(
         "ask",
@@ -202,6 +211,11 @@ class ApprovalsConfig(BaseModel):
         description="Lasting rules for apps and tools. The key is a tool name (gmail_send_email) or an app id "
         "(gmail, meaning all of its tools); a tool's own rule beats its app's rule. allow: go ahead without asking "
         "(purchases still ask). ask: always ask first, whatever the setting above says. never: Sentient can't use it.",
+    )
+    rule_origins: dict[str, RuleOrigin] = Field(
+        default_factory=dict,
+        description="Rules you made from a chat message, by rule key, so Settings can say where they came from. "
+        "An entry goes away when its rule is changed or removed.",
     )
 
     @field_validator("rules", mode="before")
@@ -217,6 +231,12 @@ class ApprovalsConfig(BaseModel):
                 raise ValueError("A rule needs a tool name or an app id.")
             out[name] = rule.strip().lower() if isinstance(rule, str) else rule
         return out
+
+    @model_validator(mode="after")
+    def _drop_stale_origins(self) -> ApprovalsConfig:
+        """An origin note only describes the rule it was made with: changing or removing that rule drops it."""
+        self.rule_origins = {k: o for k, o in self.rule_origins.items() if self.rules.get(k) == o.rule}
+        return self
 
 
 class ToolsConfig(BaseModel):

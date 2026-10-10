@@ -25,6 +25,7 @@ from typing import Any
 
 from sentient import paths
 from sentient.agent.approvals import ApprovalBroker
+from sentient.agent.chat_rules import ChatRules
 from sentient.agent.loop import Agent
 from sentient.agent.subagents import SubagentManager
 from sentient.browser import BrowserService
@@ -79,6 +80,7 @@ class SentientApp:
         self.registry = ToolRegistry(disabled=self.config.tools.disabled)
         self.approvals = ApprovalBroker(self.config.tools.approvals, timeout_s=self.config.tools.approvals.timeout_s)
         self.registry.set_blocked(self.approvals.is_never)  # "never" rules hide tools from the model (ADR 0016)
+        self.chat_rules = ChatRules(self)  # "never delete my emails" in chat -> a proposed rule (#130)
         self.memory: FactMemory | None = None
         self.agent: Agent | None = None
 

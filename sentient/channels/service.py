@@ -9,6 +9,9 @@ WhatsApp linked to the user's own account (their "Message yourself" chat).
   with action buttons. A reply to a delivered task question message is the answer to that question. A task's
   own ``deliver_to`` (``tasks/delivery.py``) can keep its notifications on the desktop or send them only to
   chosen chats instead.
+- Rules from chat (#130): a "Make this a rule?" proposal made in a paired chat is sent back to that chat with
+  "Make it a rule" / "Not now" (numbered on WhatsApp); answering there decides it, and an answer given in the
+  desktop app settles the message.
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ TASK_RESULT_EVENTS = {
 STATUS_LABELS = {
     "approved": "Approved", "declined": "Declined", "dismissed": "Dismissed", "answered": "Answered", "cancelled": "Cancelled",
 }
+RULE_OUTCOMES = {"accepted": "Made it a rule. Change it in Settings > Approvals & safety.", "declined": "Not now"}
 QUESTION_ROW = 2  # option buttons per row (Discord allows 5 per row and 5 rows)
 _TOKEN_LOG_RE = re.compile(r"bot\d{5,}:[A-Za-z0-9_-]{20,}")
 
@@ -77,6 +81,7 @@ class ChannelService(Service):
         # notification id -> [(channel, chat_id, message_id)] for messages with action buttons
         self._delivered: dict[str, list[tuple[str, str, str]]] = {}
         self._subagents_sent: set[tuple[str, str, str]] = set()
+        self._rule_cards: dict[str, tuple[str, str, str]] = {}  # proposal id -> (channel, chat_id, message_id)
         self._listening = asyncio.Event()
         install_log_redaction()
 
@@ -271,6 +276,8 @@ class ChannelService(Service):
                         await self.update_delivered(data)
                     elif kind == "subagent.updated":
                         await self.deliver_subagent(data)
+                    elif kind == "rule_proposal.updated":
+                        await self.deliver_rule_proposal(data)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -471,6 +478,58 @@ class ChannelService(Service):
             return False
         ch.publish_message(chat["chat_id"], session_id, "out", md)
         return True
+
+    async def deliver_rule_proposal(self, proposal: dict) -> bool:
+        """Send a new "Make this a rule?" proposal to the paired chat it came from; settle the message once it is
+        answered anywhere (#130). Returns True when a message was sent or settled."""
+        pid, status = str(proposal.get("id") or ""), proposal.get("status")
+        if not pid:
+            return False
+        if status != "pending":
+            sent = self._rule_cards.pop(pid, None)
+            ch = self.channels.get(sent[0]) if sent else None
+            if sent is None or ch is None or (sent[1], sent[2]) not in ch._button_text:
+                return False
+            await ch.settle_buttons(sent[1], sent[2], RULE_OUTCOMES.get(str(status), "Answered"))
+            return True
+        found = await self.store.chat_for_session(str(proposal.get("session_id") or ""))
+        if found is None or pid in self._rule_cards:
+            return False
+        channel_id, chat = found
+        ch = self.channels.get(channel_id)
+        if ch is None or not await self.is_connected(channel_id):
+            return False
+        level = "Never" if proposal.get("rule") == "never" else "Always ask"
+        what = ", ".join(str(t.get("label") or t.get("key")) for t in proposal.get("targets") or [])
+        said = summary_text(str(proposal.get("said") or ""), 200)
+        md = (
+            f"**Make this a rule?**\n{level}: {what}\n\nYou said \"{said}\". A rule keeps working in every chat. "
+            "Until you choose, I'll check with you before using it here."
+        )
+        buttons = [[Button("Make it a rule", f"rp:a:{pid}", "success"), Button("Not now", f"rp:d:{pid}", "secondary")]]
+        try:
+            ids = await ch.send_markdown(chat["chat_id"], md, buttons)
+        except Exception as exc:
+            log.warning("rule proposal delivery failed: %s", ch.redact(str(exc)))
+            return False
+        if ids:
+            self._rule_cards[pid] = (channel_id, chat["chat_id"], ids[-1])
+        ch.publish_message(chat["chat_id"], str(proposal.get("session_id")), "out", md)
+        return True
+
+    async def act_on_rule_proposal(self, ch: Channel, chat_id: str, message_id: str, proposal_id: str, *, accept: bool) -> str:
+        """The user's answer to a "Make this a rule?" message: the same decision as the desktop card."""
+        self._rule_cards.pop(proposal_id, None)
+        try:
+            proposal = await self.app.chat_rules.decide(proposal_id, "accept" if accept else "decline")
+        except LookupError:
+            outcome = "This is no longer waiting"
+        except ValueError:
+            outcome = "This was already answered"
+        else:
+            outcome = RULE_OUTCOMES[proposal["status"]]
+        await ch.settle_buttons(chat_id, message_id, outcome)
+        return outcome
 
     # ------------------------------------------------------------------ button actions
     async def act_on_plan(self, ch: Channel, chat_id: str, message_id: str, task_id: str, *, approve: bool) -> str:

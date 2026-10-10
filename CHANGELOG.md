@@ -6,6 +6,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **"Never do this" becomes a rule.** When you tell Sentient something like "never delete my emails" or "don't post
+  to Slack without asking me", it offers to turn it into a lasting rule: a small card in the chat ("Make this a rule?
+  Never: Gmail > Trash") with "Make it a rule" and "Not now". A rule keeps working in every chat, even after a long
+  conversation has been summarized, and Settings > Approvals & safety shows it came from your message. Nothing becomes
+  a rule without your click, and until you choose, Sentient checks with you before using that tool in the chat.
+  Said in Telegram, Discord or WhatsApp, the question comes back there too (on WhatsApp, reply 1 or 2).
 - **Memory review:** memories that come from an email, a web page, a message, a tool's result, work Sentient did on its
   own, or an imported document wait for you on the new Review tab of the Memory page, with a count in the sidebar.
   Each one shows where it came from and the text it was taken from; approve it, change the wording and approve, turn

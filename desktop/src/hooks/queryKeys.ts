@@ -14,6 +14,7 @@ export const qk = {
   /** Kept outside `sessions` so invalidating the list doesn't refetch transcripts mid-stream. */
   messages: (sessionId: string) => ['messages', sessionId] as const,
   sessionSearch: (q: string) => ['session-search', q] as const,
+  ruleProposals: (sessionId: string) => ['rule-proposals', sessionId] as const,
 
   providers: ['models', 'providers'] as const,
   localModels: ['models', 'local'] as const,
