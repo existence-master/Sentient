@@ -45,6 +45,28 @@ its public REST and WebSocket interface, and the desktop screens were captured f
 | Follow-ups deciding and drafting on `qwen3:8b`, with three made-up threads: a client question waiting 4 days, a "sounds good" reply, and your own unanswered request | Pass: replied, skipped, nudged; no placeholders in drafts (3 to 18 s each) |
 | Telegram with a real bot and a real phone, on `qwen3:8b`: pairing code, chat, approval buttons before running code (then the Docker sandbox), weather, `/help`, and two voice notes understood by faster-whisper | Pass. Replies to voice notes are text unless `channels.telegram.voice_replies` is on |
 
+**Claude through your own Claude Code (experimental, ADR 0022), verified on 2026-10-10**
+
+Claude Code 2.1.269 signed in to a Claude Max plan (`claude auth status`: `loggedIn true`, `authMethod claude.ai`,
+`subscriptionType max`), chat on `claude-code/sonnet`, every other role and memory on local `qwen3:8b`. Fresh
+engines driven over REST and `/ws`. No Claude token was printed or stored.
+
+| Check | Result |
+|---|---|
+| Status and Test: Settings shows the version while the switch is on; Test gives a reply with a tool call | Pass. `version "2.1.269 (Claude Code)"`; Test `ok`, `supports_tools: true`, 12.2 s |
+| A plain reply streams | Pass. A short answer comes as one piece after about 13 s; a longer one as 32 pieces between 8.2 s and 9.9 s, done at 11.7 s |
+| The exact stream-json shape | Confirmed. `system/init` first (its `tools` list is checked), then `stream_event` text and thinking deltas, the full `assistant` message with any `tool_use` blocks and usage, then `result` |
+| Claude Code's own tools are off | Pass. Asked to use its own Bash, PowerShell or Read, it said it only had Sentient's tools and made no call. Every `init` listed only `mcp__sentient__*` tools plus the harmless built-ins |
+| A Sentient tool with approval | Pass. `execute_code` asked first (risk `exec`); allowed, it ran in Sentient and streamed its output; declined, nothing ran and the reply said so. `file_write` ran in Sentient's loop without asking, as approvals mode `ask` intends |
+| Memory and usage | Pass. Remembered facts reach the reply. Each model round sends `usage` with prompt and completion tokens and no price (the plan pays) |
+| Stop everything ends a running reply | Pass. Stopped 2.2 s after a long reply began to stream: the turn ended as cancelled, and the Claude Code process, its launcher and Sentient's tool bridge (4 processes while it answered) were all gone |
+| Background work is refused | Pass. Fast and planner roles on `claude-code/` are refused with a plain message, so their fallback model takes over |
+| Scratch folders are removed | Pass after the fix for #259: no folder left after each reply or after Stop everything, and a two-hour-old leftover was removed when the engine started |
+| Turning the switch on, then the status | Pass after the fix in #246: with the save held back for 1.5 s, the first status still said "off"; the window asked again every 0.4 s and showed the version as soon as the save landed |
+
+Not checked: how this usage appears on the Claude plan's usage page (it needs the owner's claude.ai account).
+Chats on `claude-code/` models show no context meter yet (#258).
+
 The automated suite (522 engine tests, desktop typecheck and build) passes.
 
 Real-model runs found and fixed these problems, each now covered by a test: a memory update dropped a

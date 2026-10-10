@@ -2,6 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, errorMessage } from '@/lib/api'
+import { retryWhileSaving, SAVE_RETRY_MS, statusOnceSaved } from '@/lib/claudeCode'
 import { demo, isDemoMode } from '@/lib/demo'
 import type { CheckupRole, CheckupStatus, Hardware, ModelRoles, OllamaPullProgress, RoleName, SentientConfig } from '@/lib/types'
 import { qk } from './queryKeys'
@@ -61,9 +62,16 @@ export function useSecrets() {
   return useQuery({ queryKey: qk.secrets, queryFn: api.secrets.list })
 }
 
-/** Claude through your own Claude Code: on, installed, version. Asked again when the switch changes. */
+/** Claude through your own Claude Code: on, installed, version. Asked again when the switch changes, and again
+ * until the engine has saved the switch (the screen flips it before the save lands). */
 export function useClaudeCodeStatus(enabled: boolean) {
-  return useQuery({ queryKey: qk.claudeCode(enabled), queryFn: api.models.claudeCode, staleTime: 60_000, retry: false })
+  return useQuery({
+    queryKey: qk.claudeCode(enabled),
+    queryFn: () => statusOnceSaved(api.models.claudeCode, enabled),
+    staleTime: 60_000,
+    retry: retryWhileSaving,
+    retryDelay: SAVE_RETRY_MS
+  })
 }
 
 export function useTestModel() {
