@@ -15,7 +15,9 @@ Two layers:
   persists the transcript (the final reply carries its memory sources: the facts and
   insights in its prompt and the facts memory tools returned), then kicks off background work (fact extraction,
   auto title, context compression). Messages the user sends while a reply runs
-  (``Agent.steer``) are fed to the model at the next round.
+  (``Agent.steer``) are fed to the model at the next round. A message that reads like a standing "never" or
+  "ask me first" is checked for a rule proposal (``sentient.agent.chat_rules``, #130) before the model runs, so an
+  undecided proposal already makes this reply ask before the matched tools.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from pydantic import ValidationError
 
 from sentient import paths
 from sentient.agent.approvals import ApprovalBroker
+from sentient.agent.chat_rules import standing_text
 from sentient.agent.prompt import build_system_prompt
 from sentient.agent.toolselect import ToolSelector, is_local_model
 from sentient.config.schema import SentientConfig
@@ -100,6 +103,9 @@ EMPTY_ANSWER_NUDGE = (
     "otherwise answer the user now, based on the tool results above."
 )
 USER_MODEL_TIMEOUT_S = 2.0
+# longest a reply waits for the rule check of its message (chat_rules); a slower check finishes in the background,
+# and until it does the tools it is weighing ask first in that chat
+RULE_CHECK_WAIT_S = 20.0
 SPOKEN_CHANNELS = {"voice", "glasses", "phone"}  # these turns use the voice role
 # Real qwen3:8b told the user "the Place order button was clicked" after a plain decline, so say it bluntly.
 DECLINED = (
@@ -722,6 +728,9 @@ class Agent:
         unprompted: bool = False,
     ) -> _CallPlan:
         tool = self.registry.get(tc.name)
+        # an undecided rule proposal in this chat (#130) is looked up first (it may read the database), so the
+        # lasting rule read next is current: a Never saved meanwhile is refused, never turned into a question
+        chat_rule = await self._chat_rule(tool, ctx.session_id) if tool is not None else None
         rule = self.approvals.rule(tool) if tool is not None else None
         if tool is not None and rule == "never":
             # lasting rule (ADR 0016): the tool is not offered, and a call made anyway is refused without running
@@ -729,6 +738,8 @@ class Agent:
             return _CallPlan(tc=tc, tool=None, preset=({"error": refusal}, True, 0))
         if tool is None or not (tool_names is None or tc.name in tool_names):
             return _CallPlan(tc=tc, tool=None, preset=({"error": f"unknown tool {tc.name}"}, True, 0))
+        if chat_rule == "ask":
+            rule = "ask"  # ask first while the user hasn't answered the proposal, whatever else says yes
         plan = _CallPlan(tc=tc, tool=tool, risk=tool.risk)
         if "_raw" in tc.arguments and len(tc.arguments) == 1:
             plan.preset = self._raw_arguments_error(tool, tc)
@@ -766,11 +777,31 @@ class Agent:
                 plan.wants_ok = True
             return plan
         if use_approvals:
-            plan.needs_approval = await self.approvals.decide(tool, ctx.session_id, plan.risk, tc.arguments, ctx)
+            plan.needs_approval = rule == "ask" or await self.approvals.decide(
+                tool, ctx.session_id, plan.risk, tc.arguments, ctx
+            )
         elif rule == "ask":  # task runs and other unattended loops cannot stop to ask: the run stops here
             plan.preset = ({"error": unattended_ask_message(self.approvals.label(tool, self.registry))}, True, 0)
             plan.rule_stop = True
         return plan
+
+    async def _chat_rule(self, tool: Tool, session_id: str | None) -> str | None:
+        """"ask" while this chat has an undecided rule proposal for ``tool`` (``sentient.agent.chat_rules``)."""
+        chat_rules = getattr(self.app, "chat_rules", None) if self.app is not None else None
+        if chat_rules is None or not session_id:
+            return None
+        return await chat_rules.chat_rule(tool, session_id)
+
+    def _start_rule_check(self, session_id: str, message_id: str | None, text: str) -> asyncio.Task | None:
+        """Start checking ``text`` for a standing "never" or "ask me first" (#130), or None when the cheap
+        pre-filter says it is not one. The task is tracked like other background work and never raises."""
+        chat_rules = getattr(self.app, "chat_rules", None) if self.app is not None else None
+        if chat_rules is None or not standing_text(text):
+            return None
+        task = asyncio.create_task(chat_rules.check(session_id, message_id, text), name="rule-check")
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        return task
 
     @staticmethod
     def _repeated(
@@ -887,7 +918,7 @@ class Agent:
             await persist("tool", content, tool_call_id=tc.id, name=tc.name)
         yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
 
-    def _delivered_rows(self, res: Any) -> Any:
+    def delivered_rows(self, res: Any) -> Any:
         """The rows of a list result the model actually read: ``_tool_content`` cuts long results, and a
         memory from the cut part must not be shown as one Sentient had in mind."""
         limit = self.config.chat.tool_result_max_chars
@@ -960,7 +991,10 @@ class Agent:
         channel: str = "desktop",
         attachments: list[str] | None = None,
         model: str | None = None,
+        on_stopped: Callable[[dict], Any] | None = None,
     ) -> AsyncIterator[AgentEvent]:
+        """One chat turn. ``on_stopped`` is called with ``{message_id, memory_sources}`` of the reply kept when the
+        turn is stopped, so the caller can send them with its own ``done`` event."""
         turn_id = new_id()
         ev = {"session_id": session_id, "turn_id": turn_id}
         attachments = attachments or []
@@ -988,7 +1022,8 @@ class Agent:
         partial = ""
         sources = MemorySources()  # what this reply had in mind (shown under it, never asked of the model)
         try:
-            await self.store.add_message(session_id, "user", user_text, attachments=attachments)
+            user_message_id = await self.store.add_message(session_id, "user", user_text, attachments=attachments)
+            rule_check = self._start_rule_check(session_id, user_message_id, user_text)
             await self.store.touch_session(session_id, title=(user_text or (attachments[0] if attachments else ""))[:60])
 
             session = await self.store.get_session(session_id)
@@ -1024,7 +1059,14 @@ class Agent:
                 tool_names = None
 
             async def persist(role_: str, content: str | None, **fields: Any) -> None:
-                await self.store.add_message(session_id, role_, content, **fields)
+                mid = await self.store.add_message(session_id, role_, content, **fields)
+                if role_ == "user" and content:  # a steer message can be a standing instruction too (#130)
+                    check = self._start_rule_check(session_id, mid, content)
+                    if check is not None:
+                        await asyncio.wait({check}, timeout=RULE_CHECK_WAIT_S)
+
+            if rule_check is not None:  # a pending proposal must already make this reply ask (#130)
+                await asyncio.wait({rule_check}, timeout=RULE_CHECK_WAIT_S)
 
             async for event in self.run_loop(
                 messages, ctx, result=result, role=role, model=model, tool_names=tool_names,
@@ -1035,7 +1077,7 @@ class Agent:
                 elif isinstance(event, ToolResultEvent | UserInterjection):
                     partial = ""  # text before a tool call or a steer was already persisted
                     if isinstance(event, ToolResultEvent) and not event.is_error:
-                        sources.add_tool_result(event.name, self._delivered_rows(event.result))
+                        sources.add_tool_result(event.name, self.delivered_rows(event.result))
                     if ctx.untrusted and not marked:  # remember it for the rest of this chat, also after a restart
                         marked = True
                         await self.store.execute(
@@ -1052,7 +1094,12 @@ class Agent:
             release()
             # the user pressed Stop (or the window went away): keep what was shown
             with contextlib.suppress(Exception):
-                await asyncio.shield(self._persist_stopped(session_id, partial, sources))
+                save = asyncio.ensure_future(self._persist_stopped(session_id, partial, sources))
+                while not save.done():  # a second Stop while saving must not lose what the caller sends on
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.shield(save)
+                if on_stopped is not None and not save.cancelled():
+                    on_stopped(save.result())
             raise
         except BaseException:
             release()
@@ -1106,11 +1153,11 @@ class Agent:
         await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
         return source
 
-    async def _persist_stopped(self, session_id: str, partial: str, sources: MemorySources) -> None:
+    async def _persist_stopped(self, session_id: str, partial: str, sources: MemorySources) -> dict:
         content = (partial.rstrip() + "\n\n_(stopped)_").strip()
-        await self.store.add_message(
-            session_id, "assistant", content, memory_sources=await sources.resolve(self.store)
-        )
+        memory_sources = await sources.resolve(self.store)
+        message_id = await self.store.add_message(session_id, "assistant", content, memory_sources=memory_sources)
+        return {"message_id": message_id, "memory_sources": memory_sources}
 
     # ------------------------------------------------------------------ tools
     @staticmethod

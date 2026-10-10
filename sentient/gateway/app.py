@@ -82,6 +82,8 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
 
         async def run_chat(session_id: str, msg: dict, previous: asyncio.Task | None, generation: int) -> None:
             me = asyncio.current_task()
+            turn = None
+            stopped: dict = {}
             try:
                 if previous is not None and not previous.done():
                     await asyncio.wait({previous})
@@ -94,18 +96,26 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                     await send({"type": "done", "content": "", "session_id": session_id, "cancelled": True,
                                 "dropped": [str(msg.get("text", ""))], "client_id": client_id})
                     return
-                async for event in s.agent.run_turn(
+                turn = s.agent.run_turn(
                     session_id,
                     str(msg.get("text", "")),
                     channel=str(msg.get("channel", "desktop")),
                     attachments=list(msg.get("attachments") or []),
                     model=msg.get("model") or None,
-                ):
+                    on_stopped=stopped.update,
+                )
+                async for event in turn:
                     # keep consuming even if the window went away so the turn is fully persisted
                     await send(event.model_dump())
             except asyncio.CancelledError:
+                if turn is not None:  # stopped between events: close it now so the kept reply is saved first
+                    with contextlib.suppress(Exception):
+                        await turn.aclose()
                 await send({"type": "error", "message": "Stopped.", "session_id": session_id, "recoverable": True})
-                await send({"type": "done", "content": "", "session_id": session_id, "cancelled": True})
+                # the kept reply's id and memory sources, so the window shows them without a reload
+                kept = {"message_id": stopped["message_id"]} if stopped.get("message_id") else {}
+                await send({"type": "done", "content": "", "session_id": session_id, "cancelled": True, **kept,
+                            "memory_sources": stopped.get("memory_sources") or []})
                 raise
             except Exception as exc:
                 log.exception("chat turn failed")

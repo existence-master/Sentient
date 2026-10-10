@@ -11,7 +11,7 @@ import mimetypes
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -290,6 +290,30 @@ async def delete_session(request: Request, session_id: str):
 @router.get("/api/sessions/{session_id}/messages", dependencies=_auth)
 async def session_messages(request: Request, session_id: str, limit: int = 500):
     return await get_core(request).store.recent_messages(session_id, limit)
+
+
+# ----------------------------------------------------------------------------- rules from chat (#130)
+@router.get("/api/sessions/{session_id}/rule-proposals", dependencies=_auth)
+async def rule_proposals(request: Request, session_id: str, status: str = "pending"):
+    """Rules Sentient proposed from what was said in this chat; ``status=all`` includes answered ones."""
+    if status not in {"pending", "accepted", "declined", "all"}:
+        raise HTTPException(422, "status must be pending, accepted, declined or all")
+    return await get_core(request).chat_rules.list(session_id, None if status == "all" else status)
+
+
+class RuleDecisionBody(BaseModel):
+    decision: Literal["accept", "decline"]
+
+
+@router.post("/api/rule-proposals/{proposal_id}", dependencies=_auth)
+async def decide_rule_proposal(request: Request, proposal_id: str, body: RuleDecisionBody):
+    """The user's click on "Make it a rule" or "Not now". Nothing else creates a rule from chat."""
+    try:
+        return await get_core(request).chat_rules.decide(proposal_id, body.decision)
+    except LookupError as exc:
+        raise HTTPException(404, "no such rule proposal") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 # ----------------------------------------------------------------------------- chat fallback + approvals

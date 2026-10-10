@@ -6,13 +6,14 @@ import { Button, EmptyState, IconButton, Skeleton } from '@/components/ui'
 import { useBrowserView } from '@/features/browser/state'
 import { ChannelBadge } from '@/features/channels/meta'
 import { HelpersTray } from './HelpersTray'
-import { useBootstrap, useConfig, useMessages, useSessions } from '@/hooks/core'
+import { useBootstrap, useConfig, useMessages, useRuleProposals, useSessions } from '@/hooks/core'
 import { isApiError } from '@/lib/api'
 import { foldTranscript, type AttachmentView, type TimelineItem } from '@/lib/chatFold'
 import { cn } from '@/lib/utils'
 import { liveItems, useChat } from '@/stores/chat'
 import { AssistantTurn } from './AssistantTurn'
 import { Composer } from './Composer'
+import { RuleProposalCard } from './RuleProposalCard'
 import { EmptyChat, type Suggestion } from './EmptyChat'
 import { useAttachments } from './useAttachments'
 import { UserMessage } from './UserMessage'
@@ -42,6 +43,7 @@ function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPro
   const config = useConfig()
   const sessions = useSessions()
   const messages = useMessages(sessionId)
+  const proposals = useRuleProposals(sessionId)
   const attachments = useAttachments()
   const [inject, setInject] = useState<{ text: string; nonce: number } | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -188,6 +190,8 @@ function ChatView({ sessionId, initialPrompt }: { sessionId?: string; initialPro
                 />
               )
             )}
+            {/* "Make this a rule?" for something the user said in this chat (#130) */}
+            {!loadingHistory && proposals.data?.map((p) => <RuleProposalCard key={p.id} proposal={p} />)}
           </Timeline>
           <div className="shrink-0 px-6 pb-4 pt-2">
             <div className="mx-auto w-full max-w-[760px]">

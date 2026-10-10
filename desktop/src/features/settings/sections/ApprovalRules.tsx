@@ -1,6 +1,7 @@
 /**
  * "Rules for apps and tools": lasting Allow / Ask / Never choices per app or per tool
- * (`tools.approvals.rules`, docs/API.md section 2, ADR 0016). "Default" means no rule.
+ * (`tools.approvals.rules`, docs/API.md section 2, ADR 0016). "Default" means no rule. A rule made from a chat
+ * message (#130) says so: "From your message on Oct 10, 2026".
  */
 import { IconChevronDown, IconShoppingCart, IconTrash } from '@tabler/icons-react'
 import { useMemo, useState, type ReactNode } from 'react'
@@ -8,8 +9,8 @@ import { Alert, Badge, Button, FormSection, SegmentedControl, Skeleton } from '@
 import { useConfigEditor } from '@/hooks/config'
 import { useTools } from '@/hooks/core'
 import { errorMessage, isNotImplemented } from '@/lib/api'
-import type { ApprovalRule, ToolInfo, ToolPlugin } from '@/lib/types'
-import { cn, humanize } from '@/lib/utils'
+import type { ApprovalRule, RuleOrigin, ToolInfo, ToolPlugin } from '@/lib/types'
+import { cn, humanize, parseDate } from '@/lib/utils'
 import { ToolTile } from '../../tasks/tools'
 
 type Choice = ApprovalRule | 'default'
@@ -25,6 +26,17 @@ const RULE_WORDS: Record<ApprovalRule, string> = {
   allow: 'goes ahead without asking',
   ask: 'always asks first',
   never: "can't be used"
+}
+
+/** "From your message on Oct 10, 2026" for a rule made from chat; the words themselves show on hover. */
+function OriginNote({ origin }: { origin?: RuleOrigin }) {
+  if (!origin) return null
+  const day = parseDate(origin.at)?.toLocaleDateString(undefined, { dateStyle: 'medium' })
+  return (
+    <span className="block truncate text-xs text-fg-subtle" title={origin.said ? `You said: "${origin.said}"` : undefined}>
+      {day ? `From your message on ${day}` : 'From your message in a chat'}
+    </span>
+  )
 }
 
 function toolLabel(plugin: ToolPlugin, tool: ToolInfo): string {
@@ -44,6 +56,7 @@ export function ApprovalRulesSection({ query }: { query: string }) {
     for (const [k, v] of Object.entries(config?.tools.approvals.rules ?? {})) if (v) out[k] = v
     return out
   }, [config])
+  const origins = config?.tools.approvals.rule_origins ?? {}
 
   const q = query.trim().toLowerCase()
   const isOpen = (p: ToolPlugin) => !!q || (openState[p.id] ?? p.tools.some((t) => rules[t.name]))
@@ -114,11 +127,11 @@ export function ApprovalRulesSection({ query }: { query: string }) {
         {nothing && <div className="px-4 py-6 text-center text-sm text-fg-subtle">{q ? 'No apps or tools match your search.' : 'No apps or tools to set rules for yet.'}</div>}
         {plugins.apps.length > 0 && <GroupHeading>Apps and services</GroupHeading>}
         {plugins.apps.map((p) => (
-          <PluginRows key={p.id} plugin={p} rules={rules} open={isOpen(p)} onToggle={() => toggle(p)} onChange={setRule} />
+          <PluginRows key={p.id} plugin={p} rules={rules} origins={origins} open={isOpen(p)} onToggle={() => toggle(p)} onChange={setRule} />
         ))}
         {plugins.builtIn.length > 0 && <GroupHeading>Built in</GroupHeading>}
         {plugins.builtIn.map((p) => (
-          <PluginRows key={p.id} plugin={p} rules={rules} open={isOpen(p)} onToggle={() => toggle(p)} onChange={setRule} />
+          <PluginRows key={p.id} plugin={p} rules={rules} origins={origins} open={isOpen(p)} onToggle={() => toggle(p)} onChange={setRule} />
         ))}
         {orphans.length > 0 && !q && (
           <>
@@ -128,6 +141,7 @@ export function ApprovalRulesSection({ query }: { query: string }) {
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm text-fg">{humanize(key)}</div>
                   <div className="text-xs text-fg-subtle">Not connected right now. This {RULE_WORDS[rules[key]]}.</div>
+                  <OriginNote origin={origins[key]} />
                 </div>
                 <Badge size="xs">{CHOICES.find((c) => c.value === rules[key])?.label}</Badge>
                 <Button size="sm" variant="ghost" leftIcon={<IconTrash size={13} />} onClick={() => setRule(key, 'default')}>
@@ -149,12 +163,14 @@ function GroupHeading({ children }: { children: ReactNode }) {
 function PluginRows({
   plugin,
   rules,
+  origins,
   open,
   onToggle,
   onChange
 }: {
   plugin: ToolPlugin
   rules: Record<string, ApprovalRule>
+  origins: Record<string, RuleOrigin>
   open: boolean
   onToggle: () => void
   onChange: (key: string, choice: Choice, appId?: string) => void
@@ -186,6 +202,7 @@ function PluginRows({
               {appRule ? `Every tool ${RULE_WORDS[appRule]}` : `${count} tool${count === 1 ? '' : 's'}`}
               <IconChevronDown size={13} className={cn('transition-transform', open && 'rotate-180')} />
             </span>
+            {appRule && <OriginNote origin={origins[plugin.id]} />}
           </span>
         </button>
         <SegmentedControl
@@ -209,6 +226,7 @@ function PluginRows({
                   {!own && appRule && (
                     <div className="truncate text-xs text-fg-subtle">{`Follows ${plugin.display_name}: ${RULE_WORDS[appRule]}.`}</div>
                   )}
+                  {own && <OriginNote origin={origins[t.name]} />}
                 </div>
                 <SegmentedControl
                   size="sm"

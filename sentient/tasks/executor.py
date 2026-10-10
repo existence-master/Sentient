@@ -8,6 +8,8 @@ service parks it as ``waiting_for_user`` until the answer arrives (``tasks/ask.p
 A run that read outside content (a tool result, or the event that started it) and then tries
 to send something pauses the same way and asks first (ADR 0018).
 A run that gets stuck (``tasks/stuck.py``) pauses the same way with a plain reason.
+The memories a run had in mind (facts in its prompt, facts memory tools returned that the model read) are kept on
+the run as ``memory_sources``, merged across pauses, resumes and restarts (``sentient/memory/sources.py``).
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from sentient.agent.loop import Budget, LoopResult, history_to_openai
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
 from sentient.llm.provider import ToolCall
+from sentient.memory.sources import MemorySources
 from sentient.tasks import ask, limits, stuck
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
@@ -208,18 +211,18 @@ class ProgressMapper:
 
 async def _executor_system_prompt(
     svc: TaskService, task: dict, run: dict, plan: list[dict], tool_map: dict[str, list[str]]
-) -> str:
+) -> tuple[str, list[dict]]:
+    """The executor's system prompt and the recalled facts put into it."""
     app = svc.app
     cfg = app.config.assistant
     tz = get_tz(svc.tz_name())
-    memories: list[str] = []
+    facts: list[dict] = []
     if app.memory is not None:
         query = " ".join(
             str(x) for x in (task.get("name"), task.get("description"), (run.get("trigger_data") or {}).get("subject")) if x
         )[:500]
         try:
-            facts = await app.memory.recall(query)
-            memories = [f["content"] for f in facts if f.get("content")]
+            facts = [f for f in await app.memory.recall(query) if f.get("content")]
         except Exception as exc:
             log.debug("memory recall for task %s skipped: %s", task["id"], exc)
     return build_executor_prompt(
@@ -234,9 +237,9 @@ async def _executor_system_prompt(
         plan=plan,
         original_context=task.get("original_context"),
         trigger_event_data=run.get("trigger_data"),
-        memories=memories,
+        memories=[f["content"] for f in facts],
         tool_map=tool_map,
-    )
+    ), facts
 
 
 def _trigger_source(app: Any, task: dict, run: dict) -> str:
@@ -302,6 +305,7 @@ async def execute_single(
     result = LoopResult()
     messages: list[dict] = []
     asking: dict[str, Any] = {}
+    sources = MemorySources(run.get("memory_sources"))  # what the run had in mind so far (before a pause or restart)
     # active time only (waiting for an answer is not counted), plus a grace so a slow call can finish first
     hard = asyncio.timeout(remaining_s + HARD_DEADLINE_GRACE_S)
     cfg = app.config.tasks
@@ -344,9 +348,12 @@ async def execute_single(
                 if not answered and not is_first_retry_attempt(run):  # a retry's checkpoint already has its note
                     messages.append({"role": "user", "content": RESUME_NOTE})
             else:
-                system = await _executor_system_prompt(svc, task, run, plan, tool_map)
+                system, facts = await _executor_system_prompt(svc, task, run, plan, tool_map)
+                sources.add_facts(facts)
                 messages = [{"role": "system", "content": system}, {"role": "user", "content": EXECUTOR_KICKOFF}]
-                await svc.repo.update_run(run_id, {"messages": messages})
+                await svc.repo.update_run(run_id, {
+                    "messages": messages, "memory_sources": await sources.resolve(app.store),
+                })
 
             asking["asked"] = ask.count_questions(messages)
             # outside content in play: the event that started the run, or a tool result earlier in it (ADR 0018)
@@ -376,6 +383,11 @@ async def execute_single(
                 ):
                     await alive(event)
                     await mapper.handle(event, messages)
+                    if isinstance(event, ToolResultEvent) and not event.is_error:
+                        seen = len(sources)
+                        sources.add_tool_result(event.name, app.agent.delivered_rows(event.result))
+                        if len(sources) > seen:  # saved at once, so a restart keeps it
+                            await svc.repo.update_run(run_id, {"memory_sources": await sources.resolve(app.store)})
                 await mapper.flush_thought()
                 if result.paused or result.stopped_by_budget:
                     break

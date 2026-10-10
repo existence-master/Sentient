@@ -96,6 +96,7 @@ import type {
   ProgressUpdate,
   Provider,
   RoleName,
+  RuleProposal,
   SecretStatus,
   SentientConfig,
   Session,
@@ -424,6 +425,13 @@ export const api = {
     messages: (id: string, limit = 500) =>
       http.get<TranscriptMessage[]>(`/api/sessions/${enc(id)}/messages`, { query: { limit } }),
     search: (q: string) => http.get<MessageSearchHit[]>('/api/sessions/search', { query: { q } })
+  },
+
+  /** "Make this a rule?" cards from what was said in a chat (#130). Only `decide` creates a rule. */
+  ruleProposals: {
+    list: (sessionId: string) => http.get<RuleProposal[]>(`/api/sessions/${enc(sessionId)}/rule-proposals`),
+    decide: (id: string, decision: 'accept' | 'decline') =>
+      http.post<RuleProposal>(`/api/rule-proposals/${enc(id)}`, { decision })
   },
 
   chat: {

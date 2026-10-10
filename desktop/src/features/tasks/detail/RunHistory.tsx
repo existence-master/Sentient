@@ -22,10 +22,12 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, EmptyState, JsonView, Markdown, Tooltip } from '@/components/ui'
 import { ContextGauge } from '@/features/chat/ContextMeter'
+import { MemorySources } from '@/features/chat/MemorySources'
+import { useBootstrap } from '@/hooks/core'
 import { api, errorMessage } from '@/lib/api'
 import { useRetryRun } from '@/hooks/tasks'
 import { getBridge } from '@/lib/bridge'
-import type { Run, Task, TaskRunResult } from '@/lib/types'
+import type { MemorySource, Run, Task, TaskRunResult } from '@/lib/types'
 import { cn, formatDuration, parseDate, relativeTime, truncate } from '@/lib/utils'
 import { useNow } from '../hooks'
 import { retryOf, runDurationMs } from '../meta'
@@ -213,7 +215,7 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
                   {retryButton}
                 </div>
               )}
-              {run.result && <RunResult result={run.result} />}
+              {run.result && <RunResult result={run.result} memorySources={run.memory_sources} />}
               <div>
                 <div className="mb-2 flex items-center gap-2 text-2xs font-semibold uppercase tracking-wider text-fg-subtle">Execution log</div>
                 <RunLog taskId={task.task_id} run={run} live={live} tz={tz} />
@@ -347,8 +349,9 @@ export function TriggerEventCard({ source, data, tz }: { source?: string; data: 
 }
 
 // ---------------------------------------------------------------------------- result
-export function RunResult({ result }: { result: TaskRunResult }) {
+export function RunResult({ result, memorySources }: { result: TaskRunResult; memorySources?: MemorySource[] }) {
   const { names } = useToolNames()
+  const { data: boot } = useBootstrap()
   const open = (url: string) => /^https?:/.test(url) && void getBridge().openExternal(url)
   const links = [...(result.links_created ?? []).map((l) => ({ ...l, created: true })), ...(result.links_found ?? []).map((l) => ({ ...l, created: false }))]
   return (
@@ -416,6 +419,7 @@ export function RunResult({ result }: { result: TaskRunResult }) {
           ))}
         </div>
       )}
+      {!!memorySources?.length && <MemorySources sources={memorySources} assistantName={boot?.assistant.name || 'Sentient'} task />}
     </div>
   )
 }

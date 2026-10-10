@@ -144,6 +144,38 @@ export interface ApprovalsConfig {
   timeout_s: number
   /** Key: a tool name (`gmail_send_email`) or an app id (`gmail`). A tool's own rule beats its app's rule. */
   rules: Record<string, ApprovalRule>
+  /** Rules made from a chat message, by rule key (#130). Dropped by the engine when the rule changes. */
+  rule_origins?: Record<string, RuleOrigin>
+}
+
+export interface RuleOrigin {
+  rule: 'ask' | 'never'
+  /** The user's own words, shortened. */
+  said: string
+  at: ISODate | ''
+  session_id: string | null
+}
+
+/** One app or tool a rule proposal covers: `label` is "Gmail > Trash", or just "Gmail" for the whole app. */
+export interface RuleProposalTarget {
+  key: string
+  app: string | null
+  tool: string | null
+  label: string
+}
+
+/** "Make this a rule?" from something the user said in a chat (docs/API.md section 2, #130). */
+export interface RuleProposal {
+  id: string
+  session_id: string
+  message_id: string | null
+  said: string
+  rule: 'ask' | 'never'
+  keys: string[]
+  targets: RuleProposalTarget[]
+  status: 'pending' | 'accepted' | 'declined'
+  created_at: ISODate
+  decided_at: ISODate | null
 }
 
 export interface ToolsConfig {
@@ -782,6 +814,7 @@ export interface DomainEventMap {
   'memory.updated': MemoryUpdatedData
   'skill.updated': { name: string; state: SkillState }
   'session.updated': { session_id: string; title: string }
+  'rule_proposal.updated': RuleProposal
   'config.updated': { sections: string[] }
   'voice.state': { state: VoiceState }
   // §10-14
@@ -1195,6 +1228,8 @@ export interface Run {
   last_activity_at?: ISODate | null
   /** Live only (never sent by the engine): how full the model's context is, from `task.run_context` (#131). */
   context?: ContextMeter | null
+  /** Memories the run had in mind: facts in its instructions or found by a memory look-up (docs/API.md §4). */
+  memory_sources?: MemorySource[]
 }
 
 export interface TaskChatMessage {
