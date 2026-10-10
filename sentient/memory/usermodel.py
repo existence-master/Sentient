@@ -412,12 +412,17 @@ class UserModelService(Service):
 
     # ------------------------------------------------------------------ review (ADR 0021)
     async def pending_insights(self, limit: int = 500) -> list[dict]:
-        """Insights held for the user's review, newest first."""
+        """Insights held for the user's review, newest first (``limit=-1``: all of them)."""
         await ensure_memory_schema(self.app.store)
         rows = await self.app.store.fetchall(
             f"SELECT {_COLUMNS} FROM user_insights WHERE status = ? ORDER BY created_at DESC LIMIT ?", (PENDING, limit)
         )
         return [_public(_row(r)) for r in rows]
+
+    async def pending_count(self) -> int:
+        await ensure_memory_schema(self.app.store)
+        row = await self.app.store.fetchone("SELECT COUNT(*) AS n FROM user_insights WHERE status = ?", (PENDING,))
+        return int(row["n"]) if row else 0
 
     async def approve_insight(self, insight_id: str, statement: str | None = None) -> dict | None:
         """The user approved a held insight: it becomes active, or confirmed in their own words when ``statement``

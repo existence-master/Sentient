@@ -25,6 +25,7 @@ from sentient.tools.base import is_unprompted
 log = logging.getLogger(__name__)
 
 SNIPPET_CHARS = 400
+INBOX_LIMIT = 500  # items of each kind the inbox lists; its count covers all of them
 # what work nobody asked for is called on a review card
 UNPROMPTED_LABELS = {
     "proactive": "a proactive check",
@@ -110,19 +111,28 @@ def _item(kind: str, mid: Any, text: str, source: str, review: dict | None, crea
     }
 
 
-async def inbox(app: Any) -> dict:
-    """``{items, count, expire_days}``: every pending fact and insight, newest first."""
+async def _items(app: Any, limit: int) -> list[dict]:
     days = app.config.memory.review_expire_days
     items: list[dict] = []
     if app.memory is not None:
-        for f in await app.memory.pending_facts():
+        for f in await app.memory.pending_facts(limit):
             items.append(_item("fact", f["id"], f["content"], f["source"], f["review"], f["created_at"], days))
     um = getattr(app, "user_model", None)
     if um is not None:
-        for i in await um.pending_insights():
+        for i in await um.pending_insights(limit):
             items.append(_item("insight", i["id"], i["statement"], i["source"], i.get("review"), i["created_at"], days))
     items.sort(key=lambda i: i["created_at"] or "", reverse=True)
-    return {"items": items, "count": len(items), "expire_days": days}
+    return items
+
+
+async def inbox(app: Any, limit: int = INBOX_LIMIT) -> dict:
+    """``{items, count, expire_days}``: pending facts and insights, newest first (at most ``limit`` of each);
+    ``count`` is all of them."""
+    count = await app.memory.pending_count() if app.memory is not None else 0
+    um = getattr(app, "user_model", None)
+    if um is not None:
+        count += await um.pending_count()
+    return {"items": await _items(app, limit), "count": count, "expire_days": app.config.memory.review_expire_days}
 
 
 async def approve(app: Any, kind: str, item_id: str, content: str | None = None) -> bool:
@@ -145,9 +155,9 @@ async def discard(app: Any, kind: str, item_id: str) -> bool:
 
 
 async def approve_from(app: Any, source: str) -> int:
-    """Approve every pending memory whose ``from`` is ``source``. Returns how many."""
+    """Approve every pending memory whose ``from`` is ``source`` (all of them, not one inbox page). Returns how many."""
     done = 0
-    for item in (await inbox(app))["items"]:
+    for item in await _items(app, -1):
         if item["from"] == source and await approve(app, item["kind"], str(item["id"])):
             done += 1
     return done

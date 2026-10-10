@@ -818,7 +818,8 @@ only from outside material (section 15). A held memory is never in a prompt, `me
 a held fact never updates or deletes another fact (duplicates of any fact are skipped). Only these routes move one
 out of pending; no model output can:
 
-- `GET /api/memories/review` → `{items: [ReviewItem], count, expire_days}` newest first.
+- `GET /api/memories/review` → `{items: [ReviewItem], count, expire_days}` newest first (at most 500 facts and 500
+  insights; `count` covers all of them).
   **ReviewItem** `{kind: "fact"|"insight", id: int|string, text, source, from, snippet, session_id, created_at, expires_at}`
   (`expires_at` = `created_at` + `memory.review_expire_days`)
 - `POST /api/memories/review/{kind}/{id}/approve` `{content?}` → `{ok: true}`: becomes active (a fact gets its
@@ -826,7 +827,8 @@ out of pending; no model output can:
   words first (a fact keeps the old text as `previous_content`; an insight becomes source `user`, `confirmed`).
   400 bad `kind` or empty `content`; 404 when it is not waiting for review.
 - `DELETE /api/memories/review/{kind}/{id}` → `{ok: true}` (deleted; 404 when it is not waiting for review)
-- `POST /api/memories/review/approve-all` `{from}` → `{approved: n}` (every held memory with that `from`; 400 without it)
+- `POST /api/memories/review/approve-all` `{from}` → `{approved: n}` (every held memory with that `from`, also beyond
+  the first page; 400 without it)
 
 Held memories nobody reviewed are deleted after `memory.review_expire_days` (default 30, checked with the hourly
 expiry purge), with an `info` notification titled "Memory review". `DELETE /api/memories/source/{source}` removes held

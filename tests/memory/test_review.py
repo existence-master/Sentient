@@ -174,11 +174,21 @@ async def test_a_held_memory_never_changes_a_remembered_one(chat):
     assert (await chat.memory.remember("Sarthak moved to Mumbai", review=review.note("Web")))["action"] == "SKIP"
 
 
+async def test_the_live_update_says_the_memory_waits_for_review(chat):
+    async with chat.bus.subscribe() as q:
+        await _held_after_reading_mail(chat)
+        events = [q.get_nowait() for _ in range(q.qsize())]
+    updates = [e["data"] for e in events if e["type"] == "memory.updated"]
+    assert updates and all(u.get("status") == "pending" for u in updates)
+
+
 async def test_approve_all_from_one_source(chat):
     a = await chat.memory.remember("Sarthak owns a red bicycle", review=review.note("Mail"), use_llm=False)
     b = await chat.memory.remember("Sarthak drinks oat milk", review=review.note("Mail"), use_llm=False)
     c = await chat.memory.remember("Sarthak collects stamps", review=review.note("Web"), use_llm=False)
-    assert await review.approve_from(chat, "Mail") == 2
+    page = await review.inbox(chat, limit=1)
+    assert len(page["items"]) == 1 and page["count"] == 3  # the count covers more than one page
+    assert await review.approve_from(chat, "Mail") == 2  # and so does approving everything from one source
     assert {(await chat.memory.get_fact(i["id"]))["status"] for i in (a, b)} == {"active"}
     assert (await chat.memory.get_fact(c["id"]))["status"] == "pending"
 

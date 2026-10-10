@@ -1166,7 +1166,10 @@ class Agent:
             return
         for r in results:
             if isinstance(r, dict) and r.get("action") in {"ADD", "UPDATE", "DELETE"}:
-                self.app.bus.publish("memory.updated", {"action": r["action"], "id": r.get("id"), "content": r.get("content")})
+                held = {"status": "pending"} if r.get("status") == "pending" else {}  # waits for review, not learned
+                self.app.bus.publish(
+                    "memory.updated", {"action": r["action"], "id": r.get("id"), "content": r.get("content"), **held}
+                )
 
     async def _extract(self, user_text: str, review: dict | None = None) -> None:
         """Only the user's own words are mined for facts; the assistant's reply is
@@ -1208,8 +1211,7 @@ class Agent:
             return
         held = {"review": memory_review.note(untrusted, session_id=session_id)} if untrusted else {}
         try:
-            results = await flush(transcript, self.config.assistant.user_name, **held)
-            self._publish_memory(results)
+            await flush(transcript, self.config.assistant.user_name, **held)  # publishes its own memory.updated
         except Exception as exc:
             log.warning("memory flush before compression failed: %s", exc)
 

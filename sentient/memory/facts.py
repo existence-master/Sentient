@@ -1059,13 +1059,17 @@ class FactMemory:
 
     # ------------------------------------------------------------------ review (ADR 0021)
     async def pending_facts(self, limit: int = 500) -> list[dict]:
-        """Facts held for the user's review, newest first."""
+        """Facts held for the user's review, newest first (``limit=-1``: all of them)."""
         await self.ensure_schema()
         rows = await self.store.fetchall(
             f"SELECT {MEMORY_COLUMNS} FROM facts WHERE status = 'pending' ORDER BY created_at DESC, id DESC LIMIT ?",
             (limit,),
         )
         return [_row_to_memory(r) for r in rows]
+
+    async def pending_count(self) -> int:
+        row = await self.store.fetchone("SELECT COUNT(*) AS n FROM facts WHERE status = 'pending'")
+        return int(row["n"]) if row else 0
 
     async def approve(self, fid: int, content: str | None = None) -> dict | None:
         """The user approved a held fact, maybe in their own words: it becomes active and recall can find it.
