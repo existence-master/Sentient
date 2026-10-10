@@ -24,13 +24,32 @@ export function useModelCatalog(provider: string, enabled: boolean) {
   return useQuery({ queryKey: qk.catalog(provider), queryFn: () => api.models.catalog(provider), enabled, staleTime: 10 * 60_000, retry: false })
 }
 
-/** Polls an OpenRouter sign-in until it is connected or failed. */
-export function useSignInStatus(state: string | null) {
+/** Polls an OpenRouter or ChatGPT sign-in until it is connected or failed. */
+export function useSignInStatus(state: string | null, provider: 'openrouter' | 'chatgpt' = 'openrouter') {
   return useQuery({
     queryKey: qk.signIn(state ?? ''),
-    queryFn: () => api.models.signInStatus(state ?? ''),
+    queryFn: () => api.models.signInStatus(state ?? '', provider),
     enabled: !!state,
     refetchInterval: (q) => (q.state.data && ['connected', 'failed'].includes(q.state.data.status) ? false : 1500)
+  })
+}
+
+/** Whether Sign in with ChatGPT can be used here, and who is signed in. */
+export function useChatGPTStatus() {
+  return useQuery({ queryKey: qk.chatgpt, queryFn: api.models.chatgpt.status, staleTime: 30_000 })
+}
+
+export function useSignOutChatGPT() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.models.chatgpt.signOut(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.chatgpt })
+      void qc.invalidateQueries({ queryKey: qk.providers })
+      void qc.invalidateQueries({ queryKey: qk.secrets })
+      qc.removeQueries({ queryKey: qk.catalog('chatgpt') })
+      void qc.invalidateQueries({ queryKey: qk.modelPresets })
+    }
   })
 }
 

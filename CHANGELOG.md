@@ -12,6 +12,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
   approvals and rules, and Stop everything stops it. It only answers your chats: tasks, suggestions and other
   background work keep using your other models, and it can't be the memory search model. Anthropic may change how
   this is counted or allowed.
+- **Sign in with ChatGPT** (Settings > Models > Use a plan you already have > ChatGPT plan): use your ChatGPT Plus or
+  Pro plan for chat, tasks and background work. Click **Continue with ChatGPT**, sign in in your browser and allow
+  Sentient; your plan's models then show up in every model picker, and **Use ChatGPT for every job** switches the
+  main and background models in one click (the Cloud preset uses your plan when you have no other cloud key). The
+  sign-in stays in your system keychain, renews on its own, and **Sign out** removes it. **Manage usage** opens your
+  ChatGPT usage settings, and reaching your plan's limit says so plainly. Memory search keeps its own model, because
+  ChatGPT plans don't include one for it.
 - **Models sized for your computer:** Sentient checks how much memory and graphics memory this computer has before
   anything is installed and recommends a local model and how much text it reads at once (for example qwen3:8b reading
   8,192 tokens on an 8 GB graphics card, qwen3:14b reading 16,384 on a 16 GB one). A computer with less than 8 GB of

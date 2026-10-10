@@ -21,6 +21,7 @@ export const qk = {
   hardware: ['models', 'hardware'] as const,
   catalog: (provider: string) => ['models', 'catalog', provider] as const,
   signIn: (state: string) => ['models', 'sign-in', state] as const,
+  chatgpt: ['models', 'chatgpt'] as const,
   modelPresets: ['models', 'presets'] as const,
   claudeCode: (enabled: boolean) => ['models', 'claude-code', enabled] as const,
   secrets: ['secrets'] as const,

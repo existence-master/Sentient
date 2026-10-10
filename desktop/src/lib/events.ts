@@ -17,7 +17,7 @@
  *   skill.updated         -> invalidate ['skills']
  *   session.updated       -> rename in ['sessions']
  *   rule_proposal.updated -> refetch that chat's ['rule-proposals'] ("Make this a rule?" cards)
- *   config.updated        -> invalidate config/bootstrap/model presets (+ secrets/providers)
+ *   config.updated        -> invalidate config/bootstrap/model presets/ChatGPT sign-in (+ secrets/providers)
  *   voice.state           -> ['voice', 'state']
  *   subagent.updated      -> ['subagents', ...] (+ toast when a background helper finishes)
  *   browser.updated       -> ['browser', 'status'] (+ refetch ['browser', 'profiles']); browser.frame -> useBrowserView (live view)
@@ -192,6 +192,7 @@ export function installDomainEvents(qc: QueryClient): () => void {
     live.onDomain('config.updated', (e) => {
       const sections = e.data?.sections ?? []
       void qc.invalidateQueries({ queryKey: qk.modelPresets })
+      void qc.invalidateQueries({ queryKey: qk.chatgpt })
       if (sections.includes('secrets')) {
         void qc.invalidateQueries({ queryKey: qk.secrets })
         void qc.invalidateQueries({ queryKey: qk.providers })

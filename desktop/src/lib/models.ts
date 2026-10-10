@@ -76,7 +76,8 @@ const PROVIDER_LABELS: Record<string, string> = {
   deepseek: 'DeepSeek',
   xai: 'xAI',
   nous: 'Nous Portal',
-  'claude-code': 'Claude Code'
+  'claude-code': 'Claude Code',
+  chatgpt: 'ChatGPT plan'
 }
 
 export function providerOf(model: string | null | undefined): string {
@@ -165,7 +166,7 @@ export function buildModelOptions(
   return groups.filter((g) => g.options.length)
 }
 
-/** Adds a provider's live model list (OpenRouter, Nous Portal) to its group, after the suggestions. Free models say so. */
+/** Adds a provider's live model list (OpenRouter, Nous Portal, a ChatGPT plan) to its group, after the suggestions. Free models say so. */
 export function withCatalog(
   groups: ModelOptionGroup[],
   provider: Pick<Provider, 'id' | 'label'>,

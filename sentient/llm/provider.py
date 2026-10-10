@@ -109,6 +109,7 @@ def _response_cost(litellm: Any, response: Any, model: str) -> float | None:
 
 CACHE_PREFIXES = {"anthropic"}
 CLAUDE_CODE = "claude-code"  # Claude through the user's own Claude Code (``claude-code/<model>``), not LiteLLM (#206)
+CHATGPT = "chatgpt"  # ChatGPT plan models (``chatgpt/<model>``) go through the Responses API shim, not LiteLLM
 # local servers whose context length Sentient can't know (LiteLLM's list has no entry for them)
 UNLISTED_PREFIXES = {"lm_studio", "llamafile", "vllm", "hosted_vllm"}
 
@@ -232,6 +233,10 @@ class LiteLLMProvider:
             pc = provider_config(self.config, prefix)
             limit = await self._model_max_context(model, pc.api_base if pc else None)
             return min(num_ctx, limit) if limit else num_ctx
+        if prefix == CHATGPT:  # from the plan's own model list when it gave one; LiteLLM's list doesn't apply
+            from sentient.llm import chatgpt
+
+            return chatgpt.context_window(model)
         if prefix in UNLISTED_PREFIXES or prefix == CLAUDE_CODE:
             return None
         import litellm
@@ -256,10 +261,12 @@ class LiteLLMProvider:
         for model in self._chain(role, override):
             emitted = False
             try:
-                if _provider_prefix(model) == CLAUDE_CODE:
+                if _provider_prefix(model) in {CHATGPT, CLAUDE_CODE}:
                     from sentient.llm import claude_code
 
-                    async for chunk in claude_code.stream(self.config, model, role, messages, tools):
+                    other = (self._chatgpt_stream(model, role, messages, tools) if _provider_prefix(model) == CHATGPT
+                             else claude_code.stream(self.config, model, role, messages, tools))
+                    async for chunk in other:
                         emitted = emitted or bool(chunk.text or chunk.thinking)
                         yield chunk
                     return
@@ -300,16 +307,8 @@ class LiteLLMProvider:
                 tool_calls: list[ToolCall] = []
                 msg = full.choices[0].message if full and full.choices else None
                 for tc in (getattr(msg, "tool_calls", None) or []):
-                    try:
-                        args = json.loads(tc.function.arguments or "{}")
-                    except json.JSONDecodeError:
-                        try:
-                            args = parse_json_loose(tc.function.arguments or "")
-                        except ValueError:
-                            args = {"_raw": tc.function.arguments}
-                    if not isinstance(args, dict):
-                        args = {"_raw": tc.function.arguments}
-                    tool_calls.append(ToolCall(id=tc.id or f"call_{uuid.uuid4().hex[:12]}", name=tc.function.name, arguments=args))
+                    tool_calls.append(ToolCall(id=tc.id or f"call_{uuid.uuid4().hex[:12]}", name=tc.function.name,
+                                               arguments=tool_arguments(tc.function.arguments)))
                 usage = {}
                 if full is not None and getattr(full, "usage", None):
                     usage = {
@@ -329,6 +328,42 @@ class LiteLLMProvider:
                 continue
         raise ProviderError(f"All models failed for role '{role}': {last_error}")
 
+    # ------------------------------------------------------------------ ChatGPT plan (Responses API shim)
+    async def _chatgpt_stream(
+        self, model: str, role: str, messages: list[dict], tools: list[dict] | None
+    ) -> AsyncIterator[StreamChunk]:
+        """A ChatGPT plan model through the Responses API with the signed-in user's token (issue #205)."""
+        from sentient.llm import chatgpt, responses
+
+        body = responses.request_body(model.split("/", 1)[1], messages, tools,
+                                      reasoning_effort=self.config.models.reasoning.get(role))
+        url, timeout = chatgpt.responses_url(self.config), self.config.models.request_timeout_s
+        try:
+            token = await chatgpt.access_token(self.config)
+            events = await responses.open_stream(url, chatgpt.request_headers(token), body, timeout=timeout)
+        except responses.ResponsesError as exc:
+            if exc.status != 401:
+                raise
+            # the token stopped working early (signed out elsewhere, a new password): renew it once and retry
+            token = await chatgpt.access_token(self.config, force_refresh=True)
+            events = await responses.open_stream(url, chatgpt.request_headers(token), body, timeout=timeout)
+        async for ev in events:
+            if ev.get("done"):
+                calls = [ToolCall(id=tc["id"] or f"call_{uuid.uuid4().hex[:12]}", name=tc["name"],
+                                  arguments=tool_arguments(tc["arguments"])) for tc in ev["tool_calls"]]
+                yield StreamChunk(done=True, tool_calls=calls, usage=ev["usage"], model=model)
+            elif ev.get("thinking"):
+                yield StreamChunk(thinking=ev["thinking"], model=model)
+            elif ev.get("text"):
+                yield StreamChunk(text=ev["text"], model=model)
+
+    async def _chatgpt_text(self, model: str, role: str, messages: list[dict]) -> str:
+        """Plan usage only streams, so text and JSON jobs collect the stream."""
+        text = ""
+        async for chunk in self._chatgpt_stream(model, role, messages, None):
+            text += chunk.text
+        return text
+
     # ------------------------------------------------------------------ non-streaming JSON
     async def complete_text(self, role: str, messages: list[dict], *, model: str | None = None) -> str:
         import re
@@ -341,10 +376,13 @@ class LiteLLMProvider:
         for model in self._chain(role, override):
             try:
                 _refuse_claude_code(model)
-                kwargs = await self._call_kwargs(model, role)
-                sent, _ = apply_prompt_cache(model, messages)
-                resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
-                text = resp.choices[0].message.content or ""
+                if _provider_prefix(model) == CHATGPT:
+                    text = await self._chatgpt_text(model, role, messages)
+                else:
+                    kwargs = await self._call_kwargs(model, role)
+                    sent, _ = apply_prompt_cache(model, messages)
+                    resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
+                    text = resp.choices[0].message.content or ""
                 return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
             except Exception as exc:
                 last_error = exc
@@ -360,6 +398,8 @@ class LiteLLMProvider:
         for model in self._chain(role, override):
             try:
                 _refuse_claude_code(model)
+                if _provider_prefix(model) == CHATGPT:
+                    return parse_json_loose(await self._chatgpt_text(model, role, messages))
                 kwargs = await self._call_kwargs(model, role)
                 # Ollama's JSON mode corrupts qwen3 output ({"{"name": ...); ask for plain text and parse loosely
                 if _provider_prefix(model) not in {"ollama", "ollama_chat"}:
@@ -382,6 +422,8 @@ class LiteLLMProvider:
             from sentient.llm.claude_code import NO_EMBEDDINGS
 
             raise ProviderError(NO_EMBEDDINGS)
+        if _provider_prefix(model) == CHATGPT:
+            raise ProviderError("ChatGPT plans don't include embedding models. Pick a local or API embedding model.")
         kwargs = self._kwargs_for(model)
         kwargs.pop("timeout", None)
         resp = await litellm.aembedding(model=litellm_model(model), input=texts, **kwargs)
@@ -395,6 +437,18 @@ def _refuse_claude_code(model: str) -> None:
         from sentient.llm.claude_code import CHATS_ONLY
 
         raise ProviderError(CHATS_ONLY)
+
+
+def tool_arguments(raw: str | None) -> dict:
+    """A tool call's JSON arguments, parsed loosely; ``{"_raw": ...}`` when they aren't an object."""
+    try:
+        args = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        try:
+            args = parse_json_loose(raw or "")
+        except ValueError:
+            args = {"_raw": raw}
+    return args if isinstance(args, dict) else {"_raw": raw}
 
 
 def split_think(text: str, in_think: bool) -> tuple[list[tuple[str, bool]], bool]:

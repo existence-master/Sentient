@@ -182,6 +182,12 @@ class ModelsConfig(BaseModel):
         "your chats through the claude program on this computer, with Sentient's tools and approvals. Never used for "
         "work that runs in the background, and it can't make embeddings. Sentient never reads your Claude login.",
     )
+    chatgpt_client_id: str = Field(
+        "dynamic_agent_client",
+        description="How Sentient signs in with ChatGPT to use a ChatGPT plan. The default lets this computer "
+        "register Sentient on the first sign-in, which OpenAI offers to open-source apps. Put a client id from "
+        "OpenAI here to use that instead, or leave it empty to turn Sign in with ChatGPT off.",
+    )
     max_tool_rounds: int = Field(12, ge=1, le=100, description="Max tool-call rounds per chat turn.")
     request_timeout_s: int = Field(180, ge=10, description="Per-request timeout in seconds.")
 

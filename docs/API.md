@@ -47,7 +47,7 @@ All carry `session_id` and `turn_id`.
 prompt (the larger of what the provider reported and a local count with LiteLLM's bundled tokenizer, because Ollama
 reports only the part of a prompt it had not cached) plus the reply, `context_length` what the model reads at once in
 that role (Ollama's `num_ctx` as sent, capped at the model's maximum, or a cloud model's input window from LiteLLM's
-bundled list), and `context_percent` the share, rounded. From 85% `context_warning` is a plain sentence, e.g. `This chat
+bundled list; for a ChatGPT plan model, the window its plan's model list gave, if any), and `context_percent` the share, rounded. From 85% `context_warning` is a plain sentence, e.g. `This chat
 is getting long for qwen3:8b (87% of what it reads at once). Older messages may be left out: start a new chat, or set a
 longer context length in Settings > Models.` (cloud models: `..., so a new chat works best.`). All four are `null` when
 the context length is unknown (LM Studio, a model LiteLLM doesn't list). A call whose provider reported no token usage
@@ -231,8 +231,11 @@ accept or loosen a rule.
 - `GET /api/models/providers` →
   ```json
   [{"id": "anthropic", "label": "Anthropic", "kind": "cloud|local", "key_required": true, "key_set": false,
-    "api_base": null, "docs_url": "https://console.anthropic.com/", "suggested": ["anthropic/claude-sonnet-5", "anthropic/claude-haiku-4-5"]}]
+    "api_base": null, "docs_url": "https://console.anthropic.com/", "suggested": ["anthropic/claude-sonnet-5", "anthropic/claude-haiku-4-5"],
+    "sign_in": false}]
   ```
+  `sign_in: true` (the `chatgpt` entry) means the provider is connected by signing in, never by a pasted key;
+  `key_set` then means signed in.
 - `GET /api/system/hardware?refresh=false` (#131) → what this computer can run, detected once and cached (`refresh=true`
   checks again). Detection never fails: anything it can't read is `null` and `summary` is `"unknown"`.
   ```json
@@ -280,7 +283,7 @@ accept or loosen a rule.
 
   `Check` = `{id, label, status: "pass"|"warn"|"fail"|"skip", detail, fix?, action?}`. `detail` and `fix` are
   plain sentences for the UI. Checks, in order, skipping those that do not apply:
-  `connection` (Ollama running and model downloaded, or a cloud key set; a failure stops the rest), `reply` (one
+  `connection` (Ollama running and model downloaded, a cloud key set, or a ChatGPT sign-in; a failure stops the rest), `reply` (one
   short answer), `tools` (one scripted `find_city` call; roles that use tools: primary, fast, executor, vision,
   voice), `chain` (a second `get_weather` call using the first result; primary and executor), `json` (a JSON reply;
   fast and planner), `thinking` (Ollama models that can think: thinking matches the role's reasoning setting),
@@ -303,22 +306,23 @@ accept or loosen a rule.
   stored: "Local only" (the `ModelRoles` defaults from `config/schema.py`, or, once the hardware is known, the
   recommended model for `primary` and `fast` plus its `context_length`, see `GET /api/system/hardware`; a local
   embedding model the user picked is kept), "Cloud" and "Mixed" (the first of Anthropic, OpenAI, OpenRouter with a key set, models from
-  `PRESET_CLOUD_MODELS` in `config/schema.py`; Cloud leaves the embedding model alone because changing it re-indexes
+  `PRESET_CLOUD_MODELS` in `config/schema.py`, or else a ChatGPT sign-in, whose main model is the first on the plan's
+  list and whose fast model is the first "mini" or "nano" one; Cloud leaves the embedding model alone because changing it re-indexes
   memory; Mixed keeps `fast` and `embedding` local). Built-ins clear `models.fallbacks`. The user's own presets are in
   `models.presets` (`{name: {roles, fallbacks?, reasoning?, context_length?, context_length_per_role?}}`; a role left
   out keeps its model, a field left out keeps its value) and the last one applied is `models.active_preset`. Names are
   1 to 40 characters, no slashes, matched without case; built-in names are reserved.
   - **Preset** `{name, builtin, available, reason, provider, description, roles, fallbacks?, reasoning?, context_length?,
     context_length_per_role?, active}`. `available: false` with a plain `reason` for Cloud and Mixed when no cloud key
-    is set. `provider` is the cloud provider a built-in uses.
+    is set (or when a ChatGPT plan's model list can't be loaded). `provider` is the cloud provider a built-in uses.
   - `GET /api/models/presets` → `{active, modified, can_undo, undo_preset, presets: [Preset]}` (built-ins first).
     `modified` is true when a role was changed by hand after `active` was applied.
   - `POST /api/models/presets/{name}/apply` → `{preset, changed: [{role, from, to}], missing: [Missing], can_undo}`.
     Applied in one config save (`config.updated`); the setup it replaced is kept for undo. 404 unknown preset, 409
-    `available: false`. **Missing** `{kind: "pull_model"|"add_key"|"start_ollama", roles, model, provider?, detail,
-    fix, action}`: an Ollama model that is not downloaded (`action {kind: "pull_model", name, label}`, see the pull
-    route below), a cloud key that is not set (`action {kind: "add_key", provider, label}`, see `PUT /api/secrets`), or
-    Ollama not answering (`action: null`). Checked with Ollama `/api/tags` and the keychain; no model is called.
+    `available: false`. **Missing** `{kind: "pull_model"|"add_key"|"start_ollama"|"sign_in", roles, model, provider?,
+    detail, fix, action}`: an Ollama model that is not downloaded (`action {kind: "pull_model", name, label}`, see the
+    pull route below), a cloud key that is not set (`action {kind: "add_key", provider, label}`, see `PUT /api/secrets`),
+    no ChatGPT sign-in for a `chatgpt/` model (`sign_in`, `action: null`), or Ollama not answering (`action: null`). Checked with Ollama `/api/tags` and the keychain; no model is called.
   - `POST /api/models/presets/undo` → same shape: puts back the roles, fallbacks, reasoning, context lengths and active
     preset from before the last switch. One step only: 409 when there is nothing to undo.
   - `POST /api/models/presets` `{name, overwrite?}` → Preset: saves the current roles, fallbacks, reasoning and context
@@ -346,13 +350,15 @@ accept or loosen a rule.
   message. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
   and vision). Stop everything kills every running Claude Code process tree.
 - `GET /api/secrets` → `[{name, set: bool, source: "keychain"|"env"|null, kind: "provider"|"integration"}]` for every provider + integration secret name
-- `PUT /api/secrets/{name}` `{value}` → `{ok}` (stored in OS keychain; never echoed back)
-- `DELETE /api/secrets/{name}` → `{ok}`
+- `PUT /api/secrets/{name}` `{value}` → `{ok}` (stored in OS keychain; never echoed back). `chatgpt` → 400: it is a
+  sign-in, not a key.
+- `DELETE /api/secrets/{name}` → `{ok}`. For `chatgpt` this signs out (see below).
 
 ### Connecting plans (issue #204)
 
 Ways to use AI plans people already pay for. Every key lands in the keychain under the provider's id (`anthropic`,
-`openrouter`, `nous`), the same entry a pasted key uses, so `DELETE /api/secrets/{id}` disconnects.
+`openrouter`, `nous`), the same entry a pasted key uses, so `DELETE /api/secrets/{id}` disconnects. A ChatGPT sign-in
+is kept under `chatgpt`.
 
 - **Claude Max and Team plans** include monthly API credits, spent through an ordinary Anthropic API key. Apps may not
   sign in with a Claude account, so there is no sign-in flow: the window shows the steps to claim the credits in the
@@ -361,6 +367,31 @@ Ways to use AI plans people already pay for. Every key lands in the keychain und
   integrations' shared loopback listener (`http://127.0.0.1:<port>/oauth/callback`, port from
   `integrations.oauth_redirect_port`); the `state` value routes it. The code is swapped for a key at
   `https://openrouter.ai/api/v1/auth/keys`. A forged, expired or reused `state` is refused and nothing is stored.
+- **ChatGPT plans** (Plus and Pro, issue #205) use **Sign in with ChatGPT**, which OpenAI offers to open-source and
+  locally run apps (https://developers.openai.com/siwc/quickstart). OAuth with PKCE (S256), `state` and `nonce` against
+  `https://auth.openai.com/api/accounts/authorize` and `.../oauth/token`, scopes
+  `openid profile email offline_access resource.invoke chatgpt.tokens.use.direct`, `resource=https://api.openai.com/v1`,
+  and the same loopback listener as OpenRouter (only its port may change between sign-ins). The first sign-in on a
+  computer registers Sentient: `client_id=dynamic_agent_client` with `agent_name_hint=Sentient`; the callback brings
+  the issued client id, kept in store meta (`chatgpt.client_id`) and reused afterwards. Every sign-in sends
+  `ext_agent_host_id`, a random `urn:uuid:` made once per computer (store meta `chatgpt.host_id`). The callback is
+  refused unless the issued client id matches, the granted scopes include `chatgpt.tokens.use.direct`, and an ID token is
+  present and passes its RS256 signature (OpenAI's published keys), issuer, audience, expiry and nonce checks. Tokens go to the
+  keychain entry `chatgpt` (`{client_id, access_token, refresh_token, expires_at, scope, email}`, split over several
+  entries when long). The access token is renewed 5 minutes before it runs out (or once after a 401), one refresh at a
+  time because the refresh token rotates; a final refresh error (`invalid_grant`, `refresh_token_reused` and the
+  like) removes the sign-in, anything else keeps it for the next try. Sign-out revokes the refresh token
+  (best effort) and removes the entry. `models.chatgpt_client_id` (default `dynamic_agent_client`) can hold a client id
+  from OpenAI instead, or be empty to turn the sign-in off.
+  Models are `chatgpt/<slug>` from `GET https://api.openai.com/v1/models` (entries with `visibility: "list"`, in
+  OpenAI's order). They don't go through LiteLLM: `sentient/llm/responses.py` sends `POST /v1/responses` with the
+  access token, always `stream: true` and `store: false`, the leading system prompts as `instructions` (later ones as
+  `developer` messages), function tools, and `reasoning` from the role's effort; never `temperature`,
+  `max_output_tokens`, `previous_response_id` or other refused fields. Text and JSON jobs collect the stream. Tool
+  call ids are the Responses `call_id`. Plan usage has no embedding models (`embed` with a `chatgpt/` model fails).
+  A usage limit (`subscription_sharing_usage_limit_exceeded`, 429 or mid-stream `response.failed`) becomes "Usage
+  limit reached" with the Manage usage link (`https://chatgpt.com/settings/usage`); there is no silent switch to
+  another way of paying, only the user's own fallbacks.
 - **Nous Portal** has no sign-in for other apps, so it takes an API key. Models are `nous/<model>`, sent through
   LiteLLM's OpenAI-compatible client to `https://inference-api.nousresearch.com/v1` (override with
   `models.providers.nous.api_base`; env fallback `NOUS_API_KEY`).
@@ -369,10 +400,16 @@ Routes:
 - `POST /api/models/connect/openrouter` → `{auth_url, state}`. The window opens `auth_url` in the browser.
 - `GET /api/models/connect/openrouter/{state}` → `{status: "waiting"|"exchanging"|"connected"|"failed", error}`; 404
   for an unknown sign-in. On success the engine also publishes `config.updated` `{sections: ["secrets"]}`.
-- `POST /api/models/connect/{provider}/check` (`anthropic`, `openrouter`, `nous`) → `{ok, detail}` or
+- `GET /api/models/connect/chatgpt` → `{available, reason, signed_in, email, manage_usage_url}`. `available: false`
+  with a plain `reason` when `models.chatgpt_client_id` is empty.
+- `POST /api/models/connect/chatgpt` → `{auth_url, state}` (409 with a plain `detail` when the sign-in is turned off).
+  `GET /api/models/connect/chatgpt/{state}` → the same status as OpenRouter's; `config.updated`
+  `{sections: ["secrets"]}` on success.
+- `DELETE /api/models/connect/chatgpt` → `{ok}`: signs out (revokes with OpenAI, removes the tokens).
+- `POST /api/models/connect/{provider}/check` (`anthropic`, `openrouter`, `nous`, `chatgpt`) → `{ok, detail}` or
   `{ok: false, error}` with a plain sentence. A free request with the saved key (the model list, or OpenRouter's key
   info); it spends no credits. Other providers → 404.
-- `GET /api/models/catalog/{provider}` (`openrouter`, `nous`, `anthropic`) → `[{id, label, free, tools, context_length}]`,
+- `GET /api/models/catalog/{provider}` (`openrouter`, `nous`, `anthropic`, `chatgpt`) → `[{id, label, free, tools, context_length}]`,
   `id` a full model string such as `openrouter/meta-llama/llama-4-maverick:free`. OpenRouter's list is public;
   the others need the key (502 with a plain `detail` without one). Cached for 10 minutes; saving or removing the key clears it.
   The window only asks for a provider's list once that provider has a key.
