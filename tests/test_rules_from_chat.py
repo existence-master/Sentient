@@ -313,6 +313,36 @@ async def test_a_never_rule_saved_during_the_chat_lookup_is_refused_not_asked(co
         await s.stop()
 
 
+async def test_a_slow_check_fails_closed_until_it_finishes(config, isolated_home, monkeypatch):
+    """The reply stops waiting for a slow rule check; the tools that check is weighing still ask meanwhile."""
+    import asyncio
+
+    import sentient.agent.loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "RULE_CHECK_WAIT_S", 0.05)
+    release = asyncio.Event()
+
+    class Slow(FakeProvider):
+        async def complete_json(self, role, messages, *, model=None):
+            await release.wait()
+            return NEVER_DELETE
+
+    log: list[str] = []
+    config.tools.approvals.rules = {"mail": "allow"}
+    llm = Slow(replies=[[tool_call("mail_delete_email", message_id="m1")], "Not deleted."])
+    s = await _start(config, isolated_home, llm, log)
+    try:
+        sid = await s.store.create_session(channel="cli")
+        asked, _ = await _turn(s, sid, "never delete my emails, and tidy up my inbox", decision="deny")
+        assert [a.name for a in asked] == ["mail_delete_email"] and log == []
+        release.set()
+        await s.agent.drain()
+        [proposal] = await s.chat_rules.list(sid)  # the proposal still arrives
+        assert proposal["keys"] == ["mail_delete_email"] and s.chat_rules._checking == {}
+    finally:
+        await s.stop()
+
+
 async def test_a_steer_message_is_checked_before_the_next_round(config, isolated_home):
     log: list[str] = []
     llm = FakeProvider(

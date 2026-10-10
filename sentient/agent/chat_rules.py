@@ -16,7 +16,8 @@ Checks, cheapest first:
    candidates, and keys an equal or stricter rule already covers, are dropped. Nothing valid, no card.
 
 Until the user decides, a pending proposal makes its chat ask before the matched tools (``chat_rule``), also after a
-restart or once the conversation has been summarized. It only ever adds a question, never removes one.
+restart or once the conversation has been summarized. While a check is still running (a slow fast model), the tools
+it is weighing ask too, so a reply that stops waiting for it fails closed. Both only ever add a question.
 """
 
 from __future__ import annotations
@@ -218,6 +219,7 @@ class ChatRules:
     def __init__(self, app: Any):
         self.app = app
         self._pending: dict[str, dict[str, str]] = {}  # session_id -> {key: level} of undecided proposals
+        self._checking: dict[str, list[frozenset[str]]] = {}  # session_id -> candidate tools of running checks
 
     # ------------------------------------------------------------------ lookups
     def _app_names(self) -> dict[str, str]:
@@ -244,9 +246,12 @@ class ChatRules:
         return out
 
     async def chat_rule(self, tool: Tool, session_id: str | None) -> str | None:
-        """"ask" while an undecided proposal in this chat names ``tool`` or its app, else None."""
+        """"ask" while an undecided proposal in this chat names ``tool`` or its app, or while a check that is still
+        running weighs ``tool``, else None."""
         if not session_id:
             return None
+        if any(tool.name in names for names in self._checking.get(session_id, ())):
+            return "ask"
         pending = await self._session_pending(session_id)
         return "ask" if pending and (tool.name in pending or tool.plugin in pending) else None
 
@@ -300,6 +305,19 @@ class ChatRules:
         candidates = candidate_tools(said, self.app.registry.tools(include_hidden=True), names)
         if not candidates:
             return None
+        weighing = frozenset(t.name for t in candidates)
+        self._checking.setdefault(session_id, []).append(weighing)  # fail closed until this check ends
+        try:
+            return await self._propose(session_id, message_id, said, candidates, names)
+        finally:
+            running = self._checking.get(session_id, [])
+            running.remove(weighing)
+            if not running:
+                self._checking.pop(session_id, None)
+
+    async def _propose(
+        self, session_id: str, message_id: str | None, said: str, candidates: list[Tool], names: dict[str, str]
+    ) -> dict | None:
         try:
             data = await self.app.llm.complete_json("fast", detection_messages(said, candidates, names))
         except Exception as exc:

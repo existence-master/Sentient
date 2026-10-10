@@ -143,7 +143,7 @@ accept or loosen a rule.
   "always ask") make the rule `ask`. Keys an equal or stricter rule already covers (also a pending proposal in the
   same chat) are dropped. Nothing left, no proposal. A message that fails the pre-filter or has no matching tools
   never calls a model. The check runs before the reply's model call (it waits at most 20 s; a slower check finishes
-  in the background).
+  in the background, and until it does every tool it is weighing asks first in that chat).
 - **Until the user decides**, a pending proposal makes its chat ask before every matched tool (`approval_request`),
   even under an Allow rule, with approvals mode `off` and after "Allow for this chat"; subagents of that chat refuse
   the call. It is saved with the chat, so it survives a restart and summarizing, and only ever adds a question.

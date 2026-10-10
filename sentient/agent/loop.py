@@ -101,7 +101,8 @@ EMPTY_ANSWER_NUDGE = (
     "otherwise answer the user now, based on the tool results above."
 )
 USER_MODEL_TIMEOUT_S = 2.0
-# longest a reply waits for the rule check of its message (chat_rules); a slower check finishes in the background
+# longest a reply waits for the rule check of its message (chat_rules); a slower check finishes in the background,
+# and until it does the tools it is weighing ask first in that chat
 RULE_CHECK_WAIT_S = 20.0
 SPOKEN_CHANNELS = {"voice", "glasses", "phone"}  # these turns use the voice role
 # Real qwen3:8b told the user "the Place order button was clicked" after a plain decline, so say it bluntly.
