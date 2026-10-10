@@ -31,6 +31,7 @@ from typing import Any
 from sentient.evolution import prompts
 from sentient.evolution.log import log_event
 from sentient.memory import review as memory_review
+from sentient.memory.episodic import CLEAN as CLEAN_SUMMARY
 from sentient.memory.topics import TOPIC_NAMES
 from sentient.memory.vectors import cosine
 from sentient.services import Service, cancel_tasks
@@ -823,8 +824,11 @@ class EvolutionService(Service):
             " AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at",
             (since, nowiso),
         )
+        # chats that read outside content never feed MEMORY.md (ADR 0021): their facts wait for review and their
+        # summaries are left out
         new_summaries = await store.fetchall(
-            "SELECT content FROM summaries WHERE created_at > ? ORDER BY end_at DESC LIMIT 8", (since,)
+            f"SELECT content FROM summaries WHERE created_at > ? AND {CLEAN_SUMMARY} ORDER BY end_at DESC LIMIT 8",
+            (since,),
         )
         await store.set_meta("evolution.profile_last_run", nowiso)
         if not new_facts and not new_summaries:
@@ -842,7 +846,9 @@ class EvolutionService(Service):
             " ORDER BY updated_at DESC LIMIT 80",
             (nowiso,),
         )
-        summaries = await store.fetchall("SELECT content FROM summaries ORDER BY end_at DESC LIMIT 8")
+        summaries = await store.fetchall(
+            f"SELECT content FROM summaries WHERE {CLEAN_SUMMARY} ORDER BY end_at DESC LIMIT 8"
+        )
         current = app.workspace.read_full()["memory"]
         memory_chars = 0
         try:

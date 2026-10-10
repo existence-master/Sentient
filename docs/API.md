@@ -799,7 +799,7 @@ Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
 - `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
 - `DELETE /api/memories/source/{source}` → `{deleted: n}`
 - `POST /api/memories/import` multipart `file` (pdf/txt/md/docx) → `{added, updated, skipped, pending, source}` (`source` = `file:<name>`; the facts wait for review, `pending` counts them, and existing memories are kept; 400 for other types)
-- `GET /api/memories/summaries?limit=` → `[{id, content, start_at, end_at, session_id}]`
+- `GET /api/memories/summaries?limit=` → `[{id, content, start_at, end_at, session_id, untrusted}]` (`untrusted` = the app whose content that chat read, else `null`; such summaries are listed here but kept out of other chats, see below)
 - `GET /api/memories/workspace` → `{soul, user, memory, today, yesterday}` (full file contents, not the prompt-budgeted snapshot)
 - `PUT /api/memories/workspace/{soul|user|memory}` `{content}` → `{saved}`
 - `GET /api/memories/personas` → `[{id, name, description, soul_md}]` (SOUL.md presets rendered with the current assistant and user names)
@@ -829,6 +829,15 @@ out of pending; no model output can:
 - `DELETE /api/memories/review/{kind}/{id}` → `{ok: true}` (deleted; 404 when it is not waiting for review)
 - `POST /api/memories/review/approve-all` `{from}` → `{approved: n}` (every held memory with that `from`, also beyond
   the first page; 400 without it)
+
+Chats that read outside content reach no other chat in other ways either:
+- conversation summaries carry the chat's mark (`summaries.untrusted`, set from `sessions.untrusted` when written;
+  older rows take it from their chat at startup). `EpisodicMemory.search`, used by `history_semantic_search` and
+  proactive look-ups, leaves them out; the user still sees them in `GET /api/memories/summaries`.
+- profile upkeep (MEMORY.md and USER.md) reads only active facts and unmarked summaries.
+- `memory_search_history` and `history_time_search` still find the messages, but when a result comes from another
+  chat with `sessions.untrusted` set they set `ToolContext.untrusted` to that app, so the run is marked as if it had
+  read the content itself (section 10).
 
 Held memories nobody reviewed are deleted after `memory.review_expire_days` (default 30, checked with the hourly
 expiry purge), with an `info` notification titled "Memory review". `DELETE /api/memories/source/{source}` removes held

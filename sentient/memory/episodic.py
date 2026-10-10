@@ -5,6 +5,9 @@ history MCP (``semantic_search`` over summaries, ``time_based_search`` over
 messages). Summaries live in the core ``summaries`` table with vectors in a
 ``summaries_vec`` sqlite-vec table keyed by the summary's rowid; summarized
 messages get ``messages.summarized = 1``.
+
+A summary of a chat that read outside content carries that chat's mark (``summaries.untrusted``, ADR 0021): it is
+listed for the user, but ``search`` (what other chats, proactivity and profile upkeep see) leaves it out.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from sentient.store.db import Store, new_id, now_iso
 log = logging.getLogger(__name__)
 
 MAX_MESSAGE_CHARS = 1500
+CLEAN = "COALESCE(untrusted, '') = ''"  # summaries of chats that never read outside content
 
 
 def parse_when(value: str, *, end: bool = False) -> datetime:
@@ -118,10 +122,12 @@ class EpisodicMemory:
         sid = new_id()
         ids = [m["id"] for m in chunk]
         start_at, end_at = chunk[0]["created_at"], chunk[-1]["created_at"]
+        session = await self.store.fetchone("SELECT untrusted FROM sessions WHERE id = ?", (session_id,))
+        untrusted = (session["untrusted"] or "") if session else ""
         cur = await self.store.execute(
-            "INSERT INTO summaries(id, session_id, content, start_at, end_at, message_ids, created_at)"
-            " VALUES(?,?,?,?,?,?,?)",
-            (sid, session_id, content, start_at, end_at, json.dumps(ids), now_iso()),
+            "INSERT INTO summaries(id, session_id, content, start_at, end_at, message_ids, created_at, untrusted)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (sid, session_id, content, start_at, end_at, json.dumps(ids), now_iso(), untrusted),
         )
         try:
             [vec] = await self._embed([content])
@@ -130,7 +136,10 @@ class EpisodicMemory:
             log.warning("summary embedding failed (kept without vector): %s", exc)
         marks = ",".join("?" * len(ids))
         await self.store.execute(f"UPDATE messages SET summarized = 1 WHERE id IN ({marks})", ids)
-        return {"id": sid, "content": content, "start_at": start_at, "end_at": end_at, "session_id": session_id}
+        return {
+            "id": sid, "content": content, "start_at": start_at, "end_at": end_at, "session_id": session_id,
+            "untrusted": untrusted or None,
+        }
 
     async def summarize_pending(
         self, *, user_name: str = "", now: datetime | None = None, max_chunks: int = 5
@@ -148,18 +157,22 @@ class EpisodicMemory:
 
     # ------------------------------------------------------------------ reads
     async def list(self, limit: int = 50) -> list[dict]:
+        """Every summary for the user, with ``untrusted`` (the app whose content that chat read, else null)."""
         rows = await self.store.fetchall(
-            "SELECT id, content, start_at, end_at, session_id FROM summaries ORDER BY end_at DESC LIMIT ?", (limit,)
+            "SELECT id, content, start_at, end_at, session_id, NULLIF(untrusted, '') AS untrusted FROM summaries"
+            " ORDER BY end_at DESC LIMIT ?",
+            (limit,),
         )
         return [dict(r) for r in rows]
 
     async def search(self, query: str, limit: int = 5) -> list[dict]:
-        """v2 history semantic_search over conversation summaries."""
+        """v2 history semantic_search over conversation summaries. Summaries of chats that read outside content are
+        left out (ADR 0021): this is what other chats, proactivity and profile upkeep see."""
         if not query.strip():
             return []
         try:
             indexed = self.vec.ready or await self.vec.exists()
-            hits = await self.vec.knn((await self._embed([query]))[0], limit) if indexed else None
+            hits = await self.vec.knn((await self._embed([query]))[0], limit * 3) if indexed else None
             if hits is not None and not hits:
                 return []
         except Exception as exc:
@@ -169,7 +182,8 @@ class EpisodicMemory:
             sims = dict(hits)
             marks = ",".join("?" * len(sims))
             rows = await self.store.fetchall(
-                f"SELECT rowid AS rid, id, content, start_at, end_at, session_id FROM summaries WHERE rowid IN ({marks})",
+                f"SELECT rowid AS rid, id, content, start_at, end_at, session_id FROM summaries WHERE rowid IN ({marks})"
+                f" AND {CLEAN}",
                 list(sims),
             )
             out = [
@@ -177,12 +191,12 @@ class EpisodicMemory:
                 | {"similarity": round(sims[int(r["rid"])], 4)}
                 for r in rows
             ]
-            return sorted(out, key=lambda x: -x["similarity"])
+            return sorted(out, key=lambda x: -x["similarity"])[:limit]
         # no vector index (or embeddings failing): keyword fallback
         words = [w for w in query.split() if len(w) > 2][:6] or [query]
         clause = " OR ".join("content LIKE ?" for _ in words)
         rows = await self.store.fetchall(
-            f"SELECT id, content, start_at, end_at, session_id FROM summaries WHERE {clause}"
+            f"SELECT id, content, start_at, end_at, session_id FROM summaries WHERE ({clause}) AND {CLEAN}"
             " ORDER BY end_at DESC LIMIT ?",
             [*[f"%{w}%" for w in words], limit],
         )

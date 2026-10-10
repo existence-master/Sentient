@@ -69,6 +69,12 @@ class Store:
         await self.ensure_column("messages", "memory_sources", "TEXT")
         await self.ensure_column("facts", "status", "TEXT NOT NULL DEFAULT 'active'")
         await self.ensure_column("facts", "review", "TEXT")
+        await self.ensure_column("summaries", "untrusted", "TEXT")
+        # summaries written before the mark existed take it from their chat (ADR 0021)
+        await self.db.execute(
+            "UPDATE summaries SET untrusted = (SELECT s.untrusted FROM sessions s WHERE s.id = summaries.session_id)"
+            " WHERE untrusted IS NULL AND session_id IS NOT NULL"
+        )
         for pkg in PACKAGE_SCHEMAS:
             extra = _PKG_ROOT / pkg / "schema.sql"
             if extra.exists():

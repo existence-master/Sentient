@@ -1635,6 +1635,8 @@ export interface MemorySummary {
   start_at: ISODate
   end_at: ISODate
   session_id: string | null
+  /** The app whose content that chat read; such summaries are kept out of other chats (ADR 0021). */
+  untrusted?: string | null
 }
 
 export type WorkspaceFileId = 'soul' | 'user' | 'memory'

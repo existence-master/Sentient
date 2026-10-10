@@ -11,8 +11,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   Each one shows where it came from and the text it was taken from; approve it, change the wording and approve, turn
   it down, or approve everything from one place at once. Until you approve one, Sentient doesn't use it in chats,
   tasks, suggestions or what it knows about you, and no email or web page can approve it for you. Ones you don't
-  review are let go after 30 days, with a note. What you say yourself in a chat that hasn't read outside content is
-  remembered as before.
+  review are let go after 30 days, with a note. Summaries of chats that read outside content stay out of your
+  other chats and out of MEMORY.md. What you say yourself in a chat that hasn't read outside content is remembered as
+  before.
 - **Coming from Hermes?** Bring your Hermes setup over in one step, from the last onboarding screen or Settings >
   Advanced. Sentient looks inside your Hermes folder (`~/.hermes`, or one you pick) and shows what it found before
   anything changes: your own skills go to Skills for review (Hermes' built-in ones you never changed are left out),

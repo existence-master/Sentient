@@ -31,6 +31,11 @@ memories, used by proactivity, read by a user-model refresh or touched by dreami
 vector recall cannot find them, and every other read filters on `status = 'active'`. A held fact only ever adds: it
 never updates or deletes a remembered one.
 
+Chats that read outside content also stay out of everything shared between chats. Their conversation summaries
+carry the chat's mark and are never searched for another chat, a proactive check or profile upkeep, so they cannot
+reach MEMORY.md or USER.md; the user still sees them in the Conversations tab. The raw-history tools can still find
+their messages, but pulling one into another run marks that run as untrusted too (ADR 0018).
+
 Only the user moves a memory out of pending, on the Memory page's Review tab: Approve, Edit (approve in their own
 words), Discard, or Approve all from one source. Nothing a model says can approve one. Memories nobody reviewed are
 deleted after `memory.review_expire_days` (default 30) with a plain notification. The user's own words in a clean

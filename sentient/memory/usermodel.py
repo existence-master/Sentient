@@ -629,7 +629,8 @@ class UserModelService(Service):
             sections["facts"] = "\n".join(lines)
         if cfg.recent_summaries:
             rows = await store.fetchall(
-                "SELECT m.id, m.content, m.end_at, s.untrusted FROM summaries m LEFT JOIN sessions s"
+                "SELECT m.id, m.content, m.end_at, COALESCE(NULLIF(m.untrusted, ''), s.untrusted) AS untrusted"
+                " FROM summaries m LEFT JOIN sessions s"
                 " ON s.id = m.session_id WHERE m.created_at > ? ORDER BY m.created_at DESC LIMIT ?",
                 (since, cfg.recent_summaries),
             )

@@ -59,7 +59,9 @@ CREATE TABLE IF NOT EXISTS summaries (
     start_at      TEXT NOT NULL,
     end_at        TEXT NOT NULL,
     message_ids   TEXT NOT NULL,                  -- JSON list
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    untrusted     TEXT                            -- app whose content the chat had read (ADR 0018/0021): kept out of
+                                                  -- other chats, proactivity and MEMORY.md; "" or NULL = clean
 );
 
 -- ---------------------------------------------------------------- semantic memory (atomic facts)
