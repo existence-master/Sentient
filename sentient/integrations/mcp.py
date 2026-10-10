@@ -41,6 +41,7 @@ from sentient.integrations.mcp_auth import (
     headers_secret,
     load_json,
     save_json,
+    stale_sign_in,
     tokens_secret,
 )
 from sentient.tools.base import Risk, ToolContext, ToolPlugin
@@ -257,10 +258,13 @@ class MCPManager:
                 "header_keys": sorted(headers.keys()),
                 "enabled": bool(spec.get("enabled", True)),
             }
-            previous = self.app.config.integrations.mcp_servers.get(name) or {}
-            if previous.get("url") != stored["url"] or previous.get("transport", "stdio") != transport:
-                delete_json(tokens_secret(name))  # a sign-in belongs to one server URL
-                delete_json(client_secret(name))
+            previous = self.app.config.integrations.mcp_servers.get(name)
+            changed_here = previous is not None and (
+                previous.get("url") != stored["url"] or previous.get("transport", "stdio") != transport)
+            # A sign-in belongs to one server address. The keychain is shared with other setups on this computer,
+            # so only clear one saved for another address, never one another setup made for this same server.
+            for secret in stale_sign_in(name, stored["url"] if transport == "http" else None, changed_here=changed_here):
+                delete_json(secret)
             if name in self.servers:
                 old = self.servers.pop(name)
                 self._cancel_sign_in(old)
@@ -428,7 +432,7 @@ class MCPManager:
         listener = self.mgr.listener
         await listener.start(self.app.config.integrations.oauth_redirect_port)
         redirect_uri = listener.redirect_uri()
-        store = KeychainTokenStorage(name, fresh=True)
+        store = KeychainTokenStorage(name, fresh=True, url=conn.spec.get("url"))
         registered = await store.get_client_info()
         if registered is not None and redirect_uri not in [str(u) for u in registered.redirect_uris or []]:
             delete_json(client_secret(name))  # registered for another port: register again
@@ -595,7 +599,7 @@ class MCPManager:
 
     def _stored_sign_in(self, name: str, url: str) -> SentientOAuthProvider:
         """OAuth for background connections: uses and refreshes the stored sign-in, never opens a browser."""
-        store = KeychainTokenStorage(name)
+        store = KeychainTokenStorage(name, url=url)
         if not store.has_tokens():
             raise NeedsSignIn(name)
 
