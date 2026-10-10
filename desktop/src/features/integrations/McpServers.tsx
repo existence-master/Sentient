@@ -332,6 +332,7 @@ function McpValuesDialog({ server: s, keys, open, onOpenChange }: { server: McpS
   }
 
   const save = () => {
+    if (setValues.isPending || (!filled && s.enabled)) return
     setError(null)
     setValues.mutate(
       { name: s.name, values, enable: !s.enabled },

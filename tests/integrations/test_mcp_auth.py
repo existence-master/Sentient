@@ -216,8 +216,8 @@ async def test_missing_values_are_filled_in_and_used_on_reconnect(app, ctx, keyc
     mock = MockServer(oauth=False)
     app.integrations.mcp.http_transport = mock.transport()
     mcp = app.integrations.mcp
-    notes = await mcp.import_server("Notes", {"transport": "http", "url": URL, "auth": "headers",
-                                              "header_keys": ["Authorization"]})
+    notes = await mcp.import_server("Notes", {"transport": "http", "url": URL.replace("http://", "https://"),
+                                              "auth": "headers", "header_keys": ["Authorization"]})
     assert notes["missing_values"] == ["Authorization"] and notes["status"] == "disabled"
     local = await mcp.import_server("Local", {"transport": "stdio", "command": "npx", "args": ["-y", "some-mcp"],
                                               "env_keys": ["API_TOKEN", "REGION"]})
@@ -229,6 +229,13 @@ async def test_missing_values_are_filled_in_and_used_on_reconnect(app, ctx, keyc
         await mcp.set_values("Notes", {"Authorization": "Bearer a\nb"})
     with pytest.raises(KeyError):
         await mcp.set_values("Missing", {})
+    # a key is never sent to a plain http:// address on the network (this computer is fine)
+    await mcp.import_server("Plain", {"transport": "http", "url": URL, "auth": "headers", "header_keys": ["Authorization"]})
+    with pytest.raises(ValueError, match="https://"):
+        await mcp.set_values("Plain", {"Authorization": "Bearer static-secret"})
+    assert "mcp:Plain:headers" not in keychain
+    await mcp.import_server("Here", {"transport": "http", "url": "http://127.0.0.1:9/mcp", "header_keys": ["X-Key"]})
+    assert (await mcp.set_values("Here", {"X-Key": "local-only"}))["missing_values"] == []
 
     filled = await mcp.set_values("Notes", {"Authorization": "Bearer static-secret"}, enable=True)
     assert filled["status"] == "connected" and filled["missing_values"] == [] and filled["enabled"] is True

@@ -165,6 +165,7 @@ class MCPManager:
         self.servers: dict[str, ServerConn] = {}
         self._flows: dict[str, SignInFlow] = {}  # OAuth state -> browser sign-in in progress
         self.http_transport: Any = None  # tests: an httpx2 transport for remote servers
+        self._locks: dict[str, asyncio.Lock] = {}
 
     @property
     def app(self) -> Any:
@@ -311,41 +312,52 @@ class MCPManager:
         have = {**(spec.get("env") or {}), **(load_secret_json(f"mcp:{name}") or {})}
         return sorted(k for k in spec.get("env_keys") or [] if not str(have.get(k) or "").strip())
 
-    async def set_values(self, name: str, values: dict, *, enable: bool = False, wait_s: float = 15.0) -> dict:
-        """Fill in the header or environment values a server lists by name (the "Add values" form). Values go to the
-        keychain, never to config; a blank value keeps the saved one. Then the server reconnects (and is turned on
-        with ``enable``)."""
-        cfg = self.app.config
-        spec = cfg.integrations.mcp_servers.get(name)
-        if spec is None:
-            raise KeyError(name)
-        http = spec.get("transport", "stdio") == "http"
-        allowed = set(spec.get("header_keys" if http else "env_keys") or [])
-        given = {str(k).strip(): str(v).strip() for k, v in (values or {}).items() if str(v).strip()}
-        for key, value in given.items():
-            if key not in allowed:
-                raise ValueError(f"'{key}' isn't one of this server's {'headers' if http else 'settings'}.")
-            if len(value.splitlines()) > 1:
-                raise ValueError(f"Enter a single-line value for '{key}'.")
-        if given:
-            secret = headers_secret(name) if http else f"mcp:{name}"
-            current = (load_json(secret) if http else load_secret_json(secret)) or {}
-            merged = {**{k: v for k, v in current.items() if k in allowed}, **given}
-            if not (save_json(secret, merged) if http else store_secret_json(secret, merged)):
-                raise ValueError("The system keychain is unavailable, so these values can't be stored safely.")
-        stored = dict(spec)
-        if http and given and _auth_of(stored) == "none":
-            stored["auth"] = "headers"
-        if enable:
-            stored["enabled"] = True
-        if stored != spec:
-            cfg.integrations.mcp_servers = {**cfg.integrations.mcp_servers, name: stored}
-            self.app.save_config()
+    def _server_lock(self, name: str) -> asyncio.Lock:
+        """One change at a time per server, so overlapping requests can't leave a connection untracked."""
+        return self._locks.setdefault(name, asyncio.Lock())
+
+    async def _relaunch(self, name: str, stored: dict) -> ServerConn:
         old = self.servers.pop(name, None)
         if old is not None:
             self._cancel_sign_in(old)
             await self._shutdown(old)
-        conn = self._launch(name, stored)
+        return self._launch(name, stored)
+
+    async def set_values(self, name: str, values: dict, *, enable: bool = False, wait_s: float = 15.0) -> dict:
+        """Fill in the header or environment values a server lists by name (the "Add values" form). Values go to the
+        keychain, never to config; a blank value keeps the saved one. Then the server reconnects (and is turned on
+        with ``enable``)."""
+        async with self._server_lock(name):
+            cfg = self.app.config
+            spec = cfg.integrations.mcp_servers.get(name)
+            if spec is None:
+                raise KeyError(name)
+            http = spec.get("transport", "stdio") == "http"
+            allowed = set(spec.get("header_keys" if http else "env_keys") or [])
+            given = {str(k).strip(): str(v).strip() for k, v in (values or {}).items() if str(v).strip()}
+            for key, value in given.items():
+                if key not in allowed:
+                    raise ValueError(f"'{key}' isn't one of this server's {'headers' if http else 'settings'}.")
+                if len(value.splitlines()) > 1:
+                    raise ValueError(f"Enter a single-line value for '{key}'.")
+            if http and given and not _protected_url(str(spec.get("url") or "")):
+                raise ValueError("This server's address starts with http://, so these values would be sent unprotected. "
+                                 "Change it to an https:// address first.")
+            if given:
+                secret = headers_secret(name) if http else f"mcp:{name}"
+                current = (load_json(secret) if http else load_secret_json(secret)) or {}
+                merged = {**{k: v for k, v in current.items() if k in allowed}, **given}
+                if not (save_json(secret, merged) if http else store_secret_json(secret, merged)):
+                    raise ValueError("The system keychain is unavailable, so these values can't be stored safely.")
+            stored = dict(spec)
+            if http and given and _auth_of(stored) == "none":
+                stored["auth"] = "headers"
+            if enable:
+                stored["enabled"] = True
+            if stored != spec:
+                cfg.integrations.mcp_servers = {**cfg.integrations.mcp_servers, name: stored}
+                self.app.save_config()
+            conn = await self._relaunch(name, stored)
         if stored.get("enabled", True) and wait_s > 0:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(conn.ready.wait(), wait_s)
@@ -353,18 +365,15 @@ class MCPManager:
 
     async def set_enabled(self, name: str, enabled: bool) -> dict:
         """Turn a server on or off without changing anything else."""
-        cfg = self.app.config
-        spec = cfg.integrations.mcp_servers.get(name)
-        if spec is None:
-            raise KeyError(name)
-        stored = {**spec, "enabled": bool(enabled)}
-        cfg.integrations.mcp_servers = {**cfg.integrations.mcp_servers, name: stored}
-        self.app.save_config()
-        old = self.servers.pop(name, None)
-        if old is not None:
-            self._cancel_sign_in(old)
-            await self._shutdown(old)
-        return self.describe(self._launch(name, stored))
+        async with self._server_lock(name):
+            cfg = self.app.config
+            spec = cfg.integrations.mcp_servers.get(name)
+            if spec is None:
+                raise KeyError(name)
+            stored = {**spec, "enabled": bool(enabled)}
+            cfg.integrations.mcp_servers = {**cfg.integrations.mcp_servers, name: stored}
+            self.app.save_config()
+            return self.describe(await self._relaunch(name, stored))
 
     async def remove(self, name: str) -> bool:
         conn = self.servers.pop(name, None)
@@ -730,6 +739,15 @@ def _err(exc: BaseException) -> str:
 def _looks_disconnected(exc: BaseException) -> bool:
     text = f"{type(exc).__name__} {exc}".lower()
     return any(w in text for w in ("closed", "broken", "disconnect", "endofstream", "connection"))
+
+
+def _protected_url(url: str) -> bool:
+    """https, or plain http to this computer only (where nothing travels over a network)."""
+    parts = urlsplit(url)
+    if parts.scheme == "https":
+        return True
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "http" and (host in {"localhost", "::1"} or host.startswith("127.") or host.endswith(".localhost"))
 
 
 def _auth_of(spec: dict) -> str:

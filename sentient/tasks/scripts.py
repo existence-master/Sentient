@@ -108,7 +108,7 @@ def should_act(condition: str, value: Any, previous: Any) -> bool:
     ``every_run``: every successful check that produced something, even when it is the same as last time; a
     check that prints nothing stays quiet."""
     if condition == "every_run":
-        return value is not None
+        return value is not None and not (isinstance(value, str) and not value.strip())
     if condition == "changed":
         return value is not None and previous is not None and canonical(value) != canonical(previous)
     return isinstance(value, dict) and bool(value.get("alert"))

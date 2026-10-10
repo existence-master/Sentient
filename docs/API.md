@@ -574,8 +574,9 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   values of the server's own `header_keys` (remote) or `env_keys` (local command): they are merged into the keychain
   entry (`mcp:<name>:headers` or `mcp:<name>`), never config; a blank value keeps the saved one. Then the server
   reconnects (waiting up to 15 s), and `enable: true` also turns it on. A remote server with `auth: "none"` becomes
-  `headers` once it has header values. 400 for a name the server doesn't list or a value with a line break, 404 unknown
-  server, 422 when `enable` is not a boolean.
+  `headers` once it has header values. 400 for a name the server doesn't list, a value with a line break, or header
+  values for a plain `http://` address that isn't this computer (`localhost`, `127.*`, `::1`); 404 unknown server, 422
+  when `enable` is not a boolean. Changes to one server (values, on/off) run one at a time.
 - `POST /api/integrations/mcp/{name}/sign-in` → `{auth_url, state}`; the desktop opens `auth_url` in the system browser. The engine
   discovers the server's protected resource metadata and authorization server metadata (RFC 9728, RFC 8414), registers
   a client when needed (RFC 7591, `client_name: "Sentient"`, public client), and uses PKCE (S256) with the `resource`
@@ -1482,7 +1483,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `alert`: acts when the script calls `result({"alert": true, "message": "..."})`. `changed`: acts when the result differs
   from `last_result`; the first successful result is only the baseline, and an empty (`null`) result is never a change
   and keeps the baseline. `every_run` ("Report every run"): acts after every successful check that produced a value,
-  even the same one as last time; a check that prints nothing stays quiet. Its `script_alert` message is the script's
+  even the same one as last time; a check that prints nothing (or returns an empty string) stays quiet. Its `script_alert` message is the script's
   output itself (up to 3000 characters) when that is text.
   The value is the script's `result(...)`, else its trimmed stdout.
   `then: "notify"` sends a `task` notification (title = task name, message = the alert `message` or a short description of the

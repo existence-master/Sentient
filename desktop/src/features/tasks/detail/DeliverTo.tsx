@@ -66,7 +66,7 @@ export function DeliverToRow({ task, ops, compact }: { task: Task; ops: Ops; com
   const save = (next: TaskDeliverTo) => void ops.update(task.task_id, { deliver_to: next }, 'Delivery updated')
   const toggle = (chat: DeliveryChat) => {
     const next = isOn(chat) ? chosen.filter((c) => !same(normalize(c, selfId), chat)) : [...chosen, chat]
-    save(next.length ? next : 'default')
+    save(next.length ? next : 'desktop')
   }
 
   const picker = (

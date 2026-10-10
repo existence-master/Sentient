@@ -221,9 +221,10 @@ async def test_script_job_changed_then_run(make_app):
 async def test_every_run_reports_identical_output_and_changed_does_not(make_app):
     app = await make_app(FakeProvider())
     same = [{"ok": True, "result": None, "stdout": "3 new posts drafted\n"} for _ in range(3)]
-    app.sandbox.run = FakeSandbox([*same, {"ok": True, "result": None, "stdout": ""}, *same])
+    quiet = [{"ok": True, "result": None, "stdout": ""}, {"ok": True, "result": "  "}]
+    app.sandbox.run = FakeSandbox([*same, *quiet, *same])
     every = await _script_task(app, condition="every_run", status="active", name="Posting report")
-    for _ in range(4):  # the fourth check prints nothing: no report
+    for _ in range(5):  # the last two checks print nothing or result(""): no report
         await app.tasks.run_now(every)
         await app.tasks.drain()
     changed = await _script_task(app, condition="changed", status="active", name="Posting watch")

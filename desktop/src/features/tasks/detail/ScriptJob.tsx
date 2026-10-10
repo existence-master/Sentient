@@ -343,7 +343,8 @@ function describeOutcome(r: SandboxResult, s: TaskScript): { accent: boolean; ic
   if (!r.ok) return null
   const then = s.then === 'run' ? 'Sentient would run the task' : 'you would get a notification'
   if (s.condition === 'every_run') {
-    const printed = r.result ?? (r.stdout?.trim() || null)
+    const result = typeof r.result === 'string' ? r.result.trim() || null : r.result
+    const printed = result ?? (r.stdout?.trim() || null)
     return printed === null
       ? { accent: false, icon: IconCircleCheck, title: 'Nothing to report this time', body: 'The script printed nothing, so you wouldn’t hear from me.' }
       : { accent: true, icon: IconRepeat, title: 'This check would report', body: `So ${then}.` }
