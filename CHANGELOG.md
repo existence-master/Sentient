@@ -6,6 +6,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **One local model job at a time, your chats first:** a local Ollama model now works on one thing at a time, so
+  background work no longer pushes it off the graphics card and slows your chat to a crawl. Your chat always goes
+  next; tasks, suggestions, memory upkeep and chat titles wait while you are chatting (and for 30 seconds after), and
+  while your laptop runs on battery. A small "Model busy" sign in the title bar says what the model is working on and
+  what waits. Change the wait, allow background work on battery or turn the queue off in Settings > Models. Cloud
+  models never wait.
 - **Read only or Read and write for each connection:** when you connect Gmail, Calendar, GitHub or any other app,
   and on every custom MCP server, pick **Read only** or **Read and write**. Read only lets Sentient look things up
   there but never change, send, delete or run anything: those abilities are hidden from the model and refused if

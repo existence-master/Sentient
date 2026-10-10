@@ -129,6 +129,7 @@ def looks_like_correction(text: str) -> bool:
 
 class EvolutionService(Service):
     name = "evolution"
+    model_kind = "skills"
     pause_on_stop = True  # Stop everything pauses reviews, the curator and profile updates until resume
 
     def __init__(self, app):

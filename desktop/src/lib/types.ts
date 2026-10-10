@@ -62,6 +62,20 @@ export interface StopState {
   source: string | null
 }
 
+/** What the local model is doing (#149): `GET /api/models/busy`, live as `model.busy`. */
+export type ModelJobKind = 'chat' | 'interactive' | 'task' | 'suggestions' | 'memory' | 'skills' | 'titles' | 'background'
+export interface ModelBusy {
+  busy: boolean
+  job: ModelJobKind | null
+  model: string | null
+  since: ISODate | null
+  /** Jobs that go as soon as the model is free. */
+  waiting: number
+  /** Background jobs held back while you chat or on battery. */
+  deferred: number
+  deferred_reason: 'chat' | 'battery' | null
+}
+
 export interface StopResult extends StopState {
   /** How many running jobs were cancelled. */
   cancelled: number
@@ -121,6 +135,10 @@ export interface ModelsConfig {
   experimental_claude_code?: boolean
   max_tool_rounds: number
   request_timeout_s: number
+  /** #149: one local model job at a time, chats first; background waits after a chat and on battery. */
+  local_queue?: boolean
+  background_quiet_s?: number
+  background_on_battery?: boolean
 }
 
 export interface GatewayConfig {
@@ -870,6 +888,8 @@ export interface DomainEventMap {
   'source.items': SourceItemsData
   // §17
   'stop.updated': StopState
+  // #149
+  'model.busy': ModelBusy
 }
 
 export type DomainEventType = keyof DomainEventMap

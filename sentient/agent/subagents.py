@@ -28,6 +28,7 @@ from typing import Any
 from sentient import paths
 from sentient.agent.loop import Budget, LoopResult
 from sentient.llm.events import Error, TextDelta, ToolCallEvent, ToolResultEvent
+from sentient.llm.jobs import detached
 from sentient.services import Service, cancel_tasks
 from sentient.store.db import new_id, now_iso
 from sentient.tools.base import Risk, Tool
@@ -204,6 +205,8 @@ class SubagentManager(Service):
         task = asyncio.create_task(
             self._run(sub_id, goal, context or "", tools, session_id, bool(background), on_update, origin, untrusted),
             name=f"subagent:{sub_id}",
+            # a foreground helper is part of whatever waits on it (a chat reply); a background one is task work (#149)
+            context=detached("task") if background else None,
         )
         self._tasks[sub_id] = task
         task.add_done_callback(lambda _t, sid=sub_id: self._tasks.pop(sid, None))
