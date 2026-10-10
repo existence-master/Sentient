@@ -28,8 +28,12 @@ URL = f"{BASE}/mcp"
 class MockServer:
     """A tiny MCP server (JSON responses) that requires a bearer token, plus an OAuth authorization server."""
 
-    def __init__(self, *, oauth: bool, static_token: str = "static-secret"):
+    def __init__(self, *, oauth: bool, static_token: str = "static-secret", token_path: str = "/token"):
         self.oauth = oauth
+        self.token_path = token_path
+        self.metadata_status = 200  # what the well-known metadata addresses answer (500: a broken lookup)
+        self.token_posts: list[str] = []  # the path of every token request
+        self.metadata_calls = 0
         self.valid = set() if oauth else {static_token}
         self.refresh_tokens: set[str] = set()
         self.codes: dict[str, dict] = {}
@@ -44,6 +48,7 @@ class MockServer:
             Route("/.well-known/oauth-authorization-server", self.asm),
             Route("/register", self.register, methods=["POST"]),
             Route("/token", self.token, methods=["POST"]),
+            Route("/oauth2/token", self.token, methods=["POST"]),
         ])
 
     def transport(self) -> httpx2.ASGITransport:
@@ -80,15 +85,21 @@ class MockServer:
 
     # ---------------------------------------------------------------- OAuth
     async def prm(self, request: Request) -> Response:
+        self.metadata_calls += 1
         if not self.oauth:
             return Response(status_code=404)
+        if self.metadata_status != 200:
+            return Response(status_code=self.metadata_status)
         return JSONResponse({"resource": URL, "authorization_servers": [BASE]})
 
     async def asm(self, request: Request) -> Response:
+        self.metadata_calls += 1
         if not self.oauth:
             return Response(status_code=404)
+        if self.metadata_status != 200:
+            return Response(status_code=self.metadata_status)
         return JSONResponse({
-            "issuer": BASE, "authorization_endpoint": f"{BASE}/authorize", "token_endpoint": f"{BASE}/token",
+            "issuer": BASE, "authorization_endpoint": f"{BASE}/authorize", "token_endpoint": BASE + self.token_path,
             "registration_endpoint": f"{BASE}/register", "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256"],
@@ -119,6 +130,9 @@ class MockServer:
         return {"access_token": access, "token_type": "bearer", "expires_in": self.expires_in, "refresh_token": refresh}
 
     async def token(self, request: Request) -> Response:
+        self.token_posts.append(request.url.path)
+        if request.url.path != self.token_path:
+            return Response(status_code=404)
         form = dict(await request.form())
         self.token_calls.append(form)
         if form.get("grant_type") == "authorization_code":
@@ -343,6 +357,153 @@ async def test_oauth_refreshes_expired_and_rejected_tokens(app, keychain, monkey
     conn.refresh_tried = False
     conn.broken.set()
     await _wait(app, "Notes", "needs_sign_in")
+
+
+META_KEYS = ("server_url", "auth_server_url", "oauth_metadata", "protected_resource_metadata")
+
+
+async def _reconnect_expired(app, mock: MockServer, name: str) -> None:
+    """Connect again with the stored token expired. Every connection builds its provider from the keychain alone,
+    so this is what the first connection after an engine restart does."""
+    conn = app.integrations.mcp.servers[name]
+    posts, seen = len(mock.token_posts), len(mock.seen_tokens)
+    assert mcp_auth.KeychainTokenStorage(name).mark_expired()
+    conn.broken.set()
+    for _ in range(400):
+        if len(mock.token_posts) > posts and len(mock.seen_tokens) > seen and conn.status == "connected":
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{name} did not reconnect: {conn.status} {conn.error} {mock.token_posts}")
+
+
+async def _signed_in(app, mock: MockServer, name: str = "Notes") -> None:
+    app.integrations.mcp.http_transport = mock.transport()
+    await app.integrations.mcp.add(name, {"transport": "http", "url": URL})
+    assert (await _sign_in(app, mock, name)).status_code == 200
+    await _wait(app, name, "connected")
+
+
+async def test_refresh_after_restart_uses_the_saved_token_endpoint(app, keychain, monkeypatch):
+    """Issue #267: the SDK keeps the authorization server's details in memory only, so after a restart a refresh
+    went to <server>/token. The token record now keeps them, and the refresh goes to the real token endpoint."""
+    monkeypatch.setattr(mcp_mod, "MIN_BACKOFF_S", 0.05)
+    mock = MockServer(oauth=True, token_path="/oauth2/token")
+    await _signed_in(app, mock)
+    rec = _tokens(keychain, "Notes")
+    assert rec["server_url"] == URL and rec["oauth_metadata"]["token_endpoint"] == f"{BASE}/oauth2/token"
+    assert rec["auth_server_url"].rstrip("/") == BASE and rec["protected_resource_metadata"]["resource"] == URL
+
+    looked = mock.metadata_calls
+    await _reconnect_expired(app, mock, "Notes")
+    assert mock.token_posts == ["/oauth2/token", "/oauth2/token"]
+    assert [c["grant_type"] for c in mock.token_calls] == ["authorization_code", "refresh_token"]
+    assert mock.token_calls[-1]["resource"] == URL  # as at sign-in
+    assert mock.metadata_calls == looked  # the saved copy was used, nothing looked up
+    rec = _tokens(keychain, "Notes")
+    assert rec["tokens"]["access_token"] == mock.issued[1] == mock.seen_tokens[-1]
+    assert rec["oauth_metadata"]["token_endpoint"] == f"{BASE}/oauth2/token"  # still kept after the refresh
+
+    # a second restart works the same way
+    await _reconnect_expired(app, mock, "Notes")
+    assert mock.token_posts[-1] == "/oauth2/token" and mock.seen_tokens[-1] == mock.issued[2]
+
+
+async def test_refresh_looks_up_the_token_endpoint_for_an_older_record(app, keychain, monkeypatch):
+    """A sign-in saved before the record kept the server's details: they are looked up once, then saved."""
+    monkeypatch.setattr(mcp_mod, "MIN_BACKOFF_S", 0.05)
+    mock = MockServer(oauth=True, token_path="/oauth2/token")
+    await _signed_in(app, mock)
+    rec = _tokens(keychain, "Notes")
+    mcp_auth.save_json("mcp:Notes:oauth", {k: v for k, v in rec.items() if k not in META_KEYS})
+
+    looked = mock.metadata_calls
+    await _reconnect_expired(app, mock, "Notes")
+    assert mock.token_posts == ["/oauth2/token", "/oauth2/token"] and mock.metadata_calls > looked
+    assert _tokens(keychain, "Notes")["oauth_metadata"]["token_endpoint"] == f"{BASE}/oauth2/token"
+    assert mock.seen_tokens[-1] == mock.issued[1]
+
+    looked = mock.metadata_calls
+    await _reconnect_expired(app, mock, "Notes")
+    assert mock.token_posts[-1] == "/oauth2/token" and mock.metadata_calls == looked
+
+
+async def test_failed_lookup_keeps_the_old_behaviour(app, keychain, monkeypatch):
+    """When the details can't be looked up, the SDK's own fallback address is used, as before."""
+    monkeypatch.setattr(mcp_mod, "MIN_BACKOFF_S", 0.05)
+    mock = MockServer(oauth=True)  # the token endpoint is the fallback address
+    await _signed_in(app, mock)
+    rec = _tokens(keychain, "Notes")
+    mcp_auth.save_json("mcp:Notes:oauth", {k: v for k, v in rec.items() if k not in META_KEYS})
+    mock.metadata_status = 500
+
+    await _reconnect_expired(app, mock, "Notes")
+    assert mock.token_posts == ["/token", "/token"] and mock.seen_tokens[-1] == mock.issued[1]
+    assert "oauth_metadata" not in _tokens(keychain, "Notes")
+
+    # an address that can't be reached at all is ignored too
+    def unreachable(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("offline", request=request)
+
+    store = mcp_auth.KeychainTokenStorage("Notes")
+    provider = mcp_auth.SentientOAuthProvider(URL, mcp_auth.client_metadata("http://127.0.0.1:1/cb"), store,
+                                              discovery_transport=httpx2.MockTransport(unreachable))
+    await provider._initialize()
+    assert provider.context.current_tokens is not None and provider.context.oauth_metadata is None
+
+
+async def test_saved_details_are_only_used_for_the_same_server_and_client(keychain):
+    meta = {"issuer": BASE, "authorization_endpoint": f"{BASE}/authorize", "token_endpoint": f"{BASE}/oauth2/token",
+            "response_types_supported": ["code"]}
+    tokens = {"access_token": "at", "token_type": "Bearer", "refresh_token": "rt"}
+
+    async def restored(rec: dict, client: dict | None = None) -> str | None:
+        mcp_auth.save_json("mcp:T:oauth", {"tokens": tokens, "expires_at": 1.0, **rec})
+        mcp_auth.save_json("mcp:T:client", client or {"client_id": "c1", "redirect_uris": ["http://127.0.0.1:1/cb"]})
+
+        def offline(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(404)
+
+        provider = mcp_auth.SentientOAuthProvider(URL, mcp_auth.client_metadata("http://127.0.0.1:1/cb"),
+                                                  mcp_auth.KeychainTokenStorage("T"),
+                                                  discovery_transport=httpx2.MockTransport(offline))
+        await provider._initialize()
+        md = provider.context.oauth_metadata
+        return str(md.token_endpoint) if md else None
+
+    good = {"server_url": URL, "auth_server_url": BASE, "oauth_metadata": meta}
+    assert await restored(good) == f"{BASE}/oauth2/token"
+    # the server address changed: those details belong to the old one
+    assert await restored({**good, "server_url": "http://other.test/mcp"}) is None
+    # SEP-2352: a client registered with another authorization server is never sent to this one
+    other = {"client_id": "c1", "redirect_uris": ["http://127.0.0.1:1/cb"], "issuer": "http://other.test"}
+    assert await restored(good, other) is None
+    # details that don't match the authorization server they were saved for
+    assert await restored({**good, "auth_server_url": "http://other.test"}) is None
+
+
+def test_saving_looked_up_details_never_loses_the_sign_in(keychain, monkeypatch):
+    """The record grows with the details; if the keychain fails partway, the old record is put back."""
+    from sentient import secrets
+
+    rec = {"tokens": {"access_token": "at", "token_type": "Bearer", "refresh_token": "rt"}, "expires_at": 1.0}
+    mcp_auth.save_json("mcp:T:oauth", rec)
+    meta = {"issuer": BASE, "authorization_endpoint": f"{BASE}/authorize", "token_endpoint": f"{BASE}/oauth2/token",
+            "response_types_supported": ["code"], "scopes_supported": [f"scope-{i}" for i in range(200)]}
+    store = mcp_auth.KeychainTokenStorage("T")
+    provider = mcp_auth.SentientOAuthProvider(URL, mcp_auth.client_metadata("http://127.0.0.1:1/cb"), store)
+    provider._use_metadata(None, None, mcp_auth.OAuthMetadata.model_validate(meta))
+
+    real_set = secrets.set_secret
+
+    def flaky(name: str, value: str) -> bool:
+        return False if name == "mcp:T:oauth:1" else real_set(name, value)
+
+    monkeypatch.setattr(secrets, "set_secret", flaky)
+    assert store.save_metadata() is False
+    assert mcp_auth.load_json("mcp:T:oauth") == rec
+    monkeypatch.setattr(secrets, "set_secret", real_set)
+    assert store.save_metadata() is True
+    assert mcp_auth.load_json("mcp:T:oauth")["oauth_metadata"]["token_endpoint"] == f"{BASE}/oauth2/token"
 
 
 async def test_sign_out_clears_tokens(app, keychain):

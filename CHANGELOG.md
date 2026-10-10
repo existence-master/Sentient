@@ -188,6 +188,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   keeping its "search" and "run" tools together, instead of none at all.
 - A message with a link now offers local models the page reader (`web_fetch`) next to the web browser, and a tool
   you name exactly ("use web_fetch") is always offered (#252).
+- Signed-in MCP servers (Composio, for example) no longer ask you to sign in again about an hour after Sentient
+  restarts. The sign-in now remembers where the server renews it, so renewing works after a restart; sign-ins saved
+  before this fix look that up once on their own.
 - Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
   and many tools are no longer cut off without warning. Change it with `models.context_length`, per role with
   `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.
