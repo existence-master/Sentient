@@ -218,6 +218,13 @@ class ChatConfig(BaseModel):
         description="Longest tool result the model reads. Longer results are cut and the full text is saved "
         "under files/outputs/ so the assistant can open it if needed.",
     )
+    tool_result_context_share: float = Field(
+        0.25,
+        ge=0.05,
+        le=1.0,
+        description="Largest share of what the model reads at once that one tool result may fill. Keeps a single "
+        "long result from crowding out the chat on models with a short context length.",
+    )
     parallel_read_tools: bool = Field(
         True, description="Run look-up tools the model asks for in the same step at the same time."
     )

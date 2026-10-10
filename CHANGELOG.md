@@ -176,6 +176,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- One long tool result no longer fills a local model's whole context. A result may now take about a quarter of what
+  the model reads at once (Settings > General > Conversations), so on an 8,192-token model a 13,000-character Composio
+  search no longer triggers "This chat is getting long" after a single step. The model is told plainly when a result
+  was cut, and the full result is still saved. Composio's tool search keeps its useful part instead of its first
+  characters: the recommended plan, the tool names, which apps are connected and the main tool's settings. A connected
+  tool server that sends its answer twice (as text and as data) is now read once.
 - A task that can't be planned because Claude Code is your main model now says so and what to do ("Pick a
   planner model in Settings > Models"), instead of saying the AI model is unavailable.
 - A memory waiting for your review now shows the page or message it came from, not the error from a later action

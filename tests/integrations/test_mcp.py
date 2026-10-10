@@ -53,8 +53,9 @@ async def test_mcp_stdio_server_lifecycle(config, isolated_home, keychain):
         add = app.registry.get("mcp_echo_test_add_numbers")
         params = add.openai_schema()["function"]["parameters"]
         assert set(params["properties"]) == {"a", "b"} and params["required"] == ["a", "b"]
-        assert (await add.call(ctx, {"a": 2, "b": 3}))["content"] == "5"
-        assert (await app.registry.get("mcp_echo_test_echo").call(ctx, {"text": "hi"}))["content"] == "echo: hi"
+        assert await add.call(ctx, {"a": 2, "b": 3}) == {"content": "5"}  # no repeated structured copy (#264)
+        assert add.shorten_fn is None  # only known long results (Composio search) get a shortener (#264)
+        assert await app.registry.get("mcp_echo_test_echo").call(ctx, {"text": "hi"}) == {"content": "echo: hi"}
         assert "error" in await app.registry.get("mcp_echo_test_explode").call(ctx, {})
 
         tested = await app.integrations.mcp.test("Echo Test")

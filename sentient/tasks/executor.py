@@ -263,7 +263,7 @@ async def _run_approved_call(svc: TaskService, task_id: str, run_id: str, ctx: A
     if call is None:
         return messages
     await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": call["name"], "parameters": call["arguments"]})
-    res, is_error, content = await svc.app.agent.run_tool(ToolCall(**call), ctx)
+    res, is_error, content = await svc.app.agent.run_tool(ToolCall(**call), ctx, role="executor")
     await svc.progress(
         task_id, run_id, {"type": "tool_result", "tool_name": call["name"], "result": truncate(res), "is_error": is_error}
     )
@@ -385,7 +385,9 @@ async def execute_single(
                     await mapper.handle(event, messages)
                     if isinstance(event, ToolResultEvent) and not event.is_error:
                         seen = len(sources)
-                        sources.add_tool_result(event.name, app.agent.delivered_rows(event.result))
+                        sources.add_tool_result(
+                            event.name, app.agent.delivered_rows(event.result, result.tool_result_limit)
+                        )
                         if len(sources) > seen:  # saved at once, so a restart keeps it
                             await svc.repo.update_run(run_id, {"memory_sources": await sources.resolve(app.store)})
                 await mapper.flush_thought()

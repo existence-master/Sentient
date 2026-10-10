@@ -101,6 +101,10 @@ from sentient.tools.rules import (
 log = logging.getLogger(__name__)
 
 MAX_ATTACHMENT_CHARS = 60_000
+# A tool result may fill at most ``chat.tool_result_context_share`` of the model's context (#264). Characters per
+# token is cautious: JSON, ids and escaped text take more tokens per character than prose.
+CHARS_PER_TOKEN = 3
+MIN_TOOL_RESULT_CHARS = 1500
 EMPTY_ANSWER_NUDGE = (
     "You have not replied yet. If the request still needs a tool call, make it now; "
     "otherwise answer the user now, based on the tool results above."
@@ -225,6 +229,19 @@ def _json_safe(value: Any) -> str:
         return json.dumps(str(value))
 
 
+def _shorten(tool: Tool | None, res: Any) -> str | None:
+    """The tool's own shorter version of a long result (``Tool.shorten_fn``), as text; None without one."""
+    fn = getattr(tool, "shorten_fn", None)
+    if fn is None:
+        return None
+    try:
+        short = fn(res)
+    except Exception as exc:
+        log.debug("shortening a %s result failed: %s", getattr(tool, "name", "?"), exc)
+        return None
+    return None if short is None else _json_safe(short)
+
+
 def _error_text(res: Any) -> str | None:
     if isinstance(res, dict) and res.get("error"):
         return str(res["error"])[:500]
@@ -256,6 +273,8 @@ class LoopResult:
     # the first call held because this run read outside content and nobody could be asked (ADR 0018):
     # {tool, arguments, call_id, question}. A task run stops after that round and asks the question.
     needs_ok: dict | None = None
+    # the longest tool result the model read in this run (``Agent.tool_result_limit``); None before the loop starts
+    tool_result_limit: int | None = None
 
 
 def _hosts(raw: Any) -> set[str]:
@@ -529,6 +548,7 @@ class Agent:
         if unprompted and not is_unprompted(getattr(ctx, "origin", None)):
             ctx.origin = str(source).strip().lower()  # tools this run starts (a subagent) must see it as unprompted too
         tools = self.registry.openai_schemas(tool_names) or None
+        result.tool_result_limit = await self.tool_result_limit(role, model)
         rounds = max_rounds or self.config.models.max_tool_rounds
         repeat_limit = self.config.tools.repeated_call_limit
         repeats: dict[tuple[str, str], tuple[str, int]] = {}  # (tool, arguments) -> (last result, times it came back)
@@ -924,16 +944,35 @@ class Agent:
             result.skills_viewed.append(tc.arguments["name"])
         # record the result before yielding so a checkpoint taken on this event is complete
         p.seen = _json_safe(res)
-        content = await self._tool_content(res, tc.id)
+        content = await self._tool_content(res, tc.id, tool=p.tool, limit=result.tool_result_limit)
         messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": content})
         if persist:
             await persist("tool", content, tool_call_id=tc.id, name=tc.name)
         yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
 
-    def delivered_rows(self, res: Any) -> Any:
-        """The rows of a list result the model actually read: ``_tool_content`` cuts long results, and a
-        memory from the cut part must not be shown as one Sentient had in mind."""
+    async def tool_result_limit(self, role: str, model: str | None = None) -> int:
+        """The longest tool result the model reads in ``role``: ``chat.tool_result_max_chars``, and no more than
+        ``chat.tool_result_context_share`` of what the model reads at once, so one long result (an MCP search) can't
+        fill a small local model's context by itself (#264)."""
         limit = self.config.chat.tool_result_max_chars
+        window = getattr(self.llm, "context_window", None)
+        if not callable(window):
+            return limit
+        try:
+            length = await window(role, model)
+        except Exception as exc:
+            log.debug("context length for %s unknown: %s", model or role, exc)
+            return limit
+        if not length:
+            return limit
+        share = int(int(length) * self.config.chat.tool_result_context_share * CHARS_PER_TOKEN)
+        return min(limit, max(MIN_TOOL_RESULT_CHARS, share))
+
+    def delivered_rows(self, res: Any, limit: int | None = None) -> Any:
+        """The rows of a list result the model actually read: ``_tool_content`` cuts long results, and a
+        memory from the cut part must not be shown as one Sentient had in mind. ``limit`` is the run's
+        ``LoopResult.tool_result_limit`` (default ``chat.tool_result_max_chars``)."""
+        limit = limit or self.config.chat.tool_result_max_chars
         if not limit or not isinstance(res, list) or len(_json_safe(res)) <= limit:
             return res
         keep = 0
@@ -941,12 +980,15 @@ class Agent:
             keep += 1
         return res[:keep]
 
-    async def _tool_content(self, res: Any, call_id: str) -> str:
-        """The tool message the model reads. Long results are cut; the full text goes to files/outputs/."""
+    async def _tool_content(self, res: Any, call_id: str, *, tool: Tool | None = None, limit: int | None = None) -> str:
+        """The tool message the model reads. A result longer than ``limit`` (default ``chat.tool_result_max_chars``)
+        is shortened by the tool's ``shorten_fn`` when it has one, then cut from the end; the full text goes to
+        files/outputs/ and the model is told plainly."""
         content = _json_safe(res)
-        limit = self.config.chat.tool_result_max_chars
+        limit = limit or self.config.chat.tool_result_max_chars
         if not limit or len(content) <= limit:
             return content
+        short = _shorten(tool, res)
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", call_id or "")[:80] or new_id()
         rel = f"outputs/tool-{safe}.txt"
         full = res if isinstance(res, str) else json.dumps(res, ensure_ascii=False, indent=2, default=str)
@@ -958,14 +1000,15 @@ class Agent:
 
         try:
             await asyncio.to_thread(write)
-            note = (
-                f"\n\n[Result cut to {limit} of {len(content)} characters. The full result is saved as files/{rel}; "
-                f'read it with file_read(name="{rel}") if you need the rest.]'
-            )
+            saved = f' The full result is saved as files/{rel}; read it with file_read(name="{rel}") if you need the rest.'
         except OSError as exc:
             log.warning("could not save long tool result: %s", exc)
-            note = f"\n\n[Result cut to {limit} of {len(content)} characters.]"
-        return content[:limit] + note
+            saved = ""
+        if short is not None and len(short) < len(content):
+            if len(short) <= limit:
+                return short + f"\n\n[Result shortened from {len(content)} characters to its main parts.{saved}]"
+            content = short
+        return content[:limit] + f"\n\n[Result cut: this is only the first {limit} of {len(content)} characters.{saved}]"
 
     # ------------------------------------------------------------------ chat turn
     async def _user_content(self, text: str, attachments: list[str]) -> str | list[dict]:
@@ -1098,7 +1141,7 @@ class Agent:
                 elif isinstance(event, ToolResultEvent | UserInterjection):
                     partial = ""  # text before a tool call or a steer was already persisted
                     if isinstance(event, ToolResultEvent) and not event.is_error:
-                        sources.add_tool_result(event.name, self.delivered_rows(event.result))
+                        sources.add_tool_result(event.name, self.delivered_rows(event.result, result.tool_result_limit))
                     if ctx.untrusted and not marked:  # remember it for the rest of this chat, also after a restart
                         marked = True
                         await self.store.execute(
@@ -1223,11 +1266,14 @@ class Agent:
             log.exception("tool %s failed", tc.name)
             return {"error": f"{type(exc).__name__}: {exc}"}, True, int((time.perf_counter() - started) * 1000)
 
-    async def run_tool(self, call: ToolCall, ctx: ToolContext) -> tuple[Any, bool, str]:
+    async def run_tool(
+        self, call: ToolCall, ctx: ToolContext, *, role: str = "primary", model: str | None = None
+    ) -> tuple[Any, bool, str]:
         """Run one call the user approved outside the loop (a task's held call, ADR 0018); lasting rules still apply.
-        Returns ``(result, is_error, content)``, where ``content`` is the tool message the model reads."""
+        Returns ``(result, is_error, content)``, where ``content`` is the tool message the model in ``role`` reads."""
         res, is_error, _ = await self._run_tool(call, ctx)
-        return res, is_error, await self._tool_content(res, call.id)
+        limit = await self.tool_result_limit(role, model)
+        return res, is_error, await self._tool_content(res, call.id, tool=self.registry.get(call.name), limit=limit)
 
     # ------------------------------------------------------------------ background
     def _spawn(self, coro) -> None:

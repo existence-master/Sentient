@@ -204,8 +204,8 @@ accept or loosen a rule.
   (`conversation`, `manual`, `file:<name>`...) or the insight's (`user` | `inferred`); `via: "prompt"` means it was in
   the system prompt (recalled facts, user-model insights), `"tool"` that `memory_recall` or `memory_search_by_source`
   returned it during the turn. Recorded deterministically (the model is never asked which it used); deduplicated,
-  first mention wins, at most 40. Only rows of a memory tool's result that fit in `chat.tool_result_max_chars` (the
-  part the model read) count. Pending memories (section 7, review) never appear. Task runs record the same list
+  first mention wins, at most 40. Only rows of a memory tool's result that fit in the run's tool result limit
+  (`LoopResult.tool_result_limit`, section 10: the part the model read) count. Pending memories (section 7, review) never appear. Task runs record the same list
   (section 4, Run `memory_sources`).
 - `GET /api/sessions/search?q=` → `[{session_id, message_id, role, snippet, created_at}]`
 - `POST /api/chat` NDJSON fallback of the WebSocket turn: body `{text, session_id?, attachments?, model?}`; lines are the chat events above, first line `{type: "session", session_id}`.
@@ -727,6 +727,8 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
 - `PUT /api/integrations/{id}/privacy-filters` same shape → `{ok}`
 - `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, auth: "none|headers|oauth", header_keys, missing_values, signed_in, signing_in, enabled, status: "connecting|connected|needs_sign_in|error|disconnected|disabled", tools: [{name, mcp_name, description, risk}], error}]`
   (`name` is the Sentient tool name `mcp_<server>_<tool>`; `env` and header values are kept in the keychain, only `env_keys` and `header_keys` are returned)
+  - A call of an MCP tool returns `{content: text, structured?}` or `{error}`. `structured` is the server's
+    structured content, left out when it only repeats the text (`{"result": text}` or the text's own JSON).
   - `missing_values`: the `header_keys` (remote servers) or `env_keys` (local commands) that have no value in the
     keychain yet, for example on a server imported from Hermes. Never the values themselves.
   - `auth` (remote servers only): `none`, `headers` (static headers such as `Authorization: Bearer ...` sent on every request) or `oauth` (sign-in with the MCP authorization spec). Header values are sent in every mode when `header_keys` is not empty.
@@ -1202,8 +1204,16 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - Consecutive tool calls of effective risk `read` that need no approval run concurrently (`chat.parallel_read_tools`,
   default on); others run in order. Their `tool_call` events come first, `tool_progress` may interleave, and
   `tool_result` events, tool messages and persisted rows keep the order the model asked for.
-- A tool result longer than `chat.tool_result_max_chars` (default 16000) is cut, the full text is saved under
-  `files/outputs/tool-<call_id>.txt`, and the model is told where it is. The `tool_result` event still carries the full result.
+- A tool result longer than the run's limit is cut, the full text is saved under `files/outputs/tool-<call_id>.txt`,
+  and the model is told plainly (`[Result cut: this is only the first N of M characters. The full result is saved as
+  ...]`). The limit (`await app.agent.tool_result_limit(role, model)`, kept on `LoopResult.tool_result_limit`) is
+  `chat.tool_result_max_chars` (default 16000), and at most `chat.tool_result_context_share` (default 0.25) of the
+  model's context length at 3 characters per token, never below 1500: 6144 characters on an 8,192-token local model.
+  A tool can give a shorter version of a long result with `Tool.shorten_fn(result) -> result | None`; the model then
+  reads that (`[Result shortened from M characters to its main parts. ...]`), still cut if it is longer than the limit.
+  MCP tools get one by their own tool name (`sentient.integrations.mcp_shorten`): `COMPOSIO_SEARCH_TOOLS` keeps the
+  recommended plan, known pitfalls (first 3), tool slugs, connection statuses, the session id, the time and the main
+  tools' parameters. The `tool_result` event still carries the full result.
 - Anthropic models (`anthropic/*`) get prompt caching (`cache_control`) on the system prompt and the tool list.
 - Tool arguments that fail validation return `{error: "Invalid arguments for <tool>: ...", schema}` so the model can retry.
 
