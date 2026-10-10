@@ -1206,14 +1206,15 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   `tool_result` events, tool messages and persisted rows keep the order the model asked for.
 - A tool result longer than the run's limit is cut, the full text is saved under `files/outputs/tool-<call_id>.txt`,
   and the model is told plainly (`[Result cut: this is only the first N of M characters. The full result is saved as
-  ...]`). The limit (`await app.agent.tool_result_limit(role, model)`, kept on `LoopResult.tool_result_limit`) is
+  ...]`). The limit (`await app.agent.tool_result_limit(role, model)`, kept on `LoopResult.tool_result_limit` and worked out again for a fallback model that answered) is
   `chat.tool_result_max_chars` (default 16000), and at most `chat.tool_result_context_share` (default 0.25) of the
   model's context length at 3 characters per token, never below 1500: 6144 characters on an 8,192-token local model.
   A tool can give a shorter version of a long result with `Tool.shorten_fn(result) -> result | None`; the model then
   reads that (`[Result shortened from M characters to its main parts. ...]`), still cut if it is longer than the limit.
   MCP tools get one by their own tool name (`sentient.integrations.mcp_shorten`): `COMPOSIO_SEARCH_TOOLS` keeps the
-  recommended plan, known pitfalls (first 3), tool slugs, connection statuses, the session id, the time and the main
-  tools' parameters. The `tool_result` event still carries the full result.
+  connection statuses, the session id, the time and the next steps first, then the recommended plan, known pitfalls
+  (first 3) and tool slugs, then the main tools' parameters and at most 8 other tools by description. The
+  `tool_result` event still carries the full result.
 - Anthropic models (`anthropic/*`) get prompt caching (`cache_control`) on the system prompt and the tool list.
 - Tool arguments that fail validation return `{error: "Invalid arguments for <tool>: ...", schema}` so the model can retry.
 

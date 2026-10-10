@@ -16,6 +16,7 @@ from typing import Any
 PARAM_DESC_CHARS = 70
 TOOL_DESC_CHARS = 120
 MAX_PITFALLS = 3
+MAX_OTHER_TOOLS = 8  # tools besides the main ones, by description only
 PITFALL_CHARS = 160
 
 
@@ -89,7 +90,10 @@ def composio_search(result: Any) -> dict | None:
             item["known_pitfalls"] = [_clip(x, PITFALL_CHARS) for x in item["known_pitfalls"][:MAX_PITFALLS]]
         results.append(item)
         main += [s for s in r.get("primary_tool_slugs") or [] if isinstance(s, str) and s not in main]
-    out: dict[str, Any] = {"successful": outer.get("successful", data.get("success")), "results": results}
+    # what the next call needs comes first, so a cut at the end only loses other tools' descriptions
+    out: dict[str, Any] = {"successful": outer.get("successful", data.get("success"))}
+    if outer.get("error") or data.get("error"):
+        out["error"] = outer.get("error") or data.get("error")
     statuses = data.get("toolkit_connection_statuses")
     if isinstance(statuses, list):
         out["toolkit_connection_statuses"] = [
@@ -97,9 +101,6 @@ def composio_search(result: Any) -> dict | None:
             for s in statuses
             if isinstance(s, dict)
         ]
-    schemas = data.get("tool_schemas")
-    if isinstance(schemas, dict):
-        out["tool_schemas"] = {slug: _schema(t, slug in main) for slug, t in schemas.items()}
     session = data.get("session")
     if isinstance(session, dict):
         out["session"] = {k: session[k] for k in ("id", "instructions") if k in session}
@@ -108,8 +109,12 @@ def composio_search(result: Any) -> dict | None:
         out["current_time_utc"] = time_info["current_time_utc"]
     if data.get("next_steps_guidance"):
         out["next_steps_guidance"] = data["next_steps_guidance"]
-    if outer.get("error") or data.get("error"):
-        out["error"] = outer.get("error") or data.get("error")
+    out["results"] = results
+    schemas = data.get("tool_schemas")
+    if isinstance(schemas, dict):
+        first = [slug for slug in schemas if slug in main]
+        others = [slug for slug in schemas if slug not in main][:MAX_OTHER_TOOLS]
+        out["tool_schemas"] = {slug: _schema(schemas[slug], slug in main) for slug in first + others}
     out["note"] = "Shortened by Sentient: other tools' parameters left out; search again with a narrower use case if needed."
     return out
 

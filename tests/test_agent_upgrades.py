@@ -352,6 +352,30 @@ async def test_long_result_is_cut_to_the_context_share(config, isolated_home):
         await s.stop()
 
 
+async def test_a_fallback_models_context_sets_the_limit(config, isolated_home):
+    """The model that actually answered (a fallback, reported on the chunk) decides how much of a result it reads."""
+
+    @tool("big_page", risk=Risk.read)
+    async def big_page(ctx: ToolContext) -> str:
+        """Return a long page."""
+        return "y" * 13000
+
+    llm = FakeProvider(replies=[[tool_call("big_page")], "ok"])  # asks for fake/primary, answers as "fake"
+
+    async def context_window(role: str, model: str | None = None) -> int:
+        return 8192 if model == "fake" else 200_000
+
+    llm.context_window = context_window
+    s = await start(config, isolated_home, llm, "fallback")
+    try:
+        s.registry.register(make_plugin("page", big_page))
+        sid = await s.store.create_session(channel="cli")
+        _ = [ev async for ev in s.agent.run_turn(sid, "page", channel="cli")]
+        assert "only the first 6144 of 13002 characters" in llm.calls[1]["messages"][-1]["content"]
+    finally:
+        await s.stop()
+
+
 async def test_a_tools_shortener_replaces_the_plain_cut(config, isolated_home):
     """A tool with ``shorten_fn`` (Composio's search, #264) gives the model its main parts instead of the start."""
 

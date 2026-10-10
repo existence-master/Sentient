@@ -584,6 +584,9 @@ class Agent:
                         yield TextDelta(text=chunk.text, **ev)
                     if chunk.done:
                         tool_calls = chunk.tool_calls
+                        if chunk.model and chunk.model != (model or self.llm.model_for(role)):
+                            # a fallback model answered: its results must fit what it reads at once (#264)
+                            result.tool_result_limit = await self.tool_result_limit(role, chunk.model)
                         # the context meter also works when the provider reported no usage (prompt counted here)
                         gauge = await measure(self.llm, role, chunk.model or model or self.llm.model_for(role),
                                               messages, tools, chunk.usage or {}, source)

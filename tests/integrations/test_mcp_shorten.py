@@ -121,3 +121,17 @@ def test_structured_content_that_repeats_the_text_is_left_out():
     assert _result_to_json(result('{"a": 1}', {"a": 1})) == {"content": '{"a": 1}'}
     assert _result_to_json(result("3 events", {"events": [1, 2, 3]})) == {
         "content": "3 events", "structured": {"events": [1, 2, 3]}}
+
+
+def test_next_step_details_come_first_and_other_tools_are_bounded():
+    full = composio_like()
+    outer = json.loads(full["content"].split("\nNo exact fit?")[0])
+    for i in range(20):
+        outer["data"]["tool_schemas"][f"OTHER_TOOL_{i}"] = {"description": "Another tool. " * 20}
+    short = composio_search({"content": json.dumps(outer)})
+    keys = list(short)
+    assert keys.index("session") < keys.index("results") < keys.index("tool_schemas")
+    assert keys.index("toolkit_connection_statuses") < keys.index("results")
+    assert keys.index("next_steps_guidance") < keys.index("tool_schemas")
+    slugs = list(short["tool_schemas"])
+    assert slugs[0] == "CALENDAR_EVENTS_LIST_ALL" and len(slugs) == 9  # the main tool, then at most 8 others
