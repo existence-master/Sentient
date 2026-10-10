@@ -72,18 +72,20 @@ async function speak(text: string): Promise<void> {
 function speakWhenDone(clientId: string): void {
   let unsubscribe = () => undefined as void
   const giveUp = window.setTimeout(() => unsubscribe(), 5 * 60_000)
-  unsubscribe = useChat.subscribe((s) => {
+  const check = (s: ReturnType<typeof useChat.getState>) => {
     const turn = Object.values(s.live).find((l) => l.clientId === clientId)
-    if (!turn || turn.streaming) return
+    if (turn?.streaming) return
     unsubscribe()
     window.clearTimeout(giveUp)
-    if (turn.turn.status !== 'done') return
+    if (!turn || turn.turn.status !== 'done') return // gone from the live view: nothing to read
     const text = turn.turn.segments
       .map((seg) => (seg.kind === 'text' ? seg.text : ''))
       .join('')
       .trim()
     if (text) void speak(text)
-  })
+  }
+  unsubscribe = useChat.subscribe(check)
+  check(useChat.getState()) // it may have finished already
 }
 
 /**

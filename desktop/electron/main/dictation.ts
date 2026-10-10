@@ -80,6 +80,7 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 export class DictationController {
   private settings: DictationShellSettings = DICTATION_DEFAULTS
+  private paused = false
   private registered: Partial<Record<DictationMode, string>> = {}
   private problems: Partial<Record<DictationMode, string>> = {}
   private pill: BrowserWindow | null = null
@@ -105,12 +106,8 @@ export class DictationController {
   /** Register the shortcuts from `voice.dictation` (called on start and whenever the config changes). */
   apply(next: DictationShellSettings): DictationStatus {
     this.settings = { ...DICTATION_DEFAULTS, ...next }
-    for (const mode of MODES) {
-      const acc = this.registered[mode]
-      if (acc) globalShortcut.unregister(acc)
-      delete this.registered[mode]
-      delete this.problems[mode]
-    }
+    this.unregisterAll()
+    if (this.paused) return this.status()
     const taken = { ...this.host.reserved }
     for (const mode of MODES) {
       const { enabled, accelerator } = this.shortcut(mode)
@@ -137,6 +134,25 @@ export class DictationController {
     if (this.mode && !this.registered[this.mode]) this.cancel()
     if (MODES.some((m) => this.registered[m])) void this.ensurePill().catch(() => undefined) // ready before the first press
     return this.status()
+  }
+
+  /** While Settings records a new shortcut, the current ones must not start the microphone. */
+  pause(paused: boolean): void {
+    if (paused === this.paused) return
+    this.paused = paused
+    if (paused) {
+      this.cancel()
+      this.unregisterAll()
+    } else this.apply(this.settings)
+  }
+
+  private unregisterAll(): void {
+    for (const mode of MODES) {
+      const acc = this.registered[mode]
+      if (acc) globalShortcut.unregister(acc)
+      delete this.registered[mode]
+      delete this.problems[mode]
+    }
   }
 
   status(): DictationStatus {
@@ -394,11 +410,7 @@ export class DictationController {
 
   dispose(): void {
     this.cancel()
-    for (const mode of MODES) {
-      const acc = this.registered[mode]
-      if (acc) globalShortcut.unregister(acc)
-    }
-    this.registered = {}
+    this.unregisterAll()
     if (this.pill && !this.pill.isDestroyed()) this.pill.destroy()
     this.pill = null
   }

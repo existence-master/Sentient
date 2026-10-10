@@ -2,7 +2,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { MotionConfig } from 'motion/react'
 import { useEffect } from 'react'
 import { HashRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router'
-import { Toaster } from 'sonner'
+import { toast, Toaster } from 'sonner'
 import { AppShell } from '@/components/shell/AppShell'
 import { EngineError, Splash } from '@/components/shell/EngineScreens'
 import { TooltipProvider } from '@/components/ui'
@@ -23,6 +23,7 @@ import { installWakeListener, setAlwaysListening, useWakeStore } from '@/feature
 import { useBootstrap } from '@/hooks/core'
 import { useHotkey } from '@/hooks/useHotkey'
 import { useSmokeReady } from '@/hooks/useSmokeReady'
+import { errorMessage } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
 import { installDemoData } from '@/lib/demo'
 import { installDomainEvents } from '@/lib/events'
@@ -206,7 +207,9 @@ function GlobalCommands() {
             navigate(`/settings/${cmd.section ?? ''}`)
             break
           case 'push-to-talk':
-            void sendPushToTalk(cmd.text, window.location.hash).then(({ route, state }) => navigate(route, { state }))
+            sendPushToTalk(cmd.text, window.location.hash)
+              .then(({ route, state }) => navigate(route, { state }))
+              .catch((err) => toast.error("Couldn't send what you said", { description: errorMessage(err) }))
             break
         }
       }),

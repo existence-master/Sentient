@@ -388,6 +388,7 @@ function registerIpc(): void {
   )
   ipcMain.handle(CH.dictationStatus, () => (dictation ? dictation.status() : DICTATION_OFF))
   ipcMain.handle(CH.dictationCancel, () => dictation?.cancel())
+  ipcMain.handle(CH.dictationPause, (_e, paused: boolean) => dictation?.pause(!!paused))
   ipcMain.handle(CH.dictationPermission, (_e, kind: 'microphone' | 'accessibility') => dictation?.openPermissionSettings(kind))
   ipcMain.on(CH.dictationEvent, (e, ev: DictationEvent) => dictation?.onPillEvent(e.sender.id, ev))
 }

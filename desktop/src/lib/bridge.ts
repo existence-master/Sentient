@@ -155,6 +155,7 @@ function createBrowserBridge(): SentientBridge {
       apply: async () => noDictation,
       status: async () => noDictation,
       cancel: async () => undefined,
+      pause: async () => undefined,
       openPermissionSettings: async () => undefined,
       onCommand: () => () => undefined,
       report: () => undefined

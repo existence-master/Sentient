@@ -154,6 +154,8 @@ export interface DictationBridge {
   status(): Promise<DictationStatus>
   /** Turn the microphone off and drop what was heard (Stop everything). */
   cancel(): Promise<void>
+  /** Settings is recording a new shortcut: turn the dictation shortcuts off until `pause(false)`. */
+  pause(paused: boolean): Promise<void>
   /** macOS: open System Settings at the Microphone or Accessibility list. */
   openPermissionSettings(kind: 'microphone' | 'accessibility'): Promise<void>
   /** Listening pill only. */

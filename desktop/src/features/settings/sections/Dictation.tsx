@@ -1,5 +1,5 @@
 import { IconKeyboard } from '@tabler/icons-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Alert, Button, FormRow, FormSection, Shortcut, Switch } from '@/components/ui'
 import { useConfigEditor } from '@/hooks/config'
 import { useDictationStatus } from '@/features/voice/dictation'
@@ -28,6 +28,14 @@ function ShortcutButton({ value, onChange, label }: { value: string; onChange: (
   const platform = getBridge().platform
   const [recording, setRecording] = useState(false)
   const [hint, setHint] = useState<string | null>(null)
+  // While recording, the current shortcuts are off so pressing them doesn't start the microphone. The cleanup
+  // turns them back on however recording ends (new keys, Esc, clicking away, leaving the page).
+  useEffect(() => {
+    if (!recording) return
+    const dictation = getBridge().dictation
+    void dictation.pause(true)
+    return () => void dictation.pause(false)
+  }, [recording])
   if (recording) {
     return (
       <Button

@@ -23,6 +23,8 @@ interface Recording {
   startedAt: number
   maxMs: number
   cancelled: boolean
+  /** The shell said stop (or the key was let go) while the microphone was still opening. */
+  stopRequested: boolean
   abort: AbortController
 }
 
@@ -79,6 +81,7 @@ async function start(cmd: Extract<DictationCommand, { type: 'start' }>): Promise
     startedAt: Date.now(),
     maxMs: cmd.maxMs,
     cancelled: false,
+    stopRequested: false,
     abort: new AbortController()
   }
   current = rec
@@ -97,6 +100,14 @@ async function start(cmd: Extract<DictationCommand, { type: 'start' }>): Promise
   }
   if (rec.cancelled) {
     release(rec)
+    return
+  }
+  if (rec.stopRequested) {
+    // Let go before the microphone was ready: nothing is recorded.
+    release(rec)
+    current = null
+    show('empty', 'Didn’t catch that')
+    report({ type: 'empty' })
     return
   }
   const ctx = new AudioContext()
@@ -133,6 +144,7 @@ async function start(cmd: Extract<DictationCommand, { type: 'start' }>): Promise
 }
 
 function stopRecording(rec: Recording): void {
+  rec.stopRequested = true
   if (rec.recorder?.state === 'recording') rec.recorder.stop()
   else release(rec)
 }
