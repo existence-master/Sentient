@@ -218,6 +218,32 @@ def test_narrow_app_keys_is_deterministic():
     # an action no tool of that app has: the app key is dropped rather than kept
     assert narrow_app_keys(["mail"], "never post anything", tools) == []
     assert narrow_app_keys(["mail_search", "mail"], "don't archive my emails", tools) == ["mail_search"]
+    # an object that could be a verb ("messages") is not a second action
+    assert narrow_app_keys(["mail"], "never delete my email messages", tools) == ["mail_delete_email"]
+
+
+@pytest.mark.parametrize(
+    ("text", "reply", "keys"),
+    [
+        # "messages" is what gets deleted, not a send instruction: sending stays allowed
+        ("never delete my email messages", {"keys": ["gmail"], "rule": "never"}, ["gmail_trash"]),
+        # each app is narrowed by its own instruction
+        ("never delete my emails. never use Slack", {"keys": ["gmail", "slack"], "rule": "never"},
+         ["gmail_trash", "slack"]),
+        ("never delete my emails and never use Slack", {"keys": ["slack", "gmail"], "rule": "never"},
+         ["slack", "gmail_trash"]),
+    ],
+)
+async def test_each_app_is_narrowed_by_its_own_instruction(config, isolated_home, text, reply, keys):
+    llm = FakeProvider(replies=["ok"], json_replies=[reply])
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, text)
+        [proposal] = await s.chat_rules.list(sid)
+        assert proposal["keys"] == keys
+    finally:
+        await s.stop()
 
 
 async def test_without_asking_makes_an_ask_rule(config, isolated_home):

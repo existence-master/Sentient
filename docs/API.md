@@ -144,7 +144,9 @@ accept or loosen a rule.
   same chat) are dropped. A whole app is proposed only when the words name no specific action ("never use Slack",
   "don't touch my Notion"); when they name one (delete, send, post, pay, share, trash, archive...), an app key is
   replaced in code by that app's tools whose names match the action, or dropped when none do ("never delete my emails"
-  -> Gmail > Trash, never all of Gmail). Nothing left, no proposal. A message that fails the pre-filter or has no matching tools
+  -> Gmail > Trash, never all of Gmail). Each app is judged by the instruction that mentions it ("never delete my
+  emails. never use Slack" gives Gmail > Trash and all of Slack), and a word after "my" or a noun is an object, not an
+  action ("my email messages" is not "message"). Nothing left, no proposal. A message that fails the pre-filter or has no matching tools
   never calls a model. The check runs before the reply's model call (it waits at most 20 s; a slower check finishes
   in the background, and until it does every tool it is weighing asks first in that chat).
 - **Until the user decides**, a pending proposal makes its chat ask before every matched tool (`approval_request`),

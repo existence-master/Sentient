@@ -106,6 +106,12 @@ _ACTIONS = frozenset({
 })
 
 
+_DETERMINERS = frozenset({
+    "my", "your", "our", "their", "his", "her", "its", "the", "a", "an", "any", "all", "some", "every", "each",
+    "these", "those", "this", "that",
+})
+
+
 # ----------------------------------------------------------------------------- pure helpers
 def _plain(text: str) -> str:
     return (text or "").replace("\u2019", "'").replace("\u2018", "'").lower()
@@ -155,30 +161,64 @@ def _tokens(tool: Tool, app_name: str) -> set[str]:
     return {_stem(w) for w in _WORD.findall(_plain(text))}
 
 
+def _action_base(word: str) -> str | None:
+    stem = _stem(word)
+    if word in _ACTIONS:
+        return word
+    if stem in _ACTIONS:
+        return stem
+    return next((a for a in sorted(_ACTIONS) if len(stem) >= 4 and a.startswith(stem)), None)
+
+
 def action_terms(text: str) -> set[str]:
-    """The specific actions the words name ("delete" -> delete, trash, remove), as stems; empty for "never use X"."""
+    """The specific actions the words name ("delete" -> delete, trash, remove), as stems; empty for "never use X".
+
+    A word that can be a noun is only an action where a verb goes: not right after a determiner or another noun, so
+    "never delete my email messages" names delete, not "message"."""
     out: set[str] = set()
+    prev_noun = False
     for word in _WORD.findall(_plain(text)):
-        stem = _stem(word)
-        base = word if word in _ACTIONS else stem if stem in _ACTIONS else next(
-            (a for a in sorted(_ACTIONS) if len(stem) >= 4 and a.startswith(stem)), None
-        )
-        if base is not None:
+        base = _action_base(word)
+        if base is not None and not prev_noun:
             out.add(_stem(base))
             out.update(_stem(x) for x in _SYNONYMS.get(base, ()))
+            prev_noun = False
+        else:
+            # what follows a determiner ("my", "the") or a noun is an object; trigger and filler words are neither
+            prev_noun = word in _DETERMINERS or base is not None or (word not in _STOP and len(word) > 1)
     return out
 
 
-def narrow_app_keys(keys: list[str], said: str, tools: Iterable[Tool]) -> list[str]:
-    """Keep app keys only when ``said`` names no specific action. Otherwise each app key becomes that app's tools
-    whose names match the action (none match: dropped). Tool keys stay. Deterministic; runs after validation."""
-    actions = action_terms(said)
-    if not actions:
-        return keys
+def _clauses(text: str) -> list[str]:
+    """``text`` cut before every "never", "don't", "always ask"...: one instruction per clause."""
+    plain = _plain(text)
+    cuts = sorted({0, *(m.start() for m in _NEGATION.finditer(plain)), *(m.start() for m in _ASK_FIRST.finditer(plain))})
+    parts = [plain[a:b] for a, b in zip(cuts, [*cuts[1:], len(plain)], strict=True)]
+    return [p for p in parts if p.strip()]
+
+
+def _app_named(clause: str, app_id: str, app_name: str) -> bool:
+    tokens = {_stem(w) for w in _WORD.findall(_plain(f"{app_id.replace('_', ' ')} {app_name}"))}
+    return any(_match(term, tok) for term in _terms(clause) for tok in tokens)
+
+
+def narrow_app_keys(
+    keys: list[str], said: str, tools: Iterable[Tool], app_names: dict[str, str] | None = None
+) -> list[str]:
+    """Keep an app key only when its own instruction names no specific action. Otherwise the app key becomes that
+    app's tools whose names match the action (none match: dropped). Tool keys stay. The instruction for an app is the
+    clause that mentions it ("never delete my emails. never use Slack" narrows Gmail, not Slack), else all of
+    ``said``. Deterministic; runs after validation."""
     by_name = {t.name: t for t in tools}
+    clauses = _clauses(said)
     out: list[str] = []
     for key in keys:
         if key in by_name:
+            out.append(key)
+            continue
+        own = [c for c in clauses if _app_named(c, key, (app_names or {}).get(key, ""))]
+        actions = set().union(*(action_terms(c) for c in own)) if own else action_terms(said)
+        if not actions:
             out.append(key)
             continue
         for t in by_name.values():
@@ -367,7 +407,7 @@ class ChatRules:
             log.info("rule check: the fast model gave no usable answer (%s)", exc)
             return None
         keys, level = parse_detection(data, candidates)
-        keys = narrow_app_keys(keys, said, self.app.registry.tools(include_hidden=True))
+        keys = narrow_app_keys(keys, said, self.app.registry.tools(include_hidden=True), names)
         if not keys:
             return None
         level = "ask" if asks_first(said) else (level or "never")
