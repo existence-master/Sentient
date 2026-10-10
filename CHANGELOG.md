@@ -183,6 +183,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   dropped connection when the computer is busy.
 - What Sentient learns about you reads your messages in the order you sent them, even when two were saved at the
   same instant.
+- Saving something new about you no longer overwrites a different memory: "doesn't want files written" is kept next
+  to "doesn't want files deleted" instead of replacing it, and so is "doesn't want emails deleted". A memory is only
+  changed when the new one is about the same person and the same thing. A vaguer memory that an existing one already
+  covers ("your sister lives in a city", "you have a sister") is no longer added, and neither are gaps like "your
+  sister's job is unknown".
 
 ### Security
 - Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before

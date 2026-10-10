@@ -50,6 +50,12 @@ _REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _NOISE_RE = re.compile(r"\b(today's date|the current (date|time)|current weather|the weather (is|was))\b", re.IGNORECASE)
+# "Maya's sister's job is unknown": a gap, not a fact
+_UNKNOWN_RE = re.compile(
+    r"\b(is|are|was|remains?) (still )?(unknown|not known|unspecified|not specified|not mentioned|not stated|"
+    r"not provided|unclear)\b",
+    re.IGNORECASE,
+)
 _USER_REF_RE = re.compile(r"\b(the user|USERNAME)\b", re.IGNORECASE)
 # self-evident facts small models like to emit ("Maya's name is Maya.")
 _TAUTOLOGY_RE = re.compile(r"^\s*(?P<n>[\w .'-]+?)['\u2019]s name is (?P=n)\s*\.?\s*$", re.IGNORECASE)
@@ -244,6 +250,136 @@ def profile_fact(text: str, user_name: str = "") -> FactProfile:
         words=frozenset(w.lower().removesuffix("'s") for w in found),
         tokens=frozenset(keyword_tokens(text, None)),
     )
+
+
+# ---------------------------------------------------------------------- is a new fact about the same thing?
+# verbs that name what a preference or habit is about ("does not want files deleted" vs "... written")
+_ACTION_VERBS = frozenset({
+    "delete", "remove", "erase", "trash", "write", "edit", "change", "modify", "overwrite", "send", "email",
+    "message", "text", "call", "phone", "post", "tweet", "share", "publish", "read", "open", "buy", "purchase",
+    "order", "pay", "spend", "book", "schedule", "cancel", "move", "rename", "upload", "download", "install",
+    "uninstall", "run", "execute", "archive", "forward", "reply", "print", "save", "create", "contact", "disturb",
+    "wake", "remind", "notify", "ping", "record", "sign", "submit", "invite", "unsubscribe", "copy", "translate",
+})
+_IRREGULAR_VERBS = {
+    "wrote": "write", "written": "write", "sent": "send", "paid": "pay", "bought": "buy", "spent": "spend",
+    "ran": "run", "woke": "wake", "woken": "wake", "rewritten": "write", "rewrote": "write",
+}
+# words a vaguer fact uses where a fuller one names the thing ("lives in a city" vs "lives in Lisbon")
+_PLACEHOLDERS = frozenset({
+    "city", "town", "country", "place", "somewhere", "someone", "somebody", "something", "company", "job",
+    "person", "area", "region", "state", "thing", "things", "stuff",
+})
+
+
+def fact_actions(text: str) -> set[str]:
+    """The actions a fact names, as base verbs: "does not want files to be written" -> {"write"}."""
+    out: set[str] = set()
+    for w in _TOKEN_RE.findall((text or "").lower().replace(_RSQUO, "'")):
+        if w in _IRREGULAR_VERBS:
+            out.add(_IRREGULAR_VERBS[w])
+            continue
+        forms = [w, w[:-1], w[:-2], w[:-3], w[:-3] + "e", w[:-4]]  # deletes, deleted, sending, writing, shipping
+        if w.endswith("ing") or w.endswith("ed") or w.endswith("s") or w in _ACTION_VERBS:
+            hit = next((f for f in forms if len(f) >= 3 and f in _ACTION_VERBS), None)
+            if hit:
+                out.add(hit)
+    return out
+
+
+def _subject_keys(subjects: set[str], users: set[str]) -> set[tuple[str, str]]:
+    """(owner, relation) per subject, with every name for the user as "user": "maya's sister" -> ("user", "sister")."""
+    out = set()
+    for s in subjects:
+        owner, _, rel = s.partition("'s ")
+        out.add(("user" if owner in users else owner, rel))
+    return out
+
+
+def same_subject(a: str, b: str, user_name: str = "") -> bool:
+    """False only when both facts clearly name different people or things ("Maya's sister" vs "Maya's brother").
+    Unclear subjects count as the same, and so does "the user" next to a name while the user's name isn't set."""
+    sa, sb = fact_subjects(a, user_name), fact_subjects(b, user_name)
+    if not sa or not sb or sa & sb:
+        return True
+    users = {"user", "the user", (user_name or "").strip().lower()} - {""}
+    unnamed = not (user_name or "").strip()
+    ka, kb = _subject_keys(sa, users), _subject_keys(sb, users)
+    for oa, ra in ka:
+        for ob, rb in kb:
+            if ra == rb and (oa == ob or (unnamed and "user" in (oa, ob))):
+                return True
+    return False
+
+
+def same_thing(new_fact: str, existing: str, user_name: str = "") -> bool:
+    """True when ``new_fact`` may replace ``existing``: the same subject and, where both name one, the same action.
+    "does not want their files deleted" and "does not want files to be written" are two preferences, and so are
+    "does not want her files deleted" and "does not want her emails deleted"."""
+    if not same_subject(new_fact, existing, user_name):
+        return False
+    acts_new, acts_old = fact_actions(new_fact), fact_actions(existing)
+    if not acts_new or not acts_old:
+        return True
+    if not acts_new & acts_old:
+        return False
+    if NEGATION_RE.search(new_fact) and NEGATION_RE.search(existing):
+        # two "does not want X deleted" rules about different things ("files", "emails") both hold
+        shared = acts_new & acts_old
+        a, b = _object_words(new_fact, shared), _object_words(existing, shared)
+        return not (a - b and b - a)
+    return True
+
+
+# ways a fact names the assistant itself ("doesn't want Sentient to ..." = "doesn't want the assistant to ...")
+_ASSISTANT_WORDS = frozenset({"assistant", "sentient", "ai", "bot"})
+
+
+def _plain_words(text: str) -> set[str]:
+    return {w.removesuffix("s") for w in keyword_tokens(text, None) if w not in _ASSISTANT_WORDS}
+
+
+def _object_words(text: str, actions: set[str]) -> set[str]:
+    """The plain words of a fact without the given action verbs and without numbers ("9am"), which are values.
+    "emails" stays an object when the action is "delete"."""
+    return {
+        w for w in _plain_words(text)
+        if not (fact_actions(w) and fact_actions(w) <= actions) and not any(ch.isdigit() for ch in w)
+    }
+
+
+def _only_names_relation(new_fact: str, existing: str, user_name: str) -> bool:
+    """True when ``new_fact`` only says a relation exists ("Maya has a sister") that ``existing`` is about
+    ("Maya's sister Meera lives in Lisbon")."""
+    owners = {s for s in fact_subjects(new_fact, user_name) if "'s " not in s}
+    rels = set()
+    for s in fact_subjects(existing, user_name):
+        owner, _, rel = s.partition("'s ")
+        if rel and owner in owners:
+            rels.add(rel.removesuffix("s"))
+    words = _plain_words(new_fact) - owners - {"user", (user_name or "").strip().lower()}
+    return bool(rels) and bool(words) and words <= rels | _PLACEHOLDERS
+
+
+def covered_by(new_fact: str, existing: str, user_name: str = "") -> bool:
+    """True when ``existing`` already says everything ``new_fact`` says: same subject, same negation and tense, no
+    new name, place or number, and every other word is in it (or a placeholder like "a city"). "Maya has a sister"
+    is covered by any fact about Maya's sister."""
+    if not new_fact.strip() or not existing.strip():
+        return False
+    if bool(NEGATION_RE.search(new_fact)) != bool(NEGATION_RE.search(existing)):
+        return False
+    if bool(PAST_RE.search(new_fact)) != bool(PAST_RE.search(existing)):
+        return False
+    if new_details(new_fact, existing):
+        return False
+    if not same_subject(new_fact, existing, user_name):
+        return _only_names_relation(new_fact, existing, user_name)
+    have = _plain_words(existing)
+    user = (user_name or "").strip().lower()
+    have.update(w for w in (user, "user") if w)
+    left = {w for w in _plain_words(new_fact) - have if w not in _PLACEHOLDERS}
+    return not left
 
 
 def conflict_strength(a: str | FactProfile, b: str | FactProfile, user_name: str = "") -> int:
@@ -742,14 +878,24 @@ class FactMemory:
                 action, content, topics = "ADD", fact, None
             else:
                 return {"action": "SKIP", "id": fid, "content": content}
+        user = self.config.assistant.user_name
         if action == "UPDATE":
             matched = next((n["content"] for n in candidates if n["id"] == fid), "")
             dropped = new_details(matched, content or "") if matched else set()
-            if dropped and not new_details(fact, matched):
+            if matched and not same_thing(fact, matched, user):
+                # a different person or action ("files written" vs "files deleted"): both facts hold
+                log.info("CUD UPDATE of %s kept as ADD for %r (about something else)", fid, fact)
+                action, content, topics = "ADD", fact, None
+            elif dropped and not new_details(fact, matched):
                 # the rewrite would lose a name, place or number that the new fact does not replace
                 # ("moving to Berlin" rewritten as "pursuing her masters"): keep both facts instead
                 log.info("CUD UPDATE of %s kept as ADD for %r (would drop %s)", fid, fact, sorted(dropped))
                 action, content, topics = "ADD", fact, None
+        if action == "ADD":
+            cover = next((n for n in candidates if covered_by(fact, n["content"], user)), None)
+            if cover is not None:  # "sister lives in a city" next to "sister Meera lives in Lisbon"
+                log.info("CUD ADD skipped for %r: fact %s already says it", fact, cover["id"])
+                return {"action": "SKIP", "id": cover["id"], "content": cover["content"]}
         if action == "ADD" and use_llm:
             peer = self._residence_peer(fact, candidates)
             if peer is not None:  # one current home: "moved to X" replaces "lives in Y"
@@ -791,7 +937,7 @@ class FactMemory:
     # ------------------------------------------------------------------ extraction
     @staticmethod
     def clean_fact(fact: str, username: str) -> str | None:
-        """Post-filter model output: personalize leftovers, drop requests and clock/weather noise."""
+        """Post-filter model output: personalize leftovers, drop requests, clock/weather noise and "X is unknown"."""
         text = " ".join(str(fact).split()).strip(" -*•")
         if len(text) < 6:
             return None
@@ -800,7 +946,7 @@ class FactMemory:
             text = re.sub(r"\b(the user|USERNAME)'s\b", f"{name}'s", text, flags=re.IGNORECASE)
             text = _USER_REF_RE.sub(name, text)
         text = text[:1].upper() + text[1:]
-        if _REQUEST_RE.search(text) or _NOISE_RE.search(text) or _TAUTOLOGY_RE.match(text):
+        if _REQUEST_RE.search(text) or _NOISE_RE.search(text) or _UNKNOWN_RE.search(text) or _TAUTOLOGY_RE.match(text):
             return None
         return text
 
