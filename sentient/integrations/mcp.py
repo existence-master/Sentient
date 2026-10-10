@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import ipaddress
 import logging
 import re
 import time
@@ -238,35 +239,36 @@ class MCPManager:
                 raise ValueError(f"'{key}' isn't a valid header name.")
             if not value or any(c in value for c in "\r\n"):
                 raise ValueError(f"Enter a single-line value for the header '{key}'.")
-        env = {str(k): str(v) for k, v in (spec.get("env") or {}).items()}
-        if env and not store_secret_json(f"mcp:{name}", env):
-            raise ValueError("The system keychain is unavailable, so environment values can't be stored safely.")
-        if headers and not save_json(headers_secret(name), headers):
-            raise ValueError("The system keychain is unavailable, so header values can't be stored safely.")
-        if not headers:
-            delete_json(headers_secret(name))
-        stored = {
-            "transport": transport,
-            "command": spec.get("command"),
-            "args": [str(a) for a in spec.get("args") or []],
-            "url": spec.get("url"),
-            "env_keys": sorted(env.keys()),
-            "auth": auth,
-            "header_keys": sorted(headers.keys()),
-            "enabled": bool(spec.get("enabled", True)),
-        }
-        previous = self.app.config.integrations.mcp_servers.get(name) or {}
-        if previous.get("url") != stored["url"] or previous.get("transport", "stdio") != transport:
-            delete_json(tokens_secret(name))  # a sign-in belongs to one server URL
-            delete_json(client_secret(name))
-        if name in self.servers:
-            old = self.servers.pop(name)
-            self._cancel_sign_in(old)
-            await self._shutdown(old)
-        cfg = self.app.config
-        cfg.integrations.mcp_servers = {**cfg.integrations.mcp_servers, name: stored}
-        self.app.save_config()
-        conn = self._launch(name, stored)
+        async with self._server_lock(name):
+            env = {str(k): str(v) for k, v in (spec.get("env") or {}).items()}
+            if env and not store_secret_json(f"mcp:{name}", env):
+                raise ValueError("The system keychain is unavailable, so environment values can't be stored safely.")
+            if headers and not save_json(headers_secret(name), headers):
+                raise ValueError("The system keychain is unavailable, so header values can't be stored safely.")
+            if not headers:
+                delete_json(headers_secret(name))
+            stored = {
+                "transport": transport,
+                "command": spec.get("command"),
+                "args": [str(a) for a in spec.get("args") or []],
+                "url": spec.get("url"),
+                "env_keys": sorted(env.keys()),
+                "auth": auth,
+                "header_keys": sorted(headers.keys()),
+                "enabled": bool(spec.get("enabled", True)),
+            }
+            previous = self.app.config.integrations.mcp_servers.get(name) or {}
+            if previous.get("url") != stored["url"] or previous.get("transport", "stdio") != transport:
+                delete_json(tokens_secret(name))  # a sign-in belongs to one server URL
+                delete_json(client_secret(name))
+            if name in self.servers:
+                old = self.servers.pop(name)
+                self._cancel_sign_in(old)
+                await self._shutdown(old)
+            cfg = self.app.config
+            cfg.integrations.mcp_servers = {**cfg.integrations.mcp_servers, name: stored}
+            self.app.save_config()
+            conn = self._launch(name, stored)
         if stored["enabled"] and wait_s > 0:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(conn.ready.wait(), wait_s)
@@ -376,18 +378,19 @@ class MCPManager:
             return self.describe(await self._relaunch(name, stored))
 
     async def remove(self, name: str) -> bool:
-        conn = self.servers.pop(name, None)
-        if conn is not None:
-            self._cancel_sign_in(conn)
-            await self._shutdown(conn)
-        cfg = self.app.config
-        existed = name in cfg.integrations.mcp_servers
-        if existed:
-            cfg.integrations.mcp_servers = {k: v for k, v in cfg.integrations.mcp_servers.items() if k != name}
-            self.app.save_config()
-        delete_secret(f"mcp:{name}")
-        forget_server(name)
-        return existed or conn is not None
+        async with self._server_lock(name):
+            conn = self.servers.pop(name, None)
+            if conn is not None:
+                self._cancel_sign_in(conn)
+                await self._shutdown(conn)
+            cfg = self.app.config
+            existed = name in cfg.integrations.mcp_servers
+            if existed:
+                cfg.integrations.mcp_servers = {k: v for k, v in cfg.integrations.mcp_servers.items() if k != name}
+                self.app.save_config()
+            delete_secret(f"mcp:{name}")
+            forget_server(name)
+            return existed or conn is not None
 
     async def test(self, name: str) -> dict:
         conn = self.servers.get(name)
@@ -746,8 +749,15 @@ def _protected_url(url: str) -> bool:
     parts = urlsplit(url)
     if parts.scheme == "https":
         return True
+    if parts.scheme != "http":
+        return False
     host = (parts.hostname or "").lower()
-    return parts.scheme == "http" and (host in {"localhost", "::1"} or host.startswith("127.") or host.endswith(".localhost"))
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback  # an IP literal only: a name like 127.example.com is not
+    except ValueError:
+        return False
 
 
 def _auth_of(spec: dict) -> str:

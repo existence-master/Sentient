@@ -236,6 +236,14 @@ async def test_missing_values_are_filled_in_and_used_on_reconnect(app, ctx, keyc
     assert "mcp:Plain:headers" not in keychain
     await mcp.import_server("Here", {"transport": "http", "url": "http://127.0.0.1:9/mcp", "header_keys": ["X-Key"]})
     assert (await mcp.set_values("Here", {"X-Key": "local-only"}))["missing_values"] == []
+    for url, ok in (("https://a.example/mcp", True), ("http://localhost:8/mcp", True), ("http://[::1]:8/mcp", True),
+                    ("http://127.attacker.example/mcp", False), ("http://10.0.0.5/mcp", False), ("ftp://127.0.0.1/", False)):
+        assert mcp_mod._protected_url(url) is ok, url
+
+    # changes to one server run one at a time: a removal never leaves a relaunched server behind
+    await mcp.import_server("Racy", {"transport": "stdio", "command": "npx", "env_keys": ["API_TOKEN"]})
+    await asyncio.gather(mcp.set_values("Racy", {"API_TOKEN": "t"}), mcp.remove("Racy"), return_exceptions=True)
+    assert "Racy" not in mcp.servers and "Racy" not in app.config.integrations.mcp_servers
 
     filled = await mcp.set_values("Notes", {"Authorization": "Bearer static-secret"}, enable=True)
     assert filled["status"] == "connected" and filled["missing_values"] == [] and filled["enabled"] is True
