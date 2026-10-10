@@ -7,7 +7,12 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from sentient.agent.chat_rules import candidate_tools, parse_detection, standing_text
+from sentient.agent.chat_rules import (
+    candidate_tools,
+    narrow_app_keys,
+    parse_detection,
+    standing_text,
+)
 from sentient.app import SentientApp
 from sentient.config.loader import load_config
 from sentient.config.schema import SentientConfig
@@ -180,6 +185,39 @@ def test_parse_detection_checks_keys_in_code():
     # an app key covers its tools; a made-up level is dropped (the caller decides)
     assert parse_detection('{"keys": ["mail_delete_email", "mail"], "rule": "maybe"}', tools) == (["mail"], None)
     assert parse_detection("no json here", tools) == ([], None)
+
+
+@pytest.mark.parametrize(
+    ("text", "reply", "keys", "label"),
+    [
+        # names an action: only the matching tools, even when the model names the whole app
+        ("never delete my emails", {"keys": ["mail"], "rule": "never"}, ["mail_delete_email"], "Mail > Delete email"),
+        # names no action: the whole app
+        ("never use Slack", {"keys": ["slack"], "rule": "never"}, ["slack"], "Slack"),
+        ("don't touch my Notion", {"keys": ["notion"], "rule": "never"}, ["notion"], "Notion"),
+    ],
+)
+async def test_whole_apps_only_when_no_action_is_named(config, isolated_home, text, reply, keys, label):
+    llm = FakeProvider(replies=["ok"], json_replies=[reply])
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, text)
+        [proposal] = await s.chat_rules.list(sid)
+        assert proposal["keys"] == keys and proposal["targets"][0]["label"] == label
+    finally:
+        await s.stop()
+
+
+def test_narrow_app_keys_is_deterministic():
+    tools = _mail([]).tools
+    for t in tools:
+        t.plugin = "mail"
+    assert narrow_app_keys(["mail"], "never delete my emails", tools) == ["mail_delete_email"]
+    assert narrow_app_keys(["mail"], "never use my mail", tools) == ["mail"]
+    # an action no tool of that app has: the app key is dropped rather than kept
+    assert narrow_app_keys(["mail"], "never post anything", tools) == []
+    assert narrow_app_keys(["mail_search", "mail"], "don't archive my emails", tools) == ["mail_search"]
 
 
 async def test_without_asking_makes_an_ask_rule(config, isolated_home):

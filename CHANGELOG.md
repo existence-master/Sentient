@@ -11,6 +11,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
   Never: Gmail > Trash") with "Make it a rule" and "Not now". A rule keeps working in every chat, even after a long
   conversation has been summarized, and Settings > Approvals & safety shows it came from your message. Nothing becomes
   a rule without your click, and until you choose, Sentient checks with you before using that tool in the chat.
+  Said in Telegram, Discord or WhatsApp, the question comes back there too (on WhatsApp, reply 1 or 2).
 - **Coming from Hermes?** Bring your Hermes setup over in one step, from the last onboarding screen or Settings >
   Advanced. Sentient looks inside your Hermes folder (`~/.hermes`, or one you pick) and shows what it found before
   anything changes: your own skills go to Skills for review (Hermes' built-in ones you never changed are left out),

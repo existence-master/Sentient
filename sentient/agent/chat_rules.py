@@ -14,6 +14,8 @@ Checks, cheapest first:
    candidates, no model call ("I never eat breakfast").
 3. One short ``fast``-role prompt maps the words to candidate keys and a level, parsed tolerantly. Keys outside the
    candidates, and keys an equal or stricter rule already covers, are dropped. Nothing valid, no card.
+4. ``narrow_app_keys``: a whole app is proposed only when the words name no specific action ("never use Slack").
+   When they do ("never delete my emails"), an app key becomes that app's tools whose names match the action.
 
 Until the user decides, a pending proposal makes its chat ask before the matched tools (``chat_rule``), also after a
 restart or once the conversation has been summarized. While a check is still running (a slow fast model), the tools
@@ -95,6 +97,15 @@ _SYNONYMS: dict[str, tuple[str, ...]] = {
 }
 
 
+# verbs that name a specific action: a sentence with one gets rules for the matching tools, never a whole app
+_ACTIONS = frozenset({
+    "delete", "remove", "erase", "trash", "send", "post", "publish", "pay", "purchase", "buy", "order", "spend",
+    "share", "archive", "reply", "forward", "move", "edit", "update", "change", "create", "cancel", "book", "invite",
+    "schedule", "run", "execute", "comment", "upload", "transfer", "unsubscribe", "label", "mark", "write", "submit",
+    "sign", "message", "text", "dm", "tweet", "merge", "close", "rename", "install",
+})
+
+
 # ----------------------------------------------------------------------------- pure helpers
 def _plain(text: str) -> str:
     return (text or "").replace("\u2019", "'").replace("\u2018", "'").lower()
@@ -144,6 +155,38 @@ def _tokens(tool: Tool, app_name: str) -> set[str]:
     return {_stem(w) for w in _WORD.findall(_plain(text))}
 
 
+def action_terms(text: str) -> set[str]:
+    """The specific actions the words name ("delete" -> delete, trash, remove), as stems; empty for "never use X"."""
+    out: set[str] = set()
+    for word in _WORD.findall(_plain(text)):
+        stem = _stem(word)
+        base = word if word in _ACTIONS else stem if stem in _ACTIONS else next(
+            (a for a in sorted(_ACTIONS) if len(stem) >= 4 and a.startswith(stem)), None
+        )
+        if base is not None:
+            out.add(_stem(base))
+            out.update(_stem(x) for x in _SYNONYMS.get(base, ()))
+    return out
+
+
+def narrow_app_keys(keys: list[str], said: str, tools: Iterable[Tool]) -> list[str]:
+    """Keep app keys only when ``said`` names no specific action. Otherwise each app key becomes that app's tools
+    whose names match the action (none match: dropped). Tool keys stay. Deterministic; runs after validation."""
+    actions = action_terms(said)
+    if not actions:
+        return keys
+    by_name = {t.name: t for t in tools}
+    out: list[str] = []
+    for key in keys:
+        if key in by_name:
+            out.append(key)
+            continue
+        for t in by_name.values():
+            if t.plugin == key and any(_match(a, _stem(w)) for a in actions for w in t.name.split("_")):
+                out.append(t.name)
+    return list(dict.fromkeys(out))[:MAX_KEYS]
+
+
 def candidate_tools(text: str, tools: Iterable[Tool], app_names: dict[str, str]) -> list[Tool]:
     """Tools sharing a word with ``text`` (names, app, description, a few synonyms), best first, at most
     ``MAX_CANDIDATES``. Actions rank above look-ups on a tie."""
@@ -172,8 +215,8 @@ def detection_messages(said: str, candidates: list[Tool], app_names: dict[str, s
     system = (
         "You turn a user's standing instruction into safety rules for an assistant's tools. Reply with JSON only: "
         '{"keys": ["tool_name"], "rule": "never"}.\n'
-        "- keys: the tools from the list the instruction is about. Use an app id instead only when it covers "
-        "everything in that app.\n"
+        "- keys: the tools from the list the instruction is about. Use an app id instead only when the message "
+        'names no specific action, like "never use Slack".\n'
         '- rule: "never" when it must not happen at all, "ask" when it may happen only after asking the user.\n'
         '- If the message is not a standing instruction about these tools, reply {"keys": []}.'
     )
@@ -324,6 +367,7 @@ class ChatRules:
             log.info("rule check: the fast model gave no usable answer (%s)", exc)
             return None
         keys, level = parse_detection(data, candidates)
+        keys = narrow_app_keys(keys, said, self.app.registry.tools(include_hidden=True))
         if not keys:
             return None
         level = "ask" if asks_first(said) else (level or "never")

@@ -809,6 +809,10 @@ class Channel:
             return await self.service.act_on_suggestion(self, chat_id, message_id, ref, approve=code == "a")
         if kind == "tq":
             return await self.service.act_on_question(self, chat_id, message_id, ref, code)
+        if kind == "rp":  # "Make this a rule?" (#130)
+            if code not in {"a", "d"}:
+                return "Unknown button."
+            return await self.service.act_on_rule_proposal(self, chat_id, message_id, ref, accept=code == "a")
         if kind == "mp":
             return await self._preset_button(chat_id, message_id, ref)
         return "Unknown button."

@@ -141,7 +141,10 @@ accept or loosen a rule.
   short `fast`-role prompt that returns `{"keys": [...], "rule": "never"|"ask"}`, parsed tolerantly. Keys must be
   tool names or app ids among those candidates (checked in code). Words that name a condition ("without asking me",
   "always ask") make the rule `ask`. Keys an equal or stricter rule already covers (also a pending proposal in the
-  same chat) are dropped. Nothing left, no proposal. A message that fails the pre-filter or has no matching tools
+  same chat) are dropped. A whole app is proposed only when the words name no specific action ("never use Slack",
+  "don't touch my Notion"); when they name one (delete, send, post, pay, share, trash, archive...), an app key is
+  replaced in code by that app's tools whose names match the action, or dropped when none do ("never delete my emails"
+  -> Gmail > Trash, never all of Gmail). Nothing left, no proposal. A message that fails the pre-filter or has no matching tools
   never calls a model. The check runs before the reply's model call (it waits at most 20 s; a slower check finishes
   in the background, and until it does every tool it is weighing asks first in that chat).
 - **Until the user decides**, a pending proposal makes its chat ask before every matched tool (`approval_request`),
@@ -157,6 +160,10 @@ accept or loosen a rule.
   `tools.approvals.rules` where it tightens (a stricter rule already there stays) plus an origin note in
   `tools.approvals.rule_origins`; `decline` saves nothing. Either ends the chat's extra asking. 404 for an unknown id,
   409 once answered. Both publish `rule_proposal.updated`; `accept` also `config.updated`.
+- **In messaging apps** (section 14): a proposal made in a paired chat is also sent to that chat with **Make it a
+  rule** / **Not now** (callback `rp:a:<id>` / `rp:d:<id>`; WhatsApp: reply to the message with 1 or 2). Answering
+  there is the same decision as `POST /api/rule-proposals/{id}`; an answer from anywhere replaces the buttons with the
+  outcome.
 - `tools.approvals.rule_origins`: `{"<key>": {rule: "never"|"ask", said, at, session_id}}`, default `{}`. Settings shows
   "From your message on <date>". An entry is dropped when its rule is changed or removed.
 
@@ -1317,6 +1324,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `notification.updated` shows the plan/suggestion was handled elsewhere. A background subagent (`subagent.updated`,
   `background: true`, `completed`/`error`) whose session belongs to a paired chat sends its summary to that chat once.
   The Daily Brief (`kind: "brief"`, `payload.status: "active"`) is sent as its sections and lines, with links.
+  A "Make this a rule?" proposal (`rule_proposal.updated`, section 2) made in a paired chat goes back to that chat
+  (whatever `deliver` says) with **Make it a rule** / **Not now** (`rp:a:<id>` / `rp:d:<id>`).
   Toggles: `channels.deliver_task_results`, `deliver_plans`, `deliver_suggestions`, `deliver_subagents`, `deliver_briefs`.
 - Answering a task's question by replying: the delivered question ends with "Tap an option, or reply to this message
   with your answer." (without options: "Reply to this message with your answer."). The ids of the messages that carried

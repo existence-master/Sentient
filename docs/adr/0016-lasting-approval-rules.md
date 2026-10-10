@@ -68,4 +68,6 @@ app ids, those are checked in code, and only the user's click on "Make it a rule
 `tools.approvals.rule_origins` so Settings says where it came from). Until the user answers, the proposal makes that
 chat ask before the matched tools, saved with the chat so a summary or a restart cannot drop it; like every rule, it
 only adds questions. Declining saves nothing. Instructions that ask for fewer questions ("don't ask me before
-archiving") are never proposed: loosening stays a choice made in Settings.
+archiving") are never proposed: loosening stays a choice made in Settings. A whole app is proposed only when the
+words name no specific action ("never use Slack"); when they name one, code narrows the proposal to the matching
+tools. A proposal made in a messaging app is sent back there with the same two choices.

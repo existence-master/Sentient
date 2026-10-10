@@ -120,3 +120,44 @@ async def test_daily_brief_is_delivered_when_enabled(tg):
     text = tg.api.sent("sendMessage")[-1]["text"]
     assert text.startswith("<b>Your Daily Brief for Monday</b>") and "<b>Calendar</b>" in text
     assert '<a href="https://calendar.google.com/event?eid=ev1">09:30 Design review</a>' in text
+
+
+# ---------------------------------------------------------------------------- rules from chat (#130)
+NEVER_TRASH = {"keys": ["gmail_trash"], "rule": "never"}
+
+
+async def test_rule_proposal_comes_back_to_telegram_and_a_tap_makes_the_rule(tg, llm):
+    await tg.pair(42)
+    llm.replies, llm.json_replies = ["Understood."], [NEVER_TRASH]
+    await tg.say(42, "never delete my emails")
+    await until(lambda: any("Make this a rule?" in p["text"] for p in tg.api.button_messages()))
+    msg = next(p for p in tg.api.button_messages() if "Make this a rule?" in p["text"])
+    assert "Never: Gmail &gt; Trash" in msg["text"] or "Never: Gmail > Trash" in msg["text"]
+    buttons = msg["reply_markup"]["inline_keyboard"][0]
+    assert [b["text"] for b in buttons] == ["Make it a rule", "Not now"]
+    tg.ch.dispatch(callback(42, msg["_id"], buttons[0]["callback_data"]))
+    await tg.ch.wait_idle()
+    assert tg.app.config.tools.approvals.rules == {"gmail_trash": "never"}
+    assert tg.api.sent("answerCallbackQuery")[-1]["text"].startswith("Made it a rule")
+    assert "Made it a rule" in tg.api.screen()[-2] or "Made it a rule" in tg.api.screen()[-1]
+    sid = (await tg.app.channels.store.chat("telegram", "42"))["session_id"]
+    assert [p["status"] for p in await tg.app.chat_rules.list(sid, None)] == ["accepted"]
+
+
+async def test_rule_proposal_answered_on_the_desktop_settles_the_telegram_message(tg, llm):
+    await tg.pair(42)
+    llm.replies, llm.json_replies = ["Understood."], [NEVER_TRASH]
+    await tg.say(42, "never delete my emails")
+    await until(lambda: any("Make this a rule?" in p["text"] for p in tg.api.button_messages()))
+    msg = next(p for p in tg.api.button_messages() if "Make this a rule?" in p["text"])
+    sid = (await tg.app.channels.store.chat("telegram", "42"))["session_id"]
+    [proposal] = await tg.app.chat_rules.list(sid)
+    await tg.app.chat_rules.decide(proposal["id"], "decline")
+    await until(lambda: any(p["message_id"] == msg["_id"] for p in tg.api.sent("editMessageText")))
+    edit = [p for p in tg.api.sent("editMessageText") if p["message_id"] == msg["_id"]][-1]
+    assert "Not now" in edit["text"] and tg.app.config.tools.approvals.rules == {}
+    # a late tap on the old message changes nothing
+    tg.ch.dispatch(callback(42, msg["_id"], f"rp:a:{proposal['id']}"))
+    await tg.ch.wait_idle()
+    assert tg.api.sent("answerCallbackQuery")[-1]["text"] == "This was already answered"
+    assert tg.app.config.tools.approvals.rules == {}
