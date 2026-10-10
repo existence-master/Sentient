@@ -35,6 +35,7 @@ from sentient.events import EventBus
 from sentient.evolution import EvolutionService
 from sentient.integrations import IntegrationManager
 from sentient.llm.connect import ProviderConnections
+from sentient.llm.hardware import HardwareProbe
 from sentient.llm.provider import LiteLLMProvider, LLMProvider
 from sentient.memory.dreaming import DreamingService
 from sentient.memory.facts import FactMemory
@@ -88,6 +89,8 @@ class SentientApp:
         self.notifications = NotificationService(self)
         self.integrations = IntegrationManager(self)
         self.connections = ProviderConnections(self)  # OpenRouter sign-in, provider key checks
+        self.hardware = HardwareProbe(self)  # memory and graphics card, for sizing local models (#131)
+        self._hardware_warmup: asyncio.Task | None = None
         self.integrations.oauth_owners.append(self.connections)
         self.tasks = TaskService(self)
         self.proactivity = ProactiveEngine(self)
@@ -236,6 +239,8 @@ class SentientApp:
                 log.exception("service %s failed to start", svc.name)
         # services register plugins in start() (browser, code, devices, channels): re-check skills' requires_tools
         self.skills.reload(self._available_tools())
+        if self.enable_background:  # the "Local only" preset and the check-up size models from it
+            self._hardware_warmup = asyncio.create_task(self.hardware.get())
         self._started = True
         return self
 
@@ -244,6 +249,8 @@ class SentientApp:
         return {p.id for p in self.registry.plugins()} | {t.name for t in self.registry.tools(include_hidden=True)}
 
     async def stop(self) -> None:
+        if self._hardware_warmup is not None and not self._hardware_warmup.done():
+            self._hardware_warmup.cancel()
         for svc in reversed(self.services):
             try:
                 await svc.stop()

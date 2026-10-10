@@ -186,19 +186,20 @@ class _RoleCheck:
         """Fix text and, for Ollama, a one-click switch (or download) to a model that can call tools."""
         if self.prefix not in LOCAL:
             return "Pick a model from this provider that supports tool calls.", None
-        if self.name == SUGGESTED_LOCAL:
+        suggested = self.run.suggested_local
+        if self.name == suggested:
             return "Try a larger local model or a cloud model for tools and tasks.", None
         if SMALL_QWEN.match(self.name):
-            text = f"{self.name} can't call tools reliably; try {SUGGESTED_LOCAL}."
+            text = f"{self.name} can't call tools reliably; try {suggested}."
         else:
-            text = f"Pick a model that handles tools well, like {SUGGESTED_LOCAL}."
+            text = f"Pick a model that handles tools well, like {suggested}."
         if not self.ollama:
             return text, None
         installed = await self.run.ollama.installed(self._base())
-        if SUGGESTED_LOCAL in installed:
-            return text, {"kind": "use_model", "role": self.role, "model": f"ollama_chat/{SUGGESTED_LOCAL}",
-                          "label": f"Use {SUGGESTED_LOCAL}"}
-        return text, {"kind": "pull_model", "name": SUGGESTED_LOCAL, "label": f"Download {SUGGESTED_LOCAL}"}
+        if suggested in installed:
+            return text, {"kind": "use_model", "role": self.role, "model": f"ollama_chat/{suggested}",
+                          "label": f"Use {suggested}"}
+        return text, {"kind": "pull_model", "name": suggested, "label": f"Download {suggested}"}
 
     def _status(self, cid: str) -> str | None:
         return next((c["status"] for c in self.checks if c["id"] == cid), None)
@@ -326,14 +327,14 @@ class _RoleCheck:
         except Exception as exc:
             fix = self._failure_fix(exc)
             if not isinstance(exc, TimeoutError) and "json" in str(exc).lower():
-                fix = f"Memory and background jobs need clean JSON. Try {SUGGESTED_LOCAL} or a cloud model."
+                fix = f"Memory and background jobs need clean JSON. Try {self.run.suggested_local} or a cloud model."
             self.add("json", "JSON reply", "fail", _short(exc) if not isinstance(exc, TimeoutError) else "No reply.", fix)
             return
         if isinstance(data, dict) and "ok" in data:
             self.add("json", "JSON reply", "pass", "Returned clean JSON.")
         else:
             self.add("json", "JSON reply", "warn", "The reply wasn't the JSON it was asked for.",
-                     f"Memory and background jobs may miss things. Try {SUGGESTED_LOCAL} or a cloud model.")
+                     f"Memory and background jobs may miss things. Try {self.run.suggested_local} or a cloud model.")
 
     def thinking(self) -> None:
         caps = (self.show or {}).get("capabilities") or []
@@ -361,11 +362,18 @@ class _RoleCheck:
         limit = next((v for k, v in info.items() if k.endswith(".context_length") and isinstance(v, int) and v > 0), None)
         in_use = min(configured, limit) if limit else configured
         detail = f"Reads {in_use:,} tokens at a time" + (f" (this model can do up to {limit:,})." if limit else ".")
+        fits = self.run.fitting_context(self.name)
         if in_use < MIN_CONTEXT and self.role != "embedding" and (limit is None or limit >= MIN_CONTEXT):
             self.add("context", "Context length", "warn", detail,
                      "Long tasks, big inboxes and many tools may get cut off. 8,192 tokens is a good minimum.",
                      {"kind": "set_context_length", "value": MIN_CONTEXT, "role": self.role if per_role else None,
                       "label": "Use 8,192 tokens"})
+        elif fits and in_use > fits and self.role != "embedding":
+            self.add("context", "Context length", "warn", detail,
+                     f"This computer's graphics memory holds {self.name} with about {fits:,} tokens. More pushes "
+                     "part of the model onto the processor, which makes replies much slower.",
+                     {"kind": "set_context_length", "value": fits, "role": self.role if per_role else None,
+                      "label": f"Use {fits:,} tokens"})
         else:
             self.add("context", "Context length", "pass", detail)
         return in_use
@@ -380,17 +388,21 @@ class _RoleCheck:
             self.add("gpu", "Graphics card", "pass", f"Runs fully on the graphics card ({_gb(size)}).")
             return
         action = None
-        if in_use and in_use > MIN_CONTEXT:
+        shorter = self.run.fitting_context(self.name) or MIN_CONTEXT
+        if in_use and in_use > shorter:
             per_role = self.role in self.run.config.models.context_length_per_role
-            action = {"kind": "set_context_length", "value": MIN_CONTEXT, "role": self.role if per_role else None,
-                      "label": "Use 8,192 tokens"}
+            action = {"kind": "set_context_length", "value": shorter, "role": self.role if per_role else None,
+                      "label": f"Use {shorter:,} tokens"}
         if vram <= 0:
             detail = f"Ollama is running all of this model ({_gb(size)}) on the processor."
         else:
             detail = (f"Ollama is running {round(100 * (size - vram) / size)}% of this model on the processor "
                       f"({_gb(vram)} of {_gb(size)} fits on the graphics card).")
-        self.add("gpu", "Graphics card", "warn", detail,
-                 "It will be slow. Pick a smaller model or a shorter context length.", action)
+        fix = "It will be slow. Pick a smaller model or a shorter context length."
+        rec = self.run.recommendation
+        if rec and rec["runs_on"] == "graphics":
+            fix += f" For this computer Sentient suggests {rec['summary']}."
+        self.add("gpu", "Graphics card", "warn", detail, fix, action)
 
     async def embedding(self) -> None:
         self.run.step(self.role, "Trying an embedding")
@@ -436,13 +448,30 @@ class _RoleCheck:
 
 
 class CheckupRun:
-    def __init__(self, config: SentientConfig, llm: Any, client: httpx.AsyncClient, timeout_s: float):
+    def __init__(
+        self, config: SentientConfig, llm: Any, client: httpx.AsyncClient, timeout_s: float,
+        hardware: dict | None = None,
+    ):
         self.config = config
         self.llm = llm
         self.ollama = _Ollama(client)
         self.timeout_s = timeout_s
         self.events: asyncio.Queue[dict] = asyncio.Queue()
         self.shared: dict[tuple, dict[str, tuple[str, list[dict], bool]]] = {}  # settings key -> group -> result
+        rec = (hardware or {}).get("recommendation")
+        self.recommendation: dict | None = rec if rec and rec.get("tier") != "unknown" else None
+        if self.recommendation and self.recommendation.get("cloud_first"):
+            self.recommendation = None  # only a chat-only model fits: the usual local hints apply
+        # the local model the fix hints point to: the one sized for this computer
+        self.suggested_local = self.recommendation["name"] if self.recommendation else SUGGESTED_LOCAL
+
+    def fitting_context(self, name: str) -> int | None:
+        """The context length that keeps ``name`` on this computer's graphics card, when it is the model sized for
+        it (other models need different amounts of memory, so nothing is claimed for them)."""
+        rec = self.recommendation
+        if rec and rec["runs_on"] == "graphics" and rec["name"] == name:
+            return int(rec["context_length"])
+        return None
 
     def ollama_base(self, prefix: str) -> str:
         providers = self.config.models.providers
@@ -466,15 +495,20 @@ def plan(config: SentientConfig, roles: dict[str, str | None] | None = None) -> 
 
 
 async def run_checkup(
-    config: SentientConfig, llm: Any, roles: dict[str, str | None] | None = None, *, timeout_s: float = STEP_TIMEOUT_S
+    config: SentientConfig, llm: Any, roles: dict[str, str | None] | None = None, *, timeout_s: float = STEP_TIMEOUT_S,
+    hardware: dict | None = None,
 ) -> AsyncIterator[dict]:
     """Stream check-up events: ``start``, then ``step`` and ``role`` per role, then ``done``. Roles run one at a
-    time so local models are not loaded side by side."""
+    time so local models are not loaded side by side. ``hardware`` (``HardwareProbe.get()``) is shown in ``start``
+    and sizes the fix hints for this computer."""
     todo = plan(config, roles)
-    yield {"type": "start", "roles": [{"role": r, "model": m} for r, m in todo]}
+    start: dict[str, Any] = {"type": "start", "roles": [{"role": r, "model": m} for r, m in todo]}
+    if hardware is not None:
+        start["hardware"] = hardware
+    yield start
     results: list[dict] = []
     async with httpx.AsyncClient(timeout=5) as client:
-        run = CheckupRun(config, llm, client, timeout_s)
+        run = CheckupRun(config, llm, client, timeout_s, hardware)
         for role, model in todo:
             if not model:
                 result = {"role": role, "model": None, "provider": None, "local": None, "inherits": "primary",

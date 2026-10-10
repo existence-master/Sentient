@@ -1,4 +1,4 @@
-import { IconAlertCircle, IconAlertTriangle, IconChevronRight, IconCircleCheck, IconCircleDashed, IconStethoscope } from '@tabler/icons-react'
+import { IconAlertCircle, IconAlertTriangle, IconChevronRight, IconCircleCheck, IconCircleDashed, IconCpu, IconStethoscope } from '@tabler/icons-react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Card, Spinner } from '@/components/ui'
@@ -83,6 +83,16 @@ export function ModelCheckup({
         <Alert tone="danger" title="Couldn't finish the check-up" className="mx-4 mb-4">
           {c.error}
         </Alert>
+      )}
+
+      {c.hardware && c.hardware.summary !== 'unknown' && (
+        <div className="flex items-start gap-3 border-t border-border px-4 py-3 text-xs text-fg-subtle">
+          <IconCpu size={16} className="mt-px shrink-0 text-fg-faint" />
+          <span>
+            This computer: {c.hardware.summary}.{' '}
+            {c.hardware.recommendation.cloud_first ? c.hardware.recommendation.note : `For a local model Sentient suggests ${c.hardware.recommendation.summary}.`}
+          </span>
+        </div>
       )}
 
       {c.running && c.rows.length === 0 && (

@@ -1,7 +1,7 @@
-import { IconAlertTriangle, IconCircleCheck, IconCloud, IconDeviceDesktop, IconDownload, IconExternalLink, IconEye, IconEyeOff, IconKey, IconRefresh } from '@tabler/icons-react'
+import { IconAlertTriangle, IconCircleCheck, IconCloud, IconCpu, IconDeviceDesktop, IconDownload, IconExternalLink, IconEye, IconEyeOff, IconKey, IconRefresh } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { Alert, Badge, Button, Card, Field, IconButton, Input, SegmentedControl, Skeleton } from '@/components/ui'
+import { Alert, Badge, Button, Card, Field, IconButton, Input, ProgressBar, SegmentedControl, Skeleton } from '@/components/ui'
 import { InstructionsGuide } from '@/features/integrations/InstructionsGuide'
 import { CLAUDE_PLAN_STEPS, NOUS_STEPS, OpenRouterConnect } from '@/features/models/ConnectPlans'
 import { ModelCheckup } from '@/features/models/ModelCheckup'
@@ -9,7 +9,7 @@ import { ModelPicker } from '@/features/models/ModelPicker'
 import { ModelTest } from '@/features/models/ModelTest'
 import { OllamaPull } from '@/features/models/OllamaPull'
 import { useConfig } from '@/hooks/core'
-import { useLocalModels, useProviders, useSetSecret } from '@/hooks/models'
+import { useHardware, useLocalModels, useOllamaPull, useProviders, useSetSecret } from '@/hooks/models'
 import { errorMessage } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
 import { looksLikeEmbedding, recommendFastLocal, recommendLocal } from '@/lib/models'
@@ -22,19 +22,24 @@ export function BrainStep() {
   const d = useOnboardingDraft()
   const local = useLocalModels()
   const config = useConfig()
+  const hardware = useHardware()
 
-  // Pre-fill sensible defaults once we know what's installed.
+  // Pre-fill sensible defaults once we know what's installed: the model sized for this computer when it's there.
   useEffect(() => {
-    if (!local.data || d.primary) return
+    if (!local.data || d.primary || hardware.isLoading) return
     const roles = config.data?.models.roles
-    const primary = recommendLocal(local.data) ?? roles?.primary ?? ''
+    const rec = hardware.data?.recommendation
+    // a chat-only fallback (cloud_first) is never picked for the user
+    const fits = rec && !rec.cloud_first && isInstalled(rec.name, local.data.ollama.models.map((m) => m.name)) ? rec : null
+    const primary = fits?.model ?? recommendLocal(local.data) ?? roles?.primary ?? ''
     d.set({
       primary,
-      fast: recommendFastLocal(local.data) ?? primary,
-      embedding: recommendLocal(local.data, true) ?? roles?.embedding ?? ''
+      fast: fits?.model ?? recommendFastLocal(local.data) ?? primary,
+      embedding: recommendLocal(local.data, true) ?? roles?.embedding ?? '',
+      context_length: rec && rec.tier !== 'unknown' && !rec.cloud_first ? rec.context_length : null
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [local.data, config.data])
+  }, [local.data, config.data, hardware.isLoading])
 
   return (
     <div>
@@ -60,6 +65,7 @@ export function BrainStep() {
 function LocalBrain() {
   const d = useOnboardingDraft()
   const local = useLocalModels()
+  const hardware = useHardware()
   const ollama = local.data?.ollama
   const chatModels = (ollama?.models ?? []).filter((m) => !(m.is_embedding ?? looksLikeEmbedding(m.name)))
   const embedModels = (ollama?.models ?? []).filter((m) => m.is_embedding ?? looksLikeEmbedding(m.name))
@@ -78,6 +84,7 @@ function LocalBrain() {
   if (!ollama?.reachable) {
     return (
       <div className="space-y-4">
+        <RecommendedForThisComputer installed={null} />
         <Alert tone="warning" icon={<IconAlertTriangle />} title="Ollama isn't running">
           Sentient uses Ollama to run models privately on your computer. Install it, open it once, then check again.
         </Alert>
@@ -98,18 +105,24 @@ function LocalBrain() {
 
   if (!chatModels.length) {
     return (
-      <Card className="p-5">
-        <div className="flex items-center gap-2 text-sm font-medium text-fg">
-          <IconCircleCheck size={17} className="text-success" /> Ollama is running
-        </div>
-        <p className="mt-1 text-sm text-fg-muted">Now download a model. qwen3:8b is a great all-rounder if you have 8 GB of RAM or more.</p>
-        <OllamaPull className="mt-4" installed={(ollama.models ?? []).map((m) => m.name)} />
-      </Card>
+      <div className="space-y-4">
+        <RecommendedForThisComputer installed={(ollama.models ?? []).map((m) => m.name)} />
+        <Card className="p-5">
+          <div className="flex items-center gap-2 text-sm font-medium text-fg">
+            <IconCircleCheck size={17} className="text-success" /> Ollama is running
+          </div>
+          <p className="mt-1 text-sm text-fg-muted">
+            {hardware.data?.recommendation.cloud_first ? 'Now download a model, or use a cloud provider as recommended above.' : 'Now download a model. The one recommended above fits this computer.'}
+          </p>
+          <OllamaPull className="mt-4" installed={(ollama.models ?? []).map((m) => m.name)} />
+        </Card>
+      </div>
     )
   }
 
   return (
     <div className="space-y-4">
+      <RecommendedForThisComputer installed={(ollama.models ?? []).map((m) => m.name)} />
       <Card className="p-5">
         <div className="mb-4 flex items-center gap-2">
           <IconCircleCheck size={17} className="text-success" />
@@ -150,6 +163,111 @@ function LocalBrain() {
       </Card>
       <DraftCheckup />
     </div>
+  )
+}
+
+function isInstalled(name: string, installed: string[]): boolean {
+  return installed.some((n) => n === name || n === `${name}:latest`)
+}
+
+/**
+ * "Recommended for this computer" (#131): the local model and context length that fit its memory and graphics card,
+ * detected by the engine before anything is installed. `installed` is null while Ollama isn't running.
+ */
+function RecommendedForThisComputer({ installed }: { installed: string[] | null }) {
+  const d = useOnboardingDraft()
+  const hardware = useHardware()
+  const pull = useOllamaPull()
+  const rec = hardware.data?.recommendation
+  const use = () => rec && d.set({ primary: rec.model, fast: rec.model, context_length: rec.tier === 'unknown' ? null : rec.context_length })
+
+  // A finished download is the model to use.
+  useEffect(() => {
+    if (pull.done) use()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pull.done])
+
+  if (hardware.isLoading) return <Skeleton className="h-20 w-full rounded-xl" />
+  if (!hardware.data || !rec) return null
+  const summary = hardware.data.summary
+  const have = installed !== null && isInstalled(rec.name, installed)
+  const chosen = d.primary === rec.model && (rec.tier === 'unknown' || d.context_length === rec.context_length)
+  const local =
+    installed !== null &&
+    (chosen ? (
+      <Badge size="xs" tone="success">
+        In use
+      </Badge>
+    ) : have ? (
+      <Button size="sm" variant={rec.cloud_first ? 'ghost' : 'secondary'} onClick={use}>
+        {rec.cloud_first ? 'Use for chat only' : 'Use this'}
+      </Button>
+    ) : (
+      <Button size="sm" variant={rec.cloud_first ? 'ghost' : 'primary'} leftIcon={<IconDownload size={14} />} loading={pull.running} onClick={() => void pull.pull(rec.name)}>
+        {rec.cloud_first ? 'Download for chat only' : 'Download'}
+      </Button>
+    ))
+
+  if (rec.cloud_first) {
+    // too little memory for a local model that can do tasks: a cloud model first, the small one only as a labelled fallback
+    return (
+      <Card className="p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-elevated text-accent-text">
+            <IconCloud size={18} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-fg">Recommended for this computer: a cloud model</div>
+            <p className="mt-0.5 text-xs text-fg-subtle">This computer: {summary}.</p>
+            <p className="mt-1.5 text-xs leading-relaxed text-fg-muted">{rec.note}</p>
+            <Button size="sm" variant="primary" className="mt-3" leftIcon={<IconCloud size={14} />} onClick={() => d.set({ brainMode: 'cloud' })}>
+              Use a cloud provider
+            </Button>
+            <div className="mt-4 flex items-center gap-3 border-t border-border pt-3">
+              <div className="min-w-0 flex-1 text-xs text-fg-subtle">
+                <span className="font-medium text-fg-muted">Chat only:</span> <span className="font-mono">{rec.name}</span> runs here but can&apos;t do tasks
+                reliably.
+              </div>
+              {local}
+            </div>
+            {(pull.running || pull.error) && (
+              <div className="mt-3 space-y-1.5">
+                <div className={cn('text-xs', pull.error ? 'text-danger' : 'text-fg-subtle')}>{pull.error ?? pull.status}</div>
+                {!pull.error && <ProgressBar value={pull.progress} />}
+              </div>
+            )}
+          </div>
+        </div>
+      </Card>
+    )
+  }
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-elevated text-accent-text">
+          <IconCpu size={18} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-fg">Recommended for this computer</div>
+          <p className="mt-0.5 text-xs text-fg-subtle">
+            {summary === 'unknown' ? "Sentient couldn't check this computer's memory." : `This computer: ${summary}.`}
+          </p>
+          <p className="mt-2 text-sm text-fg">
+            <span className="font-mono">{rec.name}</span>, reading {rec.context_length.toLocaleString()} tokens at a time
+          </p>
+          <p className="mt-0.5 text-xs leading-relaxed text-fg-muted">{rec.note}</p>
+          {installed === null && <p className="mt-1 text-xs text-fg-subtle">Install Ollama first, then download it here.</p>}
+          {(pull.running || pull.error) && (
+            <div className="mt-3 space-y-1.5">
+              <div className={cn('text-xs', pull.error ? 'text-danger' : 'text-fg-subtle')}>{pull.error ?? pull.status}</div>
+              {!pull.error && <ProgressBar value={pull.progress} />}
+            </div>
+          )}
+        </div>
+        {local}
+      </div>
+    </Card>
   )
 }
 
