@@ -11,6 +11,7 @@ import contextlib
 import logging
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -18,21 +19,34 @@ log = logging.getLogger(__name__)
 
 TTL_S = 20.0
 _cache: tuple[float, bool | None] | None = None
+_refreshing = False
 
 
 def on_battery() -> bool:
-    """True when the computer runs on battery right now (unknown counts as plugged in)."""
-    global _cache
+    """True when the computer runs on battery right now (unknown counts as plugged in). Never blocks for long: the
+    scheduler asks from the event loop, so macOS's ``pmset`` runs in a thread and the last reading is used meanwhile."""
+    global _refreshing
     now = time.monotonic()
     if _cache is not None and now - _cache[0] < TTL_S:
         return bool(_cache[1])
+    if sys.platform == "darwin":
+        if not _refreshing:
+            _refreshing = True
+            threading.Thread(target=_refresh, name="sentient-power", daemon=True).start()
+        return bool(_cache[1]) if _cache is not None else False
+    _refresh()
+    return bool(_cache[1]) if _cache is not None else False
+
+
+def _refresh() -> None:
+    global _cache, _refreshing
     try:
         value = _probe()
     except Exception as exc:  # never let a power reading break a model call
         log.debug("battery check failed: %s", exc)
         value = None
-    _cache = (now, value)
-    return bool(value)
+    _cache = (time.monotonic(), value)
+    _refreshing = False
 
 
 def _probe() -> bool | None:

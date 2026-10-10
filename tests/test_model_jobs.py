@@ -515,3 +515,29 @@ def test_battery_reading_is_remembered_and_never_raises(monkeypatch):
     monkeypatch.setattr(power, "_cache", None)
     assert power.on_battery() is False and power.on_battery() is False
     assert len(calls) == 1
+
+
+def test_battery_reading_never_blocks_on_macos(monkeypatch):
+    import threading
+
+    from sentient.llm import power
+
+    started, release = threading.Event(), threading.Event()
+
+    def slow_pmset():
+        started.set()
+        release.wait(5)
+        return True
+
+    monkeypatch.setattr(power.sys, "platform", "darwin")
+    monkeypatch.setattr(power, "_probe", slow_pmset)
+    monkeypatch.setattr(power, "_cache", None)
+    monkeypatch.setattr(power, "_refreshing", False)
+    assert power.on_battery() is False  # answers at once while pmset runs in a thread
+    assert started.wait(5)
+    release.set()
+    for _ in range(100):
+        if power._cache is not None:
+            break
+        threading.Event().wait(0.02)
+    assert power.on_battery() is True  # the thread's reading is used from then on
