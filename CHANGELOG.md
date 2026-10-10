@@ -176,6 +176,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- Turning on "Use my Claude Code for chats" now shows the Claude Code version straight away, instead of sometimes
+  showing nothing until you came back to the page. Settings also says that its replies take a few seconds to start
+  and arrive in larger pieces than with your other models.
+- Claude Code no longer leaves empty scratch folders behind on Windows. Each reply's folder is removed once Claude
+  Code has fully exited, and folders left by earlier runs are cleared when Sentient starts.
 - A task that can't be planned because Claude Code is your main model now says so and what to do ("Pick a
   planner model in Settings > Models"), instead of saying the AI model is unavailable.
 - A memory waiting for your review now shows the page or message it came from, not the error from a later action

@@ -275,7 +275,8 @@ accept or loosen a rule.
   means a `claude` program is on PATH; `version` is its `claude --version` line, asked only while `enabled` (null
   otherwise or when it doesn't answer). `detail` is a plain sentence for Settings. `models` are the model names to
   offer (`CLAUDE_CODE_MODELS` in `config/schema.py`: `claude-code/sonnet`, `claude-code/opus`). It never calls a model
-  and never reads Claude's login; `POST /api/models/test` with a `claude-code/` model is the only dry run.
+  and never reads Claude's login; `POST /api/models/test` with a `claude-code/` model is the only dry run. `enabled`
+  is the saved setting, so a window that has just flipped the switch asks again until it matches.
 - `POST /api/models/checkup` `{roles?: {role: model | null}}` → streams NDJSON while it checks each role's model,
   one role at a time (local models are never loaded side by side). Without `roles` it checks every role in the saved
   config; with `roles` it checks only those, with those models (onboarding checks its picks before saving). It is
@@ -345,7 +346,9 @@ accept or loosen a rule.
   --output-format stream-json --verbose --include-partial-messages --model <name> --tools "" --disallowedTools <its
   built-ins> --permission-mode dontAsk --setting-sources= --strict-mcp-config --disable-slash-commands
   --no-session-persistence --max-turns 1 --system-prompt-file <file> [--mcp-config <file>] [--effort <role's
-  reasoning>]` in a scratch folder under `~/.sentient/tmp/claude-code/`, removed afterwards. The environment is the
+  reasoning>]` in a scratch folder under `~/.sentient/tmp/claude-code/`, removed once Claude Code and its tool bridge
+  have exited (retried for a few seconds while Windows still holds it; folders older than an hour are swept when the
+  engine starts). The environment is the
   engine's minus the window token and everything that would make Claude Code use something other than the plan login
   (every `ANTHROPIC_*`, `CLAUDE_CODE_USE_*` and `CLAUDE_CODE_OAUTH_*` variable, `CLAUDE_CODE_SIMPLE`,
   `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH`; `CLAUDE_CONFIG_DIR` is kept), with
