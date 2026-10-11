@@ -305,15 +305,17 @@ async def test_a_failed_scheduled_backup_is_retried_and_told_once(config, isolat
             calls.append(kind)
             raise BackupError("Sentient can't write to that folder. Pick another one.")
 
-        monkeypatch.setattr(app.backups, "backup_now", broken)
+        with monkeypatch.context() as scoped:  # only this patch: SENTIENT_HOME stays on the test home
+            scoped.setattr(app.backups, "backup_now", broken)
+            await app.backups._scheduled()
+            await app.backups._scheduled()  # an hour later: tried again, not told again
+            assert calls == ["scheduled", "scheduled"]
+            notes = [n for n in await app.notifications.list() if n["kind"] == "backup"]
+            assert len(notes) == 1 and "didn't work" in json.dumps(notes[0])
+            assert await app.store.get_meta("backup.last_scheduled") is None
         await app.backups._scheduled()
-        await app.backups._scheduled()  # an hour later: tried again, not told again
-        assert calls == ["scheduled", "scheduled"]
-        notes = [n for n in await app.notifications.list() if n["kind"] == "backup"]
-        assert len(notes) == 1 and "didn't work" in json.dumps(notes[0])
-        assert await app.store.get_meta("backup.last_scheduled") is None
-        monkeypatch.undo()
-        await app.backups._scheduled()
+        made = (await app.backups.overview())["backups"]
+        assert [Path(b["path"]).parent for b in made] == [isolated_home / "backups"]
         assert await app.store.get_meta("backup.last_scheduled")
     finally:
         await app.stop()
