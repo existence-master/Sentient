@@ -25,6 +25,7 @@ import type {
   DictationStatus,
   NativeNotification,
   OpenPathTarget,
+  PickFilesOptions,
   ShellPrefs,
   ShortcutId
 } from '../../src/types/bridge'
@@ -361,15 +362,20 @@ function registerIpc(): void {
     platform: process.platform,
     arch: process.arch
   }))
-  ipcMain.handle(CH.pickFiles, async (_e, options?: { multiple?: boolean; directory?: boolean }) => {
+  ipcMain.handle(CH.pickFiles, async (_e, options?: PickFilesOptions) => {
     const parent = win ?? undefined
     const props: Array<'openFile' | 'openDirectory' | 'multiSelections' | 'showHiddenFiles'> = options?.directory
       ? ['openDirectory', 'showHiddenFiles']
       : ['openFile']
     if (options?.multiple !== false) props.push('multiSelections')
+    const filters = Array.isArray(options?.filters)
+      ? options.filters
+          .filter((f) => typeof f?.name === 'string' && Array.isArray(f.extensions))
+          .map((f) => ({ name: f.name, extensions: f.extensions.filter((x) => typeof x === 'string' && /^[a-z0-9]{1,10}$/i.test(x)) }))
+      : undefined
     const result = parent
-      ? await dialog.showOpenDialog(parent, { properties: props })
-      : await dialog.showOpenDialog({ properties: props })
+      ? await dialog.showOpenDialog(parent, { properties: props, filters })
+      : await dialog.showOpenDialog({ properties: props, filters })
     return result.canceled ? [] : result.filePaths
   })
   ipcMain.on(CH.readyForScreenshot, () => smokeRunner?.ready())

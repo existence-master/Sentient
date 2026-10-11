@@ -890,6 +890,8 @@ export interface DomainEventMap {
   'stop.updated': StopState
   // #149
   'model.busy': ModelBusy
+  // §20
+  'backup.updated': BackupUpdated
 }
 
 export type DomainEventType = keyof DomainEventMap
@@ -2200,4 +2202,80 @@ export interface HermesResult {
   persona?: { updated: boolean }
   jobs?: { created: Array<{ task_id: string; name: string }>; skipped: HermesSkipped[] }
   mcp?: { added: string[]; skipped: HermesSkipped[] }
+}
+
+// §20 backups, restore and snapshots ------------------------------------------------------
+export type BackupKind = 'manual' | 'scheduled' | 'snapshot'
+export type BackupSchedule = 'off' | 'daily' | 'weekly'
+
+/** Something signed in through the keychain. Keychain secrets are never in a backup. */
+export interface BackupSignIn {
+  kind: 'model' | 'integration' | 'channel' | 'browser'
+  id: string
+  label: string
+  /** After a restore: whether it works on this computer now (`null`: Sentient can't tell). */
+  signed_in?: boolean | null
+}
+
+export interface BackupEntry {
+  name: string
+  path: string
+  kind: BackupKind
+  /** Why a snapshot was taken, e.g. "before importing from Hermes". */
+  reason: string | null
+  created_at: ISODate | null
+  version: string | null
+  schema_version: number | null
+  size: number
+  /** Snapshots leave out the files folder. */
+  includes_files: boolean
+  counts: { chats?: number; memories?: number; tasks?: number; skills?: number }
+  sign_ins: BackupSignIn[]
+}
+
+export interface BackupInspect extends BackupEntry {
+  /** Made by a newer Sentient than this one. */
+  newer: boolean
+  contents: string[]
+}
+
+export interface RestoreStaged {
+  staged: true
+  restart_required: true
+  source: string
+  created_at: ISODate | null
+  contents: string[]
+  sign_ins: BackupSignIn[]
+}
+
+export interface RestoreResult {
+  restored_at: ISODate
+  source: string | null
+  kind: BackupKind | null
+  backup_created_at: ISODate | null
+  contents: string[]
+  sign_ins: BackupSignIn[]
+  /** The snapshot of the data the restore replaced (restore it to undo). */
+  snapshot: string | null
+  /** A plain sentence when the restore didn't happen; the data was left as it was. */
+  error: string | null
+}
+
+export interface BackupOverview {
+  folder: string
+  default_folder: string
+  backups: BackupEntry[]
+  snapshots: BackupEntry[]
+  schedule: BackupSchedule
+  keep: number
+  snapshots_keep: number
+  last_scheduled_at: ISODate | null
+  pending_restore: { source: string | null; created_at: ISODate | null; staged_at: ISODate | null; kind: BackupKind | null } | null
+  last_restore: RestoreResult | null
+}
+
+export interface BackupUpdated {
+  what: 'backup' | 'snapshot' | 'restore_staged' | 'restore_cancelled' | 'restore_dismissed'
+  name?: string
+  source?: string
 }

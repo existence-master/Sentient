@@ -6,6 +6,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Backups and restore:** Settings > Backups backs up everything Sentient keeps (chats, memory, tasks, settings,
+  skills and files) to one file, in a folder you pick, by hand or every day or week. Restore one from the list or from
+  a file: you see what is in it and confirm, Sentient keeps a snapshot of what you have now, then restarts with the
+  backup. Passwords, API keys and sign-ins stay in your computer's keychain and are never in a backup; after a restore
+  Sentient lists the ones to sign in to again. Sentient also takes a snapshot on its own before it updates its
+  database, before a Hermes import and before a restore, keeps the last five, and any of them can be restored.
 - **One local model job at a time, your chats first:** a local Ollama model now works on one thing at a time, so
   background work no longer pushes it off the graphics card and slows your chat to a crawl. Your chat always goes
   next; tasks, suggestions, memory upkeep and chat titles wait while you are chatting (and for 30 seconds after), and

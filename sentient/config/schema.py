@@ -977,6 +977,27 @@ class DreamingConfig(BaseModel):
     notify: bool = Field(True, description="Send a notification when a dream changed something meaningful.")
 
 
+class BackupsConfig(BaseModel):
+    folder: str | None = Field(
+        None,
+        description="Folder for backups. Empty uses the backups folder inside Sentient's data folder. A folder on "
+        "another drive or a synced cloud folder keeps them safe if this computer fails.",
+    )
+    schedule: Literal["off", "daily", "weekly"] = Field(
+        "off", description="Back up automatically every day or every week, while Sentient is running."
+    )
+    keep: int = Field(
+        5, ge=1, le=100,
+        description="How many automatic backups to keep. Older automatic ones are deleted; backups you make yourself "
+        "are never deleted.",
+    )
+    snapshots_keep: int = Field(
+        5, ge=1, le=50,
+        description="How many snapshots to keep. Sentient takes one before it updates its database, before an import "
+        "and before a restore.",
+    )
+
+
 class SentientConfig(BaseModel):
     """Root configuration, persisted at ``~/.sentient/config.yaml``."""
 
@@ -1000,4 +1021,5 @@ class SentientConfig(BaseModel):
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     user_model: UserModelConfig = Field(default_factory=UserModelConfig)
     dreaming: DreamingConfig = Field(default_factory=DreamingConfig)
+    backups: BackupsConfig = Field(default_factory=BackupsConfig)
     ui: UIConfig = Field(default_factory=UIConfig)

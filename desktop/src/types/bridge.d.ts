@@ -91,7 +91,14 @@ export interface ShortcutResult {
   shortcuts: ShortcutInfo[]
 }
 
-export type OpenPathTarget = 'home' | 'logs' | 'files' | 'workspace' | 'skills'
+export interface PickFilesOptions {
+  multiple?: boolean
+  directory?: boolean
+  /** e.g. `[{ name: 'Sentient backups', extensions: ['zip'] }]` */
+  filters?: Array<{ name: string; extensions: string[] }>
+}
+
+export type OpenPathTarget = 'home' | 'logs' | 'files' | 'workspace' | 'skills' | 'backups'
 
 export interface VersionInfo {
   app: string
@@ -216,8 +223,8 @@ export interface SentientBridge {
   /** Smoke-test hook: the current route has rendered and its data has loaded. */
   readyForScreenshot(): void
   /** Native open dialog. Returns absolute paths (drag and drop is the primary path). `directory` picks a folder
-   *  (hidden folders such as ~/.hermes are shown). */
-  pickFiles(options?: { multiple?: boolean; directory?: boolean }): Promise<string[]>
+   *  (hidden folders such as ~/.hermes are shown); `filters` limits files by extension (a backup's `.zip`). */
+  pickFiles(options?: PickFilesOptions): Promise<string[]>
   /** Whether the window currently has OS focus. */
   isFocused(): Promise<boolean>
   /** Open a file from Sentient's files folder (`outputs/chart.png`) with the default app. */
