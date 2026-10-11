@@ -104,6 +104,11 @@ When several people build and capture screenshots at once, take `desktop/.build.
 .venv/Scripts/ruff.exe check sentient tests
 ```
 
+To check how background work behaves on battery on a computer that is plugged in, start the engine with
+`SENTIENT_DEBUG_BATTERY` set: `ac`, `battery`, or a percent such as `35` or `10` (tests and debugging only; the
+engine logs a warning while it is set). The engine log then shows `model job held: ... (on battery ...)`,
+`upkeep burst on battery` and `model job released: ...` lines.
+
 No test touches the network; the LLM is a scripted, deterministic fake
 (`tests/conftest.py`). Browser tests drive a hidden local Edge or Chrome against local pages and skip
 when none can start; Docker sandbox tests skip when Docker is not running. The suite is large: on a busy

@@ -22,12 +22,17 @@ LOCAL = "ollama_chat/qwen3:8b"
 WAIT = 3.0  # seconds before a test calls it a deadlock
 
 
-def make_jobs(*, quiet: int = 0, battery: bool = False, on_battery: bool = False, **kw) -> ModelJobs:
+def make_jobs(*, quiet: int = 0, battery: bool = False, on_battery: bool = False, percent: int | None = None,
+              idle: float = 0, every: float = 0, cap: float = 7200, **kw) -> ModelJobs:
     models = SentientConfig().models
     models.background_quiet_s = quiet
     models.background_on_battery = on_battery
-    state = {"battery": battery}
-    jobs = ModelJobs(lambda: models, on_battery=lambda: state["battery"], **kw)
+    models.battery_idle_s = idle  # type: ignore[assignment]  tests use fractions of a second
+    models.battery_upkeep_every_s = every  # type: ignore[assignment]
+    models.battery_max_wait_s = cap  # type: ignore[assignment]
+    state = {"battery": battery, "percent": percent}
+    jobs = ModelJobs(lambda: models, on_battery=lambda: state["battery"],
+                     battery_percent=lambda: state["percent"] if state["battery"] else None, **kw)
     jobs.test_battery = state  # type: ignore[attr-defined]
     jobs.test_models = models  # type: ignore[attr-defined]
     return jobs
@@ -124,9 +129,9 @@ async def test_background_waits_while_you_chat_and_until_it_has_been_quiet():
     assert meter.order == ["chat", "button", "task"]
 
 
-async def test_background_waits_on_battery_but_chats_do_not(monkeypatch):
+async def test_upkeep_waits_on_low_battery_but_chats_do_not(monkeypatch):
     monkeypatch.setattr(jobs_mod, "RECHECK_S", 0.05)
-    jobs, meter = make_jobs(battery=True), Meter()
+    jobs, meter = make_jobs(battery=True, percent=30), Meter()
     task = as_task("suggestions", meter.use(jobs, "suggestions"))
     await asyncio.sleep(0.1)
     assert meter.order == [] and jobs.status() == {
@@ -139,9 +144,156 @@ async def test_background_waits_on_battery_but_chats_do_not(monkeypatch):
     assert meter.order == ["chat", "suggestions"]
 
 
-async def test_background_on_battery_can_be_allowed():
-    jobs, meter = make_jobs(battery=True, on_battery=True), Meter()
+# ---------------------------------------------------------------------------- on battery (#296)
+async def test_tasks_run_on_time_on_battery_even_when_it_is_critical(monkeypatch):
+    monkeypatch.setattr(jobs_mod, "RECHECK_S", 0.05)
+    jobs, meter = make_jobs(battery=True, percent=5, idle=60, every=3600), Meter()
+    upkeep = as_task("memory", meter.use(jobs, "memory"))
+    await asyncio.wait_for(as_task("task", meter.use(jobs, "task")), WAIT)  # a task you scheduled: on time
+    assert meter.order == ["task"] and jobs.status()["deferred_reason"] == "battery_low"
+    upkeep.cancel()
+
+
+async def test_upkeep_on_battery_goes_above_the_threshold(monkeypatch):
+    monkeypatch.setattr(jobs_mod, "RECHECK_S", 0.05)
+    jobs, meter = make_jobs(battery=True, percent=40), Meter()  # "above 40%": 40 itself still waits
+    upkeep = as_task("titles", meter.use(jobs, "title"))
+    await asyncio.sleep(0.1)
+    assert meter.order == [] and jobs.status()["deferred_reason"] == "battery"
+    jobs.test_battery["percent"] = 41  # type: ignore[attr-defined]
+    await asyncio.wait_for(upkeep, WAIT)
+    assert meter.order == ["title"]
+
+
+async def test_upkeep_on_battery_waits_until_you_have_stopped_chatting():
+    jobs, meter = make_jobs(battery=True, percent=80, idle=0.5), Meter()
+    loop = asyncio.get_running_loop()
+    with jobs.chat_turn():
+        upkeep = as_task("memory", meter.use(jobs, "memory"))
+        task = as_task("task", meter.use(jobs, "task"))
+        await meter.use(jobs, "chat")
+    ended = loop.time()
+    await asyncio.wait_for(task, WAIT)  # tasks only wait for the usual quiet time (0 here)
+    assert jobs.status()["deferred_reason"] == "battery"
+    await asyncio.wait_for(upkeep, WAIT)
+    assert loop.time() - ended >= 0.45  # the longer quiet time on battery
+    assert meter.order == ["chat", "task", "memory"]
+
+
+async def test_upkeep_on_battery_runs_in_bursts(monkeypatch):
+    monkeypatch.setattr(jobs_mod, "BURST_GRACE_S", 0.15)
+    jobs, meter = make_jobs(battery=True, percent=80, every=0.6), Meter()
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    # a pass of several calls back to back: one burst
+    for name in ("a", "b", "c"):
+        await asyncio.wait_for(as_task("memory", meter.use(jobs, name)), WAIT)
+    await asyncio.sleep(0.25)  # the burst ends after a quiet gap
+    later = as_task("skills", meter.use(jobs, "later"))
+    await asyncio.sleep(0.05)
+    assert meter.order == ["a", "b", "c"] and jobs.status()["deferred_reason"] == "battery"
+    await asyncio.wait_for(later, WAIT)
+    assert loop.time() - start >= 0.55  # the next burst, no sooner than battery_upkeep_every_s after the first
+    jobs.test_battery["battery"] = False  # type: ignore[attr-defined]  plugged in: no bursts
+    await asyncio.wait_for(as_task("memory", meter.use(jobs, "plugged")), WAIT)
+
+
+async def test_the_cap_releases_upkeep_held_at_critical_battery_and_its_pass_follows(monkeypatch):
+    monkeypatch.setattr(jobs_mod, "BURST_MAX_S", 0.6)
+    jobs, meter = make_jobs(battery=True, percent=5, cap=0.4), Meter()
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    upkeep = as_task("memory", meter.use(jobs, "memory"))
+    await asyncio.sleep(0.1)
+    assert meter.order == [] and jobs.status()["deferred_reason"] == "battery_low"
+    await asyncio.wait_for(upkeep, WAIT)  # no polling needed: the scheduler wakes when the cap ends
+    assert loop.time() - start >= 0.35
+    # the next call of the same pass does not wait the whole cap again
+    released = loop.time()
+    await asyncio.wait_for(as_task("memory", meter.use(jobs, "memory 2")), WAIT)
+    assert loop.time() - released < 0.2
+    # once the burst is over (here BURST_MAX_S), new upkeep waits again
+    await asyncio.sleep(0.6)
+    later = as_task("titles", meter.use(jobs, "title"))
+    await asyncio.sleep(0.1)
+    assert "title" not in meter.order and jobs.status()["deferred_reason"] == "battery_low"
+    await asyncio.wait_for(later, WAIT)
+
+
+async def test_upkeep_a_person_asked_for_skips_the_battery_limits_but_not_critical(monkeypatch):
+    monkeypatch.setattr(jobs_mod, "RECHECK_S", 0.05)
+    jobs, meter = make_jobs(battery=True, percent=20, idle=60, every=3600, cap=0.4), Meter()
+    loop = asyncio.get_running_loop()
+
+    def asked(name: str, press=None) -> asyncio.Task:
+        """One call of a Dream now press (``press``: the press it belongs to; None: a new press)."""
+        ctx = (press or detached("memory", requested=True)).copy()
+        return asyncio.create_task(meter.use(jobs, name), context=ctx)
+
+    # 20% is below the minimum, and the idle and burst limits would hold scheduled upkeep: Dream now goes at once
+    await asyncio.wait_for(asked("dream"), WAIT)
+    scheduled = as_task("memory", meter.use(jobs, "nightly"))
+    await asyncio.sleep(0.1)
+    assert "nightly" not in meter.order  # scheduled upkeep keeps the limits, and Dream now opened no burst for it
+    scheduled.cancel()
+    # critical: held as battery_low until the cap, then the rest of the dream follows at once
+    jobs.test_battery["percent"] = 10  # type: ignore[attr-defined]
+    start = loop.time()
+    press = detached("memory", requested=True)
+    first = asked("dream 2", press)
+    await asyncio.sleep(0.1)
+    assert "dream 2" not in meter.order and jobs.status()["deferred_reason"] == "battery_low"
+    await asyncio.wait_for(first, WAIT)
+    assert loop.time() - start >= 0.35
+    released = loop.time()
+    scheduled = as_task("memory", meter.use(jobs, "scheduled"))  # queued after the cap let the dream go
+    await asyncio.wait_for(asked("dream 3", press), WAIT)
+    assert loop.time() - released < 0.2  # the rest of the dream follows at once ...
+    again = asked("next press")  # a new Dream now while that burst is open does not inherit it
+    await asyncio.sleep(0.1)
+    assert jobs._asked_open(loop.time())
+    assert "scheduled" not in meter.order and "next press" not in meter.order  # ... nothing else
+    assert jobs.status()["deferred"] == 2 and jobs.status()["deferred_reason"] == "battery_low"
+    await asyncio.wait_for(asyncio.gather(scheduled, again), WAIT)  # each goes on its own cap
+
+
+async def test_dream_now_is_upkeep_a_person_asked_for(config, isolated_home, monkeypatch):
+    app = await start_app(config, isolated_home, FakeProvider(), "dream")
+    try:
+        seen: list[tuple[str, bool]] = []
+
+        async def execute(dream_id: str) -> None:
+            seen.append((current_kind(), jobs_mod._requested.get() is not None))
+
+        monkeypatch.setattr(app.dreaming, "_execute", execute)
+        await app.dreaming.start_run("manual")
+        await asyncio.wait_for(app.dreaming._task, WAIT)
+        assert seen == [("memory", True)]
+    finally:
+        await app.stop()
+
+
+async def test_background_on_battery_lifts_the_limits_but_not_critical(monkeypatch):
+    monkeypatch.setattr(jobs_mod, "RECHECK_S", 0.05)
+    monkeypatch.setattr(jobs_mod, "BURST_GRACE_S", 0.05)
+    jobs, meter = make_jobs(battery=True, on_battery=True, percent=20, idle=60, every=3600), Meter()
     await asyncio.wait_for(as_task("memory", meter.use(jobs, "memory")), WAIT)
+    jobs.test_battery["percent"] = 15  # type: ignore[attr-defined]
+    await asyncio.sleep(0.1)  # after the burst (a pass under way may finish)
+    held = as_task("memory", meter.use(jobs, "critical"))
+    await asyncio.sleep(0.1)
+    assert jobs.status()["deferred_reason"] == "battery_low"
+    held.cancel()
+
+
+async def test_battery_holds_never_let_calls_overlap(monkeypatch):
+    monkeypatch.setattr(jobs_mod, "BURST_GRACE_S", 0.05)
+    jobs, meter = make_jobs(battery=True, percent=10, cap=0.2), Meter()
+    calls = [as_task(kind, meter.use(jobs, f"{kind}{i}", 0.02))
+             for i in range(3) for kind in ("task", "memory", "chat", "titles")]
+    await asyncio.wait_for(asyncio.gather(*calls), WAIT * 2)
+    assert meter.most == 1 and len(meter.order) == 12
+    assert jobs.status()["busy"] is False and jobs.status()["deferred"] == 0
 
 
 # ---------------------------------------------------------------------------- no deadlocks
@@ -495,11 +647,51 @@ def test_linux_power_status(tmp_path):
         for key, value in files.items():
             (tmp_path / name / key).write_text(value + "\n")
 
-    assert power._linux(tmp_path / "missing") is None
+    assert power._linux(tmp_path / "missing").on_battery is None
     supply("BAT0", type="Battery", status="Discharging")
-    assert power._linux(tmp_path) is True
+    assert power._linux(tmp_path).on_battery is True
     supply("AC", type="Mains", online="1")
-    assert power._linux(tmp_path) is False  # plugged in wins
+    assert power._linux(tmp_path).on_battery is False  # plugged in wins
+
+
+def test_linux_battery_percent(tmp_path):
+    from sentient.llm import power
+
+    (tmp_path / "BAT0").mkdir()
+    for key, value in {"type": "Battery", "status": "Discharging", "capacity": "37"}.items():
+        (tmp_path / "BAT0" / key).write_text(value + "\n")
+    assert power._linux(tmp_path) == power.PowerState(True, 37)
+    (tmp_path / "BAT1").mkdir()  # a second battery: full and idle, it does not hide the low one
+    for key, value in {"type": "Battery", "status": "Full", "capacity": "100"}.items():
+        (tmp_path / "BAT1" / key).write_text(value + "\n")
+    (tmp_path / "BAT2").mkdir()
+    for key, value in {"type": "Battery", "status": "Discharging", "capacity": "5"}.items():
+        (tmp_path / "BAT2" / key).write_text(value + "\n")
+    assert power._linux(tmp_path) == power.PowerState(True, 5)
+
+
+def test_macos_power_status():
+    from sentient.llm import power
+
+    on_battery = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=123)\t62%; discharging; 4:01 remaining"
+    assert power.parse_pmset(on_battery) == power.PowerState(True, 62)
+    assert power.parse_pmset("Now drawing from 'AC Power'\n -InternalBattery-0\t100%; charged").on_battery is False
+
+
+def test_battery_can_be_faked_for_tests_and_debugging(monkeypatch):
+    from sentient.llm import power
+
+    monkeypatch.setattr(power, "_probe", lambda: power.PowerState(False, None))
+    monkeypatch.setattr(power, "_cache", None)
+    monkeypatch.setenv(power.DEBUG_ENV, "12")
+    assert power.on_battery() is True and power.percent() == 12
+    monkeypatch.setenv(power.DEBUG_ENV, "ac")
+    assert power.on_battery() is False and power.percent() is None
+    monkeypatch.setenv(power.DEBUG_ENV, "battery")
+    assert power.read() == power.PowerState(True, None)
+    for junk in ("nonsense", "\u00b2", "101"):  # ignored: the real reading ("\u00b2" passes isdigit(), not int())
+        monkeypatch.setenv(power.DEBUG_ENV, junk)
+        assert power.on_battery() is False
 
 
 def test_battery_reading_is_remembered_and_never_raises(monkeypatch):

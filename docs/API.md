@@ -328,10 +328,23 @@ accept or loosen a rule.
   `memory` (memory notes after a reply, compression, the user model, dreams), `skills`, `titles`, `background`. Waiting
   calls go in that order, then first come first served; a running call is never cut off. `waiting` counts calls that go
   as soon as the model is free; `deferred` counts background calls (`task` and below) held back although it may be
-  free, with `deferred_reason`: `"chat"` while a chat reply runs or ended less than `models.background_quiet_s`
-  (default 30) seconds ago, `"battery"` while the computer runs on battery (Windows, macOS and Linux power status) and
-  `models.background_on_battery` is off (the default). Work a running chat reply waits on is never held back, and a
-  reply that has not used the model for 60 seconds stops holding background work back, so the queue can't deadlock.
+  free, with `deferred_reason` (the most telling one when several apply: `battery_low`, then `battery`, then
+  `chat`): `"chat"` while a chat reply runs or ended less than `models.background_quiet_s` (default 30) seconds ago;
+  `"battery"` or `"battery_low"` while Sentient's own upkeep waits on battery (#296). Battery holds apply only to
+  upkeep (`suggestions`, `memory`, `skills`, `titles`, `background`); `task` calls run on time at any battery level.
+  On battery (Windows, macOS and Linux power status) upkeep goes only while the battery is above
+  `models.battery_min_percent` (default 40), you have not chatted for `models.battery_idle_s` (default 300), and in
+  bursts at most every `models.battery_upkeep_every_s` (default 1800; a burst stays open while upkeep keeps using the
+  model, so a pass of several calls finishes together); `models.background_on_battery` (default off) lifts these
+  three limits. At or below `models.battery_critical_percent` (default 15) upkeep is `"battery_low"` and waits even
+  with that switch on. Whatever the battery, no call waits longer than `models.battery_max_wait_s` (default 7200)
+  because of it; a call the cap lets go opens a burst too, so the rest of its pass follows at once (a burst lasts at
+  most 5 minutes). Upkeep a person starts from the window (`POST /api/memories/dreams/run`, Dream now) skips the usual
+  limits: on battery only `models.battery_critical_percent` (and the cap) holds it, as `"battery_low"`. When the cap
+  lets it go, the rest of it follows in a burst of its own; scheduled upkeep never rides along. Work a running chat reply waits on is never held back, and a reply that has not used the model for
+  60 seconds stops holding background work back, so the queue can't deadlock. For tests and debugging only, the
+  engine's `SENTIENT_DEBUG_BATTERY` environment variable fakes the reading: `ac` (plugged in), `battery` (on battery,
+  level unknown) or a percent from 0 to 100 (on battery at that level).
   A stream holds the model until its last chunk; cancelling (Stop everything) frees it.
 - `GET /api/models/claude-code` → `{enabled, installed, version, detail, models}`: Claude through the user's own
   Claude Code (experimental, ADR 0022). `enabled` is `models.experimental_claude_code` (default false). `installed`

@@ -40,7 +40,12 @@ export const LABELS: Record<string, FieldLabel> = {
   // models (#149)
   'models.local_queue': { label: 'One job at a time, your chats first' },
   'models.background_quiet_s': { label: 'Background work waits after you chat', unit: 's' },
-  'models.background_on_battery': { label: 'Background work on battery' },
+  'models.background_on_battery': { label: 'Lift the battery limits for upkeep' },
+  'models.battery_min_percent': { label: 'On battery, upkeep needs more than', unit: '%' },
+  'models.battery_critical_percent': { label: 'Battery low: upkeep waits at or below', unit: '%' },
+  'models.battery_idle_s': { label: 'On battery, upkeep waits after you chat', unit: 's' },
+  'models.battery_upkeep_every_s': { label: 'On battery, upkeep runs at most every', unit: 's' },
+  'models.battery_max_wait_s': { label: 'Upkeep never waits longer than', unit: 's' },
   // tasks
   'backups.schedule': { label: 'Back up automatically' },
   'backups.keep': { label: 'Automatic backups to keep' },

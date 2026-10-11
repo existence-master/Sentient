@@ -234,6 +234,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
   `--keep-live`.
 - Chats using Claude through your own Claude Code now show the context meter and the "getting long" warning at
   85%: the context length is read from the matching Anthropic model, which LiteLLM knows, instead of nothing.
+- **Background work on a laptop that stays on battery:** Sentient's own upkeep (memory, what it learns about you,
+  dreams, suggestions, skill review, chat titles) used to wait for the charger, so a laptop used all day on battery
+  never ran it. It now runs on battery too, gently: while the battery is above 40%, after you have not chatted for
+  five minutes, in short bursts at most every 30 minutes, and never held more than two hours. At 15% or below it
+  waits. Tasks you scheduled always run on time, whatever the battery, and so does Dream now unless the battery is
+  low. The title bar says "Waiting: on battery" (or
+  "Waiting: battery low") while upkeep waits, and every limit is in Settings > Models > Sharing your local model.
 - Messages and memories saved at the same moment now always keep their order, and the daily upkeep of MEMORY.md and
   USER.md no longer misses a memory saved while it was reading. Summarizing a long chat no longer skips messages
   saved at the same moment as the last summary.

@@ -270,8 +270,12 @@ class DreamingService(Service):
                 if running is not None:
                     return running
             dream = await self._begin(trigger)
-        # memory upkeep even when a button started it: it waits for a quiet moment like a nightly dream (#149)
-        self._task = asyncio.create_task(self._execute(dream["id"]), name="dreaming:run", context=detached("memory"))
+        # memory upkeep that waits for a quiet moment (#149); on battery only a critical level holds it, because
+        # a person asked for it (#296). Nightly dreams keep the battery limits.
+        requested = trigger == "manual"  # each press is its own request
+        self._task = asyncio.create_task(
+            self._execute(dream["id"]), name="dreaming:run", context=detached("memory", requested=requested)
+        )
         return dream
 
     async def run(self, trigger: str = "manual") -> dict:

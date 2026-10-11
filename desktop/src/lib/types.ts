@@ -73,7 +73,8 @@ export interface ModelBusy {
   waiting: number
   /** Background jobs held back while you chat or on battery. */
   deferred: number
-  deferred_reason: 'chat' | 'battery' | null
+  /** #296: on battery only Sentient's own upkeep waits; `battery_low` at or below `battery_critical_percent`. */
+  deferred_reason: 'chat' | 'battery' | 'battery_low' | null
 }
 
 export interface StopResult extends StopState {
@@ -139,6 +140,12 @@ export interface ModelsConfig {
   local_queue?: boolean
   background_quiet_s?: number
   background_on_battery?: boolean
+  /** #296: how upkeep behaves on battery. Tasks always run on time. */
+  battery_min_percent?: number
+  battery_critical_percent?: number
+  battery_idle_s?: number
+  battery_upkeep_every_s?: number
+  battery_max_wait_s?: number
 }
 
 export interface GatewayConfig {
