@@ -842,16 +842,15 @@ class EvolutionService(Service):
         after, params = after_watermark(summaries_mark, "created_at", "id")
         new_summaries = await store.fetchall(
             f"SELECT id, content, created_at FROM summaries WHERE {after} AND {CLEAN_SUMMARY}"
-            " ORDER BY end_at DESC, rowid DESC LIMIT 8",
+            " ORDER BY created_at, id LIMIT 8",  # in watermark order, so the limit never jumps over a summary
             params,
         )
         await store.set_meta("evolution.profile_last_run", nowiso)
-        if new_facts:
-            await store.set_meta(PROFILE_FACTS_MARK, next_watermark(facts_mark, new_facts, "updated_at", "id"))
-        if new_summaries:
-            await store.set_meta(
-                PROFILE_SUMMARIES_MARK, next_watermark(summaries_mark, new_summaries, "created_at", "id")
-            )
+        # saved after every read, also an empty one: the next read starts where this one did, never at this run's time
+        await store.set_meta(PROFILE_FACTS_MARK, next_watermark(facts_mark, new_facts, "updated_at", "id"))
+        await store.set_meta(
+            PROFILE_SUMMARIES_MARK, next_watermark(summaries_mark, new_summaries, "created_at", "id")
+        )
         if not new_facts and not new_summaries:
             return {"updated": False}
 

@@ -12,7 +12,7 @@ from sentient.store import db as store_db
 from sentient.store.db import after_watermark, next_watermark
 from tests.conftest import FakeProvider
 
-TICK = "2026-10-11T06:00:00.000000+00:00"
+TICK = "2026-10-11T06:00:00.123456+00:00"
 
 
 def freeze(monkeypatch, *modules) -> None:
@@ -98,5 +98,23 @@ async def test_profile_upkeep_learns_a_fact_saved_in_the_same_tick(config, isola
         user_md = s.workspace.user.read_text(encoding="utf-8")
         assert user_md.count("marathon") == 1 and "mentors two junior" in user_md
         assert (await s.evolution.update_profile(now, force=True))["updated"] is False  # nothing new is read twice
+    finally:
+        await s.stop()
+
+
+async def test_profile_upkeep_after_an_empty_read_still_learns_a_same_tick_fact(config, isolated_home, monkeypatch):
+    from sentient.memory import facts as facts_mod
+
+    freeze(monkeypatch, store_db, facts_mod)
+    llm = FakeProvider()
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "empty.db", enable_background=False).start()
+    try:
+        now = datetime.fromisoformat(TICK)
+        assert (await s.evolution.update_profile(now, force=True))["updated"] is False  # nothing to read yet
+        assert s.memory is not None
+        a = await s.memory.remember("Maya is training for a marathon", use_llm=False)  # same tick as that run
+        await s.store.execute("UPDATE facts SET topics = ? WHERE id = ?", ('["Health & Wellbeing"]', a["id"]))
+        llm.text_replies.append("# Long-term memory\n\n## Goals\n- Maya is training for a marathon.\n")
+        assert (await s.evolution.update_profile(now, force=True))["learned_appended"] == 1
     finally:
         await s.stop()
