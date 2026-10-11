@@ -163,3 +163,24 @@ def test_a_window_the_user_never_named_is_dropped():
     assert sched.spoken_window(windowed, "Every weekday morning, check the library page")["window"] == "morning"
     night = {**windowed, "window": "night"}
     assert sched.spoken_window(night, "Remind me tonight to water the plants")["window"] == "night"
+
+
+async def test_a_decision_made_while_the_user_changed_the_check_is_dropped(make_app):
+    app = await make_app(FakeProvider())
+    app.sandbox.run = FakeSandbox([_page(PAGE_V1), _page(PAGE_V2)])
+    task_id = await _script_task(app, condition="noteworthy", status="active")
+    await _check(app, task_id)
+
+    async def judge_while_user_edits(task, previous, value):  # the user picks "Run the task" mid-judgement
+        await app.tasks.repo.update_task(task_id, {"script": {**task["script"], "then": "run"}})
+        return True, "Author talk added."
+
+    app.tasks._judge_change = judge_while_user_edits
+    task = await _check(app, task_id)
+    assert _events(await app.notifications.list(), task_id) == [] and task["runs"] == []
+    assert task["script"]["last_result"] == PAGE_V1  # the next check decides again with the new settings
+    assert task["status"] == "active"
+
+
+def test_changed_lines_that_look_like_diff_headers_reach_the_judge():
+    assert scripts.diff_text("--Sale\nBooks", "++Sale\nBooks") == "- --Sale\n+ ++Sale"

@@ -99,6 +99,12 @@ class TaskConflict(ValueError):
 
 
 # ---------------------------------------------------------------------------- helpers
+def _check_settings(task: dict) -> tuple:
+    """What a script check's decision depends on: its code, condition and action."""
+    script = task.get("script") if isinstance(task.get("script"), dict) else {}
+    return tuple(script.get(k) for k in ("code", "condition", "then"))
+
+
 def _title(prompt: str) -> str:
     text = " ".join(prompt.split())
     return text if len(text) <= 120 else text[:117] + "..."
@@ -1718,6 +1724,13 @@ class TaskService(Service):
             outcome_name, note = ("changed", change) if act else ("minor", change)
             if act and change:
                 message = change
+        current = await self.repo.get_task(task_id)
+        if current is None or current.get("task_type") != "script" or _check_settings(current) != _check_settings(task):
+            # the user changed the check while it ran (or while the model judged it): drop this stale decision, the
+            # next check decides with the new settings
+            await self._after_run(task_id, "completed", None)
+            await self.publish(task_id)
+            return
         state: dict[str, Any] = {
             "last_run_at": now, "last_error": None,
             "checks": scripts.add_check(script.get("checks"), outcome_name, now, note),

@@ -173,10 +173,9 @@ def _lines(value: Any) -> list[str]:
 
 def diff_text(previous: Any, value: Any) -> str:
     """The changed lines only (``- removed``, ``+ added``), at most ``DIFF_CHARS``; "" when nothing differs."""
-    lines = [
-        line for line in difflib.unified_diff(_lines(previous), _lines(value), lineterm="", n=0)
-        if not line.startswith(("---", "+++", "@@"))
-    ]
+    # skip the two file headers by position; hunk headers start with "@@", changed lines with "-" or "+"
+    diff = list(difflib.unified_diff(_lines(previous), _lines(value), lineterm="", n=0))[2:]
+    lines = [line for line in diff if line.startswith(("-", "+"))]
     text = "\n".join(f"{line[0]} {line[1:].strip()}" for line in lines)
     return text if len(text) <= DIFF_CHARS else text[: DIFF_CHARS - 4] + "\n..."
 

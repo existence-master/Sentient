@@ -95,7 +95,8 @@ Your JSON Output:
     "type": "recurring",
     "frequency": "weekly",
     "days": ["Friday"],
-    "time": "09:00"
+    "time": "09:00",
+    "window": "morning"
   }}
 }}
 

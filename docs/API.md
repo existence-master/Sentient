@@ -1864,7 +1864,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   answers `{"noteworthy": bool, "change": "one sentence"}`. `true`: the job acts once, and the `script_alert` message
   (or the run's `trigger_event_data.message`) is the `change` sentence. `false`: nothing is sent. Either way the new
   result becomes the baseline. A judge that gives no usable answer counts as `true` with the usual change message.
-  Switching between `changed` and `noteworthy` keeps `last_result`.
+  Switching between `changed` and `noteworthy` keeps `last_result`. If the code, condition or action is edited while a
+  check runs or is being judged, that check's decision is dropped (nothing saved, sent or started); the next check decides.
 - `checks` is the job's recent history, oldest first, at most 30 entries: `baseline` (first result of a comparing
   job), `nothing_new`, `changed` (acted; `note` is the judge's sentence for `noteworthy`), `minor` (changed, the judge
   said not worth telling; `note` says what changed), `alert` (`note` is its message), `quiet` (no alert, or an
