@@ -1,5 +1,5 @@
 import { IconAlertTriangle, IconCircleCheck, IconCloud, IconCpu, IconDeviceDesktop, IconDownload, IconExternalLink, IconEye, IconEyeOff, IconKey, IconRefresh } from '@tabler/icons-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Card, Field, IconButton, Input, ProgressBar, SegmentedControl, Skeleton } from '@/components/ui'
 import { InstructionsGuide } from '@/features/integrations/InstructionsGuide'
@@ -293,10 +293,18 @@ function CloudBrain() {
   const isChatGPT = selected?.id === 'chatgpt'
   const plan = useModelCatalog('chatgpt', isChatGPT && !!selected?.key_set)
 
-  // Signed in with ChatGPT: start from the plan's models by the same rule as Settings (first listed, for both).
+  // Signed in with ChatGPT: start from the plan's models by the same rule as Settings (first listed, for both), once
+  // each time the ChatGPT plan is picked, so a later refresh of the plan's list never undoes the user's own choice.
+  const prefilled = useRef(false)
   useEffect(() => {
-    const picked = isChatGPT ? chatgptPlanModels((plan.data ?? []).map((m) => m.id)) : null
-    if (picked && !d.primary.startsWith('chatgpt/')) d.set({ primary: picked.main, fast: picked.fast })
+    if (!isChatGPT) {
+      prefilled.current = false
+      return
+    }
+    const picked = chatgptPlanModels((plan.data ?? []).map((m) => m.id))
+    if (!picked || prefilled.current) return
+    prefilled.current = true
+    if (!d.primary.startsWith('chatgpt/')) d.set({ primary: picked.main, fast: picked.fast })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isChatGPT, plan.data])
 

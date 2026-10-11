@@ -410,6 +410,7 @@ async def reasoning_effort(config: SentientConfig, model: str, wanted: str | Non
     if wanted and wanted != "none":
         return wanted
     if model not in _efforts and time.time() - _listed_at > MODEL_INFO_RETRY_S:
+        _listed_at = time.time()  # claim the window first, so calls that start together load the list once
         try:
             await list_models(config)
         except Exception:  # offline or refused: the reply itself will say what went wrong
