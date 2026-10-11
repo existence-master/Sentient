@@ -69,6 +69,27 @@ Chats on `claude-code/` models show no context meter yet (#258).
 
 The automated suite (522 engine tests, desktop typecheck and build) passes.
 
+**Sign in with ChatGPT follow-ups (#241), checked on 2026-10-11 without a ChatGPT account**
+
+The owner's ChatGPT account has no Plus or Pro plan (OpenAI's consent page turned it down), so nothing here signed in
+to ChatGPT for real. The window was driven in the built app; the signed-in screens use the dev-only demo sign-in
+(`#/...?demo=1&chatgpt=1`, never in a packaged build) with the fictional Maya Rao.
+
+| Check | Result |
+|---|---|
+| First-run setup, cloud step: a **ChatGPT plan** choice; picking it shows "Use your ChatGPT plan" and **Continue with ChatGPT** | Pass. Real engine, fresh home, dark and light themes |
+| The button carries OpenAI's ChatGPT logo (the published sign-in button SVG, unchanged): white logo on black in the light theme, black on white in the dark one | Pass |
+| "You're using your ChatGPT plan" shows once after signing in; **Got it** dismisses it for good | Pass in the window (demo sign-in). Engine side: `welcome` false while signed out, true once signed in, false after `POST /api/models/connect/chatgpt/welcome`, through a later sign-out and sign-in (automated) |
+| The chat box shows **Using ChatGPT plan** with **Manage usage** while the main model is a `chatgpt/` model | Pass. Seeded Maya home with `chatgpt/gpt-6-astra` as the main model, dark and light themes |
+| The fast model rule on a recorded list: OpenAI's published Codex model catalog (11 models, 8 listed) | Pass. Ranked by `priority`: `gpt-6.1-sol` (1), `gpt-6-astra` (2), `gpt-6-sol`, `gpt-6-luna`, then the older ones. Main and fast `chatgpt/gpt-6.1-sol`, the everyday model (the list itself puts the heavier `gpt-6-astra` first); fast jobs send `reasoning: {effort: "low"}` (the lightest the list gives), the main role keeps `medium`. No listed name says "mini" or "nano", so the old guess had nothing to find |
+| A user without ChatGPT: real engine start-up on a fresh home | Pass. `GET /api/models/connect/chatgpt` says `signed_in: false`, `welcome: false`; presets unchanged; no errors in the log |
+| A chat on `claude-code/sonnet` | Pass. 12.8 s, the right answer |
+| A chat on `qwen3:8b` | Pass. 25.5 s, the right answer, 32% of context |
+
+**Pending a ChatGPT Plus or Pro account (#241):** signing in with a Plus and a Pro account, the plan's real model list
+(and whether it carries reasoning levels), a streamed tool call, a refresh after an hour, usage-limit behaviour, and
+switching to another ChatGPT account with the saved client id.
+
 Real-model runs found and fixed these problems, each now covered by a test: a memory update dropped a
 city; a task run stopped after announcing its next step; the model passed a whole snapshot line as a browser
 element reference, which hid a purchase from the approval check; empty replies after a tool call; scripts
@@ -77,6 +98,7 @@ action had happened (declined results now say plainly that nothing was done).
 
 **Not yet verified on real hardware or accounts:**
 
+- Sign in with ChatGPT with a real Plus or Pro account (#241, listed above).
 - Integrations with real Google, GitHub, Slack, Notion, Discord, Trello or WhatsApp accounts, and a paired
   Discord chat. Spoken replies to Telegram voice notes.
 - A real phone and real glasses hardware. The device protocol was exercised over the network with the

@@ -234,12 +234,21 @@ class ProviderConnections:
                                challenge=challenge, state=state, nonce=nonce, host_id=host, registering=registering)
         return {"auth_url": url, "state": state}
 
-    def chatgpt_status(self) -> dict:
-        """``GET /api/models/connect/chatgpt``: whether the sign-in can be used and who is signed in."""
+    async def chatgpt_status(self) -> dict:
+        """``GET /api/models/connect/chatgpt``: whether the sign-in can be used and who is signed in.
+
+        ``welcome`` is true while the one-time "You're using your ChatGPT plan" message is still to be shown: signed
+        in, and never acknowledged on this computer (OpenAI's UI guidelines show it after the first sign-in only)."""
         tokens = chatgpt.load_tokens()
         reason = chatgpt.unavailable_reason(self.app.config)
+        welcomed = await self.app.store.get_meta(chatgpt.WELCOME_META) == "1"
         return {"available": reason is None, "reason": reason, "signed_in": tokens is not None,
-                "email": (tokens or {}).get("email"), "manage_usage_url": chatgpt.MANAGE_USAGE_URL}
+                "email": (tokens or {}).get("email"), "manage_usage_url": chatgpt.MANAGE_USAGE_URL,
+                "welcome": tokens is not None and not welcomed}
+
+    async def chatgpt_welcomed(self) -> None:
+        """The welcome message was shown and dismissed: never show it again on this computer."""
+        await self.app.store.set_meta(chatgpt.WELCOME_META, "1")
 
     async def sign_out_chatgpt(self) -> None:
         for flow in self._flows.values():  # a sign-in still open in the browser must not sign back in
@@ -248,6 +257,7 @@ class ProviderConnections:
                 if flow["status"] == "waiting":
                     self._fail(flow, "You signed out, so this sign-in was stopped.")
         await chatgpt.sign_out()
+        chatgpt.forget_models()
         await self.app.store.set_meta(chatgpt.MODELS_META, "")
         self._catalog.pop("chatgpt", None)
         self.app.bus.publish("config.updated", {"sections": ["secrets"]})

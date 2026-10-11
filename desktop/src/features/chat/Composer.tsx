@@ -24,6 +24,7 @@ import type { ContextMeter } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { ContextGauge } from './ContextMeter'
 import { ModelOverride } from './ModelOverride'
+import { PlanIndicator } from './PlanIndicator'
 import { filterCommands, parseSlash, slashQuery, SlashMenu, type SlashCommand } from './slash'
 import type { useAttachments } from './useAttachments'
 import { useDictation } from './useDictation'
@@ -308,6 +309,7 @@ export function Composer({ draftKey, assistantName, streaming, attachments, onSe
             }}
           />
           <ModelOverride value={model} onChange={setModel} />
+          <PlanIndicator override={model} />
 
           <div className="flex-1" />
           {context && <ContextGauge meter={context} className="mr-1.5" />}
