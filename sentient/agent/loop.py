@@ -43,9 +43,11 @@ from sentient import paths
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import standing_text
 from sentient.agent.prompt import build_system_prompt
+from sentient.agent.sources import AnswerSources
 from sentient.agent.toolselect import ToolSelector, is_local_model
 from sentient.config.schema import SentientConfig
 from sentient.files.extract import extract_text, is_image
+from sentient.integrations.base import IntegrationPlugin
 from sentient.llm import claude_code
 from sentient.llm.errors import is_tool_support_error
 from sentient.llm.events import (
@@ -1183,6 +1185,7 @@ class Agent:
         result = LoopResult()
         partial = ""
         sources = MemorySources()  # what this reply had in mind (shown under it, never asked of the model)
+        used = AnswerSources()  # pages, emails, files and apps it used (#174)
         try:
             user_message_id = await self.store.add_message(session_id, "user", user_text, attachments=attachments)
             rule_check = self._start_rule_check(session_id, user_message_id, user_text)
@@ -1262,6 +1265,7 @@ class Agent:
                     partial = ""  # text before a tool call or a steer was already persisted
                     if isinstance(event, ToolResultEvent) and not event.is_error:
                         sources.add_tool_result(event.name, self.delivered_rows(event.result, result.tool_result_limit))
+                        self._add_answer_source(used, event.name, event.result)
                     if ctx.untrusted and not marked:  # remember it for the rest of this chat, also after a restart
                         marked = True
                         await self.store.execute(
@@ -1278,7 +1282,7 @@ class Agent:
             release()
             # the user pressed Stop (or the window went away): keep what was shown
             with contextlib.suppress(Exception):
-                save = asyncio.ensure_future(self._persist_stopped(session_id, partial, sources))
+                save = asyncio.ensure_future(self._persist_stopped(session_id, partial, sources, used))
                 while not save.done():  # a second Stop while saving must not lose what the caller sends on
                     with contextlib.suppress(asyncio.CancelledError):
                         await asyncio.shield(save)
@@ -1296,9 +1300,12 @@ class Agent:
             if not (result.error and not result.text):
                 memory_sources = await sources.resolve(self.store)
                 message_id = await self.store.add_message(
-                    session_id, "assistant", result.text, thinking=result.thinking or None, memory_sources=memory_sources
+                    session_id, "assistant", result.text, thinking=result.thinking or None, memory_sources=memory_sources,
+                    sources=used.items(),
                 )
-                yield Done(content=result.text, message_id=message_id, memory_sources=memory_sources, **ev)
+                yield Done(
+                    content=result.text, message_id=message_id, memory_sources=memory_sources, sources=used.items(), **ev
+                )
 
                 said = "\n\n".join([user_text, *result.interjections]).strip()
                 # nothing is learned from an incognito chat (#154): no fact extraction, no memory flush, and no
@@ -1347,11 +1354,29 @@ class Agent:
         await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
         return source
 
-    async def _persist_stopped(self, session_id: str, partial: str, sources: MemorySources) -> dict:
+    async def _persist_stopped(
+        self, session_id: str, partial: str, sources: MemorySources, used: AnswerSources | None = None
+    ) -> dict:
         content = (partial.rstrip() + "\n\n_(stopped)_").strip()
         memory_sources = await sources.resolve(self.store)
-        message_id = await self.store.add_message(session_id, "assistant", content, memory_sources=memory_sources)
-        return {"message_id": message_id, "memory_sources": memory_sources}
+        items = used.items() if used is not None else []
+        message_id = await self.store.add_message(
+            session_id, "assistant", content, memory_sources=memory_sources, sources=items
+        )
+        return {"message_id": message_id, "memory_sources": memory_sources, "sources": items}
+
+    def _add_answer_source(self, used: AnswerSources, name: str, res: Any) -> None:
+        """Record what a successful tool result brought into the reply (#174). Never breaks a turn."""
+        tool = self.registry.get(name)
+        plugin = self.registry.plugin(tool.plugin) if tool is not None else None
+        is_app = isinstance(plugin, IntegrationPlugin) or getattr(plugin, "auth", None) == "mcp"
+        try:
+            used.add_tool_result(
+                name, res, plugin=tool.plugin if tool is not None else "",
+                app_name=str(getattr(plugin, "display_name", "") or ""), is_app=is_app,
+            )
+        except Exception as exc:
+            log.debug("answer source from %s skipped: %s", name, exc)
 
     # ------------------------------------------------------------------ tools
     @staticmethod

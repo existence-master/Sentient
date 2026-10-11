@@ -392,6 +392,7 @@ export interface TranscriptMessage {
   attachments?: string[]
   /** Memories the final reply had in mind; `[]` on every other row. */
   memory_sources?: MemorySource[]
+  sources?: AnswerSource[]
   created_at: ISODate
 }
 
@@ -407,6 +408,26 @@ export interface MemorySource {
   source: string
   /** `prompt`: it was in front of the model; `tool`: a memory look-up returned it during the reply. */
   via: 'prompt' | 'tool'
+}
+
+/** Something a reply used (#174): a web page, an email, a file, or a connected app. Recorded from tool results. */
+export interface AnswerSource {
+  kind: 'web' | 'email' | 'file' | 'app'
+  title: string
+  /** Web page, or the email in its mail app. */
+  url?: string
+  /** File name under the files folder (`kind: 'file'`). */
+  file?: string
+  /** Sender (`kind: 'email'`). */
+  from?: string
+  id?: string
+  /** A short excerpt of what Sentient read. */
+  snippet?: string
+  /** Plugin id and the tool that found it. */
+  app: string
+  tool: string
+  /** Every tool of that app the reply used (`kind: 'app'`). */
+  tools?: string[]
 }
 
 export interface MessageSearchHit {
@@ -791,6 +812,7 @@ export interface DoneEvent extends TurnScoped {
   message_id: string | null
   cancelled?: boolean
   memory_sources?: MemorySource[]
+  sources?: AnswerSource[]
   /** §17: a queued message dropped by Stop everything (its text; never sent). Comes with the `client_id` it was sent with. */
   dropped?: string[]
   client_id?: string | null

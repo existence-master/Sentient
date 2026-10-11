@@ -40,7 +40,7 @@ All carry `session_id` and `turn_id`.
 | `steer_ack` | `session_id`, `queued`, `client_id` (echo; no `turn_id`) |
 | `usage` | `model`, `prompt_tokens`, `completion_tokens`, `context_used`, `context_length`, `context_percent`, `context_warning` (context meter, below) |
 | `error` | `message`, `recoverable` |
-| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id` and its `memory_sources` too (none when it was stopped before it started) |
+| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `sources: [AnswerSource]` (pages, emails, files and apps it used, section 2; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id` and its `memory_sources` too (none when it was stopped before it started) |
 | `approval.ack` | `approval_id`, `resolved` |
 
 **Model errors** (#280). When a provider turns a request down for a known reason, `error.message` (and a task's
@@ -207,7 +207,7 @@ accept or loosen a rule.
   {"id": "...", "role": "user|assistant|tool", "content": "...", "thinking": "...|null",
    "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "memory_recall", "arguments": "{\"query\":\"sister\"}"}}],
    "tool_call_id": "call_1", "name": "memory_recall", "attachments": ["report.pdf"], "interjection": false,
-   "memory_sources": [], "created_at": "..."}
+   "memory_sources": [], "sources": [], "created_at": "..."}
   ```
   The UI folds each `assistant` message with `tool_calls` plus its following `tool` messages into one assistant turn.
 - **Memory sources.** The final assistant message of a chat turn (also a stopped one) carries `memory_sources`, the
@@ -220,6 +220,19 @@ accept or loosen a rule.
   first mention wins, at most 40. Only rows of a memory tool's result that fit in the run's tool result limit
   (`LoopResult.tool_result_limit`, section 10: the part the model read) count. Pending memories (section 7, review) never appear. Task runs record the same list
   (section 4, Run `memory_sources`).
+- **Answer sources** (#174). The final assistant message of a chat turn (also a stopped one) carries `sources`, also
+  sent on its `done` event; every other row has `[]`. An **AnswerSource** is
+  `{kind: "web"|"email"|"file"|"app", title, url?, file?, from?, id?, snippet?, app, tool, tools?}`:
+  - `web`: a page `web_fetch` or the browser opened (`url`, page `title`), or one of the first 3 results of each
+    `web_search`;
+  - `email`: an email a connected mail app returned (`title` is its subject, `from`, `id`, `url` when the app has a
+    link, e.g. Gmail);
+  - `file`: a file `file_read` opened (`file` is its name under the files folder, `title` its base name);
+  - `app`: a connected app or MCP server whose tools returned something else (`title` its name, `tools` every tool
+    of it the reply used).
+  `app` is the plugin id and `tool` the tool that found it; `snippet` is up to 280 characters of what the model read.
+  Errors and declined calls never count; memories stay in `memory_sources`. Recorded deterministically from tool
+  results (never asked of the model), first mention wins, at most 12. A reply that used none has `[]`.
 - `GET /api/sessions/search?q=` → `[{session_id, message_id, role, snippet, created_at}]` (never incognito chats)
 - `POST /api/chat` NDJSON fallback of the WebSocket turn: body `{text, session_id?, attachments?, model?, incognito?}`; lines are the chat events above, first line `{type: "session", session_id}`.
 - **Incognito chats** (#154). A chat created with `incognito: true` (`chat.send`, `POST /api/chat`,

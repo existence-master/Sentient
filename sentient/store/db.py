@@ -73,6 +73,7 @@ class Store:
         await self.ensure_column("messages", "attachments", "TEXT")
         await self.ensure_column("messages", "interjection", "INTEGER NOT NULL DEFAULT 0")
         await self.ensure_column("messages", "memory_sources", "TEXT")
+        await self.ensure_column("messages", "sources", "TEXT")
         await self.ensure_column("facts", "status", "TEXT NOT NULL DEFAULT 'active'")
         await self.ensure_column("facts", "review", "TEXT")
         await self.ensure_column("summaries", "untrusted", "TEXT")
@@ -184,11 +185,12 @@ class Store:
         attachments: list[str] | None = None,
         interjection: bool = False,
         memory_sources: list[dict] | None = None,
+        sources: list[dict] | None = None,
     ) -> str:
         mid = new_id()
         await self.execute(
             "INSERT INTO messages(id, session_id, role, content, tool_calls, tool_call_id, name, thinking, attachments,"
-            " interjection, memory_sources, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            " interjection, memory_sources, sources, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 mid,
                 session_id,
@@ -201,6 +203,7 @@ class Store:
                 json.dumps(attachments) if attachments else None,
                 int(bool(interjection)),
                 json.dumps(memory_sources, ensure_ascii=False) if memory_sources else None,
+                json.dumps(sources, ensure_ascii=False) if sources else None,
                 now_iso(),
             ),
         )
@@ -219,6 +222,7 @@ class Store:
             d["attachments"] = json.loads(d["attachments"]) if d.get("attachments") else []
             d["interjection"] = bool(d.get("interjection"))
             d["memory_sources"] = json.loads(d["memory_sources"]) if d.get("memory_sources") else []
+            d["sources"] = json.loads(d["sources"]) if d.get("sources") else []
             out.append(d)
         return out
 
