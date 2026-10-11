@@ -258,6 +258,11 @@ class ChatConfig(BaseModel):
         description="An incognito chat is deleted when you leave it or close Sentient, or after this many minutes "
         "without a new message.",
     )
+    mark_outside_content: bool = Field(
+        True,
+        description="Mark text from web pages, emails, messages and other apps so the assistant reads it as "
+        "information and never follows instructions hidden in it.",
+    )
 
 
 class RuleOrigin(BaseModel):

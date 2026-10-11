@@ -254,6 +254,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Edge's downloads hub no longer replaces the active page or appears as a browser tab when a download starts.
 
 ### Security
+- Text from web pages, emails, messages and other apps now reaches the AI clearly marked as outside content, with a
+  standing rule to treat it as information and never follow instructions hidden in it. A page can't fake the end of
+  the marked part. Your own messages are not marked. To compare, turn it off in Settings > General > Conversations
+  ("Mark outside content").
 - Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before
   sending, posting, inviting people to an event, typing into a web page, running code or opening an address that
   could carry your data to a new site, even for apps set to Allow and with approvals off. The
