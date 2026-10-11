@@ -646,10 +646,10 @@ can't be read, nothing goes to a messaging app.
 
 ### Recurring tasks remember
 Each model run of a recurring task (`schedule.type: "recurring"`; not swarm or one-call tasks) gets a short section in
-its executor prompt: the last 3 finished runs (`completed`/`completed_with_errors`), each as its start time and its
-`result.summary` (or, while that report is still being written, its final answer) cut to 400 characters, then the
-task's `notepad`, then an instruction to report only what is new or still open and to update the notepad. The first run
-is told it is the first. When there is anything to remember, the run's log starts with
+its executor prompt: the last 3 finished runs (`completed`/`completed_with_errors`), each as its start time and what it
+told the user (its final answer, or `result.summary` when it has none) cut to 400 characters, then the task's
+`notepad`, then an instruction to report only what is new or still open and to save the full list of items reported so
+far with `task_notepad`. The first run is told it is the first. When there is anything to remember, the run's log starts with
 `Remembering N earlier runs and its notepad, so it reports only what is new.` One-off and triggered runs get none of it.
 - Inside those runs only, the executor can call `task_notepad(text: str)` (plugin `task_notepad`, scoped, risk `write`,
   internal): it replaces the task's `notepad` (trimmed, at most 1500 characters). It is left out of `result.tools_used`.

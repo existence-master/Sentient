@@ -1,11 +1,12 @@
 """Recurring tasks remember their last runs (docs/API.md section 4, "Recurring tasks remember").
 
 Each run of a recurring task sees a short note of what its last few runs found, sent or decided, plus the task's
-notepad: a few lines the runs keep for each other ("told Maya about the Lisbon fare on 12 Oct; tell again only if it
-drops below 30k"). The run reports only what is new instead of repeating itself every day.
+notepad: a few lines the runs keep for each other (the items reported so far, what is still open). The run reports
+only what is new instead of repeating itself every day.
 
 Kept compact for small local models: at most ``EARLIER_RUNS`` runs of ``RUN_NOTE_CHARS`` each and a notepad of
-``MAX_NOTEPAD_CHARS``. The note is the run's result summary, or its final answer when the report is not written yet.
+``MAX_NOTEPAD_CHARS``. A run's note is its final answer (what the user was told), or its result summary when it has
+none.
 The run updates its notepad with ``task_notepad`` (plugin ``task_notepad``, scoped: offered only inside runs of
 recurring tasks).
 """
@@ -51,14 +52,15 @@ async def earlier_runs(repo: Any, task_id: str, current_run_id: str, tz: tzinfo)
     runs = [r for r in await repo.runs_for(task_id) if r["id"] != current_run_id and r["status"] in FINISHED]
     out: list[dict] = []
     for run in runs[-EARLIER_RUNS:]:
-        result = run.get("result") if isinstance(run.get("result"), dict) else {}
-        note = str(result.get("summary") or "").strip()
-        if not note:  # the report is written after the run settles; its final answer says the same
-            for update in reversed(await repo.events(run["id"], limit=20)):
-                msg = (update or {}).get("message") or {}
-                if msg.get("type") == "final_answer" and str(msg.get("content") or "").strip():
-                    note = str(msg["content"])
-                    break
+        note = ""
+        for update in reversed(await repo.events(run["id"], limit=20)):  # what the user was told
+            msg = (update or {}).get("message") or {}
+            if msg.get("type") == "final_answer" and str(msg.get("content") or "").strip():
+                note = str(msg["content"]).strip()
+                break
+        if not note:
+            result = run.get("result") if isinstance(run.get("result"), dict) else {}
+            note = str(result.get("summary") or "").strip()
         if not note:
             continue
         started = parse_iso(run.get("started_at") or run.get("created_at"))
@@ -71,17 +73,18 @@ def prompt_section(runs: list[dict], notepad: str | None) -> str:
     """The executor prompt's section about earlier runs (a one-line note for the first run)."""
     if not runs and not notepad:
         return (
-            "**Earlier runs:** This is the first run of this recurring task. Before your final answer, call "
-            "`task_notepad` once with a short note for the next run (what you reported, what is still open).\n\n"
+            "**Earlier runs:** None, this is the first run of this recurring task. Before your final answer, call "
+            "`task_notepad` once with a short list of the items you reported, so the next run can compare.\n\n"
         )
-    parts = ["**Earlier runs of this recurring task (most recent last):**"]
+    parts = ["**What earlier runs of this recurring task told the user (most recent last):**"]
     parts += [f"- {r['when']}: {r['note']}" for r in runs] or ["- (no finished runs yet)"]
     if notepad:
-        parts.append("**Your notepad from earlier runs:**\n" + notepad)
+        parts.append("**Notepad kept by earlier runs:**\n" + notepad)
     parts.append(
-        "Do not repeat what earlier runs already reported. Report what is new or changed since then; mention an old "
-        "item again only if it is still open and needs attention, and say it was reported before. If nothing is new, "
-        "say so in one sentence. Before your final answer, call `task_notepad` once with the updated note for the next run."
+        "**Report only what is new.** Compare what you find now with the above. Leave out items the user was already "
+        "told about, unless they changed or still need the user's attention (then say it was reported before). If "
+        "nothing is new, your final answer is one sentence saying so. Before your final answer, call `task_notepad` "
+        "once with the full list of items reported so far, old and new, so the next run can compare."
     )
     return "\n".join(parts) + "\n\n"
 

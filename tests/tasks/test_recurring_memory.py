@@ -31,7 +31,7 @@ def _tool_names(call) -> set[str]:
     return {t["function"]["name"] for t in call["tools"]}
 
 
-async def test_second_run_sees_first_runs_summary_and_notepad(make_app):
+async def test_second_run_sees_what_the_first_run_said_and_its_notepad(make_app):
     llm = FakeProvider(
         replies=[
             [tool_call("task_notepad", text="Told the user about the Lisbon fare at 32k.")],
@@ -50,12 +50,12 @@ async def test_second_run_sees_first_runs_summary_and_notepad(make_app):
     task = await _run(app, task["task_id"])
     first, second = stream_calls(llm)[0], stream_calls(llm)[-1]
     assert "task_notepad" in _tool_names(first) and "task_notepad" in _tool_names(second)
-    assert "This is the first run of this recurring task" in _system(first)
+    assert "this is the first run of this recurring task" in _system(first)
     system = _system(second)
-    assert "Earlier runs of this recurring task" in system
-    assert "Found the Lisbon fare at 32k and told the user." in system
-    assert "Told the user about the Lisbon fare at 32k." in system
-    assert "Do not repeat what earlier runs already reported" in system
+    assert "What earlier runs of this recurring task told the user" in system
+    assert "The Lisbon fare is 32k." in system  # what run 1 told the user
+    assert "Told the user about the Lisbon fare at 32k." in system  # its notepad
+    assert "Report only what is new." in system
     log = [u["message"].get("content") for u in task["runs"][1]["progress_updates"]]
     assert "Remembering 1 earlier run and its notepad, so it reports only what is new." in log
 
@@ -82,29 +82,28 @@ async def test_notepad_tool_refuses_outside_a_recurring_run(make_app):
     assert "task_notepad" not in {t.name for t in app.registry.tools()}
 
 
-async def test_final_answer_stands_in_until_the_report_is_written(make_app):
-    llm = FakeProvider(replies=["The fare is 32k.", "ok"], json_replies=[REFINE_DAILY, PLAN_TIME, _result("x")])
+async def test_a_run_is_remembered_by_what_it_told_the_user_else_its_summary(make_app):
+    llm = FakeProvider(replies=["The fare is 32k."], json_replies=[REFINE_DAILY, PLAN_TIME, _result("Checked fares.")])
     app = await make_app(llm)
     task = await _recurring(app)
     task = await _run(app, task["task_id"])
-    await app.tasks.repo.update_run(task["runs"][0]["run_id"], {"result": None})
     runs = await continuity.earlier_runs(app.tasks.repo, task["task_id"], "other", UTC)
     assert [r["note"] for r in runs] == ["The fare is 32k."]
+    await app.store.execute("DELETE FROM run_events WHERE run_id = ?", (task["runs"][0]["run_id"],))
+    runs = await continuity.earlier_runs(app.tasks.repo, task["task_id"], "other", UTC)
+    assert [r["note"] for r in runs] == ["Checked fares."]
 
 
 async def test_earlier_runs_stay_compact(make_app):
-    replies = [f"Run {i} answer." for i in range(5)]
-    llm = FakeProvider(
-        replies=replies,
-        json_replies=[REFINE_DAILY, PLAN_TIME, *[_result(f"Run {i} " + "found a lot. " * 80) for i in range(5)]],
-    )
+    replies = [f"Run {i} " + "found a lot. " * 80 for i in range(5)]
+    llm = FakeProvider(replies=replies, json_replies=[REFINE_DAILY, PLAN_TIME, *[_result(f"Run {i}.") for i in range(5)]])
     app = await make_app(llm)
     task = await _recurring(app)
     for _ in range(5):
         task = await _run(app, task["task_id"])
     system = _system(stream_calls(llm)[-1])
     assert "Run 1 found" in system and "Run 3 found" in system and "Run 0 found" not in system  # the last three
-    section = system.split("**Earlier runs of this recurring task", 1)[1].split("Do not repeat", 1)[0]
+    section = system.split("told the user (most recent last):**", 1)[1].split("**Report only", 1)[0]
     assert len(section) < 3 * continuity.RUN_NOTE_CHARS + 200
 
 
