@@ -27,6 +27,7 @@ proposing a change to one of them.
 | [0020](0020-whatsapp-web-bridge.md) | Link WhatsApp as a device with an in-process WhatsApp Web bridge | Accepted | 2026-10-09 |
 | [0021](0021-hold-untrusted-memories-for-review.md) | Hold memories from untrusted sources for the user's review | Accepted | 2026-10-10 |
 | [0022](0022-claude-through-your-own-claude-code.md) | Let chats use Claude through the user's own Claude Code, off by default | Accepted | 2026-10-10 |
+| [0023](0023-mark-outside-content-in-prompts.md) | Mark outside content in prompts so the model reads it as data | Accepted | 2026-10-11 |
 
 ## Adding a record
 

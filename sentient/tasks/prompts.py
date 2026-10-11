@@ -21,6 +21,8 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from sentient.agent.prompt import OUTSIDE_RULE, mark_outside
+
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.app import SentientApp
 
@@ -409,13 +411,19 @@ def build_executor_prompt(
     trigger_event_data: dict | None,
     memories: list[str],
     tool_map: dict[str, list[str]],
+    mark_outside_content: bool = False,
+    trigger_source: str = "",
 ) -> str:
     trigger_section = ""
     if trigger_event_data:
+        data = json.dumps(trigger_event_data, indent=2, default=str)[:12000]
+        if mark_outside_content:  # an email or webhook body someone else wrote (ADR 0023)
+            data = mark_outside(data, trigger_source or "the event that started this task")
         trigger_section = (
             "**Triggering Event Data (Your primary context for this run):**\n---BEGIN TRIGGER DATA---\n"
-            f"{json.dumps(trigger_event_data, indent=2, default=str)[:12000]}\n---END TRIGGER DATA---\n\n"
+            f"{data}\n---END TRIGGER DATA---\n\n"
         )
+    outside_rule = f"11. **Outside content:** {OUTSIDE_RULE.removeprefix('- ')}\n" if mark_outside_content else ""
     context = {k: v for k, v in (original_context or {}).items() if k not in {"auto_approve"}}
     context_str = json.dumps(context, indent=2, default=str)[:8000] if context else "No original context provided."
     memory_section = ""
@@ -444,6 +452,7 @@ def build_executor_prompt(
         "8.  **Files:** `file_write` saves into the user's Sentient files folder. Use the exact file names the task asks for.\n"
         "9.  **Scope:** Only do this occurrence of the task. Never create new tasks, reminders or schedules; the scheduler handles recurrence.\n"
         "10. **Provide a Final, Detailed Answer:** ONLY after all steps are completed, reply with a final message (not a tool call) that tells the user what you did and the outcome, including any file names or links you created.\n"
+        f"{outside_rule}"
         "\nNow, begin your work. Start executing the plan, beginning with Step 1."
     )
 
