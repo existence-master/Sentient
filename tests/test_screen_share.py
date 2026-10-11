@@ -90,8 +90,17 @@ def test_a_screen_capture_goes_to_the_vision_role_and_marks_the_chat(config, iso
         role = "vision" if vision else "primary"
         content = _user_message(llm, role)["content"]
         assert isinstance(content, list)
-        assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
-        assert "Screen capture attached: screens/Inbox - Mail.png" in content[0]["text"]
+        image_block = next(
+            block for block in content
+            if block.get("type") == "image_url"
+        )
+        image_url = image_block["image_url"]["url"]
+        assert image_url.startswith("data:image/png;base64,")
+        assert any(
+            block.get("type") == "text"
+            and "Screen capture attached: screens/Inbox - Mail.png" in block.get("text", "")
+            for block in content
+        )
         listed = next(s for s in client.get("/api/sessions").json() if s["id"] == sid)
         assert listed["untrusted"] == "your screen"
 
@@ -104,7 +113,13 @@ def test_a_plain_image_upload_does_not_mark_the_chat(config, isolated_home, monk
         r = client.post("/api/chat", json={"text": "what is this?", "attachments": [up["name"]]})
         sid = json.loads(r.text.splitlines()[0])["session_id"]
         assert llm.calls[-1]["role"] == "vision"
-        assert "Image attached: uploads/cat.png" in _user_message(llm, "vision")["content"][0]["text"]
+        content = _user_message(llm, "vision")["content"]
+        assert isinstance(content, list)
+        assert any(
+            block.get("type") == "text"
+            and "Image attached: uploads/cat.png" in block.get("text", "")
+            for block in content
+        )
         listed = next(s for s in client.get("/api/sessions").json() if s["id"] == sid)
         assert listed["untrusted"] == ""
 

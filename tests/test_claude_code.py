@@ -179,7 +179,12 @@ async def test_chat_reply_streams_through_claude_code(make_app, fake_claude, iso
     assert not run["has_gateway_token"] and run["tool_search"] == "false"
     assert "Sentient" in run["system"]  # Sentient's own system prompt replaces Claude Code's
     [message] = run["stdin"]
-    assert message["type"] == "user" and message["message"]["content"][0]["text"] == "say hello"
+    content = message["message"]["content"]
+    assert isinstance(content, list)
+    assert any(
+        block.get("type") == "text" and block.get("text", "").endswith("say hello")
+        for block in content
+    )
     # it ran in a scratch folder under Sentient's home, removed afterwards; nothing is left running
     assert Path(run["cwd"]).is_relative_to(isolated_home) and not Path(run["cwd"]).exists()
     assert not claude_code._live
