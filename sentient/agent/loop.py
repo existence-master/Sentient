@@ -42,7 +42,7 @@ from pydantic import ValidationError
 from sentient import paths
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import standing_text
-from sentient.agent.prompt import build_system_prompt
+from sentient.agent.prompt import build_system_prompt, mark_outside
 from sentient.agent.sources import AnswerSources
 from sentient.agent.toolselect import ToolSelector, is_local_model
 from sentient.config.schema import SentientConfig
@@ -100,6 +100,7 @@ from sentient.tools.rules import (
     call_address,
     is_screen_capture,
     never_message,
+    outside_source,
     sends_out,
     unattended_ask_message,
     untrusted_address_reason,
@@ -563,6 +564,7 @@ class Agent:
             user_context=user_context,
             tool_names=[t.name for t in self.registry.tools()],
             read_only_apps=self._read_only_apps(),
+            mark_outside_content=self.config.chat.mark_outside_content,
         )
         if session and session.get("context_summary"):
             prompt += "\n\n## Earlier in this conversation\n" + session["context_summary"]
@@ -1041,10 +1043,29 @@ class Agent:
         # record the result before yielding so a checkpoint taken on this event is complete
         p.seen = _json_safe(res)
         content = await self._tool_content(res, tc.id, tool=p.tool, limit=result.tool_result_limit)
-        messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": content})
-        if persist:
+        model_content = self.outside_content(content, p.tool) if p.tool is not None else content
+        messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": model_content})
+        if persist:  # stored as it is; marked again when the transcript is read back (mark_outside_messages)
             await persist("tool", content, tool_call_id=tc.id, name=tc.name)
         yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
+
+    def outside_content(self, content: str, tool: Tool) -> str:
+        """A tool message as the model reads it: wrapped as outside content when ``tool`` brings text someone else
+        wrote and ``chat.mark_outside_content`` is on (ADR 0023)."""
+        if not self.config.chat.mark_outside_content or not brings_untrusted(tool):
+            return content
+        return mark_outside(content, untrusted_source(tool, self.registry))
+
+    def mark_outside_messages(self, messages: list[dict]) -> list[dict]:
+        """Wrap the tool messages in a transcript read back from storage that brought outside content in (ADR 0023);
+        text already wrapped is left as it is. Changes ``messages`` in place and returns it."""
+        if not self.config.chat.mark_outside_content:
+            return messages
+        for m in messages:
+            source = outside_source(m, self.registry)
+            if source:
+                m["content"] = mark_outside(str(m.get("content") or ""), source)
+        return messages
 
     async def tool_result_limit(self, role: str, model: str | None = None) -> int:
         """The longest tool result the model reads in ``role``: ``chat.tool_result_max_chars``, and no more than
@@ -1195,7 +1216,7 @@ class Agent:
             incognito = bool((session or {}).get("incognito"))
             system, sources = await self._system_prompt_with_sources(user_text, channel, session)
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
-            convo = history_to_openai(history)
+            convo = self.mark_outside_messages(history_to_openai(history))
 
             # Replace the just-stored user message with the rich version (attachments inlined).
             # Keep the stored user message unchanged. Add the current time to the
@@ -1432,7 +1453,9 @@ class Agent:
         Returns ``(result, is_error, content)``, where ``content`` is the tool message the model in ``role`` reads."""
         res, is_error, _ = await self._run_tool(call, ctx)
         limit = await self.tool_result_limit(role, model)
-        return res, is_error, await self._tool_content(res, call.id, tool=self.registry.get(call.name), limit=limit)
+        tool = self.registry.get(call.name)
+        content = await self._tool_content(res, call.id, tool=tool, limit=limit)
+        return res, is_error, self.outside_content(content, tool) if tool is not None else content
 
     # ------------------------------------------------------------------ background
     def _spawn(self, coro, kind: str = "background") -> None:

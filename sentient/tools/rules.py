@@ -207,17 +207,23 @@ def untrusted_in(messages: list[dict] | None, registry: Any) -> str:
     A result whose tool is no longer registered (an MCP server that was removed) counts as outside content, since
     its kind can't be checked any more; only the engine's own "unknown tool" refusal for a made-up name does not."""
     for m in messages or []:
-        if not isinstance(m, dict) or m.get("role") != "tool":
-            continue
-        name = str(m.get("name") or "")
-        t = registry.get(name)
-        if t is None:
-            if name and not str(m.get("content") or "").startswith('{"error": "unknown tool '):
-                return UNAVAILABLE_SOURCE
-            continue
-        if brings_untrusted(t):
-            return untrusted_source(t, registry)
+        source = outside_source(m, registry)
+        if source:
+            return source
     return ""
+
+
+def outside_source(message: Any, registry: Any) -> str:
+    """Where a tool message came from when it brought outside content in ("Gmail", ``UNAVAILABLE_SOURCE``), else ""."""
+    if not isinstance(message, dict) or message.get("role") != "tool":
+        return ""
+    name = str(message.get("name") or "")
+    t = registry.get(name)
+    if t is None:
+        if name and not str(message.get("content") or "").startswith('{"error": "unknown tool '):
+            return UNAVAILABLE_SOURCE
+        return ""
+    return untrusted_source(t, registry) if brings_untrusted(t) else ""
 
 
 SCREEN_FOLDER = "screens"  # files/screens: what the user shared from their screen (window or region hotkey)
