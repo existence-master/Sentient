@@ -883,6 +883,7 @@ class BrowserService(Service):
             self._download_cleanup_task = None
 
     def _clear_attached_downloads(self, exc: Exception | None = None) -> None:
+        """Safely fail and clear all tracked attached-browser CDP downloads during context shutdown."""
         entries = list(self._attached_downloads)
         self._attached_downloads.clear()
         err = exc or BrowserError("The browser closed before the download completed.")
@@ -893,7 +894,33 @@ class BrowserService(Service):
                 with contextlib.suppress(Exception):
                     fut.exception()
 
+    def _prune_attached_downloads(self) -> None:
+        """Evict completed download records while keeping pending downloads reachable."""
+        if len(self._attached_downloads) <= 100:
+            return
+        retained: list[dict[str, Any]] = []
+        for entry in self._attached_downloads:
+            fut = entry.get("future")
+            if (fut is not None and not fut.done()) or not entry.get("consumed"):
+                retained.append(entry)
+        if len(retained) > 100:
+            pending = [e for e in retained if e.get("future") is not None and not e["future"].done()]
+            finished = [e for e in retained if e.get("future") is None or e["future"].done()]
+            max_finished = max(0, 100 - len(pending))
+            retained = pending + finished[-max_finished:]
+        if len(retained) > 100:
+            to_evict = retained[:-100]
+            retained = retained[-100:]
+            for entry in to_evict:
+                fut = entry.get("future")
+                if fut is not None and not fut.done():
+                    fut.set_exception(BrowserError("Download record evicted."))
+                    with contextlib.suppress(Exception):
+                        fut.exception()
+        self._attached_downloads = retained
+
     def _on_cdp_download_will_begin(self, payload: dict[str, Any]) -> None:
+        """Record a CDP Browser.downloadWillBegin event to attribute downloads to frames."""
         guid = payload.get("guid")
         if not guid:
             return
@@ -906,10 +933,10 @@ class BrowserService(Service):
             "consumed": False,
         }
         self._attached_downloads.append(entry)
-        if len(self._attached_downloads) > 100:
-            self._attached_downloads = [e for e in self._attached_downloads if not e.get("consumed")][-50:]
+        self._prune_attached_downloads()
 
     def _on_cdp_download_progress(self, payload: dict[str, Any]) -> None:
+        """Handle CDP Browser.downloadProgress events to complete or fail awaiting download tasks."""
         guid = payload.get("guid")
         state = payload.get("state")
         file_path = payload.get("filePath")
@@ -927,6 +954,53 @@ class BrowserService(Service):
                         with contextlib.suppress(Exception):
                             fut.exception()
                 break
+
+    @staticmethod
+    def _match_cdp_entry(
+        entries: list[dict[str, Any]],
+        page_frames: set[str],
+        dl_url: str,
+        dl_name: str,
+    ) -> dict[str, Any] | None:
+        """Find the best matching unconsumed CDP download entry for a given frame tree and download metadata."""
+        best_entry: dict[str, Any] | None = None
+        best_score = 0
+        for entry in entries:
+            if entry.get("frameId") not in page_frames or entry.get("consumed"):
+                continue
+            e_url = entry.get("url", "")
+            e_name = entry.get("filename", "")
+
+            url_matches = bool(dl_url and e_url and dl_url == e_url)
+            name_matches = bool(dl_name and e_name and dl_name not in {"", "download"} and dl_name == e_name)
+            url_conflicts = bool(dl_url and e_url and dl_url != e_url)
+            name_conflicts = bool(
+                dl_name
+                and e_name
+                and dl_name not in {"", "download"}
+                and e_name not in {"", "download"}
+                and dl_name != e_name
+            )
+
+            if url_conflicts:
+                continue
+            if name_conflicts and not url_matches:
+                continue
+
+            score = 0
+            if url_matches and name_matches:
+                score = 3
+            elif url_matches or name_matches:
+                score = 2
+            elif not name_conflicts:
+                score = 1
+
+            if score > best_score:
+                best_score = score
+                best_entry = entry
+                if score == 3:
+                    break
+        return best_entry
 
     @staticmethod
     def _download_filename(download: Any) -> str:
@@ -1018,11 +1092,11 @@ class BrowserService(Service):
                         if page_frames:
                             match_timeout = getattr(self, "_attached_match_timeout_s", ATTACHED_MATCH_TIMEOUT_S)
                             match_deadline = time.monotonic() + match_timeout
+                            dl_url = str(getattr(download, "url", "") or "")
                             while True:
-                                for entry in self._attached_downloads:
-                                    if entry.get("frameId") in page_frames and not entry.get("consumed"):
-                                        matched = entry
-                                        break
+                                matched = self._match_cdp_entry(
+                                    self._attached_downloads, page_frames, dl_url, name
+                                )
                                 if matched is not None or time.monotonic() >= match_deadline or self._context is None:
                                     break
                                 await asyncio.sleep(0.05)
@@ -1030,8 +1104,13 @@ class BrowserService(Service):
                     if matched is not None:
                         matched["consumed"] = True
                         file_path = await matched["future"]
-                        target.unlink(missing_ok=True)
-                        shutil.move(file_path, str(target))
+
+                        def _finalize_file() -> None:
+                            assert target is not None
+                            target.unlink(missing_ok=True)
+                            shutil.move(file_path, str(target))
+
+                        await asyncio.to_thread(_finalize_file)
                     elif self._context is None:
                         abort_closed_browser()
                     else:

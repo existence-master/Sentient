@@ -190,7 +190,9 @@ async def test_attach_to_a_running_browser_and_detach_leaves_it_running(browser,
         downloaded_file.exists() and not (tmp_path / "user-downloads" / "report.txt.crdownload").exists()
     ):
         await asyncio.sleep(0.1)
-    assert downloaded_file.exists()
+    folder = downloaded_file.parent
+    folder_contents = sorted(p.name for p in folder.iterdir()) if folder.exists() else []
+    assert downloaded_file.exists(), f"download missing; folder has {folder_contents}"
     assert downloaded_file.read_text(encoding="utf-8") == "Sentient browser download test.\n"
     assert browser._download_tasks == downloads_before
 
