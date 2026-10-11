@@ -26,6 +26,7 @@ from typing import Any
 from sentient import paths
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import ChatRules
+from sentient.agent.incognito import IncognitoSweeper
 from sentient.agent.loop import Agent
 from sentient.agent.subagents import SubagentManager
 from sentient.browser import BrowserService
@@ -113,6 +114,7 @@ class SentientApp:
         self.channels = ChannelService(self)
         self.user_model = UserModelService(self)
         self.dreaming = DreamingService(self)
+        self.incognito = IncognitoSweeper(self)  # incognito chats are deleted when closed (#154)
         self._started = False
         self.stop_state: dict[str, Any] = {"stopped": False, "stopped_at": None, "source": None}
         # bumped by every stop_all: work queued before it (e.g. a chat message waiting behind a reply) is dropped
@@ -127,6 +129,7 @@ class SentientApp:
         return [
             self.notifications, self.integrations, self.subagents, self.sandbox, self.terminal, self.browser, self.nodes,
             self.tasks, self.proactivity, self.evolution, self.user_model, self.dreaming, self.voice, self.channels,
+            self.incognito,
         ]
 
     async def notify(self, kind: str, message: str, *, title: str | None = None, payload: dict | None = None) -> dict:

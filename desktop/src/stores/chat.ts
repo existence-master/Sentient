@@ -21,6 +21,8 @@ export interface ChatRequestDraft {
   text: string
   attachments?: AttachmentView[]
   model?: string
+  /** Start a new incognito chat (#154). Only used for a chat that has no id yet. */
+  incognito?: boolean
 }
 
 export interface LiveSession {
@@ -49,12 +51,16 @@ interface ChatState {
   resolved: Record<string, string>
   /** session_id -> how full the model's context was after its latest call (#131). Kept after the turn ends. */
   context: Record<string, ContextMeter>
+  /** Incognito chats started in this window (#154), so the view and the cleanup know before the list refetches. */
+  incognito: Record<string, true>
   send: (sessionId: string | null, draft: ChatRequestDraft) => Promise<string>
   cancel: (sessionId: string) => void
   retry: (sessionId: string) => Promise<void>
   respondApproval: (sessionId: string, approvalId: string, decision: ApprovalDecision) => Promise<void>
   handleEvent: (ev: ChatEvent) => void
   dropLive: (key: string) => void
+  /** Close an incognito chat: stop its reply and delete it (#154). */
+  closeIncognito: (sessionId: string) => void
 }
 
 const pendingKey = (clientId: string) => `pending:${clientId}`
@@ -93,6 +99,7 @@ export const useChat = create<ChatState>((set, get) => ({
   live: {},
   resolved: {},
   context: {},
+  incognito: {},
 
   send: async (sessionId, draft) => {
     const clientId = uid()
@@ -127,7 +134,8 @@ export const useChat = create<ChatState>((set, get) => ({
 
     const attachments = (draft.attachments ?? []).map((a) => a.name)
     const wsOk = live.isOpen || (await live.waitOpen(1500))
-    if (wsOk && live.send({ type: 'chat.send', session_id: sessionId ?? undefined, text: draft.text, attachments, model: draft.model, client_id: clientId, channel: 'desktop' })) {
+    const incognito = !sessionId && draft.incognito ? true : undefined
+    if (wsOk && live.send({ type: 'chat.send', session_id: sessionId ?? undefined, text: draft.text, attachments, model: draft.model, client_id: clientId, channel: 'desktop', incognito })) {
       return key
     }
 
@@ -137,7 +145,7 @@ export const useChat = create<ChatState>((set, get) => ({
     void (async () => {
       let currentKey = key
       try {
-        for await (const ev of api.chat.stream({ text: draft.text, session_id: sessionId ?? undefined, attachments, model: draft.model, channel: 'desktop' }, abort.signal)) {
+        for await (const ev of api.chat.stream({ text: draft.text, session_id: sessionId ?? undefined, attachments, model: draft.model, channel: 'desktop', incognito }, abort.signal)) {
           if (ev.type === 'session') {
             get().handleEvent({ ...ev, client_id: clientId })
             currentKey = ev.session_id
@@ -200,15 +208,18 @@ export const useChat = create<ChatState>((set, get) => ({
         if (pending && pk) {
           const { [pk]: _moved, ...rest } = state.live
           void _moved
+          const incognito = !!pending.request.incognito
           set({
             live: { ...rest, [ev.session_id]: { ...pending, key: ev.session_id, sessionId: ev.session_id, user: { ...pending.user, pending: false } } },
-            resolved: { ...state.resolved, [pending.clientId]: ev.session_id }
+            resolved: { ...state.resolved, [pending.clientId]: ev.session_id },
+            incognito: incognito ? { ...state.incognito, [ev.session_id]: true } : state.incognito
           })
-          // Show the new chat in the sidebar right away.
+          // Show the new chat in the sidebar right away (an incognito chat is kept out of the list).
+          const now = new Date().toISOString()
           queryClient.setQueryData<Session[]>(qk.sessions, (old) =>
             old?.some((s) => s.id === ev.session_id)
               ? old
-              : [{ id: ev.session_id, title: null, channel: 'desktop', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, ...(old ?? [])]
+              : [{ id: ev.session_id, title: null, channel: 'desktop', created_at: now, updated_at: now, incognito }, ...(old ?? [])]
           )
         } else if (state.live[ev.session_id]) {
           set(patchLive(state, ev.session_id, (l) => ({ ...l, user: { ...l.user, pending: false } })))
@@ -319,8 +330,29 @@ export const useChat = create<ChatState>((set, get) => ({
     if (!removed) return
     removed.user.attachments.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl))
     set({ live: rest })
+  },
+
+  closeIncognito: (sessionId) => {
+    get().cancel(sessionId)
+    get().dropLive(sessionId)
+    const { [sessionId]: _gone, ...incognito } = get().incognito
+    void _gone
+    const { [sessionId]: _meter, ...context } = get().context
+    void _meter
+    set({ incognito, context })
+    queryClient.setQueryData<Session[]>(qk.sessions, (old) => old?.filter((s) => s.id !== sessionId))
+    queryClient.removeQueries({ queryKey: qk.messages(sessionId) })
+    // the engine also deletes it at shutdown, at the next start and after a while without messages
+    void api.sessions.delete(sessionId).catch(() => undefined)
   }
 }))
+
+/** True when `sessionId` is an incognito chat this window knows about (#154). */
+export function isIncognito(sessionId: string | null | undefined): boolean {
+  if (!sessionId) return false
+  if (useChat.getState().incognito[sessionId]) return true
+  return !!queryClient.getQueryData<Session[]>(qk.sessions)?.find((s) => s.id === sessionId)?.incognito
+}
 
 function lastUserDraft(sessionId: string): ChatRequestDraft | null {
   const rows = queryClient.getQueryData<TranscriptMessage[]>(qk.messages(sessionId)) ?? []

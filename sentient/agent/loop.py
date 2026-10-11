@@ -134,6 +134,20 @@ REPEAT_NUDGE = (
     "You called {name} with exactly the same arguments several times and got the same result each time. "
     "Do not call it again with these arguments. Try something different, or answer the user with what you have."
 )
+# Incognito chats (#154): tools that would keep something from the chat are never offered or run, and the model is
+# told so it does not promise to remember. Without ``chat.incognito_uses_memory`` the memory look-ups go too.
+INCOGNITO_LEARNING_TOOLS = frozenset({"memory_remember", "skill_save"})
+INCOGNITO_MEMORY_TOOLS = frozenset({
+    "memory_recall", "memory_search_by_source", "memory_search_history", "history_semantic_search",
+    "history_time_search", "user_model_ask",
+})
+INCOGNITO_NOTE = (
+    "## Incognito chat\nThis is an incognito chat. Nothing from it is saved to memory, and it is deleted when the "
+    "user closes it. Never say you will remember something from it."
+)
+INCOGNITO_NO_MEMORY_NOTE = (
+    INCOGNITO_NOTE + " You also do not use what you know about the user here: answer from this chat alone."
+)
 PersistFn = Callable[..., Awaitable[Any]]
 # policy(tool, effective_risk, arguments) -> refusal message or None (sync or async)
 PolicyFn = Callable[[Tool, Risk, dict], "str | Awaitable[str | None] | None"]
@@ -489,15 +503,24 @@ class Agent:
     async def _system_prompt_with_sources(
         self, user_text: str, channel: str, session: dict | None = None
     ) -> tuple[str, MemorySources]:
-        """The system prompt and the memories put into it (recalled facts, user-model insights)."""
-        facts, (user_context, insights) = await asyncio.gather(
-            self._recall(user_text), self._user_model_context(user_text)
-        )
+        """The system prompt and the memories put into it (recalled facts, user-model insights). An incognito chat
+        (#154) reads memory only while ``chat.incognito_uses_memory`` is on, and is told nothing will be kept."""
+        incognito = bool((session or {}).get("incognito"))
+        reads_memory = not incognito or self.config.chat.incognito_uses_memory
+        if reads_memory:
+            facts, (user_context, insights) = await asyncio.gather(
+                self._recall(user_text), self._user_model_context(user_text)
+            )
+        else:
+            facts, user_context, insights = [], "", []
         sources = MemorySources()
         sources.add_facts(facts)
         sources.add_insights(insights)
+        snapshot = self.workspace.snapshot()
+        if not reads_memory:  # only the persona: no profile, memory file or daily notes
+            snapshot = {k: (v if k == "soul" else "") for k, v in snapshot.items()}
         prompt = build_system_prompt(
-            snapshot=self.workspace.snapshot(),
+            snapshot=snapshot,
             facts=facts,
             skills_index=self.skills.prompt_index(),
             assistant_name=self.config.assistant.name,
@@ -510,7 +533,15 @@ class Agent:
         )
         if session and session.get("context_summary"):
             prompt += "\n\n## Earlier in this conversation\n" + session["context_summary"]
+        if incognito:
+            prompt += "\n\n" + (INCOGNITO_NOTE if reads_memory else INCOGNITO_NO_MEMORY_NOTE)
         return prompt, sources
+
+    def _incognito_tools(self, tool_names: list[str] | None) -> list[str]:
+        """``tool_names`` (None: every offered tool) without the tools an incognito chat must not use (#154)."""
+        names = tool_names if tool_names is not None else [t.name for t in self.registry.tools()]
+        left_out = INCOGNITO_LEARNING_TOOLS | (frozenset() if self.config.chat.incognito_uses_memory else INCOGNITO_MEMORY_TOOLS)
+        return [n for n in names if n not in left_out]
 
     def _read_only_apps(self) -> list[str]:
         """Names of the connected apps set to Read only that have tools Sentient now can't use (#141), so the model
@@ -1124,6 +1155,7 @@ class Agent:
             await self.store.touch_session(session_id, title=(user_text or (attachments[0] if attachments else ""))[:60])
 
             session = await self.store.get_session(session_id)
+            incognito = bool((session or {}).get("incognito"))
             system, sources = await self._system_prompt_with_sources(user_text, channel, session)
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
             convo = history_to_openai(history)
@@ -1150,6 +1182,7 @@ class Agent:
                 role = "vision"
             messages: list[dict] = [{"role": "system", "content": system}, *convo]
             ctx = self.tool_context(session_id, channel)
+            ctx.incognito = incognito
             # outside content read earlier in this chat still counts until a new chat starts (ADR 0018)
             ctx.untrusted = await self._chat_untrusted(session_id, session)
             if not ctx.untrusted and any(is_screen_capture(a) for a in attachments):
@@ -1172,6 +1205,8 @@ class Agent:
             except Exception as exc:  # selection must never break a turn
                 log.warning("tool selection failed, offering all tools: %s", exc)
                 tool_names = None
+            if incognito:
+                tool_names = self._incognito_tools(tool_names)
 
             async def persist(role_: str, content: str | None, **fields: Any) -> None:
                 mid = await self.store.add_message(session_id, role_, content, **fields)
@@ -1229,13 +1264,18 @@ class Agent:
             yield Done(content=result.text, message_id=message_id, memory_sources=memory_sources, **ev)
 
             said = "\n\n".join([user_text, *result.interjections]).strip()
-            if self.memory is not None and self.config.memory.extract_after_turn:
+            # nothing is learned from an incognito chat (#154): no fact extraction, no memory flush, and no
+            # chat.turn_completed, so skills, the user model and dreaming never see it
+            if self.memory is not None and self.config.memory.extract_after_turn and not incognito:
                 # a chat that read outside content holds what it learns for the user's review (ADR 0021)
+                log.info("chat %s: fact extraction started for this turn", session_id)
                 self._spawn(self._extract(said, memory_review.for_context(ctx)), "memory")
             if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
                 self._spawn(self._auto_title(session_id, user_text, result.text), "titles")
-            self._spawn(self._maybe_compress(session_id), "memory")
-            if self.app is not None:
+            self._spawn(self._maybe_compress(session_id, flush=not incognito), "memory")
+            if incognito:
+                log.info("incognito chat %s: nothing learned from this turn", session_id)
+            elif self.app is not None:
                 self.app.bus.publish(
                     "chat.turn_completed",
                     {
@@ -1391,9 +1431,10 @@ class Agent:
         except Exception as exc:
             log.warning("memory flush before compression failed: %s", exc)
 
-    async def _maybe_compress(self, session_id: str) -> None:
+    async def _maybe_compress(self, session_id: str, *, flush: bool = True) -> None:
         """Hermes-style context compression: fold turns that fell out of the history
-        window into a running summary injected into the system prompt."""
+        window into a running summary injected into the system prompt. ``flush=False`` (an incognito chat) keeps
+        no facts from the folded turns."""
         try:
             total = await self.store.count_messages(session_id)
             window = self.config.chat.history_window
@@ -1410,7 +1451,8 @@ class Agent:
             if len(older) < 10:
                 return
             transcript = "\n".join(f"{r['role']}: {(r['content'] or '')[:800]}" for r in older)
-            await self._flush_memory(transcript, (session or {}).get("untrusted") or "", session_id)
+            if flush:
+                await self._flush_memory(transcript, (session or {}).get("untrusted") or "", session_id)
             prev = (session or {}).get("context_summary") or ""
             summary = await self.llm.complete_text(
                 "fast",

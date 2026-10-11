@@ -23,6 +23,11 @@ _PKG_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_SCHEMAS = ["tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox"]
 
 
+# SQL condition: the chat ``col`` names is not incognito (#154). Learning, summaries and history search use it so an
+# incognito chat is never read back. ``.format(col="m.session_id")``.
+NOT_INCOGNITO = "NOT EXISTS (SELECT 1 FROM sessions inc WHERE inc.id = {col} AND inc.incognito = 1)"
+
+
 def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -64,6 +69,7 @@ class Store:
         await self.ensure_column("sessions", "context_upto", "TEXT")
         await self.ensure_column("sessions", "untrusted", "TEXT")
         await self.ensure_column("sessions", "visited_hosts", "TEXT")
+        await self.ensure_column("sessions", "incognito", "INTEGER NOT NULL DEFAULT 0")
         await self.ensure_column("messages", "attachments", "TEXT")
         await self.ensure_column("messages", "interjection", "INTEGER NOT NULL DEFAULT 0")
         await self.ensure_column("messages", "memory_sources", "TEXT")
@@ -124,14 +130,31 @@ class Store:
         )
 
     # ------------------------------------------------------------------ sessions & messages
-    async def create_session(self, channel: str = "web", title: str | None = None) -> str:
+    async def create_session(self, channel: str = "web", title: str | None = None, *, incognito: bool = False) -> str:
         sid = new_id()
         ts = now_iso()
         await self.execute(
-            "INSERT INTO sessions(id, title, channel, created_at, updated_at) VALUES(?,?,?,?,?)",
-            (sid, title, channel, ts, ts),
+            "INSERT INTO sessions(id, title, channel, created_at, updated_at, incognito) VALUES(?,?,?,?,?,?)",
+            (sid, title, channel, ts, ts, int(bool(incognito))),
         )
         return sid
+
+    async def is_incognito(self, session_id: str | None) -> bool:
+        """True for an incognito chat (#154): nothing is learned from it and it is deleted when closed."""
+        if not session_id:
+            return False
+        row = await self.fetchone("SELECT incognito FROM sessions WHERE id = ?", (session_id,))
+        return bool(row and row["incognito"])
+
+    async def incognito_sessions(self, idle_before: str | None = None) -> list[str]:
+        """Ids of incognito chats, or only those last used before ``idle_before`` (ISO time)."""
+        if idle_before is None:
+            rows = await self.fetchall("SELECT id FROM sessions WHERE incognito = 1")
+        else:
+            rows = await self.fetchall(
+                "SELECT id FROM sessions WHERE incognito = 1 AND updated_at < ?", (idle_before,)
+            )
+        return [r["id"] for r in rows]
 
     async def touch_session(self, session_id: str, title: str | None = None) -> None:
         if title:
@@ -208,9 +231,10 @@ class Store:
         return int(row["n"]) if row else 0
 
     async def search_messages(self, query: str, limit: int = 10) -> list[dict]:
+        """Keyword search over past chats. Incognito chats are never found (#154)."""
         rows = await self.fetchall(
             "SELECT m.* FROM messages_fts f JOIN messages m ON m.rowid = f.rowid"
-            " WHERE messages_fts MATCH ? ORDER BY rank LIMIT ?",
+            f" WHERE messages_fts MATCH ? AND {NOT_INCOGNITO.format(col='m.session_id')} ORDER BY rank LIMIT ?",
             (query, limit),
         )
         return [dict(r) for r in rows]

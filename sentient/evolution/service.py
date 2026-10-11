@@ -246,6 +246,7 @@ class EvolutionService(Service):
             "SELECT s.id, s.updated_at, r.activity_at FROM sessions s"
             " LEFT JOIN evolution_reviews r ON r.target = 'session:' || s.id"
             " WHERE s.updated_at <= ? AND s.updated_at >= ? AND (r.activity_at IS NULL OR r.activity_at < s.updated_at)"
+            " AND s.incognito = 0"  # skills are never learned from an incognito chat (#154)
             " ORDER BY s.updated_at",
             (cutoff, lookback),
         )
@@ -335,6 +336,8 @@ class EvolutionService(Service):
 
     async def review_session(self, session_id: str, *, force: bool = False) -> dict:
         store = self.app.store
+        if await store.is_incognito(session_id):  # never learned from (#154)
+            return {"reviewed": False, "decision": "skipped"}
         target = f"session:{session_id}"
         prev = await store.fetchone("SELECT activity_at FROM evolution_reviews WHERE target = ?", (target,))
         since = (prev["activity_at"] if prev else None) or ""
@@ -521,6 +524,8 @@ class EvolutionService(Service):
         if not sid:
             return []
         lib, store = self.app.skills, self.app.store
+        if await store.is_incognito(sid):  # an incognito chat never shapes skills (#154)
+            return []
         proposed: list[str] = []
         prev = self._last_skill_turn.pop(sid, None)
         user_text = str(data.get("user_text") or "")

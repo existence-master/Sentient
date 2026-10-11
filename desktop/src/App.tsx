@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { MotionConfig } from 'motion/react'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { HashRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { toast, Toaster } from 'sonner'
 import { AppShell } from '@/components/shell/AppShell'
@@ -30,7 +30,7 @@ import { installDemoData } from '@/lib/demo'
 import { installDomainEvents } from '@/lib/events'
 import { queryClient } from '@/lib/queryClient'
 import { resolveTheme } from '@/lib/theme'
-import { installChatEvents } from '@/stores/chat'
+import { installChatEvents, isIncognito, useChat } from '@/stores/chat'
 import { useConnection } from '@/stores/connection'
 import { useNotificationStore } from '@/stores/notifications'
 import { useUI } from '@/stores/ui'
@@ -55,6 +55,7 @@ export function App() {
         <TooltipProvider delayDuration={450} skipDelayDuration={200}>
           <HashRouter>
             <GlobalCommands />
+            <IncognitoCleanup />
             <Routes>
               <Route element={<EngineGate />}>
                 <Route element={<BootstrapGate />}>
@@ -178,6 +179,19 @@ function BootstrapGate() {
   )
 }
 
+/** Leaving an incognito chat closes it: it is deleted (#154). The engine deletes leftovers when Sentient closes. */
+function IncognitoCleanup() {
+  const location = useLocation()
+  const current = location.pathname.match(/^\/chat\/([^/?#]+)/)?.[1] ?? null
+  const previous = useRef<string | null>(null)
+  useEffect(() => {
+    const prev = previous.current
+    previous.current = current
+    if (prev && prev !== current && isIncognito(prev)) useChat.getState().closeIncognito(prev)
+  }, [current])
+  return null
+}
+
 function SmokeReporter() {
   useSmokeReady(true)
   return null
@@ -224,6 +238,7 @@ function GlobalCommands() {
 
   useHotkey('mod+k', () => useUI.getState().setPaletteOpen(!useUI.getState().paletteOpen))
   useHotkey('mod+n', () => navigate('/chat', { state: { fresh: Date.now() } }))
+  useHotkey('mod+shift+n', () => navigate('/chat', { state: { fresh: Date.now(), incognito: true } }))
   useHotkey('mod+,', () => navigate('/settings'))
   useHotkey('mod+b', () => useUI.getState().toggleSidebar())
   return null
