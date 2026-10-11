@@ -7,7 +7,7 @@ LLM provider and a temporary database.
 Start order (stop runs in reverse):
     store -> memory -> notifications -> integrations (registers plugins)
     -> builtin tools -> skills -> agent -> subagents -> sandbox -> terminal -> browser -> nodes
-    -> tasks -> proactivity -> evolution -> user_model -> dreaming -> voice -> channels
+    -> tasks -> proactivity -> evolution -> user_model -> dreaming -> voice -> channels -> backups
 
 Stop everything (``stop_all`` / ``resume``, docs/API.md section 17) is deterministic: it never
 asks the model. It cancels running chat replies, task runs, helpers, scripts, commands and browser
@@ -26,8 +26,10 @@ from typing import Any
 from sentient import paths
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import ChatRules
+from sentient.agent.incognito import IncognitoSweeper
 from sentient.agent.loop import Agent
 from sentient.agent.subagents import SubagentManager
+from sentient.backup import BackupService
 from sentient.browser import BrowserService
 from sentient.channels import ChannelService
 from sentient.config import SentientConfig, load_config, save_config
@@ -37,6 +39,7 @@ from sentient.integrations import IntegrationManager
 from sentient.llm import claude_code
 from sentient.llm.connect import ProviderConnections
 from sentient.llm.hardware import HardwareProbe
+from sentient.llm.jobs import ModelJobs, as_kind
 from sentient.llm.provider import LiteLLMProvider, LLMProvider
 from sentient.memory.dreaming import DreamingService
 from sentient.memory.facts import FactMemory
@@ -73,15 +76,22 @@ class SentientApp:
         self.config = config or load_config()
         self.enable_background = enable_background  # tests turn schedulers/pollers off
         self.bus = EventBus()
-        self.store = Store(db_path)
+        self.store = Store(db_path, before_migration=self._snapshot_before_migration)
         self.llm: LLMProvider = llm or LiteLLMProvider(self.config)
+        # one local model job at a time, chats first (#149): the provider's scheduler, or an idle one for status
+        jobs = getattr(self.llm, "jobs", None)
+        self.model_jobs: ModelJobs = jobs if isinstance(jobs, ModelJobs) else ModelJobs(lambda: self.config.models)
+        self.model_jobs.on_change = lambda state: self.bus.publish("model.busy", state)
         self.workspace = Workspace(budget_chars=self.config.memory.workspace_budget_chars)
         self.skills = SkillLibrary(
             [paths.skills_dir(), *[Path(d).expanduser() for d in self.config.skills.extra_dirs]]
         )
         self.registry = ToolRegistry(disabled=self.config.tools.disabled)
         self.approvals = ApprovalBroker(self.config.tools.approvals, timeout_s=self.config.tools.approvals.timeout_s)
-        self.registry.set_blocked(self.approvals.is_never)  # "never" rules hide tools from the model (ADR 0016)
+        # Read only connections (#141) are read from the live config on every check, so a switch applies at once
+        self.approvals.read_only_source = lambda: self.config.integrations.read_only
+        # "never" rules and the write tools of Read only connections are hidden from the model (ADR 0016)
+        self.registry.set_blocked(self.approvals.is_hidden)
         self.chat_rules = ChatRules(self)  # "never delete my emails" in chat -> a proposed rule (#130)
         self.memory: FactMemory | None = None
         self.agent: Agent | None = None
@@ -105,6 +115,8 @@ class SentientApp:
         self.channels = ChannelService(self)
         self.user_model = UserModelService(self)
         self.dreaming = DreamingService(self)
+        self.backups = BackupService(self)
+        self.incognito = IncognitoSweeper(self)  # incognito chats are deleted when closed (#154)
         self._started = False
         self.stop_state: dict[str, Any] = {"stopped": False, "stopped_at": None, "source": None}
         # bumped by every stop_all: work queued before it (e.g. a chat message waiting behind a reply) is dropped
@@ -119,6 +131,8 @@ class SentientApp:
         return [
             self.notifications, self.integrations, self.subagents, self.sandbox, self.terminal, self.browser, self.nodes,
             self.tasks, self.proactivity, self.evolution, self.user_model, self.dreaming, self.voice, self.channels,
+            self.backups,
+            self.incognito,
         ]
 
     async def notify(self, kind: str, message: str, *, title: str | None = None, payload: dict | None = None) -> dict:
@@ -201,6 +215,22 @@ class SentientApp:
                         log.exception("resuming interrupted tasks failed")
             return dict(self.stop_state)
 
+    async def _snapshot_before_migration(self, reason: str) -> None:
+        """Store hook: a snapshot of the data folder before the database changes shape (issue #151)."""
+        await self.backups.snapshot(reason, db_path=self.store.path)
+
+    async def delete_chat(self, session_id: str, *, reason: str | None = None) -> None:
+        """Delete a chat: its running replies and helpers are stopped first, so none keeps writing to or working for a
+        chat that is gone (a stopped reply saves what it kept, then goes with the chat)."""
+        try:
+            if self.agent is not None:
+                await self.agent.cancel_session(session_id)
+            await self.subagents.cancel_for_session(session_id)
+        except Exception:
+            log.exception("stopping the work of chat %s failed", session_id)
+        await self.store.delete_session(session_id)
+        self.bus.publish("session.deleted", {"session_id": session_id, **({"reason": reason} if reason else {})})
+
     def tool_extra(self) -> dict[str, Any]:
         return {"app": self, "skills": self.skills, "workspace": self.workspace, "registry": self.registry}
 
@@ -209,6 +239,7 @@ class SentientApp:
         if self._started:
             return self
         paths.ensure_layout()
+        await asyncio.to_thread(claude_code.sweep_scratch)  # folders an earlier run couldn't remove (ADR 0022)
         await self.store.open()
         await self._load_stop_state()  # before services start: a stopped Sentient starts paused
         self.workspace.ensure_defaults(
@@ -218,8 +249,10 @@ class SentientApp:
         if self.memory is None:
             log.warning("sqlite-vec unavailable: semantic memory disabled")
 
-        await self.notifications.start()
-        await self.integrations.start()  # registers integration plugins into self.registry
+        with as_kind(self.notifications.model_kind):
+            await self.notifications.start()
+        with as_kind(self.integrations.model_kind):
+            await self.integrations.start()  # registers integration plugins into self.registry
         self.registry.load_builtin()
         self.skills.reload(self._available_tools())
         self.agent = Agent(
@@ -236,7 +269,8 @@ class SentientApp:
         await self.registry.setup_all(self.agent.tool_context(None, "system"))
         for svc in self.services[2:]:  # notifications and integrations started above
             try:
-                await svc.start()
+                with as_kind(svc.model_kind):  # the loops and listeners it starts call the model as this kind
+                    await svc.start()
             except Exception:
                 log.exception("service %s failed to start", svc.name)
         # services register plugins in start() (browser, code, devices, channels): re-check skills' requires_tools
@@ -260,6 +294,10 @@ class SentientApp:
                 log.exception("service %s failed to stop", svc.name)
         if self.agent is not None:
             await self.agent.drain(timeout=SHUTDOWN_GRACE_S)
+        try:  # incognito chats are deleted when Sentient closes (#154), once nothing writes to them any more
+            await self.incognito.purge(skip_running=False)
+        except Exception:
+            log.exception("deleting incognito chats at shutdown failed")
         claude_code.kill_all()
         await self.store.close()
         self._started = False

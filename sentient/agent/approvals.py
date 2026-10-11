@@ -16,6 +16,10 @@ name or a plugin id, and a tool's own rule beats its plugin's rule:
 - ``ask``: always ask, even in mode "off", after "Allow for this chat" and for read-only tools.
 - ``allow``: run without asking, except purchases, which still ask whenever approvals are on.
 
+A connection set to Read only (``integrations.read_only``, #141) works like a "never" rule on its tools that can
+change, send, delete or run something (``is_hidden``, ``read_only_refusal``): checked per call on the effective risk,
+so a tool whose risk depends on its arguments (Composio's multi-execute) runs look-ups and refuses the rest.
+
 Work nobody asked for (``ToolContext.origin`` in ``UNPROMPTED_ORIGINS``, ADR 0017) is checked before all of this:
 it may only read and make Sentient-internal changes, whatever the mode or rules say (``unprompted_refusal``).
 
@@ -28,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -35,6 +40,9 @@ from sentient.config.schema import ApprovalsConfig
 from sentient.tools.base import Risk, Tool, ToolContext, effective_risk
 from sentient.tools.rules import (
     is_purchase,
+    read_only_blocks,
+    read_only_hides,
+    read_only_message,
     rule_for,
     rule_label,
     unprompted_allows,
@@ -71,6 +79,9 @@ class ApprovalBroker:
     _pending: dict[str, asyncio.Future] = field(default_factory=dict)
     # (session_id, tool name) -> highest risk the user allowed for this chat
     _session_allow: dict[tuple[str, str], Risk] = field(default_factory=dict)
+    # the app ids of connections set to Read only (``integrations.read_only``), read on every check so a switch
+    # applies at once (#141)
+    read_only_source: Callable[[], Collection[str] | None] | None = None
 
     # ------------------------------------------------------------------ lasting rules
     def rule(self, tool: Tool) -> str | None:
@@ -80,6 +91,23 @@ class ApprovalBroker:
     def is_never(self, tool: Tool) -> bool:
         """True when a lasting rule says Sentient must never use ``tool`` (the registry hides it)."""
         return self.rule(tool) == "never"
+
+    def read_only(self) -> Collection[str]:
+        """App ids of the connections set to Read only."""
+        return (self.read_only_source() if self.read_only_source is not None else None) or ()
+
+    def is_hidden(self, tool: Tool) -> bool:
+        """True when the model must not be offered ``tool``: a "never" rule, or a tool of a Read only connection
+        that can never be a look-up (the registry hides it)."""
+        return self.is_never(tool) or read_only_hides(self.read_only(), tool)
+
+    def read_only_refusal(self, tool: Tool, risk: Risk, registry: Any = None) -> str | None:
+        """The plain refusal when ``tool``'s connection is Read only and this call (effective risk ``risk``) would
+        change, send, delete or run something; None when it may run. Like a "never" rule: checked before every
+        mode, rule and "Allow for this chat", and again right before the tool runs."""
+        if read_only_blocks(self.read_only(), tool, risk):
+            return read_only_message(tool, registry)
+        return None
 
     def label(self, tool: Tool, registry: Any = None) -> str:
         return rule_label(tool, getattr(self.config, "rules", None), registry)
@@ -125,6 +153,8 @@ class ApprovalBroker:
         mode = self.config.mode
         rule = self.rule(tool)
         if rule in {"ask", "never"}:  # "never" is refused before this; asking is the safe answer anyway
+            return True
+        if read_only_blocks(self.read_only(), tool, risk):  # refused before this too (Read only connection)
             return True
         if purchase:  # spending money always asks; browser.confirm_purchases is the only switch for it
             return True

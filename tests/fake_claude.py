@@ -112,6 +112,8 @@ def main() -> int:
             json.dump({"claude": os.getpid(), "child": child.pid}, f)
         time.sleep(600)
         return 0
+    if scenario == "linger":  # like the tool bridge: something it started still runs in the scratch folder
+        subprocess.Popen([sys.executable, "-c", "import time; time.sleep(2)"])
     usage = {"input_tokens": 10, "cache_read_input_tokens": 5, "output_tokens": 7}
     if scenario == "tools" and "<tool_result" not in prompt:
         emit({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_t"}}})

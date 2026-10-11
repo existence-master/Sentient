@@ -12,6 +12,10 @@
  *   engine does not have them yet; whenever the engine answers, its data is used.
  */
 import type {
+  BackupEntry,
+  BackupInspect,
+  BackupOverview,
+  RestoreStaged,
   BrowserProfileCreate,
   BrowserProfilePatch,
   BrowserProfiles,
@@ -46,6 +50,7 @@ import type {
   CheckupEvent,
   ClarificationAnswer,
   ConfigPatchResponse,
+  ConnectionAccess,
   ConnectResponse,
   DeepPartial,
   DictateResult,
@@ -76,6 +81,7 @@ import type {
   ModelPresetList,
   ModelRoles,
   ModelTestResult,
+  ModelBusy,
   CatalogModel,
   ChatGPTStatus,
   ProviderKeyCheck,
@@ -422,7 +428,8 @@ export const api = {
 
   sessions: {
     list: (limit = 100) => http.get<Session[]>('/api/sessions', { query: { limit } }),
-    create: () => http.post<{ session_id: string }>('/api/sessions'),
+    create: (opts: { incognito?: boolean } = {}) =>
+      http.post<{ session_id: string }>('/api/sessions', undefined, { query: opts.incognito ? { incognito: true } : undefined }),
     rename: (id: string, title: string) => http.patch<OkResponse>(`/api/sessions/${enc(id)}`, { title }),
     delete: (id: string) => http.delete<OkResponse>(`/api/sessions/${enc(id)}`),
     messages: (id: string, limit = 500) =>
@@ -474,6 +481,8 @@ export const api = {
     test: (model: string, role?: RoleName) => http.post<ModelTestResult>('/api/models/test', { model, role }),
     testEmbedding: (model: string) => http.post<EmbeddingTestResult>('/api/models/test-embedding', { model }),
     claudeCode: () => http.get<ClaudeCodeStatus>('/api/models/claude-code'),
+    /** What the local model is doing now and what waits for it (#149). */
+    busy: () => http.get<ModelBusy>('/api/models/busy'),
     setRoles: (roles: Partial<Record<RoleName, string | null>>) => http.put<ModelRoles>('/api/models/roles', roles),
     setFallbacks: (fallbacks: Partial<Record<RoleName, string[]>>) =>
       http.put<FallbacksResponse>('/api/models/fallbacks', fallbacks),
@@ -547,8 +556,10 @@ export const api = {
   integrations: {
     list: () => http.get<Integration[]>('/api/integrations'),
     get: (id: string) => http.get<Integration>(`/api/integrations/${enc(id)}`),
-    connect: (id: string, fields: Record<string, string> = {}) =>
-      http.post<ConnectResponse>(`/api/integrations/${enc(id)}/connect`, { fields }),
+    connect: (id: string, fields: Record<string, string> = {}, access?: ConnectionAccess) =>
+      http.post<ConnectResponse>(`/api/integrations/${enc(id)}/connect`, access ? { fields, access } : { fields }),
+    /** Read only or Read and write (#141). Takes effect at once. */
+    setAccess: (id: string, access: ConnectionAccess) => http.put<Integration>(`/api/integrations/${enc(id)}/access`, { access }),
     disconnect: (id: string) => http.post<Integration>(`/api/integrations/${enc(id)}/disconnect`),
     /** Abandon a pending browser sign-in so the integration stops showing "connecting". */
     cancel: (id: string) => http.post<Integration>(`/api/integrations/${enc(id)}/cancel`),
@@ -564,6 +575,7 @@ export const api = {
       signIn: (name: string) => http.post<McpSignInStart>(`/api/integrations/mcp/${enc(name)}/sign-in`),
       signOut: (name: string) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/sign-out`),
       setEnabled: (name: string, enabled: boolean) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/enabled`, { enabled }),
+      setAccess: (name: string, access: ConnectionAccess) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/access`, { access }),
       /** Fill in the server's own header or env values (keychain only), then it reconnects. */
       setValues: (name: string, values: Record<string, string>, enable = false) =>
         http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/values`, { values, enable })
@@ -756,6 +768,16 @@ export const api = {
       apply: (body: { path?: string; parts: HermesPart[]; skip?: string[] }) => http.post<HermesResult>('/api/import/hermes/apply', body),
       removeMemories: () => http.delete<{ facts: number; insights: number }>('/api/import/hermes/memories')
     }
+  },
+
+  // §20 backups, restore and snapshots ------------------------------------------------------
+  backups: {
+    get: () => http.get<BackupOverview>('/api/backups'),
+    create: (folder?: string) => http.post<BackupEntry>('/api/backups', { folder: folder || null }),
+    inspect: (path: string) => http.post<BackupInspect>('/api/backups/inspect', { path }),
+    restore: (path: string) => http.post<RestoreStaged>('/api/backups/restore', { path }),
+    cancelRestore: () => http.delete<{ cancelled: boolean }>('/api/backups/restore'),
+    dismissLastRestore: () => http.delete<{ ok: boolean }>('/api/backups/last-restore')
   },
 
   // §16 webhooks --------------------------------------------------------------------------

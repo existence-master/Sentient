@@ -78,6 +78,7 @@ import { getBridge } from '@/lib/bridge'
 import { localModelValue, looksLikeEmbedding, modelShortName, REASONING_LEVELS, ROLE_META } from '@/lib/models'
 import { ROLE_NAMES, type Provider, type RoleName, type SentientConfig } from '@/lib/types'
 import { cn, formatBytes } from '@/lib/utils'
+import { SchemaForm } from '../SchemaForm'
 import type { SectionProps } from '../SettingsPage'
 
 const ROLE_ICON: Record<RoleName, Icon> = {
@@ -89,6 +90,9 @@ const ROLE_ICON: Record<RoleName, Icon> = {
   embedding: IconBrain,
   vision: IconEye
 }
+
+/** #149: one local model job at a time, your chats first. */
+const MODEL_QUEUE_KEYS = ['models.local_queue', 'models.background_quiet_s', 'models.background_on_battery']
 
 export function ModelsSection({ query }: SectionProps) {
   const { config } = useConfigEditor()
@@ -125,6 +129,9 @@ export function ModelsSection({ query }: SectionProps) {
       {(!q || 'claude code experimental subscription plan sign in'.includes(q)) && <ClaudeCodeSection />}
       <ProvidersPanel />
       <OllamaPanel />
+      {(!q || 'one job at a time queue busy background wait battery local model sharing'.includes(q)) && (
+        <SchemaForm section="models" title="Sharing your local model" include={MODEL_QUEUE_KEYS} />
+      )}
     </div>
   )
 }

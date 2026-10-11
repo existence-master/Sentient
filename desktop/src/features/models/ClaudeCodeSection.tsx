@@ -14,6 +14,8 @@ import { getBridge } from '@/lib/bridge'
 import { modelShortName, providerOf } from '@/lib/models'
 
 export const CLAUDE_CODE_WARNING = 'Experimental. Uses your own Claude Code install and login. Anthropic may change how this is counted or allowed.'
+/** Claude Code starts fresh for every reply and sends text in bursts (issue #246). */
+export const CLAUDE_CODE_STREAMING = 'Replies take a few seconds to start, and the text arrives in larger pieces than with your other models.'
 const CLAUDE_CODE_URL = 'https://claude.com/claude-code'
 
 export function ClaudeCodeSection() {
@@ -64,7 +66,7 @@ export function ClaudeCodeSection() {
         </div>
 
         <Alert tone="warning">
-          {CLAUDE_CODE_WARNING} It only answers your chats: tasks, suggestions and other background work keep using your other models, and it can't be the memory search model.
+          {CLAUDE_CODE_WARNING} It only answers your chats: tasks, suggestions and other background work keep using your other models, and it can't be the memory search model. {CLAUDE_CODE_STREAMING}
         </Alert>
 
         {enabled &&

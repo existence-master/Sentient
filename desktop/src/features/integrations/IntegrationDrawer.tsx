@@ -4,6 +4,7 @@ import {
   IconBolt,
   IconChevronDown,
   IconCircleCheck,
+  IconLockAccess,
   IconPlugConnected,
   IconPlugConnectedX,
   IconPlus,
@@ -20,6 +21,7 @@ import { useIntegrationActions } from '@/hooks/integrations'
 import { errorMessage } from '@/lib/api'
 import type { Integration, IntegrationTestResult } from '@/lib/types'
 import { cn, formatNumber } from '@/lib/utils'
+import { AccessChoice, hasChangingTools } from './AccessChoice'
 import { BrandIcon } from './BrandIcon'
 import { categoryLabel, plainDescription, RISK_LABEL, riskOf, statusMeta, toolLabel, TRIGGER_HINT } from './meta'
 import { PrivacyFiltersEditor } from './PrivacyFiltersEditor'
@@ -102,6 +104,8 @@ function DrawerBody({
     return acc
   }, {})
   const tools = showAllTools ? i.tools : i.tools.slice(0, 6)
+  const readOnly = i.access === 'read'
+  const canChooseAccess = i.access !== undefined && hasChangingTools(i.tools)
 
   useEffect(() => {
     if (!focus) return
@@ -183,6 +187,31 @@ function DrawerBody({
         </div>
       </div>
 
+      {/* access: Read only or Read and write (#141) */}
+      {canChooseAccess && (
+        <Section
+          id="section-access"
+          icon={<IconLockAccess />}
+          title="What Sentient may do"
+          description="Changes apply right away, also to chats and tasks already running."
+        >
+          <AccessChoice
+            value={i.access ?? 'read_write'}
+            app={i.display_name}
+            onChange={(access) =>
+              actions.setAccess.mutate(
+                { id: i.id, access },
+                {
+                  onSuccess: () =>
+                    toast.success(access === 'read' ? `${i.display_name} is read only` : `${i.display_name} can read and write`),
+                  onError: (e) => toast.error("Couldn't change access", { description: errorMessage(e) })
+                }
+              )
+            }
+          />
+        </Section>
+      )}
+
       {/* capabilities */}
       {i.tools.length > 0 ? (
         <Section
@@ -204,16 +233,17 @@ function DrawerBody({
           <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface">
             {tools.map((t) => {
               const risk = RISK_LABEL[riskOf(t.risk)]
+              const off = readOnly && riskOf(t.risk) !== 'read'
               return (
-                <li key={t.name} className="flex items-start gap-3 px-3.5 py-2.5">
+                <li key={t.name} className={cn('flex items-start gap-3 px-3.5 py-2.5', off && 'opacity-55')}>
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-fg">{toolLabel(t.name, i.id)}</div>
                     <div className="mt-0.5 text-xs leading-relaxed text-fg-subtle">{plainDescription(t.description)}</div>
                   </div>
-                  <Tooltip content={risk.hint} side="left">
+                  <Tooltip content={off ? 'Off while this connection is read only.' : risk.hint} side="left">
                     <span className="mt-0.5">
-                      <Badge size="xs" tone={risk.tone}>
-                        {risk.label}
+                      <Badge size="xs" tone={off ? 'neutral' : risk.tone}>
+                        {off ? 'Off' : risk.label}
                       </Badge>
                     </span>
                   </Tooltip>

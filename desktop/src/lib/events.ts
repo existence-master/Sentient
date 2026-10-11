@@ -16,6 +16,7 @@
  *   memory.updated        -> invalidate ['memories']
  *   skill.updated         -> invalidate ['skills']
  *   session.updated       -> rename in ['sessions']
+ *   session.deleted       -> remove from ['sessions'] and refetch its transcript (an incognito chat that was closed)
  *   rule_proposal.updated -> refetch that chat's ['rule-proposals'] ("Make this a rule?" cards)
  *   config.updated        -> invalidate config/bootstrap/model presets/ChatGPT sign-in (+ secrets/providers)
  *   voice.state           -> ['voice', 'state']
@@ -27,6 +28,8 @@
  *   dream.updated         -> upsert into ['memories', 'dreams'] (and refetch the user model when one completes)
  *   source.items          -> webhook calls refresh ['hooks'] (last called / call count)
  *   stop.updated          -> ['stop'] (Stop everything banner and title bar button; cancels dictation)
+ *   model.busy            -> ['models', 'busy'] (the title bar's "model busy" indicator)
+ *   backup.updated        -> refetch ['backups'] (Settings > Backups)
  */
 import type { QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -181,6 +184,14 @@ export function installDomainEvents(qc: QueryClient): () => void {
       if (!found) void qc.invalidateQueries({ queryKey: qk.sessions })
     })
   )
+  offs.push(
+    live.onDomain('session.deleted', (e) => {
+      const { session_id } = e.data
+      qc.setQueryData<Session[]>(qk.sessions, (old) => old?.filter((s) => s.id !== session_id))
+      // an open chat that was deleted (an incognito chat left idle) shows "This chat doesn't exist anymore"
+      void qc.invalidateQueries({ queryKey: qk.messages(session_id) })
+    })
+  )
 
   offs.push(
     live.onDomain('rule_proposal.updated', (e) => {
@@ -293,12 +304,16 @@ export function installDomainEvents(qc: QueryClient): () => void {
     })
   )
 
+  // #149 one local model job at a time
+  offs.push(live.onDomain('model.busy', (e) => qc.setQueryData(qk.modelBusy, e.data)))
+  offs.push(live.onDomain('backup.updated', () => void qc.invalidateQueries({ queryKey: qk.backups })))
+
   // After a reconnect we may have missed events: refresh lists (not transcripts).
   let prev: SocketState = live.state
   offs.push(
     live.onState((s) => {
       if (s === 'open' && prev === 'reconnecting') {
-        for (const key of [qk.sessions, qk.notifications, qk.tasks.all, qk.integrations.all, qk.bootstrap, qk.stop, deviceKeys.all, channelKeys.all, browserKeys.status, browserKeys.profiles]) {
+        for (const key of [qk.sessions, qk.notifications, qk.tasks.all, qk.integrations.all, qk.bootstrap, qk.stop, qk.modelBusy, deviceKeys.all, channelKeys.all, browserKeys.status, browserKeys.profiles]) {
           void qc.invalidateQueries({ queryKey: key })
         }
       }

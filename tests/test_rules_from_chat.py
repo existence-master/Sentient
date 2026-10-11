@@ -187,6 +187,71 @@ def test_parse_detection_checks_keys_in_code():
     assert parse_detection("no json here", tools) == ([], None)
 
 
+def test_prefilter_skips_everyday_dont_phrases():
+    """#250: "if you don't know, say so" is no prohibition and never reaches the model."""
+    assert standing_text("What is my favourite tea? If you don't know, say so.") == ""
+    assert standing_text("I don\u2019t know what to cook tonight.") == ""
+    assert standing_text("Don't worry about the format.") == ""
+    # a real instruction in the same sentence still counts
+    assert standing_text("If you don't know, never guess my address.") == "If you don't know, never guess my address."
+    assert standing_text("Never write files for me.") == "Never write files for me."
+
+
+def test_a_tool_key_needs_an_action_the_app_or_the_tool_in_the_words():
+    @tool("device_speak", risk=Risk.send)
+    async def device_speak(ctx: ToolContext, text: str) -> dict:
+        """Say something out loud on a device."""
+        return {}
+
+    @tool("device_take_photo", risk=Risk.read)
+    async def device_take_photo(ctx: ToolContext) -> dict:
+        """Take a photo with a device camera."""
+        return {}
+
+    @tool("file_write", risk=Risk.write)
+    async def file_write(ctx: ToolContext, name: str) -> dict:
+        """Write a file."""
+        return {}
+
+    device_speak.plugin = device_take_photo.plugin = "nodes"
+    file_write.plugin = "files"
+    tools = [device_speak, device_take_photo, file_write]
+    names = {"nodes": "Devices", "files": "Files"}
+    loose = ["device_speak", "device_take_photo"]
+    assert narrow_app_keys(loose, "never say you don't know", tools, names) == []
+    assert narrow_app_keys(loose, "If you don't know, say so.", tools, names) == []
+    assert narrow_app_keys(["file_write"], "Never write files for me.", tools, names) == ["file_write"]
+    assert narrow_app_keys(["device_take_photo"], "never take photos", tools, names) == ["device_take_photo"]
+    assert narrow_app_keys(loose, "don't use my devices", tools, names) == loose
+
+
+async def test_if_you_dont_know_say_so_proposes_nothing(config, isolated_home):
+    """#250: the exact message from the real run makes no card and no model call."""
+    reply = {"keys": ["device_speak", "device_capture_screen", "device_take_photo", "history_semantic_search"],
+             "rule": "never"}
+    llm = FakeProvider(replies=["I don't know yet."], json_replies=[reply])
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, "What is my favourite colour, and what is my favourite tea? If you don't know, say so.")
+        assert await s.chat_rules.list(sid, None) == []
+        assert _json_calls(llm) == []
+    finally:
+        await s.stop()
+
+
+async def test_never_write_files_still_proposes_file_write(config, isolated_home):
+    llm = FakeProvider(replies=["ok"], json_replies=[{"keys": ["file_write"], "rule": "never"}])
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, "From now on, never write files for me.")
+        [proposal] = await s.chat_rules.list(sid)
+        assert proposal["keys"] == ["file_write"] and proposal["rule"] == "never"
+    finally:
+        await s.stop()
+
+
 @pytest.mark.parametrize(
     ("text", "reply", "keys", "label"),
     [

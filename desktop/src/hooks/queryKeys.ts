@@ -8,6 +8,7 @@ export const qk = {
   bootstrap: ['bootstrap'] as const,
   stop: ['stop'] as const,
   config: ['config'] as const,
+  backups: ['backups'] as const,
   configSchema: ['config-schema'] as const,
 
   sessions: ['sessions'] as const,
@@ -19,6 +20,7 @@ export const qk = {
   providers: ['models', 'providers'] as const,
   localModels: ['models', 'local'] as const,
   hardware: ['models', 'hardware'] as const,
+  modelBusy: ['models', 'busy'] as const,
   catalog: (provider: string) => ['models', 'catalog', provider] as const,
   signIn: (state: string) => ['models', 'sign-in', state] as const,
   chatgpt: ['models', 'chatgpt'] as const,

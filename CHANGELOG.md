@@ -6,6 +6,50 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Backups and restore:** Settings > Backups backs up everything Sentient keeps (chats, memory, tasks, settings,
+  skills and files) to one file, by hand or every day or week. Backups go to Sentient Backups in your Documents
+  folder (the one Windows really uses, also when it lives in OneDrive), apart from your data, or to a folder you
+  pick. Settings says when that folder syncs to OneDrive, Dropbox, Google Drive or iCloud, since the backups are
+  then copied to the cloud too. A backup holds the certificate your devices trust, so keep
+  backups somewhere private. Restore one from the list or from
+  a file: you see what is in it and confirm, Sentient keeps a snapshot of what you have now, then restarts with the
+  backup. Passwords, API keys and sign-ins stay in your computer's keychain and are never in a backup; after a restore
+  Sentient lists the ones to sign in to again. Sentient also takes a snapshot on its own before it updates its
+  database, before a Hermes import and before a restore, keeps the last five, and any of them can be restored.
+- **Recurring tasks remember their last runs:** each run of a recurring task now reads a short note of what its last
+  three runs found, sent or decided, plus the task's own notes, so it tells you only what is new instead of repeating
+  yesterday's news. Runs keep those notes up to date themselves; see, edit or clear them under **Notes between runs**
+  on the task.
+- **Watches that only speak up when something important changed:** a check script can now **Tell me when something
+  important changes**. Each check is compared with the last one without any AI, so an unchanged page costs nothing
+  and stays silent; only when something changed does your fast AI model decide whether it matters, and then you get
+  one notification that says what changed. Every watch also keeps a quiet list of its recent checks ("Checked,
+  nothing new", "Something changed. You were told") under Runs.
+- **Fuzzy times for repeating tasks:** a daily or weekly task can run "in the morning", "afternoon", "evening" or "at
+  night" instead of at an exact time; Sentient picks a time inside that part of the day. Say it in your request
+  ("every weekday morning") or pick it in the schedule editor.
+- **Sources under answers:** when Sentient used the web, your email, a file or a connected app to answer, small
+  chips under the reply show what it used: the page, the email's subject, the file or the app, next to the memories
+  it had in mind. Click a chip to see the part Sentient read and open the page, email or file. Answers that used
+  nothing show no chips.
+- **Incognito chats:** start one from the button next to New chat, the command palette or Ctrl+Shift+N
+  (Cmd+Shift+N on a Mac). Nothing you say in it is remembered: Sentient saves no memories from it, learns no skills
+  from it, leaves it out of what it learns about you and of chat search, and deletes it when you leave it or close
+  Sentient (or after 30 minutes without a message). The chat has a tinted header and an Incognito label so you always
+  know. It can still use what Sentient already knows about you; turn that off in Settings > General > Conversations.
+- **One local model job at a time, your chats first:** a local Ollama model now works on one thing at a time, so
+  background work no longer pushes it off the graphics card and slows your chat to a crawl. Your chat always goes
+  next; tasks, suggestions, memory upkeep and chat titles wait while you are chatting (and for 30 seconds after), and
+  while your laptop runs on battery. A small "Model busy" sign in the title bar says what the model is working on and
+  what waits. Change the wait, allow background work on battery or turn the queue off in Settings > Models. Cloud
+  models never wait.
+- **Read only or Read and write for each connection:** when you connect Gmail, Calendar, GitHub or any other app,
+  and on every custom MCP server, pick **Read only** or **Read and write**. Read only lets Sentient look things up
+  there but never change, send, delete or run anything: those abilities are hidden from the model and refused if
+  it tries anyway, in chats, tasks, helpers and scripts alike, even with an Allow rule or approvals turned off. Switch
+  any time from the app's panel in Integrations (or the server's row); it applies at once, no restart. For a server
+  that runs other apps' actions by name (Composio's multi-execute), Read only still allows the look-ups and refuses
+  the rest, and those look-ups no longer ask for approval. Fewer tools also helps small local models pick the right one.
 - **Claude through your own Claude Code (experimental):** if Claude Code is installed and signed in on your computer,
   your chats can use Claude through it (Settings > Models, off until you turn it on). Sentient never reads or keeps
   your Claude login, and leaves API keys and other sign-in settings in your environment out, so Claude Code always
@@ -13,6 +57,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   approvals and rules, and Stop everything stops it. It only answers your chats: tasks, suggestions and other
   background work keep using your other models, and it can't be the memory search model. Anthropic may change how
   this is counted or allowed.
+- **Browser downloads:** files Sentient downloads while using a website are saved to `downloads/` in your Files
+  folder, and the browser result says where. In an attached browser, only downloads from Sentient's own tabs are
+  saved.
 - **Push to talk and dictation into any app:** hold Ctrl+Alt+Shift+T (Cmd+Option+Shift+T on a Mac) anywhere, speak,
   and let go: what you said goes to Sentient as a chat message, and the answer is read aloud. Press Ctrl+Alt+Shift+D,
   speak, and press it again (or just pause): your words are typed where your cursor is, in any app. A small bar at the
@@ -178,6 +225,40 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 - Chats using Claude through your own Claude Code now show the context meter and the "getting long" warning at
   85%: the context length is read from the matching Anthropic model, which LiteLLM knows, instead of nothing.
+- Messages and memories saved at the same moment now always keep their order, and the daily upkeep of MEMORY.md and
+  USER.md no longer misses a memory saved while it was reading. Summarizing a long chat no longer skips messages
+  saved at the same moment as the last summary.
+- When a cloud model says no, chat and tasks now say why in a plain sentence and what to do, instead of showing the
+  provider's raw reply. For example: "OpenRouter's free models have reached today's limit. Add credits on
+  openrouter.ai, wait until tomorrow, or pick another model in Settings > Models." This covers rate limits, an
+  account out of credits, a key that was mistyped or revoked, a free model OpenRouter keeps for coding tools, a model
+  that doesn't exist or isn't downloaded, and a provider that is down or too slow. The raw reply stays in the log.
+- One long tool result no longer fills a local model's whole context. A result may now take about a quarter of what
+  the model reads at once (Settings > General > Conversations), so on an 8,192-token model a 13,000-character Composio
+  search no longer triggers "This chat is getting long" after a single step. The model is told plainly when a result
+  was cut, and the full result is still saved. Composio's tool search keeps its useful part instead of its first
+  characters: the recommended plan, the tool names, which apps are connected and the main tool's settings. A connected
+  tool server that sends its answer twice (as text and as data) is now read once.
+- Turning on "Use my Claude Code for chats" now shows the Claude Code version straight away, instead of sometimes
+  showing nothing until you came back to the page. Settings also says that its replies take a few seconds to start
+  and arrive in larger pieces than with your other models.
+- Claude Code no longer leaves empty scratch folders behind on Windows. Each reply's folder is removed once Claude
+  Code has fully exited, and folders left by earlier runs are cleared when Sentient starts.
+- A task that can't be planned because Claude Code is your main model now says so and what to do ("Pick a
+  planner model in Settings > Models"), instead of saying the AI model is unavailable.
+- A memory waiting for your review now shows the page or message it came from, not the error from a later action
+  you declined or that failed.
+- Adding a server (MCP) that you already signed in to from another Sentient setup on the same computer, such as a
+  fresh install or a test setup, no longer signs you out of it. The sign-in now remembers the server's address, so it
+  is kept and reused for the same address and only cleared when the address changes.
+- Local models can now use large MCP servers such as Composio, Notion or GitHub. Naming the server in your message
+  ("using Composio...") always offers its tools, and a server with more tools than fit offers its most relevant ones,
+  keeping its "search" and "run" tools together, instead of none at all.
+- A message with a link now offers local models the page reader (`web_fetch`) next to the web browser, and a tool
+  you name exactly ("use web_fetch") is always offered (#252).
+- Signed-in MCP servers (Composio, for example) no longer ask you to sign in again about an hour after Sentient
+  restarts. The sign-in now remembers where the server renews it, so renewing works after a restart; sign-ins saved
+  before this fix look that up once on their own.
 - Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
   and many tools are no longer cut off without warning. Change it with `models.context_length`, per role with
   `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.
@@ -185,8 +266,25 @@ and versions follow [Semantic Versioning](https://semver.org/).
   dropped connection when the computer is busy.
 - What Sentient learns about you reads your messages in the order you sent them, even when two were saved at the
   same instant.
+- The model check-up no longer warns about the graphics card on an 8 GB card running the setup Sentient recommends
+  for it (qwen3:8b reading 8,192 tokens at a time). About 90% of the model fits there, which is expected; the only way
+  to fit all of it is a context below 8,192 tokens, which cuts off long tasks. A bigger spill, a longer context or a
+  different model still gets the warning.
+- Saving something new about you no longer overwrites a different memory: "doesn't want files written" is kept next
+  to "doesn't want files deleted" instead of replacing it, and so is "doesn't want emails deleted". A memory is only
+  changed when the new one is about the same person and the same thing. A vaguer memory that an existing one already
+  covers ("your sister lives in a city", "you have a sister") is no longer added, and neither are gaps like "your
+  sister's job is unknown".
+- Everyday phrases like "If you don't know, say so" no longer make Sentient suggest a Never rule for unrelated
+  tools. A suggested rule for a single tool now needs your words to name an action, the app or the tool, so
+  "Never write files for me" still suggests blocking file writing.
+- Edge's downloads hub no longer replaces the active page or appears as a browser tab when a download starts.
 
 ### Security
+- Text from web pages, emails, messages and other apps now reaches the AI clearly marked as outside content, with a
+  standing rule to treat it as information and never follow instructions hidden in it. A page can't fake the end of
+  the marked part. Your own messages are not marked. To compare, turn it off in Settings > General > Conversations
+  ("Mark outside content").
 - Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before
   sending, posting, inviting people to an event, typing into a web page, running code or opening an address that
   could carry your data to a new site, even for apps set to Allow and with approvals off. The

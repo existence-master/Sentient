@@ -162,8 +162,9 @@ budget), context compression first calls `memory.flush_conversation`, and
 
 ### Memory is pushed, not pulled
 Each turn the system prompt carries SOUL.md (persona), USER.md, MEMORY.md,
-recent daily notes, recalled facts, the skill index, the clock and a running
-summary of long conversations. v2 relied on the model deciding to call a memory
+recent daily notes, recalled facts, the skill index, and a running
+summary of long conversations. The current clock goes with the latest user
+message instead. v2 relied on the model deciding to call a memory
 tool before it knew anything about you. Tools remain for explicit recall,
 remembering, forgetting and history search. Memories learned from outside
 content (an email, a web page), from work nobody asked for, or from an import

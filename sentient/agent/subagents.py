@@ -28,6 +28,7 @@ from typing import Any
 from sentient import paths
 from sentient.agent.loop import Budget, LoopResult
 from sentient.llm.events import Error, TextDelta, ToolCallEvent, ToolResultEvent
+from sentient.llm.jobs import detached
 from sentient.services import Service, cancel_tasks
 from sentient.store.db import new_id, now_iso
 from sentient.tools.base import Risk, Tool
@@ -154,6 +155,14 @@ class SubagentManager(Service):
         return bool(t and not t.done())
 
     # ------------------------------------------------------------------ actions
+    async def cancel_for_session(self, session_id: str) -> int:
+        """Cancel the helpers a chat started (before the chat is deleted). Returns how many were running."""
+        rows = await self.app.store.fetchall(
+            "SELECT id FROM subagents WHERE session_id = ? AND status = 'running'", (session_id,)
+        )
+        tasks = [t for r in rows if (t := self._tasks.get(r["id"])) is not None and not t.done()]
+        return await cancel_tasks(tasks, timeout=10) if tasks else 0
+
     async def cancel(self, subagent_id: str) -> dict | None:
         task = self._tasks.get(subagent_id)
         if task is not None and not task.done():
@@ -204,6 +213,8 @@ class SubagentManager(Service):
         task = asyncio.create_task(
             self._run(sub_id, goal, context or "", tools, session_id, bool(background), on_update, origin, untrusted),
             name=f"subagent:{sub_id}",
+            # a foreground helper is part of whatever waits on it (a chat reply); a background one is task work (#149)
+            context=detached("task") if background else None,
         )
         self._tasks[sub_id] = task
         task.add_done_callback(lambda _t, sid=sub_id: self._tasks.pop(sid, None))
@@ -320,14 +331,15 @@ class SubagentManager(Service):
             return [t.name for t in usable]
         return [n for n in selected if n in usable_names]
 
-    def _system_prompt(self) -> str:
+    def _system_prompt(self, *, private: bool = False) -> str:
+        """``private``: started from an incognito chat that doesn't use memory (#154), so the user's name stays out."""
         from sentient.tools.builtin.time_tool import resolve_tz
 
         cfg = self.app.config.assistant
         now = datetime.now(resolve_tz(cfg.timezone))
         return SUBAGENT_SYSTEM.format(
             assistant=cfg.name or "Sentient",
-            user=cfg.user_name or "the user",
+            user=(None if private else cfg.user_name) or "the user",
             now=f"{now.strftime('%A %Y-%m-%d %H:%M')} ({now.tzinfo})",
         )
 
@@ -363,11 +375,14 @@ class SubagentManager(Service):
             async with self._slot():
                 before = await asyncio.to_thread(_snapshot_files)
                 note({"type": "info", "content": f"Started: {goal[:200]}"}, "Started")
+                incognito = await self.app.store.is_incognito(session_id)  # kept if the chat is deleted (#154)
+                private = incognito and not self.app.config.chat.incognito_uses_memory
                 messages = [
-                    {"role": "system", "content": self._system_prompt()},
+                    {"role": "system", "content": self._system_prompt(private=private)},
                     {"role": "user", "content": f"Goal: {goal}" + (f"\n\nContext:\n{context}" if context else "")},
                 ]
                 ctx = agent.tool_context(session_id, "subagent", origin=origin)
+                ctx.incognito = incognito
                 ctx.untrusted = untrusted
                 ctx.extra["subagent_id"] = sub_id
                 names = await self._tool_names(goal, context, tools, cfg.role)

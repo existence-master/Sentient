@@ -300,12 +300,183 @@ async def test_large_tool_result_is_cut_and_saved(config, isolated_home):
         saved = isolated_home / "files" / "outputs" / "tool-call_big_dump.txt"
         assert saved.read_text(encoding="utf-8") == "x" * 5000
         rows = await s.store.recent_messages(sid, 10)
-        assert next(r for r in rows if r["role"] == "tool")["content"] == tool_msg["content"]
+        stored = next(r for r in rows if r["role"] == "tool")["content"]
+        # stored as cut; the model reads it marked as outside content (ADR 0023)
+        assert s.agent.outside_content(stored, s.registry.get("big_dump")) == tool_msg["content"]
+    finally:
+        await s.stop()
+
+
+def with_window(llm: FakeProvider, tokens: int | None) -> FakeProvider:
+    async def context_window(role: str, model: str | None = None) -> int | None:
+        return tokens
+
+    llm.context_window = context_window
+    return llm
+
+
+async def test_tool_result_limit_is_a_share_of_the_context(config, isolated_home):
+    """#264: on an 8,192-token local model one result may fill about a quarter of the context, not 16,000 chars."""
+    s = await start(config, isolated_home, FakeProvider(), "limit")
+    try:
+        assert await s.agent.tool_result_limit("primary") == 16000  # context length unknown: the fixed cap
+        with_window(s.agent.llm, 8192)
+        assert await s.agent.tool_result_limit("primary") == 6144
+        with_window(s.agent.llm, 200_000)
+        assert await s.agent.tool_result_limit("primary") == 16000  # a big cloud window keeps the fixed cap
+        with_window(s.agent.llm, 1024)
+        assert await s.agent.tool_result_limit("primary") == 1500  # never below a useful minimum
+        config.chat.tool_result_context_share = 0.5
+        with_window(s.agent.llm, 8192)
+        assert await s.agent.tool_result_limit("primary") == 12288
+    finally:
+        await s.stop()
+
+
+async def test_long_result_is_cut_to_the_context_share(config, isolated_home):
+    @tool("big_page", risk=Risk.read)
+    async def big_page(ctx: ToolContext) -> str:
+        """Return a long page."""
+        return "y" * 13000
+
+    llm = with_window(FakeProvider(replies=[[tool_call("big_page")], "ok"]), 8192)
+    s = await start(config, isolated_home, llm, "share")
+    try:
+        s.registry.register(make_plugin("page", big_page))
+        sid = await s.store.create_session(channel="cli")
+        events = [ev async for ev in s.agent.run_turn(sid, "page", channel="cli")]
+        assert next(e for e in events if isinstance(e, ToolResultEvent)).result == "y" * 13000
+        content = llm.calls[1]["messages"][-1]["content"]
+        body = content.split("\n", 1)[1]  # after the outside-content marker (ADR 0023)
+        assert body.startswith('"yyy') and "y" * 6143 in content and "y" * 6200 not in content
+        assert "[Result cut: this is only the first 6144 of 13002 characters." in content
+        assert "files/outputs/tool-call_big_page.txt" in content
+    finally:
+        await s.stop()
+
+
+async def test_a_fallback_models_context_sets_the_limit(config, isolated_home):
+    """The model that actually answered (a fallback, reported on the chunk) decides how much of a result it reads."""
+
+    @tool("big_page", risk=Risk.read)
+    async def big_page(ctx: ToolContext) -> str:
+        """Return a long page."""
+        return "y" * 13000
+
+    llm = FakeProvider(replies=[[tool_call("big_page")], "ok"])  # asks for fake/primary, answers as "fake"
+
+    async def context_window(role: str, model: str | None = None) -> int:
+        return 8192 if model == "fake" else 200_000
+
+    llm.context_window = context_window
+    s = await start(config, isolated_home, llm, "fallback")
+    try:
+        s.registry.register(make_plugin("page", big_page))
+        sid = await s.store.create_session(channel="cli")
+        _ = [ev async for ev in s.agent.run_turn(sid, "page", channel="cli")]
+        assert "only the first 6144 of 13002 characters" in llm.calls[1]["messages"][-1]["content"]
+    finally:
+        await s.stop()
+
+
+async def test_a_tools_shortener_replaces_the_plain_cut(config, isolated_home):
+    """A tool with ``shorten_fn`` (Composio's search, #264) gives the model its main parts instead of the start."""
+
+    @tool("search_catalog", risk=Risk.read)
+    async def search_catalog(ctx: ToolContext) -> dict:
+        """Search the catalog."""
+        return {"plan": ["call LIST_EVENTS"], "schemas": "z" * 20000}
+
+    search_catalog.shorten_fn = lambda res: {"plan": res["plan"]}
+    llm = with_window(FakeProvider(replies=[[tool_call("search_catalog")], "ok"]), 8192)
+    s = await start(config, isolated_home, llm, "shorten")
+    try:
+        s.registry.register(make_plugin("catalog", search_catalog))
+        sid = await s.store.create_session(channel="cli")
+        _ = [ev async for ev in s.agent.run_turn(sid, "search", channel="cli")]
+        content = llm.calls[1]["messages"][-1]["content"]
+        assert content.split("\n", 1)[1].startswith('{"plan": ["call LIST_EVENTS"]}')  # after the outside marker
+        assert "[Result shortened from 20045 characters to its main parts." in content and "zzz" not in content
+        saved = isolated_home / "files" / "outputs" / "tool-call_search_catalog.txt"
+        assert "z" * 20000 in saved.read_text(encoding="utf-8")
+    finally:
+        await s.stop()
+
+
+async def test_a_shortener_that_fails_falls_back_to_the_cut(config, isolated_home):
+    @tool("odd_tool", risk=Risk.read)
+    async def odd_tool(ctx: ToolContext) -> str:
+        """Return a long odd result."""
+        return "q" * 9000
+
+    def broken(res):
+        raise ValueError("unexpected shape")
+
+    odd_tool.shorten_fn = broken
+    llm = with_window(FakeProvider(replies=[[tool_call("odd_tool")], "ok"]), 8192)
+    s = await start(config, isolated_home, llm, "broken")
+    try:
+        s.registry.register(make_plugin("odd", odd_tool))
+        sid = await s.store.create_session(channel="cli")
+        _ = [ev async for ev in s.agent.run_turn(sid, "odd", channel="cli")]
+        assert "[Result cut: this is only the first 6144 of 9002 characters." in llm.calls[1]["messages"][-1]["content"]
     finally:
         await s.stop()
 
 
 # ---------------------------------------------------------------------------- prompt caching
+async def test_current_time_is_in_user_message_not_system_prompt(config, isolated_home):
+    llm = FakeProvider(replies=["First answer.", "Second answer."])
+    s = await start(config, isolated_home, llm, "current-time")
+    try:
+        sid = await s.store.create_session(channel="cli")
+
+        async for _ in s.agent.run_turn(sid, "What time is it?", channel="cli"):
+            pass
+
+        first_messages = llm.calls[0]["messages"]
+        first_system = first_messages[0]["content"]
+        first_user = first_messages[-1]["content"]
+
+        assert "[Current time:" not in first_system
+        assert "[Current time:" in first_user
+        assert "What time is it?" in first_user
+
+        async for _ in s.agent.run_turn(sid, "And now?", channel="cli"):
+            pass
+
+        second_messages = llm.calls[1]["messages"]
+        second_system = second_messages[0]["content"]
+        second_user = second_messages[-1]["content"]
+
+        assert second_system == first_system
+        assert "[Current time:" in second_user
+        assert "And now?" in second_user
+
+        rows = await s.store.recent_messages(sid, 20)
+        assert rows[0]["content"] == "What time is it?"
+        assert rows[2]["content"] == "And now?"
+    finally:
+        await s.stop()
+
+
+def test_system_prompt_does_not_depend_on_current_time():
+    from sentient.agent.prompt import build_system_prompt
+
+    kwargs = {
+        "snapshot": {},
+        "facts": [],
+        "skills_index": "",
+        "assistant_name": "Sentient",
+        "user_name": "Maya",
+        "channel": "desktop",
+    }
+
+    prompt = build_system_prompt(**kwargs)
+
+    assert "- Now:" not in prompt
+    assert "[Current time:" not in prompt
+
 def test_prompt_cache_only_for_anthropic():
     messages = [{"role": "system", "content": "persona"}, {"role": "user", "content": "hi"}]
     tools = [{"type": "function", "function": {"name": "a"}}, {"type": "function", "function": {"name": "b"}}]
@@ -487,7 +658,7 @@ async def test_selection_triggers_surface_new_capabilities():
 
 def test_capability_rules_follow_available_tools():
     base = dict(snapshot={}, facts=[], skills_index="", assistant_name="Sentient", user_name="Sarthak",
-                timezone="UTC", channel="desktop")
+                channel="desktop")
     plain = build_system_prompt(**base, tool_names=["memory_recall"])
     assert "Open browser button" not in plain and "execute_code" not in plain
     rich = build_system_prompt(
@@ -562,7 +733,7 @@ async def test_steer_messages_are_marked_and_package_schemas_listed(config, isol
 
 
 async def test_messaging_and_phone_channels(config, isolated_home):
-    base = dict(snapshot={}, facts=[], skills_index="", assistant_name="Sentient", user_name="Sarthak", timezone="UTC")
+    base = dict(snapshot={}, facts=[], skills_index="", assistant_name="Sentient", user_name="Sarthak")
     assert "chatting in Telegram" in build_system_prompt(**base, channel="telegram")
     assert "No wide tables" in build_system_prompt(**base, channel="discord")
     llm = FakeProvider(replies=["Hi."])

@@ -80,7 +80,10 @@ CLAUDE_CODE_MODELS: tuple[str, ...] = ("claude-code/sonnet", "claude-code/opus")
 # local model can use (an NVIDIA or AMD card, or about two thirds of the memory on Apple silicon); ``min_ram_gb`` is
 # total memory, for computers without one. Sizes are GiB as tools report them (an "8 GB" card or computer shows about
 # 7.8 to 8.0). One model does chat and background jobs, so Ollama keeps a single model loaded. Only the 8 GB row is
-# measured (qwen3:8b on an RTX 4060 laptop); the 12, 16 and 24 GB rows are estimates from model and cache sizes.
+# measured (qwen3:8b on an RTX 4060 laptop, Ollama 0.9, 2026-10-10): at 8,192 tokens about 89 to 91% of the model is on
+# the graphics card (24 tokens/s); only 5,120 tokens or fewer fit fully (42 tokens/s), which is below the 8,192 that
+# long tasks need, so the row keeps 8,192 and the check-up accepts the small spill. The 12, 16 and 24 GB rows are
+# estimates from model and cache sizes.
 # ``cloud_first``: too little memory for a local model that can do tasks, so a cloud model is recommended and the row's
 # model is only a labelled chat-only fallback (qwen3:4b can't call tools reliably).
 LOCAL_MODEL_TIERS: tuple[dict, ...] = (
@@ -149,8 +152,8 @@ class ModelsConfig(BaseModel):
         le=1_048_576,
         description="How much text (in tokens) a local Ollama model reads at once: instructions, the conversation "
         "and tool results. Ollama's own default is only 4096 on most computers, which quietly cuts off long tasks. "
-        "Bigger values let the model see more but need more graphics memory: 8192 keeps qwen3:8b fully on an "
-        "8 GB graphics card, while 16384 or more can push part of it onto the processor and make replies much "
+        "Bigger values let the model see more but need more graphics memory: 8192 keeps most of qwen3:8b on an "
+        "8 GB graphics card, while 16384 or more pushes much more of it onto the processor and makes replies much "
         "slower. Never goes above the model's own maximum. Cloud models ignore this.",
     )
     context_length_per_role: dict[str, Annotated[int, Field(ge=2048, le=1_048_576)]] = Field(
@@ -190,6 +193,21 @@ class ModelsConfig(BaseModel):
     )
     max_tool_rounds: int = Field(12, ge=1, le=100, description="Max tool-call rounds per chat turn.")
     request_timeout_s: int = Field(180, ge=10, description="Per-request timeout in seconds.")
+    local_queue: bool = Field(
+        True,
+        description="Give a local Ollama model one job at a time, your chats first. Two jobs at once can push the "
+        "model off the graphics card and make both slow. Cloud models never wait.",
+    )
+    background_quiet_s: int = Field(
+        30, ge=0, le=3600,
+        description="Background work (tasks, suggestions, memory upkeep, chat titles) waits to use a local model "
+        "until you have not chatted for this many seconds.",
+    )
+    background_on_battery: bool = Field(
+        False,
+        description="Let background work use a local model while this computer runs on battery. When off, it waits "
+        "until you plug in. Your chats always run.",
+    )
 
 
 class GatewayConfig(BaseModel):
@@ -218,8 +236,32 @@ class ChatConfig(BaseModel):
         description="Longest tool result the model reads. Longer results are cut and the full text is saved "
         "under files/outputs/ so the assistant can open it if needed.",
     )
+    tool_result_context_share: float = Field(
+        0.25,
+        ge=0.05,
+        le=1.0,
+        description="Largest share of what the model reads at once that one tool result may fill. Keeps a single "
+        "long result from crowding out the chat on models with a short context length.",
+    )
     parallel_read_tools: bool = Field(
         True, description="Run look-up tools the model asks for in the same step at the same time."
+    )
+    incognito_uses_memory: bool = Field(
+        True,
+        description="Incognito chats can use what Sentient already knows about you. Nothing from an incognito chat "
+        "is ever remembered either way.",
+    )
+    incognito_delete_after_minutes: int = Field(
+        30,
+        ge=1,
+        le=1440,
+        description="An incognito chat is deleted when you leave it or close Sentient, or after this many minutes "
+        "without a new message.",
+    )
+    mark_outside_content: bool = Field(
+        True,
+        description="Mark text from web pages, emails, messages and other apps to help the assistant treat it as "
+        "information, not as instructions.",
     )
 
 
@@ -421,6 +463,19 @@ class IntegrationsConfig(BaseModel):
         True,
         description="Only show the model tools of integrations that are connected (keeps small local models focused).",
     )
+    read_only: list[str] = Field(
+        default_factory=list,
+        description="Connections set to Read only, by app id (gmail, github, mcp_<server>). Sentient can look things "
+        "up there but never change, send, delete or run anything: those tools are hidden and refused.",
+    )
+
+    @field_validator("read_only", mode="before")
+    @classmethod
+    def _clean_read_only(cls, value: object) -> object:
+        """Trim ids, drop empty ones and duplicates, keep the order."""
+        if not isinstance(value, list | tuple | set):
+            return value
+        return list(dict.fromkeys(s for s in (str(v).strip() for v in value) if s))
     news_country: str = Field(
         "", description="Two-letter country code for top headlines (empty = guess from your location, else US)."
     )
@@ -939,6 +994,28 @@ class DreamingConfig(BaseModel):
     notify: bool = Field(True, description="Send a notification when a dream changed something meaningful.")
 
 
+class BackupsConfig(BaseModel):
+    folder: str | None = Field(
+        None,
+        description="Folder for backups. Empty uses Sentient Backups in your Documents folder (or the backups folder "
+        "inside Sentient's data folder when Documents can't be used). A folder on another drive or a synced cloud "
+        "folder keeps them safe if this computer fails.",
+    )
+    schedule: Literal["off", "daily", "weekly"] = Field(
+        "off", description="Back up automatically every day or every week, while Sentient is running."
+    )
+    keep: int = Field(
+        5, ge=1, le=100,
+        description="How many automatic backups to keep. Older automatic ones are deleted; backups you make yourself "
+        "are never deleted.",
+    )
+    snapshots_keep: int = Field(
+        5, ge=1, le=50,
+        description="How many snapshots to keep. Sentient takes one before it updates its database, before an import "
+        "and before a restore.",
+    )
+
+
 class SentientConfig(BaseModel):
     """Root configuration, persisted at ``~/.sentient/config.yaml``."""
 
@@ -962,4 +1039,5 @@ class SentientConfig(BaseModel):
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     user_model: UserModelConfig = Field(default_factory=UserModelConfig)
     dreaming: DreamingConfig = Field(default_factory=DreamingConfig)
+    backups: BackupsConfig = Field(default_factory=BackupsConfig)
     ui: UIConfig = Field(default_factory=UIConfig)

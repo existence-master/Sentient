@@ -13,11 +13,20 @@ user's installed `claude` program (Claude Code) instead of calling the API. Anth
   ([legal and compliance](https://code.claude.com/docs/en/legal-and-compliance),
   [Agent SDK overview](https://code.claude.com/docs/en/agent-sdk/overview)).
 - This does not stop an end user from signing in to the unmodified Claude Code binary with their own plan.
-- `claude -p`, the Agent SDK and third-party apps still draw on plan limits; a separate Agent SDK credit was announced
-  and then paused on 2026-06-15, and Max and Team plans gained monthly API credits on 2026-10-07
-  ([help article](https://support.claude.com/en/articles/15036540)). Advertised limits assume "ordinary, individual
-  usage". Since April 2026, harnesses that call the API with plan logins are reported to draw paid extra usage
-  instead of plan limits.
+- `claude -p`, the Agent SDK and third-party apps still draw on plan limits. A change to Agent SDK usage was announced
+  and then paused on 2026-06-15, and on 2026-10-07 Max and Team plans gained monthly API credits
+  ([Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540), checked
+  2026-10-10). Those credits cover `claude -p` only when it runs with an API key; signed in with a plan, it draws on
+  the plan's limits and never on the credits
+  ([Monthly API credits for Max and Team plans](https://support.claude.com/en/articles/17154008)).
+- Plan usage "is designed to support ordinary use of native Anthropic applications". For third-party software the
+  preferred route is an API key; Anthropic may allow certain third-party tools for subscribers who turned on usage
+  credits and "reserves the right" to charge their use to those credits instead of plan limits; and tools that route
+  third-party traffic against plan limits are not allowed
+  ([Log in to your Claude account](https://support.claude.com/en/articles/13189465), 2026-05-19).
+- In April 2026 Anthropic emailed subscribers that third-party harnesses using plan logins (OpenClaw first) would
+  draw on paid extra usage instead of plan limits. That email was reported in the press; no current help article
+  repeats it, and the login article above is the standing rule.
 
 So the one possible route is the user running their own Claude Code, and how Anthropic counts or allows that may
 change. Claude Code is also an agent with its own tools (shell, file edits, web fetch) that would bypass Sentient's
@@ -68,9 +77,9 @@ switch and this ADR are where to change course.
 ## Alternatives considered
 
 Reading `~/.claude/.credentials.json` or a `setup-token` and calling the API with Claude Code headers (Hermes's native
-path): forbidden by Anthropic's terms and billed as extra usage anyway. The Claude Agent SDK for Python: it drives the
+path): forbidden by Anthropic's terms, and reported since April 2026 to be billed as extra usage anyway. The Claude Agent SDK for Python: it drives the
 same binary, but adds a dependency and its in-process MCP tools would run inside Claude Code's loop instead of
 Sentient's. Letting Claude Code run Sentient's tools through an MCP server that calls back into the engine: a second
 tool loop to keep in step with approvals, rules and outside-content checks. Allowing it for background work: it would
-strain "ordinary, individual usage" and run without anyone watching. A Claude Max plan's monthly API credits through
+go beyond the "ordinary use" plans are meant for and run without anyone watching. A Claude Max plan's monthly API credits through
 an ordinary API key remain the fully supported way to use a plan.

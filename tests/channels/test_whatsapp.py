@@ -314,7 +314,12 @@ async def test_photo_and_document_become_attachments(wa, llm):
     await wa.say("what is this", media=[WAMedia(kind="image", name="whatsapp-image-1.jpg", mime="image/jpeg", size=12, ref="img")])
     assert (paths.files_dir() / "uploads" / "whatsapp-image-1.jpg").read_bytes() == b"\xff\xd8\xff\xe0fakejpeg"
     content = llm.calls[-1]["messages"][-1]["content"]
-    assert isinstance(content, list) and "what is this" in content[0]["text"]
+    assert isinstance(content, list)
+    assert any(
+        block.get("type") == "text"
+        and "what is this" in block.get("text", "")
+        for block in content
+    )
     await wa.say(media=[WAMedia(kind="document", name="notes.txt", mime="text/plain", size=22, ref="doc")])
     assert "hello from a text file" in llm.calls[-1]["messages"][-1]["content"]
     await wa.say(media=[WAMedia(kind="document", name="huge.zip", size=50 * 1024 * 1024, ref="big")])
@@ -426,9 +431,15 @@ async def test_voice_note_in_and_voice_note_out(wa, llm, monkeypatch):
     await wa.say(media=[WAMedia(kind="voice", name="whatsapp-voice-ABC.ogg", mime="audio/ogg; codecs=opus", size=10, ref="v1")])
     assert voice.received == [(b"OggS-voice", "whatsapp-voice-ABC.ogg")]
     assert "_Heard:_ what's the weather in Pune" in wa.hub.screen()
-    assert llm.calls[-1]["messages"][-1]["content"] == "what's the weather in Pune"
+    content = llm.calls[-1]["messages"][-1]["content"]
+    assert isinstance(content, str)
+    assert content.endswith("what's the weather in Pune")
     assert wa.hub.last() == "It's sunny."
     notes = [s for s in wa.hub.sent if s["op"] == "voice"]
+    print("Voice replies enabled:", wa.app.config.channels.whatsapp.voice_replies)
+    print("Voice service:", repr(wa.app.voice))
+    print("Sent operations:", [s["op"] for s in wa.hub.sent])
+    print("All sent messages:", repr(wa.hub.sent))
     assert len(notes) == 1 and notes[0]["data"].startswith(b"OggS") and notes[0]["seconds"] >= 1
 
 

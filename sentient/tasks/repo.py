@@ -19,7 +19,7 @@ TASK_COLUMNS = {
     "name", "description", "status", "priority", "task_type", "schedule", "plan", "original_prompt",
     "source", "enabled", "assignee", "model", "chat_history", "clarifying_questions", "swarm_details",
     "original_context", "script", "error", "next_execution_at", "last_execution_at", "created_at", "updated_at",
-    "browser_profile", "deliver_to",
+    "browser_profile", "deliver_to", "notepad",
 }
 RUN_JSON_FIELDS = {"plan", "trigger_data", "messages", "result", "pending_question", "limits", "memory_sources"}
 RUN_COLUMNS = {
@@ -40,6 +40,7 @@ _ADDED_TASK_COLUMNS = {
     "script": "TEXT",
     "browser_profile": "TEXT",
     "deliver_to": "TEXT",
+    "notepad": "TEXT",
 }
 _ADDED_RUN_COLUMNS = {
     "plan": "TEXT", "resume_count": "INTEGER NOT NULL DEFAULT 0", "retry_of": "TEXT", "pending_question": "TEXT",
@@ -358,6 +359,7 @@ class TaskRepo:
             "model": task.get("model"),
             "browser_profile": task.get("browser_profile"),
             "deliver_to": from_stored(task.get("deliver_to")),
+            "notepad": task.get("notepad") or None,
             "original_context": task.get("original_context") or {"source": "manual_creation"},
             "script": task.get("script") if task.get("task_type") == "script" else None,
             "error": task.get("error"),

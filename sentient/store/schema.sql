@@ -19,9 +19,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at  TEXT NOT NULL,
     archived    INTEGER NOT NULL DEFAULT 0,
     context_summary TEXT,                         -- running summary of turns older than the history window
-    context_upto    TEXT,                         -- created_at of the last message folded into the summary
+    context_upto    TEXT,                         -- watermark of the messages folded into the summary (store.db.next_watermark)
     untrusted       TEXT,                         -- app whose content this chat read ("Gmail"); sends then ask (ADR 0018)
-    visited_hosts   TEXT                          -- JSON list of web hosts this chat loaded (ADR 0018)
+    visited_hosts   TEXT,                         -- JSON list of web hosts this chat loaded (ADR 0018)
+    incognito       INTEGER NOT NULL DEFAULT 0    -- 1: nothing is learned from it and it is deleted when closed (#154)
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS messages (
     attachments   TEXT,                           -- JSON list of file names (user messages)
     interjection  INTEGER NOT NULL DEFAULT 0,     -- 1 for user messages sent while a reply was running (steering)
     memory_sources TEXT,                          -- JSON list: memories a final assistant reply had in mind
+    sources       TEXT,                           -- JSON list: pages, emails, files and apps a final reply used (#174)
     created_at    TEXT NOT NULL,
     summarized    INTEGER NOT NULL DEFAULT 0
 );

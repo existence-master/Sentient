@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 
 from sentient import __version__
 from sentient.app import SentientApp
+from sentient.backup import apply_pending_restore
 from sentient.gateway.auth import load_or_create_token, ws_token_ok
 from sentient.gateway.routes import ROUTERS
 
@@ -46,6 +47,9 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
         # SENTIENT_DISABLE_BACKGROUND=1 starts the engine without schedulers, pollers, resume or reviews
         # (demo/screenshot profiles, debugging). The desktop app never sets it.
         background = os.environ.get("SENTIENT_DISABLE_BACKGROUND", "").strip().lower() not in {"1", "true", "yes"}
+        if sentient is None:
+            # a restore staged before the restart replaces the data now, before config and database are opened
+            apply_pending_restore()
         app.state.sentient = sentient or SentientApp(enable_background=background)
         await app.state.sentient.start()
         yield
@@ -115,7 +119,8 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                 # the kept reply's id and memory sources, so the window shows them without a reload
                 kept = {"message_id": stopped["message_id"]} if stopped.get("message_id") else {}
                 await send({"type": "done", "content": "", "session_id": session_id, "cancelled": True, **kept,
-                            "memory_sources": stopped.get("memory_sources") or []})
+                            "memory_sources": stopped.get("memory_sources") or [],
+                            "sources": stopped.get("sources") or []})
                 raise
             except Exception as exc:
                 log.exception("chat turn failed")
@@ -159,7 +164,7 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                         await send({"type": "steer_ack", "session_id": session_id, "queued": False,
                                     "client_id": msg.get("client_id")})
                     session_id = session_id or await s.store.create_session(
-                        channel=str(msg.get("channel", "desktop"))
+                        channel=str(msg.get("channel", "desktop")), incognito=msg.get("incognito") is True
                     )
                     await send({"type": "session", "session_id": session_id, "client_id": msg.get("client_id")})
                     chain = turns.setdefault(session_id, [])

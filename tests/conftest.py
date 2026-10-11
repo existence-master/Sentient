@@ -1,21 +1,50 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 import zlib
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from sentient.config.schema import SentientConfig
 from sentient.llm.provider import StreamChunk, ToolCall
+from sentient.paths import _windows_documents
+
+# The real user's folders a test must never write to (resolved once, before any test patches the home folder).
+_REAL_HOME = Path(os.path.expanduser("~"))
+REAL_GUARDED = [
+    _REAL_HOME / ".sentient" / "backups",
+    _REAL_HOME / "Documents" / "Sentient Backups",
+    *([Path(os.path.expandvars(os.environ["XDG_DOCUMENTS_DIR"])).expanduser() / "Sentient Backups"]
+      if os.environ.get("XDG_DOCUMENTS_DIR") else []),
+    # Windows' real Documents (it may be redirected, e.g. to OneDrive)
+    *([known / "Sentient Backups"] if sys.platform == "win32" and (known := _windows_documents()) is not None else []),
+]
+
+
+def _guarded_state() -> list:
+    out = []
+    for folder in REAL_GUARDED:
+        try:
+            out.append(sorted((p.name, p.stat().st_mtime_ns) for p in folder.iterdir()) if folder.exists() else None)
+        except OSError:
+            out.append("unreadable")
+    return out
 
 
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
-    """Every test gets its own ~/.sentient."""
+    """Every test gets its own ~/.sentient and its own Documents folder (where backups go by default), and fails if
+    it wrote backups to the real user's ones (issue #151)."""
+    before = _guarded_state()
     monkeypatch.setenv("SENTIENT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SENTIENT_DOCUMENTS_DIR", str(tmp_path / "documents"))
     yield tmp_path / "home"
+    assert _guarded_state() == before, f"a test wrote to the real user's backup folders: {REAL_GUARDED}"
 
 
 class FakeProvider:

@@ -25,7 +25,7 @@ from sentient.agent.loop import Budget, LoopResult, history_to_openai
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
 from sentient.llm.provider import ToolCall
 from sentient.memory.sources import MemorySources
-from sentient.tasks import ask, limits, stuck
+from sentient.tasks import ask, continuity, limits, stuck
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
     CORE_HELPER_PLUGINS,
@@ -36,7 +36,7 @@ from sentient.tasks.prompts import (
     build_executor_prompt,
 )
 from sentient.tasks.schedule import get_tz
-from sentient.tools.base import Risk
+from sentient.tools.base import Risk, effective_risk
 from sentient.tools.rules import never_message, untrusted_in
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -61,7 +61,7 @@ CONTINUE_NUDGE = (
 _ANNOUNCE_RE = re.compile(
     r"\b(?:I will|I'll|I am going to|I'm going to|let me|let's|now I will|next,? I will|I shall)\s+"
     r"(?:now\s+|then\s+|next\s+)?(?:proceed|create|write|save|start|begin|go ahead|draft|compose|generate|"
-    r"make|put|store|send|update|add|fetch|search|check)\b",
+    r"make|put|store|send|update|add|fetch|search|check|record|note)\b",
     re.IGNORECASE,
 )
 _DONE_RE = re.compile(
@@ -209,10 +209,26 @@ class ProgressMapper:
         # Error is reported once by the service when the run finishes.
 
 
+async def _earlier_section(svc: TaskService, task: dict, run: dict) -> tuple[str, bool]:
+    """What the last runs of a recurring task found and its notepad, logged once on the run (``tasks/continuity.py``),
+    and whether there was anything to remember."""
+    if not continuity.applies(task):
+        return "", False
+    runs = await continuity.earlier_runs(svc.repo, task["id"], run["id"], get_tz(svc.tz_name()))
+    notepad = continuity.clean_notepad(task.get("notepad"))
+    if runs or notepad:
+        what = [f"{len(runs)} earlier run{'s' if len(runs) != 1 else ''}"] if runs else []
+        what += ["its notepad"] if notepad else []
+        await svc.progress(task["id"], run["id"], {
+            "type": "info", "content": f"Remembering {' and '.join(what)}, so it reports only what is new.",
+        })
+    return continuity.prompt_section(runs, notepad), bool(runs or notepad)
+
+
 async def _executor_system_prompt(
     svc: TaskService, task: dict, run: dict, plan: list[dict], tool_map: dict[str, list[str]]
-) -> tuple[str, list[dict]]:
-    """The executor's system prompt and the recalled facts put into it."""
+) -> tuple[str, list[dict], str]:
+    """The executor's system prompt, the recalled facts put into it and the kickoff message."""
     app = svc.app
     cfg = app.config.assistant
     tz = get_tz(svc.tz_name())
@@ -225,6 +241,9 @@ async def _executor_system_prompt(
             facts = [f for f in await app.memory.recall(query) if f.get("content")]
         except Exception as exc:
             log.debug("memory recall for task %s skipped: %s", task["id"], exc)
+    earlier, remembered = await _earlier_section(svc, task, run)
+    # small models follow the plan's wording; the kickoff repeats "only what is new" where they look last
+    kickoff = EXECUTOR_KICKOFF + (continuity.KICKOFF_NOTE if remembered else "")
     return build_executor_prompt(
         assistant_name=cfg.name or "Sentient",
         user_name=cfg.user_name or "User",
@@ -239,7 +258,10 @@ async def _executor_system_prompt(
         trigger_event_data=run.get("trigger_data"),
         memories=[f["content"] for f in facts],
         tool_map=tool_map,
-    ), facts
+        earlier=earlier,
+        mark_outside_content=app.config.chat.mark_outside_content,
+        trigger_source=_trigger_source(app, task, run),
+    ), facts, kickoff
 
 
 def _trigger_source(app: Any, task: dict, run: dict) -> str:
@@ -251,7 +273,9 @@ def _trigger_source(app: Any, task: dict, run: dict) -> str:
     return getattr(plugin, "display_name", None) or source or "the event that started it"
 
 
-async def _run_approved_call(svc: TaskService, task_id: str, run_id: str, ctx: Any, checkpoint: list[dict]) -> list[dict]:
+async def _run_approved_call(
+    svc: TaskService, task_id: str, run_id: str, ctx: Any, checkpoint: list[dict], model: str | None = None
+) -> list[dict]:
     """Run the held call the user said yes to (ADR 0018), once: the mark is saved away before the call starts, so a
     restart in the middle never repeats it, and the saved placeholder then says the outcome is unknown
     (``ask.INTERRUPTED_NOTE``). The call's result replaces that placeholder."""
@@ -263,7 +287,7 @@ async def _run_approved_call(svc: TaskService, task_id: str, run_id: str, ctx: A
     if call is None:
         return messages
     await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": call["name"], "parameters": call["arguments"]})
-    res, is_error, content = await svc.app.agent.run_tool(ToolCall(**call), ctx)
+    res, is_error, content = await svc.app.agent.run_tool(ToolCall(**call), ctx, role="executor", model=model)
     await svc.progress(
         task_id, run_id, {"type": "tool_result", "tool_name": call["name"], "result": truncate(res), "is_error": is_error}
     )
@@ -341,16 +365,20 @@ async def execute_single(
             ctx.extra.update({"task_id": task_id, "run_id": run_id, ask.STATE_KEY: asking})
             if task.get("browser_profile"):  # the browser tools use the task's profile (docs/API.md section 12)
                 ctx.extra["browser_profile"] = task["browser_profile"]
+            if continuity.applies(task):
+                ctx.extra[continuity.PLUGIN_ID] = True
             checkpoint = run.get("messages") if resume else None
             if isinstance(checkpoint, list) and checkpoint:
-                checkpoint = await _run_approved_call(svc, task_id, run_id, ctx, checkpoint)
-                messages = history_to_openai(checkpoint)
+                checkpoint = await _run_approved_call(
+                    svc, task_id, run_id, ctx, checkpoint, model=task.get("model") or None
+                )
+                messages = app.agent.mark_outside_messages(history_to_openai(checkpoint))
                 if not answered and not is_first_retry_attempt(run):  # a retry's checkpoint already has its note
                     messages.append({"role": "user", "content": RESUME_NOTE})
             else:
-                system, facts = await _executor_system_prompt(svc, task, run, plan, tool_map)
+                system, facts, kickoff = await _executor_system_prompt(svc, task, run, plan, tool_map)
                 sources.add_facts(facts)
-                messages = [{"role": "system", "content": system}, {"role": "user", "content": EXECUTOR_KICKOFF}]
+                messages = [{"role": "system", "content": system}, {"role": "user", "content": kickoff}]
                 await svc.repo.update_run(run_id, {
                     "messages": messages, "memory_sources": await sources.resolve(app.store),
                 })
@@ -360,6 +388,8 @@ async def execute_single(
             ctx.untrusted = _trigger_source(app, task, run) or untrusted_in(messages, app.registry)
             if app.registry.get(ask.ASK_TOOL) is not None:
                 tool_names = [*tool_names, ask.ASK_TOOL]
+            if continuity.applies(task) and app.registry.get(continuity.NOTEPAD_TOOL) is not None:
+                tool_names = [*tool_names, continuity.NOTEPAD_TOOL]
             mapper = ProgressMapper(svc, task_id, run_id)
             for attempt in range(MAX_CONTINUE_NUDGES + 1):
                 rounds = int(limit["steps"]) - budget.steps
@@ -385,7 +415,9 @@ async def execute_single(
                     await mapper.handle(event, messages)
                     if isinstance(event, ToolResultEvent) and not event.is_error:
                         seen = len(sources)
-                        sources.add_tool_result(event.name, app.agent.delivered_rows(event.result))
+                        sources.add_tool_result(
+                            event.name, app.agent.delivered_rows(event.result, result.tool_result_limit)
+                        )
                         if len(sources) > seen:  # saved at once, so a restart keeps it
                             await svc.repo.update_run(run_id, {"memory_sources": await sources.resolve(app.store)})
                 await mapper.flush_thought()
@@ -485,12 +517,16 @@ async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume:
         raise RunFailed(f"The tool {name} is not available, so nothing was done.")
     if app.approvals.rule(tool) == "never":
         raise RunFailed(never_message(app.approvals.label(tool, app.registry)))
-    await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": name, "parameters": arguments})
     ctx = app.agent.tool_context(None, "task") if app.agent is not None else None
     if ctx is not None:
         ctx.extra.update({"task_id": task_id, "run_id": run_id})
         if task.get("browser_profile"):
             ctx.extra["browser_profile"] = task["browser_profile"]
+    if tool.plugin in app.approvals.read_only():  # a Read only connection (#141) refuses it like a "never" rule
+        refusal = app.approvals.read_only_refusal(tool, await effective_risk(tool, arguments, ctx), app.registry)
+        if refusal:
+            raise RunFailed(refusal)
+    await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": name, "parameters": arguments})
     try:
         result = await tool.call(ctx, arguments)
     except Exception as exc:
@@ -611,9 +647,10 @@ async def generate_result(
 
     # ground truth from the transcript beats what a small model remembers
     plugin_ids = {p.id for p in app.registry.plugins()}
-    tools_used = [t for t in result["tools_used"] if t in plugin_ids and t != ask.PLUGIN_ID]
+    inner = {ask.PLUGIN_ID, continuity.PLUGIN_ID}  # the run's own helpers, not tools the user cares about
+    tools_used = [t for t in result["tools_used"] if t in plugin_ids and t not in inner]
     for pid in (loop_result.tools_used if loop_result else []):
-        if pid not in tools_used and pid != ask.PLUGIN_ID:
+        if pid not in tools_used and pid not in inner:
             tools_used.append(pid)
     result["tools_used"] = tools_used
     known = {f["filename"] for f in result["files_created"]}

@@ -21,6 +21,7 @@ export const CH = {
   pickFiles: 'sentient:pick-files',
   isFocused: 'sentient:is-focused',
   openFile: 'sentient:open-file',
+  showInFolder: 'sentient:show-in-folder',
   getDevicePrivacy: 'sentient:get-device-privacy',
   setDevicePrivacy: 'sentient:set-device-privacy',
   captureNotice: 'sentient:capture-notice',

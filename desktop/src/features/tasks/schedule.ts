@@ -4,7 +4,7 @@
  * Mirrors sentient/tasks/schedule.py: naive `run_at` values are wall-clock times in the
  * schedule's timezone, recurring times are HH:MM in that zone, weekly uses day names.
  */
-import type { IntervalSchedule, RecurringSchedule, Task, TaskSchedule, TriggeredSchedule, Weekday } from '@/lib/types'
+import type { IntervalSchedule, RecurringSchedule, ScheduleWindow, Task, TaskSchedule, TriggeredSchedule, Weekday } from '@/lib/types'
 import { detectTimezone, humanize, parseDate } from '@/lib/utils'
 
 export function isIntervalSchedule(s: unknown): s is IntervalSchedule {
@@ -254,6 +254,8 @@ export function describeSchedule(schedule: TaskSchedule | null | undefined, opts
   if (isIntervalSchedule(schedule)) return { text: everyMinutesText(intervalMinutes(schedule)) }
   if (schedule.type === 'recurring') {
     const lead = schedule.frequency === 'daily' ? 'Every day' : describeDays(normalizeDays(schedule.days))
+    const window = schedule.window ? WINDOW_LABELS[schedule.window] : undefined
+    if (window) return { text: `${lead} ${window.phrase}`, zone: zoneLabel(schedule.timezone) }
     return { text: `${lead} at ${formatClock(schedule.time)}`, zone: zoneLabel(schedule.timezone) }
   }
   const t = schedule as TriggeredSchedule
@@ -261,6 +263,14 @@ export function describeSchedule(schedule: TaskSchedule | null | undefined, opts
   const detail = rules.rules.length ? rules.rules.map((r) => r.text).join(rules.mode === 'any' ? ' or ' : ', ') : undefined
   if (t.source === 'webhook') return { text: 'When your webhook is called', detail }
   return { text: `When ${eventLabel(t.source, t.event)} in ${sourceLabel(t.source)}`, detail }
+}
+
+/** Fuzzy windows (§4): the engine picks a minute inside the range each time. Mirrors `WINDOWS` in schedule.py. */
+export const WINDOW_LABELS: Record<ScheduleWindow, { label: string; phrase: string; start: string }> = {
+  morning: { label: 'In the morning (7 to 10 am)', phrase: 'in the morning, between 7 and 10 am', start: '07:00' },
+  afternoon: { label: 'In the afternoon (12 to 4 pm)', phrase: 'in the afternoon, between 12 and 4 pm', start: '12:00' },
+  evening: { label: 'In the evening (5 to 8 pm)', phrase: 'in the evening, between 5 and 8 pm', start: '17:00' },
+  night: { label: 'At night (8 to 11 pm)', phrase: 'at night, between 8 and 11 pm', start: '20:00' }
 }
 
 /** "Every 15 minutes", "Every hour", "Every 6 hours". */
@@ -429,7 +439,7 @@ export function recurringOccurrences(schedule: RecurringSchedule, from: Date, to
     return out
   }
   const tz = schedule.timezone ?? 'auto'
-  const { hour, minute } = parseClock(schedule.time)
+  const { hour, minute } = parseClock(schedule.window ? WINDOW_LABELS[schedule.window].start : schedule.time)
   const days = schedule.frequency === 'daily' ? WEEKDAYS : normalizeDays(schedule.days).length ? normalizeDays(schedule.days) : (['Monday'] as Weekday[])
   const wanted = new Set(days.map((d) => WEEKDAYS.indexOf(d)))
   const out: Date[] = []

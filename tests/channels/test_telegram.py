@@ -288,7 +288,9 @@ async def test_message_while_running_is_queued_without_steer(tg, gated, monkeypa
     gated.gate.set()
     await tg.ch.wait_idle()
     assert gated.stream_calls == 2
-    assert gated.calls[-1]["messages"][-1]["content"] == "two"
+    content = gated.calls[-1]["messages"][-1]["content"]
+    assert "[Current time:" in content
+    assert content.endswith("two")
     assert tg.api.screen()[-1] == "second reply"
 
 
@@ -364,7 +366,9 @@ async def test_voice_note_is_transcribed_and_answered(tg, llm, monkeypatch):
     await tg.say(42, None, **VOICE)
     assert voice.received == [(b"OggS-voice", "telegram-voice-u1.ogg")]
     assert any("<i>Heard:</i> what&#x27;s the weather" in t or "<i>Heard:</i> what's the weather" in t for t in tg.api.screen())
-    assert llm.calls[-1]["messages"][-1]["content"] == "what's the weather in Pune"
+    content = llm.calls[-1]["messages"][-1]["content"]
+    assert "[Current time:" in content
+    assert content.endswith("what's the weather in Pune")
     assert tg.api.screen()[-1] == "It's sunny."
     voices = [kwargs for method, kwargs in sent if method == "sendVoice"]
     assert len(voices) == 1
@@ -424,7 +428,13 @@ async def test_photo_and_document_become_attachments(tg, llm):
     saved = paths.files_dir() / "uploads" / "telegram-photo-big.jpg"
     assert saved.read_bytes() == b"\xff\xd8\xff\xe0fakejpeg"
     content = llm.calls[-1]["messages"][-1]["content"]
-    assert isinstance(content, list) and "what is this" in content[0]["text"]
+    assert isinstance(content, list)
+    assert "[Current time:" in content[0]["text"]
+    assert any(
+        block.get("type") == "text" and "what is this" in block.get("text", "")
+        for block in content
+    )
+    assert any(block.get("type") == "image_url" for block in content)
     doc = {"document": {"file_id": "d1", "file_unique_id": "doc", "file_name": "notes.txt", "mime_type": "text/plain", "file_size": 22}}
     await tg.say(42, None, **doc)
     assert "hello from a text file" in llm.calls[-1]["messages"][-1]["content"]

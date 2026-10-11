@@ -1,9 +1,11 @@
 /** React Query hooks for §3 models & secrets. */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, errorMessage } from '@/lib/api'
+import { api, errorMessage, isNotImplemented } from '@/lib/api'
+import { retryWhileSaving, SAVE_RETRY_MS, statusOnceSaved } from '@/lib/claudeCode'
 import { demo, isDemoMode } from '@/lib/demo'
-import type { CheckupRole, CheckupStatus, Hardware, ModelRoles, OllamaPullProgress, RoleName, SentientConfig } from '@/lib/types'
+import type { CheckupRole, CheckupStatus, Hardware, ModelBusy, ModelRoles, OllamaPullProgress, RoleName, SentientConfig } from '@/lib/types'
+import { useConnection } from '@/stores/connection'
 import { qk } from './queryKeys'
 
 export function useProviders() {
@@ -61,9 +63,16 @@ export function useSecrets() {
   return useQuery({ queryKey: qk.secrets, queryFn: api.secrets.list })
 }
 
-/** Claude through your own Claude Code: on, installed, version. Asked again when the switch changes. */
+/** Claude through your own Claude Code: on, installed, version. Asked again when the switch changes, and again
+ * until the engine has saved the switch (the screen flips it before the save lands). */
 export function useClaudeCodeStatus(enabled: boolean) {
-  return useQuery({ queryKey: qk.claudeCode(enabled), queryFn: api.models.claudeCode, staleTime: 60_000, retry: false })
+  return useQuery({
+    queryKey: qk.claudeCode(enabled),
+    queryFn: () => statusOnceSaved(api.models.claudeCode, enabled),
+    staleTime: 60_000,
+    retry: retryWhileSaving,
+    retryDelay: SAVE_RETRY_MS
+  })
 }
 
 export function useTestModel() {
@@ -289,3 +298,24 @@ export function useModelCheckup() {
   useEffect(() => () => abort.current?.abort(), [])
   return { ...state, run, cancel }
 }
+
+/**
+ * What the local model is doing (#149). Live from `model.busy` (lib/events.ts); fetched once when the engine is
+ * ready. An engine without the route reads as idle.
+ */
+export function useModelBusy() {
+  const ready = useConnection((s) => s.backend.state === 'ready')
+  const qc = useQueryClient()
+  useEffect(() => {
+    if (ready) void qc.invalidateQueries({ queryKey: qk.modelBusy }) // a restarted engine starts idle
+  }, [ready, qc])
+  return useQuery({
+    queryKey: qk.modelBusy,
+    queryFn: () => api.models.busy().catch((err) => (isNotImplemented(err) ? IDLE : Promise.reject(err))),
+    enabled: ready,
+    staleTime: Infinity,
+    retry: false
+  })
+}
+
+const IDLE: ModelBusy = { busy: false, job: null, model: null, since: null, waiting: 0, deferred: 0, deferred_reason: null }

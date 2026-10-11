@@ -227,6 +227,7 @@ class SandboxService(Service):
             max_tool_calls=cfg.max_tool_calls,
             rules=self.app.config.tools.approvals.rules,
             rules_source=lambda: self.app.config.tools.approvals.rules,
+            read_only_apps_source=lambda: self.app.config.integrations.read_only,
         )
         ctx = self._tool_context(session_id, channel)
         transport = self._transport_for(backend)

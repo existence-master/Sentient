@@ -62,6 +62,20 @@ export interface StopState {
   source: string | null
 }
 
+/** What the local model is doing (#149): `GET /api/models/busy`, live as `model.busy`. */
+export type ModelJobKind = 'chat' | 'interactive' | 'task' | 'suggestions' | 'memory' | 'skills' | 'titles' | 'background'
+export interface ModelBusy {
+  busy: boolean
+  job: ModelJobKind | null
+  model: string | null
+  since: ISODate | null
+  /** Jobs that go as soon as the model is free. */
+  waiting: number
+  /** Background jobs held back while you chat or on battery. */
+  deferred: number
+  deferred_reason: 'chat' | 'battery' | null
+}
+
 export interface StopResult extends StopState {
   /** How many running jobs were cancelled. */
   cancelled: number
@@ -121,6 +135,10 @@ export interface ModelsConfig {
   experimental_claude_code?: boolean
   max_tool_rounds: number
   request_timeout_s: number
+  /** #149: one local model job at a time, chats first; background waits after a chat and on battery. */
+  local_queue?: boolean
+  background_quiet_s?: number
+  background_on_battery?: boolean
 }
 
 export interface GatewayConfig {
@@ -133,6 +151,9 @@ export interface ChatConfig {
   compress_after_messages: number
   show_thinking: boolean
   auto_title: boolean
+  /** Incognito chats can use what Sentient already knows (#154). Nothing from them is remembered either way. */
+  incognito_uses_memory?: boolean
+  incognito_delete_after_minutes?: number
 }
 
 export type ApprovalMode = 'off' | 'ask' | 'always'
@@ -224,6 +245,8 @@ export interface IntegrationsConfig {
   searxng_url: string
   weather_provider: 'open_meteo' | 'accuweather'
   mcp_servers: Record<string, McpServerConfig>
+  /** App ids set to Read only (#141). */
+  read_only?: string[]
   [key: string]: unknown
 }
 
@@ -343,6 +366,8 @@ export interface Session {
   channel: string
   created_at: ISODate
   updated_at: ISODate
+  /** Nothing is learned from it and it is deleted when closed (#154). */
+  incognito?: boolean
   [key: string]: unknown
 }
 
@@ -367,6 +392,7 @@ export interface TranscriptMessage {
   attachments?: string[]
   /** Memories the final reply had in mind; `[]` on every other row. */
   memory_sources?: MemorySource[]
+  sources?: AnswerSource[]
   created_at: ISODate
 }
 
@@ -384,6 +410,26 @@ export interface MemorySource {
   via: 'prompt' | 'tool'
 }
 
+/** Something a reply used (#174): a web page, an email, a file, or a connected app. Recorded from tool results. */
+export interface AnswerSource {
+  kind: 'web' | 'email' | 'file' | 'app'
+  title: string
+  /** Web page, or the email in its mail app. */
+  url?: string
+  /** File name under the files folder (`kind: 'file'`). */
+  file?: string
+  /** Sender (`kind: 'email'`). */
+  from?: string
+  id?: string
+  /** A short excerpt of what Sentient read. */
+  snippet?: string
+  /** Plugin id and the tool that found it. */
+  app: string
+  tool: string
+  /** Every tool of that app the reply used (`kind: 'app'`). */
+  tools?: string[]
+}
+
 export interface MessageSearchHit {
   session_id: string
   message_id: string
@@ -398,6 +444,8 @@ export interface ChatRequest {
   attachments?: string[]
   model?: string
   channel?: string
+  /** Start a new incognito chat (#154); ignored with `session_id`. */
+  incognito?: boolean
 }
 
 export type ApprovalDecision = 'allow' | 'allow_session' | 'deny'
@@ -764,6 +812,7 @@ export interface DoneEvent extends TurnScoped {
   message_id: string | null
   cancelled?: boolean
   memory_sources?: MemorySource[]
+  sources?: AnswerSource[]
   /** §17: a queued message dropped by Stop everything (its text; never sent). Comes with the `client_id` it was sent with. */
   dropped?: string[]
   client_id?: string | null
@@ -850,6 +899,8 @@ export interface DomainEventMap {
   'memory.updated': MemoryUpdatedData
   'skill.updated': { name: string; state: SkillState }
   'session.updated': { session_id: string; title: string }
+  /** A chat was deleted: by the user, or an incognito chat that was closed or left idle (#154). */
+  'session.deleted': { session_id: string; reason?: 'incognito' }
   'rule_proposal.updated': RuleProposal
   'config.updated': { sections: string[] }
   'voice.state': { state: VoiceState }
@@ -868,6 +919,10 @@ export interface DomainEventMap {
   'source.items': SourceItemsData
   // §17
   'stop.updated': StopState
+  // #149
+  'model.busy': ModelBusy
+  // §20
+  'backup.updated': BackupUpdated
 }
 
 export type DomainEventType = keyof DomainEventMap
@@ -888,6 +943,8 @@ export type ClientMessage =
       model?: string
       client_id?: string
       channel?: string
+      /** Start a new incognito chat (#154); ignored with `session_id`. */
+      incognito?: boolean
     }
   | { type: 'chat.cancel'; session_id: string }
   | { type: 'chat.steer'; session_id: string; text: string }
@@ -1176,12 +1233,15 @@ export interface RecurringSchedule {
   days?: Weekday[] | string[]
   time: string
   interval_minutes?: number
+  /** Daily/weekly only: run at some time in this part of the day instead of at `time` (§4 "Fuzzy windows"). */
+  window?: ScheduleWindow
   timezone?: string
   catch_up?: CatchUpPolicy
 }
+export type ScheduleWindow = 'morning' | 'afternoon' | 'evening' | 'night'
 
 // §16 script jobs
-export type ScriptCondition = 'changed' | 'alert' | 'every_run'
+export type ScriptCondition = 'changed' | 'noteworthy' | 'alert' | 'every_run'
 export type ScriptThen = 'notify' | 'run'
 
 export interface TaskScript {
@@ -1191,6 +1251,17 @@ export interface TaskScript {
   last_result: unknown
   last_run_at: ISODate | null
   last_error: string | null
+  /** Recent checks, oldest first (§16). Older engines leave it out. */
+  checks?: ScriptCheck[] | null
+}
+export type ScriptCheckOutcome = 'baseline' | 'nothing_new' | 'changed' | 'minor' | 'alert' | 'quiet' | 'reported' | 'failed'
+export interface ScriptCheck {
+  at: ISODate
+  outcome: ScriptCheckOutcome
+  note?: string
+  /** A row of the same quiet outcome folds into one entry. */
+  count?: number
+  last_at?: ISODate
 }
 export interface TriggeredSchedule {
   type: 'triggered'
@@ -1320,6 +1391,8 @@ export interface Task {
   browser_profile?: string | null
   /** Where its notifications go besides the app (§4 "Where results go"). Older engines leave it out (default). */
   deliver_to?: TaskDeliverTo
+  /** Recurring tasks: short notes its runs keep for the next run (§4 "Recurring tasks remember"). */
+  notepad?: string | null
   original_context: { source: 'manual_creation' | 'chat' | 'proactive' | 'trigger' | string; [k: string]: unknown }
   /** Last planning/run failure message (v2 `task.error`). */
   error: string | null
@@ -1363,7 +1436,7 @@ export interface DeliveryChat {
 /** `default`: paired chats with delivery on; `desktop`: the app only; a list: only those chats. */
 export type TaskDeliverTo = 'default' | 'desktop' | DeliveryChat[]
 
-export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'deliver_to'>>
+export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'deliver_to' | 'notepad'>>
 
 export interface ClarificationAnswer {
   question_id: string
@@ -1402,8 +1475,13 @@ export interface Integration {
    * (`accuweather` -> `weather`, `brave_search` -> `internet_search`...). These have no tools.
    */
   alternative_for: string | null
+  /** Read only (`read`) or Read and write (`read_write`, the default). Older engines leave it out. */
+  access?: ConnectionAccess
   tools: ToolInfo[]
 }
+
+/** #141: a Read only connection hides and refuses its tools that change, send, delete or run something. */
+export type ConnectionAccess = 'read' | 'read_write'
 
 /**
  * `connect` result for OAuth (`{auth_url, state}`) and GitHub device flow (`+ user_code`).
@@ -1437,6 +1515,8 @@ export interface McpToolInfo {
   mcp_name: string
   description: string
   risk: Risk
+  /** The risk is decided per call from the tools it runs (Composio's multi-execute). Older engines leave it out. */
+  per_call?: boolean
 }
 
 export type McpServerStatus = 'connecting' | 'connected' | 'needs_sign_in' | 'error' | 'disconnected' | 'disabled'
@@ -1462,6 +1542,8 @@ export interface McpServer {
   /** A browser sign-in is waiting for the user. */
   signing_in: boolean
   enabled: boolean
+  /** Read only or Read and write. Older engines leave it out. */
+  access?: ConnectionAccess
   status: McpServerStatus | string
   tools: McpToolInfo[]
   error: string | null
@@ -1477,6 +1559,7 @@ export interface McpServerCreate {
   headers?: Record<string, string>
   auth?: McpAuth
   enabled?: boolean
+  access?: ConnectionAccess
 }
 
 /** `POST /api/integrations/mcp/{name}/sign-in`: open `auth_url` in the browser. */
@@ -2168,4 +2251,86 @@ export interface HermesResult {
   persona?: { updated: boolean }
   jobs?: { created: Array<{ task_id: string; name: string }>; skipped: HermesSkipped[] }
   mcp?: { added: string[]; skipped: HermesSkipped[] }
+}
+
+// §20 backups, restore and snapshots ------------------------------------------------------
+export type BackupKind = 'manual' | 'scheduled' | 'snapshot'
+export type BackupSchedule = 'off' | 'daily' | 'weekly'
+
+/** Something signed in through the keychain. Keychain secrets are never in a backup. */
+export interface BackupSignIn {
+  kind: 'model' | 'integration' | 'channel' | 'browser'
+  id: string
+  label: string
+  /** After a restore: whether it works on this computer now (`null`: Sentient can't tell). */
+  signed_in?: boolean | null
+}
+
+export interface BackupEntry {
+  name: string
+  path: string
+  kind: BackupKind
+  /** Why a snapshot was taken, e.g. "before importing from Hermes". */
+  reason: string | null
+  created_at: ISODate | null
+  version: string | null
+  schema_version: number | null
+  size: number
+  /** Snapshots leave out the files folder. */
+  includes_files: boolean
+  counts: { chats?: number; memories?: number; tasks?: number; skills?: number }
+  sign_ins: BackupSignIn[]
+}
+
+export interface BackupInspect extends BackupEntry {
+  /** Made by a newer Sentient than this one. */
+  newer: boolean
+  contents: string[]
+}
+
+export interface RestoreStaged {
+  staged: true
+  restart_required: true
+  source: string
+  created_at: ISODate | null
+  contents: string[]
+  sign_ins: BackupSignIn[]
+}
+
+export interface RestoreResult {
+  restored_at: ISODate
+  source: string | null
+  kind: BackupKind | null
+  backup_created_at: ISODate | null
+  contents: string[]
+  sign_ins: BackupSignIn[]
+  /** The snapshot of the data the restore replaced (restore it to undo). */
+  snapshot: string | null
+  /** A plain sentence when the restore didn't happen; the data was left as it was. */
+  error: string | null
+}
+
+export interface BackupOverview {
+  folder: string
+  default_folder: string
+  /** Sentient's data folder. */
+  home: string
+  /** The backup folder is inside the data folder (so a backup would not survive losing it). */
+  folder_in_home: boolean
+  /** The sync service the backup folder is inside (its backups are copied to the cloud too). */
+  folder_cloud: 'OneDrive' | 'Dropbox' | 'Google Drive' | 'iCloud' | null
+  backups: BackupEntry[]
+  snapshots: BackupEntry[]
+  schedule: BackupSchedule
+  keep: number
+  snapshots_keep: number
+  last_scheduled_at: ISODate | null
+  pending_restore: { source: string | null; created_at: ISODate | null; staged_at: ISODate | null; kind: BackupKind | null } | null
+  last_restore: RestoreResult | null
+}
+
+export interface BackupUpdated {
+  what: 'backup' | 'snapshot' | 'restore_staged' | 'restore_cancelled' | 'restore_dismissed'
+  name?: string
+  source?: string
 }

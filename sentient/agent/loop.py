@@ -11,7 +11,7 @@ Two layers:
   look-up tools requested together run concurrently; results keep their order.
 - ``Agent.run_turn`` is a chat turn: persists the user message (with
   attachments), builds the system prompt (persona, profile, recalled memory,
-  user model, skills, clock, running conversation summary), runs the loop,
+  user model, skills, running conversation summary), runs the loop,
   persists the transcript (the final reply carries its memory sources: the facts and
   insights in its prompt and the facts memory tools returned), then kicks off background work (fact extraction,
   auto title, context compression). Messages the user sends while a reply runs
@@ -34,6 +34,7 @@ import time
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from pydantic import ValidationError
@@ -41,11 +42,14 @@ from pydantic import ValidationError
 from sentient import paths
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import standing_text
-from sentient.agent.prompt import build_system_prompt
+from sentient.agent.prompt import build_system_prompt, mark_outside
+from sentient.agent.sources import AnswerSources
 from sentient.agent.toolselect import ToolSelector, is_local_model
 from sentient.config.schema import SentientConfig
 from sentient.files.extract import extract_text, is_image
+from sentient.integrations.base import IntegrationPlugin
 from sentient.llm import claude_code
+from sentient.llm.errors import is_tool_support_error
 from sentient.llm.events import (
     AgentEvent,
     ApprovalRequest,
@@ -60,15 +64,22 @@ from sentient.llm.events import (
     UserInterjection,
     tool_progress_event,
 )
+from sentient.llm.jobs import as_kind, detached
 from sentient.llm.meter import measure
-from sentient.llm.provider import LLMProvider, ProviderError, StreamChunk, ToolCall
+from sentient.llm.provider import (
+    LLMProvider,
+    PlainProviderError,
+    ProviderError,
+    StreamChunk,
+    ToolCall,
+)
 from sentient.memory import review as memory_review
 from sentient.memory.facts import FactMemory
 from sentient.memory.sources import MemorySources
 from sentient.memory.workspace import Workspace
 from sentient.services import cancel_tasks
 from sentient.skills.loader import SkillLibrary
-from sentient.store.db import Store, new_id
+from sentient.store.db import Store, after_watermark, new_id, next_watermark
 from sentient.tools.base import (
     UNPROMPTED_ORIGINS,
     Risk,
@@ -79,6 +90,7 @@ from sentient.tools.base import (
     effective_risk,
     is_unprompted,
 )
+from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import (
     SCREEN_SOURCE,
@@ -88,6 +100,7 @@ from sentient.tools.rules import (
     call_address,
     is_screen_capture,
     never_message,
+    outside_source,
     sends_out,
     unattended_ask_message,
     untrusted_address_reason,
@@ -101,6 +114,10 @@ from sentient.tools.rules import (
 log = logging.getLogger(__name__)
 
 MAX_ATTACHMENT_CHARS = 60_000
+# A tool result may fill at most ``chat.tool_result_context_share`` of the model's context (#264). Characters per
+# token is cautious: JSON, ids and escaped text take more tokens per character than prose.
+CHARS_PER_TOKEN = 3
+MIN_TOOL_RESULT_CHARS = 1500
 EMPTY_ANSWER_NUDGE = (
     "You have not replied yet. If the request still needs a tool call, make it now; "
     "otherwise answer the user now, based on the tool results above."
@@ -119,6 +136,20 @@ DECLINED = (
 REPEAT_NUDGE = (
     "You called {name} with exactly the same arguments several times and got the same result each time. "
     "Do not call it again with these arguments. Try something different, or answer the user with what you have."
+)
+# Incognito chats (#154): tools that would keep something from the chat are never offered or run, and the model is
+# told so it does not promise to remember. Without ``chat.incognito_uses_memory`` the memory look-ups go too.
+INCOGNITO_LEARNING_TOOLS = frozenset({"memory_remember", "skill_save"})
+INCOGNITO_MEMORY_TOOLS = frozenset({
+    "memory_recall", "memory_search_by_source", "memory_search_history", "history_semantic_search",
+    "history_time_search", "user_model_ask",
+})
+INCOGNITO_NOTE = (
+    "## Incognito chat\nThis is an incognito chat. Nothing from it is saved to memory, and it is deleted when the "
+    "user closes it. Never say you will remember something from it."
+)
+INCOGNITO_NO_MEMORY_NOTE = (
+    INCOGNITO_NOTE + " You also do not use what you know about the user here: answer from this chat alone."
 )
 PersistFn = Callable[..., Awaitable[Any]]
 # policy(tool, effective_risk, arguments) -> refusal message or None (sync or async)
@@ -214,8 +245,7 @@ def history_to_openai(rows: list[dict]) -> list[dict]:
 def is_tool_format_error(exc: Exception) -> bool:
     """True when the provider rejected the request because the model cannot do tool calling
     (e.g. an old Ollama model template emitting malformed tool calls)."""
-    m = str(exc).lower()
-    return "does not support tools" in m or "invalid character" in m or ("tool" in m and "pars" in m)
+    return not isinstance(exc, PlainProviderError) and is_tool_support_error(str(exc))
 
 
 def _json_safe(value: Any) -> str:
@@ -223,6 +253,19 @@ def _json_safe(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, default=str)
     except Exception:
         return json.dumps(str(value))
+
+
+def _shorten(tool: Tool | None, res: Any) -> str | None:
+    """The tool's own shorter version of a long result (``Tool.shorten_fn``), as text; None without one."""
+    fn = getattr(tool, "shorten_fn", None)
+    if fn is None:
+        return None
+    try:
+        short = fn(res)
+    except Exception as exc:
+        log.debug("shortening a %s result failed: %s", getattr(tool, "name", "?"), exc)
+        return None
+    return None if short is None else _json_safe(short)
 
 
 def _error_text(res: Any) -> str | None:
@@ -256,6 +299,8 @@ class LoopResult:
     # the first call held because this run read outside content and nobody could be asked (ADR 0018):
     # {tool, arguments, call_id, question}. A task run stops after that round and asks the question.
     needs_ok: dict | None = None
+    # the longest tool result the model read in this run (``Agent.tool_result_limit``); None before the loop starts
+    tool_result_limit: int | None = None
 
 
 def _hosts(raw: Any) -> set[str]:
@@ -393,12 +438,43 @@ class Agent:
         self._background: set[asyncio.Task] = set()
         self._steers: dict[str, SteerQueue] = {}
         self._turn_tasks: weakref.WeakSet[asyncio.Task] = weakref.WeakSet()  # tasks running a chat reply
+        # session id -> chat turns not finished yet, counted until their last write (incognito cleanup waits, #154)
+        self._busy: dict[str, int] = {}
+        self._session_tasks: dict[str, set[asyncio.Task]] = {}  # session id -> tasks running its chat turns
 
     # ------------------------------------------------------------------ steering
     def is_running(self, session_id: str) -> bool:
         """True while a chat reply for this session is running and can take steer messages."""
         q = self._steers.get(session_id)
         return bool(q and q.accepting)
+
+    def is_busy(self, session_id: str) -> bool:
+        """True from the start of a chat turn until its last write (the final or stopped reply) is done."""
+        return self._busy.get(session_id, 0) > 0
+
+    def _turn_done(self, session_id: str) -> None:
+        left = self._busy.get(session_id, 0) - 1
+        if left > 0:
+            self._busy[session_id] = left
+        else:
+            self._busy.pop(session_id, None)
+        task = asyncio.current_task()
+        tasks = self._session_tasks.get(session_id)
+        if tasks is not None and task is not None:
+            tasks.discard(task)
+            if not tasks:
+                self._session_tasks.pop(session_id, None)
+
+    async def cancel_session(self, session_id: str, timeout: float = 10.0) -> int:
+        """Stop the chat turns running for ``session_id`` and wait until they have saved what they keep (a chat
+        about to be deleted). Returns how many were stopped."""
+        me = asyncio.current_task()
+        tasks = [t for t in self._session_tasks.get(session_id, set()) if not t.done() and t is not me]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.wait(tasks, timeout=timeout)
+        return len(tasks)
 
     def steer(self, session_id: str, text: str) -> bool:
         """Queue ``text`` for the reply running in ``session_id``. Returns False when no reply is running
@@ -461,28 +537,58 @@ class Agent:
     async def _system_prompt_with_sources(
         self, user_text: str, channel: str, session: dict | None = None
     ) -> tuple[str, MemorySources]:
-        """The system prompt and the memories put into it (recalled facts, user-model insights)."""
-        facts, (user_context, insights) = await asyncio.gather(
-            self._recall(user_text), self._user_model_context(user_text)
-        )
+        """The system prompt and the memories put into it (recalled facts, user-model insights). An incognito chat
+        (#154) reads memory only while ``chat.incognito_uses_memory`` is on, and is told nothing will be kept."""
+        incognito = bool((session or {}).get("incognito"))
+        reads_memory = not incognito or self.config.chat.incognito_uses_memory
+        if reads_memory:
+            facts, (user_context, insights) = await asyncio.gather(
+                self._recall(user_text), self._user_model_context(user_text)
+            )
+        else:
+            facts, user_context, insights = [], "", []
         sources = MemorySources()
         sources.add_facts(facts)
         sources.add_insights(insights)
+        snapshot = self.workspace.snapshot()
+        if not reads_memory:  # only the persona: no profile, memory file or daily notes
+            snapshot = {k: (v if k == "soul" else "") for k, v in snapshot.items()}
         prompt = build_system_prompt(
-            snapshot=self.workspace.snapshot(),
+            snapshot=snapshot,
             facts=facts,
             skills_index=self.skills.prompt_index(),
             assistant_name=self.config.assistant.name,
-            user_name=self.config.assistant.user_name,
-            timezone=self.config.assistant.timezone,
+            user_name=self.config.assistant.user_name if reads_memory else "",
             channel=channel,
-            location=self.config.assistant.location,
+            location=self.config.assistant.location if reads_memory else "",
             user_context=user_context,
             tool_names=[t.name for t in self.registry.tools()],
+            read_only_apps=self._read_only_apps(),
+            mark_outside_content=self.config.chat.mark_outside_content,
         )
         if session and session.get("context_summary"):
             prompt += "\n\n## Earlier in this conversation\n" + session["context_summary"]
+        if incognito:
+            prompt += "\n\n" + (INCOGNITO_NOTE if reads_memory else INCOGNITO_NO_MEMORY_NOTE)
         return prompt, sources
+
+    def _incognito_tools(self, tool_names: list[str] | None) -> list[str]:
+        """``tool_names`` (None: every offered tool) without the tools an incognito chat must not use (#154)."""
+        names = tool_names if tool_names is not None else [t.name for t in self.registry.tools()]
+        left_out = INCOGNITO_LEARNING_TOOLS | (frozenset() if self.config.chat.incognito_uses_memory else INCOGNITO_MEMORY_TOOLS)
+        return [n for n in names if n not in left_out]
+
+    def _read_only_apps(self) -> list[str]:
+        """Names of the connected apps set to Read only that have tools Sentient now can't use (#141), so the model
+        can say why instead of looking for another way."""
+        names: list[str] = []
+        for pid in self.approvals.read_only():
+            plugin = self.registry.plugin(pid)
+            if plugin is None or self.registry.is_hidden(pid):
+                continue
+            if any(self.registry.get(t.name) is t and self.registry.is_blocked(t) for t in plugin.tools):
+                names.append(getattr(plugin, "display_name", None) or pid)
+        return names
 
     # ------------------------------------------------------------------ reusable engine
     async def run_loop(
@@ -529,6 +635,7 @@ class Agent:
         if unprompted and not is_unprompted(getattr(ctx, "origin", None)):
             ctx.origin = str(source).strip().lower()  # tools this run starts (a subagent) must see it as unprompted too
         tools = self.registry.openai_schemas(tool_names) or None
+        result.tool_result_limit = await self.tool_result_limit(role, model)
         rounds = max_rounds or self.config.models.max_tool_rounds
         repeat_limit = self.config.tools.repeated_call_limit
         repeats: dict[tuple[str, str], tuple[str, int]] = {}  # (tool, arguments) -> (last result, times it came back)
@@ -564,6 +671,9 @@ class Agent:
                         yield TextDelta(text=chunk.text, **ev)
                     if chunk.done:
                         tool_calls = chunk.tool_calls
+                        if chunk.model and chunk.model != (model or self.llm.model_for(role)):
+                            # a fallback model answered: its results must fit what it reads at once (#264)
+                            result.tool_result_limit = await self.tool_result_limit(role, chunk.model)
                         # the context meter also works when the provider reported no usage (prompt counted here)
                         gauge = await measure(self.llm, role, chunk.model or model or self.llm.model_for(role),
                                               messages, tools, chunk.usage or {}, source)
@@ -748,6 +858,14 @@ class Agent:
             # lasting rule (ADR 0016): the tool is not offered, and a call made anyway is refused without running
             refusal = never_message(self.approvals.label(tool, self.registry))
             return _CallPlan(tc=tc, tool=None, preset=({"error": refusal}, True, 0))
+        risk: Risk | None = None
+        if tool is not None and tool.plugin in self.approvals.read_only():
+            # a Read only connection (#141): a call that would change, send, delete or run something is refused
+            # like a "never" rule, judged on this call's effective risk (Composio's multi-execute can just look up)
+            risk = await effective_risk(tool, tc.arguments, ctx)
+            refusal = self.approvals.read_only_refusal(tool, risk, self.registry)
+            if refusal:
+                return _CallPlan(tc=tc, tool=None, preset=({"error": refusal}, True, 0))
         if tool is None or not (tool_names is None or tc.name in tool_names):
             return _CallPlan(tc=tc, tool=None, preset=({"error": f"unknown tool {tc.name}"}, True, 0))
         if chat_rule == "ask":
@@ -756,7 +874,7 @@ class Agent:
         if "_raw" in tc.arguments and len(tc.arguments) == 1:
             plan.preset = self._raw_arguments_error(tool, tc)
             return plan
-        plan.risk = await effective_risk(tool, tc.arguments, ctx)
+        plan.risk = risk if risk is not None else await effective_risk(tool, tc.arguments, ctx)
         address = call_address(tool, tc.arguments, ctx)
         plan.host = address_host(address)
         if unprompted:  # work nobody asked for: look-ups and Sentient-internal changes only, before any rule
@@ -924,16 +1042,54 @@ class Agent:
             result.skills_viewed.append(tc.arguments["name"])
         # record the result before yielding so a checkpoint taken on this event is complete
         p.seen = _json_safe(res)
-        content = await self._tool_content(res, tc.id)
-        messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": content})
-        if persist:
+        content = await self._tool_content(res, tc.id, tool=p.tool, limit=result.tool_result_limit)
+        model_content = self.outside_content(content, p.tool) if p.tool is not None else content
+        messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": model_content})
+        if persist:  # stored as it is; marked again when the transcript is read back (mark_outside_messages)
             await persist("tool", content, tool_call_id=tc.id, name=tc.name)
         yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
 
-    def delivered_rows(self, res: Any) -> Any:
-        """The rows of a list result the model actually read: ``_tool_content`` cuts long results, and a
-        memory from the cut part must not be shown as one Sentient had in mind."""
+    def outside_content(self, content: str, tool: Tool) -> str:
+        """A tool message as the model reads it: wrapped as outside content when ``tool`` brings text someone else
+        wrote and ``chat.mark_outside_content`` is on (ADR 0023)."""
+        if not self.config.chat.mark_outside_content or not brings_untrusted(tool):
+            return content
+        return mark_outside(content, untrusted_source(tool, self.registry))
+
+    def mark_outside_messages(self, messages: list[dict]) -> list[dict]:
+        """Wrap the tool messages in a transcript read back from storage that brought outside content in (ADR 0023);
+        text already wrapped is left as it is. Changes ``messages`` in place and returns it."""
+        if not self.config.chat.mark_outside_content:
+            return messages
+        for m in messages:
+            source = outside_source(m, self.registry)
+            if source:
+                m["content"] = mark_outside(str(m.get("content") or ""), source)
+        return messages
+
+    async def tool_result_limit(self, role: str, model: str | None = None) -> int:
+        """The longest tool result the model reads in ``role``: ``chat.tool_result_max_chars``, and no more than
+        ``chat.tool_result_context_share`` of what the model reads at once, so one long result (an MCP search) can't
+        fill a small local model's context by itself (#264)."""
         limit = self.config.chat.tool_result_max_chars
+        window = getattr(self.llm, "context_window", None)
+        if not callable(window):
+            return limit
+        try:
+            length = await window(role, model)
+        except Exception as exc:
+            log.debug("context length for %s unknown: %s", model or role, exc)
+            return limit
+        if not length:
+            return limit
+        share = int(int(length) * self.config.chat.tool_result_context_share * CHARS_PER_TOKEN)
+        return min(limit, max(MIN_TOOL_RESULT_CHARS, share))
+
+    def delivered_rows(self, res: Any, limit: int | None = None) -> Any:
+        """The rows of a list result the model actually read: ``_tool_content`` cuts long results, and a
+        memory from the cut part must not be shown as one Sentient had in mind. ``limit`` is the run's
+        ``LoopResult.tool_result_limit`` (default ``chat.tool_result_max_chars``)."""
+        limit = limit or self.config.chat.tool_result_max_chars
         if not limit or not isinstance(res, list) or len(_json_safe(res)) <= limit:
             return res
         keep = 0
@@ -941,12 +1097,15 @@ class Agent:
             keep += 1
         return res[:keep]
 
-    async def _tool_content(self, res: Any, call_id: str) -> str:
-        """The tool message the model reads. Long results are cut; the full text goes to files/outputs/."""
+    async def _tool_content(self, res: Any, call_id: str, *, tool: Tool | None = None, limit: int | None = None) -> str:
+        """The tool message the model reads. A result longer than ``limit`` (default ``chat.tool_result_max_chars``)
+        is shortened by the tool's ``shorten_fn`` when it has one, then cut from the end; the full text goes to
+        files/outputs/ and the model is told plainly."""
         content = _json_safe(res)
-        limit = self.config.chat.tool_result_max_chars
+        limit = limit or self.config.chat.tool_result_max_chars
         if not limit or len(content) <= limit:
             return content
+        short = _shorten(tool, res)
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", call_id or "")[:80] or new_id()
         rel = f"outputs/tool-{safe}.txt"
         full = res if isinstance(res, str) else json.dumps(res, ensure_ascii=False, indent=2, default=str)
@@ -958,14 +1117,15 @@ class Agent:
 
         try:
             await asyncio.to_thread(write)
-            note = (
-                f"\n\n[Result cut to {limit} of {len(content)} characters. The full result is saved as files/{rel}; "
-                f'read it with file_read(name="{rel}") if you need the rest.]'
-            )
+            saved = f' The full result is saved as files/{rel}; read it with file_read(name="{rel}") if you need the rest.'
         except OSError as exc:
             log.warning("could not save long tool result: %s", exc)
-            note = f"\n\n[Result cut to {limit} of {len(content)} characters.]"
-        return content[:limit] + note
+            saved = ""
+        if short is not None and len(short) < len(content):
+            if len(short) <= limit:
+                return short + f"\n\n[Result shortened from {len(content)} characters to its main parts.{saved}]"
+            content = short
+        return content[:limit] + f"\n\n[Result cut: this is only the first {limit} of {len(content)} characters.{saved}]"
 
     # ------------------------------------------------------------------ chat turn
     async def _user_content(self, text: str, attachments: list[str]) -> str | list[dict]:
@@ -1015,6 +1175,9 @@ class Agent:
         turn_id = new_id()
         ev = {"session_id": session_id, "turn_id": turn_id}
         attachments = attachments or []
+        self._busy[session_id] = self._busy.get(session_id, 0) + 1
+        if (current := asyncio.current_task()) is not None:
+            self._session_tasks.setdefault(session_id, set()).add(current)
         # register for steering; a second concurrent turn on the same session (rare) does not take it over
         steer: SteerQueue | None = None
         if not self.is_running(session_id):
@@ -1024,8 +1187,13 @@ class Agent:
         turn_task = asyncio.current_task()  # Stop everything cancels this task (halt)
         if turn_task is not None:
             self._turn_tasks.add(turn_task)
+        # the model serves this reply (and what it runs) first; background work waits until it has been quiet (#149)
+        jobs = getattr(self.app, "model_jobs", None)
+        turn_scope = contextlib.ExitStack()
+        turn_scope.enter_context(jobs.chat_turn() if jobs is not None else as_kind("chat"))
 
         def release() -> list[str]:
+            turn_scope.close()
             if turn_task is not None:
                 self._turn_tasks.discard(turn_task)
             if steer is None:
@@ -1038,24 +1206,41 @@ class Agent:
         result = LoopResult()
         partial = ""
         sources = MemorySources()  # what this reply had in mind (shown under it, never asked of the model)
+        used = AnswerSources()  # pages, emails, files and apps it used (#174)
         try:
             user_message_id = await self.store.add_message(session_id, "user", user_text, attachments=attachments)
             rule_check = self._start_rule_check(session_id, user_message_id, user_text)
             await self.store.touch_session(session_id, title=(user_text or (attachments[0] if attachments else ""))[:60])
 
             session = await self.store.get_session(session_id)
+            incognito = bool((session or {}).get("incognito"))
             system, sources = await self._system_prompt_with_sources(user_text, channel, session)
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
-            convo = history_to_openai(history)
-            # replace the just-stored user message with the rich version (attachments inlined)
+            convo = self.mark_outside_messages(history_to_openai(history))
+
+            # Replace the just-stored user message with the rich version (attachments inlined).
+            # Keep the stored user message unchanged. Add the current time to the
+            # model-facing user message so it doesn't invalidate the system prompt cache.
             if convo and convo[-1]["role"] == "user":
-                convo[-1] = {"role": "user", "content": await self._user_content(user_text, attachments)}
+                content = await self._user_content(user_text, attachments)
+                tz = resolve_tz(self.config.assistant.timezone)
+                now = datetime.now(tz)
+                time_note = f"[Current time: {now.strftime('%A %Y-%m-%d %H:%M')} ({now.tzinfo})]"
+
+                if isinstance(content, str):
+                    content = f"{time_note}\n\n{content}"
+                else:
+                    content = [{"type": "text", "text": time_note}, *content]
+
+                convo[-1] = {"role": "user", "content": content}
+
             # spoken channels use the voice role: its own model and reasoning effort (default: thinking off)
             role = "voice" if channel in SPOKEN_CHANNELS else "primary"
             if attachments and any(is_image(paths.files_dir() / a) for a in attachments) and self.config.models.roles.vision:
                 role = "vision"
             messages: list[dict] = [{"role": "system", "content": system}, *convo]
             ctx = self.tool_context(session_id, channel)
+            ctx.incognito = incognito
             # outside content read earlier in this chat still counts until a new chat starts (ADR 0018)
             ctx.untrusted = await self._chat_untrusted(session_id, session)
             if not ctx.untrusted and any(is_screen_capture(a) for a in attachments):
@@ -1078,6 +1263,8 @@ class Agent:
             except Exception as exc:  # selection must never break a turn
                 log.warning("tool selection failed, offering all tools: %s", exc)
                 tool_names = None
+            if incognito:
+                tool_names = self._incognito_tools(tool_names)
 
             async def persist(role_: str, content: str | None, **fields: Any) -> None:
                 mid = await self.store.add_message(session_id, role_, content, **fields)
@@ -1098,7 +1285,8 @@ class Agent:
                 elif isinstance(event, ToolResultEvent | UserInterjection):
                     partial = ""  # text before a tool call or a steer was already persisted
                     if isinstance(event, ToolResultEvent) and not event.is_error:
-                        sources.add_tool_result(event.name, self.delivered_rows(event.result))
+                        sources.add_tool_result(event.name, self.delivered_rows(event.result, result.tool_result_limit))
+                        self._add_answer_source(used, event.name, event.result)
                     if ctx.untrusted and not marked:  # remember it for the rest of this chat, also after a restart
                         marked = True
                         await self.store.execute(
@@ -1115,46 +1303,59 @@ class Agent:
             release()
             # the user pressed Stop (or the window went away): keep what was shown
             with contextlib.suppress(Exception):
-                save = asyncio.ensure_future(self._persist_stopped(session_id, partial, sources))
+                save = asyncio.ensure_future(self._persist_stopped(session_id, partial, sources, used))
                 while not save.done():  # a second Stop while saving must not lose what the caller sends on
                     with contextlib.suppress(asyncio.CancelledError):
                         await asyncio.shield(save)
                 if on_stopped is not None and not save.cancelled():
                     on_stopped(save.result())
+            self._turn_done(session_id)
             raise
         except BaseException:
             release()
+            self._turn_done(session_id)
             raise
         leftover = release()
 
-        if not (result.error and not result.text):
-            memory_sources = await sources.resolve(self.store)
-            message_id = await self.store.add_message(
-                session_id, "assistant", result.text, thinking=result.thinking or None, memory_sources=memory_sources
-            )
-            yield Done(content=result.text, message_id=message_id, memory_sources=memory_sources, **ev)
-
-            said = "\n\n".join([user_text, *result.interjections]).strip()
-            if self.memory is not None and self.config.memory.extract_after_turn:
-                # a chat that read outside content holds what it learns for the user's review (ADR 0021)
-                self._spawn(self._extract(said, memory_review.for_context(ctx)))
-            if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
-                self._spawn(self._auto_title(session_id, user_text, result.text))
-            self._spawn(self._maybe_compress(session_id))
-            if self.app is not None:
-                self.app.bus.publish(
-                    "chat.turn_completed",
-                    {
-                        "session_id": session_id,
-                        "turn_id": turn_id,
-                        "tool_calls": result.tool_calls,
-                        "tool_errors": result.tool_errors,
-                        "skills_viewed": result.skills_viewed,
-                        "user_text": said,
-                        "reply": result.text,
-                    },
+        try:  # the turn counts as busy until here, also when the caller stops reading at Done
+            if not (result.error and not result.text):
+                memory_sources = await sources.resolve(self.store)
+                message_id = await self.store.add_message(
+                    session_id, "assistant", result.text, thinking=result.thinking or None, memory_sources=memory_sources,
+                    sources=used.items(),
+                )
+                yield Done(
+                    content=result.text, message_id=message_id, memory_sources=memory_sources, sources=used.items(), **ev
                 )
 
+                said = "\n\n".join([user_text, *result.interjections]).strip()
+                # nothing is learned from an incognito chat (#154): no fact extraction, no memory flush, and no
+                # chat.turn_completed, so skills, the user model and dreaming never see it
+                if self.memory is not None and self.config.memory.extract_after_turn and not incognito:
+                    # a chat that read outside content holds what it learns for the user's review (ADR 0021)
+                    log.info("chat %s: fact extraction started for this turn", session_id)
+                    self._spawn(self._extract(said, memory_review.for_context(ctx)), "memory")
+                if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
+                    self._spawn(self._auto_title(session_id, user_text, result.text), "titles")
+                self._spawn(self._maybe_compress(session_id, flush=not incognito), "memory")
+                if incognito:
+                    log.info("incognito chat %s: nothing learned from this turn", session_id)
+                elif self.app is not None:
+                    self.app.bus.publish(
+                        "chat.turn_completed",
+                        {
+                            "session_id": session_id,
+                            "turn_id": turn_id,
+                            "tool_calls": result.tool_calls,
+                            "tool_errors": result.tool_errors,
+                            "skills_viewed": result.skills_viewed,
+                            "user_text": said,
+                            "reply": result.text,
+                        },
+                    )
+
+        finally:
+            self._turn_done(session_id)
         if leftover:
             # steer messages that arrived after the final round start a new turn
             async for event in self.run_turn(session_id, "\n\n".join(leftover), channel=channel, model=model):
@@ -1167,18 +1368,36 @@ class Agent:
         if stored is not None:
             return str(stored)
         rows = await self.store.fetchall(
-            "SELECT role, name, content FROM messages WHERE session_id = ? AND role = 'tool' ORDER BY created_at",
+            "SELECT role, name, content FROM messages WHERE session_id = ? AND role = 'tool' ORDER BY created_at, rowid",
             (session_id,),
         )
         source = untrusted_in([dict(r) for r in rows], self.registry)
         await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
         return source
 
-    async def _persist_stopped(self, session_id: str, partial: str, sources: MemorySources) -> dict:
+    async def _persist_stopped(
+        self, session_id: str, partial: str, sources: MemorySources, used: AnswerSources | None = None
+    ) -> dict:
         content = (partial.rstrip() + "\n\n_(stopped)_").strip()
         memory_sources = await sources.resolve(self.store)
-        message_id = await self.store.add_message(session_id, "assistant", content, memory_sources=memory_sources)
-        return {"message_id": message_id, "memory_sources": memory_sources}
+        items = used.items() if used is not None else []
+        message_id = await self.store.add_message(
+            session_id, "assistant", content, memory_sources=memory_sources, sources=items
+        )
+        return {"message_id": message_id, "memory_sources": memory_sources, "sources": items}
+
+    def _add_answer_source(self, used: AnswerSources, name: str, res: Any) -> None:
+        """Record what a successful tool result brought into the reply (#174). Never breaks a turn."""
+        tool = self.registry.get(name)
+        plugin = self.registry.plugin(tool.plugin) if tool is not None else None
+        is_app = isinstance(plugin, IntegrationPlugin) or getattr(plugin, "auth", None) == "mcp"
+        try:
+            used.add_tool_result(
+                name, res, plugin=tool.plugin if tool is not None else "",
+                app_name=str(getattr(plugin, "display_name", "") or ""), is_app=is_app,
+            )
+        except Exception as exc:
+            log.debug("answer source from %s skipped: %s", name, exc)
 
     # ------------------------------------------------------------------ tools
     @staticmethod
@@ -1201,6 +1420,10 @@ class Agent:
             return {"error": f"unknown tool {tc.name}"}, True, 0
         if self.approvals.is_never(tool):  # a "never" rule set while this call waited for approval still wins
             return {"error": never_message(self.approvals.label(tool, self.registry))}, True, 0
+        if tool.plugin in self.approvals.read_only():  # so does a switch to Read only (#141)
+            refusal = self.approvals.read_only_refusal(tool, await effective_risk(tool, tc.arguments, ctx), self.registry)
+            if refusal:
+                return {"error": refusal}, True, 0
         started = time.perf_counter()
         if "_raw" in tc.arguments and len(tc.arguments) == 1:
             return self._raw_arguments_error(tool, tc)
@@ -1223,15 +1446,21 @@ class Agent:
             log.exception("tool %s failed", tc.name)
             return {"error": f"{type(exc).__name__}: {exc}"}, True, int((time.perf_counter() - started) * 1000)
 
-    async def run_tool(self, call: ToolCall, ctx: ToolContext) -> tuple[Any, bool, str]:
+    async def run_tool(
+        self, call: ToolCall, ctx: ToolContext, *, role: str = "primary", model: str | None = None
+    ) -> tuple[Any, bool, str]:
         """Run one call the user approved outside the loop (a task's held call, ADR 0018); lasting rules still apply.
-        Returns ``(result, is_error, content)``, where ``content`` is the tool message the model reads."""
+        Returns ``(result, is_error, content)``, where ``content`` is the tool message the model in ``role`` reads."""
         res, is_error, _ = await self._run_tool(call, ctx)
-        return res, is_error, await self._tool_content(res, call.id)
+        limit = await self.tool_result_limit(role, model)
+        tool = self.registry.get(call.name)
+        content = await self._tool_content(res, call.id, tool=tool, limit=limit)
+        return res, is_error, self.outside_content(content, tool) if tool is not None else content
 
     # ------------------------------------------------------------------ background
-    def _spawn(self, coro) -> None:
-        task = asyncio.create_task(coro)
+    def _spawn(self, coro, kind: str = "background") -> None:
+        """Background work after a reply: it calls the model as ``kind`` and waits for a quiet moment (#149)."""
+        task = asyncio.create_task(coro, context=detached(kind))
         self._background.add(task)
         task.add_done_callback(self._background.discard)
 
@@ -1289,9 +1518,10 @@ class Agent:
         except Exception as exc:
             log.warning("memory flush before compression failed: %s", exc)
 
-    async def _maybe_compress(self, session_id: str) -> None:
+    async def _maybe_compress(self, session_id: str, *, flush: bool = True) -> None:
         """Hermes-style context compression: fold turns that fell out of the history
-        window into a running summary injected into the system prompt."""
+        window into a running summary injected into the system prompt. ``flush=False`` (an incognito chat) keeps
+        no facts from the folded turns."""
         try:
             total = await self.store.count_messages(session_id)
             window = self.config.chat.history_window
@@ -1299,16 +1529,18 @@ class Agent:
                 return
             session = await self.store.get_session(session_id)
             upto = (session or {}).get("context_upto") or ""
+            after, params = after_watermark(upto, "created_at", "rowid")  # same-tick messages are not skipped (#236)
             rows = await self.store.fetchall(
-                "SELECT role, content, created_at FROM messages WHERE session_id = ? AND created_at > ?"
-                " AND role IN ('user','assistant') AND content IS NOT NULL ORDER BY created_at",
-                (session_id, upto),
+                f"SELECT rowid, role, content, created_at FROM messages WHERE session_id = ? AND {after}"
+                " AND role IN ('user','assistant') AND content IS NOT NULL ORDER BY created_at, rowid",
+                (session_id, *params),
             )
             older = rows[: max(0, len(rows) - window)]
             if len(older) < 10:
                 return
             transcript = "\n".join(f"{r['role']}: {(r['content'] or '')[:800]}" for r in older)
-            await self._flush_memory(transcript, (session or {}).get("untrusted") or "", session_id)
+            if flush:
+                await self._flush_memory(transcript, (session or {}).get("untrusted") or "", session_id)
             prev = (session or {}).get("context_summary") or ""
             summary = await self.llm.complete_text(
                 "fast",
@@ -1319,7 +1551,7 @@ class Agent:
             )
             await self.store.execute(
                 "UPDATE sessions SET context_summary = ?, context_upto = ? WHERE id = ?",
-                (summary.strip(), older[-1]["created_at"], session_id),
+                (summary.strip(), next_watermark(upto, older, "created_at", "rowid"), session_id),
             )
         except Exception as exc:
             log.debug("context compression skipped: %s", exc)

@@ -71,3 +71,22 @@ only adds questions. Declining saves nothing. Instructions that ask for fewer qu
 archiving") are never proposed: loosening stays a choice made in Settings. A whole app is proposed only when the
 words name no specific action ("never use Slack"); when they name one, code narrows the proposal to the matching
 tools. A proposal made in a messaging app is sent back there with the same two choices.
+
+## Amendment (2026-10-10): Read only connections (#141)
+
+People want Sentient to read their mail or repos without ever being able to change them, and a rule per write tool
+is a lot to set up. Each connection (an integration or an MCP server) now has an access level, **Read only** or
+**Read and write** (the default), chosen when connecting and changed any time in Integrations. It is stored in
+`integrations.read_only`, a list of app ids, and read on every check, so a switch takes effect without a restart.
+
+A Read only connection works exactly like a Never rule on every one of its tools whose effective risk is above
+`read`: those tools are not offered on any surface and are left out of planners' lists, and a call made anyway is
+refused in code before modes, rules, "Allow for this chat" or a script's approvals mode are consulted, and again
+right before the tool runs. Like a Never rule it only takes away: an Allow rule never reopens a write tool of a Read
+only connection. A tool whose risk depends on its arguments (`risk_fn`) stays offered and each call is judged on its
+effective risk. MCP tools that run other tools named by a slug with their arguments (Composio's
+`COMPOSIO_MULTI_EXECUTE_TOOL`) now get such a `risk_fn`, whatever the server's own hints say: the verb in each slug decides (`GMAIL_FETCH_EMAILS` reads,
+`GMAIL_SEND_EMAIL` sends), a slug with no known verb counts as `write`, and a call is `read` only when every slug it
+runs is a plain look-up. This also means those look-ups no longer ask in approvals mode "ask"; they still ask once
+the chat has read outside content (ADR 0018), because the tool stays marked as one that can send data out.
+

@@ -10,6 +10,7 @@ to a model string plus a fallback chain from config.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import uuid
@@ -19,12 +20,52 @@ from typing import Any, Protocol
 
 from sentient import secrets
 from sentient.config.schema import ProviderConfig, SentientConfig
+from sentient.llm.chatgpt import ChatGPTError
+from sentient.llm.errors import is_tool_support_error, plain_error
+from sentient.llm.jobs import ModelJobs
+from sentient.llm.responses import ResponsesError
 
 log = logging.getLogger(__name__)
 
 
 class ProviderError(RuntimeError):
     pass
+
+
+class PlainProviderError(ProviderError):
+    """The message is a plain sentence that says what to do, for the user as is (the raw error is only logged)."""
+
+
+class ModelRefused(PlainProviderError):
+    """A model that is set up can't do this job (Claude Code in the background, for one). The message is a plain
+    sentence that says what to change, for the user as is."""
+
+
+class ProviderFailed(PlainProviderError):
+    """A provider turned the request down for a known reason: out of credits, a rate limit, a bad key... (#280)."""
+
+
+def _failure(exc: Exception, model: str) -> Exception:
+    """What a failed model leaves for the user: a plain error for a known provider failure, else ``exc`` itself.
+    Claude Code and ChatGPT plan errors are written for the user already."""
+    if isinstance(exc, PlainProviderError):
+        return exc
+    if (isinstance(exc, ResponsesError | ChatGPTError) or (
+        _provider_prefix(model) == CLAUDE_CODE and type(exc) is ProviderError
+    )) and not is_tool_support_error(str(exc)):  # a tool refusal stays as is: chat answers without tools
+        return ProviderFailed(str(exc))
+    plain = plain_error(exc, model)
+    return ProviderFailed(plain) if plain else exc
+
+
+def _all_failed(role: str, errors: list[Exception]) -> ProviderError:
+    """The error for a role whose every model failed: the last model's plain reason when Sentient knows it (when
+    every model refused the job, why and what to do), else the general error."""
+    if errors and all(isinstance(e, ModelRefused) for e in errors):
+        return ModelRefused(str(errors[0]))
+    if errors and isinstance(errors[-1], PlainProviderError):
+        return ProviderFailed(str(errors[-1]))
+    return ProviderError(f"All models failed for role '{role}': {errors[-1] if errors else None}")
 
 
 @dataclass
@@ -145,6 +186,8 @@ class LiteLLMProvider:
     def __init__(self, config: SentientConfig):
         self.config = config
         self._max_context: dict[str, int | None] = {}
+        # one local model call at a time, chats first (#149); reads the config live, so Settings changes apply
+        self.jobs = ModelJobs(lambda: self.config.models)
 
     # ------------------------------------------------------------------ resolution
     def model_for(self, role: str) -> str:
@@ -260,7 +303,7 @@ class LiteLLMProvider:
 
         litellm.drop_params = True
         litellm.suppress_debug_info = True
-        last_error: Exception | None = None
+        errors: list[Exception] = []
         override = model
         for model in self._chain(role, override):
             emitted = False
@@ -282,31 +325,43 @@ class LiteLLMProvider:
                 if sent_tools:
                     kwargs["tools"] = sent_tools
                     kwargs["tool_choice"] = "auto"
-                response = await litellm.acompletion(
-                    model=litellm_model(model), messages=sent_messages, stream=True, **kwargs
-                )
-                chunks: list[Any] = []
-                in_think = False
-                async for chunk in response:
-                    chunks.append(chunk)
-                    delta = chunk.choices[0].delta if chunk.choices else None
-                    if delta is None:
-                        continue
-                    reasoning = getattr(delta, "reasoning_content", None)
-                    if reasoning:
-                        emitted = True
-                        yield StreamChunk(thinking=reasoning, model=model)
-                    text = delta.content or ""
-                    if not text:
-                        continue
-                    # Models like qwen3 emit <think>...</think> inline; route it to the thinking stream.
-                    pieces, in_think = split_think(text, in_think)
-                    emitted = True
-                    for piece, is_think in pieces:
-                        if is_think:
-                            yield StreamChunk(thinking=piece, model=model)
-                        else:
-                            yield StreamChunk(text=piece, model=model)
+                # a local model is held for the whole stream; cancelling the caller (Stop) lets it go
+                async with self.jobs.slot(model):
+                    response = await litellm.acompletion(
+                        model=litellm_model(model), messages=sent_messages, stream=True, **kwargs
+                    )
+                    chunks: list[Any] = []
+                    in_think = False
+                    finished = False
+                    try:
+                        async for chunk in response:
+                            chunks.append(chunk)
+                            delta = chunk.choices[0].delta if chunk.choices else None
+                            if delta is None:
+                                continue
+                            reasoning = getattr(delta, "reasoning_content", None)
+                            if reasoning:
+                                emitted = True
+                                yield StreamChunk(thinking=reasoning, model=model)
+                            text = delta.content or ""
+                            if not text:
+                                continue
+                            # Models like qwen3 emit <think>...</think> inline; route it to the thinking stream.
+                            pieces, in_think = split_think(text, in_think)
+                            emitted = True
+                            for piece, is_think in pieces:
+                                if is_think:
+                                    yield StreamChunk(thinking=piece, model=model)
+                                else:
+                                    yield StreamChunk(text=piece, model=model)
+                        finished = True
+                    finally:
+                        aclose = getattr(response, "aclose", None)
+                        if not finished and aclose is not None:
+                            # stopped early (Stop, an error): end the request so the model really is free for the next
+                            with contextlib.suppress(Exception):
+                                await aclose()
+                # the slot is free again before the last chunk: its caller runs tools that may call the model again
                 full = litellm.stream_chunk_builder(chunks, messages=messages)
                 tool_calls: list[ToolCall] = []
                 msg = full.choices[0].message if full and full.choices else None
@@ -324,13 +379,16 @@ class LiteLLMProvider:
                 )
                 return
             except Exception as exc:
-                last_error = exc
+                failure = _failure(exc, model)
+                errors.append(failure)
                 log.warning("model %s failed for role %s: %s", model, role, exc)
                 if emitted:
                     # part of a reply already reached the user; switching models would duplicate it
+                    if isinstance(failure, PlainProviderError):
+                        raise ProviderFailed(str(failure)) from exc
                     raise ProviderError(f"{model} stopped mid-reply: {exc}") from exc
                 continue
-        raise ProviderError(f"All models failed for role '{role}': {last_error}")
+        raise _all_failed(role, errors)
 
     # ------------------------------------------------------------------ ChatGPT plan (Responses API shim)
     async def _chatgpt_stream(
@@ -375,33 +433,34 @@ class LiteLLMProvider:
         import litellm
 
         litellm.drop_params = True
-        last_error: Exception | None = None
+        errors: list[Exception] = []
         override = model
         for model in self._chain(role, override):
             try:
-                _refuse_claude_code(model)
+                _refuse_claude_code(model, role)
                 if _provider_prefix(model) == CHATGPT:
                     text = await self._chatgpt_text(model, role, messages)
                 else:
                     kwargs = await self._call_kwargs(model, role)
                     sent, _ = apply_prompt_cache(model, messages)
-                    resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
+                    async with self.jobs.slot(model):
+                        resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
                     text = resp.choices[0].message.content or ""
                 return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
             except Exception as exc:
-                last_error = exc
+                errors.append(_failure(exc, model))
                 log.warning("model %s failed for role %s: %s", model, role, exc)
-        raise ProviderError(f"All models failed for role '{role}': {last_error}")
+        raise _all_failed(role, errors)
 
     async def complete_json(self, role: str, messages: list[dict], *, model: str | None = None) -> Any:
         import litellm
 
         litellm.drop_params = True
-        last_error: Exception | None = None
+        errors: list[Exception] = []
         override = model
         for model in self._chain(role, override):
             try:
-                _refuse_claude_code(model)
+                _refuse_claude_code(model, role)
                 if _provider_prefix(model) == CHATGPT:
                     return parse_json_loose(await self._chatgpt_text(model, role, messages))
                 kwargs = await self._call_kwargs(model, role)
@@ -409,13 +468,14 @@ class LiteLLMProvider:
                 if _provider_prefix(model) not in {"ollama", "ollama_chat"}:
                     kwargs["response_format"] = {"type": "json_object"}
                 sent, _ = apply_prompt_cache(model, messages)
-                resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
+                async with self.jobs.slot(model):
+                    resp = await litellm.acompletion(model=litellm_model(model), messages=sent, **kwargs)
                 text = resp.choices[0].message.content or ""
                 return parse_json_loose(text)
             except Exception as exc:
-                last_error = exc
+                errors.append(_failure(exc, model))
                 log.warning("model %s failed for role %s: %s", model, role, exc)
-        raise ProviderError(f"All models failed for role '{role}': {last_error}")
+        raise _all_failed(role, errors)
 
     # ------------------------------------------------------------------ embeddings
     async def embed(self, texts: list[str], *, model: str | None = None) -> list[list[float]]:
@@ -430,17 +490,25 @@ class LiteLLMProvider:
             raise ProviderError("ChatGPT plans don't include embedding models. Pick a local or API embedding model.")
         kwargs = self._kwargs_for(model)
         kwargs.pop("timeout", None)
-        resp = await litellm.aembedding(model=litellm_model(model), input=texts, **kwargs)
+        try:
+            async with self.jobs.slot(model):
+                resp = await litellm.aembedding(model=litellm_model(model), input=texts, **kwargs)
+        except Exception as exc:
+            plain = plain_error(exc, model)
+            if plain is None:
+                raise
+            log.warning("embedding model %s failed: %s", model, exc)
+            raise ProviderFailed(plain) from exc
         return [d["embedding"] for d in resp.data]
 
 
 # ---------------------------------------------------------------------- helpers
-def _refuse_claude_code(model: str) -> None:
+def _refuse_claude_code(model: str, role: str) -> None:
     """Claude Code only writes chat replies (ADR 0022): text and JSON jobs run in the background."""
     if _provider_prefix(model) == CLAUDE_CODE:
-        from sentient.llm.claude_code import CHATS_ONLY
+        from sentient.llm.claude_code import background_refusal
 
-        raise ProviderError(CHATS_ONLY)
+        raise ModelRefused(background_refusal(role))
 
 
 def tool_arguments(raw: str | None) -> dict:

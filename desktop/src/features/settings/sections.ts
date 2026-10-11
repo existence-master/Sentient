@@ -1,4 +1,5 @@
 import {
+  IconArchive,
   IconBolt,
   IconBrain,
   IconChartBar,
@@ -35,7 +36,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'General',
     description: 'Names, timezone, language, appearance, startup and shortcuts.',
     icon: IconSettings,
-    keywords: ['name', 'timezone', 'location', 'language', 'theme', 'dark', 'light', 'accent', 'color', 'login', 'startup', 'tray', 'shortcut', 'hotkey', 'keyboard', 'screen', 'share', 'screenshot', 'window', 'region']
+    keywords: ['name', 'timezone', 'location', 'language', 'theme', 'dark', 'light', 'accent', 'color', 'login', 'startup', 'tray', 'shortcut', 'hotkey', 'keyboard', 'screen', 'share', 'screenshot', 'window', 'region', 'incognito', 'private']
   },
   {
     id: 'models',
@@ -144,6 +145,14 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     description: 'Tokens by model, source and day.',
     icon: IconChartBar,
     keywords: ['tokens', 'cost', 'insights', 'statistics']
+  },
+  {
+    id: 'backups',
+    label: 'Backups',
+    description: 'Back up and restore your data, and snapshots taken before updates.',
+    icon: IconArchive,
+    keywords: ['backup', 'back up', 'restore', 'snapshot', 'export', 'copy', 'undo', 'schedule', 'new computer', 'move'],
+    schemaSections: ['backups']
   },
   {
     id: 'advanced',

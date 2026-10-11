@@ -13,9 +13,9 @@ import {
   session,
   shell
 } from 'electron'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve, sep } from 'node:path'
+import { basename, join, resolve, sep } from 'node:path'
 import type {
   AppCommand,
   CaptureNotice,
@@ -25,6 +25,7 @@ import type {
   DictationStatus,
   NativeNotification,
   OpenPathTarget,
+  PickFilesOptions,
   ShellPrefs,
   ShortcutId
 } from '../../src/types/bridge'
@@ -361,18 +362,38 @@ function registerIpc(): void {
     platform: process.platform,
     arch: process.arch
   }))
-  ipcMain.handle(CH.pickFiles, async (_e, options?: { multiple?: boolean; directory?: boolean }) => {
+  ipcMain.handle(CH.pickFiles, async (_e, options?: PickFilesOptions) => {
     const parent = win ?? undefined
     const props: Array<'openFile' | 'openDirectory' | 'multiSelections' | 'showHiddenFiles'> = options?.directory
       ? ['openDirectory', 'showHiddenFiles']
       : ['openFile']
     if (options?.multiple !== false) props.push('multiSelections')
+    const filters = Array.isArray(options?.filters)
+      ? options.filters
+          .filter((f) => typeof f?.name === 'string' && Array.isArray(f.extensions))
+          .map((f) => ({ name: f.name, extensions: f.extensions.filter((x) => typeof x === 'string' && /^[a-z0-9]{1,10}$/i.test(x)) }))
+      : undefined
     const result = parent
-      ? await dialog.showOpenDialog(parent, { properties: props })
-      : await dialog.showOpenDialog({ properties: props })
+      ? await dialog.showOpenDialog(parent, { properties: props, filters })
+      : await dialog.showOpenDialog({ properties: props, filters })
     return result.canceled ? [] : result.filePaths
   })
   ipcMain.on(CH.readyForScreenshot, () => smokeRunner?.ready())
+  ipcMain.handle(CH.showInFolder, async (_e, path: string) => {
+    if (typeof path !== 'string' || !path) return false
+    const target = resolve(path)
+    let isDir: boolean
+    try {
+      isDir = statSync(target).isDirectory()
+    } catch {
+      return false
+    }
+    // a folder opens in the file manager; only a Sentient backup file is selected in its folder; nothing is opened or run
+    if (isDir) return (await shell.openPath(target)) === ''
+    if (!/^sentient-(backup|snapshot)-[\w-]+\.zip$/i.test(basename(target))) return false
+    shell.showItemInFolder(target)
+    return true
+  })
   ipcMain.handle(CH.openFile, async (_e, name: string) => {
     if (typeof name !== 'string' || !name) return false
     const base = resolve(homePaths.files())

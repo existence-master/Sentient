@@ -21,7 +21,7 @@ import httpx
 from sentient import secrets
 from sentient.config.schema import ModelRoles, SentientConfig
 from sentient.llm import chatgpt, claude_code
-from sentient.llm.provider import CLAUDE_CODE, ToolCall, provider_config
+from sentient.llm.provider import CLAUDE_CODE, PlainProviderError, ToolCall, provider_config
 
 ROLES = ("primary", "fast", "planner", "executor", "vision", "voice", "embedding")
 TOOL_ROLES = {"primary", "fast", "executor", "vision", "voice"}  # roles that run the agent loop with tools
@@ -32,6 +32,9 @@ LOCAL = OLLAMA | {"lm_studio"}
 SUGGESTED_LOCAL = ModelRoles.model_fields["primary"].default.split("/", 1)[1]  # the default local model
 STEP_TIMEOUT_S = 60.0
 MIN_CONTEXT = 8192
+# the share of the model that must be on the graphics card for the setup sized for this computer to pass: qwen3:8b at
+# 8,192 tokens keeps about 89 to 91% there on an 8 GB card (Ollama 0.9, 2026-10-10); only 5,120 tokens or fewer fit fully
+EXPECTED_ON_GPU = 0.85
 SMALL_QWEN = re.compile(r"^qwen3:(0\.6|1\.7|4)b")
 LABELS = {
     "ollama": "Ollama", "ollama_chat": "Ollama", "lm_studio": "LM Studio", "anthropic": "Anthropic",
@@ -175,6 +178,8 @@ class _RoleCheck:
         if isinstance(exc, TimeoutError):
             return (f"No reply within {int(self.run.timeout_s)} seconds. The model may be too big for this "
                     "computer: try a smaller model, or a shorter context length.")
+        if isinstance(exc, PlainProviderError):
+            return ""  # the reason already says what to do
         msg = str(exc).lower()
         if any(k in msg for k in ("401", "403", "api key", "api_key", "authentication", "unauthorized")):
             return f"{self.label} turned the key down. Check your {self.label} key under Providers."
@@ -406,6 +411,14 @@ class _RoleCheck:
         if vram >= size * 0.99:
             self.add("gpu", "Graphics card", "pass", f"Runs fully on the graphics card ({_gb(size)}).")
             return
+        rec = self.run.recommendation
+        if (vram >= size * EXPECTED_ON_GPU and rec and rec["runs_on"] == "graphics" and rec["name"] == self.name
+                and in_use and in_use <= int(rec["context_length"])):
+            # the setup Sentient recommends for this card: a small part on the processor is expected, and the only
+            # change that would fit fully is a context below 8,192 tokens, which cuts off long tasks
+            self.add("gpu", "Graphics card", "pass",
+                     f"Runs mostly on the graphics card ({_gb(vram)} of {_gb(size)}), as expected for this computer.")
+            return
         action = None
         shorter = self.run.fitting_context(self.name) or MIN_CONTEXT
         if in_use and in_use > shorter:
@@ -418,7 +431,6 @@ class _RoleCheck:
             detail = (f"Ollama is running {round(100 * (size - vram) / size)}% of this model on the processor "
                       f"({_gb(vram)} of {_gb(size)} fits on the graphics card).")
         fix = "It will be slow. Pick a smaller model or a shorter context length."
-        rec = self.run.recommendation
         if rec and rec["runs_on"] == "graphics":
             fix += f" For this computer Sentient suggests {rec['summary']}."
         self.add("gpu", "Graphics card", "warn", detail, fix, action)

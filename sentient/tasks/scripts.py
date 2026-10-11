@@ -2,25 +2,44 @@
 
 A script job is a task with ``task_type: "script"`` and a ``script`` object::
 
-    {code, condition: "changed"|"alert"|"every_run", then: "notify"|"run", last_result, last_run_at, last_error}
+    {code, condition: "changed"|"noteworthy"|"alert"|"every_run", then: "notify"|"run", last_result, last_run_at,
+     last_error, checks}
 
 The code runs through ``app.sandbox.run`` and may call read-only Sentient tools with
 ``from sentient_tools import tools, result``. This module holds the pure helpers:
-validation, normalization, reading the sandbox outcome and deciding whether to act.
+validation, normalization, reading the sandbox outcome, deciding whether to act and the short history of checks.
+
+A ``noteworthy`` job is a quiet monitor (#157): like ``changed`` it compares each result with the last one with no
+model, so an unchanged source costs nothing; only when something changed does the ``fast`` model judge whether the
+change matters (``JUDGE_PROMPT`` on a line diff), and only then does the job act.
 """
 
 from __future__ import annotations
 
 import ast
+import difflib
 import json
 from typing import Any
 
-CONDITIONS = ("alert", "changed", "every_run")
+CONDITIONS = ("alert", "changed", "noteworthy", "every_run")
+COMPARING = ("changed", "noteworthy")  # act on a difference from the last result
 THEN = ("notify", "run")
 MAX_CODE_CHARS = 20000
 MAX_RESULT_CHARS = 20000
 REPORT_CHARS = 3000  # an every-run report shows this much of the script's output
-SCRIPT_STATE_FIELDS = ("last_result", "last_run_at", "last_error")
+SCRIPT_STATE_FIELDS = ("last_result", "last_run_at", "last_error", "checks")
+MAX_CHECKS = 30  # the history keeps this many entries; a row of quiet checks is one entry
+QUIET_OUTCOMES = ("nothing_new", "quiet")  # repeats of these fold into one entry with a count
+DIFF_CHARS = 3000  # the judge sees at most this much of the change
+JUDGE_PROMPT = (
+    "You check a change in something the user asked Sentient to watch. First say what changed, then decide whether "
+    "the user would want a notification about it.\n"
+    "Worth telling (true): an item was added or removed, or a price, date, status or result the user asked about "
+    "changed.\n"
+    "Not worth telling (false): only a counter changed (page views, visitors, likes, comments), a clock or "
+    "\"last updated\" time, an ad, the order of items, spacing, or the same words said differently.\n"
+    'Reply with JSON only: {"change": "one short sentence naming what changed", "noteworthy": true or false}'
+)
 
 
 class ScriptInvalid(ValueError):
@@ -50,14 +69,18 @@ def normalize_script(raw: Any, previous: dict | None = None) -> dict:
     code = validate_code(code)
     condition = str(raw.get("condition") or prev.get("condition") or "alert").strip().lower()
     if condition not in CONDITIONS:
-        raise ScriptInvalid("script.condition must be 'alert', 'changed' or 'every_run'.")
+        raise ScriptInvalid("script.condition must be 'alert', 'changed', 'noteworthy' or 'every_run'.")
     then = str(raw.get("then") or prev.get("then") or "notify").strip().lower()
     if then not in THEN:
         raise ScriptInvalid("script.then must be 'notify' or 'run'.")
     out = {"code": code, "condition": condition, "then": then}
-    keep = previous is not None and prev.get("code") == code and prev.get("condition") == condition
+    same_code = previous is not None and prev.get("code") == code
+    # switching between changed and noteworthy keeps the baseline: both compare the same result
+    keep = same_code and (prev.get("condition") == condition or {prev.get("condition"), condition} <= set(COMPARING))
     for key in SCRIPT_STATE_FIELDS:
         out[key] = prev.get(key) if keep else None
+    if same_code:
+        out["checks"] = prev.get("checks")  # the history of checks stays while only the condition changes
     return out
 
 
@@ -106,10 +129,10 @@ def should_act(condition: str, value: Any, previous: Any) -> bool:
     previous successful result. The first successful result of a ``changed`` job is only the baseline, and an
     empty (``None``) result is never a change (a page that briefly returns nothing should not alert).
     ``every_run``: every successful check that produced something, even when it is the same as last time; a
-    check that prints nothing stays quiet."""
+    check that prints nothing stays quiet. ``noteworthy`` is ``changed`` here; the judge decides afterwards."""
     if condition == "every_run":
         return value is not None and not (isinstance(value, str) and not value.strip())
-    if condition == "changed":
+    if condition in COMPARING:
         return value is not None and previous is not None and canonical(value) != canonical(previous)
     return isinstance(value, dict) and bool(value.get("alert"))
 
@@ -121,7 +144,7 @@ def alert_message(task_name: str, condition: str, value: Any) -> str:
         return value if len(value) <= REPORT_CHARS else value[: REPORT_CHARS - 3] + "..."  # the output is the report
     shown = value if isinstance(value, str) else canonical(value)
     shown = shown if len(shown) <= 500 else shown[:497] + "..."
-    if condition == "changed":
+    if condition in COMPARING:
         return f"'{task_name}' noticed a change: {shown}"
     if condition == "every_run":
         return f"'{task_name}' reported: {shown}"
@@ -133,5 +156,62 @@ def describe_for_approval(script: dict) -> str:
     action = "send you a notification" if script.get("then") == "notify" else "start a full task run"
     if script.get("condition") == "every_run":
         return f"Runs a small check script with no AI calls; after every check that prints something, it will {action}."
+    if script.get("condition") == "noteworthy":
+        return (
+            "Runs a small check script with no AI calls. When the result changes, your fast AI model decides whether "
+            f"the change matters; if it does, it will {action}."
+        )
     when = "the script raises an alert" if script.get("condition") == "alert" else "the result changes"
     return f"Runs a small check script with no AI calls; when {when}, it will {action}."
+
+
+# ---------------------------------------------------------------------------- noteworthy: the judge
+def _lines(value: Any) -> list[str]:
+    text = value if isinstance(value, str) else json.dumps(value, indent=1, sort_keys=True, ensure_ascii=False, default=str)
+    return [line.rstrip() for line in text.splitlines() if line.strip()]
+
+
+def diff_text(previous: Any, value: Any) -> str:
+    """The changed lines only (``- removed``, ``+ added``), at most ``DIFF_CHARS``; "" when nothing differs."""
+    # skip the two file headers by position; hunk headers start with "@@", changed lines with "-" or "+"
+    diff = list(difflib.unified_diff(_lines(previous), _lines(value), lineterm="", n=0))[2:]
+    lines = [line for line in diff if line.startswith(("-", "+"))]
+    text = "\n".join(f"{line[0]} {line[1:].strip()}" for line in lines)
+    return text if len(text) <= DIFF_CHARS else text[: DIFF_CHARS - 4] + "\n..."
+
+
+def judge_messages(goal: str, previous: Any, value: Any) -> list[dict]:
+    """The judge's short prompt: what the user watches and the line diff."""
+    user = (
+        f"What the user watches: {goal[:500]}\n"
+        f"Changes since the last check (- removed, + added):\n{diff_text(previous, value) or '(only spacing)'}"
+    )
+    return [{"role": "system", "content": JUDGE_PROMPT}, {"role": "user", "content": user}]
+
+
+def read_verdict(data: Any) -> tuple[bool | None, str]:
+    """``(noteworthy, change)`` from the judge's JSON; ``None`` when it gave no usable answer."""
+    if not isinstance(data, dict):
+        return None, ""
+    raw = data.get("noteworthy", data.get("notify", data.get("material")))
+    if isinstance(raw, str):
+        raw = {"true": True, "yes": True, "false": False, "no": False}.get(raw.strip().lower())
+    change = " ".join(str(data.get("change") or data.get("summary") or "").split())[:300]
+    return (raw if isinstance(raw, bool) else None), change
+
+
+# ---------------------------------------------------------------------------- the history of checks
+def add_check(checks: Any, outcome: str, now: str, note: str = "") -> list[dict]:
+    """Append ``{at, outcome, note?}`` to the history, newest last. A quiet check right after one with the same
+    outcome folds into it (``count``, ``last_at``), so a monitor that checks every 5 minutes stays readable."""
+    out = [dict(c) for c in checks if isinstance(c, dict)] if isinstance(checks, list) else []
+    last = out[-1] if out else None
+    if last and outcome in QUIET_OUTCOMES and last.get("outcome") == outcome:
+        last["count"] = int(last.get("count") or 1) + 1
+        last["last_at"] = now
+        return out
+    entry: dict[str, Any] = {"at": now, "outcome": outcome}
+    if note:
+        entry["note"] = note[:300]
+    out.append(entry)
+    return out[-MAX_CHECKS:]
