@@ -78,7 +78,7 @@ def _debug_override() -> PowerState | None:
         state = PowerState(False, None)
     elif raw == "battery":
         state = PowerState(True, None)
-    elif raw.isdigit() and 0 <= int(raw) <= 100:
+    elif raw.isascii() and raw.isdigit() and 0 <= int(raw) <= 100:
         state = PowerState(True, int(raw))
     else:
         return None
@@ -144,18 +144,18 @@ def _linux(root: Path) -> PowerState:
     if not root.is_dir():
         return UNKNOWN
     discharging = False
-    pct: int | None = None
+    levels: list[int] = []
     for supply in root.iterdir():
         kind = _read(supply / "type")
         if kind in {"Mains", "USB", "USB_C", "USB_PD"} and _read(supply / "online") == "1":
             return PowerState(False, None)
-        if kind == "Battery":
-            if _read(supply / "status") == "Discharging":
-                discharging = True
+        if kind == "Battery" and _read(supply / "status") == "Discharging":
+            discharging = True
             cap = _read(supply / "capacity")
-            if cap.isdigit() and pct is None:
-                pct = min(100, int(cap))
-    return PowerState(discharging, pct if discharging else None)
+            if cap.isascii() and cap.isdigit():
+                levels.append(min(100, int(cap)))
+    # several discharging batteries: the lowest is the careful answer
+    return PowerState(discharging, min(levels) if levels else None)
 
 
 def _read(path: Path) -> str:

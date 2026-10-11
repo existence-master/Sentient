@@ -255,7 +255,9 @@ class ModelJobs:
         if w.rank < GATED_RANK or (w.turn is not None and w.turn.active):
             return None
         if self._turns and now - self._last_chat_use >= STALL_S:
-            return None  # the safety valve: the running reply is not using the model, maybe waiting on this
+            # the safety valve: the running reply is not using the model, maybe waiting on this. It comes before the
+            # battery holds on purpose: a reply stuck behind held upkeep would otherwise hang until the cap (#296)
+            return None
         if w.rank >= UPKEEP_RANK and (hold := self._battery_hold(w, now)):
             return hold
         if self._turns or now - self._last_chat_end < self._quiet_s():

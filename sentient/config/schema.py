@@ -206,8 +206,8 @@ class ModelsConfig(BaseModel):
     background_on_battery: bool = Field(
         False,
         description="Let Sentient's own upkeep (memory, suggestions, skill review, chat titles) use a local model on "
-        "battery as freely as when plugged in. When off, upkeep still runs on battery, with the limits below. Your "
-        "chats and the tasks you scheduled always run on time.",
+        "battery as freely as when plugged in, except when the battery is low (below). When off, upkeep still runs on "
+        "battery, with the limits below. Your chats and the tasks you scheduled always run on time.",
     )
     battery_min_percent: int = Field(
         40, ge=0, le=100,

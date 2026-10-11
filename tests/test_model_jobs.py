@@ -608,6 +608,13 @@ def test_linux_battery_percent(tmp_path):
     for key, value in {"type": "Battery", "status": "Discharging", "capacity": "37"}.items():
         (tmp_path / "BAT0" / key).write_text(value + "\n")
     assert power._linux(tmp_path) == power.PowerState(True, 37)
+    (tmp_path / "BAT1").mkdir()  # a second battery: full and idle, it does not hide the low one
+    for key, value in {"type": "Battery", "status": "Full", "capacity": "100"}.items():
+        (tmp_path / "BAT1" / key).write_text(value + "\n")
+    (tmp_path / "BAT2").mkdir()
+    for key, value in {"type": "Battery", "status": "Discharging", "capacity": "5"}.items():
+        (tmp_path / "BAT2" / key).write_text(value + "\n")
+    assert power._linux(tmp_path) == power.PowerState(True, 5)
 
 
 def test_macos_power_status():
@@ -629,8 +636,9 @@ def test_battery_can_be_faked_for_tests_and_debugging(monkeypatch):
     assert power.on_battery() is False and power.percent() is None
     monkeypatch.setenv(power.DEBUG_ENV, "battery")
     assert power.read() == power.PowerState(True, None)
-    monkeypatch.setenv(power.DEBUG_ENV, "nonsense")  # ignored: the real reading
-    assert power.on_battery() is False
+    for junk in ("nonsense", "\u00b2", "101"):  # ignored: the real reading ("\u00b2" passes isdigit(), not int())
+        monkeypatch.setenv(power.DEBUG_ENV, junk)
+        assert power.on_battery() is False
 
 
 def test_battery_reading_is_remembered_and_never_raises(monkeypatch):
