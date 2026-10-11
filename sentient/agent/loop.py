@@ -46,6 +46,7 @@ from sentient.agent.toolselect import ToolSelector, is_local_model
 from sentient.config.schema import SentientConfig
 from sentient.files.extract import extract_text, is_image
 from sentient.llm import claude_code
+from sentient.llm.errors import is_tool_support_error
 from sentient.llm.events import (
     AgentEvent,
     ApprovalRequest,
@@ -62,7 +63,13 @@ from sentient.llm.events import (
 )
 from sentient.llm.jobs import as_kind, detached
 from sentient.llm.meter import measure
-from sentient.llm.provider import LLMProvider, ProviderError, StreamChunk, ToolCall
+from sentient.llm.provider import (
+    LLMProvider,
+    PlainProviderError,
+    ProviderError,
+    StreamChunk,
+    ToolCall,
+)
 from sentient.memory import review as memory_review
 from sentient.memory.facts import FactMemory
 from sentient.memory.sources import MemorySources
@@ -219,8 +226,7 @@ def history_to_openai(rows: list[dict]) -> list[dict]:
 def is_tool_format_error(exc: Exception) -> bool:
     """True when the provider rejected the request because the model cannot do tool calling
     (e.g. an old Ollama model template emitting malformed tool calls)."""
-    m = str(exc).lower()
-    return "does not support tools" in m or "invalid character" in m or ("tool" in m and "pars" in m)
+    return not isinstance(exc, PlainProviderError) and is_tool_support_error(str(exc))
 
 
 def _json_safe(value: Any) -> str:

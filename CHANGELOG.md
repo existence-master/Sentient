@@ -189,6 +189,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- When a cloud model says no, chat and tasks now say why in a plain sentence and what to do, instead of showing the
+  provider's raw reply. For example: "OpenRouter's free models have reached today's limit. Add credits on
+  openrouter.ai, wait until tomorrow, or pick another model in Settings > Models." This covers rate limits, an
+  account out of credits, a key that was mistyped or revoked, a free model OpenRouter keeps for coding tools, a model
+  that doesn't exist or isn't downloaded, and a provider that is down or too slow. The raw reply stays in the log.
 - One long tool result no longer fills a local model's whole context. A result may now take about a quarter of what
   the model reads at once (Settings > General > Conversations), so on an 8,192-token model a 13,000-character Composio
   search no longer triggers "This chat is getting long" after a single step. The model is told plainly when a result

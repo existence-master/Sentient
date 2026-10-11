@@ -21,7 +21,7 @@ import httpx
 from sentient import secrets
 from sentient.config.schema import ModelRoles, SentientConfig
 from sentient.llm import chatgpt, claude_code
-from sentient.llm.provider import CLAUDE_CODE, ToolCall, provider_config
+from sentient.llm.provider import CLAUDE_CODE, PlainProviderError, ToolCall, provider_config
 
 ROLES = ("primary", "fast", "planner", "executor", "vision", "voice", "embedding")
 TOOL_ROLES = {"primary", "fast", "executor", "vision", "voice"}  # roles that run the agent loop with tools
@@ -178,6 +178,8 @@ class _RoleCheck:
         if isinstance(exc, TimeoutError):
             return (f"No reply within {int(self.run.timeout_s)} seconds. The model may be too big for this "
                     "computer: try a smaller model, or a shorter context length.")
+        if isinstance(exc, PlainProviderError):
+            return ""  # the reason already says what to do
         msg = str(exc).lower()
         if any(k in msg for k in ("401", "403", "api key", "api_key", "authentication", "unauthorized")):
             return f"{self.label} turned the key down. Check your {self.label} key under Providers."
