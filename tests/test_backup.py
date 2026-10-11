@@ -230,6 +230,7 @@ def test_backup_routes(config, isolated_home, monkeypatch, tmp_path):
         c.headers.update({"Authorization": "Bearer test-token"})
         first = c.get("/api/backups").json()
         assert first["backups"] == [] and first["pending_restore"] is None and first["schedule"] == "off"
+        assert first["folder_in_home"] is True  # this test's Documents doesn't exist: the data-folder fallback
         made = c.post("/api/backups", json={}).json()
         assert made["name"].startswith("sentient-backup-")
         elsewhere = c.post("/api/backups", json={"folder": str(tmp_path / "usb")}).json()
@@ -360,7 +361,7 @@ async def test_backups_go_to_documents_by_default(config, isolated_home, tmp_pat
         assert Path(made["path"]).parent == docs / "Sentient Backups"
         overview = await app.backups.overview()
         assert overview["folder"] == overview["default_folder"] == str(docs / "Sentient Backups")
-        assert overview["home"] == str(isolated_home)
+        assert overview["home"] == str(isolated_home) and overview["folder_in_home"] is False
         assert [b["name"] for b in overview["backups"]] == [made["name"]]
         # snapshots, a staged restore and the restore result stay in the data folder
         assert (await app.backups.snapshot("before a test"))["path"].startswith(str(isolated_home / "backups"))
@@ -403,5 +404,28 @@ async def test_incognito_chats_are_never_in_a_backup(config, isolated_home, tmp_
         with zipfile.ZipFile(made["path"]) as zf:
             raw = zf.read("sentient.db")
         assert b"surprise gift" not in raw and b"Coorg trek" in raw
+    finally:
+        await app.stop()
+
+
+async def test_a_restore_whose_snapshot_fails_stays_waiting(config, isolated_home, monkeypatch):
+    app = await _app(config)
+    made = await app.backups.backup_now()
+    sid = await app.store.create_session(title="Made after the backup")
+    await app.backups.restore(made["path"])
+    await app.stop()
+
+    def no_snapshot(*a, **k):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(archive, "create_snapshot", no_snapshot)
+        result = apply_pending_restore()
+    assert "couldn't save a copy" in result["error"]
+    assert archive.pending_restore() is not None  # nothing changed, so it is tried again next start
+    assert apply_pending_restore()["error"] is None  # next start: the snapshot works, the restore happens
+    app = await _app(config)
+    try:
+        assert await app.store.get_session(sid) is None
     finally:
         await app.stop()

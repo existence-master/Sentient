@@ -104,7 +104,7 @@ def _unique(folder: Path, prefix: str, suffix: str = "") -> Path:
     return path
 
 
-def _inside(path: Path, root: Path) -> bool:
+def is_inside(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
         return True
@@ -257,7 +257,7 @@ def create_archive(
                     if not root.is_dir():
                         continue
                     for p in sorted(root.rglob("*")):
-                        if p.is_symlink() or not p.is_file() or any(_inside(p, s) for s in skip_roots):
+                        if p.is_symlink() or not p.is_file() or any(is_inside(p, s) for s in skip_roots):
                             continue
                         rel = p.relative_to(home).as_posix()
                         try:
@@ -399,7 +399,7 @@ def _unpack(archive: Path, work: Path, contents: list[str]) -> None:
                 ):
                     raise BackupError(_ODD_PLACE)
                 target = work.joinpath(*parts)
-                if not _inside(target, work):
+                if not is_inside(target, work):
                     raise BackupError(_ODD_PLACE)
                 if info.is_dir():
                     target.mkdir(parents=True, exist_ok=True)
@@ -478,14 +478,17 @@ def apply_pending_restore(home: Path | None = None, *, snapshot_keep: int = 5) -
         "snapshot": None,
         "error": None,
     }
+    keep_pending = False
     try:
         if (home / DB_NAME).exists():
             try:
                 result["snapshot"] = create_snapshot("before restoring a backup", keep=snapshot_keep, home=home)["name"]
             except Exception as exc:
                 log.exception("could not take a snapshot before restoring")
+                keep_pending = True  # nothing changed: it is tried again at the next start, or cancelled in Settings
                 raise BackupError(
-                    "The restore didn't happen, because Sentient couldn't save a copy of your current data first."
+                    "The restore didn't happen, because Sentient couldn't save a copy of your current data first. "
+                    "It tries again the next time Sentient starts, or you can cancel it in Settings > Backups."
                 ) from exc
         # a fresh folder each time: one left by a failed rollback may hold the only copy of something
         old = backups_root(home) / f"restore-old-{_stamp()}"
@@ -493,7 +496,13 @@ def apply_pending_restore(home: Path | None = None, *, snapshot_keep: int = 5) -
         while old.exists():
             old = backups_root(home) / f"restore-old-{_stamp()}-{n}"
             n += 1
-        old.mkdir(parents=True)
+        try:
+            old.mkdir(parents=True)
+        except OSError as exc:
+            raise BackupError(
+                "The restore didn't happen, because Sentient couldn't make room for it in its data folder. Your data "
+                "was left as it was."
+            ) from exc
         moved: list[str] = []
         placed: list[str] = []
         try:
@@ -534,7 +543,8 @@ def apply_pending_restore(home: Path | None = None, *, snapshot_keep: int = 5) -
     except BackupError as exc:
         result["error"] = str(exc)
     finally:
-        shutil.rmtree(pending, ignore_errors=True)
+        if not keep_pending:
+            shutil.rmtree(pending, ignore_errors=True)
     out = backups_root(home) / LAST_RESTORE
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")

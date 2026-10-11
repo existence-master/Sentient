@@ -2148,7 +2148,7 @@ back; if even that fails, it stays in `<home>/backups/restore-old-<time>/` and t
 
 **BackupOverview**
 ```json
-{"folder": "...", "default_folder": "~/Documents/Sentient Backups", "home": "<home>",
+{"folder": "...", "default_folder": "~/Documents/Sentient Backups", "home": "<home>", "folder_in_home": false,
  "backups": [BackupEntry], "snapshots": [BackupEntry],
  "schedule": "off|daily|weekly", "keep": 5, "snapshots_keep": 5, "last_scheduled_at": "...|null",
  "pending_restore": {"source", "created_at", "staged_at", "kind"} | null,

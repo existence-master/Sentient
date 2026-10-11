@@ -182,7 +182,7 @@ export function BackupsSection({ query }: SectionProps) {
               <span className="mt-1 block">
                 {customFolder
                   ? 'The folder you picked.'
-                  : data.folder.startsWith(data.home)
+                  : data.folder_in_home
                     ? "Inside Sentient's data folder, because your Documents folder can't be used. Pick a folder elsewhere so a backup survives losing it."
                     : 'In your Documents folder, apart from your data, so a backup survives losing it.'}
               </span>

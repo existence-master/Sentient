@@ -15,7 +15,7 @@ import {
 } from 'electron'
 import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve, sep } from 'node:path'
+import { basename, join, resolve, sep } from 'node:path'
 import type {
   AppCommand,
   CaptureNotice,
@@ -388,8 +388,9 @@ function registerIpc(): void {
     } catch {
       return false
     }
-    // a folder opens in the file manager; a file is only selected in its folder, never opened or run
+    // a folder opens in the file manager; only a Sentient backup file is selected in its folder; nothing is opened or run
     if (isDir) return (await shell.openPath(target)) === ''
+    if (!/^sentient-(backup|snapshot)-[\w-]+\.zip$/i.test(basename(target))) return false
     shell.showItemInFolder(target)
     return true
   })
