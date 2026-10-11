@@ -6,6 +6,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Sources under answers:** when Sentient used the web, your email, a file or a connected app to answer, small
+  chips under the reply show what it used: the page, the email's subject, the file or the app, next to the memories
+  it had in mind. Click a chip to see the part Sentient read and open the page, email or file. Answers that used
+  nothing show no chips.
 - **One local model job at a time, your chats first:** a local Ollama model now works on one thing at a time, so
   background work no longer pushes it off the graphics card and slows your chat to a crawl. Your chat always goes
   next; tasks, suggestions, memory upkeep and chat titles wait while you are chatting (and for 30 seconds after), and

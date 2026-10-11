@@ -103,6 +103,8 @@ class Done(_Event):
     cancelled: bool = False
     # memories this reply had in mind (sentient.memory.sources): what was in its prompt or returned by memory tools
     memory_sources: list[dict[str, Any]] = Field(default_factory=list)
+    # pages, emails, files and apps this reply used (sentient.agent.sources, #174)
+    sources: list[dict[str, Any]] = Field(default_factory=list)
 
 
 AgentEvent = (

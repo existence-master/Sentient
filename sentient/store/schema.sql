@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS messages (
     attachments   TEXT,                           -- JSON list of file names (user messages)
     interjection  INTEGER NOT NULL DEFAULT 0,     -- 1 for user messages sent while a reply was running (steering)
     memory_sources TEXT,                          -- JSON list: memories a final assistant reply had in mind
+    sources       TEXT,                           -- JSON list: pages, emails, files and apps a final reply used (#174)
     created_at    TEXT NOT NULL,
     summarized    INTEGER NOT NULL DEFAULT 0
 );
