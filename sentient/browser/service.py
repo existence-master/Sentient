@@ -70,6 +70,7 @@ DOWNLOAD_CANCEL_TIMEOUT_S = 5.0
 DOWNLOAD_TASK_RETENTION_S = 300.0
 DOWNLOAD_TASK_CLEANUP_INTERVAL_S = 30.0
 ATTACHED_MATCH_TIMEOUT_S = 2.0
+ATTACHED_UNCONSUMED_TTL_S = 30.0
 # models often pass the whole snapshot line ("[e4] button \"Place order\"") instead of just "e4"
 _REF_RE = re.compile(r"\b(e\d+)\b", re.IGNORECASE)
 
@@ -977,28 +978,59 @@ class BrowserService(Service):
         return expanded
 
     def _prune_attached_downloads(self) -> None:
-        """Evict completed download records while keeping pending downloads reachable."""
-        if len(self._attached_downloads) <= 100:
-            return
+        """Evict completed download records while keeping active in-flight downloads reachable."""
+        now = time.monotonic()
         retained: list[dict[str, Any]] = []
         for entry in self._attached_downloads:
             fut = entry.get("future")
-            if (fut is not None and not fut.done()) or not entry.get("consumed"):
+            is_pending = fut is not None and not fut.done()
+            consumed = entry.get("consumed", False)
+            created_at = entry.get("created_at")
+
+            # Active in-flight download: consumed and awaiting completion
+            if consumed and is_pending:
                 retained.append(entry)
+                continue
+
+            # Unconsumed record: keep while within TTL
+            if not consumed:
+                if created_at is None or (now - created_at) <= ATTACHED_UNCONSUMED_TTL_S:
+                    retained.append(entry)
+                else:
+                    if is_pending:
+                        fut.set_exception(BrowserError("Download record expired without matching."))
+                        with contextlib.suppress(Exception):
+                            fut.exception()
+                continue
+
+            # Finished consumed record: retain recent for short retention
+            if created_at is None or (now - created_at) <= 10.0:
+                retained.append(entry)
+
         if len(retained) > 100:
-            pending = [e for e in retained if e.get("future") is not None and not e["future"].done()]
+            inflight = [e for e in retained if e.get("consumed") and e.get("future") is not None and not e["future"].done()]
+            unconsumed_pending = [e for e in retained if not e.get("consumed") and e.get("future") is not None and not e["future"].done()]
             finished = [e for e in retained if e.get("future") is None or e["future"].done()]
-            max_finished = max(0, 100 - len(pending))
-            retained = pending + finished[-max_finished:]
-        if len(retained) > 100:
-            to_evict = retained[:-100]
-            retained = retained[-100:]
-            for entry in to_evict:
+
+            keep_inflight = inflight[-100:]
+            evict_inflight = inflight[:-100]
+
+            remaining_slots = max(0, 100 - len(keep_inflight))
+            keep_unconsumed = unconsumed_pending[-remaining_slots:] if remaining_slots > 0 else []
+            evict_unconsumed = [e for e in unconsumed_pending if e not in keep_unconsumed]
+            remaining_slots -= len(keep_unconsumed)
+
+            keep_finished = finished[-remaining_slots:] if remaining_slots > 0 else []
+
+            for entry in evict_inflight + evict_unconsumed:
                 fut = entry.get("future")
                 if fut is not None and not fut.done():
                     fut.set_exception(BrowserError("Download record evicted."))
                     with contextlib.suppress(Exception):
                         fut.exception()
+
+            kept_ids = {id(e) for e in keep_inflight} | {id(e) for e in keep_unconsumed} | {id(e) for e in keep_finished}
+            retained = [e for e in retained if id(e) in kept_ids]
         self._attached_downloads = retained
 
     def _on_cdp_download_will_begin(self, payload: dict[str, Any]) -> None:
@@ -1013,6 +1045,7 @@ class BrowserService(Service):
             "filename": self._download_filename(payload.get("suggestedFilename") or "download"),
             "future": asyncio.get_running_loop().create_future(),
             "consumed": False,
+            "created_at": time.monotonic(),
         }
         self._attached_downloads.append(entry)
         self._prune_attached_downloads()
@@ -1043,19 +1076,27 @@ class BrowserService(Service):
         page_frames: set[str],
         dl_url: str,
         dl_name: str,
+        now: float | None = None,
     ) -> dict[str, Any] | None:
         """Find the best matching unconsumed CDP download entry for a given frame tree and download metadata."""
         best_entry: dict[str, Any] | None = None
         best_score = 0
+        current_time = now if now is not None else time.monotonic()
         for entry in entries:
             if entry.get("frameId") not in page_frames or entry.get("consumed"):
+                continue
+            created_at = entry.get("created_at")
+            if created_at is not None and (current_time - created_at) > ATTACHED_UNCONSUMED_TTL_S:
                 continue
             e_url = entry.get("url", "")
             e_name = entry.get("filename", "")
 
+            # Strict URL agreement when both are available
+            if dl_url and e_url and dl_url != e_url:
+                continue
+
             url_matches = bool(dl_url and e_url and dl_url == e_url)
             name_matches = bool(dl_name and e_name and dl_name not in {"", "download"} and dl_name == e_name)
-            url_conflicts = bool(dl_url and e_url and dl_url != e_url)
             name_conflicts = bool(
                 dl_name
                 and e_name
@@ -1064,15 +1105,13 @@ class BrowserService(Service):
                 and dl_name != e_name
             )
 
-            if url_conflicts:
-                continue
             if name_conflicts and not url_matches:
                 continue
 
             score = 0
             if url_matches and name_matches:
                 score = 3
-            elif url_matches or name_matches:
+            elif url_matches or (name_matches and not (dl_url and e_url)):
                 score = 2
             elif not name_conflicts:
                 score = 1
@@ -1160,9 +1199,10 @@ class BrowserService(Service):
                         candidate_pages: list[Any] = []
                         if page is not None and not getattr(page, "is_closed", lambda: False)():
                             candidate_pages.append(page)
-                        for p in self._download_pages:
-                            if p not in candidate_pages and not getattr(p, "is_closed", lambda: False)():
-                                candidate_pages.append(p)
+                        else:
+                            for p in self._download_pages:
+                                if not getattr(p, "is_closed", lambda: False)():
+                                    candidate_pages.append(p)
 
                         for cand in candidate_pages:
                             try:
@@ -1184,12 +1224,12 @@ class BrowserService(Service):
                                 pass
 
                         if page_frames:
-                            page_frames = self._expand_frames_with_popups(page_frames)
                             match_timeout = getattr(self, "_attached_match_timeout_s", ATTACHED_MATCH_TIMEOUT_S)
                             match_deadline = time.monotonic() + match_timeout
                             while True:
+                                active_frames = self._expand_frames_with_popups(page_frames)
                                 matched = self._match_cdp_entry(
-                                    self._attached_downloads, page_frames, dl_url, name
+                                    self._attached_downloads, active_frames, dl_url, name
                                 )
                                 if matched is not None or time.monotonic() >= match_deadline or self._context is None:
                                     break

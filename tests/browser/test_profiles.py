@@ -1819,3 +1819,185 @@ async def test_attached_finalize_file_fallback_on_os_error(tmp_path, monkeypatch
 
     assert rel == "downloads/test.txt"
     assert (tmp_path / rel).read_text(encoding="utf-8") == "file content"
+
+
+async def test_attached_popup_target_created_after_matching_starts_is_discovered(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    page_cdp = _MockPageCDP("opener-frame-1")
+    svc._context = _MockContext(page_cdp)
+
+    file_popup = tmp_path / "browser_download_late_popup.txt"
+    file_popup.write_text("late popup text", encoding="utf-8")
+
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result(str(file_popup))
+    entry = {
+        "guid": "g-late-popup",
+        "frameId": "popup-target-1",
+        "filename": "late_popup.txt",
+        "url": "https://example.com/late_popup.txt",
+        "future": fut,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(entry)
+
+    opener_page = type("Page", (), {"is_closed": lambda self: False, "main_frame": object()})()
+    dl = _MockDownload("late_popup.txt", url="https://example.com/late_popup.txt", page=opener_page)
+
+    async def late_target_created():
+        await asyncio.sleep(0.06)
+        svc._on_cdp_target_created({
+            "targetInfo": {
+                "targetId": "popup-target-1",
+                "openerId": "opener-frame-1",
+                "openerFrameId": "opener-frame-1",
+            }
+        })
+
+    target_task = asyncio.create_task(late_target_created())
+    rel = await svc._save_download(dl)
+    await target_task
+
+    assert rel == "downloads/late_popup.txt"
+    assert entry["consumed"] is True
+    assert (tmp_path / rel).read_text(encoding="utf-8") == "late popup text"
+
+
+async def test_attached_unmatched_download_cleans_up_reservation_and_reports_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    svc._attached_match_timeout_s = 0.05
+    page_cdp = _MockPageCDP("sentient-frame-1")
+    svc._context = _MockContext(page_cdp)
+
+    dl = _MockDownload("unmatched.pdf", url="https://example.com/unmatched.pdf", page=object())
+
+    svc._on_download(dl)
+    assert len(svc._download_tasks) == 1
+    task = next(iter(svc._download_tasks))
+
+    with pytest.raises(BrowserError, match="could not be associated with a browser download record"):
+        await task
+
+    # Reserved file must be cleaned up
+    assert not (tmp_path / "downloads" / "unmatched.pdf").exists()
+
+    result = await svc._include_downloads({"ok": True}, set())
+    assert result.get("ok") is True
+    assert "downloads" not in result
+    assert result.get("download_errors") == [
+        "Download 'unmatched.pdf' could not be associated with a browser download record."
+    ]
+
+
+async def test_stale_unconsumed_cdp_records_are_not_matched_and_get_evicted(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    loop = asyncio.get_running_loop()
+
+    fut = loop.create_future()
+    stale_entry = {
+        "guid": "g-stale",
+        "frameId": "frame-1",
+        "filename": "old.pdf",
+        "url": "https://example.com/old.pdf",
+        "future": fut,
+        "consumed": False,
+        "created_at": time.monotonic() - 35.0,
+    }
+    svc._attached_downloads.append(stale_entry)
+
+    matched = BrowserService._match_cdp_entry(svc._attached_downloads, {"frame-1"}, "https://example.com/old.pdf", "old.pdf")
+    assert matched is None
+
+    svc._prune_attached_downloads()
+    assert stale_entry not in svc._attached_downloads
+    assert fut.done()
+    assert isinstance(fut.exception(), BrowserError)
+
+
+async def test_prune_attached_downloads_preserves_inflight_and_evicts_overflow_promptly():
+    svc = BrowserService(make_app())
+    loop = asyncio.get_running_loop()
+
+    inflight_fut = loop.create_future()
+    inflight_entry = {
+        "guid": "g-inflight",
+        "frameId": "frame-1",
+        "filename": "inflight.pdf",
+        "url": "https://example.com/inflight.pdf",
+        "future": inflight_fut,
+        "consumed": True,
+        "created_at": time.monotonic(),
+    }
+    svc._attached_downloads.append(inflight_entry)
+
+    overflow_futs = []
+    for i in range(120):
+        f = loop.create_future()
+        overflow_futs.append(f)
+        svc._attached_downloads.append({
+            "guid": f"g-{i}",
+            "frameId": "frame-other",
+            "filename": f"file_{i}.pdf",
+            "url": f"https://example.com/file_{i}.pdf",
+            "future": f,
+            "consumed": False,
+            "created_at": time.monotonic(),
+        })
+
+    svc._prune_attached_downloads()
+
+    assert inflight_entry in svc._attached_downloads
+    assert not inflight_fut.done()
+
+    evicted_futs = [f for f in overflow_futs if f.done()]
+    assert len(evicted_futs) > 0
+    for f in evicted_futs:
+        assert isinstance(f.exception(), BrowserError)
+        assert "evicted" in str(f.exception())
+
+
+async def test_candidate_pages_scoped_to_download_page_when_valid(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    svc._attached_match_timeout_s = 0.05
+
+    other_page = type("Page", (), {"is_closed": lambda self: False, "main_frame": object()})()
+    dl_page = type("Page", (), {"is_closed": lambda self: False, "main_frame": object()})()
+    svc._download_pages.update((other_page, dl_page))
+
+    queried_pages = []
+
+    class MockContextWithSpy:
+        async def new_cdp_session(self, page):
+            queried_pages.append(page)
+            return _MockPageCDP("dl-frame")
+
+    svc._context = MockContextWithSpy()
+
+    file_test = tmp_path / "browser_download_test.txt"
+    file_test.write_text("scoped test", encoding="utf-8")
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result(str(file_test))
+
+    entry = {
+        "guid": "g-scoped",
+        "frameId": "dl-frame",
+        "filename": "scoped.txt",
+        "url": "https://example.com/scoped.txt",
+        "future": fut,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(entry)
+
+    dl = _MockDownload("scoped.txt", url="https://example.com/scoped.txt", page=dl_page)
+    rel = await svc._save_download(dl)
+
+    assert rel == "downloads/scoped.txt"
+    assert queried_pages == [dl_page]

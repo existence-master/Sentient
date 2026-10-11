@@ -29,7 +29,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - **Browser downloads:** files Sentient downloads while using a website are saved to `downloads/` in your Files
   folder, and the browser result says where. In an attached browser, only downloads from Sentient's own tabs and
   their popups (including `target="_blank"`) are saved, while downloads from other user tabs remain in the browser's
-  native Downloads folder. When attached, if a download cannot be matched to a confirmed browser download record,
+  native Downloads folder. Sentient's own downloads briefly pass through the browser's download folder before being moved to the downloads directory. When attached, if a download cannot be matched to a confirmed browser download record,
   it returns a clear error rather than falsely reporting success.
 - **Push to talk and dictation into any app:** hold Ctrl+Alt+Shift+T (Cmd+Option+Shift+T on a Mac) anywhere, speak,
   and let go: what you said goes to Sentient as a chat message, and the answer is read aloud. Press Ctrl+Alt+Shift+D,
