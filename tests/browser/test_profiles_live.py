@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import subprocess
 import sys
 import time
@@ -124,6 +125,20 @@ async def own_browser(tmp_path):
     if exe is None:
         pytest.skip("no Edge or Chrome installed")
     data = tmp_path / "user-browser"
+    user_downloads = tmp_path / "user-downloads"
+    user_downloads.mkdir(parents=True, exist_ok=True)
+    prefs_dir = data / "Default"
+    prefs_dir.mkdir(parents=True, exist_ok=True)
+    prefs_file = prefs_dir / "Preferences"
+    prefs_file.write_text(
+        json.dumps({
+            "download": {
+                "default_directory": str(user_downloads.resolve()),
+                "prompt_for_download": False,
+            }
+        }),
+        encoding="utf-8",
+    )
     args = [exe, "--headless=new", "--remote-debugging-port=0", f"--user-data-dir={data}", "--no-first-run",
             "--no-default-browser-check", "about:blank"]
     if sys.platform.startswith("linux"):
@@ -152,7 +167,7 @@ async def own_browser(tmp_path):
             proc.wait(timeout=15)
 
 
-async def test_attach_to_a_running_browser_and_detach_leaves_it_running(browser, site, own_browser):
+async def test_attach_to_a_running_browser_and_detach_leaves_it_running(browser, site, own_browser, tmp_path):
     port = own_browser
     app = browser.app
     await browser.create_profile("mine", kind="attach", endpoint=f"localhost:{port}")
@@ -165,15 +180,19 @@ async def test_attach_to_a_running_browser_and_detach_leaves_it_running(browser,
     assert status["attached"] and status["profile"] == "mine" and status["engine"] is None
     assert len(status["tabs"]) >= 2  # the user's own tab plus the one Sentient opened for itself
 
-    user_page = next(page for page in browser._context.pages if page is not browser._active)
+    user_page = next(page for page in browser._context.pages if page not in browser._download_pages)
     await user_page.goto(f"{site}/download.html")
     downloads_before = browser._download_tasks.copy()
-    async with user_page.expect_download(timeout=10_000) as download_info:
-        await user_page.get_by_role("link", name="Download report").click()
-    user_download = await download_info.value
-    assert user_download.suggested_filename == "report.txt"
+    await user_page.get_by_role("link", name="Download report").click()
+    downloaded_file = tmp_path / "user-downloads" / "report.txt"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not (
+        downloaded_file.exists() and not (tmp_path / "user-downloads" / "report.txt.crdownload").exists()
+    ):
+        await asyncio.sleep(0.1)
+    assert downloaded_file.exists()
+    assert downloaded_file.read_text(encoding="utf-8") == "Sentient browser download test.\n"
     assert browser._download_tasks == downloads_before
-    await user_download.cancel()
 
     download_page = await bt.browser_open.call(ctx, {"url": f"{site}/download.html", "profile": "mine"})
     download_ref = next(

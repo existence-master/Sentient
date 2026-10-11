@@ -69,6 +69,7 @@ DOWNLOAD_MAX_DURATION_S = 120.0
 DOWNLOAD_CANCEL_TIMEOUT_S = 5.0
 DOWNLOAD_TASK_RETENTION_S = 300.0
 DOWNLOAD_TASK_CLEANUP_INTERVAL_S = 30.0
+ATTACHED_MATCH_TIMEOUT_S = 2.0
 # models often pass the whole snapshot line ("[e4] button \"Place order\"") instead of just "e4"
 _REF_RE = re.compile(r"\b(e\d+)\b", re.IGNORECASE)
 
@@ -238,6 +239,9 @@ class BrowserService(Service):
         self._download_completed_at: dict[asyncio.Task[str], float] = {}
         self._download_cleanup_task: asyncio.Task | None = None
         self._download_lock = asyncio.Lock()
+        self._browser_cdp: Any = None
+        self._attached_downloads: list[dict[str, Any]] = []
+        self._attached_match_timeout_s = ATTACHED_MATCH_TIMEOUT_S
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -602,6 +606,12 @@ class BrowserService(Service):
         self._browser = browser
         self._attached = True
         self._engine = None
+        with contextlib.suppress(Exception):
+            cdp = await browser.new_browser_cdp_session()
+            self._browser_cdp = cdp
+            cdp.on("Browser.downloadWillBegin", self._on_cdp_download_will_begin)
+            cdp.on("Browser.downloadProgress", self._on_cdp_download_progress)
+            await cdp.send("Browser.setDownloadBehavior", {"behavior": "default", "eventsEnabled": True})
         return context
 
     async def _ensure(self, ctx: Any = None) -> Any:
@@ -657,6 +667,11 @@ class BrowserService(Service):
             self._focused = None
             self._download_pages.clear()
             self._internal_pages.clear()
+            if self._browser_cdp is not None:
+                with contextlib.suppress(Exception):
+                    await self._browser_cdp.detach()
+                self._browser_cdp = None
+            self._attached_downloads.clear()
 
     async def _flush_storage(self, ctx: Any) -> None:
         """Let a launched browser write site storage to disk before it closes: close its tabs with their unload
@@ -750,6 +765,8 @@ class BrowserService(Service):
         self._snap = None
         self._focused = None
         self._download_pages.clear()
+        self._browser_cdp = None
+        self._attached_downloads.clear()
         if not self._closing:  # the user closed the visible window (or their attached browser)
             self._spawn(self._publish_status())
 
@@ -865,9 +882,42 @@ class BrowserService(Service):
         finally:
             self._download_cleanup_task = None
 
+    def _on_cdp_download_will_begin(self, payload: dict[str, Any]) -> None:
+        guid = payload.get("guid")
+        if not guid:
+            return
+        entry = {
+            "guid": guid,
+            "frameId": payload.get("frameId", ""),
+            "url": payload.get("url", ""),
+            "filename": self._download_filename(payload.get("suggestedFilename") or "download"),
+            "future": asyncio.get_running_loop().create_future(),
+            "consumed": False,
+        }
+        self._attached_downloads.append(entry)
+        if len(self._attached_downloads) > 100:
+            self._attached_downloads = [e for e in self._attached_downloads if not e.get("consumed")][-50:]
+
+    def _on_cdp_download_progress(self, payload: dict[str, Any]) -> None:
+        guid = payload.get("guid")
+        state = payload.get("state")
+        file_path = payload.get("filePath")
+        if not guid:
+            return
+        for entry in self._attached_downloads:
+            if entry["guid"] == guid:
+                if state == "completed" and file_path and not entry["future"].done():
+                    entry["future"].set_result(file_path)
+                elif state == "canceled" and not entry["future"].done():
+                    entry["future"].cancel()
+                break
+
     @staticmethod
     def _download_filename(download: Any) -> str:
-        raw_name = str(getattr(download, "suggested_filename", None) or "download")
+        if isinstance(download, str):
+            raw_name = download
+        else:
+            raw_name = str(getattr(download, "suggested_filename", None) or "download")
         name = raw_name.replace("\\", "/").rsplit("/", 1)[-1]
         return re.sub(r"[^\w.\- ()]+", "_", name).strip(" .")[:160] or "download"
 
@@ -923,7 +973,50 @@ class BrowserService(Service):
         try:
             async with timeout:
                 target = await reserve_target()
-                await download.save_as(str(target))
+                if self._attached:
+                    matched = None
+                    page = getattr(download, "page", None)
+                    if page is not None and self._context is not None:
+                        page_frames: set[str] = set()
+                        try:
+                            page_cdp = await self._context.new_cdp_session(page)
+                            try:
+                                tree = await page_cdp.send("Page.getFrameTree")
+
+                                def _collect_frame_ids(node: dict[str, Any]) -> set[str]:
+                                    fids = {node.get("frame", {}).get("id", "")}
+                                    for child in node.get("childFrames", []):
+                                        fids.update(_collect_frame_ids(child))
+                                    return fids
+
+                                page_frames = _collect_frame_ids(tree.get("frameTree", {}))
+                            finally:
+                                with contextlib.suppress(Exception):
+                                    await page_cdp.detach()
+                        except Exception:
+                            pass
+
+                        if page_frames:
+                            match_timeout = getattr(self, "_attached_match_timeout_s", ATTACHED_MATCH_TIMEOUT_S)
+                            match_deadline = time.monotonic() + match_timeout
+                            while True:
+                                for entry in self._attached_downloads:
+                                    if entry.get("frameId") in page_frames and not entry.get("consumed"):
+                                        matched = entry
+                                        break
+                                if matched is not None or time.monotonic() >= match_deadline:
+                                    break
+                                await asyncio.sleep(0.05)
+
+                    if matched is not None:
+                        matched["consumed"] = True
+                        file_path = await matched["future"]
+                        target.unlink(missing_ok=True)
+                        shutil.move(file_path, str(target))
+                    else:
+                        await download.save_as(str(target))
+                else:
+                    await download.save_as(str(target))
         except asyncio.CancelledError as exc:
             try:
                 cancel_error = await request_download_cancel()
