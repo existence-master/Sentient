@@ -671,7 +671,7 @@ class BrowserService(Service):
                 with contextlib.suppress(Exception):
                     await self._browser_cdp.detach()
                 self._browser_cdp = None
-            self._attached_downloads.clear()
+            self._clear_attached_downloads()
 
     async def _flush_storage(self, ctx: Any) -> None:
         """Let a launched browser write site storage to disk before it closes: close its tabs with their unload
@@ -766,7 +766,7 @@ class BrowserService(Service):
         self._focused = None
         self._download_pages.clear()
         self._browser_cdp = None
-        self._attached_downloads.clear()
+        self._clear_attached_downloads()
         if not self._closing:  # the user closed the visible window (or their attached browser)
             self._spawn(self._publish_status())
 
@@ -882,6 +882,17 @@ class BrowserService(Service):
         finally:
             self._download_cleanup_task = None
 
+    def _clear_attached_downloads(self, exc: Exception | None = None) -> None:
+        entries = list(self._attached_downloads)
+        self._attached_downloads.clear()
+        err = exc or BrowserError("The browser closed before the download completed.")
+        for entry in entries:
+            fut = entry.get("future")
+            if fut is not None and not fut.done():
+                fut.set_exception(err)
+                with contextlib.suppress(Exception):
+                    fut.exception()
+
     def _on_cdp_download_will_begin(self, payload: dict[str, Any]) -> None:
         guid = payload.get("guid")
         if not guid:
@@ -906,10 +917,15 @@ class BrowserService(Service):
             return
         for entry in self._attached_downloads:
             if entry["guid"] == guid:
-                if state == "completed" and file_path and not entry["future"].done():
-                    entry["future"].set_result(file_path)
-                elif state == "canceled" and not entry["future"].done():
-                    entry["future"].cancel()
+                fut = entry.get("future")
+                if fut is not None and not fut.done():
+                    if state == "completed" and file_path:
+                        fut.set_result(file_path)
+                    elif state == "canceled":
+                        fname = entry.get("filename") or "download"
+                        fut.set_exception(BrowserError(f"Download '{fname}' was canceled by the browser."))
+                        with contextlib.suppress(Exception):
+                            fut.exception()
                 break
 
     @staticmethod
@@ -968,6 +984,9 @@ class BrowserService(Service):
             reason = str(exc).strip().splitlines()[0][:300] or type(exc).__name__
             return f"Couldn't save downloaded file '{name}': {reason}"
 
+        def abort_closed_browser() -> None:
+            raise BrowserError("The browser closed before the download completed.")
+
         timeout = asyncio.timeout(DOWNLOAD_MAX_DURATION_S)
         target: Path | None = None
         try:
@@ -1004,7 +1023,7 @@ class BrowserService(Service):
                                     if entry.get("frameId") in page_frames and not entry.get("consumed"):
                                         matched = entry
                                         break
-                                if matched is not None or time.monotonic() >= match_deadline:
+                                if matched is not None or time.monotonic() >= match_deadline or self._context is None:
                                     break
                                 await asyncio.sleep(0.05)
 
@@ -1013,6 +1032,8 @@ class BrowserService(Service):
                         file_path = await matched["future"]
                         target.unlink(missing_ok=True)
                         shutil.move(file_path, str(target))
+                    elif self._context is None:
+                        abort_closed_browser()
                     else:
                         await download.save_as(str(target))
                 else:
