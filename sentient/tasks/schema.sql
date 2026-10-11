@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     script                TEXT,                       -- JSON (script jobs only): {code, condition, then, last_result, last_run_at, last_error}
     browser_profile       TEXT,                       -- named browser profile the task's browser calls use (NULL: default)
     deliver_to            TEXT,                       -- JSON (tasks/delivery.py): "desktop" or [{channel, chat_id}]; NULL: default
+    notepad               TEXT,                       -- recurring tasks: notes the runs keep for the next run (tasks/continuity.py)
     error                 TEXT,
     next_execution_at     TEXT,                       -- UTC ISO-8601, seconds precision (lexicographically comparable)
     last_execution_at     TEXT,

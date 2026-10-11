@@ -1389,6 +1389,8 @@ export interface Task {
   browser_profile?: string | null
   /** Where its notifications go besides the app (§4 "Where results go"). Older engines leave it out (default). */
   deliver_to?: TaskDeliverTo
+  /** Recurring tasks: short notes its runs keep for the next run (§4 "Recurring tasks remember"). */
+  notepad?: string | null
   original_context: { source: 'manual_creation' | 'chat' | 'proactive' | 'trigger' | string; [k: string]: unknown }
   /** Last planning/run failure message (v2 `task.error`). */
   error: string | null
@@ -1432,7 +1434,7 @@ export interface DeliveryChat {
 /** `default`: paired chats with delivery on; `desktop`: the app only; a list: only those chats. */
 export type TaskDeliverTo = 'default' | 'desktop' | DeliveryChat[]
 
-export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'deliver_to'>>
+export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'deliver_to' | 'notepad'>>
 
 export interface ClarificationAnswer {
   question_id: string
