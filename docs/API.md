@@ -85,6 +85,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `voice.state` | `{state, session_id}` (mirrors voice socket for other windows) |
 | `stop.updated` | **StopState** (section 17): Stop everything was turned on or off |
 | `model.busy` | **ModelBusy** (section 3, `GET /api/models/busy`): what the local model is doing changed (#149). Quick changes are published once (after 0.2 s), and only when something other than `since` changed |
+| `backup.updated` | `{what: "backup"\|"snapshot"\|"restore_staged"\|"restore_cancelled"\|"restore_dismissed", name?, source?}` (section 20): refetch `GET /api/backups` |
 
 ---
 
@@ -2139,3 +2140,86 @@ suggestion may be `null`.
 ```
 Applying publishes the usual events: `skill.updated` (`state: "pending_review"`), `memory.updated`,
 `user_model.updated`, `task.updated` and `config.updated`.
+
+## 20. Backups, restore and snapshots (owner: core)
+
+One-click backup and restore of the data folder (`SENTIENT_HOME`, default `~/.sentient`), and a snapshot before
+anything that changes the database's shape (issue #151). Code: `sentient/backup/`.
+
+**What a backup holds.** One zip file: `manifest.json`, `sentient.db` (a consistent copy made with SQLite's online
+backup API while the engine runs, never a raw copy of the live WAL file), `config.yaml`, `workspace/`, `skills/`,
+`files/` and `tls/` (the devices certificate, so paired devices keep trusting it). Never inside: keychain secrets (API
+keys, tokens, sign-ins), `gateway.token`, `logs/`, the browser profile, WhatsApp's link, downloaded voice models,
+scratch folders, the backups folder itself and open incognito chats (removed from the copy with secure delete). A backup is complete or not made: if a file can't be read (open in another program), the backup fails with a plain
+`detail` naming it, since a restore replaces whole folders. The manifest lists the sign-ins that were in the keychain (`sign_ins`)
+so the window can say which to redo. Names: `sentient-backup-YYYYMMDD-HHMMSS.zip` (`-auto` for scheduled ones) and
+`sentient-snapshot-YYYYMMDD-HHMMSS.zip`.
+
+**Where backups go.** `backups.folder` when set, else `Documents/Sentient Backups`, outside the data folder so a backup
+survives losing it: on Windows the Known Folder API's Documents (`SHGetKnownFolderPath`, `FOLDERID_Documents`, so a
+folder redirected to OneDrive is used), else `~/Documents`; `~/Documents` on macOS; on Linux `XDG_DOCUMENTS_DIR` when
+set, else `~/Documents`
+(`SENTIENT_DOCUMENTS_DIR` overrides it, and tests always set it). When Documents is missing or can't be written to,
+`<home>/backups`. A backup holds the devices certificate (`tls/`), so it should be kept somewhere private.
+`folder_cloud` names the sync service the folder is inside, from the `OneDrive`, `OneDriveConsumer` and
+`OneDriveCommercial` environment variables and the path (`OneDrive...`, `Dropbox...`, `Google Drive`, `My Drive`,
+`GoogleDrive-...`, `iCloud Drive`, `Mobile Documents`, `com~apple~CloudDocs`); Settings then says the backups are
+copied to the cloud too.
+
+**Snapshots** are backups without `files/`, kept in `<home>/backups/snapshots` (the newest `backups.snapshots_keep`).
+Sentient takes one:
+- when it opens a database whose `PRAGMA user_version` differs from `sentient.store.db.SCHEMA_VERSION` (an update or a
+  downgrade; a new database has no snapshot). Bump `SCHEMA_VERSION` with any schema change that needs existing
+  databases updated;
+- before the first `store.ensure_column` that actually adds a column to an existing database in a run (at most one per
+  start), as a safety net for a change that forgot the bump;
+- before `POST /api/import/hermes/apply` (section 19);
+- before a restore replaces the data (so a restore can be undone).
+A snapshot that fails is logged and never keeps Sentient from starting.
+
+**Restore** is two steps, so nothing in use is swapped under the running engine: `POST /api/backups/restore` checks the
+archive (manifest, names, SQLite `quick_check`) and unpacks it into `<home>/backups/restore-pending`; the next engine
+start applies it before config or database are opened (the desktop restarts the engine at once). Applying takes a
+snapshot of the current data, then replaces exactly the items the manifest lists (`contents`): a snapshot leaves
+`files/` alone, and an item listed but empty in the backup ends up empty. If anything fails the current data is put
+back; if even that fails, it stays in `<home>/backups/restore-old-<time>/` and the result's `error` says so. The outcome is kept in `<home>/backups/last-restore.json` until dismissed.
+
+- `GET /api/backups` → **BackupOverview**
+- `POST /api/backups` `{folder?}` → **BackupEntry** (a manual backup into `folder`, else `backups.folder`, else the
+  default folder below; 400 with a plain `detail` for a relative path or a folder that can't be written)
+- `POST /api/backups/inspect` `{path}` → **BackupEntry** + `{newer, contents}` for the confirmation (`newer`: made by
+  a newer database version than this engine's). 400 with a plain `detail` when it isn't a readable Sentient backup
+- `POST /api/backups/restore` `{path}` → `{staged: true, restart_required: true, source, created_at, contents,
+  sign_ins}`; 400 with a plain `detail` (not a backup, damaged, a name outside the listed items, no database)
+- `DELETE /api/backups/restore` → `{cancelled}` (drops a staged restore)
+- `DELETE /api/backups/last-restore` → `{ok}` (dismisses the result card)
+
+**BackupEntry**
+```json
+{"name": "sentient-backup-20261011-153012.zip", "path": "C:/Users/me/.sentient/backups/sentient-backup-....zip",
+ "kind": "manual|scheduled|snapshot", "reason": "before importing from Hermes", "created_at": "2026-10-11T10:00:12+00:00",
+ "version": "3.0.0a0", "schema_version": 1, "size": 1048576, "includes_files": true,
+ "counts": {"chats": 12, "memories": 40, "tasks": 5, "skills": 3},
+ "sign_ins": [{"kind": "model|integration|channel|browser", "id": "openai", "label": "OpenAI"}]}
+```
+
+**BackupOverview**
+```json
+{"folder": "...", "default_folder": "~/Documents/Sentient Backups", "home": "<home>", "folder_in_home": false, "folder_cloud": "OneDrive|Dropbox|Google Drive|iCloud|null",
+ "backups": [BackupEntry], "snapshots": [BackupEntry],
+ "schedule": "off|daily|weekly", "keep": 5, "snapshots_keep": 5, "last_scheduled_at": "...|null",
+ "pending_restore": {"source", "created_at", "staged_at", "kind"} | null,
+ "last_restore": {"restored_at", "source", "kind", "backup_created_at", "contents", "snapshot": "<name>|null",
+                  "error": "plain sentence|null",
+                  "sign_ins": [{"kind", "id", "label", "signed_in": true|false|null}]} | null}
+```
+`backups` lists the Sentient backups in `folder`, newest first (other files are ignored); `last_restore.sign_ins[].
+signed_in` is checked live (`null`: Sentient can't tell, e.g. browser sign-ins).
+
+**Scheduled backups** (config `backups.schedule`, `backups.keep`): checked hourly while the engine runs; only the newest
+`keep` scheduled backups are kept, backups made by hand are never deleted. A failed one is tried again the next hour
+(an unplugged drive may be back) and is a `backup` notification at most once per interval.
+
+**CLI**: `sentient backup [--to FOLDER]` (default: the folder above), `sentient restore FILE [--now]` (stages; `--now` applies at once and must only
+be used while Sentient is closed).
+

@@ -1,4 +1,5 @@
 import {
+  IconArchive,
   IconBolt,
   IconBrain,
   IconChartBar,
@@ -144,6 +145,14 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     description: 'Tokens by model, source and day.',
     icon: IconChartBar,
     keywords: ['tokens', 'cost', 'insights', 'statistics']
+  },
+  {
+    id: 'backups',
+    label: 'Backups',
+    description: 'Back up and restore your data, and snapshots taken before updates.',
+    icon: IconArchive,
+    keywords: ['backup', 'back up', 'restore', 'snapshot', 'export', 'copy', 'undo', 'schedule', 'new computer', 'move'],
+    schemaSections: ['backups']
   },
   {
     id: 'advanced',

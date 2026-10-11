@@ -773,6 +773,9 @@ async def apply(app: Any, path: str | None, parts: list[str] | None, skip: list[
     plan = await preview(app, path)
     home = Path(plan["path"])
     left_out = set(skip or [])
+    backups = getattr(app, "backups", None)
+    if backups is not None:  # an import can be undone by restoring this snapshot (issue #151)
+        await backups.snapshot("before importing from Hermes")
     result: dict[str, Any] = {"path": plan["path"]}
 
     if "skills" in chosen:

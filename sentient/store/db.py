@@ -6,9 +6,12 @@ lets the UI read while a task run writes.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import sqlite3
 import uuid
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,9 +20,14 @@ import aiosqlite
 
 from sentient import paths
 
+log = logging.getLogger(__name__)
+
 _SCHEMA = Path(__file__).with_name("schema.sql")
 _PKG_ROOT = Path(__file__).resolve().parents[1]
 # Feature packages own their tables. Each file must be idempotent. Order matters for foreign keys.
+# Bump when a change to a schema.sql or an ensure_column needs existing databases updated. Opening a database
+# with another version takes a snapshot first (issue #151); so does the first column added to an existing one.
+SCHEMA_VERSION = 4  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292)
 PACKAGE_SCHEMAS = ["tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox"]
 
 
@@ -93,15 +101,43 @@ async def _load_vec(db: aiosqlite.Connection) -> bool:
         return False
 
 
+def _peek_version(path: Path) -> tuple[bool, int]:
+    """(has tables, user_version) of a database file, before anything changes it."""
+    if not path.exists():
+        return False, 0
+    con = sqlite3.connect(path, timeout=30)
+    try:
+        tables = con.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0]
+        return bool(tables), int(con.execute("PRAGMA user_version").fetchone()[0])
+    finally:
+        con.close()
+
+
 class Store:
-    def __init__(self, path: Path | None = None):
+    def __init__(self, path: Path | None = None, *, before_migration: Callable[[str], Awaitable[None]] | None = None):
         self.path = path or paths.db_file()
         self._db: aiosqlite.Connection | None = None
         self.vec_available = False
+        # called once, before the first change to an existing database (a snapshot, issue #151)
+        self.before_migration = before_migration
+        self._existing = False
+        self._snapshot_taken = False
+
+    async def _before_migration(self, reason: str) -> None:
+        if not self._existing or self._snapshot_taken or self.before_migration is None:
+            return
+        self._snapshot_taken = True
+        try:
+            await self.before_migration(reason)
+        except Exception:  # a failed snapshot never keeps Sentient from starting
+            log.exception("could not take a snapshot before updating the database")
 
     # ------------------------------------------------------------------ lifecycle
     async def open(self) -> Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._existing, version = await asyncio.to_thread(_peek_version, self.path)
+        if self._existing and version != SCHEMA_VERSION:
+            await self._before_migration(f"before updating the database (version {version} to {SCHEMA_VERSION})")
         self._db = await aiosqlite.connect(self.path)
         self._db.row_factory = aiosqlite.Row
         self.vec_available = await _load_vec(self._db)
@@ -128,6 +164,7 @@ class Store:
             extra = _PKG_ROOT / pkg / "schema.sql"
             if extra.exists():
                 await self._db.executescript(extra.read_text(encoding="utf-8"))
+        await self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await self._db.commit()
         return self
 
@@ -160,6 +197,7 @@ class Store:
         async with self.db.execute(f"PRAGMA table_info({table})") as cur:
             cols = {r[1] for r in await cur.fetchall()}
         if cols and column not in cols:
+            await self._before_migration(f"before adding {column} to {table}")
             await self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     async def get_meta(self, key: str) -> str | None:

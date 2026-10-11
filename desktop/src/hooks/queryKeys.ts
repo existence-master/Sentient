@@ -8,6 +8,7 @@ export const qk = {
   bootstrap: ['bootstrap'] as const,
   stop: ['stop'] as const,
   config: ['config'] as const,
+  backups: ['backups'] as const,
   configSchema: ['config-schema'] as const,
 
   sessions: ['sessions'] as const,

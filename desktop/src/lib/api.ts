@@ -12,6 +12,10 @@
  *   engine does not have them yet; whenever the engine answers, its data is used.
  */
 import type {
+  BackupEntry,
+  BackupInspect,
+  BackupOverview,
+  RestoreStaged,
   BrowserProfileCreate,
   BrowserProfilePatch,
   BrowserProfiles,
@@ -764,6 +768,16 @@ export const api = {
       apply: (body: { path?: string; parts: HermesPart[]; skip?: string[] }) => http.post<HermesResult>('/api/import/hermes/apply', body),
       removeMemories: () => http.delete<{ facts: number; insights: number }>('/api/import/hermes/memories')
     }
+  },
+
+  // §20 backups, restore and snapshots ------------------------------------------------------
+  backups: {
+    get: () => http.get<BackupOverview>('/api/backups'),
+    create: (folder?: string) => http.post<BackupEntry>('/api/backups', { folder: folder || null }),
+    inspect: (path: string) => http.post<BackupInspect>('/api/backups/inspect', { path }),
+    restore: (path: string) => http.post<RestoreStaged>('/api/backups/restore', { path }),
+    cancelRestore: () => http.delete<{ cancelled: boolean }>('/api/backups/restore'),
+    dismissLastRestore: () => http.delete<{ ok: boolean }>('/api/backups/last-restore')
   },
 
   // §16 webhooks --------------------------------------------------------------------------

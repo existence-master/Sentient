@@ -42,6 +42,10 @@ export const LABELS: Record<string, FieldLabel> = {
   'models.background_quiet_s': { label: 'Background work waits after you chat', unit: 's' },
   'models.background_on_battery': { label: 'Background work on battery' },
   // tasks
+  'backups.schedule': { label: 'Back up automatically' },
+  'backups.keep': { label: 'Automatic backups to keep' },
+  'backups.snapshots_keep': { label: 'Snapshots to keep' },
+
   'tasks.tick_seconds': { label: 'Scheduler check interval', unit: 's' },
   'tasks.max_concurrent_runs': { label: 'Runs at the same time' },
   'tasks.run_timeout_minutes': { label: 'Stop a run after', unit: 'min' },

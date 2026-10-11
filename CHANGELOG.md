@@ -6,6 +6,16 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Backups and restore:** Settings > Backups backs up everything Sentient keeps (chats, memory, tasks, settings,
+  skills and files) to one file, by hand or every day or week. Backups go to Sentient Backups in your Documents
+  folder (the one Windows really uses, also when it lives in OneDrive), apart from your data, or to a folder you
+  pick. Settings says when that folder syncs to OneDrive, Dropbox, Google Drive or iCloud, since the backups are
+  then copied to the cloud too. A backup holds the certificate your devices trust, so keep
+  backups somewhere private. Restore one from the list or from
+  a file: you see what is in it and confirm, Sentient keeps a snapshot of what you have now, then restarts with the
+  backup. Passwords, API keys and sign-ins stay in your computer's keychain and are never in a backup; after a restore
+  Sentient lists the ones to sign in to again. Sentient also takes a snapshot on its own before it updates its
+  database, before a Hermes import and before a restore, keeps the last five, and any of them can be restored.
 - **Recurring tasks remember their last runs:** each run of a recurring task now reads a short note of what its last
   three runs found, sent or decided, plus the task's own notes, so it tells you only what is new instead of repeating
   yesterday's news. Runs keep those notes up to date themselves; see, edit or clear them under **Notes between runs**
