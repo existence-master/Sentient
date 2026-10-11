@@ -437,8 +437,9 @@ accept or loosen a rule.
   (`~/.sentient`, used when `SENTIENT_HOME` is unset or points at it) uses the service `sentient`, the entries every
   earlier version wrote, so nothing moves. Any other `SENTIENT_HOME` uses `sentient-<first 12 hex of the SHA-256 of
   its resolved, case-folded path>` and can't see the default folder's entries. `SENTIENT_KEYCHAIN_NAMESPACE`
-  overrides it: `default` uses `sentient`, any other word `sentient-<word>` (lower case, other characters become
-  `-`). Entry names, and the `<name>:1`, `<name>:2`... parts of long values, are the same in every namespace. The
+  overrides it: exactly `default` (any case) uses `sentient`; any other value gives `sentient-<word>` (lower case,
+  other characters become `-`; a value left empty by that, or spelled like `default!`, gets `sentient-x<hash>`), so
+  only the word `default` ever shares the default folder's entries. Entry names, and the `<name>:1`, `<name>:2`... parts of long values, are the same in every namespace. The
   engine logs the service it uses at start (never a value). Every route below reads and writes this namespace only.
 - `GET /api/secrets` → `[{name, set: bool, source: "keychain"|"env"|null, kind: "provider"|"integration"}]` for every provider + integration secret name
 - `PUT /api/secrets/{name}` `{value}` → `{ok}` (stored in OS keychain; never echoed back). `chatgpt` → 400: it is a

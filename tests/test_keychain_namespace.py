@@ -114,6 +114,11 @@ def test_the_override(kr, user_home, monkeypatch, tmp_path):
     assert secrets.service() == "sentient-e2e-test-302"
     assert secrets.load_json("mcp:composio:oauth") is None
 
+    for odd in ("---", "!!", "default!", " Default "):  # only the word itself shares; anything else stays isolated
+        monkeypatch.setenv(secrets.ENV_NAMESPACE, odd)
+        assert secrets.service() != "sentient" or odd.strip().lower() == "default"
+
+    monkeypatch.setenv(secrets.ENV_NAMESPACE, "E2E test/302")
     use_home(monkeypatch, None)  # the override applies to the default home too
     assert secrets.service() == "sentient-e2e-test-302"
     monkeypatch.setenv(secrets.ENV_NAMESPACE, "  ")  # blank means not set

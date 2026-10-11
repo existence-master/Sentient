@@ -48,8 +48,12 @@ def namespace(home: Path | None = None) -> str:
     """``default`` for the default data folder (or the override ``default``), else the namespace's id."""
     raw = os.environ.get(ENV_NAMESPACE, "").strip()
     if raw:
+        if raw.lower() == DEFAULT_NAMESPACE:
+            return DEFAULT_NAMESPACE  # only the exact word shares the default folder's entries
         cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip("-.")[:40].lower()
-        return cleaned or DEFAULT_NAMESPACE
+        if not cleaned or cleaned == DEFAULT_NAMESPACE:  # e.g. "---" or "default!": still a namespace of its own
+            cleaned = "x" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+        return cleaned
     if is_default_home(home):
         return DEFAULT_NAMESPACE
     return hashlib.sha256(_norm(home or paths.home()).encode("utf-8")).hexdigest()[:12]

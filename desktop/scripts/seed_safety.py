@@ -29,7 +29,6 @@ def _table_has(db: sqlite3.Connection, table: str, column: str) -> bool:
 def quiet(home: str | Path) -> dict:
     """Pause the tasks and turn off channel deliveries in ``home``. Returns what changed."""
     home = Path(home).expanduser().resolve()
-    os.environ["SENTIENT_HOME"] = str(home)
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
     from sentient import paths, secrets
@@ -37,6 +36,7 @@ def quiet(home: str | Path) -> dict:
 
     if secrets.is_default_home(home):
         raise SystemExit(f"seed_safety: {home} is the default data folder (the real one); refusing to change it.")
+    os.environ["SENTIENT_HOME"] = str(home)  # paths.* read it on every call
     report = {"tasks_paused": 0, "chats_muted": 0, "channels_off": False}
     if paths.config_file().exists() or paths.db_file().exists():
         cfg = load_config()
