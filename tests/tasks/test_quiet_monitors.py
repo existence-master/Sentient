@@ -155,3 +155,11 @@ def test_fuzzy_windows_schedule_within_their_range():
     plain = normalize_schedule({"type": "recurring", "frequency": "daily", "time": "08:15", "window": "brunch"}, tz)
     assert "window" not in plain
     assert calculate_next_run(plain, now).astimezone(sched.get_tz(tz)).strftime("%H:%M") == "08:15"
+
+
+def test_a_window_the_user_never_named_is_dropped():
+    windowed = {"type": "recurring", "frequency": "daily", "time": "09:00", "window": "morning"}
+    assert "window" not in sched.spoken_window(windowed, "Every 5 minutes, check the library page")
+    assert sched.spoken_window(windowed, "Every weekday morning, check the library page")["window"] == "morning"
+    night = {**windowed, "window": "night"}
+    assert sched.spoken_window(night, "Remind me tonight to water the plants")["window"] == "night"

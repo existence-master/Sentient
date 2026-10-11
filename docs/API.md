@@ -536,7 +536,8 @@ task-creation prompt still only produces daily/weekly (v2), the planner uses `in
 timezone, instead of at `time` (kept for the editor): `morning` 07:00-10:00, `afternoon` 12:00-16:00, `evening`
 17:00-20:00, `night` 20:00-23:00. `next_execution_at` is the next window that has not started yet (so a run inside
 today's window is not repeated today), with a new random minute each time. An unknown `window` is dropped. The
-task-creation prompt sets it for requests like "every morning".
+task-creation prompt sets it for requests like "every morning"; a window the request does not name (a small model adding
+"morning" to "every 5 minutes") is dropped.
 
 **Run**
 ```json

@@ -52,6 +52,7 @@ from sentient.tasks.schedule import (
     normalize_schedule,
     parse_iso,
     parse_run_at,
+    spoken_window,
     user_timezone_name,
 )
 from sentient.tasks.scripts import ScriptInvalid, normalize_script, validate_code
@@ -1207,7 +1208,7 @@ class TaskService(Service):
             "name": str(data.get("name") or "").strip()[:200] or _title(prompt),
             "description": str(data.get("description") or "").strip() or prompt,
             "priority": _priority(data.get("priority", 1)),
-            "schedule": normalize_schedule(data.get("schedule"), tz),
+            "schedule": spoken_window(normalize_schedule(data.get("schedule"), tz), prompt),
         }
 
     async def _refine_and_plan(self, task_id: str, *, auto_approve: bool = False) -> None:

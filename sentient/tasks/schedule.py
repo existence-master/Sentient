@@ -173,6 +173,27 @@ WINDOWS: dict[str, tuple[int, int]] = {
 _window_random = random.Random()  # tests may seed it
 
 
+# Words that name each window in a request; a model-proposed window the user never said is dropped.
+WINDOW_WORDS: dict[str, tuple[str, ...]] = {
+    "morning": ("morning", "mornings"),
+    "afternoon": ("afternoon", "afternoons"),
+    "evening": ("evening", "evenings"),
+    "night": ("night", "nights", "tonight"),
+}
+
+
+def spoken_window(schedule: dict, prompt: str) -> dict:
+    """Keep a model-proposed ``window`` only when the request names that part of the day (small models add one to
+    requests like "every 5 minutes")."""
+    window = schedule.get("window") if isinstance(schedule, dict) else None
+    if not window:
+        return schedule
+    words = set(re.findall(r"[a-z]+", str(prompt or "").lower()))
+    if words & set(WINDOW_WORDS.get(window, ())):
+        return schedule
+    return {k: v for k, v in schedule.items() if k != "window"}
+
+
 def window_of(schedule: dict | None) -> tuple[int, int] | None:
     """``(start, end)`` minutes of a daily/weekly schedule's ``window``, or None."""
     if not isinstance(schedule, dict) or str(schedule.get("frequency") or "").lower() == "interval":
