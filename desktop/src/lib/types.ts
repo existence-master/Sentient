@@ -1231,12 +1231,15 @@ export interface RecurringSchedule {
   days?: Weekday[] | string[]
   time: string
   interval_minutes?: number
+  /** Daily/weekly only: run at some time in this part of the day instead of at `time` (§4 "Fuzzy windows"). */
+  window?: ScheduleWindow
   timezone?: string
   catch_up?: CatchUpPolicy
 }
+export type ScheduleWindow = 'morning' | 'afternoon' | 'evening' | 'night'
 
 // §16 script jobs
-export type ScriptCondition = 'changed' | 'alert' | 'every_run'
+export type ScriptCondition = 'changed' | 'noteworthy' | 'alert' | 'every_run'
 export type ScriptThen = 'notify' | 'run'
 
 export interface TaskScript {
@@ -1246,6 +1249,17 @@ export interface TaskScript {
   last_result: unknown
   last_run_at: ISODate | null
   last_error: string | null
+  /** Recent checks, oldest first (§16). Older engines leave it out. */
+  checks?: ScriptCheck[] | null
+}
+export type ScriptCheckOutcome = 'baseline' | 'nothing_new' | 'changed' | 'minor' | 'alert' | 'quiet' | 'reported' | 'failed'
+export interface ScriptCheck {
+  at: ISODate
+  outcome: ScriptCheckOutcome
+  note?: string
+  /** A row of the same quiet outcome folds into one entry. */
+  count?: number
+  last_at?: ISODate
 }
 export interface TriggeredSchedule {
   type: 'triggered'

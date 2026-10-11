@@ -507,10 +507,11 @@ Routes:
   "status": "planning|clarification_pending|approval_pending|pending|active|processing|waiting_for_user|completed|completed_with_errors|error|declined|cancelled|archived",
   "priority": 0, "assignee": "ai", "task_type": "single|swarm|script",
   "schedule": {"type": "once", "run_at": "2026-09-16T09:00|null", "timezone": "Asia/Kolkata", "catch_up?": "run|skip"}
-            | {"type": "recurring", "frequency": "daily|weekly", "days": ["Monday"], "time": "09:00", "timezone": "...", "catch_up?": "run|skip"}
+            | {"type": "recurring", "frequency": "daily|weekly", "days": ["Monday"], "time": "09:00", "window?": "morning|afternoon|evening|night", "timezone": "...", "catch_up?": "run|skip"}
             | {"type": "recurring", "frequency": "interval", "interval_minutes": 60, "timezone": "..."}
             | {"type": "triggered", "source": "gmail|gcalendar|webhook|...", "event": "new_email|new_event|<hook id>|...", "filter": {}, "timezone": "..."},
-  "script": {"code": "...", "condition": "alert|changed|every_run", "then": "notify|run", "last_result": null, "last_run_at": "...|null", "last_error": "...|null"} | null,
+  "script": {"code": "...", "condition": "alert|changed|noteworthy|every_run", "then": "notify|run", "last_result": null, "last_run_at": "...|null", "last_error": "...|null",
+             "checks": [{"at": "...", "outcome": "baseline|nothing_new|changed|minor|alert|quiet|reported|failed", "note?": "...", "count?": 3, "last_at?": "..."}]} | null,
   "plan": [{"tool": "gmail", "description": "Fetch unread emails from the last 7 days"}],
   "runs": [Run], "chat_history": [{"role": "user|assistant", "content": "...", "timestamp": "..."}],
   "clarifying_questions": [{"question_id": "q1", "text": "...", "answer": null}],
@@ -531,6 +532,12 @@ Routes:
 Each run embeds its most recent 200 progress updates; the full log is at the `/events` endpoint.
 `interval` schedules (every `interval_minutes`, minimum 5; `frequency: "hourly"` is normalized to 60) are additive; the
 task-creation prompt still only produces daily/weekly (v2), the planner uses `interval` for script jobs.
+**Fuzzy windows:** a daily or weekly schedule with `window` runs at a random minute inside that part of the day, in its
+timezone, instead of at `time` (kept for the editor): `morning` 07:00-10:00, `afternoon` 12:00-16:00, `evening`
+17:00-20:00, `night` 20:00-23:00. `next_execution_at` is the next window that has not started yet (so a run inside
+today's window is not repeated today), with a new random minute each time. An unknown `window` is dropped. The
+task-creation prompt sets it for requests like "every morning"; a window the request does not name (a small model adding
+"morning" to "every 5 minutes") is dropped.
 
 **Run**
 ```json
@@ -579,7 +586,8 @@ notifies skips the planner and goes straight to `approval_pending` with a one-st
   (`deliver_to`: `"default"` (or `null`), `"desktop"`, or a list of up to 10 `{channel, chat_id}`; an empty list is
   `"desktop"`; 400 for anything else, an unknown channel or a missing `chat_id`)
   (`script`: partial `{code?, condition?, then?}` merged into the current script and validated, 400 when the code does not
-  compile; changing `code` or `condition` resets `last_result`/`last_run_at`/`last_error`; `script: null` turns a script job back
+  compile; changing `code` or `condition` resets `last_result`/`last_run_at`/`last_error` (switching between `changed` and
+  `noteworthy` keeps them, and only a code change resets `checks`); `script: null` turns a script job back
   into a `single` task; a `script` on a single task makes it a script job)
 - `DELETE /api/tasks/{id}` → `{ok}`
 - `POST /api/tasks/{id}/approve` → `Task`
@@ -1850,7 +1858,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   integration lists one trigger per hook (section 5).
 
 ### Script jobs (owner: tasks)
-- New `task_type: "script"`. Task field `script` `{code, condition: "changed"|"alert"|"every_run", then: "notify"|"run", last_result, last_run_at, last_error}`.
+- New `task_type: "script"`. Task field `script` `{code, condition: "changed"|"noteworthy"|"alert"|"every_run", then: "notify"|"run", last_result, last_run_at, last_error, checks}`.
   Runs on the task's schedule (recurring, `interval`, triggered, or a one-off `run_at`) through
   `app.sandbox.run(code, channel="task", allowed_tools=[read-risk tool names])`, with no model calls. A check does not
   create a Run: it updates `script` and the task goes `active → processing → active` (next run computed as usual).
@@ -1863,6 +1871,21 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `then: "notify"` sends a `task` notification (title = task name, message = the alert `message` or a short description of the
   value, `payload: {task_id, event: "script_alert", result}`); `then: "run"` starts a normal model run whose
   `trigger_event_data` is `{script_result, message, trigger_event?}`.
+- `noteworthy` ("Tell me when something important changes", #157): compared like `changed` with no model, so an
+  unchanged result makes no model call and sends nothing. When the result differs, the `fast` role judges a line diff
+  (only the changed lines, `- removed` / `+ added`, at most 3000 characters, plus the task's name and description) and
+  answers `{"noteworthy": bool, "change": "one sentence"}`. `true`: the job acts once, and the `script_alert` message
+  (or the run's `trigger_event_data.message`) is the `change` sentence. `false`: nothing is sent. Either way the new
+  result becomes the baseline. A judge that gives no usable answer counts as `true` with the usual change message.
+  Switching between `changed` and `noteworthy` keeps `last_result`. If the code, condition or action is edited while a
+  check runs or is being judged, that check's decision is dropped (nothing saved, sent or started); the next check decides.
+- `checks` is the job's recent history, oldest first, at most 30 entries: `baseline` (first result of a comparing
+  job), `nothing_new`, `changed` (acted; `note` is the judge's sentence for `noteworthy`), `minor` (changed, the judge
+  said not worth telling; `note` says what changed), `alert` (`note` is its message), `quiet` (no alert, or an
+  `every_run` check that printed nothing), `reported`, `failed` (`note` is the error). A `nothing_new` or `quiet` check
+  right after one with the same outcome folds into it: `count` goes up and `last_at` is that check's time. Changing the
+  code or the kind of check resets `last_result`; changing only the condition keeps `checks`. The app shows it under
+  Runs.
 - Triggered script jobs receive the event as a `trigger_event` variable (a prelude is prepended to the code).
 - Failures (`ok: false`, timeouts, code execution unavailable) set `last_error` and keep `last_result`; a `script_failed`
   notification is sent on the first failure only, and a `script_recovered` notification when a later check succeeds.
