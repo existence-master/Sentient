@@ -355,7 +355,14 @@ async def connect_openrouter_status(request: Request, state: str):
 @router.get("/models/connect/chatgpt")
 async def chatgpt_status(request: Request):
     """Whether Sign in with ChatGPT can be used here, and whether someone is signed in."""
-    return get_core(request).connections.chatgpt_status()
+    return await get_core(request).connections.chatgpt_status()
+
+
+@router.post("/models/connect/chatgpt/welcome")
+async def chatgpt_welcomed(request: Request):
+    """The one-time "You're using your ChatGPT plan" message was shown: don't show it again."""
+    await get_core(request).connections.chatgpt_welcomed()
+    return {"ok": True}
 
 
 @router.post("/models/connect/chatgpt")
