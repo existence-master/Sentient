@@ -29,6 +29,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OFFLINE_API_BASE = "http://10.255.255.1:11434"
+import seed_safety  # noqa: E402  (next to this script)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -39,6 +40,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--timezone", default="Asia/Kolkata", help="assistant timezone written to config")
     p.add_argument("--theme", choices=["dark", "light", "system"], default=None, help="set ui.theme (for screenshots)")
     p.add_argument("--config-only", action="store_true", help="only update config.yaml (theme, models); keep tasks")
+    p.add_argument(seed_safety.KEEP_LIVE_FLAG, action="store_true", help=seed_safety.KEEP_LIVE_HELP)
     args = p.parse_args()
     if not args.home:
         p.error("pass a folder or set SENTIENT_HOME")
@@ -759,6 +761,8 @@ async def main() -> None:
     print(f"Seeded {len(ids)} tasks into {paths.home()}")
     for key, task_id in ids.items():
         print(f"  {key:<13} {task_id}")
+    if not ARGS.keep_live:
+        seed_safety.announce(seed_safety.quiet(paths.home()))
 
 
 if __name__ == "__main__":

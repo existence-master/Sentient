@@ -223,6 +223,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- A second Sentient data folder (a test or demo profile set with `SENTIENT_HOME`) no longer shares the keychain with
+  your own: it gets its own place for API keys, tokens and sign-ins, so it can't use, change or remove yours, and a
+  seeded demo can't message anyone through your Telegram bot. Your own data folder (`~/.sentient`) keeps every key
+  and sign-in as it is, with nothing to redo. `SENTIENT_KEYCHAIN_NAMESPACE=default` shares yours on purpose. The demo
+  seed scripts and `scripts/smoke.mjs` now pause the seeded tasks and turn off messaging deliveries unless given
+  `--keep-live`.
 - Chats using Claude through your own Claude Code now show the context meter and the "getting long" warning at
   85%: the context length is read from the matching Anthropic model, which LiteLLM knows, instead of nothing.
 - Messages and memories saved at the same moment now always keep their order, and the daily upkeep of MEMORY.md and

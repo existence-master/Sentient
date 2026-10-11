@@ -30,6 +30,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OFFLINE_API_BASE = "http://10.255.255.1:11434"
+import seed_safety  # noqa: E402  (next to this script)
 
 
 def _args() -> argparse.Namespace:
@@ -38,6 +39,7 @@ def _args() -> argparse.Namespace:
                    help="folder to seed (created if missing); defaults to SENTIENT_HOME")
     p.add_argument("--reset", action="store_true", help="delete sentient.db in that home first")
     p.add_argument("--theme", choices=["dark", "light", "system"], default=None)
+    p.add_argument(seed_safety.KEEP_LIVE_FLAG, action="store_true", help=seed_safety.KEEP_LIVE_HELP)
     args = p.parse_args()
     if not args.home:
         p.error("pass a folder or set SENTIENT_HOME")
@@ -402,6 +404,8 @@ async def main() -> None:
     finally:
         await app.stop()
     print(json.dumps({"home": str(HOME), **REPORT}, indent=2, ensure_ascii=False))
+    if not ARGS.keep_live:
+        seed_safety.announce(seed_safety.quiet(HOME))
 
 
 if __name__ == "__main__":
