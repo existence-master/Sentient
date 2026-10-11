@@ -7,6 +7,8 @@ from sentient.evolution.log import log_event
 from sentient.skills.loader import slugify, valid_name
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 
+INCOGNITO_REFUSAL = "This is an incognito chat, so nothing from it is saved as a skill. Carry on without saving."
+
 
 def _lib(ctx: ToolContext):
     return ctx.extra.get("skills")
@@ -21,7 +23,7 @@ async def skill_view(ctx: ToolContext, name: str) -> dict:
     s = lib.get(name)
     if not s:
         return {"error": f"no skill named {name}", "available": [k.name for k in lib.list()][:30]}
-    if ctx.store is not None:
+    if ctx.store is not None and not await ctx.is_incognito():  # an incognito chat leaves no usage trail (#154)
         await lib.mark_used(s.name, ctx.store, viewed=True)
     out = {"name": s.name, "description": s.description, "version": s.version, "body": s.body}
     if s.browser_profile:  # the skill's browser work happens in its own profile (docs/API.md section 12)
@@ -46,6 +48,8 @@ async def skill_save(
     lib = _lib(ctx)
     if lib is None:
         return {"error": "skills unavailable"}
+    if await ctx.is_incognito():
+        return {"error": INCOGNITO_REFUSAL}
     name = name.strip().lower()
     if not valid_name(name):
         name = slugify(name)

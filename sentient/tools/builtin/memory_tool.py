@@ -14,10 +14,18 @@ from sentient.memory.episodic import EpisodicMemory
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from sentient.tools.rules import brings_untrusted
 
+INCOGNITO_REFUSAL = (
+    "Not saved: this is an incognito chat, so nothing from it is remembered. Don't tell the user you will remember it."
+)
 HELD_NOTE = (
     "Saved for the user to review first, because this run read outside content or nobody asked for it. "
     "It is not used until they approve it."
 )
+
+
+async def _memory_closed(ctx: ToolContext) -> bool:
+    """An incognito chat with ``chat.incognito_uses_memory`` off reads nothing Sentient knows (#154)."""
+    return not ctx.config.chat.incognito_uses_memory and await ctx.is_incognito()
 
 
 def _episodic(ctx: ToolContext) -> EpisodicMemory:
@@ -35,7 +43,7 @@ def _fts_query(text: str, joiner: str) -> str:
 async def memory_recall(ctx: ToolContext, query: str, limit: int = 8) -> list[dict]:
     """Search what you remember about the user. Use when a question depends on personal
     context (their preferences, people, projects, routines) that is not already in your prompt."""
-    if ctx.memory is None:
+    if ctx.memory is None or await _memory_closed(ctx):
         return []
     facts = await ctx.memory.recall(query, top_k=limit)
     return [
@@ -50,6 +58,8 @@ async def memory_remember(ctx: ToolContext, fact: str) -> dict:
     Existing facts on the same subject are updated instead of duplicated."""
     if ctx.memory is None:
         return {"error": "memory unavailable"}
+    if await ctx.is_incognito():  # nothing is kept from an incognito chat (#154)
+        return {"error": INCOGNITO_REFUSAL}
     held = review.for_context(ctx)  # outside content or unprompted work: the user reviews it first (ADR 0021)
     if held is not None:
         held["snippet"] = review.note("", await _last_outside_result(ctx))["snippet"]
@@ -128,7 +138,7 @@ async def memory_forget(ctx: ToolContext, fact_id: int) -> dict:
 async def memory_search_by_source(ctx: ToolContext, query: str, source: str, limit: int = 5) -> list[dict]:
     """Search remembered facts that came from one source, e.g. "file:resume.pdf", "onboarding",
     "conversation" or "manual". Use when the user asks what you learned from a specific document."""
-    if ctx.memory is None:
+    if ctx.memory is None or await _memory_closed(ctx):
         return []
     facts = await ctx.memory.search_by_source(query, source, top_k=limit)
     return [{"id": f["id"], "fact": f["content"], "similarity": f["similarity"]} for f in facts]
@@ -138,6 +148,8 @@ async def memory_search_by_source(ctx: ToolContext, query: str, source: str, lim
 async def memory_search_history(ctx: ToolContext, query: str, limit: int = 8) -> list[dict]:
     """Keyword search over past conversations. Use when the user refers to something
     discussed earlier ("that link you sent", "what did we decide about X")."""
+    if await _memory_closed(ctx):
+        return []
     rows = []
     for joiner in (" ", " OR "):
         q = _fts_query(query, joiner)
@@ -157,6 +169,8 @@ async def memory_search_history(ctx: ToolContext, query: str, limit: int = 8) ->
 async def history_semantic_search(ctx: ToolContext, query: str, limit: int = 5) -> dict:
     """Meaning-based search of summaries of older conversations. Use for topics, ideas or past
     decisions when you do not know when they were discussed ("what did we decide about the marketing plan?")."""
+    if await _memory_closed(ctx):
+        return {"result": "No relevant conversation summaries found."}
     hits = await _episodic(ctx).search(query, limit=limit)
     if not hits:
         return {"result": "No relevant conversation summaries found."}
@@ -173,6 +187,8 @@ async def history_time_search(ctx: ToolContext, start_date: str, end_date: str, 
     """Every message exchanged in a date range. Use when the user asks about a specific day or period
     ("what did we talk about yesterday afternoon?"). Dates are ISO 8601, e.g. '2026-09-14T00:00:00Z'
     or '2026-09-14' (a bare end date includes that whole day)."""
+    if await _memory_closed(ctx):
+        return {"result": "No messages found in that time period."}
     try:
         rows = await _episodic(ctx).messages_between(start_date, end_date, limit=limit)
     except ValueError:
@@ -188,6 +204,8 @@ async def history_time_search(ctx: ToolContext, start_date: str, end_date: str, 
 async def user_model_ask(ctx: ToolContext, question: str) -> dict:
     """Predict what the user would want or prefer, from the insights and facts you have learned about them.
     Use before choosing on their behalf ("which option would they pick?", "how do they like reports written?")."""
+    if await _memory_closed(ctx):
+        return {"error": "This incognito chat doesn't use what Sentient knows about the user."}
     app = ctx.extra.get("app")
     um = getattr(app, "user_model", None)
     if um is None or not hasattr(um, "ask"):

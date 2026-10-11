@@ -10,6 +10,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   chips under the reply show what it used: the page, the email's subject, the file or the app, next to the memories
   it had in mind. Click a chip to see the part Sentient read and open the page, email or file. Answers that used
   nothing show no chips.
+- **Incognito chats:** start one from the button next to New chat, the command palette or Ctrl+Shift+N
+  (Cmd+Shift+N on a Mac). Nothing you say in it is remembered: Sentient saves no memories from it, learns no skills
+  from it, leaves it out of what it learns about you and of chat search, and deletes it when you leave it or close
+  Sentient (or after 30 minutes without a message). The chat has a tinted header and an Incognito label so you always
+  know. It can still use what Sentient already knows about you; turn that off in Settings > General > Conversations.
 - **One local model job at a time, your chats first:** a local Ollama model now works on one thing at a time, so
   background work no longer pushes it off the graphics card and slows your chat to a crawl. Your chat always goes
   next; tasks, suggestions, memory upkeep and chat titles wait while you are chatting (and for 30 seconds after), and

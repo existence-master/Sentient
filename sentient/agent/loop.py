@@ -136,6 +136,20 @@ REPEAT_NUDGE = (
     "You called {name} with exactly the same arguments several times and got the same result each time. "
     "Do not call it again with these arguments. Try something different, or answer the user with what you have."
 )
+# Incognito chats (#154): tools that would keep something from the chat are never offered or run, and the model is
+# told so it does not promise to remember. Without ``chat.incognito_uses_memory`` the memory look-ups go too.
+INCOGNITO_LEARNING_TOOLS = frozenset({"memory_remember", "skill_save"})
+INCOGNITO_MEMORY_TOOLS = frozenset({
+    "memory_recall", "memory_search_by_source", "memory_search_history", "history_semantic_search",
+    "history_time_search", "user_model_ask",
+})
+INCOGNITO_NOTE = (
+    "## Incognito chat\nThis is an incognito chat. Nothing from it is saved to memory, and it is deleted when the "
+    "user closes it. Never say you will remember something from it."
+)
+INCOGNITO_NO_MEMORY_NOTE = (
+    INCOGNITO_NOTE + " You also do not use what you know about the user here: answer from this chat alone."
+)
 PersistFn = Callable[..., Awaitable[Any]]
 # policy(tool, effective_risk, arguments) -> refusal message or None (sync or async)
 PolicyFn = Callable[[Tool, Risk, dict], "str | Awaitable[str | None] | None"]
@@ -423,12 +437,43 @@ class Agent:
         self._background: set[asyncio.Task] = set()
         self._steers: dict[str, SteerQueue] = {}
         self._turn_tasks: weakref.WeakSet[asyncio.Task] = weakref.WeakSet()  # tasks running a chat reply
+        # session id -> chat turns not finished yet, counted until their last write (incognito cleanup waits, #154)
+        self._busy: dict[str, int] = {}
+        self._session_tasks: dict[str, set[asyncio.Task]] = {}  # session id -> tasks running its chat turns
 
     # ------------------------------------------------------------------ steering
     def is_running(self, session_id: str) -> bool:
         """True while a chat reply for this session is running and can take steer messages."""
         q = self._steers.get(session_id)
         return bool(q and q.accepting)
+
+    def is_busy(self, session_id: str) -> bool:
+        """True from the start of a chat turn until its last write (the final or stopped reply) is done."""
+        return self._busy.get(session_id, 0) > 0
+
+    def _turn_done(self, session_id: str) -> None:
+        left = self._busy.get(session_id, 0) - 1
+        if left > 0:
+            self._busy[session_id] = left
+        else:
+            self._busy.pop(session_id, None)
+        task = asyncio.current_task()
+        tasks = self._session_tasks.get(session_id)
+        if tasks is not None and task is not None:
+            tasks.discard(task)
+            if not tasks:
+                self._session_tasks.pop(session_id, None)
+
+    async def cancel_session(self, session_id: str, timeout: float = 10.0) -> int:
+        """Stop the chat turns running for ``session_id`` and wait until they have saved what they keep (a chat
+        about to be deleted). Returns how many were stopped."""
+        me = asyncio.current_task()
+        tasks = [t for t in self._session_tasks.get(session_id, set()) if not t.done() and t is not me]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.wait(tasks, timeout=timeout)
+        return len(tasks)
 
     def steer(self, session_id: str, text: str) -> bool:
         """Queue ``text`` for the reply running in ``session_id``. Returns False when no reply is running
@@ -491,28 +536,45 @@ class Agent:
     async def _system_prompt_with_sources(
         self, user_text: str, channel: str, session: dict | None = None
     ) -> tuple[str, MemorySources]:
-        """The system prompt and the memories put into it (recalled facts, user-model insights)."""
-        facts, (user_context, insights) = await asyncio.gather(
-            self._recall(user_text), self._user_model_context(user_text)
-        )
+        """The system prompt and the memories put into it (recalled facts, user-model insights). An incognito chat
+        (#154) reads memory only while ``chat.incognito_uses_memory`` is on, and is told nothing will be kept."""
+        incognito = bool((session or {}).get("incognito"))
+        reads_memory = not incognito or self.config.chat.incognito_uses_memory
+        if reads_memory:
+            facts, (user_context, insights) = await asyncio.gather(
+                self._recall(user_text), self._user_model_context(user_text)
+            )
+        else:
+            facts, user_context, insights = [], "", []
         sources = MemorySources()
         sources.add_facts(facts)
         sources.add_insights(insights)
+        snapshot = self.workspace.snapshot()
+        if not reads_memory:  # only the persona: no profile, memory file or daily notes
+            snapshot = {k: (v if k == "soul" else "") for k, v in snapshot.items()}
         prompt = build_system_prompt(
-            snapshot=self.workspace.snapshot(),
+            snapshot=snapshot,
             facts=facts,
             skills_index=self.skills.prompt_index(),
             assistant_name=self.config.assistant.name,
-            user_name=self.config.assistant.user_name,
+            user_name=self.config.assistant.user_name if reads_memory else "",
             channel=channel,
-            location=self.config.assistant.location,
+            location=self.config.assistant.location if reads_memory else "",
             user_context=user_context,
             tool_names=[t.name for t in self.registry.tools()],
             read_only_apps=self._read_only_apps(),
         )
         if session and session.get("context_summary"):
             prompt += "\n\n## Earlier in this conversation\n" + session["context_summary"]
+        if incognito:
+            prompt += "\n\n" + (INCOGNITO_NOTE if reads_memory else INCOGNITO_NO_MEMORY_NOTE)
         return prompt, sources
+
+    def _incognito_tools(self, tool_names: list[str] | None) -> list[str]:
+        """``tool_names`` (None: every offered tool) without the tools an incognito chat must not use (#154)."""
+        names = tool_names if tool_names is not None else [t.name for t in self.registry.tools()]
+        left_out = INCOGNITO_LEARNING_TOOLS | (frozenset() if self.config.chat.incognito_uses_memory else INCOGNITO_MEMORY_TOOLS)
+        return [n for n in names if n not in left_out]
 
     def _read_only_apps(self) -> list[str]:
         """Names of the connected apps set to Read only that have tools Sentient now can't use (#141), so the model
@@ -1092,6 +1154,9 @@ class Agent:
         turn_id = new_id()
         ev = {"session_id": session_id, "turn_id": turn_id}
         attachments = attachments or []
+        self._busy[session_id] = self._busy.get(session_id, 0) + 1
+        if (current := asyncio.current_task()) is not None:
+            self._session_tasks.setdefault(session_id, set()).add(current)
         # register for steering; a second concurrent turn on the same session (rare) does not take it over
         steer: SteerQueue | None = None
         if not self.is_running(session_id):
@@ -1127,6 +1192,7 @@ class Agent:
             await self.store.touch_session(session_id, title=(user_text or (attachments[0] if attachments else ""))[:60])
 
             session = await self.store.get_session(session_id)
+            incognito = bool((session or {}).get("incognito"))
             system, sources = await self._system_prompt_with_sources(user_text, channel, session)
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
             convo = history_to_openai(history)
@@ -1153,6 +1219,7 @@ class Agent:
                 role = "vision"
             messages: list[dict] = [{"role": "system", "content": system}, *convo]
             ctx = self.tool_context(session_id, channel)
+            ctx.incognito = incognito
             # outside content read earlier in this chat still counts until a new chat starts (ADR 0018)
             ctx.untrusted = await self._chat_untrusted(session_id, session)
             if not ctx.untrusted and any(is_screen_capture(a) for a in attachments):
@@ -1175,6 +1242,8 @@ class Agent:
             except Exception as exc:  # selection must never break a turn
                 log.warning("tool selection failed, offering all tools: %s", exc)
                 tool_names = None
+            if incognito:
+                tool_names = self._incognito_tools(tool_names)
 
             async def persist(role_: str, content: str | None, **fields: Any) -> None:
                 mid = await self.store.add_message(session_id, role_, content, **fields)
@@ -1219,43 +1288,53 @@ class Agent:
                         await asyncio.shield(save)
                 if on_stopped is not None and not save.cancelled():
                     on_stopped(save.result())
+            self._turn_done(session_id)
             raise
         except BaseException:
             release()
+            self._turn_done(session_id)
             raise
         leftover = release()
 
-        if not (result.error and not result.text):
-            memory_sources = await sources.resolve(self.store)
-            message_id = await self.store.add_message(
-                session_id, "assistant", result.text, thinking=result.thinking or None, memory_sources=memory_sources,
-                sources=used.items(),
-            )
-            yield Done(
-                content=result.text, message_id=message_id, memory_sources=memory_sources, sources=used.items(), **ev
-            )
-
-            said = "\n\n".join([user_text, *result.interjections]).strip()
-            if self.memory is not None and self.config.memory.extract_after_turn:
-                # a chat that read outside content holds what it learns for the user's review (ADR 0021)
-                self._spawn(self._extract(said, memory_review.for_context(ctx)), "memory")
-            if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
-                self._spawn(self._auto_title(session_id, user_text, result.text), "titles")
-            self._spawn(self._maybe_compress(session_id), "memory")
-            if self.app is not None:
-                self.app.bus.publish(
-                    "chat.turn_completed",
-                    {
-                        "session_id": session_id,
-                        "turn_id": turn_id,
-                        "tool_calls": result.tool_calls,
-                        "tool_errors": result.tool_errors,
-                        "skills_viewed": result.skills_viewed,
-                        "user_text": said,
-                        "reply": result.text,
-                    },
+        try:  # the turn counts as busy until here, also when the caller stops reading at Done
+            if not (result.error and not result.text):
+                memory_sources = await sources.resolve(self.store)
+                message_id = await self.store.add_message(
+                    session_id, "assistant", result.text, thinking=result.thinking or None, memory_sources=memory_sources,
+                    sources=used.items(),
+                )
+                yield Done(
+                    content=result.text, message_id=message_id, memory_sources=memory_sources, sources=used.items(), **ev
                 )
 
+                said = "\n\n".join([user_text, *result.interjections]).strip()
+                # nothing is learned from an incognito chat (#154): no fact extraction, no memory flush, and no
+                # chat.turn_completed, so skills, the user model and dreaming never see it
+                if self.memory is not None and self.config.memory.extract_after_turn and not incognito:
+                    # a chat that read outside content holds what it learns for the user's review (ADR 0021)
+                    log.info("chat %s: fact extraction started for this turn", session_id)
+                    self._spawn(self._extract(said, memory_review.for_context(ctx)), "memory")
+                if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
+                    self._spawn(self._auto_title(session_id, user_text, result.text), "titles")
+                self._spawn(self._maybe_compress(session_id, flush=not incognito), "memory")
+                if incognito:
+                    log.info("incognito chat %s: nothing learned from this turn", session_id)
+                elif self.app is not None:
+                    self.app.bus.publish(
+                        "chat.turn_completed",
+                        {
+                            "session_id": session_id,
+                            "turn_id": turn_id,
+                            "tool_calls": result.tool_calls,
+                            "tool_errors": result.tool_errors,
+                            "skills_viewed": result.skills_viewed,
+                            "user_text": said,
+                            "reply": result.text,
+                        },
+                    )
+
+        finally:
+            self._turn_done(session_id)
         if leftover:
             # steer messages that arrived after the final round start a new turn
             async for event in self.run_turn(session_id, "\n\n".join(leftover), channel=channel, model=model):
@@ -1416,9 +1495,10 @@ class Agent:
         except Exception as exc:
             log.warning("memory flush before compression failed: %s", exc)
 
-    async def _maybe_compress(self, session_id: str) -> None:
+    async def _maybe_compress(self, session_id: str, *, flush: bool = True) -> None:
         """Hermes-style context compression: fold turns that fell out of the history
-        window into a running summary injected into the system prompt."""
+        window into a running summary injected into the system prompt. ``flush=False`` (an incognito chat) keeps
+        no facts from the folded turns."""
         try:
             total = await self.store.count_messages(session_id)
             window = self.config.chat.history_window
@@ -1435,7 +1515,8 @@ class Agent:
             if len(older) < 10:
                 return
             transcript = "\n".join(f"{r['role']}: {(r['content'] or '')[:800]}" for r in older)
-            await self._flush_memory(transcript, (session or {}).get("untrusted") or "", session_id)
+            if flush:
+                await self._flush_memory(transcript, (session or {}).get("untrusted") or "", session_id)
             prev = (session or {}).get("context_summary") or ""
             summary = await self.llm.complete_text(
                 "fast",

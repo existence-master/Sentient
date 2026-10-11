@@ -241,12 +241,13 @@ async def sessions(request: Request, limit: int = 100):
             row["visited_hosts"] = json.loads(raw) if raw else None
         except (TypeError, ValueError):
             row["visited_hosts"] = None
+        row["incognito"] = bool(row.get("incognito"))
     return rows
 
 
 @router.post("/api/sessions", dependencies=_auth)
-async def create_session(request: Request, channel: str = "desktop"):
-    sid = await get_core(request).store.create_session(channel=channel)
+async def create_session(request: Request, channel: str = "desktop", incognito: bool = False):
+    sid = await get_core(request).store.create_session(channel=channel, incognito=incognito)
     return {"session_id": sid}
 
 
@@ -284,13 +285,16 @@ async def rename_session(request: Request, session_id: str, body: RenameBody):
 
 @router.delete("/api/sessions/{session_id}", dependencies=_auth)
 async def delete_session(request: Request, session_id: str):
-    await get_core(request).store.delete_session(session_id)
+    await get_core(request).delete_chat(session_id)
     return {"ok": True}
 
 
 @router.get("/api/sessions/{session_id}/messages", dependencies=_auth)
 async def session_messages(request: Request, session_id: str, limit: int = 500):
-    return await get_core(request).store.recent_messages(session_id, limit)
+    s = get_core(request)
+    if await s.store.get_session(session_id) is None:  # deleted (an incognito chat that was closed, #154)
+        raise HTTPException(404, "no such chat")
+    return await s.store.recent_messages(session_id, limit)
 
 
 # ----------------------------------------------------------------------------- rules from chat (#130)
@@ -324,6 +328,7 @@ class ChatBody(BaseModel):
     channel: str = "desktop"
     attachments: list[str] = []
     model: str | None = None
+    incognito: bool = False  # a new chat (no session_id) that learns nothing and is deleted when closed (#154)
 
 
 @router.post("/api/chat", dependencies=_auth)
@@ -334,7 +339,7 @@ async def chat(request: Request, body: ChatBody):
         # a reply is already running for this chat: the text steers it (docs/API.md section 10)
         ack = {"type": "steer_ack", "session_id": body.session_id, "queued": True}
         return StreamingResponse(iter([json.dumps(ack) + "\n"]), media_type="application/x-ndjson")
-    session_id = body.session_id or await s.store.create_session(channel=body.channel)
+    session_id = body.session_id or await s.store.create_session(channel=body.channel, incognito=body.incognito)
 
     async def gen():
         yield json.dumps({"type": "session", "session_id": session_id}) + "\n"
