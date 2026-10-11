@@ -446,8 +446,12 @@ def apply_pending_restore(home: Path | None = None, *, snapshot_keep: int = 5) -
                 raise BackupError(
                     "The restore didn't happen, because Sentient couldn't save a copy of your current data first."
                 ) from exc
-        old = backups_root(home) / "restore-old"
-        shutil.rmtree(old, ignore_errors=True)
+        # a fresh folder each time: one left by a failed rollback may hold the only copy of something
+        old = backups_root(home) / f"restore-old-{_stamp()}"
+        n = 2
+        while old.exists():
+            old = backups_root(home) / f"restore-old-{_stamp()}-{n}"
+            n += 1
         old.mkdir(parents=True)
         moved: list[str] = []
         placed: list[str] = []
@@ -468,9 +472,18 @@ def apply_pending_restore(home: Path | None = None, *, snapshot_keep: int = 5) -
             for item in placed:
                 with contextlib.suppress(OSError):
                     _remove(home / item)
+            lost = []
             for name in moved:
-                with contextlib.suppress(OSError):
+                try:
                     _move(old / name, home / name)
+                except OSError:
+                    lost.append(name)
+            if lost:
+                raise BackupError(
+                    "The restore didn't finish and some of your data couldn't be put back in place. Nothing is lost: "
+                    f"it is in {old}. Close any program using Sentient's folder and move it back."
+                ) from exc
+            shutil.rmtree(old, ignore_errors=True)
             raise BackupError(
                 "The restore didn't finish, so your data was left as it was. Close any program using Sentient's "
                 "folder and try again."

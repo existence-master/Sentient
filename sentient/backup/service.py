@@ -22,9 +22,17 @@ from sentient.services import Service
 log = logging.getLogger(__name__)
 
 SCHEDULE_META = "backup.last_scheduled"
+FAILURE_META = "backup.failure_notified"
 SCHEDULE_EVERY = {"daily": timedelta(days=1), "weekly": timedelta(days=7)}
 CHECK_EVERY_S = 3600
 BROWSER_SIGN_IN = {"kind": "browser", "id": "browser", "label": "Websites you signed in to in Sentient's browser"}
+
+
+def _older_than(iso: str, now: datetime, age: timedelta) -> bool:
+    try:
+        return now - datetime.fromisoformat(iso) >= age
+    except (ValueError, TypeError):
+        return True
 
 
 class BackupService(Service):
@@ -165,18 +173,20 @@ class BackupService(Service):
             return
         last = await self.app.store.get_meta(SCHEDULE_META)
         now = datetime.now(UTC)
-        if last:
-            try:
-                if now - datetime.fromisoformat(last) < every:
-                    return
-            except ValueError:
-                pass
+        if last and not _older_than(last, now, every):
+            return
         try:
             await self.backup_now(kind="scheduled")
         except BackupError as exc:
+            # tried again next hour (an unplugged drive may be back); the user hears about it once per interval
             log.warning("scheduled backup failed: %s", exc)
-            await self.app.notify("backup", f"The automatic backup didn't work: {exc}", title="Backup")
+            told = await self.app.store.get_meta(FAILURE_META)
+            if not told or _older_than(told, now, every):
+                await self.app.notify("backup", f"The automatic backup didn't work: {exc}", title="Backup")
+                await self.app.store.set_meta(FAILURE_META, now.isoformat())
+            return
         await self.app.store.set_meta(SCHEDULE_META, now.isoformat())
+        await self.app.store.set_meta(FAILURE_META, "")
 
     # ------------------------------------------------------------------ restoring
     async def inspect(self, path: str) -> dict:

@@ -293,3 +293,49 @@ async def test_a_failed_restore_puts_the_current_data_back(config, isolated_home
         assert (await app.backups.overview())["last_restore"]["error"] == result["error"]
     finally:
         await app.stop()
+
+
+async def test_a_failed_scheduled_backup_is_retried_and_told_once(config, isolated_home, tmp_path, monkeypatch):
+    config.backups.schedule = "daily"
+    app = await _app(config)
+    try:
+        calls = []
+
+        async def broken(folder=None, *, kind="manual"):
+            calls.append(kind)
+            raise BackupError("Sentient can't write to that folder. Pick another one.")
+
+        monkeypatch.setattr(app.backups, "backup_now", broken)
+        await app.backups._scheduled()
+        await app.backups._scheduled()  # an hour later: tried again, not told again
+        assert calls == ["scheduled", "scheduled"]
+        notes = [n for n in await app.notifications.list() if n["kind"] == "backup"]
+        assert len(notes) == 1 and "didn't work" in json.dumps(notes[0])
+        assert await app.store.get_meta("backup.last_scheduled") is None
+        monkeypatch.undo()
+        await app.backups._scheduled()
+        assert await app.store.get_meta("backup.last_scheduled")
+    finally:
+        await app.stop()
+
+
+async def test_a_rollback_that_fails_keeps_the_data_aside(config, isolated_home, monkeypatch):
+    app = await _app(config)
+    (paths.files_dir() / "mine.txt").write_text("in the backup", encoding="utf-8")
+    made = await app.backups.backup_now()
+    (paths.files_dir() / "mine.txt").write_text("only copy", encoding="utf-8")
+    await app.backups.restore(made["path"])
+    await app.stop()
+
+    real = archive._move
+
+    def stuck(src, dst, tries=6):
+        if Path(src).name == "files" and (archive.PENDING in str(src) or "restore-old" in str(src)):
+            raise PermissionError("in use")
+        real(src, dst, tries=1)
+
+    monkeypatch.setattr(archive, "_move", stuck)
+    result = apply_pending_restore()
+    assert "couldn't be put back" in result["error"]
+    kept = [p for p in archive.backups_root().glob("restore-old-*") if (p / "files" / "mine.txt").exists()]
+    assert len(kept) == 1 and (kept[0] / "files" / "mine.txt").read_text(encoding="utf-8") == "only copy"

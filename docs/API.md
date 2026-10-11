@@ -2085,7 +2085,7 @@ archive (manifest, names, SQLite `quick_check`) and unpacks it into `<home>/back
 start applies it before config or database are opened (the desktop restarts the engine at once). Applying takes a
 snapshot of the current data, then replaces exactly the items the manifest lists (`contents`): a snapshot leaves
 `files/` alone, and an item listed but empty in the backup ends up empty. If anything fails the current data is put
-back. The outcome is kept in `<home>/backups/last-restore.json` until dismissed.
+back; if even that fails, it stays in `<home>/backups/restore-old-<time>/` and the result's `error` says so. The outcome is kept in `<home>/backups/last-restore.json` until dismissed.
 
 - `GET /api/backups` → **BackupOverview**
 - `POST /api/backups` `{folder?}` → **BackupEntry** (a manual backup into `folder`, else `backups.folder`, else
@@ -2119,7 +2119,8 @@ back. The outcome is kept in `<home>/backups/last-restore.json` until dismissed.
 signed_in` is checked live (`null`: Sentient can't tell, e.g. browser sign-ins).
 
 **Scheduled backups** (config `backups.schedule`, `backups.keep`): checked hourly while the engine runs; only the newest
-`keep` scheduled backups are kept, backups made by hand are never deleted. A failure is a `backup` notification.
+`keep` scheduled backups are kept, backups made by hand are never deleted. A failed one is tried again the next hour
+(an unplugged drive may be back) and is a `backup` notification at most once per interval.
 
 **CLI**: `sentient backup [--to FOLDER]`, `sentient restore FILE [--now]` (stages; `--now` applies at once and must only
 be used while Sentient is closed).
