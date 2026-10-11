@@ -74,23 +74,36 @@ async def _mark_if_outside(ctx: ToolContext, session_ids: list) -> None:
 
 async def _last_outside_result(ctx: ToolContext) -> str | None:
     """The latest successful tool result in this chat that brought in outside content (the review card shows it).
-    Errors and declined calls are skipped: they say nothing about where a fact came from."""
+    Errors and declined calls are skipped: they say nothing about where a fact came from.
+
+    SQL does only the cheap, index-backed part (session, tool role, the ``name IN`` allow-list and the newest-first
+    ordering); it carries no fixed window, so any number of failed calls after the real read never buries it (#270).
+    The success/failure decision stays in Python (``_failed``), preserving the exact truthiness semantics the old
+    code had: ``{"error": false}`` / ``{"error": 0}`` / ``{"error": {}}`` are successes, and ``{"declined": "yes"}``
+    is a decline. Rows are read in pages so a long chat never loads at once."""
     registry = ctx.extra.get("registry")
     if not ctx.session_id or registry is None or not ctx.untrusted:
         return None
-    try:
-        rows = await ctx.store.fetchall(
-            "SELECT name, content FROM messages WHERE session_id = ? AND role = 'tool'"
-            " ORDER BY created_at DESC, rowid DESC LIMIT 12",
-            (ctx.session_id,),
-        )
-    except Exception:
+    names = [t.name for t in registry.tools(include_hidden=True) if brings_untrusted(t)]
+    if not names:
         return None
-    for r in rows:
-        t = registry.get(r["name"] or "")
-        if t is not None and brings_untrusted(t) and not _failed(r["content"]):
-            return r["content"]
-    return None
+    placeholders = ",".join("?" * len(names))
+    sql = (
+        f"SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND name IN ({placeholders})"
+        " ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?"
+    )
+    offset = 0
+    while True:
+        try:
+            rows = await ctx.store.fetchall(sql, (ctx.session_id, *names, 50, offset))
+        except Exception:
+            return None
+        if not rows:
+            return None
+        for r in rows:
+            if not _failed(r["content"]):
+                return r["content"]
+        offset += len(rows)
 
 
 def _failed(content: str | None) -> bool:
