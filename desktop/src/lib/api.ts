@@ -428,7 +428,8 @@ export const api = {
 
   sessions: {
     list: (limit = 100) => http.get<Session[]>('/api/sessions', { query: { limit } }),
-    create: () => http.post<{ session_id: string }>('/api/sessions'),
+    create: (opts: { incognito?: boolean } = {}) =>
+      http.post<{ session_id: string }>('/api/sessions', undefined, { query: opts.incognito ? { incognito: true } : undefined }),
     rename: (id: string, title: string) => http.patch<OkResponse>(`/api/sessions/${enc(id)}`, { title }),
     delete: (id: string) => http.delete<OkResponse>(`/api/sessions/${enc(id)}`),
     messages: (id: string, limit = 500) =>

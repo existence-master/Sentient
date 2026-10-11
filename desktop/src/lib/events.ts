@@ -16,6 +16,7 @@
  *   memory.updated        -> invalidate ['memories']
  *   skill.updated         -> invalidate ['skills']
  *   session.updated       -> rename in ['sessions']
+ *   session.deleted       -> remove from ['sessions'] and refetch its transcript (an incognito chat that was closed)
  *   rule_proposal.updated -> refetch that chat's ['rule-proposals'] ("Make this a rule?" cards)
  *   config.updated        -> invalidate config/bootstrap/model presets/ChatGPT sign-in (+ secrets/providers)
  *   voice.state           -> ['voice', 'state']
@@ -181,6 +182,14 @@ export function installDomainEvents(qc: QueryClient): () => void {
         })
       )
       if (!found) void qc.invalidateQueries({ queryKey: qk.sessions })
+    })
+  )
+  offs.push(
+    live.onDomain('session.deleted', (e) => {
+      const { session_id } = e.data
+      qc.setQueryData<Session[]>(qk.sessions, (old) => old?.filter((s) => s.id !== session_id))
+      // an open chat that was deleted (an incognito chat left idle) shows "This chat doesn't exist anymore"
+      void qc.invalidateQueries({ queryKey: qk.messages(session_id) })
     })
   )
 

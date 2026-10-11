@@ -246,6 +246,18 @@ class ChatConfig(BaseModel):
     parallel_read_tools: bool = Field(
         True, description="Run look-up tools the model asks for in the same step at the same time."
     )
+    incognito_uses_memory: bool = Field(
+        True,
+        description="Incognito chats can use what Sentient already knows about you. Nothing from an incognito chat "
+        "is ever remembered either way.",
+    )
+    incognito_delete_after_minutes: int = Field(
+        30,
+        ge=1,
+        le=1440,
+        description="An incognito chat is deleted when you leave it or close Sentient, or after this many minutes "
+        "without a new message.",
+    )
 
 
 class RuleOrigin(BaseModel):

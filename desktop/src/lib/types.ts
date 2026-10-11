@@ -151,6 +151,9 @@ export interface ChatConfig {
   compress_after_messages: number
   show_thinking: boolean
   auto_title: boolean
+  /** Incognito chats can use what Sentient already knows (#154). Nothing from them is remembered either way. */
+  incognito_uses_memory?: boolean
+  incognito_delete_after_minutes?: number
 }
 
 export type ApprovalMode = 'off' | 'ask' | 'always'
@@ -363,6 +366,8 @@ export interface Session {
   channel: string
   created_at: ISODate
   updated_at: ISODate
+  /** Nothing is learned from it and it is deleted when closed (#154). */
+  incognito?: boolean
   [key: string]: unknown
 }
 
@@ -418,6 +423,8 @@ export interface ChatRequest {
   attachments?: string[]
   model?: string
   channel?: string
+  /** Start a new incognito chat (#154); ignored with `session_id`. */
+  incognito?: boolean
 }
 
 export type ApprovalDecision = 'allow' | 'allow_session' | 'deny'
@@ -870,6 +877,8 @@ export interface DomainEventMap {
   'memory.updated': MemoryUpdatedData
   'skill.updated': { name: string; state: SkillState }
   'session.updated': { session_id: string; title: string }
+  /** A chat was deleted: by the user, or an incognito chat that was closed or left idle (#154). */
+  'session.deleted': { session_id: string; reason?: 'incognito' }
   'rule_proposal.updated': RuleProposal
   'config.updated': { sections: string[] }
   'voice.state': { state: VoiceState }
@@ -912,6 +921,8 @@ export type ClientMessage =
       model?: string
       client_id?: string
       channel?: string
+      /** Start a new incognito chat (#154); ignored with `session_id`. */
+      incognito?: boolean
     }
   | { type: 'chat.cancel'; session_id: string }
   | { type: 'chat.steer'; session_id: string; text: string }

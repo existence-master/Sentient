@@ -389,3 +389,19 @@ def test_where_documents_is_on_each_system(tmp_path, monkeypatch):
     assert paths.documents_dir() == tmp_path / "xdg"
     monkeypatch.delenv("XDG_DOCUMENTS_DIR")
     assert paths.documents_dir() == tmp_path / "me" / "Documents"
+
+
+async def test_incognito_chats_are_never_in_a_backup(config, isolated_home, tmp_path):
+    app = await _app(config)
+    try:
+        kept = await app.store.create_session(title="Normal chat")
+        await app.store.add_message(kept, "user", "plan the Coorg trek")
+        secret = await app.store.create_session(title="Incognito", incognito=True)
+        await app.store.add_message(secret, "user", "a surprise gift for Anika")
+        made = await app.backups.backup_now()
+        assert made["counts"]["chats"] == 1
+        with zipfile.ZipFile(made["path"]) as zf:
+            raw = zf.read("sentient.db")
+        assert b"surprise gift" not in raw and b"Coorg trek" in raw
+    finally:
+        await app.stop()

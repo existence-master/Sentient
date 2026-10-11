@@ -26,6 +26,7 @@ from typing import Any
 from sentient import paths
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import ChatRules
+from sentient.agent.incognito import IncognitoSweeper
 from sentient.agent.loop import Agent
 from sentient.agent.subagents import SubagentManager
 from sentient.backup import BackupService
@@ -115,6 +116,7 @@ class SentientApp:
         self.user_model = UserModelService(self)
         self.dreaming = DreamingService(self)
         self.backups = BackupService(self)
+        self.incognito = IncognitoSweeper(self)  # incognito chats are deleted when closed (#154)
         self._started = False
         self.stop_state: dict[str, Any] = {"stopped": False, "stopped_at": None, "source": None}
         # bumped by every stop_all: work queued before it (e.g. a chat message waiting behind a reply) is dropped
@@ -130,6 +132,7 @@ class SentientApp:
             self.notifications, self.integrations, self.subagents, self.sandbox, self.terminal, self.browser, self.nodes,
             self.tasks, self.proactivity, self.evolution, self.user_model, self.dreaming, self.voice, self.channels,
             self.backups,
+            self.incognito,
         ]
 
     async def notify(self, kind: str, message: str, *, title: str | None = None, payload: dict | None = None) -> dict:
@@ -216,6 +219,18 @@ class SentientApp:
         """Store hook: a snapshot of the data folder before the database changes shape (issue #151)."""
         await self.backups.snapshot(reason, db_path=self.store.path)
 
+    async def delete_chat(self, session_id: str, *, reason: str | None = None) -> None:
+        """Delete a chat: its running replies and helpers are stopped first, so none keeps writing to or working for a
+        chat that is gone (a stopped reply saves what it kept, then goes with the chat)."""
+        try:
+            if self.agent is not None:
+                await self.agent.cancel_session(session_id)
+            await self.subagents.cancel_for_session(session_id)
+        except Exception:
+            log.exception("stopping the work of chat %s failed", session_id)
+        await self.store.delete_session(session_id)
+        self.bus.publish("session.deleted", {"session_id": session_id, **({"reason": reason} if reason else {})})
+
     def tool_extra(self) -> dict[str, Any]:
         return {"app": self, "skills": self.skills, "workspace": self.workspace, "registry": self.registry}
 
@@ -279,6 +294,10 @@ class SentientApp:
                 log.exception("service %s failed to stop", svc.name)
         if self.agent is not None:
             await self.agent.drain(timeout=SHUTDOWN_GRACE_S)
+        try:  # incognito chats are deleted when Sentient closes (#154), once nothing writes to them any more
+            await self.incognito.purge(skip_running=False)
+        except Exception:
+            log.exception("deleting incognito chats at shutdown failed")
         claude_code.kill_all()
         await self.store.close()
         self._started = False

@@ -8,7 +8,7 @@ A backup is one zip file:
 - ``config.yaml``, ``workspace/``, ``skills/``, ``files/`` and ``tls/`` (the devices certificate).
 
 Never inside: keychain secrets (API keys, tokens, sign-ins), ``gateway.token``, logs, the browser profile,
-WhatsApp's link, downloaded voice models, scratch folders and the backups folder itself.
+WhatsApp's link, downloaded voice models, scratch folders, the backups folder itself, and open incognito chats.
 
 Backups go to ``Documents/Sentient Backups`` by default (:func:`default_folder`), outside the data folder.
 
@@ -158,6 +158,26 @@ def database_version(db: Path) -> int:
         con.close()
 
 
+def _drop_incognito(db: Path) -> None:
+    """Incognito chats (#154) are never kept: remove them, and their messages, from the copy with secure delete on."""
+    con = sqlite3.connect(db)
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(sessions)")}
+        if "incognito" not in cols:
+            return
+        con.execute("PRAGMA secure_delete = ON")
+        con.execute("PRAGMA foreign_keys = ON")
+        gone = "SELECT id FROM sessions WHERE incognito = 1"
+        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "subagents" in tables:
+            con.execute(f"DELETE FROM subagents WHERE session_id IN ({gone})")
+        con.execute(f"DELETE FROM messages WHERE session_id IN ({gone})")
+        con.execute("DELETE FROM sessions WHERE incognito = 1")
+        con.commit()
+    finally:
+        con.close()
+
+
 _COUNTS = {
     "chats": "SELECT COUNT(*) FROM sessions",
     "memories": "SELECT COUNT(*) FROM facts WHERE status = 'active'",
@@ -207,6 +227,7 @@ def create_archive(
             schema = None
             if db_path.exists():
                 copy_database(db_path, db_copy)
+                _drop_incognito(db_copy)
                 contents.append(DB_NAME)
                 counts = _counts(db_copy, home)
                 schema = database_version(db_copy)

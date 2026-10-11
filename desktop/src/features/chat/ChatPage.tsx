@@ -1,4 +1,4 @@
-import { IconArrowDown, IconFileUpload, IconMessageOff, IconWorldWww } from '@tabler/icons-react'
+import { IconArrowDown, IconFileUpload, IconMessageOff, IconSpy, IconWorldWww } from '@tabler/icons-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router'
@@ -16,6 +16,7 @@ import { Composer } from './Composer'
 import { RuleProposalCard } from './RuleProposalCard'
 import { takeScreenShare } from './screenShare'
 import { EmptyChat, type Suggestion } from './EmptyChat'
+import { IncognitoBadge, IncognitoIntro } from './Incognito'
 import { useAttachments } from './useAttachments'
 import { UserMessage } from './UserMessage'
 
@@ -23,13 +24,16 @@ export function ChatPage() {
   const { sessionId } = useParams()
   const location = useLocation()
   // `pendingKey`: a message already sent from outside the chat view (push to talk) whose new chat this view shows.
-  const state = location.state as { fresh?: number; prompt?: { text: string; autoSend?: boolean }; pendingKey?: string } | null
+  // `incognito` (or `#/chat?incognito=1`): a new incognito chat (#154).
+  const state = location.state as { fresh?: number; prompt?: { text: string; autoSend?: boolean }; pendingKey?: string; incognito?: boolean } | null
+  const newIncognito = !sessionId && (!!state?.incognito || /(^|[?&])incognito=1\b/.test(location.search))
   return (
     <ChatView
-      key={sessionId ?? `new-${state?.fresh ?? ''}`}
+      key={sessionId ?? `new-${state?.fresh ?? ''}${newIncognito ? '-incognito' : ''}`}
       sessionId={sessionId}
       initialPrompt={sessionId ? undefined : state?.prompt}
       initialPendingKey={sessionId ? undefined : state?.pendingKey}
+      newIncognito={newIncognito}
     />
   )
 }
@@ -37,11 +41,13 @@ export function ChatPage() {
 function ChatView({
   sessionId,
   initialPrompt,
-  initialPendingKey
+  initialPendingKey,
+  newIncognito = false
 }: {
   sessionId?: string
   initialPrompt?: { text: string; autoSend?: boolean }
   initialPendingKey?: string
+  newIncognito?: boolean
 }) {
   const navigate = useNavigate()
   const [pendingKey, setPendingKey] = useState<string | null>(initialPendingKey ?? null)
@@ -69,6 +75,9 @@ function ChatView({
   const assistantName = bootstrap.data?.assistant.name ?? 'Sentient'
   const showThinking = config.data?.chat.show_thinking ?? true
   const session = sessions.data?.find((s) => s.id === sessionId)
+  const knownIncognito = useChat((s) => (sessionId ? !!s.incognito[sessionId] : false))
+  const incognito = newIncognito || knownIncognito || !!session?.incognito || !!liveSession?.request.incognito
+  const usesMemory = config.data?.chat.incognito_uses_memory ?? true
 
   // A brand-new chat navigates to its session once the engine assigns an id.
   useEffect(() => {
@@ -86,10 +95,10 @@ function ChatView({
 
   const onSend = useCallback(
     async (text: string, files: AttachmentView[], model: string | undefined) => {
-      const key = await send(sessionId ?? null, { text, attachments: files, model })
+      const key = await send(sessionId ?? null, { text, attachments: files, model, incognito: !sessionId && newIncognito })
       if (!sessionId) setPendingKey(key)
     },
-    [send, sessionId]
+    [send, sessionId, newIncognito]
   )
 
   const onPick = (s: Pick<Suggestion, 'prompt' | 'autoSend'>) => {
@@ -151,11 +160,17 @@ function ChatView({
       }}
     >
       {!empty && (
-        <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-6">
+        <div
+          className={cn(
+            'flex h-12 shrink-0 items-center gap-3 border-b px-6',
+            incognito ? 'border-incognito/25 bg-incognito/8' : 'border-border'
+          )}
+        >
+          {incognito && <IconSpy size={17} className="shrink-0 text-incognito" aria-hidden />}
           <h2 className="min-w-0 truncate text-sm font-medium text-fg">
-            {session?.title?.trim() || (streaming ? 'New chat' : 'Chat')}
+            {session?.title?.trim() || (incognito ? 'Incognito chat' : streaming ? 'New chat' : 'Chat')}
           </h2>
-          <ChannelBadge channel={session?.channel} withLabel />
+          {incognito ? <IncognitoBadge /> : <ChannelBadge channel={session?.channel} withLabel />}
           <span className="flex-1" />
           {streaming && <span className="text-xs text-fg-subtle">{assistantName} is replying…</span>}
           <HelpersTray sessionId={sessionId} />
@@ -166,7 +181,11 @@ function ChatView({
       {empty ? (
         <div className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 py-10">
           <div className="my-auto w-full max-w-[720px]">
-            <EmptyChat userName={bootstrap.data?.assistant.user_name} onPick={onPick} />
+            {newIncognito ? (
+              <IncognitoIntro usesMemory={usesMemory} />
+            ) : (
+              <EmptyChat userName={bootstrap.data?.assistant.user_name} onPick={onPick} />
+            )}
             <div className="mt-8">
               <Composer
                 draftKey="new"
@@ -220,6 +239,12 @@ function ChatView({
           </Timeline>
           <div className="shrink-0 px-6 pb-4 pt-2">
             <div className="mx-auto w-full max-w-[760px]">
+              {incognito && (
+                <p className="mb-2 flex items-center justify-center gap-1.5 text-xs text-fg-subtle">
+                  <IconSpy size={13} className="text-incognito" aria-hidden />
+                  Incognito: nothing here is remembered, and the chat is deleted when you leave it.
+                </p>
+              )}
               <Composer
                 draftKey={sessionId ?? 'pending'}
                 assistantName={assistantName}

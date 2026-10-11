@@ -113,6 +113,18 @@ class ToolContext:
     untrusted: str = ""
     # web hosts this run (or chat) already loaded; an address on one of them never asks for carrying data (ADR 0018)
     visited: set[str] = field(default_factory=set)
+    # True in an incognito chat (#154): tools that would keep something from it refuse. Tools also check the chat
+    # itself (``store.is_incognito``), so work it starts (a subagent) is covered too.
+    incognito: bool = False
+
+    async def is_incognito(self) -> bool:
+        """True when this run belongs to an incognito chat (#154)."""
+        if self.incognito:
+            return True
+        check = getattr(self.store, "is_incognito", None)
+        if not self.session_id or not callable(check):
+            return False
+        return bool(await check(self.session_id))
 
     @property
     def call_id(self) -> str | None:

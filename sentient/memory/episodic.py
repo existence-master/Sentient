@@ -21,7 +21,7 @@ from sentient.config.schema import SentientConfig
 from sentient.llm.provider import LLMProvider
 from sentient.memory import prompts
 from sentient.memory.vectors import VecTable, pack
-from sentient.store.db import Store, new_id, now_iso
+from sentient.store.db import NOT_INCOGNITO, Store, new_id, now_iso
 
 log = logging.getLogger(__name__)
 
@@ -81,7 +81,8 @@ class EpisodicMemory:
         rows = await self.store.fetchall(
             "SELECT id, session_id, role, content, attachments, created_at FROM messages"
             " WHERE summarized = 0 AND role IN ('user', 'assistant') AND content IS NOT NULL AND content != ''"
-            " AND created_at < ? ORDER BY session_id, created_at, rowid",
+            f" AND created_at < ? AND {NOT_INCOGNITO.format(col='messages.session_id')}"  # never summarized (#154)
+            " ORDER BY session_id, created_at, rowid",
             (cutoff,),
         )
         by_session: dict[str, list[dict]] = {}
@@ -214,7 +215,8 @@ class EpisodicMemory:
             "SELECT m.session_id, m.role, m.content, m.created_at, s.title FROM messages m"
             " LEFT JOIN sessions s ON s.id = m.session_id"
             " WHERE m.created_at >= ? AND m.created_at <= ? AND m.role IN ('user', 'assistant')"
-            " AND m.content IS NOT NULL AND m.content != '' ORDER BY m.created_at LIMIT ?",
+            " AND m.content IS NOT NULL AND m.content != ''"
+            f" AND {NOT_INCOGNITO.format(col='m.session_id')} ORDER BY m.created_at LIMIT ?",
             (s, e, limit),
         )
         return [dict(r) for r in rows]
