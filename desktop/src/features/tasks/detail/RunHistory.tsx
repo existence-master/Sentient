@@ -30,10 +30,11 @@ import { getBridge } from '@/lib/bridge'
 import type { MemorySource, Run, Task, TaskRunResult } from '@/lib/types'
 import { cn, formatDuration, parseDate, relativeTime, truncate } from '@/lib/utils'
 import { useNow } from '../hooks'
-import { retryOf, runDurationMs } from '../meta'
+import { retryOf, runDurationMs, scriptOf } from '../meta'
 import { LiveDot, RunStatusBadge, SectionHeading } from '../parts'
 import { formatInZone, sourceLabel } from '../schedule'
 import { ToolIcon, toolIdentity, useToolNames } from '../tools'
+import { CheckHistory } from './CheckHistory'
 import { RunLog } from './RunLog'
 import { RunQuestion } from './RunQuestion'
 
@@ -51,6 +52,9 @@ export function RunHistory({
   cancelling: boolean
 }) {
   const runs = [...task.runs].reverse()
+  const script = scriptOf(task)
+  const checks = script?.checks?.length ? <CheckHistory script={script} tz={tz} /> : null
+  if (!runs.length && checks) return checks
   if (!runs.length) {
     return (
       <EmptyState
@@ -62,23 +66,26 @@ export function RunHistory({
     )
   }
   return (
-    <section className="space-y-2.5">
-      <SectionHeading icon={<IconHistory />} title="Runs" count={runs.length} description="Newest first" />
-      <div className="space-y-2">
-        {runs.map((run, i) => (
-          <RunCard
-            key={run.run_id}
-            task={task}
-            run={run}
-            number={runs.length - i}
-            tz={tz}
-            defaultOpen={focusRunId ? focusRunId === run.run_id : i === 0}
-            onCancel={() => onCancelRun(run.run_id)}
-            cancelling={cancelling}
-          />
-        ))}
-      </div>
-    </section>
+    <div className="space-y-6">
+      {checks}
+      <section className="space-y-2.5">
+        <SectionHeading icon={<IconHistory />} title="Runs" count={runs.length} description="Newest first" />
+        <div className="space-y-2">
+          {runs.map((run, i) => (
+            <RunCard
+              key={run.run_id}
+              task={task}
+              run={run}
+              number={runs.length - i}
+              tz={tz}
+              defaultOpen={focusRunId ? focusRunId === run.run_id : i === 0}
+              onCancel={() => onCancelRun(run.run_id)}
+              cancelling={cancelling}
+            />
+          ))}
+        </div>
+      </section>
+    </div>
   )
 }
 

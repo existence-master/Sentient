@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-09
+- **Amended by:** [ADR 0023](0023-mark-outside-content-in-prompts.md) (the same tools' results reach the model marked as outside content)
 
 ## Context
 

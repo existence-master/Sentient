@@ -259,6 +259,8 @@ async def _executor_system_prompt(
         memories=[f["content"] for f in facts],
         tool_map=tool_map,
         earlier=earlier,
+        mark_outside_content=app.config.chat.mark_outside_content,
+        trigger_source=_trigger_source(app, task, run),
     ), facts, kickoff
 
 
@@ -370,7 +372,7 @@ async def execute_single(
                 checkpoint = await _run_approved_call(
                     svc, task_id, run_id, ctx, checkpoint, model=task.get("model") or None
                 )
-                messages = history_to_openai(checkpoint)
+                messages = app.agent.mark_outside_messages(history_to_openai(checkpoint))
                 if not answered and not is_first_retry_attempt(run):  # a retry's checkpoint already has its note
                     messages.append({"role": "user", "content": RESUME_NOTE})
             else:

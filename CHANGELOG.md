@@ -10,6 +10,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
   three runs found, sent or decided, plus the task's own notes, so it tells you only what is new instead of repeating
   yesterday's news. Runs keep those notes up to date themselves; see, edit or clear them under **Notes between runs**
   on the task.
+- **Watches that only speak up when something important changed:** a check script can now **Tell me when something
+  important changes**. Each check is compared with the last one without any AI, so an unchanged page costs nothing
+  and stays silent; only when something changed does your fast AI model decide whether it matters, and then you get
+  one notification that says what changed. Every watch also keeps a quiet list of its recent checks ("Checked,
+  nothing new", "Something changed. You were told") under Runs.
+- **Fuzzy times for repeating tasks:** a daily or weekly task can run "in the morning", "afternoon", "evening" or "at
+  night" instead of at an exact time; Sentient picks a time inside that part of the day. Say it in your request
+  ("every weekday morning") or pick it in the schedule editor.
 - **Sources under answers:** when Sentient used the web, your email, a file or a connected app to answer, small
   chips under the reply show what it used: the page, the email's subject, the file or the app, next to the memories
   it had in mind. Click a chip to see the part Sentient read and open the page, email or file. Answers that used
@@ -205,6 +213,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- Messages and memories saved at the same moment now always keep their order, and the daily upkeep of MEMORY.md and
+  USER.md no longer misses a memory saved while it was reading. Summarizing a long chat no longer skips messages
+  saved at the same moment as the last summary.
 - When a cloud model says no, chat and tasks now say why in a plain sentence and what to do, instead of showing the
   provider's raw reply. For example: "OpenRouter's free models have reached today's limit. Add credits on
   openrouter.ai, wait until tomorrow, or pick another model in Settings > Models." This covers rate limits, an
@@ -258,6 +269,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Edge's downloads hub no longer replaces the active page or appears as a browser tab when a download starts.
 
 ### Security
+- Text from web pages, emails, messages and other apps now reaches the AI clearly marked as outside content, with a
+  standing rule to treat it as information and never follow instructions hidden in it. A page can't fake the end of
+  the marked part. Your own messages are not marked. To compare, turn it off in Settings > General > Conversations
+  ("Mark outside content").
 - Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before
   sending, posting, inviting people to an event, typing into a web page, running code or opening an address that
   could carry your data to a new site, even for apps set to Allow and with approvals off. The
