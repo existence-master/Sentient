@@ -14,6 +14,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
   backup. Passwords, API keys and sign-ins stay in your computer's keychain and are never in a backup; after a restore
   Sentient lists the ones to sign in to again. Sentient also takes a snapshot on its own before it updates its
   database, before a Hermes import and before a restore, keeps the last five, and any of them can be restored.
+- **Sources under answers:** when Sentient used the web, your email, a file or a connected app to answer, small
+  chips under the reply show what it used: the page, the email's subject, the file or the app, next to the memories
+  it had in mind. Click a chip to see the part Sentient read and open the page, email or file. Answers that used
+  nothing show no chips.
 - **Incognito chats:** start one from the button next to New chat, the command palette or Ctrl+Shift+N
   (Cmd+Shift+N on a Mac). Nothing you say in it is remembered: Sentient saves no memories from it, learns no skills
   from it, leaves it out of what it learns about you and of chat search, and deletes it when you leave it or close

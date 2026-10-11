@@ -27,7 +27,7 @@ _PKG_ROOT = Path(__file__).resolve().parents[1]
 # Feature packages own their tables. Each file must be idempotent. Order matters for foreign keys.
 # Bump when a change to a schema.sql or an ensure_column needs existing databases updated. Opening a database
 # with another version takes a snapshot first (issue #151); so does the first column added to an existing one.
-SCHEMA_VERSION = 2  # 2: sessions.incognito (#154)
+SCHEMA_VERSION = 3  # 2: sessions.incognito (#154); 3: messages.sources (#290)
 PACKAGE_SCHEMAS = ["tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox"]
 
 
@@ -109,6 +109,7 @@ class Store:
         await self.ensure_column("messages", "attachments", "TEXT")
         await self.ensure_column("messages", "interjection", "INTEGER NOT NULL DEFAULT 0")
         await self.ensure_column("messages", "memory_sources", "TEXT")
+        await self.ensure_column("messages", "sources", "TEXT")
         await self.ensure_column("facts", "status", "TEXT NOT NULL DEFAULT 'active'")
         await self.ensure_column("facts", "review", "TEXT")
         await self.ensure_column("summaries", "untrusted", "TEXT")
@@ -222,11 +223,12 @@ class Store:
         attachments: list[str] | None = None,
         interjection: bool = False,
         memory_sources: list[dict] | None = None,
+        sources: list[dict] | None = None,
     ) -> str:
         mid = new_id()
         await self.execute(
             "INSERT INTO messages(id, session_id, role, content, tool_calls, tool_call_id, name, thinking, attachments,"
-            " interjection, memory_sources, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            " interjection, memory_sources, sources, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 mid,
                 session_id,
@@ -239,6 +241,7 @@ class Store:
                 json.dumps(attachments) if attachments else None,
                 int(bool(interjection)),
                 json.dumps(memory_sources, ensure_ascii=False) if memory_sources else None,
+                json.dumps(sources, ensure_ascii=False) if sources else None,
                 now_iso(),
             ),
         )
@@ -257,6 +260,7 @@ class Store:
             d["attachments"] = json.loads(d["attachments"]) if d.get("attachments") else []
             d["interjection"] = bool(d.get("interjection"))
             d["memory_sources"] = json.loads(d["memory_sources"]) if d.get("memory_sources") else []
+            d["sources"] = json.loads(d["sources"]) if d.get("sources") else []
             out.append(d)
         return out
 
