@@ -32,12 +32,13 @@ MAX_CHECKS = 30  # the history keeps this many entries; a row of quiet checks is
 QUIET_OUTCOMES = ("nothing_new", "quiet")  # repeats of these fold into one entry with a count
 DIFF_CHARS = 3000  # the judge sees at most this much of the change
 JUDGE_PROMPT = (
-    "You check a change in something the user asked Sentient to watch, and decide whether it is worth telling them.\n"
-    "Worth telling: something new was added or removed, or a price, date, status or number the user cares about "
+    "You check a change in something the user asked Sentient to watch. First say what changed, then decide whether "
+    "the user would want a notification about it.\n"
+    "Worth telling (true): an item was added or removed, or a price, date, status or result the user asked about "
     "changed.\n"
-    "Not worth telling: only a time, a visitor counter, an ad, the order of items, spacing or wording that means the "
-    "same.\n"
-    'Reply with JSON only: {"noteworthy": true or false, "change": "one short sentence naming what changed"}'
+    "Not worth telling (false): only a counter changed (page views, visitors, likes, comments), a clock or "
+    "\"last updated\" time, an ad, the order of items, spacing, or the same words said differently.\n"
+    'Reply with JSON only: {"change": "one short sentence naming what changed", "noteworthy": true or false}'
 )
 
 

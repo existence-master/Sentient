@@ -1754,7 +1754,8 @@ class TaskService(Service):
     async def _judge_change(self, task: dict, previous: Any, value: Any) -> tuple[bool, str]:
         """Ask the ``fast`` model whether a change is worth telling the user: ``(noteworthy, change)``. If the model
         gives no usable answer, the change is reported anyway: a missed change is worse than one extra message."""
-        goal = " ".join(str(x) for x in (task.get("name"), task.get("description")) if x)
+        parts = [str(x).strip() for x in (task.get("name"), task.get("description"), task.get("original_prompt")) if x]
+        goal = ". ".join(dict.fromkeys(p for p in parts if p))  # what the user asked for, in their words too
         try:
             data = await complete_json_object(
                 self.app.llm, "fast", scripts.judge_messages(goal, previous, value), keys=("noteworthy",)
