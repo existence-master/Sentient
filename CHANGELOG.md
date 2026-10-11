@@ -201,6 +201,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- Messages and memories saved at the same moment now always keep their order, and the daily upkeep of MEMORY.md and
+  USER.md no longer misses a memory saved while it was reading. Summarizing a long chat no longer skips messages
+  saved at the same moment as the last summary.
 - When a cloud model says no, chat and tasks now say why in a plain sentence and what to do, instead of showing the
   provider's raw reply. For example: "OpenRouter's free models have reached today's limit. Add credits on
   openrouter.ai, wait until tomorrow, or pick another model in Settings > Models." This covers rate limits, an
