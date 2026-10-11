@@ -44,6 +44,48 @@ def new_id() -> str:
     return uuid.uuid4().hex
 
 
+# ---------------------------------------------------------------- watermarks (#236)
+# Rows saved in the same clock tick share a timestamp (Windows' clock moves about every 15.6 ms), so "newer than the
+# last timestamp seen" skips a row saved in that tick after the read. A watermark keeps the newest timestamp read and
+# the ids already read at it, as JSON: {"at": "<iso>", "ids": [...]}. A plain timestamp (from an older build, or a
+# starting point) means "strictly newer than this".
+
+
+def _read_mark(mark: str | None) -> tuple[str, list]:
+    if not mark:
+        return "", []
+    try:
+        data = json.loads(mark)
+    except ValueError:
+        return mark, []
+    if isinstance(data, dict):
+        return str(data.get("at") or ""), list(data.get("ids") or [])
+    return mark, []
+
+
+def after_watermark(mark: str | None, ts_col: str, id_col: str) -> tuple[str, list]:
+    """SQL condition and parameters for rows after ``mark``: newer than its timestamp, or at it and not read yet."""
+    at, ids = _read_mark(mark)
+    if not ids:
+        return f"{ts_col} > ?", [at]
+    marks = ",".join("?" * len(ids))
+    return f"({ts_col} > ? OR ({ts_col} = ? AND {id_col} NOT IN ({marks})))", [at, at, *ids]
+
+
+def next_watermark(mark: str | None, rows: Iterable[Any], ts_key: str, id_key: str) -> str | None:
+    """The watermark after reading ``rows`` (each with ``ts_key`` and ``id_key``): their newest timestamp and the ids
+    read at it, kept together with ``mark``'s ids when the timestamp did not move. ``mark`` itself when no rows."""
+    rows = list(rows)
+    if not rows:
+        return mark
+    at = max(str(r[ts_key]) for r in rows)
+    ids = [r[id_key] for r in rows if str(r[ts_key]) == at]
+    old_at, old_ids = _read_mark(mark)
+    if old_at == at:
+        ids = [*old_ids, *(i for i in ids if i not in old_ids)]
+    return json.dumps({"at": at, "ids": ids})
+
+
 async def _load_vec(db: aiosqlite.Connection) -> bool:
     try:
         import sqlite_vec
