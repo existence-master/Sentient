@@ -1154,7 +1154,7 @@ class FactMemory:
         """v2 create_memory_graph: nodes plus links where cosine similarity >= threshold."""
         rows = await self.store.fetchall(
             f"SELECT {MEMORY_COLUMNS} FROM facts WHERE {ACTIVE} AND (expires_at IS NULL OR expires_at > ?)"
-            " ORDER BY created_at DESC LIMIT ?",
+            " ORDER BY created_at DESC, id DESC LIMIT ?",
             (now_iso(), max_nodes),
         )
         nodes = []

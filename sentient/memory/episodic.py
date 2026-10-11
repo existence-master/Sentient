@@ -216,7 +216,7 @@ class EpisodicMemory:
             " LEFT JOIN sessions s ON s.id = m.session_id"
             " WHERE m.created_at >= ? AND m.created_at <= ? AND m.role IN ('user', 'assistant')"
             " AND m.content IS NOT NULL AND m.content != ''"
-            f" AND {NOT_INCOGNITO.format(col='m.session_id')} ORDER BY m.created_at LIMIT ?",
+            f" AND {NOT_INCOGNITO.format(col='m.session_id')} ORDER BY m.created_at, m.rowid LIMIT ?",
             (s, e, limit),
         )
         return [dict(r) for r in rows]
