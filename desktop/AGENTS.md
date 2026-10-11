@@ -35,5 +35,7 @@ node scripts/smoke.mjs chat shot.png 1440x900   # launch the built app, capture 
 
 Point `SENTIENT_HOME` at an empty folder and run the seed scripts with the engine's Python in this order, then
 capture with the same `SENTIENT_HOME`: `seed-memory-skills.py --reset`, `seed-chats-devices-channels.py --add`,
-`seed-tasks.py`, `seed-integrations-notifications.py --keep-db`, `seed-automations-usermodel.py`. They all use one fictional persona (Maya Rao). In Git Bash write routes without a leading slash. When several people or agents build at once,
+`seed-tasks.py`, `seed-integrations-notifications.py --keep-db`, `seed-automations-usermodel.py`. They all use one fictional persona (Maya Rao).
+The seeders and `smoke.mjs` pause the home's tasks and turn off its messaging deliveries unless given `--keep-live`
+(`scripts/seed_safety.py`), and a test home has its own keychain namespace, so a demo never reaches a real chat. In Git Bash write routes without a leading slash. When several people or agents build at once,
 take `desktop/.build.lock` before `npm run build` and remove it after, because `out/` is shared.

@@ -22,6 +22,8 @@ import zlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import seed_safety  # next to this script
+
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
@@ -622,6 +624,7 @@ def main() -> None:
     ap.add_argument("--reset", action="store_true", help=f"wipe the home first (only if it contains {MARKER})")
     ap.add_argument("--theme", choices=["dark", "light", "system"], default="dark")
     ap.add_argument("--theme-only", action="store_true", help="only change ui.theme in an already seeded home")
+    ap.add_argument(seed_safety.KEEP_LIVE_FLAG, action="store_true", help=seed_safety.KEEP_LIVE_HELP)
     args = ap.parse_args()
     if not args.home:
         ap.error("--home or SENTIENT_HOME is required")
@@ -639,6 +642,8 @@ def main() -> None:
     (home / MARKER).write_text("created by desktop/scripts/seed-memory-skills.py\n", encoding="utf-8")
     os.environ["SENTIENT_HOME"] = str(home)
     asyncio.run(seed(home, args.theme))
+    if not args.keep_live:
+        seed_safety.announce(seed_safety.quiet(home))
 
 
 if __name__ == "__main__":

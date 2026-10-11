@@ -432,6 +432,15 @@ accept or loosen a rule.
   this way has it as its `error` (instead of "Sorry, the AI model is unavailable right now...") and a task route
   answers `503` with it as `detail`. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
   and vision). Stop everything kills every running Claude Code process tree.
+- **Keychain namespaces (#302).** Every secret (API keys, integration tokens, channel bot tokens, MCP headers and
+  sign-ins, the ChatGPT sign-in) is an OS keychain entry under one service per data folder. The default data folder
+  (`~/.sentient`, used when `SENTIENT_HOME` is unset or points at it) uses the service `sentient`, the entries every
+  earlier version wrote, so nothing moves. Any other `SENTIENT_HOME` uses `sentient-<first 12 hex of the SHA-256 of
+  its resolved, case-folded path>` and can't see the default folder's entries. `SENTIENT_KEYCHAIN_NAMESPACE`
+  overrides it: exactly `default` (any case) uses `sentient`; any other value gives `sentient-<word>` (lower case,
+  other characters become `-`; a value left empty by that, or spelled like `default!`, gets `sentient-x<hash>`), so
+  only the word `default` ever shares the default folder's entries. Entry names, and the `<name>:1`, `<name>:2`... parts of long values, are the same in every namespace. The
+  engine logs the service it uses at start (never a value). Every route below reads and writes this namespace only.
 - `GET /api/secrets` → `[{name, set: bool, source: "keychain"|"env"|null, kind: "provider"|"integration"}]` for every provider + integration secret name
 - `PUT /api/secrets/{name}` `{value}` → `{ok}` (stored in OS keychain; never echoed back). `chatgpt` → 400: it is a
   sign-in, not a key.
@@ -851,7 +860,7 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   - `status: "needs_sign_in"`: the server answered 401, or `auth` is `oauth` with no stored sign-in, or the stored sign-in expired and could not be refreshed. `error` says what to do: `"This server asks you to sign in."` (none), `"The server didn't accept the saved headers. Change their values with the key button on the server."` (headers), `"Sign in to use this server."` (oauth). The engine retries a server in this state every 5 minutes, and at once after a sign-in or a test.
 - `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, headers?, auth?, enabled?, access?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input; `access` is saved before the server starts, and left out keeps the current choice)
   - `headers`: `{name: value}`; values go to the keychain. `auth` defaults to `headers` when headers are given, else `none`. 400 when `auth` is `headers` without headers, a header name or value is invalid, or a stdio server has headers or `auth` other than `none`.
-  - Headers not given are deleted. The keychain is shared by every Sentient setup on the computer, so a stored sign-in
+  - Headers not given are deleted. The keychain is shared by every Sentient setup in the same keychain namespace (§3), so a stored sign-in
     (tokens and client registration) records the server URL it was made for (`server_url`) and is kept when a
     server with the same name and URL is added (in this setup or another), then used. It is dropped when the URL
     differs, and an older record without `server_url` is dropped only when this setup had the server at another
@@ -2171,7 +2180,7 @@ backup API while the engine runs, never a raw copy of the live WAL file), `confi
 `files/` and `tls/` (the devices certificate, so paired devices keep trusting it). Never inside: keychain secrets (API
 keys, tokens, sign-ins), `gateway.token`, `logs/`, the browser profile, WhatsApp's link, downloaded voice models,
 scratch folders, the backups folder itself and open incognito chats (removed from the copy with secure delete). A backup is complete or not made: if a file can't be read (open in another program), the backup fails with a plain
-`detail` naming it, since a restore replaces whole folders. The manifest lists the sign-ins that were in the keychain (`sign_ins`)
+`detail` naming it, since a restore replaces whole folders. The manifest lists the sign-ins that were in this data folder's keychain namespace (§3, `sign_ins`)
 so the window can say which to redo. Names: `sentient-backup-YYYYMMDD-HHMMSS.zip` (`-auto` for scheduled ones) and
 `sentient-snapshot-YYYYMMDD-HHMMSS.zip`.
 
