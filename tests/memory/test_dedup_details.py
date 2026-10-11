@@ -5,15 +5,15 @@ from tests.conftest import FakeProvider
 
 
 def test_new_details_finds_places_names_numbers():
-    assert new_details("Sarthak lives in Mumbai.", "Sarthak lives in Pune.") == {"Mumbai"}
+    assert new_details("Maya lives in Mumbai.", "Maya lives in Pune.") == {"Mumbai"}
     assert "Berlin" in new_details(
-        "Sarthak's sister Riya is moving to Berlin next month for her masters.",
-        "Sarthak's sister Riya is pursuing her masters.",
+        "Maya's sister Riya is moving to Berlin next month for her masters.",
+        "Maya's sister Riya is pursuing her masters.",
     )
-    assert "10" in new_details("Sarthak runs 10k every Sunday.", "Sarthak runs every Sunday.")
-    assert new_details("Sarthak runs every Sunday.", "Sarthak runs every Sunday.") == set()
+    assert "10" in new_details("Maya runs 10k every Sunday.", "Maya runs every Sunday.")
+    assert new_details("Maya runs every Sunday.", "Maya runs every Sunday.") == set()
     # possessives of known words and the sentence-initial capital are not "new"
-    assert new_details("Sarthak's sister lives in Pune.", "Sarthak has a sister who lives in Pune.") == set()
+    assert new_details("Maya's sister lives in Pune.", "Maya has a sister who lives in Pune.") == set()
 
 
 def test_duplicate_threshold_default_is_conservative():
@@ -26,7 +26,7 @@ async def test_model_skip_overruled_when_new_fact_adds_detail(config, isolated_h
         config.memory.duplicate_similarity = 0.999
         llm = FakeProvider()
         mem = FactMemory(store, llm, config)
-        first = await mem.remember("Sarthak's sister Riya is pursuing her masters.", use_llm=False)
+        first = await mem.remember("Maya's sister Riya is pursuing her masters.", use_llm=False)
         assert first["action"] == "ADD"
 
         llm.json_replies.extend(
@@ -38,14 +38,14 @@ async def test_model_skip_overruled_when_new_fact_adds_detail(config, isolated_h
             ]
         )
         second = await mem.remember(
-            "Sarthak's sister Riya is moving to Berlin next month for her masters.", use_llm=True
+            "Maya's sister Riya is moving to Berlin next month for her masters.", use_llm=True
         )
         stored = [f["content"] for f in await mem.list_facts()]
         assert second["action"] == "ADD"
         assert any("Berlin" in f for f in stored)
 
         llm.json_replies.append({"action": "SKIP", "fact_id": first["id"], "content": None, "analysis": None})
-        third = await mem.remember("Sarthak's sister Riya is pursuing her masters now.", use_llm=True)
+        third = await mem.remember("Maya's sister Riya is pursuing her masters now.", use_llm=True)
         assert third["action"] == "SKIP"
     finally:
         await store.close()

@@ -12,7 +12,7 @@ from tests.proactivity.conftest import ACTIONABLE, MEETING_EMAIL, script_pipelin
 
 
 def test_pre_filter():
-    assert event_pre_filter(MEETING_EMAIL, "gmail", "sarthak@example.com")
+    assert event_pre_filter(MEETING_EMAIL, "gmail", "maya@example.com")
     assert not event_pre_filter({**MEETING_EMAIL, "labels": ["CATEGORY_PROMOTIONS"]}, "gmail")
     assert not event_pre_filter({**MEETING_EMAIL, "subject": "Automatic reply: away"}, "gmail")
     assert not event_pre_filter({**MEETING_EMAIL, "headers": {"List-Unsubscribe": "<x>"}}, "gmail")
@@ -21,15 +21,15 @@ def test_pre_filter():
     assert not event_pre_filter({**MEETING_EMAIL, "sender_email": "no-reply@shop.com"}, "gmail")
     assert not event_pre_filter({**MEETING_EMAIL, "subject": "Big sale this weekend"}, "gmail")
     assert event_pre_filter({**MEETING_EMAIL, "subject": "Salesforce renewal questions"}, "gmail")
-    assert not event_pre_filter({**MEETING_EMAIL, "sender_email": "sarthak@example.com"}, "gmail", "sarthak@example.com")
+    assert not event_pre_filter({**MEETING_EMAIL, "sender_email": "maya@example.com"}, "gmail", "maya@example.com")
     cal = {"id": "e1", "summary": "Design review", "status": "confirmed", "organizer_email": "jane@acme.com",
-           "attendees": [{"email": "sarthak@example.com", "responseStatus": "needsAction"}]}
-    assert event_pre_filter(cal, "gcalendar", "sarthak@example.com")
+           "attendees": [{"email": "maya@example.com", "responseStatus": "needsAction"}]}
+    assert event_pre_filter(cal, "gcalendar", "maya@example.com")
     assert not event_pre_filter({**cal, "status": "cancelled"}, "gcalendar")
     assert not event_pre_filter({**cal, "summary": "Focus time"}, "gcalendar")
-    assert not event_pre_filter({**cal, "organizer_email": "sarthak@example.com"}, "gcalendar", "sarthak@example.com")
+    assert not event_pre_filter({**cal, "organizer_email": "maya@example.com"}, "gcalendar", "maya@example.com")
     assert not event_pre_filter(
-        {**cal, "attendees": [{"email": "sarthak@example.com", "responseStatus": "declined"}]}, "gcalendar", "sarthak@example.com"
+        {**cal, "attendees": [{"email": "maya@example.com", "responseStatus": "declined"}]}, "gcalendar", "maya@example.com"
     )
 
 
@@ -241,7 +241,7 @@ async def test_codes_and_reset_links_never_reach_the_proactive_prompts(app):
     script_pipeline(llm, {"actionable": False})
     item = {**MEETING_EMAIL, "id": "msg-otp",
             "snippet": "The login code for the shared account is 482913",
-            "body": "Hi Sarthak, the login code for the shared account is 482913. If it fails, reset it at "
+            "body": "Hi Maya, the login code for the shared account is 482913. If it fails, reset it at "
                     "https://acme.example/reset?token=abcDEF1234567890xyz and update the launch plan. Jane"}
     await app.proactivity.process_event("gmail", "new_email", item)
     prompts_seen = " ".join(str(m["content"]) for c in llm.calls for m in c["messages"])

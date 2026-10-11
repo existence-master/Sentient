@@ -97,7 +97,7 @@ Everything the renderer needs on launch.
 {
   "version": "3.0.0a0",
   "home": "C:\\Users\\me\\.sentient",
-  "assistant": {"name": "Sentient", "user_name": "Sarthak", "timezone": "auto", "location": "", "language": "en", "onboarding_complete": true},
+  "assistant": {"name": "Sentient", "user_name": "Maya", "timezone": "auto", "location": "", "language": "en", "onboarding_complete": true},
   "models": {"primary": "ollama_chat/qwen3:8b", "fast": "...", "planner": null, "executor": null, "embedding": "...", "vision": null, "voice": null},
   "memory_enabled": true,
   "unread_notifications": 3,
@@ -111,7 +111,7 @@ Everything the renderer needs on launch.
 ### Onboarding
 `POST /api/onboarding`
 ```json
-{"user_name": "Sarthak", "assistant_name": "Sentient", "timezone": "Asia/Kolkata", "location": "Pune, India",
+{"user_name": "Maya", "assistant_name": "Sentient", "timezone": "Asia/Kolkata", "location": "Pune, India",
  "professional_context": "...", "personal_context": "...", "persona": "friendly|professional|concise|custom",
  "daily_brief": false}
 ```
@@ -1721,7 +1721,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 - Schedule: once per local day (assistant timezone) at or after `dreaming.time`, only when there was no chat turn or user
   message for `dreaming.require_idle_minutes`. Steps: merge near-duplicates (similarity ≥ `merge_similarity` and word
   overlap ≥ `merge_min_overlap`, never facts whose names/places/numbers conflict; the kept fact keeps its id), settle
-  contradictions: facts are paired when they are about the same subject (name, possessive relation like "Sarthak's sister
+  contradictions: facts are paired when they are about the same subject (name, possessive relation like "Maya's sister
   Riya", or the user as "I"/"the user") and share an attribute family or differ in names/places/numbers or negation;
   place, job, relationship and diet pairs are always checked, broader families (routine, ownership, health) need
   similarity ≥ `contradiction_similarity`; the model confirms and names the current fact (the newer one wins unless the

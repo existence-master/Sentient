@@ -40,8 +40,8 @@ async def test_preview_counts_and_what_will_happen(app, hermes_home, opened_secr
     assert ("fact", "The project lives at ~/code/myapi and uses Axum + SQLx. Tests run with cargo nextest.", "import") in texts
     # a bare § inside an entry is text, not a separator
     assert any("§ sign marks sections" in t for _, t, _ in texts)
-    assert ("insight", "Sarthak prefers concise answers without bullet points", "import") in texts
-    assert ("insight", "Sarthak works mostly in the evenings", "import") in texts
+    assert ("insight", "Maya prefers concise answers without bullet points", "import") in texts
+    assert ("insight", "Maya works mostly in the evenings", "import") in texts
     assert [i["note"] for i in plan["memory"] if i["action"] == "skip"] == ["It's in the file twice."]
 
     assert plan["persona"]["action"] == "import"
@@ -106,7 +106,7 @@ async def test_memory_entries_wait_for_review_with_source(app, hermes_home):
     assert {(i["kind"], i["from"]) for i in held} == {("fact", "Hermes"), ("insight", "Hermes")}
     assert "This machine runs Ubuntu 22.04 with Docker installed" in {i["text"] for i in held}
     assert {i["text"] for i in held if i["kind"] == "insight"} == {
-        "Sarthak prefers concise answers without bullet points", "Sarthak works mostly in the evenings",
+        "Maya prefers concise answers without bullet points", "Maya works mostly in the evenings",
     }
     assert app.fake.calls == []  # no model calls, only embeddings
 

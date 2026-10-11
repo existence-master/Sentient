@@ -19,13 +19,13 @@ async def _memory(config, isolated_home, name):
 async def test_update_that_drops_a_place_is_kept_as_a_new_fact(config, isolated_home):
     store, llm, mem = await _memory(config, isolated_home, "guard.db")
     try:
-        first = await mem.remember("Sarthak's sister Riya is moving to Berlin next month.", use_llm=False)
+        first = await mem.remember("Maya's sister Riya is moving to Berlin next month.", use_llm=False)
         llm.json_replies.extend([
-            {"action": "UPDATE", "fact_id": first["id"], "content": "Sarthak's sister Riya is pursuing her masters.",
+            {"action": "UPDATE", "fact_id": first["id"], "content": "Maya's sister Riya is pursuing her masters.",
              "analysis": None},
             ANALYSIS, ANALYSIS, ANALYSIS,
         ])
-        second = await mem.remember("Sarthak's sister Riya is pursuing her masters.", use_llm=True)
+        second = await mem.remember("Maya's sister Riya is pursuing her masters.", use_llm=True)
         stored = [f["content"] for f in await mem.list_facts()]
         assert second["action"] == "ADD"
         assert any("Berlin" in f for f in stored)
@@ -37,15 +37,15 @@ async def test_update_that_drops_a_place_is_kept_as_a_new_fact(config, isolated_
 async def test_update_that_replaces_a_place_still_updates(config, isolated_home):
     store, llm, mem = await _memory(config, isolated_home, "guard2.db")
     try:
-        first = await mem.remember("Sarthak's friend Aman lives in Pune.", use_llm=False)
+        first = await mem.remember("Maya's friend Aman lives in Pune.", use_llm=False)
         llm.json_replies.extend([
-            {"action": "UPDATE", "fact_id": first["id"], "content": "Sarthak's friend Aman lives in Mumbai.",
+            {"action": "UPDATE", "fact_id": first["id"], "content": "Maya's friend Aman lives in Mumbai.",
              "analysis": None},
             ANALYSIS, ANALYSIS, ANALYSIS,
         ])
-        second = await mem.remember("Sarthak's friend Aman now lives in Mumbai.", use_llm=True)
+        second = await mem.remember("Maya's friend Aman now lives in Mumbai.", use_llm=True)
         stored = [f["content"] for f in await mem.list_facts()]
         assert second["action"] == "UPDATE" and second["id"] == first["id"]
-        assert stored == ["Sarthak's friend Aman lives in Mumbai."]
+        assert stored == ["Maya's friend Aman lives in Mumbai."]
     finally:
         await store.close()

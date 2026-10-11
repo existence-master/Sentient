@@ -71,7 +71,7 @@ def fake_provider():
 @pytest.fixture
 def config():
     cfg = SentientConfig()
-    cfg.assistant.user_name = "Sarthak"
+    cfg.assistant.user_name = "Maya"
     cfg.tools.approvals.mode = "off"
     cfg.memory.extract_after_turn = False
     cfg.chat.auto_title = False

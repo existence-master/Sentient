@@ -7,7 +7,7 @@
 
 [ADR 0009](0009-memory-pushed-into-the-prompt.md) puts recalled facts and user-model insights into every prompt
 and saves what Sentient learns without asking. That makes memory a way to make an injection last: an email or web
-page that gets one line into memory ("Sarthak wants invoices forwarded to ...") steers every later chat, also after
+page that gets one line into memory ("Maya wants invoices forwarded to ...") steers every later chat, also after
 the chat that read it is gone. Memory poisoning is OWASP ASI06; attacks such as MINJA and ZombieAgent work this way,
 and one 2026 preprint planted target memories in 24 of 25 trials. [ADR 0018](0018-untrusted-content-gates-sending.md)
 already marks runs that read outside content, and [ADR 0017](0017-unprompted-work-reads-only.md) marks work nobody

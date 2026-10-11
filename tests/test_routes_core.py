@@ -25,7 +25,7 @@ def test_bootstrap_and_onboarding(client):
     assert b["assistant"]["onboarding_complete"] is False
     r = client.post(
         "/api/onboarding",
-        json={"user_name": "Sarthak", "assistant_name": "Nova", "timezone": "Asia/Kolkata",
+        json={"user_name": "Maya", "assistant_name": "Nova", "timezone": "Asia/Kolkata",
               "location": "Pune, India", "professional_context": "Founder of Existence", "persona": "professional"},
     )
     assert r.json() == {"ok": True}
