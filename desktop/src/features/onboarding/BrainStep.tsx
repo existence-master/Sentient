@@ -1,15 +1,16 @@
 import { IconAlertTriangle, IconCircleCheck, IconCloud, IconCpu, IconDeviceDesktop, IconDownload, IconExternalLink, IconEye, IconEyeOff, IconKey, IconRefresh } from '@tabler/icons-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Card, Field, IconButton, Input, ProgressBar, SegmentedControl, Skeleton } from '@/components/ui'
 import { InstructionsGuide } from '@/features/integrations/InstructionsGuide'
-import { CLAUDE_PLAN_STEPS, NOUS_STEPS, OpenRouterConnect } from '@/features/models/ConnectPlans'
+import { ChatGPTMark } from '@/features/models/ChatGPTBrand'
+import { CLAUDE_PLAN_STEPS, ChatGPTConnect, chatgptPlanModels, NOUS_STEPS, OpenRouterConnect } from '@/features/models/ConnectPlans'
 import { ModelCheckup } from '@/features/models/ModelCheckup'
 import { ModelPicker } from '@/features/models/ModelPicker'
 import { ModelTest } from '@/features/models/ModelTest'
 import { OllamaPull } from '@/features/models/OllamaPull'
 import { useConfig } from '@/hooks/core'
-import { useHardware, useLocalModels, useOllamaPull, useProviders, useSetSecret } from '@/hooks/models'
+import { useHardware, useLocalModels, useModelCatalog, useOllamaPull, useProviders, useSetSecret } from '@/hooks/models'
 import { errorMessage } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
 import { looksLikeEmbedding, recommendFastLocal, recommendLocal } from '@/lib/models'
@@ -45,7 +46,7 @@ export function BrainStep() {
     <div>
       <StepHeader
         title="Choose my brain"
-        subtitle="Run a model privately on this computer, or use a cloud provider with your own key. You can change this any time."
+        subtitle="Run a model privately on this computer, or use a cloud provider with your own key or your ChatGPT plan. You can change this any time."
       />
       <SegmentedControl
         fullWidth
@@ -286,9 +287,26 @@ function CloudBrain() {
   const setSecret = useSetSecret()
   const [key, setKey] = useState('')
   const [show, setShow] = useState(false)
-  // a ChatGPT plan is signed in from Settings > Models once setup is done; its models come from the plan's own list
-  const cloud = (providers.data ?? []).filter((p) => p.kind === 'cloud' && !p.sign_in)
+  // a ChatGPT plan is a sign-in ("Continue with ChatGPT"), not a key; its models come from the plan's own list
+  const cloud = (providers.data ?? []).filter((p) => p.kind === 'cloud')
   const selected = cloud.find((p) => p.id === d.cloudProvider)
+  const isChatGPT = selected?.id === 'chatgpt'
+  const plan = useModelCatalog('chatgpt', isChatGPT && !!selected?.key_set)
+
+  // Signed in with ChatGPT: start from the plan's models by the same rule as Settings (the plan's first model, for
+  // both), once each time the ChatGPT plan is picked, so a later refresh of the plan's list never undoes the user's own choice.
+  const prefilled = useRef(false)
+  useEffect(() => {
+    if (!isChatGPT) {
+      prefilled.current = false
+      return
+    }
+    const picked = chatgptPlanModels((plan.data ?? []).map((m) => m.id))
+    if (!picked || prefilled.current) return
+    prefilled.current = true
+    if (!d.primary.startsWith('chatgpt/')) d.set({ primary: picked.main, fast: picked.fast })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isChatGPT, plan.data])
 
   useEffect(() => {
     if (!d.cloudProvider && cloud.length) d.set({ cloudProvider: cloud[0].id })
@@ -325,15 +343,22 @@ function CloudBrain() {
               d.cloudProvider === p.id ? 'border-accent/60 bg-accent/[0.06]' : 'border-border bg-surface/70 hover:border-border-strong'
             )}
           >
-            <span className="text-sm font-medium text-fg">{p.label}</span>
-            <span className={cn('text-2xs', p.key_set ? 'text-success' : 'text-fg-subtle')}>{p.key_set ? 'Key saved' : 'Needs a key'}</span>
+            <span className="flex items-center gap-1.5 text-sm font-medium text-fg">
+              {p.sign_in && p.id === 'chatgpt' && <ChatGPTMark size={14} />}
+              {p.label}
+            </span>
+            <span className={cn('text-2xs', p.key_set ? 'text-success' : 'text-fg-subtle')}>
+              {p.sign_in ? (p.key_set ? 'Signed in' : 'Sign in') : p.key_set ? 'Key saved' : 'Needs a key'}
+            </span>
           </button>
         ))}
       </div>
 
       {selected && (
         <Card className="space-y-4 p-5">
-          {selected.key_set ? (
+          {isChatGPT ? (
+            <ChatGPTConnect />
+          ) : selected.key_set ? (
             <div className="flex items-center gap-2 text-sm text-fg">
               <IconCircleCheck size={17} className="text-success" />
               Your {selected.label} key is saved in the system keychain.
@@ -384,21 +409,25 @@ function CloudBrain() {
               </Field>
             </>
           )}
-          <Field label="Main model">
-            <div className="flex items-center gap-2">
-              <ModelPicker provider={selected.id} value={d.primary} onChange={(primary) => d.set({ primary })} className="flex-1" />
-              <ModelTest model={d.primary} role="primary" className="shrink-0" />
-            </div>
-          </Field>
-          <Field label="Background model" description="Used for memory and summaries. A cheaper model is ideal.">
-            <ModelPicker provider={selected.id} value={d.fast} onChange={(fast) => d.set({ fast })} />
-          </Field>
-          <Field label="Memory search" description="Embeddings can stay local even with a cloud chat model.">
-            <div className="flex items-center gap-2">
-              <ModelPicker embedding value={d.embedding} onChange={(embedding) => d.set({ embedding })} className="flex-1" />
-              <ModelTest embedding model={d.embedding} className="shrink-0" />
-            </div>
-          </Field>
+          {!(isChatGPT && !selected.key_set) && (
+            <>
+              <Field label="Main model">
+                <div className="flex items-center gap-2">
+                  <ModelPicker provider={selected.id} value={d.primary} onChange={(primary) => d.set({ primary })} className="flex-1" />
+                  <ModelTest model={d.primary} role="primary" className="shrink-0" />
+                </div>
+              </Field>
+              <Field label="Background model" description="Used for memory and summaries. A cheaper model is ideal.">
+                <ModelPicker provider={selected.id} value={d.fast} onChange={(fast) => d.set({ fast })} />
+              </Field>
+              <Field label="Memory search" description="Embeddings can stay local even with a cloud chat model.">
+                <div className="flex items-center gap-2">
+                  <ModelPicker embedding value={d.embedding} onChange={(embedding) => d.set({ embedding })} className="flex-1" />
+                  <ModelTest embedding model={d.embedding} className="shrink-0" />
+                </div>
+              </Field>
+            </>
+          )}
         </Card>
       )}
       {selected?.key_set && <DraftCheckup />}

@@ -136,7 +136,7 @@ import type {
   WorkspaceSnapshot
 } from './types'
 import type { Connection } from '@/types/bridge'
-import { DEMO_FEEDS, demo, isDemoMode } from './demo'
+import { DEMO_FEEDS, demo, isDemoChatGPT, isDemoMode } from './demo'
 
 // ---------------------------------------------------------------------------- connection
 let connection: Connection | null = null
@@ -495,14 +495,18 @@ export const api = {
     connectOpenRouter: () => http.post<ProviderSignIn>('/api/models/connect/openrouter'),
     signInStatus: (state: string, provider: 'openrouter' | 'chatgpt' = 'openrouter') =>
       http.get<ProviderSignInStatus>(`/api/models/connect/${provider}/${enc(state)}`),
-    /** Sign in with ChatGPT to use a ChatGPT plan: status, start (open `auth_url`, poll `signInStatus`), sign out. */
+    /** Sign in with ChatGPT to use a ChatGPT plan: status, start (open `auth_url`, poll `signInStatus`), sign out.
+     * In dev demo mode with `chatgpt=1` the status and model list are a fake sign-in (lib/demo.ts). */
     chatgpt: {
-      status: () => http.get<ChatGPTStatus>('/api/models/connect/chatgpt'),
+      status: () => (isDemoChatGPT() ? Promise.resolve(demo.chatgptStatus()) : http.get<ChatGPTStatus>('/api/models/connect/chatgpt')),
       connect: () => http.post<ProviderSignIn>('/api/models/connect/chatgpt'),
-      signOut: () => http.delete<OkResponse>('/api/models/connect/chatgpt')
+      signOut: () => http.delete<OkResponse>('/api/models/connect/chatgpt'),
+      /** The one-time welcome message was shown. */
+      welcomed: () => (isDemoChatGPT() ? Promise.resolve(demo.chatgptWelcomed()) : http.post<OkResponse>('/api/models/connect/chatgpt/welcome'))
     },
     checkKey: (provider: string) => http.post<ProviderKeyCheck>(`/api/models/connect/${enc(provider)}/check`),
-    catalog: (provider: string) => http.get<CatalogModel[]>(`/api/models/catalog/${enc(provider)}`),
+    catalog: (provider: string) =>
+      provider === 'chatgpt' && isDemoChatGPT() ? Promise.resolve(demo.chatgptCatalog()) : http.get<CatalogModel[]>(`/api/models/catalog/${enc(provider)}`),
     /** Model presets: switch every role at once, save your own, undo the last switch. */
     presets: {
       list: () => http.get<ModelPresetList>('/api/models/presets'),

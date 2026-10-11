@@ -75,13 +75,16 @@ and versions follow [Semantic Versioning](https://semver.org/).
   your vision model when you set one. Both shortcuts are also in the tray menu and can be changed or turned off in
   Settings > General. Since a screen can show other people's text, a chat with a shared picture checks with you
   before sending anything. On a Mac, Sentient explains how to allow Screen Recording the first time.
-- **Sign in with ChatGPT** (Settings > Models > Use a plan you already have > ChatGPT plan): use your ChatGPT Plus or
-  Pro plan for chat, tasks and background work. Click **Continue with ChatGPT**, sign in in your browser and allow
-  Sentient; your plan's models then show up in every model picker, and **Use ChatGPT for every job** switches the
-  main and background models in one click (the Cloud preset uses your plan when you have no other cloud key). The
-  sign-in stays in your system keychain, renews on its own, and **Sign out** removes it. **Manage usage** opens your
-  ChatGPT usage settings, and reaching your plan's limit says so plainly. Memory search keeps its own model, because
-  ChatGPT plans don't include one for it.
+- **Sign in with ChatGPT** (Settings > Models > Use a plan you already have > ChatGPT plan, or **ChatGPT plan** in
+  first-run setup's cloud step): use your ChatGPT Plus or Pro plan for chat, tasks and background work. Click
+  **Continue with ChatGPT** (with OpenAI's ChatGPT logo), sign in in your browser and allow Sentient; your plan's
+  models then show up in every model picker, and **Use ChatGPT for every job** switches the main and background
+  models in one click (the Cloud preset uses your plan when you have no other cloud key). Main and background jobs
+  use the everyday model OpenAI ranks first on your plan, background jobs with the lightest thinking it allows, so
+  nothing is guessed from model names. After your first sign-in Sentient says once that you're using your ChatGPT
+  plan, and while your next message goes to a plan model the chat box shows **Using ChatGPT plan** with a **Manage
+  usage** link. The sign-in stays in your system keychain, renews on its own, and **Sign out** removes it. **Manage usage** opens your ChatGPT usage settings, and reaching
+  your plan's limit says so plainly. Memory search keeps its own model, because ChatGPT plans don't include one for it.
 - **Models sized for your computer:** Sentient checks how much memory and graphics memory this computer has before
   anything is installed and recommends a local model and how much text it reads at once (for example qwen3:8b reading
   8,192 tokens on an 8 GB graphics card, qwen3:14b reading 16,384 on a 16 GB one). A computer with less than 8 GB of
@@ -223,6 +226,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- A second Sentient data folder (a test or demo profile set with `SENTIENT_HOME`) no longer shares the keychain with
+  your own: it gets its own place for API keys, tokens and sign-ins, so it can't use, change or remove yours, and a
+  seeded demo can't message anyone through your Telegram bot. Your own data folder (`~/.sentient`) keeps every key
+  and sign-in as it is, with nothing to redo. `SENTIENT_KEYCHAIN_NAMESPACE=default` shares yours on purpose. The demo
+  seed scripts and `scripts/smoke.mjs` now pause the seeded tasks and turn off messaging deliveries unless given
+  `--keep-live`.
 - Chats using Claude through your own Claude Code now show the context meter and the "getting long" warning at
   85%: the context length is read from the matching Anthropic model, which LiteLLM knows, instead of nothing.
 - **Background work on a laptop that stays on battery:** Sentient's own upkeep (memory, what it learns about you,

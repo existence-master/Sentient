@@ -23,7 +23,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from sentient import paths
+from sentient import paths, secrets
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import ChatRules
 from sentient.agent.incognito import IncognitoSweeper
@@ -239,6 +239,7 @@ class SentientApp:
         if self._started:
             return self
         paths.ensure_layout()
+        log.info("data folder %s, %s", paths.home(), secrets.describe())  # #302: secrets are per data folder
         await asyncio.to_thread(claude_code.sweep_scratch)  # folders an earlier run couldn't remove (ADR 0022)
         await self.store.open()
         await self._load_stop_state()  # before services start: a stopped Sentient starts paused

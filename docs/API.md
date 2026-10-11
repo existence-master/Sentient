@@ -393,8 +393,8 @@ accept or loosen a rule.
   stored: "Local only" (the `ModelRoles` defaults from `config/schema.py`, or, once the hardware is known, the
   recommended model for `primary` and `fast` plus its `context_length`, see `GET /api/system/hardware`; a local
   embedding model the user picked is kept), "Cloud" and "Mixed" (the first of Anthropic, OpenAI, OpenRouter with a key set, models from
-  `PRESET_CLOUD_MODELS` in `config/schema.py`, or else a ChatGPT sign-in, whose main model is the first on the plan's
-  list and whose fast model is the first "mini" or "nano" one; Cloud leaves the embedding model alone because changing it re-indexes
+  `PRESET_CLOUD_MODELS` in `config/schema.py`, or else a ChatGPT sign-in, whose models follow the fast model rule
+  under "Connecting plans" below; Cloud leaves the embedding model alone because changing it re-indexes
   memory; Mixed keeps `fast` and `embedding` local). Built-ins clear `models.fallbacks`. The user's own presets are in
   `models.presets` (`{name: {roles, fallbacks?, reasoning?, context_length?, context_length_per_role?}}`; a role left
   out keeps its model, a field left out keeps its value) and the last one applied is `models.active_preset`. Names are
@@ -445,6 +445,15 @@ accept or loosen a rule.
   this way has it as its `error` (instead of "Sorry, the AI model is unavailable right now...") and a task route
   answers `503` with it as `detail`. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
   and vision). Stop everything kills every running Claude Code process tree.
+- **Keychain namespaces (#302).** Every secret (API keys, integration tokens, channel bot tokens, MCP headers and
+  sign-ins, the ChatGPT sign-in) is an OS keychain entry under one service per data folder. The default data folder
+  (`~/.sentient`, used when `SENTIENT_HOME` is unset or points at it) uses the service `sentient`, the entries every
+  earlier version wrote, so nothing moves. Any other `SENTIENT_HOME` uses `sentient-<first 12 hex of the SHA-256 of
+  its resolved, case-folded path>` and can't see the default folder's entries. `SENTIENT_KEYCHAIN_NAMESPACE`
+  overrides it: exactly `default` (any case) uses `sentient`; any other value gives `sentient-<word>` (lower case,
+  other characters become `-`; a value left empty by that, or spelled like `default!`, gets `sentient-x<hash>`), so
+  only the word `default` ever shares the default folder's entries. Entry names, and the `<name>:1`, `<name>:2`... parts of long values, are the same in every namespace. The
+  engine logs the service it uses at start (never a value). Every route below reads and writes this namespace only.
 - `GET /api/secrets` → `[{name, set: bool, source: "keychain"|"env"|null, kind: "provider"|"integration"}]` for every provider + integration secret name
 - `PUT /api/secrets/{name}` `{value}` → `{ok}` (stored in OS keychain; never echoed back). `chatgpt` → 400: it is a
   sign-in, not a key.
@@ -482,12 +491,29 @@ is kept under `chatgpt`.
   Models are `chatgpt/<slug>` from `GET https://api.openai.com/v1/models` (entries with `visibility: "list"`, in
   OpenAI's order). They don't go through LiteLLM: `sentient/llm/responses.py` sends `POST /v1/responses` with the
   access token, always `stream: true` and `store: false`, the leading system prompts as `instructions` (later ones as
-  `developer` messages), function tools, and `reasoning` from the role's effort; never `temperature`,
+  `developer` messages), function tools, and `reasoning` from the role's effort (see the fast model rule); never `temperature`,
   `max_output_tokens`, `previous_response_id` or other refused fields. Text and JSON jobs collect the stream. Tool
   call ids are the Responses `call_id`. Plan usage has no embedding models (`embed` with a `chatgpt/` model fails).
   A usage limit (`subscription_sharing_usage_limit_exceeded`, 429 or mid-stream `response.failed`) becomes "Usage
   limit reached" with the Manage usage link (`https://chatgpt.com/settings/usage`); there is no silent switch to
   another way of paying, only the user's own fallbacks.
+  **The fast model rule** (issue #241). The plan's model list gives each model's slug, name, visibility and order
+  (https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) and says nothing about which
+  models are small or quick, so nothing is guessed from names. When the list ranks its models with `priority` (lower
+  comes first, as in OpenAI's Codex model catalog), the catalog and model pickers order them by it, ranked models
+  first and the list's own order for ties and unranked ones; otherwise the list's own order stands. The Cloud and
+  Mixed presets (and "Use ChatGPT for every job") use the **first model in that order** (the everyday model OpenAI
+  ranks first) as the main model and **the same model** for the fast jobs. A role whose
+  `models.reasoning` effort is `none` (the fast jobs by default) gets the **lightest effort the list gives for that
+  model** (`supported_reasoning_levels`, lightest of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`,
+  `ultra`); a role with `low`, `medium` or `high` gets exactly that. When the list hasn't named the model's levels, a
+  plan call loads the list once (at most every 10 minutes); if it still doesn't say, no effort is sent and the model
+  uses its own default. The user can pick any plan model for any role under Settings > Models > Roles.
+  **OpenAI's UI guidelines** (https://developers.openai.com/siwc/ui-ux-guidelines): the sign-in button says "Continue
+  with ChatGPT" with OpenAI's ChatGPT logo (the white or black sign-in button logo from
+  https://developers.openai.com/siwc/website, unchanged), in Settings > Models and in first-run setup's cloud step;
+  after the first sign-in on a computer the window shows "You're using your ChatGPT plan" once; and while the model
+  for the next chat message is a `chatgpt/` model, the chat box shows "Using ChatGPT plan" with a Manage usage link.
 - **Nous Portal** has no sign-in for other apps, so it takes an API key. Models are `nous/<model>`, sent through
   LiteLLM's OpenAI-compatible client to `https://inference-api.nousresearch.com/v1` (override with
   `models.providers.nous.api_base`; env fallback `NOUS_API_KEY`).
@@ -496,8 +522,11 @@ Routes:
 - `POST /api/models/connect/openrouter` → `{auth_url, state}`. The window opens `auth_url` in the browser.
 - `GET /api/models/connect/openrouter/{state}` → `{status: "waiting"|"exchanging"|"connected"|"failed", error}`; 404
   for an unknown sign-in. On success the engine also publishes `config.updated` `{sections: ["secrets"]}`.
-- `GET /api/models/connect/chatgpt` → `{available, reason, signed_in, email, manage_usage_url}`. `available: false`
-  with a plain `reason` when `models.chatgpt_client_id` is empty.
+- `GET /api/models/connect/chatgpt` → `{available, reason, signed_in, email, manage_usage_url, welcome}`. `available: false`
+  with a plain `reason` when `models.chatgpt_client_id` is empty. `welcome` is true while signed in and the one-time
+  "You're using your ChatGPT plan" message has never been dismissed on this computer (store meta `chatgpt.welcomed`).
+- `POST /api/models/connect/chatgpt/welcome` → `{ok}`: the welcome message was shown; `welcome` stays false from now
+  on, through later sign-outs and sign-ins.
 - `POST /api/models/connect/chatgpt` → `{auth_url, state}` (409 with a plain `detail` when the sign-in is turned off).
   `GET /api/models/connect/chatgpt/{state}` → the same status as OpenRouter's; `config.updated`
   `{sections: ["secrets"]}` on success.
@@ -505,7 +534,7 @@ Routes:
 - `POST /api/models/connect/{provider}/check` (`anthropic`, `openrouter`, `nous`, `chatgpt`) → `{ok, detail}` or
   `{ok: false, error}` with a plain sentence. A free request with the saved key (the model list, or OpenRouter's key
   info); it spends no credits. Other providers → 404.
-- `GET /api/models/catalog/{provider}` (`openrouter`, `nous`, `anthropic`, `chatgpt`) → `[{id, label, free, tools, context_length}]`,
+- `GET /api/models/catalog/{provider}` (`openrouter`, `nous`, `anthropic`, `chatgpt`; `chatgpt` ranked as in the fast model rule) → `[{id, label, free, tools, context_length}]`,
   `id` a full model string such as `openrouter/meta-llama/llama-4-maverick:free`. OpenRouter's list is public;
   the others need the key (502 with a plain `detail` without one). Cached for 10 minutes; saving or removing the key clears it.
   The window only asks for a provider's list once that provider has a key.
@@ -844,7 +873,7 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   - `status: "needs_sign_in"`: the server answered 401, or `auth` is `oauth` with no stored sign-in, or the stored sign-in expired and could not be refreshed. `error` says what to do: `"This server asks you to sign in."` (none), `"The server didn't accept the saved headers. Change their values with the key button on the server."` (headers), `"Sign in to use this server."` (oauth). The engine retries a server in this state every 5 minutes, and at once after a sign-in or a test.
 - `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, headers?, auth?, enabled?, access?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input; `access` is saved before the server starts, and left out keeps the current choice)
   - `headers`: `{name: value}`; values go to the keychain. `auth` defaults to `headers` when headers are given, else `none`. 400 when `auth` is `headers` without headers, a header name or value is invalid, or a stdio server has headers or `auth` other than `none`.
-  - Headers not given are deleted. The keychain is shared by every Sentient setup on the computer, so a stored sign-in
+  - Headers not given are deleted. The keychain is shared by every Sentient setup in the same keychain namespace (§3), so a stored sign-in
     (tokens and client registration) records the server URL it was made for (`server_url`) and is kept when a
     server with the same name and URL is added (in this setup or another), then used. It is dropped when the URL
     differs, and an older record without `server_url` is dropped only when this setup had the server at another
@@ -2164,7 +2193,7 @@ backup API while the engine runs, never a raw copy of the live WAL file), `confi
 `files/` and `tls/` (the devices certificate, so paired devices keep trusting it). Never inside: keychain secrets (API
 keys, tokens, sign-ins), `gateway.token`, `logs/`, the browser profile, WhatsApp's link, downloaded voice models,
 scratch folders, the backups folder itself and open incognito chats (removed from the copy with secure delete). A backup is complete or not made: if a file can't be read (open in another program), the backup fails with a plain
-`detail` naming it, since a restore replaces whole folders. The manifest lists the sign-ins that were in the keychain (`sign_ins`)
+`detail` naming it, since a restore replaces whole folders. The manifest lists the sign-ins that were in this data folder's keychain namespace (§3, `sign_ins`)
 so the window can say which to redo. Names: `sentient-backup-YYYYMMDD-HHMMSS.zip` (`-auto` for scheduled ones) and
 `sentient-snapshot-YYYYMMDD-HHMMSS.zip`.
 
