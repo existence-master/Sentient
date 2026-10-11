@@ -226,6 +226,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- Chats using Claude through your own Claude Code now show the context meter and the "getting long" warning at
+  85%: the context length is read from the matching Anthropic model, which LiteLLM knows, instead of nothing.
 - Messages and memories saved at the same moment now always keep their order, and the daily upkeep of MEMORY.md and
   USER.md no longer misses a memory saved while it was reading. Summarizing a long chat no longer skips messages
   saved at the same moment as the last summary.
