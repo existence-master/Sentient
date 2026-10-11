@@ -260,8 +260,8 @@ class ChatConfig(BaseModel):
     )
     mark_outside_content: bool = Field(
         True,
-        description="Mark text from web pages, emails, messages and other apps so the assistant reads it as "
-        "information and never follows instructions hidden in it.",
+        description="Mark text from web pages, emails, messages and other apps to help the assistant treat it as "
+        "information, not as instructions.",
     )
 
 

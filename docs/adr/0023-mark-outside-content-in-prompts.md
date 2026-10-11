@@ -24,7 +24,7 @@ browser, email and other apps' look-ups, MCP servers, code runs, subagents, devi
 [end of outside content 3f9a01c2]
 ```
 
-- The code is an HMAC of the text with a secret made when the engine starts, so the text cannot guess it to close
+- The code is an HMAC of the marked text with a secret made when the engine starts, so the text cannot guess it to close
   the block early. It is the same for the same text while the engine runs, so a turn re-reads its history with the
   same markers and the provider's prompt cache keeps working.
 - Marker look-alikes inside the text are replaced with `[fake marker removed]`.
@@ -36,8 +36,9 @@ browser, email and other apps' look-ups, MCP servers, code runs, subagents, devi
   and a triggered task's event data (an email, a webhook body) is wrapped too. The proactive reasoner's prompt says
   its trigger event and app search results were written by other people.
 - Results are stored unmarked and marked again when a transcript is read back, so the history view, the memory
-  review card and raw-history search see the real text. Task checkpoints keep the marked text; already marked text
-  is never wrapped twice.
+  review card and raw-history search see the real text. Task checkpoints keep the marked text; text the engine
+  already marked is never wrapped twice, and it is recognized by its code, so a result that fakes the markers is
+  wrapped like any other.
 - The user's own messages, including chats from paired messaging apps, are never marked.
 - `chat.mark_outside_content` (default on) turns it off, so it can be measured on local models.
 
