@@ -79,7 +79,7 @@ from sentient.memory.sources import MemorySources
 from sentient.memory.workspace import Workspace
 from sentient.services import cancel_tasks
 from sentient.skills.loader import SkillLibrary
-from sentient.store.db import Store, new_id
+from sentient.store.db import Store, after_watermark, new_id, next_watermark
 from sentient.tools.base import (
     UNPROMPTED_ORIGINS,
     Risk,
@@ -1347,7 +1347,7 @@ class Agent:
         if stored is not None:
             return str(stored)
         rows = await self.store.fetchall(
-            "SELECT role, name, content FROM messages WHERE session_id = ? AND role = 'tool' ORDER BY created_at",
+            "SELECT role, name, content FROM messages WHERE session_id = ? AND role = 'tool' ORDER BY created_at, rowid",
             (session_id,),
         )
         source = untrusted_in([dict(r) for r in rows], self.registry)
@@ -1506,10 +1506,11 @@ class Agent:
                 return
             session = await self.store.get_session(session_id)
             upto = (session or {}).get("context_upto") or ""
+            after, params = after_watermark(upto, "created_at", "rowid")  # same-tick messages are not skipped (#236)
             rows = await self.store.fetchall(
-                "SELECT role, content, created_at FROM messages WHERE session_id = ? AND created_at > ?"
-                " AND role IN ('user','assistant') AND content IS NOT NULL ORDER BY created_at",
-                (session_id, upto),
+                f"SELECT rowid, role, content, created_at FROM messages WHERE session_id = ? AND {after}"
+                " AND role IN ('user','assistant') AND content IS NOT NULL ORDER BY created_at, rowid",
+                (session_id, *params),
             )
             older = rows[: max(0, len(rows) - window)]
             if len(older) < 10:
@@ -1527,7 +1528,7 @@ class Agent:
             )
             await self.store.execute(
                 "UPDATE sessions SET context_summary = ?, context_upto = ? WHERE id = ?",
-                (summary.strip(), older[-1]["created_at"], session_id),
+                (summary.strip(), next_watermark(upto, older, "created_at", "rowid"), session_id),
             )
         except Exception as exc:
             log.debug("context compression skipped: %s", exc)
