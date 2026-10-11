@@ -521,7 +521,7 @@ async def test_claude_code_models_use_the_matching_anthropic_window(monkeypatch,
     windows = {"anthropic/claude-sonnet-5-5": {"max_input_tokens": 500_000},
                "anthropic/claude-opus-5-5": {"max_input_tokens": 200_000},
                "anthropic/claude-haiku-4-5": {"max_input_tokens": 200_000},
-               "anthropic/claude-fable-4-5": {"max_input_tokens": 200_000}}
+               "anthropic/claude-fable-5-1": {"max_input_tokens": 200_000}}
 
     def info(model):
         if model not in windows:
