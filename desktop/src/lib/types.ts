@@ -2264,6 +2264,8 @@ export interface RestoreResult {
 export interface BackupOverview {
   folder: string
   default_folder: string
+  /** Sentient's data folder (a default folder inside it means Documents couldn't be used). */
+  home: string
   backups: BackupEntry[]
   snapshots: BackupEntry[]
   schedule: BackupSchedule

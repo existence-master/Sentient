@@ -980,8 +980,9 @@ class DreamingConfig(BaseModel):
 class BackupsConfig(BaseModel):
     folder: str | None = Field(
         None,
-        description="Folder for backups. Empty uses the backups folder inside Sentient's data folder. A folder on "
-        "another drive or a synced cloud folder keeps them safe if this computer fails.",
+        description="Folder for backups. Empty uses Sentient Backups in your Documents folder (or the backups folder "
+        "inside Sentient's data folder when Documents can't be used). A folder on another drive or a synced cloud "
+        "folder keeps them safe if this computer fails.",
     )
     schedule: Literal["off", "daily", "weekly"] = Field(
         "off", description="Back up automatically every day or every week, while Sentient is running."

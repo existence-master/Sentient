@@ -49,7 +49,7 @@ class BackupService(Service):
     # ------------------------------------------------------------------ settings
     def folder(self) -> Path:
         raw = (self.app.config.backups.folder or "").strip()
-        return Path(raw).expanduser() if raw else archive.backups_root()
+        return Path(raw).expanduser() if raw else archive.default_folder()
 
     def _publish(self, what: str, **extra: Any) -> None:
         self.app.bus.publish("backup.updated", {"what": what, **extra})
@@ -103,7 +103,8 @@ class BackupService(Service):
         cfg = self.app.config.backups
         return {
             "folder": str(folder),
-            "default_folder": str(archive.backups_root()),
+            "default_folder": str(archive.default_folder()),
+            "home": str(paths.home()),
             "backups": [b for b in backups if b["kind"] != "snapshot"],
             "snapshots": [s for s in snapshots if s["kind"] == "snapshot"],
             "schedule": cfg.schedule,

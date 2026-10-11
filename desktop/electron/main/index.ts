@@ -13,7 +13,7 @@ import {
   session,
   shell
 } from 'electron'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import type {
@@ -379,6 +379,20 @@ function registerIpc(): void {
     return result.canceled ? [] : result.filePaths
   })
   ipcMain.on(CH.readyForScreenshot, () => smokeRunner?.ready())
+  ipcMain.handle(CH.showInFolder, async (_e, path: string) => {
+    if (typeof path !== 'string' || !path) return false
+    const target = resolve(path)
+    let isDir: boolean
+    try {
+      isDir = statSync(target).isDirectory()
+    } catch {
+      return false
+    }
+    // a folder opens in the file manager; a file is only selected in its folder, never opened or run
+    if (isDir) return (await shell.openPath(target)) === ''
+    shell.showItemInFolder(target)
+    return true
+  })
   ipcMain.handle(CH.openFile, async (_e, name: string) => {
     if (typeof name !== 'string' || !name) return false
     const base = resolve(homePaths.files())

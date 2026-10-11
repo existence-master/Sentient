@@ -28,6 +28,7 @@ import { SchemaForm } from '../SchemaForm'
 import type { SectionProps } from '../SettingsPage'
 
 const KEYCHAIN_NOTE = "Passwords, API keys and sign-ins stay in this computer's keychain and are never in a backup."
+const DEVICES_NOTE = 'A backup also holds the certificate your devices trust, so keep backups somewhere private.'
 
 function countsLine(e: BackupEntry): string {
   const c = e.counts
@@ -154,7 +155,7 @@ export function BackupsSection({ query }: SectionProps) {
 
       {data.last_restore && <LastRestore result={data.last_restore} onDismiss={() => dismiss.mutate()} />}
 
-      <FormSection title="Back up" description={KEYCHAIN_NOTE}>
+      <FormSection title="Back up" description={`${KEYCHAIN_NOTE} ${DEVICES_NOTE}`}>
         <FormRow label="Back up now" description="Saves your chats, memory, tasks, settings, skills and files in one file.">
           <div className="flex flex-wrap justify-end gap-1.5">
             <Button
@@ -176,7 +177,16 @@ export function BackupsSection({ query }: SectionProps) {
         <FormRow
           label="Backup folder"
           description={
-            <span className="break-all font-mono">{data.folder}</span>
+            <>
+              <span className="block break-all font-mono">{data.folder}</span>
+              <span className="mt-1 block">
+                {customFolder
+                  ? 'The folder you picked.'
+                  : data.folder.startsWith(data.home)
+                    ? "Inside Sentient's data folder, because your Documents folder can't be used. Pick a folder elsewhere so a backup survives losing it."
+                    : 'In your Documents folder, apart from your data, so a backup survives losing it.'}
+              </span>
+            </>
           }
         >
           <div className="flex flex-wrap justify-end gap-1.5">
@@ -185,11 +195,17 @@ export function BackupsSection({ query }: SectionProps) {
                 Use the default
               </Button>
             )}
-            {!customFolder && (
-              <Button size="sm" variant="ghost" leftIcon={<IconFolder size={14} />} disabled={!bridge.isDesktop} onClick={() => void bridge.openPath('backups')}>
-                Open
-              </Button>
-            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              leftIcon={<IconFolder size={14} />}
+              disabled={!bridge.isDesktop}
+              onClick={async () => {
+                if (!(await bridge.showInFolder(data.folder))) toast.message('The folder appears after your first backup.')
+              }}
+            >
+              Open
+            </Button>
             <Button
               size="sm"
               leftIcon={<IconFolderOpen size={14} />}

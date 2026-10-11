@@ -108,12 +108,12 @@ def claude_code_tools(tools_file: str):
 
 @app.command()
 def backup(
-    to: Path | None = typer.Option(None, "--to", help="Folder for the backup (default: backups in the data folder)."),
+    to: Path | None = typer.Option(None, "--to", help="Folder for the backup (default: Documents/Sentient Backups)."),
 ):
     """Back up the data folder (database, config, workspace, skills, files) to one zip file."""
     from sentient.backup import archive
 
-    folder = to or Path(load_config().backups.folder or archive.backups_root()).expanduser()
+    folder = to or Path(load_config().backups.folder or archive.default_folder()).expanduser()
     made = archive.create_archive(archive.new_backup_path(folder), kind="manual")
     console.print(f"[green]backed up[/green] {made['path']} ({made['size']:,} bytes)")
     console.print("API keys and sign-ins stay in this computer's keychain and are not in the backup.")

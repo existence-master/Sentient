@@ -16,8 +16,7 @@ export const homePaths = {
   logs: () => join(sentientHome(), 'logs'),
   files: () => join(sentientHome(), 'files'),
   workspace: () => join(sentientHome(), 'workspace'),
-  skills: () => join(sentientHome(), 'skills'),
-  backups: () => join(sentientHome(), 'backups')
+  skills: () => join(sentientHome(), 'skills')
 }
 
 /**

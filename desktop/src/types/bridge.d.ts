@@ -98,7 +98,7 @@ export interface PickFilesOptions {
   filters?: Array<{ name: string; extensions: string[] }>
 }
 
-export type OpenPathTarget = 'home' | 'logs' | 'files' | 'workspace' | 'skills' | 'backups'
+export type OpenPathTarget = 'home' | 'logs' | 'files' | 'workspace' | 'skills'
 
 export interface VersionInfo {
   app: string
@@ -229,6 +229,9 @@ export interface SentientBridge {
   isFocused(): Promise<boolean>
   /** Open a file from Sentient's files folder (`outputs/chart.png`) with the default app. */
   openFile(name: string): Promise<boolean>
+  /** Show a folder in the file manager, or a file selected in its folder (a backup). Never opens or runs a file.
+   *  False when the path isn't there. */
+  showInFolder(path: string): Promise<boolean>
   getDevicePrivacy(): Promise<DevicePrivacy>
   setDevicePrivacy(patch: Partial<DevicePrivacy>): Promise<DevicePrivacy>
   onCaptureNotice(cb: (notice: CaptureNotice) => void): () => void

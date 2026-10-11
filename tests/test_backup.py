@@ -17,7 +17,7 @@ from sentient.backup import BackupError, apply_pending_restore, archive
 from sentient.gateway.app import create_app
 from sentient.migrate import hermes
 from sentient.store.db import SCHEMA_VERSION
-from tests.conftest import FakeProvider
+from tests.conftest import REAL_GUARDED, FakeProvider
 
 
 @pytest.fixture(autouse=True)
@@ -341,3 +341,51 @@ async def test_a_rollback_that_fails_keeps_the_data_aside(config, isolated_home,
     assert "couldn't be put back" in result["error"]
     kept = [p for p in archive.backups_root().glob("restore-old-*") if (p / "files" / "mine.txt").exists()]
     assert len(kept) == 1 and (kept[0] / "files" / "mine.txt").read_text(encoding="utf-8") == "only copy"
+
+
+def test_tests_never_use_the_real_folders(isolated_home, tmp_path):
+    """The guard in conftest compares REAL_GUARDED before and after every test; here the overrides themselves."""
+    assert paths.home() == isolated_home and paths.documents_dir() == tmp_path / "documents"
+    assert archive.default_folder() == isolated_home / "backups"  # this test's Documents doesn't exist: fallback
+    for real in REAL_GUARDED:
+        assert not str(archive.default_folder()).startswith(str(real.parent))
+
+
+async def test_backups_go_to_documents_by_default(config, isolated_home, tmp_path):
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    app = await _app(config)
+    try:
+        made = await app.backups.backup_now()
+        assert Path(made["path"]).parent == docs / "Sentient Backups"
+        overview = await app.backups.overview()
+        assert overview["folder"] == overview["default_folder"] == str(docs / "Sentient Backups")
+        assert overview["home"] == str(isolated_home)
+        assert [b["name"] for b in overview["backups"]] == [made["name"]]
+        # snapshots, a staged restore and the restore result stay in the data folder
+        assert (await app.backups.snapshot("before a test"))["path"].startswith(str(isolated_home / "backups"))
+    finally:
+        await app.stop()
+
+
+def test_a_documents_folder_that_cant_be_written_falls_back(isolated_home, tmp_path, monkeypatch):
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    assert archive.default_folder() == docs / "Sentient Backups"
+    monkeypatch.setattr(archive.os, "access", lambda p, mode: False)
+    assert archive.default_folder() == isolated_home / "backups"
+
+
+def test_where_documents_is_on_each_system(tmp_path, monkeypatch):
+    # only resolves paths: nothing here creates or writes a folder
+    monkeypatch.delenv("SENTIENT_DOCUMENTS_DIR")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "me"))
+    monkeypatch.setattr(paths.sys, "platform", "win32")
+    assert paths.documents_dir() == tmp_path / "me" / "Documents"
+    monkeypatch.setattr(paths.sys, "platform", "darwin")
+    monkeypatch.setenv("XDG_DOCUMENTS_DIR", str(tmp_path / "xdg"))
+    assert paths.documents_dir() == tmp_path / "me" / "Documents"  # XDG is a Linux setting
+    monkeypatch.setattr(paths.sys, "platform", "linux")
+    assert paths.documents_dir() == tmp_path / "xdg"
+    monkeypatch.delenv("XDG_DOCUMENTS_DIR")
+    assert paths.documents_dir() == tmp_path / "me" / "Documents"

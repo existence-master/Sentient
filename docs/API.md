@@ -2069,6 +2069,11 @@ scratch folders and the backups folder itself. The manifest lists the sign-ins t
 so the window can say which to redo. Names: `sentient-backup-YYYYMMDD-HHMMSS.zip` (`-auto` for scheduled ones) and
 `sentient-snapshot-YYYYMMDD-HHMMSS.zip`.
 
+**Where backups go.** `backups.folder` when set, else `Documents/Sentient Backups`, outside the data folder so a backup
+survives losing it: `~/Documents` on Windows and macOS; on Linux `XDG_DOCUMENTS_DIR` when set, else `~/Documents`
+(`SENTIENT_DOCUMENTS_DIR` overrides it, and tests always set it). When Documents is missing or can't be written to,
+`<home>/backups`. A backup holds the devices certificate (`tls/`), so it should be kept somewhere private.
+
 **Snapshots** are backups without `files/`, kept in `<home>/backups/snapshots` (the newest `backups.snapshots_keep`).
 Sentient takes one:
 - when it opens a database whose `PRAGMA user_version` differs from `sentient.store.db.SCHEMA_VERSION` (an update or a
@@ -2088,8 +2093,8 @@ snapshot of the current data, then replaces exactly the items the manifest lists
 back; if even that fails, it stays in `<home>/backups/restore-old-<time>/` and the result's `error` says so. The outcome is kept in `<home>/backups/last-restore.json` until dismissed.
 
 - `GET /api/backups` → **BackupOverview**
-- `POST /api/backups` `{folder?}` → **BackupEntry** (a manual backup into `folder`, else `backups.folder`, else
-  `<home>/backups`; 400 with a plain `detail` for a relative path or a folder that can't be written)
+- `POST /api/backups` `{folder?}` → **BackupEntry** (a manual backup into `folder`, else `backups.folder`, else the
+  default folder below; 400 with a plain `detail` for a relative path or a folder that can't be written)
 - `POST /api/backups/inspect` `{path}` → **BackupEntry** + `{newer, contents}` for the confirmation (`newer`: made by
   a newer database version than this engine's). 400 with a plain `detail` when it isn't a readable Sentient backup
 - `POST /api/backups/restore` `{path}` → `{staged: true, restart_required: true, source, created_at, contents,
@@ -2108,7 +2113,8 @@ back; if even that fails, it stays in `<home>/backups/restore-old-<time>/` and t
 
 **BackupOverview**
 ```json
-{"folder": "...", "default_folder": "<home>/backups", "backups": [BackupEntry], "snapshots": [BackupEntry],
+{"folder": "...", "default_folder": "~/Documents/Sentient Backups", "home": "<home>",
+ "backups": [BackupEntry], "snapshots": [BackupEntry],
  "schedule": "off|daily|weekly", "keep": 5, "snapshots_keep": 5, "last_scheduled_at": "...|null",
  "pending_restore": {"source", "created_at", "staged_at", "kind"} | null,
  "last_restore": {"restored_at", "source", "kind", "backup_created_at", "contents", "snapshot": "<name>|null",
@@ -2122,6 +2128,6 @@ signed_in` is checked live (`null`: Sentient can't tell, e.g. browser sign-ins).
 `keep` scheduled backups are kept, backups made by hand are never deleted. A failed one is tried again the next hour
 (an unplugged drive may be back) and is a `backup` notification at most once per interval.
 
-**CLI**: `sentient backup [--to FOLDER]`, `sentient restore FILE [--now]` (stages; `--now` applies at once and must only
+**CLI**: `sentient backup [--to FOLDER]` (default: the folder above), `sentient restore FILE [--now]` (stages; `--now` applies at once and must only
 be used while Sentient is closed).
 

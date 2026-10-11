@@ -10,6 +10,8 @@ A backup is one zip file:
 Never inside: keychain secrets (API keys, tokens, sign-ins), ``gateway.token``, logs, the browser profile,
 WhatsApp's link, downloaded voice models, scratch folders and the backups folder itself.
 
+Backups go to ``Documents/Sentient Backups`` by default (:func:`default_folder`), outside the data folder.
+
 A snapshot is the same format without ``files/`` (nothing that takes one changes files). Sentient takes one before
 it updates its database and before an import; the last N are kept.
 
@@ -60,6 +62,24 @@ class BackupError(Exception):
 # ----------------------------------------------------------------------------- where things go
 def backups_root(home: Path | None = None) -> Path:
     return (home or paths.home()) / "backups"
+
+
+BACKUP_FOLDER_NAME = "Sentient Backups"
+
+
+def default_folder(home: Path | None = None) -> Path:
+    """Where backups go unless the user picked a folder: ``Documents/Sentient Backups``, outside the data folder so a
+    backup survives losing it. ``<home>/backups`` when Documents is missing or can't be written to."""
+    docs = paths.documents_dir()
+    target = docs / BACKUP_FOLDER_NAME
+    try:
+        if target.is_dir():
+            return target if os.access(target, os.W_OK) else backups_root(home)
+        if docs.is_dir() and os.access(docs, os.W_OK):
+            return target
+    except OSError:
+        pass
+    return backups_root(home)
 
 
 def snapshots_dir(home: Path | None = None) -> Path:

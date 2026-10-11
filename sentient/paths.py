@@ -9,6 +9,7 @@ and for running several isolated profiles).
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -49,6 +50,21 @@ def files_dir() -> Path:
 
 def logs_dir() -> Path:
     return home() / "logs"
+
+
+def documents_dir() -> Path:
+    """The user's Documents folder (it may not exist).
+
+    ``SENTIENT_DOCUMENTS_DIR`` overrides it (tests always set it). Windows and macOS: ``~/Documents``. Linux:
+    ``XDG_DOCUMENTS_DIR`` when set, else ``~/Documents``."""
+    raw = os.environ.get("SENTIENT_DOCUMENTS_DIR", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    if sys.platform.startswith("linux"):
+        xdg = os.environ.get("XDG_DOCUMENTS_DIR", "").strip()
+        if xdg:
+            return Path(os.path.expandvars(xdg)).expanduser()
+    return Path.home() / "Documents"
 
 
 def ensure_layout() -> Path:
