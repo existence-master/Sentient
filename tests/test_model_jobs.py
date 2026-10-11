@@ -243,8 +243,13 @@ async def test_upkeep_a_person_asked_for_skips_the_battery_limits_but_not_critic
     await asyncio.wait_for(first, WAIT)
     assert loop.time() - start >= 0.35
     released = loop.time()
+    scheduled = as_task("memory", meter.use(jobs, "scheduled"))  # queued after the cap let the dream go
     await asyncio.wait_for(asked("dream 3"), WAIT)
-    assert loop.time() - released < 0.2
+    assert loop.time() - released < 0.2  # the rest of the dream follows at once ...
+    await asyncio.sleep(0.1)
+    assert "scheduled" not in meter.order and jobs.status()["deferred_reason"] == "battery_low"  # ... nothing else
+    await asyncio.wait_for(scheduled, WAIT)  # scheduled upkeep goes on its own cap
+    assert meter.order[-1] == "scheduled"
 
 
 async def test_dream_now_is_upkeep_a_person_asked_for(config, isolated_home, monkeypatch):

@@ -33,7 +33,8 @@ None of these holds a call longer than ``models.battery_max_wait_s``: then it go
 a burst, so the rest of its pass follows instead of waiting the whole time again.
 
 Upkeep a person started from the window (Dream now) runs in ``detached(kind, requested=True)``: only a critical battery
-(and the cap) holds it, and it never opens a burst for scheduled upkeep to ride along.
+(and the cap) holds it. When the cap lets it go it gets a burst of its own, so the rest of it follows, and it never
+opens a burst that scheduled upkeep could ride along.
 
 **Streams hold the slot until they end.** The provider holds it across a whole stream and lets it go just before
 the final chunk, so the caller can run tools that call the model again. Cancelling (Stop everything) releases it.
@@ -142,6 +143,7 @@ class Slot:
         self.started = time.monotonic()
         self.started_at = _now_iso()
         self.burst = False  # upkeep that went on battery: it keeps the burst open until it ends
+        self.asked_burst = False  # the same for upkeep a person asked for, after the cap let it go
 
     def release(self) -> None:
         jobs, self._jobs = self._jobs, None
@@ -190,6 +192,8 @@ class ModelJobs:
         self._last_chat_use = float("-inf")
         self._last_upkeep_use = float("-inf")  # on battery: when upkeep last used the model (a burst is open)
         self._burst_start = float("-inf")  # on battery: when the last upkeep burst began
+        self._asked_use = float("-inf")  # the same two for upkeep a person asked for, released by the cap
+        self._asked_start = float("-inf")
         self._timer: asyncio.TimerHandle | None = None
         self._notify: asyncio.TimerHandle | None = None
         self._published: dict | None = None
@@ -254,6 +258,8 @@ class ModelJobs:
             self._last_chat_use = now
         if slot.burst:
             self._last_upkeep_use = now
+        if slot.asked_burst:
+            self._asked_use = now
         log.info("model job done: %s %s after %.1fs", slot.kind, _short(slot.model), now - slot.started)
         self._dispatch()
 
@@ -284,6 +290,8 @@ class ModelJobs:
             return None  # the cap: never held longer than this, whatever the battery
         if self._burst_open(now):
             return None  # a burst is under way (maybe one the cap let go): the rest of its pass goes with it
+        if w.requested and self._asked_open(now):
+            return None  # the cap let part of what a person asked for go: the rest follows (never scheduled upkeep)
         pct = self._battery_percent()
         if pct is not None and pct <= self._setting("battery_critical_percent", 15):
             return "battery_low", "at or below models.battery_critical_percent"
@@ -299,6 +307,9 @@ class ModelJobs:
 
     def _burst_open(self, now: float) -> bool:
         return now - self._last_upkeep_use < BURST_GRACE_S and now - self._burst_start < BURST_MAX_S
+
+    def _asked_open(self, now: float) -> bool:
+        return now - self._asked_use < BURST_GRACE_S and now - self._asked_start < BURST_MAX_S
 
     def _battery_detail(self) -> str:
         pct = self._battery_percent()
@@ -317,8 +328,8 @@ class ModelJobs:
                 if w.kind == "chat":
                     self._last_chat_use = now
                 if w.rank >= UPKEEP_RANK and self._on_battery():
-                    if w.requested and w.held not in BATTERY_REASONS:
-                        log.info("model job on battery: %s you asked for goes (%s)", w.kind, self._battery_detail())
+                    if w.requested:
+                        self._start_asked(w, slot, now)
                     else:
                         self._start_burst(w, slot, now)
                 w.fut.set_result(slot)
@@ -339,6 +350,19 @@ class ModelJobs:
             self._burst_start = now
             log.info("upkeep burst on battery: %s goes (%s)", w.kind, self._battery_detail())
         self._last_upkeep_use = now
+
+    def _start_asked(self, w: _Waiter, slot: Slot, now: float) -> None:
+        """Upkeep a person asked for goes on battery. Released by the cap, it opens a burst of its own for the rest."""
+        if w.held in BATTERY_REASONS and slot.waited >= self._setting("battery_max_wait_s", 7200):
+            log.info("model job released: %s you asked for waited %.0fs %s, the most it may wait "
+                     "(models.battery_max_wait_s)", w.kind, slot.waited, self._battery_detail())
+            if not self._asked_open(now):
+                self._asked_start = now
+        else:
+            log.info("model job on battery: %s you asked for goes (%s)", w.kind, self._battery_detail())
+        if self._asked_open(now) or self._asked_start == now:
+            slot.asked_burst = True
+            self._asked_use = now
 
     def _log_holds(self, now: float) -> None:
         """Log when a waiting call starts being held back for the battery, once per change."""
