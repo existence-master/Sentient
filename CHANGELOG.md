@@ -6,6 +6,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Recurring tasks remember their last runs:** each run of a recurring task now reads a short note of what its last
+  three runs found, sent or decided, plus the task's own notes, so it tells you only what is new instead of repeating
+  yesterday's news. Runs keep those notes up to date themselves; see, edit or clear them under **Notes between runs**
+  on the task.
 - **Sources under answers:** when Sentient used the web, your email, a file or a connected app to answer, small
   chips under the reply show what it used: the page, the email's subject, the file or the app, next to the memories
   it had in mind. Click a chip to see the part Sentient read and open the page, email or file. Answers that used

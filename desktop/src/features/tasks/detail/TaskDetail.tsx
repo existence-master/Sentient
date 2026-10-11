@@ -59,6 +59,7 @@ import { HookName } from '@/features/automations/HookLabel'
 import { useBrowserProfiles } from '@/features/browser/state'
 import { ScriptJobSection } from './ScriptJob'
 import { DeliverToRow } from './DeliverTo'
+import { NotepadCard } from './NotepadCard'
 import { Clarifications } from './Clarifications'
 import { RunQuestion } from './RunQuestion'
 import { PlanSection } from './PlanSection'
@@ -518,6 +519,10 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
       <DescriptionCard task={task} onSave={(description) => ops.update(id, { description }, 'Description saved')} />
 
       <ScheduleCard task={task} tz={tz} onSave={(schedule) => ops.update(id, { schedule }, 'Schedule updated')} saving={ops.isBusy('update', id)} />
+
+      {task.schedule?.type === 'recurring' && task.task_type !== 'swarm' && (!isScriptJob(task) || scriptOf(task)?.then === 'run') && (
+        <NotepadCard task={task} onSave={(notepad) => ops.update(id, { notepad }, notepad ? 'Notes saved' : 'Notes cleared')} />
+      )}
 
       {task.task_type === 'swarm' && task.swarm_details && <SwarmSection swarm={task.swarm_details} tz={tz} running={task.status === 'processing' || task.status === 'planning'} />}
 

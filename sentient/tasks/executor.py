@@ -25,7 +25,7 @@ from sentient.agent.loop import Budget, LoopResult, history_to_openai
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
 from sentient.llm.provider import ToolCall
 from sentient.memory.sources import MemorySources
-from sentient.tasks import ask, limits, stuck
+from sentient.tasks import ask, continuity, limits, stuck
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
     CORE_HELPER_PLUGINS,
@@ -209,6 +209,21 @@ class ProgressMapper:
         # Error is reported once by the service when the run finishes.
 
 
+async def _earlier_section(svc: TaskService, task: dict, run: dict) -> str:
+    """What the last runs of a recurring task found and its notepad, logged once on the run (``tasks/continuity.py``)."""
+    if not continuity.applies(task):
+        return ""
+    runs = await continuity.earlier_runs(svc.repo, task["id"], run["id"], get_tz(svc.tz_name()))
+    notepad = continuity.clean_notepad(task.get("notepad"))
+    if runs or notepad:
+        what = [f"{len(runs)} earlier run{'s' if len(runs) != 1 else ''}"] if runs else []
+        what += ["its notepad"] if notepad else []
+        await svc.progress(task["id"], run["id"], {
+            "type": "info", "content": f"Remembering {' and '.join(what)}, so it reports only what is new.",
+        })
+    return continuity.prompt_section(runs, notepad)
+
+
 async def _executor_system_prompt(
     svc: TaskService, task: dict, run: dict, plan: list[dict], tool_map: dict[str, list[str]]
 ) -> tuple[str, list[dict]]:
@@ -239,6 +254,7 @@ async def _executor_system_prompt(
         trigger_event_data=run.get("trigger_data"),
         memories=[f["content"] for f in facts],
         tool_map=tool_map,
+        earlier=await _earlier_section(svc, task, run),
     ), facts
 
 
@@ -343,6 +359,8 @@ async def execute_single(
             ctx.extra.update({"task_id": task_id, "run_id": run_id, ask.STATE_KEY: asking})
             if task.get("browser_profile"):  # the browser tools use the task's profile (docs/API.md section 12)
                 ctx.extra["browser_profile"] = task["browser_profile"]
+            if continuity.applies(task):
+                ctx.extra[continuity.PLUGIN_ID] = True
             checkpoint = run.get("messages") if resume else None
             if isinstance(checkpoint, list) and checkpoint:
                 checkpoint = await _run_approved_call(
@@ -364,6 +382,8 @@ async def execute_single(
             ctx.untrusted = _trigger_source(app, task, run) or untrusted_in(messages, app.registry)
             if app.registry.get(ask.ASK_TOOL) is not None:
                 tool_names = [*tool_names, ask.ASK_TOOL]
+            if continuity.applies(task) and app.registry.get(continuity.NOTEPAD_TOOL) is not None:
+                tool_names = [*tool_names, continuity.NOTEPAD_TOOL]
             mapper = ProgressMapper(svc, task_id, run_id)
             for attempt in range(MAX_CONTINUE_NUDGES + 1):
                 rounds = int(limit["steps"]) - budget.steps
@@ -621,9 +641,10 @@ async def generate_result(
 
     # ground truth from the transcript beats what a small model remembers
     plugin_ids = {p.id for p in app.registry.plugins()}
-    tools_used = [t for t in result["tools_used"] if t in plugin_ids and t != ask.PLUGIN_ID]
+    inner = {ask.PLUGIN_ID, continuity.PLUGIN_ID}  # the run's own helpers, not tools the user cares about
+    tools_used = [t for t in result["tools_used"] if t in plugin_ids and t not in inner]
     for pid in (loop_result.tools_used if loop_result else []):
-        if pid not in tools_used and pid != ask.PLUGIN_ID:
+        if pid not in tools_used and pid not in inner:
             tools_used.append(pid)
     result["tools_used"] = tools_used
     known = {f["filename"] for f in result["files_created"]}

@@ -409,7 +409,9 @@ def build_executor_prompt(
     trigger_event_data: dict | None,
     memories: list[str],
     tool_map: dict[str, list[str]],
+    earlier: str = "",
 ) -> str:
+    """``earlier``: what the last runs of a recurring task found and its notepad (``tasks/continuity.py``)."""
     trigger_section = ""
     if trigger_event_data:
         trigger_section = (
@@ -427,6 +429,7 @@ def build_executor_prompt(
         f"You are {assistant_name}, a resourceful and autonomous executor agent. Your goal is to complete the user's request by intelligently following the provided plan.\n\n"
         f"**User Context:**\n- **User's Name:** {user_name}\n- **User's Location:** {user_location}\n- **Current Date & Time:** {current_time}\n\n"
         f"{memory_section}"
+        f"{earlier}"
         f"{trigger_section}"
         f"Your task ID is '{task_id}' and the current run ID is '{run_id}'.\n\n"
         f"The original context that triggered this plan is:\n---BEGIN CONTEXT---\n{context_str}\n---END CONTEXT---\n\n"

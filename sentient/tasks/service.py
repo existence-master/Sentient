@@ -33,7 +33,7 @@ from typing import Any
 from sentient.llm.jobs import detached
 from sentient.llm.provider import PlainProviderError, ProviderError
 from sentient.services import Service, cancel_tasks
-from sentient.tasks import ask, catchup, executor, limits, scripts, stuck, swarm
+from sentient.tasks import ask, catchup, continuity, executor, limits, scripts, stuck, swarm
 from sentient.tasks.delivery import from_stored, stored
 from sentient.tasks.executor import RunFailed, RunPaused
 from sentient.tasks.jsonio import complete_json_object
@@ -66,7 +66,7 @@ STATUSES = {
 }
 UPDATABLE_FIELDS = {
     "name", "description", "priority", "schedule", "plan", "enabled", "status", "model", "assignee", "script",
-    "browser_profile", "deliver_to",
+    "browser_profile", "deliver_to", "notepad",
 }
 SANDBOX_RESULT = {
     "ok": False, "backend": None, "stdout": "", "stderr": "", "result": None, "files_created": [],
@@ -178,6 +178,8 @@ class TaskService(Service):
             self.app.registry.register(TasksPlugin())
         if not any(p.id == ask.PLUGIN_ID for p in self.app.registry.plugins()):
             self.app.registry.register(ask.TaskQuestionsPlugin())
+        if not any(p.id == continuity.PLUGIN_ID for p in self.app.registry.plugins()):
+            self.app.registry.register(continuity.TaskNotepadPlugin())
         # source.items is event-driven (feeds, polls, webhooks), so it is consumed even without timers.
         # Subscribe synchronously here so an event published right after start() is never missed.
         self._bus_subscription = self.app.bus.subscribe()
@@ -547,6 +549,8 @@ class TaskService(Service):
             changes["browser_profile"] = self._browser_profile(data["browser_profile"])
         if "deliver_to" in data:
             changes["deliver_to"] = stored(data["deliver_to"])
+        if "notepad" in data:
+            changes["notepad"] = continuity.clean_notepad(data["notepad"])
         if "assignee" in data:
             changes["assignee"] = data["assignee"] or "ai"
         if "plan" in data:
