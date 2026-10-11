@@ -47,12 +47,26 @@ PAGES = {
     "index.html": INDEX,
     "search.html": "<!doctype html><title>Results</title><main><h1>Results page</h1><p>Search results here.</p></main>",
     "help.html": "<!doctype html><title>Help</title><main><h1>Help center</h1></main>",
+    "download.html": '<!doctype html><title>Downloads</title><a href="/report.txt" download>Download report</a>',
+    "report.txt": "Sentient browser download test.\n",
 }
 
 
 class _Quiet(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):  # keep test output clean
         return
+
+    def do_GET(self):
+        if self.path == "/direct-download":
+            body = b"Direct browser-open download test.\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", 'attachment; filename="direct-report.txt"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
 
 
 @pytest.fixture(scope="session")
