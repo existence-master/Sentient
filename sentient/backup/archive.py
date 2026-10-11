@@ -488,6 +488,15 @@ def _remove(path: Path) -> None:
         path.unlink()
 
 
+def _check_staged(contents: list[str], pending: Path) -> None:
+    """A staged restore damaged after it was checked (a partial write) is refused, never half applied."""
+    if DB_NAME not in contents or not (pending / DB_NAME).is_file():
+        raise BackupError(
+            "The restore didn't happen, because the prepared backup was damaged. Your data was left as it was. Try "
+            "restoring the backup again."
+        )
+
+
 def apply_pending_restore(home: Path | None = None, *, snapshot_keep: int = 5) -> dict | None:
     """Swap a staged restore into place. Call before anything opens the database or reads config.yaml.
 
@@ -513,6 +522,7 @@ def apply_pending_restore(home: Path | None = None, *, snapshot_keep: int = 5) -
     }
     keep_pending = False
     try:
+        _check_staged(contents, pending)
         if (home / DB_NAME).exists():
             try:
                 result["snapshot"] = create_snapshot("before restoring a backup", keep=snapshot_keep, home=home)["name"]

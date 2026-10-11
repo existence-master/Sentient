@@ -496,3 +496,22 @@ async def test_a_file_that_cant_be_read_means_no_backup(config, isolated_home, m
         assert (await app.backups.backup_now())["includes_files"]  # once it can be read, the backup works
     finally:
         await app.stop()
+
+
+async def test_a_damaged_staged_restore_changes_nothing(config, isolated_home):
+    app = await _app(config)
+    made = await app.backups.backup_now()
+    sid = await app.store.create_session(title="Made after the backup")
+    await app.backups.restore(made["path"])
+    await app.stop()
+    staged = archive.pending_dir() / "manifest.json"
+    data = json.loads(staged.read_text(encoding="utf-8"))
+    data["contents"] = []  # a manifest damaged after staging
+    staged.write_text(json.dumps(data), encoding="utf-8")
+    result = apply_pending_restore()
+    assert "damaged" in result["error"] and result["snapshot"] is None
+    app = await _app(config)
+    try:
+        assert await app.store.get_session(sid) is not None
+    finally:
+        await app.stop()
