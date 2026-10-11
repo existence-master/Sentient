@@ -415,9 +415,11 @@ def build_executor_prompt(
     trigger_event_data: dict | None,
     memories: list[str],
     tool_map: dict[str, list[str]],
+    earlier: str = "",
     mark_outside_content: bool = False,
     trigger_source: str = "",
 ) -> str:
+    """``earlier``: what the last runs of a recurring task found and its notepad (``tasks/continuity.py``)."""
     trigger_section = ""
     if trigger_event_data:
         data = json.dumps(trigger_event_data, indent=2, default=str)[:12000]
@@ -445,6 +447,7 @@ def build_executor_prompt(
         f"**Primary Objective:** '{objective}'\n\n"
         f"**The Plan to Execute:**\n{_plan_lines(plan)}\n\n"
         f"**Plan tools and the functions you can call for them:**\n{tools_section}\n\n"
+        f"{earlier}"
         "**EXECUTION STRATEGY:**\n"
         "1.  **Think Step-by-Step:** Before each action, briefly decide what you are about to do and why.\n"
         "2.  **Execution Flow:** You MUST start by executing the first step of the plan. Do not summarize the plan or provide a final answer until you have executed all steps. Follow the plan sequentially. SEARCH FOR ANY RELEVANT CONTEXT THAT YOU NEED TO COMPLETE THE EXECUTION.\n"

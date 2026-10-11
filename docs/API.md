@@ -521,6 +521,7 @@ Routes:
                     "aggregated_results": []} | null,
   "enabled": true, "model": null, "browser_profile": "x-posting|null",
   "deliver_to": "default" | "desktop" | [{"channel": "telegram|discord|whatsapp", "chat_id": "..."}],
+  "notepad": "...|null",
   "original_context": {"source": "manual_creation|chat|proactive|trigger", "...": "..."},
   "error": "...|null",
   "next_execution_at": "...|null", "last_execution_at": "...|null", "created_at": "...", "updated_at": "..."
@@ -529,6 +530,7 @@ Routes:
 `swarm_details` is `null` for single tasks. `script` is `null` unless `task_type` is `script` (section 16).
 `browser_profile` is the browser profile its runs use (section 12); `null` means `default`.
 `deliver_to` is where the task's notifications go besides the app (see "Where results go" below).
+`notepad` is the notes a recurring task's runs keep for the next run (see "Recurring tasks remember" below); `null` when empty.
 `error` holds the last planning/run failure message (v2 `task.error`).
 Each run embeds its most recent 200 progress updates; the full log is at the `/events` endpoint.
 `interval` schedules (every `interval_minutes`, minimum 5; `frequency: "hourly"` is normalized to 60) are additive; the
@@ -582,7 +584,8 @@ notifies skips the planner and goes straight to `approval_pending` with a one-st
 - `GET /api/tasks/{id}` → `Task`
 - `POST /api/tasks` `{prompt, is_swarm?: bool, assignee?: "ai", model?, browser_profile?}` → `Task` (status `planning`; refinement + planning continue in the background and arrive as `task.updated`)
 - `POST /api/tasks/preview` `{prompt}` → `{name, description, priority, schedule}` (v2 generate-plan)
-- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile, deliver_to}` → `Task`
+- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile, deliver_to, notepad}` → `Task`
+  (`notepad`: text, trimmed and cut to 1500 characters; `null` or `""` clears it)
   (`browser_profile`: a name from `browser.profiles`, 400 for an unknown one; `null`, `""` or `"default"` clear it)
   (`deliver_to`: `"default"` (or `null`), `"desktop"`, or a list of up to 10 `{channel, chat_id}`; an empty list is
   `"desktop"`; 400 for anything else, an unknown channel or a missing `chat_id`)
@@ -649,6 +652,17 @@ tasks, the brief itself. The app always gets them.
   number is linked. A chat that is not paired (or a channel that is not connected) is skipped. If the task's setting
 can't be read, nothing goes to a messaging app.
 `rerun` keeps it. Backend API: `await app.tasks.delivery_for(task_id)` → `"default" | "desktop" | [...]`.
+
+### Recurring tasks remember
+Each model run of a recurring task (`schedule.type: "recurring"`; not swarm or one-call tasks) gets a short section in
+its executor prompt: the last 3 finished runs (`completed`/`completed_with_errors`), each as its start time and what it
+told the user (its final answer, or `result.summary` when it has none) cut to 400 characters, then the task's
+`notepad`, then an instruction to report only what is new or still open and to save the full list of items reported so
+far with `task_notepad`. The first run is told it is the first. When there is anything to remember, the run's log starts with
+`Remembering N earlier runs and its notepad, so it reports only what is new.` One-off and triggered runs get none of it.
+- Inside those runs only, the executor can call `task_notepad(text: str)` (plugin `task_notepad`, scoped, risk `write`,
+  internal): it replaces the task's `notepad` (trimmed, at most 1500 characters). It is left out of `result.tools_used`.
+- The user can edit or clear the notepad with `PATCH {notepad}`. `rerun` copies start with an empty notepad.
 
 ### Tasks that ask you a question
 - Inside a task run (never in chat, subagents, swarm workers or the planner) the executor can call

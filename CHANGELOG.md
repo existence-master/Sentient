@@ -16,6 +16,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
   backup. Passwords, API keys and sign-ins stay in your computer's keychain and are never in a backup; after a restore
   Sentient lists the ones to sign in to again. Sentient also takes a snapshot on its own before it updates its
   database, before a Hermes import and before a restore, keeps the last five, and any of them can be restored.
+- **Recurring tasks remember their last runs:** each run of a recurring task now reads a short note of what its last
+  three runs found, sent or decided, plus the task's own notes, so it tells you only what is new instead of repeating
+  yesterday's news. Runs keep those notes up to date themselves; see, edit or clear them under **Notes between runs**
+  on the task.
 - **Watches that only speak up when something important changed:** a check script can now **Tell me when something
   important changes**. Each check is compared with the last one without any AI, so an unchanged page costs nothing
   and stays silent; only when something changed does your fast AI model decide whether it matters, and then you get
