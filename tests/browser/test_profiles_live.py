@@ -252,3 +252,42 @@ async def test_writes_in_unload_handlers_survive_a_switch(browser, site):
     await bt.browser_open.call(ctx, {"url": f"{site}/help.html", "profile": "default"})
     stored = await browser._active.evaluate("() => [localStorage.getItem('bye'), localStorage.getItem('hide')]")
     assert stored == ["before", "yes"]
+
+
+async def test_attached_browser_target_blank_download_saves_non_zero_file(browser, site, own_browser):
+    port = own_browser
+    app = browser.app
+    await browser.create_profile("popup", kind="attach", endpoint=f"localhost:{port}")
+    ctx = make_ctx(app)
+
+    snap_open = await bt.browser_open.call(ctx, {"url": f"{site}/download.html", "profile": "popup"})
+    assert snap_open.get("profile") == "popup"
+    await browser._active.evaluate(
+        "() => {"
+        "  const a = document.createElement('a');"
+        "  a.href = '/direct-download';"
+        "  a.target = '_blank';"
+        "  a.textContent = 'Download popup report';"
+        "  document.body.appendChild(a);"
+        "}"
+    )
+    snap = await bt.browser_snapshot.call(ctx, {})
+    ref = next(
+        line.split("]")[0][1:]
+        for line in snap["text"].splitlines()
+        if 'link "Download popup report"' in line
+    )
+    res = await bt.browser_click.call(ctx, {"ref": ref})
+    download_paths = res.get("downloads", [])
+    if not download_paths:
+        pending = [task for task in browser._download_tasks if not task.done()]
+        if pending:
+            await asyncio.wait_for(asyncio.gather(*pending), timeout=10)
+        later = await bt.browser_snapshot.call(ctx, {})
+        download_paths = later.get("downloads", [])
+    assert download_paths == ["downloads/direct-report.txt"]
+    saved = paths.files_dir() / download_paths[0]
+    assert saved.exists()
+    assert saved.stat().st_size > 0
+    assert saved.read_text(encoding="utf-8") == "Direct browser-open download test.\n"
+    assert "download_errors" not in res

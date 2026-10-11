@@ -242,6 +242,7 @@ class BrowserService(Service):
         self._browser_cdp: Any = None
         self._attached_downloads: list[dict[str, Any]] = []
         self._attached_match_timeout_s = ATTACHED_MATCH_TIMEOUT_S
+        self._target_openers: dict[str, tuple[str, ...]] = {}
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -606,12 +607,17 @@ class BrowserService(Service):
         self._browser = browser
         self._attached = True
         self._engine = None
-        with contextlib.suppress(Exception):
+        try:
             cdp = await browser.new_browser_cdp_session()
             self._browser_cdp = cdp
+            cdp.on("Target.targetCreated", self._on_cdp_target_created)
+            cdp.on("Target.targetInfoChanged", self._on_cdp_target_created)
             cdp.on("Browser.downloadWillBegin", self._on_cdp_download_will_begin)
             cdp.on("Browser.downloadProgress", self._on_cdp_download_progress)
+            await cdp.send("Target.setDiscoverTargets", {"discover": True})
             await cdp.send("Browser.setDownloadBehavior", {"behavior": "default", "eventsEnabled": True})
+        except Exception:
+            pass
         return context
 
     async def _ensure(self, ctx: Any = None) -> Any:
@@ -884,6 +890,7 @@ class BrowserService(Service):
 
     def _clear_attached_downloads(self, exc: Exception | None = None) -> None:
         """Safely fail and clear all tracked attached-browser CDP downloads during context shutdown."""
+        self._target_openers.clear()
         entries = list(self._attached_downloads)
         self._attached_downloads.clear()
         err = exc or BrowserError("The browser closed before the download completed.")
@@ -893,6 +900,31 @@ class BrowserService(Service):
                 fut.set_exception(err)
                 with contextlib.suppress(Exception):
                     fut.exception()
+
+    def _on_cdp_target_created(self, payload: dict[str, Any]) -> None:
+        """Record targetId -> opener associations so popup downloads can be linked to Sentient tabs."""
+        target_info = payload.get("targetInfo", {})
+        target_id = target_info.get("targetId")
+        opener_id = target_info.get("openerId")
+        opener_frame_id = target_info.get("openerFrameId")
+        openers = tuple(filter(None, (opener_id, opener_frame_id)))
+        if target_id and openers:
+            self._target_openers[target_id] = openers
+            if len(self._target_openers) > 500:
+                for k in list(self._target_openers.keys())[:100]:
+                    self._target_openers.pop(k, None)
+
+    def _expand_frames_with_popups(self, frames: set[str]) -> set[str]:
+        """Expand frame IDs to include popup targets opened by any frame in the tree."""
+        expanded = set(frames)
+        added = True
+        while added:
+            added = False
+            for target_id, openers in list(self._target_openers.items()):
+                if target_id not in expanded and any(op in expanded for op in openers):
+                    expanded.add(target_id)
+                    added = True
+        return expanded
 
     def _prune_attached_downloads(self) -> None:
         """Evict completed download records while keeping pending downloads reachable."""
@@ -1061,6 +1093,9 @@ class BrowserService(Service):
         def abort_closed_browser() -> None:
             raise BrowserError("The browser closed before the download completed.")
 
+        def abort_missing_attached_download() -> None:
+            raise BrowserError(f"Download '{name}' could not be associated with a browser download record.")
+
         timeout = asyncio.timeout(DOWNLOAD_MAX_DURATION_S)
         target: Path | None = None
         try:
@@ -1069,30 +1104,39 @@ class BrowserService(Service):
                 if self._attached:
                     matched = None
                     page = getattr(download, "page", None)
-                    if page is not None and self._context is not None:
-                        page_frames: set[str] = set()
-                        try:
-                            page_cdp = await self._context.new_cdp_session(page)
+                    page_frames: set[str] = set()
+                    dl_url = str(getattr(download, "url", "") or "")
+                    if self._context is not None:
+                        candidate_pages: list[Any] = []
+                        if page is not None and not getattr(page, "is_closed", lambda: False)():
+                            candidate_pages.append(page)
+                        for p in self._download_pages:
+                            if p not in candidate_pages and not getattr(p, "is_closed", lambda: False)():
+                                candidate_pages.append(p)
+
+                        for cand in candidate_pages:
                             try:
-                                tree = await page_cdp.send("Page.getFrameTree")
+                                page_cdp = await self._context.new_cdp_session(cand)
+                                try:
+                                    tree = await page_cdp.send("Page.getFrameTree")
 
-                                def _collect_frame_ids(node: dict[str, Any]) -> set[str]:
-                                    fids = {node.get("frame", {}).get("id", "")}
-                                    for child in node.get("childFrames", []):
-                                        fids.update(_collect_frame_ids(child))
-                                    return fids
+                                    def _collect_frame_ids(node: dict[str, Any]) -> set[str]:
+                                        fids = {node.get("frame", {}).get("id", "")}
+                                        for child in node.get("childFrames", []):
+                                            fids.update(_collect_frame_ids(child))
+                                        return fids
 
-                                page_frames = _collect_frame_ids(tree.get("frameTree", {}))
-                            finally:
-                                with contextlib.suppress(Exception):
-                                    await page_cdp.detach()
-                        except Exception:
-                            pass
+                                    page_frames.update(_collect_frame_ids(tree.get("frameTree", {})))
+                                finally:
+                                    with contextlib.suppress(Exception):
+                                        await page_cdp.detach()
+                            except Exception:
+                                pass
 
                         if page_frames:
+                            page_frames = self._expand_frames_with_popups(page_frames)
                             match_timeout = getattr(self, "_attached_match_timeout_s", ATTACHED_MATCH_TIMEOUT_S)
                             match_deadline = time.monotonic() + match_timeout
-                            dl_url = str(getattr(download, "url", "") or "")
                             while True:
                                 matched = self._match_cdp_entry(
                                     self._attached_downloads, page_frames, dl_url, name
@@ -1107,14 +1151,28 @@ class BrowserService(Service):
 
                         def _finalize_file() -> None:
                             assert target is not None
-                            target.unlink(missing_ok=True)
-                            shutil.move(file_path, str(target))
+                            try:
+                                os.replace(file_path, str(target))
+                            except OSError:
+                                target.unlink(missing_ok=True)
+                                shutil.move(file_path, str(target))
 
                         await asyncio.to_thread(_finalize_file)
                     elif self._context is None:
                         abort_closed_browser()
                     else:
-                        await download.save_as(str(target))
+                        if page_frames:
+                            for entry in self._attached_downloads:
+                                if (
+                                    entry.get("frameId") in page_frames
+                                    and not entry.get("consumed")
+                                    and (
+                                        (dl_url and entry.get("url") == dl_url)
+                                        or (name and entry.get("filename") == name)
+                                    )
+                                ):
+                                    entry["consumed"] = True
+                        abort_missing_attached_download()
                 else:
                     await download.save_as(str(target))
         except asyncio.CancelledError as exc:

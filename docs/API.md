@@ -1448,8 +1448,10 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   profiles`. Every safety rule below applies the same in every profile, attached ones included.
 - Tools (plugin `browser`). Failures return `{error}` with a message the model can act on.
   - Downloads from launched profiles are accepted by Playwright; in an attached profile, only downloads from the tab
-    Sentient opens and popups opened from Sentient-owned tabs are handled (not the user's existing tabs). Every handled
-    download is saved under `downloads/` in Sentient's Files folder. Browser tool results (including `browser_scroll`)
+    Sentient opens and popups opened from Sentient-owned tabs (including `target="_blank"`, tracked via opener target discovery)
+    are handled (not the user's existing tabs). When attached, if no matching browser download record is identified, the
+    download fails with a clear error in `download_errors` rather than falsely reporting success. Every handled download
+    is saved under `downloads/` in Sentient's Files folder. Browser tool results (including `browser_scroll`)
     may include an optional `downloads` array of relative paths such as `["downloads/report.pdf"]`.
     `browser_open`, `browser_click`, `browser_type`, `browser_press`, `browser_select` and `browser_back` wait up to
     0.3 s for a download to start during the action. Opening a URL that directly starts a download returns a normal

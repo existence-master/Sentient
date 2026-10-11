@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import http.server
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -814,7 +815,7 @@ async def test_user_tab_entry_never_consumed_even_when_sentient_cdp_arrives_late
     assert (tmp_path / rel).read_text(encoding="utf-8") == "late content from browser"
 
 
-async def test_frame_tree_lookup_failure_uses_safe_fallback_without_consuming_user_entry(tmp_path, monkeypatch):
+async def test_frame_tree_lookup_failure_raises_without_consuming_user_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
     svc = BrowserService(make_app())
     svc._attached = True
@@ -833,13 +834,13 @@ async def test_frame_tree_lookup_failure_uses_safe_fallback_without_consuming_us
     svc._attached_downloads.append(user_entry)
 
     dl = _MockDownload("report.pdf", page=object())
-    rel = await svc._save_download(dl)
+    with pytest.raises(BrowserError, match="could not be associated with a browser download record"):
+        await svc._save_download(dl)
 
-    assert rel == "downloads/report.pdf"
     assert user_entry["consumed"] is False
     assert not user_future.done()
-    assert dl.saved_to is not None
-    assert (tmp_path / rel).read_text(encoding="utf-8") == "saved via download.save_as"
+    assert dl.saved_to is None
+    assert not (tmp_path / "downloads" / "report.pdf").exists()
 
 
 async def test_bounded_wait_terminates_when_no_matching_event_arrives(tmp_path, monkeypatch):
@@ -863,13 +864,14 @@ async def test_bounded_wait_terminates_when_no_matching_event_arrives(tmp_path, 
 
     dl = _MockDownload("report.pdf", page=object())
     t0 = time.monotonic()
-    rel = await svc._save_download(dl)
+    with pytest.raises(BrowserError, match="could not be associated with a browser download record"):
+        await svc._save_download(dl)
     elapsed = time.monotonic() - t0
 
-    assert rel == "downloads/report.pdf"
     assert user_entry["consumed"] is False
     assert not user_future.done()
-    assert dl.saved_to is not None
+    assert dl.saved_to is None
+    assert not (tmp_path / "downloads" / "report.pdf").exists()
     assert elapsed >= 0.04
     assert elapsed < 0.5
 
@@ -1570,3 +1572,104 @@ async def test_unreported_completed_download_expires_after_reporting_window(monk
     assert not svc._download_tasks
     assert not svc._download_completed_at
     assert not svc._download_names
+
+
+async def test_attached_popup_download_associated_via_target_opener(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    page_cdp = _MockPageCDP("opener-frame-1")
+    svc._context = _MockContext(page_cdp)
+
+    # Record target opener mapping: popup target was opened by opener-frame-1
+    svc._on_cdp_target_created({
+        "targetInfo": {
+            "targetId": "popup-target-1",
+            "openerId": "opener-frame-1",
+            "openerFrameId": "opener-frame-1",
+        }
+    })
+
+    file_popup = tmp_path / "browser_download_popup.txt"
+    file_popup.write_text("popup download text", encoding="utf-8")
+
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result(str(file_popup))
+    entry = {
+        "guid": "g-popup",
+        "frameId": "popup-target-1",
+        "filename": "newtab.txt",
+        "url": "https://example.com/newtab.txt",
+        "future": fut,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(entry)
+
+    dl = _MockDownload("newtab.txt", url="https://example.com/newtab.txt", page=object())
+    rel = await svc._save_download(dl)
+
+    assert rel == "downloads/newtab.txt"
+    assert entry["consumed"] is True
+    assert (tmp_path / rel).read_text(encoding="utf-8") == "popup download text"
+
+
+async def test_attached_download_timeout_marks_stale_records_consumed(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    svc._attached_match_timeout_s = 0.05
+    page_cdp = _MockPageCDP("sentient-frame-1")
+    svc._context = _MockContext(page_cdp)
+
+    stale_fut = asyncio.get_running_loop().create_future()
+    stale_entry = {
+        "guid": "g-stale",
+        "frameId": "sentient-frame-1",
+        "filename": "data.csv",
+        "url": "https://example.com/data.csv",
+        "future": stale_fut,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(stale_entry)
+
+    # Download with conflicting URL arrives, so stale_entry is rejected
+    dl = _MockDownload("data.csv", url="https://example.com/different-url.csv", page=object())
+    with pytest.raises(BrowserError, match="could not be associated with a browser download record"):
+        await svc._save_download(dl)
+
+    # After fallback, stale record in page_frames matching filename was marked consumed
+    assert stale_entry["consumed"] is True
+
+
+async def test_attached_finalize_file_fallback_on_os_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    page_cdp = _MockPageCDP("f-1")
+    svc._context = _MockContext(page_cdp)
+
+    src_file = tmp_path / "browser_file.txt"
+    src_file.write_text("file content", encoding="utf-8")
+
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result(str(src_file))
+    entry = {
+        "guid": "g-1",
+        "frameId": "f-1",
+        "filename": "test.txt",
+        "url": "https://example.com/test.txt",
+        "future": fut,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(entry)
+
+    def mock_replace(src, dst):
+        raise OSError("Cross-device link")
+
+    monkeypatch.setattr(os, "replace", mock_replace)
+
+    dl = _MockDownload("test.txt", url="https://example.com/test.txt", page=object())
+    rel = await svc._save_download(dl)
+
+    assert rel == "downloads/test.txt"
+    assert (tmp_path / rel).read_text(encoding="utf-8") == "file content"
