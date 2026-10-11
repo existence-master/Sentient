@@ -43,6 +43,14 @@ All carry `session_id` and `turn_id`.
 | `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id` and its `memory_sources` too (none when it was stopped before it started) |
 | `approval.ack` | `approval_id`, `resolved` |
 
+**Model errors** (#280). When a provider turns a request down for a known reason, `error.message` (and a task's
+`error`, section 4) is one plain sentence that says what to do, e.g. `OpenRouter's free models have reached today's
+limit. Add credits on openrouter.ai, wait until tomorrow, or pick another model in Settings > Models.` This covers rate
+limits (OpenRouter's free models per day and per minute), no credits (402), a key the provider rejects (401), a model
+the provider keeps for coding tools, a model it doesn't have (an Ollama model that isn't downloaded), and a provider
+that is down, slow or unreachable. The provider's raw reply only goes to the engine log; other failures keep their
+text.
+
 **Context meter** (#131). After every model call `usage` says how full the model's context is: `context_used` is the
 prompt (the larger of what the provider reported and a local count with LiteLLM's bundled tokenizer, because Ollama
 reports only the part of a prompt it had not cached) plus the reply, `context_length` what the model reads at once in
@@ -1439,9 +1447,26 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   idle_minutes, allow_domains, block_domains, max_snapshot_chars, max_extract_chars, confirm_purchases, live_view,
   profiles`. Every safety rule below applies the same in every profile, attached ones included.
 - Tools (plugin `browser`). Failures return `{error}` with a message the model can act on.
+  - Downloads from launched profiles are accepted by Playwright; in an attached profile, only downloads from the tab
+    Sentient opens and popups opened from Sentient-owned tabs are handled (not the user's existing tabs). Every handled
+    download is saved under `downloads/` in Sentient's Files folder. Browser tool results (including `browser_scroll`)
+    may include an optional `downloads` array of relative paths such as `["downloads/report.pdf"]`.
+    `browser_open`, `browser_click`, `browser_type`, `browser_press`, `browser_select` and `browser_back` wait up to
+    0.3 s for a download to start during the action. Opening a URL that directly starts a download returns a normal
+    browser result with its download status rather than a navigation error. Edge's internal downloads hub is excluded
+    from browser tabs and does not replace the active page. If a download starts later, it remains tracked and is
+    reported on a later browser result after saving finishes. Other browser results collect finished downloads
+    immediately without that start wait. Actions do not wait for downloads to finish; unfinished downloads are listed
+    by filename in an optional `downloads_in_progress` array and reported under `downloads` when a later result observes
+    that they have finished. Saves reserve unique filenames under a short lock, then transfer concurrently. Each save
+    is limited to 120 s total; when the limit is reached, Sentient asks the browser to cancel it, with a 5 s limit for
+    that cancellation request. A cancellation failure is included in `download_errors`.
+    Failed saves are reported in an optional `download_errors` array; they don't discard the browser action result or
+    successful downloads from the same batch. Completed downloads that no browser result consumes become eligible for
+    cleanup after 5 minutes, and active browser actions get the chance to report them before cleanup.
   - `browser_open(url, profile="")` read → same as `browser_snapshot` plus `profile` (http/https only; allow/block lists
-    apply, also after redirects). `profile` switches to that profile for this and the following calls of the run;
-    empty uses the run's profile, else `default`.
+    apply, also after redirects). `profile` switches to that profile for this and the following calls of the run; empty
+    uses the run's profile, else `default`.
   - `browser_snapshot()` read → `{url, title, text, truncated?}`. `text` is `Page:`/`URL:`/`Scroll:` header, interactive
     elements one per line (`[e12] button "Sign in"`, `[e4] textbox "Search" value=""`, `[e7] combobox "Country"
     value="India" options: India | Japan`, `[e3] link "Docs" -> /docs`, flags `checked`, `disabled`, `focused`) and the

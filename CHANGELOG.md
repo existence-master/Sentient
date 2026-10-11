@@ -26,6 +26,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   approvals and rules, and Stop everything stops it. It only answers your chats: tasks, suggestions and other
   background work keep using your other models, and it can't be the memory search model. Anthropic may change how
   this is counted or allowed.
+- **Browser downloads:** files Sentient downloads while using a website are saved to `downloads/` in your Files
+  folder, and the browser result says where. In an attached browser, only downloads from Sentient's own tabs are
+  saved.
 - **Push to talk and dictation into any app:** hold Ctrl+Alt+Shift+T (Cmd+Option+Shift+T on a Mac) anywhere, speak,
   and let go: what you said goes to Sentient as a chat message, and the answer is read aloud. Press Ctrl+Alt+Shift+D,
   speak, and press it again (or just pause): your words are typed where your cursor is, in any app. A small bar at the
@@ -189,6 +192,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- When a cloud model says no, chat and tasks now say why in a plain sentence and what to do, instead of showing the
+  provider's raw reply. For example: "OpenRouter's free models have reached today's limit. Add credits on
+  openrouter.ai, wait until tomorrow, or pick another model in Settings > Models." This covers rate limits, an
+  account out of credits, a key that was mistyped or revoked, a free model OpenRouter keeps for coding tools, a model
+  that doesn't exist or isn't downloaded, and a provider that is down or too slow. The raw reply stays in the log.
 - One long tool result no longer fills a local model's whole context. A result may now take about a quarter of what
   the model reads at once (Settings > General > Conversations), so on an 8,192-token model a 13,000-character Composio
   search no longer triggers "This chat is getting long" after a single step. The model is told plainly when a result
@@ -234,6 +242,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Everyday phrases like "If you don't know, say so" no longer make Sentient suggest a Never rule for unrelated
   tools. A suggested rule for a single tool now needs your words to name an action, the app or the tool, so
   "Never write files for me" still suggests blocking file writing.
+- Edge's downloads hub no longer replaces the active page or appears as a browser tab when a download starts.
 
 ### Security
 - Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before
