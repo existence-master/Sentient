@@ -25,6 +25,10 @@ MAX_NOTEPAD_CHARS = 1500
 NOTEPAD_TOOL = "task_notepad"
 PLUGIN_ID = "task_notepad"
 FINISHED = ("completed", "completed_with_errors")
+KICKOFF_NOTE = (
+    " This task ran before, and the user was already told what is listed under \"What earlier runs told the user\". "
+    "Your final answer must report only what is new since then, or say in one sentence that nothing is new."
+)
 
 
 def applies(task: dict) -> bool:
@@ -76,7 +80,7 @@ def prompt_section(runs: list[dict], notepad: str | None) -> str:
             "**Earlier runs:** None, this is the first run of this recurring task. Before your final answer, call "
             "`task_notepad` once with a short list of the items you reported, so the next run can compare.\n\n"
         )
-    parts = ["**What earlier runs of this recurring task told the user (most recent last):**"]
+    parts = ["**What earlier runs told the user (this task repeats; most recent last):**"]
     parts += [f"- {r['when']}: {r['note']}" for r in runs] or ["- (no finished runs yet)"]
     if notepad:
         parts.append("**Notepad kept by earlier runs:**\n" + notepad)

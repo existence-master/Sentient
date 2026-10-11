@@ -61,7 +61,7 @@ CONTINUE_NUDGE = (
 _ANNOUNCE_RE = re.compile(
     r"\b(?:I will|I'll|I am going to|I'm going to|let me|let's|now I will|next,? I will|I shall)\s+"
     r"(?:now\s+|then\s+|next\s+)?(?:proceed|create|write|save|start|begin|go ahead|draft|compose|generate|"
-    r"make|put|store|send|update|add|fetch|search|check)\b",
+    r"make|put|store|send|update|add|fetch|search|check|record|note)\b",
     re.IGNORECASE,
 )
 _DONE_RE = re.compile(
@@ -209,10 +209,11 @@ class ProgressMapper:
         # Error is reported once by the service when the run finishes.
 
 
-async def _earlier_section(svc: TaskService, task: dict, run: dict) -> str:
-    """What the last runs of a recurring task found and its notepad, logged once on the run (``tasks/continuity.py``)."""
+async def _earlier_section(svc: TaskService, task: dict, run: dict) -> tuple[str, bool]:
+    """What the last runs of a recurring task found and its notepad, logged once on the run (``tasks/continuity.py``),
+    and whether there was anything to remember."""
     if not continuity.applies(task):
-        return ""
+        return "", False
     runs = await continuity.earlier_runs(svc.repo, task["id"], run["id"], get_tz(svc.tz_name()))
     notepad = continuity.clean_notepad(task.get("notepad"))
     if runs or notepad:
@@ -221,13 +222,13 @@ async def _earlier_section(svc: TaskService, task: dict, run: dict) -> str:
         await svc.progress(task["id"], run["id"], {
             "type": "info", "content": f"Remembering {' and '.join(what)}, so it reports only what is new.",
         })
-    return continuity.prompt_section(runs, notepad)
+    return continuity.prompt_section(runs, notepad), bool(runs or notepad)
 
 
 async def _executor_system_prompt(
     svc: TaskService, task: dict, run: dict, plan: list[dict], tool_map: dict[str, list[str]]
-) -> tuple[str, list[dict]]:
-    """The executor's system prompt and the recalled facts put into it."""
+) -> tuple[str, list[dict], str]:
+    """The executor's system prompt, the recalled facts put into it and the kickoff message."""
     app = svc.app
     cfg = app.config.assistant
     tz = get_tz(svc.tz_name())
@@ -240,6 +241,9 @@ async def _executor_system_prompt(
             facts = [f for f in await app.memory.recall(query) if f.get("content")]
         except Exception as exc:
             log.debug("memory recall for task %s skipped: %s", task["id"], exc)
+    earlier, remembered = await _earlier_section(svc, task, run)
+    # small models follow the plan's wording; the kickoff repeats "only what is new" where they look last
+    kickoff = EXECUTOR_KICKOFF + (continuity.KICKOFF_NOTE if remembered else "")
     return build_executor_prompt(
         assistant_name=cfg.name or "Sentient",
         user_name=cfg.user_name or "User",
@@ -254,8 +258,8 @@ async def _executor_system_prompt(
         trigger_event_data=run.get("trigger_data"),
         memories=[f["content"] for f in facts],
         tool_map=tool_map,
-        earlier=await _earlier_section(svc, task, run),
-    ), facts
+        earlier=earlier,
+    ), facts, kickoff
 
 
 def _trigger_source(app: Any, task: dict, run: dict) -> str:
@@ -370,9 +374,9 @@ async def execute_single(
                 if not answered and not is_first_retry_attempt(run):  # a retry's checkpoint already has its note
                     messages.append({"role": "user", "content": RESUME_NOTE})
             else:
-                system, facts = await _executor_system_prompt(svc, task, run, plan, tool_map)
+                system, facts, kickoff = await _executor_system_prompt(svc, task, run, plan, tool_map)
                 sources.add_facts(facts)
-                messages = [{"role": "system", "content": system}, {"role": "user", "content": EXECUTOR_KICKOFF}]
+                messages = [{"role": "system", "content": system}, {"role": "user", "content": kickoff}]
                 await svc.repo.update_run(run_id, {
                     "messages": messages, "memory_sources": await sources.resolve(app.store),
                 })
