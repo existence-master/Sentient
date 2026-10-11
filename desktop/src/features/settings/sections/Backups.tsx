@@ -179,6 +179,12 @@ export function BackupsSection({ query }: SectionProps) {
           description={
             <>
               <span className="block break-all font-mono">{data.folder}</span>
+              {data.folder_cloud && (
+                <span className="mt-1 block text-warning">
+                  This folder syncs to {data.folder_cloud}, so your backups (chats, memory, the device certificate) are copied
+                  to the cloud too.
+                </span>
+              )}
               <span className="mt-1 block">
                 {customFolder
                   ? 'The folder you picked.'

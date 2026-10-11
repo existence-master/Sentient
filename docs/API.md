@@ -2105,9 +2105,15 @@ so the window can say which to redo. Names: `sentient-backup-YYYYMMDD-HHMMSS.zip
 `sentient-snapshot-YYYYMMDD-HHMMSS.zip`.
 
 **Where backups go.** `backups.folder` when set, else `Documents/Sentient Backups`, outside the data folder so a backup
-survives losing it: `~/Documents` on Windows and macOS; on Linux `XDG_DOCUMENTS_DIR` when set, else `~/Documents`
+survives losing it: on Windows the Known Folder API's Documents (`SHGetKnownFolderPath`, `FOLDERID_Documents`, so a
+folder redirected to OneDrive is used), else `~/Documents`; `~/Documents` on macOS; on Linux `XDG_DOCUMENTS_DIR` when
+set, else `~/Documents`
 (`SENTIENT_DOCUMENTS_DIR` overrides it, and tests always set it). When Documents is missing or can't be written to,
 `<home>/backups`. A backup holds the devices certificate (`tls/`), so it should be kept somewhere private.
+`folder_cloud` names the sync service the folder is inside, from the `OneDrive`, `OneDriveConsumer` and
+`OneDriveCommercial` environment variables and the path (`OneDrive...`, `Dropbox...`, `Google Drive`, `My Drive`,
+`GoogleDrive-...`, `iCloud Drive`, `Mobile Documents`, `com~apple~CloudDocs`); Settings then says the backups are
+copied to the cloud too.
 
 **Snapshots** are backups without `files/`, kept in `<home>/backups/snapshots` (the newest `backups.snapshots_keep`).
 Sentient takes one:
@@ -2148,7 +2154,7 @@ back; if even that fails, it stays in `<home>/backups/restore-old-<time>/` and t
 
 **BackupOverview**
 ```json
-{"folder": "...", "default_folder": "~/Documents/Sentient Backups", "home": "<home>", "folder_in_home": false,
+{"folder": "...", "default_folder": "~/Documents/Sentient Backups", "home": "<home>", "folder_in_home": false, "folder_cloud": "OneDrive|Dropbox|Google Drive|iCloud|null",
  "backups": [BackupEntry], "snapshots": [BackupEntry],
  "schedule": "off|daily|weekly", "keep": 5, "snapshots_keep": 5, "last_scheduled_at": "...|null",
  "pending_restore": {"source", "created_at", "staged_at", "kind"} | null,

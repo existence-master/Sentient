@@ -106,6 +106,7 @@ class BackupService(Service):
             "default_folder": str(archive.default_folder()),
             "home": str(paths.home()),
             "folder_in_home": archive.is_inside(folder, paths.home()),
+            "folder_cloud": archive.cloud_service(folder),
             "backups": [b for b in backups if b["kind"] != "snapshot"],
             "snapshots": [s for s in snapshots if s["kind"] == "snapshot"],
             "schedule": cfg.schedule,

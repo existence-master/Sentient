@@ -8,7 +8,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ### Added
 - **Backups and restore:** Settings > Backups backs up everything Sentient keeps (chats, memory, tasks, settings,
   skills and files) to one file, by hand or every day or week. Backups go to Sentient Backups in your Documents
-  folder, apart from your data, or to a folder you pick. A backup holds the certificate your devices trust, so keep
+  folder (the one Windows really uses, also when it lives in OneDrive), apart from your data, or to a folder you
+  pick. Settings says when that folder syncs to OneDrive, Dropbox, Google Drive or iCloud, since the backups are
+  then copied to the cloud too. A backup holds the certificate your devices trust, so keep
   backups somewhere private. Restore one from the list or from
   a file: you see what is in it and confirm, Sentient keeps a snapshot of what you have now, then restarts with the
   backup. Passwords, API keys and sign-ins stay in your computer's keychain and are never in a backup; after a restore

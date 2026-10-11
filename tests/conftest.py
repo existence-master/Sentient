@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import zlib
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 
 from sentient.config.schema import SentientConfig
 from sentient.llm.provider import StreamChunk, ToolCall
+from sentient.paths import _windows_documents
 
 # The real user's folders a test must never write to (resolved once, before any test patches the home folder).
 _REAL_HOME = Path(os.path.expanduser("~"))
@@ -19,6 +21,8 @@ REAL_GUARDED = [
     _REAL_HOME / "Documents" / "Sentient Backups",
     *([Path(os.path.expandvars(os.environ["XDG_DOCUMENTS_DIR"])).expanduser() / "Sentient Backups"]
       if os.environ.get("XDG_DOCUMENTS_DIR") else []),
+    # Windows' real Documents (it may be redirected, e.g. to OneDrive)
+    *([known / "Sentient Backups"] if sys.platform == "win32" and (known := _windows_documents()) is not None else []),
 ]
 
 

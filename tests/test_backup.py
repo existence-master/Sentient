@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import sys
 import zipfile
 from pathlib import Path
 
@@ -382,6 +383,9 @@ def test_where_documents_is_on_each_system(tmp_path, monkeypatch):
     monkeypatch.delenv("SENTIENT_DOCUMENTS_DIR")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "me"))
     monkeypatch.setattr(paths.sys, "platform", "win32")
+    monkeypatch.setattr(paths, "_windows_documents", lambda: tmp_path / "me" / "OneDrive" / "Documents")
+    assert paths.documents_dir() == tmp_path / "me" / "OneDrive" / "Documents"  # where Windows really keeps it
+    monkeypatch.setattr(paths, "_windows_documents", lambda: None)  # the Known Folder call failed
     assert paths.documents_dir() == tmp_path / "me" / "Documents"
     monkeypatch.setattr(paths.sys, "platform", "darwin")
     monkeypatch.setenv("XDG_DOCUMENTS_DIR", str(tmp_path / "xdg"))
@@ -427,5 +431,47 @@ async def test_a_restore_whose_snapshot_fails_stays_waiting(config, isolated_hom
     app = await _app(config)
     try:
         assert await app.store.get_session(sid) is None
+    finally:
+        await app.stop()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Known Folder API is Windows only")
+def test_the_known_folder_call_answers_on_windows():
+    # read only: resolves where Windows keeps Documents, nothing is created or written
+    found = paths._windows_documents()
+    assert found is not None and found.is_absolute()
+
+
+def test_cloud_synced_folders_are_named(tmp_path, monkeypatch):
+    for var in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        monkeypatch.delenv(var, raising=False)
+    cases = {
+        tmp_path / "OneDrive" / "Documents" / "Sentient Backups": "OneDrive",
+        tmp_path / "OneDrive - Northwind Studio" / "Documents": "OneDrive",
+        tmp_path / "Library" / "CloudStorage" / "OneDrive-Personal" / "Backups": "OneDrive",
+        tmp_path / "Dropbox" / "Sentient Backups": "Dropbox",
+        tmp_path / "Library" / "CloudStorage" / "GoogleDrive-maya@example.com" / "My Drive": "Google Drive",
+        tmp_path / "Google Drive" / "Backups": "Google Drive",
+        tmp_path / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "Backups": "iCloud",
+        tmp_path / "Documents" / "Sentient Backups": None,
+        tmp_path / "D" / "Backups": None,
+    }
+    for folder, service in cases.items():
+        assert archive.cloud_service(folder) == service, folder
+    synced = tmp_path / "Work Sync"  # a OneDrive root without the word in its name
+    monkeypatch.setenv("OneDriveCommercial", str(synced))
+    assert archive.cloud_service(synced / "Documents" / "Sentient Backups") == "OneDrive"
+
+
+async def test_the_overview_says_when_backups_sync_to_the_cloud(config, isolated_home, tmp_path, monkeypatch):
+    docs = tmp_path / "OneDrive" / "Documents"
+    docs.mkdir(parents=True)
+    monkeypatch.setenv("SENTIENT_DOCUMENTS_DIR", str(docs))
+    app = await _app(config)
+    try:
+        overview = await app.backups.overview()
+        assert overview["folder"] == str(docs / "Sentient Backups") and overview["folder_cloud"] == "OneDrive"
+        config.backups.folder = str(tmp_path / "usb")
+        assert (await app.backups.overview())["folder_cloud"] is None
     finally:
         await app.stop()

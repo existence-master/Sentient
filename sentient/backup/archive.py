@@ -67,6 +67,29 @@ def backups_root(home: Path | None = None) -> Path:
 BACKUP_FOLDER_NAME = "Sentient Backups"
 
 
+_ONEDRIVE_ENV = ("OneDrive", "OneDriveConsumer", "OneDriveCommercial")
+
+
+def cloud_service(path: Path) -> str | None:
+    """The sync service a folder is inside (OneDrive, Dropbox, Google Drive or iCloud), from its path; else None.
+
+    A backup there is copied to the cloud too, so Settings says so."""
+    for var in _ONEDRIVE_ENV:
+        root = os.environ.get(var, "").strip()
+        if root and is_inside(path, Path(root)):
+            return "OneDrive"
+    for seg in (s.lower() for s in Path(path).parts):
+        if seg.startswith("onedrive"):  # "OneDrive", "OneDrive - Contoso", macOS CloudStorage "OneDrive-Personal"
+            return "OneDrive"
+        if seg.startswith("dropbox"):
+            return "Dropbox"
+        if seg in {"google drive", "googledrive", "my drive"} or seg.startswith("googledrive-"):
+            return "Google Drive"
+        if seg in {"icloud drive", "iclouddrive", "mobile documents", "com~apple~clouddocs"}:
+            return "iCloud"
+    return None
+
+
 def default_folder(home: Path | None = None) -> Path:
     """Where backups go unless the user picked a folder: ``Documents/Sentient Backups``, outside the data folder so a
     backup survives losing it. ``<home>/backups`` when Documents is missing or can't be written to."""

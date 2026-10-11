@@ -2301,6 +2301,8 @@ export interface BackupOverview {
   home: string
   /** The backup folder is inside the data folder (so a backup would not survive losing it). */
   folder_in_home: boolean
+  /** The sync service the backup folder is inside (its backups are copied to the cloud too). */
+  folder_cloud: 'OneDrive' | 'Dropbox' | 'Google Drive' | 'iCloud' | null
   backups: BackupEntry[]
   snapshots: BackupEntry[]
   schedule: BackupSchedule
