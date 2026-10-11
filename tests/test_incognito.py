@@ -199,3 +199,47 @@ def test_gateway_creates_lists_and_deletes_incognito_chats(client):
     assert client.delete(f"/api/sessions/{sid}").json() == {"ok": True}
     assert sid not in {s["id"] for s in client.get("/api/sessions").json()}
     assert client.get(f"/api/sessions/{sid}/messages").status_code == 404  # the window shows it no longer exists
+
+
+async def test_without_memory_the_prompt_has_no_personal_details(app):
+    app.config.chat.incognito_uses_memory = False
+    app.config.assistant.location = "Koramangala, Bengaluru"
+    sid = await app.store.create_session(channel="desktop", incognito=True)
+    app.fake.replies.append("Hello.")
+    await _turn(app, sid, "hi there")
+    system = app.fake.calls[-1]["messages"][0]["content"]
+    # the configured name and place stay out (the persona the user wrote is kept as it is)
+    assert "Koramangala" not in system and "- User: Sarthak" not in system
+
+
+async def test_a_reply_still_writing_is_not_swept_and_deleting_cancels_helpers(app, monkeypatch):
+    sid = await app.store.create_session(channel="desktop", incognito=True)
+    app.agent._busy[sid] = 1  # a turn between its last model call and its final write
+    assert await app.incognito.purge() == []
+    app.agent._turn_done(sid)
+    assert not app.agent.is_busy(sid)
+    cancelled: list[str] = []
+
+    async def fake_cancel(session_id):
+        cancelled.append(session_id)
+        return 0
+
+    monkeypatch.setattr(app.subagents, "cancel_for_session", fake_cancel)
+    assert await app.incognito.purge() == [sid]
+    assert cancelled == [sid] and await app.store.get_session(sid) is None
+
+
+async def test_turn_busy_count_covers_the_final_write(app):
+    sid = await app.store.create_session(channel="desktop", incognito=True)
+    seen: list[bool] = []
+    real_add = app.store.add_message
+
+    async def spy(session_id, role, content, **kw):
+        if role == "assistant":
+            seen.append(app.agent.is_busy(session_id))
+        return await real_add(session_id, role, content, **kw)
+
+    app.store.add_message = spy
+    app.fake.replies.append("Done.")
+    await _turn(app, sid, "hello")
+    assert seen == [True] and not app.agent.is_busy(sid)

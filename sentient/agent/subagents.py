@@ -155,6 +155,14 @@ class SubagentManager(Service):
         return bool(t and not t.done())
 
     # ------------------------------------------------------------------ actions
+    async def cancel_for_session(self, session_id: str) -> int:
+        """Cancel the helpers a chat started (before the chat is deleted). Returns how many were running."""
+        rows = await self.app.store.fetchall(
+            "SELECT id FROM subagents WHERE session_id = ? AND status = 'running'", (session_id,)
+        )
+        tasks = [t for r in rows if (t := self._tasks.get(r["id"])) is not None and not t.done()]
+        return await cancel_tasks(tasks, timeout=10) if tasks else 0
+
     async def cancel(self, subagent_id: str) -> dict | None:
         task = self._tasks.get(subagent_id)
         if task is not None and not task.done():
@@ -371,6 +379,7 @@ class SubagentManager(Service):
                     {"role": "user", "content": f"Goal: {goal}" + (f"\n\nContext:\n{context}" if context else "")},
                 ]
                 ctx = agent.tool_context(session_id, "subagent", origin=origin)
+                ctx.incognito = await self.app.store.is_incognito(session_id)  # kept if the chat is deleted (#154)
                 ctx.untrusted = untrusted
                 ctx.extra["subagent_id"] = sub_id
                 names = await self._tool_names(goal, context, tools, cfg.role)

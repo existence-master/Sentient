@@ -182,13 +182,27 @@ function BootstrapGate() {
 /** Leaving an incognito chat closes it: it is deleted (#154). The engine deletes leftovers when Sentient closes. */
 function IncognitoCleanup() {
   const location = useLocation()
+  const known = useChat((s) => s.incognito)
   const current = location.pathname.match(/^\/chat\/([^/?#]+)/)?.[1] ?? null
+  // the new incognito chat view, which moves to its chat as soon as the engine names it
+  const state = location.state as { incognito?: boolean } | null
+  const onNewIncognito = location.pathname === '/chat' && (!!state?.incognito || /(^|[?&])incognito=1\b/.test(location.search))
   const previous = useRef<string | null>(null)
+  const visited = useRef(new Set<string>())
   useEffect(() => {
     const prev = previous.current
     previous.current = current
-    if (prev && prev !== current && isIncognito(prev)) useChat.getState().closeIncognito(prev)
-  }, [current])
+    if (current) visited.current.add(current)
+    const leaving = new Set(Object.keys(known))
+    if (prev && isIncognito(prev)) leaving.add(prev)
+    for (const id of leaving) {
+      if (id === current) continue
+      // named while its view was still open: that view is about to show it. Named after the user left: close it.
+      if (!visited.current.has(id) && onNewIncognito) continue
+      visited.current.delete(id)
+      useChat.getState().closeIncognito(id)
+    }
+  }, [current, known, onNewIncognito])
   return null
 }
 

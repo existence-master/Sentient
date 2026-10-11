@@ -285,9 +285,7 @@ async def rename_session(request: Request, session_id: str, body: RenameBody):
 
 @router.delete("/api/sessions/{session_id}", dependencies=_auth)
 async def delete_session(request: Request, session_id: str):
-    s = get_core(request)
-    await s.store.delete_session(session_id)
-    s.bus.publish("session.deleted", {"session_id": session_id})
+    await get_core(request).delete_chat(session_id)
     return {"ok": True}
 
 

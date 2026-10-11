@@ -435,12 +435,25 @@ class Agent:
         self._background: set[asyncio.Task] = set()
         self._steers: dict[str, SteerQueue] = {}
         self._turn_tasks: weakref.WeakSet[asyncio.Task] = weakref.WeakSet()  # tasks running a chat reply
+        # session id -> chat turns not finished yet, counted until their last write (incognito cleanup waits, #154)
+        self._busy: dict[str, int] = {}
 
     # ------------------------------------------------------------------ steering
     def is_running(self, session_id: str) -> bool:
         """True while a chat reply for this session is running and can take steer messages."""
         q = self._steers.get(session_id)
         return bool(q and q.accepting)
+
+    def is_busy(self, session_id: str) -> bool:
+        """True from the start of a chat turn until its last write (the final or stopped reply) is done."""
+        return self._busy.get(session_id, 0) > 0
+
+    def _turn_done(self, session_id: str) -> None:
+        left = self._busy.get(session_id, 0) - 1
+        if left > 0:
+            self._busy[session_id] = left
+        else:
+            self._busy.pop(session_id, None)
 
     def steer(self, session_id: str, text: str) -> bool:
         """Queue ``text`` for the reply running in ``session_id``. Returns False when no reply is running
@@ -524,9 +537,9 @@ class Agent:
             facts=facts,
             skills_index=self.skills.prompt_index(),
             assistant_name=self.config.assistant.name,
-            user_name=self.config.assistant.user_name,
+            user_name=self.config.assistant.user_name if reads_memory else "",
             channel=channel,
-            location=self.config.assistant.location,
+            location=self.config.assistant.location if reads_memory else "",
             user_context=user_context,
             tool_names=[t.name for t in self.registry.tools()],
             read_only_apps=self._read_only_apps(),
@@ -1121,6 +1134,7 @@ class Agent:
         turn_id = new_id()
         ev = {"session_id": session_id, "turn_id": turn_id}
         attachments = attachments or []
+        self._busy[session_id] = self._busy.get(session_id, 0) + 1
         # register for steering; a second concurrent turn on the same session (rare) does not take it over
         steer: SteerQueue | None = None
         if not self.is_running(session_id):
@@ -1250,9 +1264,11 @@ class Agent:
                         await asyncio.shield(save)
                 if on_stopped is not None and not save.cancelled():
                     on_stopped(save.result())
+            self._turn_done(session_id)
             raise
         except BaseException:
             release()
+            self._turn_done(session_id)
             raise
         leftover = release()
 
@@ -1289,6 +1305,7 @@ class Agent:
                     },
                 )
 
+        self._turn_done(session_id)
         if leftover:
             # steer messages that arrived after the final round start a new turn
             async for event in self.run_turn(session_id, "\n\n".join(leftover), channel=channel, model=model):

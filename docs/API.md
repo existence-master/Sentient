@@ -200,7 +200,7 @@ accept or loosen a rule.
   incognito chats out of its chat list)
 - `POST /api/sessions?incognito=false` → `{session_id}`
 - `PATCH /api/sessions/{id}` `{title}` → `{ok}`
-- `DELETE /api/sessions/{id}` → `{ok}`
+- `DELETE /api/sessions/{id}` → `{ok}` (helpers the chat started are cancelled first; publishes `session.deleted`)
 - `GET /api/sessions/{id}/messages?limit=500` → raw transcript rows, oldest first (404 when the chat doesn't exist, e.g. a
   closed incognito chat):
   ```json
@@ -236,7 +236,10 @@ accept or loosen a rule.
     memory file, daily notes, facts or insights, and the memory look-up tools are not offered and return nothing.
     The prompt also tells the model the chat is incognito.
   - it is deleted: the window deletes it when the user leaves it; the engine deletes every incognito chat at start
-    and shutdown, and one with no new message for `chat.incognito_delete_after_minutes` (default 30) within a minute.
+    and shutdown (after replies and background work have finished), and one with no new message for
+    `chat.incognito_delete_after_minutes` (default 30) within a minute; a reply still writing is never cut off.
+    Helpers it started keep refusing to save even if it is deleted first. Without memory, its prompt also leaves out
+    the configured name and location.
     Each engine deletion publishes `session.deleted` with `reason: "incognito"`.
 - `POST /api/approvals` `{approval_id, decision}` → `{resolved}`
 

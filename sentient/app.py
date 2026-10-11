@@ -212,6 +212,15 @@ class SentientApp:
                         log.exception("resuming interrupted tasks failed")
             return dict(self.stop_state)
 
+    async def delete_chat(self, session_id: str, *, reason: str | None = None) -> None:
+        """Delete a chat: its helpers are cancelled first, so none keeps working for a chat that is gone."""
+        try:
+            await self.subagents.cancel_for_session(session_id)
+        except Exception:
+            log.exception("cancelling the helpers of chat %s failed", session_id)
+        await self.store.delete_session(session_id)
+        self.bus.publish("session.deleted", {"session_id": session_id, **({"reason": reason} if reason else {})})
+
     def tool_extra(self) -> dict[str, Any]:
         return {"app": self, "skills": self.skills, "workspace": self.workspace, "registry": self.registry}
 
@@ -275,6 +284,10 @@ class SentientApp:
                 log.exception("service %s failed to stop", svc.name)
         if self.agent is not None:
             await self.agent.drain(timeout=SHUTDOWN_GRACE_S)
+        try:  # incognito chats are deleted when Sentient closes (#154), once nothing writes to them any more
+            await self.incognito.purge(skip_running=False)
+        except Exception:
+            log.exception("deleting incognito chats at shutdown failed")
         claude_code.kill_all()
         await self.store.close()
         self._started = False

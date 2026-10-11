@@ -9,7 +9,7 @@
  */
 import { toast } from 'sonner'
 import { create } from 'zustand'
-import { api, errorMessage } from '@/lib/api'
+import { api, errorMessage, isApiError } from '@/lib/api'
 import { applyAgentEvent, emptyTurn, meterFrom, type AssistantTurnView, type AttachmentView, type TimelineItem, type UserMessageView } from '@/lib/chatFold'
 import { queryClient } from '@/lib/queryClient'
 import type { AgentEvent, ApprovalDecision, ChatEvent, ContextMeter, Session, TranscriptMessage } from '@/lib/types'
@@ -64,6 +64,8 @@ interface ChatState {
 }
 
 const pendingKey = (clientId: string) => `pending:${clientId}`
+/** Incognito chats being deleted right now (#154). */
+const closing = new Set<string>()
 
 function patchLive(state: ChatState, key: string, fn: (l: LiveSession) => LiveSession): Partial<ChatState> {
   const cur = state.live[key]
@@ -333,17 +335,28 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   closeIncognito: (sessionId) => {
+    if (closing.has(sessionId)) return
+    closing.add(sessionId)
     get().cancel(sessionId)
     get().dropLive(sessionId)
-    const { [sessionId]: _gone, ...incognito } = get().incognito
-    void _gone
-    const { [sessionId]: _meter, ...context } = get().context
-    void _meter
-    set({ incognito, context })
     queryClient.setQueryData<Session[]>(qk.sessions, (old) => old?.filter((s) => s.id !== sessionId))
     queryClient.removeQueries({ queryKey: qk.messages(sessionId) })
-    // the engine also deletes it at shutdown, at the next start and after a while without messages
-    void api.sessions.delete(sessionId).catch(() => undefined)
+    const forget = () => {
+      const { [sessionId]: _gone, ...incognito } = get().incognito
+      void _gone
+      const { [sessionId]: _meter, ...context } = get().context
+      void _meter
+      set({ incognito, context })
+    }
+    // the marker stays until the engine confirms, so leaving another page tries again; the engine also deletes it at
+    // shutdown, at the next start and after a while without messages
+    api.sessions
+      .delete(sessionId)
+      .then(forget, (err) => {
+        if (isApiError(err) && err.status === 404) forget()
+        else toast.error("Couldn't delete the incognito chat yet", { description: 'Sentient will delete it when it closes.' })
+      })
+      .finally(() => closing.delete(sessionId))
   }
 }))
 

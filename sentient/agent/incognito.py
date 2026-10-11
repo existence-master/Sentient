@@ -8,7 +8,6 @@ is enforced where it happens (``Agent.run_turn``, the memory and skill tools, su
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from datetime import UTC, datetime, timedelta
 
@@ -28,9 +27,7 @@ class IncognitoSweeper(Service):
             self.run_every(SWEEP_EVERY_S, self.sweep, name="sweep", initial_delay=SWEEP_EVERY_S)
 
     async def stop(self) -> None:
-        await super().stop()
-        with contextlib.suppress(Exception):
-            await self.purge(skip_running=False)
+        await super().stop()  # the final purge runs in SentientApp.stop, after replies and background work end
 
     async def sweep(self, now: datetime | None = None) -> list[str]:
         """Delete incognito chats with no new message for ``chat.incognito_delete_after_minutes``."""
@@ -39,15 +36,14 @@ class IncognitoSweeper(Service):
         return await self.purge(cutoff.isoformat())
 
     async def purge(self, idle_before: str | None = None, *, skip_running: bool = True) -> list[str]:
-        """Delete incognito chats (only those idle since ``idle_before`` when given). A chat whose reply is still
-        running is left for the next sweep unless ``skip_running`` is off. Returns the deleted ids."""
+        """Delete incognito chats (only those idle since ``idle_before`` when given). A chat with a reply that hasn't
+        finished writing is left for the next sweep unless ``skip_running`` is off. Returns the deleted ids."""
         agent = self.app.agent
         deleted: list[str] = []
         for sid in await self.app.store.incognito_sessions(idle_before):
-            if skip_running and agent is not None and agent.is_running(sid):
+            if skip_running and agent is not None and agent.is_busy(sid):
                 continue
-            await self.app.store.delete_session(sid)
-            self.app.bus.publish("session.deleted", {"session_id": sid, "reason": "incognito"})
+            await self.app.delete_chat(sid, reason="incognito")
             deleted.append(sid)
         if deleted:
             log.info("deleted %d incognito chat(s)", len(deleted))
