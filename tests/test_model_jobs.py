@@ -225,8 +225,10 @@ async def test_upkeep_a_person_asked_for_skips_the_battery_limits_but_not_critic
     jobs, meter = make_jobs(battery=True, percent=20, idle=60, every=3600, cap=0.4), Meter()
     loop = asyncio.get_running_loop()
 
-    def asked(name: str) -> asyncio.Task:
-        return asyncio.create_task(meter.use(jobs, name), context=detached("memory", requested=True))
+    def asked(name: str, press=None) -> asyncio.Task:
+        """One call of a Dream now press (``press``: the press it belongs to; None: a new press)."""
+        ctx = (press or detached("memory", requested=True)).copy()
+        return asyncio.create_task(meter.use(jobs, name), context=ctx)
 
     # 20% is below the minimum, and the idle and burst limits would hold scheduled upkeep: Dream now goes at once
     await asyncio.wait_for(asked("dream"), WAIT)
@@ -237,19 +239,22 @@ async def test_upkeep_a_person_asked_for_skips_the_battery_limits_but_not_critic
     # critical: held as battery_low until the cap, then the rest of the dream follows at once
     jobs.test_battery["percent"] = 10  # type: ignore[attr-defined]
     start = loop.time()
-    first = asked("dream 2")
+    press = detached("memory", requested=True)
+    first = asked("dream 2", press)
     await asyncio.sleep(0.1)
     assert "dream 2" not in meter.order and jobs.status()["deferred_reason"] == "battery_low"
     await asyncio.wait_for(first, WAIT)
     assert loop.time() - start >= 0.35
     released = loop.time()
     scheduled = as_task("memory", meter.use(jobs, "scheduled"))  # queued after the cap let the dream go
-    await asyncio.wait_for(asked("dream 3"), WAIT)
+    await asyncio.wait_for(asked("dream 3", press), WAIT)
     assert loop.time() - released < 0.2  # the rest of the dream follows at once ...
+    again = asked("next press")  # a new Dream now while that burst is open does not inherit it
     await asyncio.sleep(0.1)
-    assert "scheduled" not in meter.order and jobs.status()["deferred_reason"] == "battery_low"  # ... nothing else
-    await asyncio.wait_for(scheduled, WAIT)  # scheduled upkeep goes on its own cap
-    assert meter.order[-1] == "scheduled"
+    assert jobs._asked_open(loop.time())
+    assert "scheduled" not in meter.order and "next press" not in meter.order  # ... nothing else
+    assert jobs.status()["deferred"] == 2 and jobs.status()["deferred_reason"] == "battery_low"
+    await asyncio.wait_for(asyncio.gather(scheduled, again), WAIT)  # each goes on its own cap
 
 
 async def test_dream_now_is_upkeep_a_person_asked_for(config, isolated_home, monkeypatch):
@@ -258,7 +263,7 @@ async def test_dream_now_is_upkeep_a_person_asked_for(config, isolated_home, mon
         seen: list[tuple[str, bool]] = []
 
         async def execute(dream_id: str) -> None:
-            seen.append((current_kind(), jobs_mod._requested.get()))
+            seen.append((current_kind(), jobs_mod._requested.get() is not None))
 
         monkeypatch.setattr(app.dreaming, "_execute", execute)
         await app.dreaming.start_run("manual")

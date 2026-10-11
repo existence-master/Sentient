@@ -82,7 +82,9 @@ NOTIFY_DELAY_S = 0.2  # quick back-to-back changes are published once
 _kind: contextvars.ContextVar[str | None] = contextvars.ContextVar("sentient_model_kind", default=None)
 _turn: contextvars.ContextVar[_Turn | None] = contextvars.ContextVar("sentient_model_turn", default=None)
 _held: contextvars.ContextVar[Slot | None] = contextvars.ContextVar("sentient_model_slot", default=None)
-_requested: contextvars.ContextVar[bool] = contextvars.ContextVar("sentient_model_requested", default=False)
+# a person asked for this upkeep (#296): None, or one id per request so a burst the cap opened serves only that request
+_requested: contextvars.ContextVar[int | None] = contextvars.ContextVar("sentient_model_requested", default=None)
+_request_ids = itertools.count(1)
 
 
 def is_local(model: str | None) -> bool:
@@ -115,7 +117,7 @@ def detached(kind: str, *, requested: bool = False) -> contextvars.Context:
     ctx.run(_kind.set, kind)
     ctx.run(_turn.set, None)
     ctx.run(_held.set, None)
-    ctx.run(_requested.set, requested)
+    ctx.run(_requested.set, next(_request_ids) if requested else None)
     return ctx
 
 
@@ -164,7 +166,7 @@ class _Waiter:
         self.fut = fut
         self.held: str | None = None  # the last reason it was held back for
         self.why: str | None = None  # which battery limit held it last (logged when it changes)
-        self.requested = _requested.get()  # a person asked for this upkeep: only a critical battery holds it
+        self.requested = _requested.get()  # the request id when a person asked for this upkeep, else None
 
 
 class ModelJobs:
@@ -194,6 +196,7 @@ class ModelJobs:
         self._burst_start = float("-inf")  # on battery: when the last upkeep burst began
         self._asked_use = float("-inf")  # the same two for upkeep a person asked for, released by the cap
         self._asked_start = float("-inf")
+        self._asked_owner: int | None = None  # the one request that burst belongs to
         self._timer: asyncio.TimerHandle | None = None
         self._notify: asyncio.TimerHandle | None = None
         self._published: dict | None = None
@@ -290,12 +293,12 @@ class ModelJobs:
             return None  # the cap: never held longer than this, whatever the battery
         if self._burst_open(now):
             return None  # a burst is under way (maybe one the cap let go): the rest of its pass goes with it
-        if w.requested and self._asked_open(now):
+        if w.requested is not None and w.requested == self._asked_owner and self._asked_open(now):
             return None  # the cap let part of what a person asked for go: the rest follows (never scheduled upkeep)
         pct = self._battery_percent()
         if pct is not None and pct <= self._setting("battery_critical_percent", 15):
             return "battery_low", "at or below models.battery_critical_percent"
-        if self._battery_ok() or w.requested:
+        if self._battery_ok() or w.requested is not None:
             return None  # the usual limits are lifted (the setting), or a person asked for this (Dream now)
         if pct is not None and pct <= self._setting("battery_min_percent", 40):
             return "battery", "not above models.battery_min_percent"
@@ -328,7 +331,7 @@ class ModelJobs:
                 if w.kind == "chat":
                     self._last_chat_use = now
                 if w.rank >= UPKEEP_RANK and self._on_battery():
-                    if w.requested:
+                    if w.requested is not None:
                         self._start_asked(w, slot, now)
                     else:
                         self._start_burst(w, slot, now)
@@ -356,11 +359,11 @@ class ModelJobs:
         if w.held in BATTERY_REASONS and slot.waited >= self._setting("battery_max_wait_s", 7200):
             log.info("model job released: %s you asked for waited %.0fs %s, the most it may wait "
                      "(models.battery_max_wait_s)", w.kind, slot.waited, self._battery_detail())
-            if not self._asked_open(now):
-                self._asked_start = now
+            if not self._asked_open(now) or self._asked_owner != w.requested:
+                self._asked_start, self._asked_owner = now, w.requested
         else:
             log.info("model job on battery: %s you asked for goes (%s)", w.kind, self._battery_detail())
-        if self._asked_open(now) or self._asked_start == now:
+        if self._asked_owner == w.requested and (self._asked_open(now) or self._asked_start == now):
             slot.asked_burst = True
             self._asked_use = now
 
