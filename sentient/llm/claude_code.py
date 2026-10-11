@@ -65,7 +65,7 @@ MODEL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,79}$")
 # In Claude Code, sonnet/opus/haiku/fable are aliases for the latest model of each family
 # (claude --help: "an alias for the latest model"), so these track the current flagships.
 ANTHROPIC_MODELS = {"sonnet": "anthropic/claude-sonnet-5-5", "opus": "anthropic/claude-opus-5-5",
-                    "haiku": "anthropic/claude-haiku-4-5", "fable": "anthropic/claude-fable-4-5"}
+                    "haiku": "anthropic/claude-haiku-4-5", "fable": "anthropic/claude-fable-5-1"}
 UNSAFE_FOR_BATCH = re.compile(r'["%!^&|<>\r\n]')  # cmd.exe would read these when claude is a .cmd launcher
 SECRET_ENV = {"SENTIENT_GATEWAY_TOKEN", "CLAUDECODE"}  # never handed to Claude Code
 # Variables that make Claude Code use something other than the plan login the user made with /login
