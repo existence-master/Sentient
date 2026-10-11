@@ -213,11 +213,14 @@ class SentientApp:
             return dict(self.stop_state)
 
     async def delete_chat(self, session_id: str, *, reason: str | None = None) -> None:
-        """Delete a chat: its helpers are cancelled first, so none keeps working for a chat that is gone."""
+        """Delete a chat: its running replies and helpers are stopped first, so none keeps writing to or working for a
+        chat that is gone (a stopped reply saves what it kept, then goes with the chat)."""
         try:
+            if self.agent is not None:
+                await self.agent.cancel_session(session_id)
             await self.subagents.cancel_for_session(session_id)
         except Exception:
-            log.exception("cancelling the helpers of chat %s failed", session_id)
+            log.exception("stopping the work of chat %s failed", session_id)
         await self.store.delete_session(session_id)
         self.bus.publish("session.deleted", {"session_id": session_id, **({"reason": reason} if reason else {})})
 

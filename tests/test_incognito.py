@@ -243,3 +243,48 @@ async def test_turn_busy_count_covers_the_final_write(app):
     app.fake.replies.append("Done.")
     await _turn(app, sid, "hello")
     assert seen == [True] and not app.agent.is_busy(sid)
+
+
+async def test_closing_the_stream_at_done_still_ends_the_busy_count(app):
+    sid = await app.store.create_session(channel="desktop", incognito=True)
+    app.fake.replies.append("Hi.")
+    gen = app.agent.run_turn(sid, "hello", channel="desktop")
+    async for ev in gen:
+        if isinstance(ev, Done):
+            break
+    await gen.aclose()  # the window went away right at the final event
+    assert not app.agent.is_busy(sid)
+    assert await app.incognito.purge() == [sid]
+
+
+async def test_deleting_a_chat_stops_its_running_reply_first(app):
+    import asyncio
+
+    sid = await app.store.create_session(channel="desktop", incognito=True)
+    started, release = asyncio.Event(), asyncio.Event()
+    real_stream = app.fake.stream
+
+    async def slow_stream(*a, **k):
+        started.set()
+        await release.wait()
+        async for chunk in real_stream(*a, **k):
+            yield chunk
+
+    app.fake.stream = slow_stream
+
+    async def consume():
+        return [ev async for ev in app.agent.run_turn(sid, "tell me something", channel="desktop")]
+
+    turn = asyncio.create_task(consume())
+    await asyncio.wait_for(started.wait(), 5)
+    await app.delete_chat(sid, reason="incognito")
+    assert turn.done() and turn.cancelled()
+    assert await app.store.get_session(sid) is None
+    assert await app.store.fetchall("SELECT id FROM messages WHERE session_id = ?", (sid,)) == []
+    assert not app.agent.is_busy(sid)
+
+
+async def test_helpers_of_a_private_incognito_chat_do_not_get_the_name(app):
+    app.config.chat.incognito_uses_memory = False
+    assert "Sarthak" in app.subagents._system_prompt()
+    assert "Sarthak" not in app.subagents._system_prompt(private=True)

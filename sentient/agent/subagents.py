@@ -331,14 +331,15 @@ class SubagentManager(Service):
             return [t.name for t in usable]
         return [n for n in selected if n in usable_names]
 
-    def _system_prompt(self) -> str:
+    def _system_prompt(self, *, private: bool = False) -> str:
+        """``private``: started from an incognito chat that doesn't use memory (#154), so the user's name stays out."""
         from sentient.tools.builtin.time_tool import resolve_tz
 
         cfg = self.app.config.assistant
         now = datetime.now(resolve_tz(cfg.timezone))
         return SUBAGENT_SYSTEM.format(
             assistant=cfg.name or "Sentient",
-            user=cfg.user_name or "the user",
+            user=(None if private else cfg.user_name) or "the user",
             now=f"{now.strftime('%A %Y-%m-%d %H:%M')} ({now.tzinfo})",
         )
 
@@ -374,12 +375,14 @@ class SubagentManager(Service):
             async with self._slot():
                 before = await asyncio.to_thread(_snapshot_files)
                 note({"type": "info", "content": f"Started: {goal[:200]}"}, "Started")
+                incognito = await self.app.store.is_incognito(session_id)  # kept if the chat is deleted (#154)
+                private = incognito and not self.app.config.chat.incognito_uses_memory
                 messages = [
-                    {"role": "system", "content": self._system_prompt()},
+                    {"role": "system", "content": self._system_prompt(private=private)},
                     {"role": "user", "content": f"Goal: {goal}" + (f"\n\nContext:\n{context}" if context else "")},
                 ]
                 ctx = agent.tool_context(session_id, "subagent", origin=origin)
-                ctx.incognito = await self.app.store.is_incognito(session_id)  # kept if the chat is deleted (#154)
+                ctx.incognito = incognito
                 ctx.untrusted = untrusted
                 ctx.extra["subagent_id"] = sub_id
                 names = await self._tool_names(goal, context, tools, cfg.role)

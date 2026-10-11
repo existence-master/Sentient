@@ -437,6 +437,7 @@ class Agent:
         self._turn_tasks: weakref.WeakSet[asyncio.Task] = weakref.WeakSet()  # tasks running a chat reply
         # session id -> chat turns not finished yet, counted until their last write (incognito cleanup waits, #154)
         self._busy: dict[str, int] = {}
+        self._session_tasks: dict[str, set[asyncio.Task]] = {}  # session id -> tasks running its chat turns
 
     # ------------------------------------------------------------------ steering
     def is_running(self, session_id: str) -> bool:
@@ -454,6 +455,23 @@ class Agent:
             self._busy[session_id] = left
         else:
             self._busy.pop(session_id, None)
+        task = asyncio.current_task()
+        tasks = self._session_tasks.get(session_id)
+        if tasks is not None and task is not None:
+            tasks.discard(task)
+            if not tasks:
+                self._session_tasks.pop(session_id, None)
+
+    async def cancel_session(self, session_id: str, timeout: float = 10.0) -> int:
+        """Stop the chat turns running for ``session_id`` and wait until they have saved what they keep (a chat
+        about to be deleted). Returns how many were stopped."""
+        me = asyncio.current_task()
+        tasks = [t for t in self._session_tasks.get(session_id, set()) if not t.done() and t is not me]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.wait(tasks, timeout=timeout)
+        return len(tasks)
 
     def steer(self, session_id: str, text: str) -> bool:
         """Queue ``text`` for the reply running in ``session_id``. Returns False when no reply is running
@@ -1135,6 +1153,8 @@ class Agent:
         ev = {"session_id": session_id, "turn_id": turn_id}
         attachments = attachments or []
         self._busy[session_id] = self._busy.get(session_id, 0) + 1
+        if (current := asyncio.current_task()) is not None:
+            self._session_tasks.setdefault(session_id, set()).add(current)
         # register for steering; a second concurrent turn on the same session (rare) does not take it over
         steer: SteerQueue | None = None
         if not self.is_running(session_id):
@@ -1272,40 +1292,42 @@ class Agent:
             raise
         leftover = release()
 
-        if not (result.error and not result.text):
-            memory_sources = await sources.resolve(self.store)
-            message_id = await self.store.add_message(
-                session_id, "assistant", result.text, thinking=result.thinking or None, memory_sources=memory_sources
-            )
-            yield Done(content=result.text, message_id=message_id, memory_sources=memory_sources, **ev)
-
-            said = "\n\n".join([user_text, *result.interjections]).strip()
-            # nothing is learned from an incognito chat (#154): no fact extraction, no memory flush, and no
-            # chat.turn_completed, so skills, the user model and dreaming never see it
-            if self.memory is not None and self.config.memory.extract_after_turn and not incognito:
-                # a chat that read outside content holds what it learns for the user's review (ADR 0021)
-                log.info("chat %s: fact extraction started for this turn", session_id)
-                self._spawn(self._extract(said, memory_review.for_context(ctx)), "memory")
-            if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
-                self._spawn(self._auto_title(session_id, user_text, result.text), "titles")
-            self._spawn(self._maybe_compress(session_id, flush=not incognito), "memory")
-            if incognito:
-                log.info("incognito chat %s: nothing learned from this turn", session_id)
-            elif self.app is not None:
-                self.app.bus.publish(
-                    "chat.turn_completed",
-                    {
-                        "session_id": session_id,
-                        "turn_id": turn_id,
-                        "tool_calls": result.tool_calls,
-                        "tool_errors": result.tool_errors,
-                        "skills_viewed": result.skills_viewed,
-                        "user_text": said,
-                        "reply": result.text,
-                    },
+        try:  # the turn counts as busy until here, also when the caller stops reading at Done
+            if not (result.error and not result.text):
+                memory_sources = await sources.resolve(self.store)
+                message_id = await self.store.add_message(
+                    session_id, "assistant", result.text, thinking=result.thinking or None, memory_sources=memory_sources
                 )
+                yield Done(content=result.text, message_id=message_id, memory_sources=memory_sources, **ev)
 
-        self._turn_done(session_id)
+                said = "\n\n".join([user_text, *result.interjections]).strip()
+                # nothing is learned from an incognito chat (#154): no fact extraction, no memory flush, and no
+                # chat.turn_completed, so skills, the user model and dreaming never see it
+                if self.memory is not None and self.config.memory.extract_after_turn and not incognito:
+                    # a chat that read outside content holds what it learns for the user's review (ADR 0021)
+                    log.info("chat %s: fact extraction started for this turn", session_id)
+                    self._spawn(self._extract(said, memory_review.for_context(ctx)), "memory")
+                if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
+                    self._spawn(self._auto_title(session_id, user_text, result.text), "titles")
+                self._spawn(self._maybe_compress(session_id, flush=not incognito), "memory")
+                if incognito:
+                    log.info("incognito chat %s: nothing learned from this turn", session_id)
+                elif self.app is not None:
+                    self.app.bus.publish(
+                        "chat.turn_completed",
+                        {
+                            "session_id": session_id,
+                            "turn_id": turn_id,
+                            "tool_calls": result.tool_calls,
+                            "tool_errors": result.tool_errors,
+                            "skills_viewed": result.skills_viewed,
+                            "user_text": said,
+                            "reply": result.text,
+                        },
+                    )
+
+        finally:
+            self._turn_done(session_id)
         if leftover:
             # steer messages that arrived after the final round start a new turn
             async for event in self.run_turn(session_id, "\n\n".join(leftover), channel=channel, model=model):
