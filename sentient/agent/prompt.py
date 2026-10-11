@@ -97,7 +97,6 @@ def build_system_prompt(
     skills_index: str,
     assistant_name: str,
     user_name: str,
-    timezone: str,
     channel: str,
     location: str = "",
     user_context: str = "",

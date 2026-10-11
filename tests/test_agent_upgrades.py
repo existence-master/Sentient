@@ -466,7 +466,6 @@ def test_system_prompt_does_not_depend_on_current_time():
         "skills_index": "",
         "assistant_name": "Sentient",
         "user_name": "Maya",
-        "timezone": "UTC",
         "channel": "desktop",
     }
 
@@ -656,7 +655,7 @@ async def test_selection_triggers_surface_new_capabilities():
 
 def test_capability_rules_follow_available_tools():
     base = dict(snapshot={}, facts=[], skills_index="", assistant_name="Sentient", user_name="Sarthak",
-                timezone="UTC", channel="desktop")
+                channel="desktop")
     plain = build_system_prompt(**base, tool_names=["memory_recall"])
     assert "Open browser button" not in plain and "execute_code" not in plain
     rich = build_system_prompt(
@@ -731,7 +730,7 @@ async def test_steer_messages_are_marked_and_package_schemas_listed(config, isol
 
 
 async def test_messaging_and_phone_channels(config, isolated_home):
-    base = dict(snapshot={}, facts=[], skills_index="", assistant_name="Sentient", user_name="Sarthak", timezone="UTC")
+    base = dict(snapshot={}, facts=[], skills_index="", assistant_name="Sentient", user_name="Sarthak")
     assert "chatting in Telegram" in build_system_prompt(**base, channel="telegram")
     assert "No wide tables" in build_system_prompt(**base, channel="discord")
     llm = FakeProvider(replies=["Hi."])

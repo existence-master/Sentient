@@ -502,7 +502,6 @@ class Agent:
             skills_index=self.skills.prompt_index(),
             assistant_name=self.config.assistant.name,
             user_name=self.config.assistant.user_name,
-            timezone=self.config.assistant.timezone,
             channel=channel,
             location=self.config.assistant.location,
             user_context=user_context,
