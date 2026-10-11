@@ -687,6 +687,141 @@ async def test_attached_browser_resets_download_behavior_to_default(monkeypatch)
     assert "Browser.downloadProgress" in cdp_handlers
 
 
+@pytest.mark.parametrize(
+    ("fail_stage", "exc_to_raise", "expected_err_type", "expected_match"),
+    [
+        (
+            "session",
+            RuntimeError("session creation failed"),
+            BrowserError,
+            "failed to set up download tracking.*session creation failed",
+        ),
+        (
+            "send",
+            RuntimeError("setDownloadBehavior failed"),
+            BrowserError,
+            "failed to set up download tracking.*setDownloadBehavior failed",
+        ),
+        ("session", asyncio.CancelledError(), asyncio.CancelledError, None),
+        ("send", asyncio.CancelledError(), asyncio.CancelledError, None),
+    ],
+)
+async def test_attached_browser_cdp_setup_failure_and_cancellation_cleanup(
+    monkeypatch, fail_stage, exc_to_raise, expected_err_type, expected_match
+):
+    svc = BrowserService(make_app())
+    closed = []
+    detached = []
+
+    class MockCDP:
+        def on(self, event, handler):
+            pass
+
+        async def send(self, command, params):
+            if fail_stage == "send" and command == "Browser.setDownloadBehavior":
+                raise exc_to_raise
+
+        async def detach(self):
+            await asyncio.sleep(0.01)
+            detached.append(True)
+
+    class MockBrowser:
+        contexts = [object()]
+
+        def on(self, event, handler):
+            pass
+
+        async def new_browser_cdp_session(self):
+            if fail_stage == "session":
+                raise exc_to_raise
+            return MockCDP()
+
+        async def close(self):
+            await asyncio.sleep(0.01)
+            closed.append(True)
+
+    class MockChromium:
+        async def connect_over_cdp(self, ws, timeout=None):
+            return MockBrowser()
+
+    svc._pw = type("MockPW", (), {"chromium": MockChromium()})()
+    monkeypatch.setattr(safety, "devtools_endpoint", lambda ep: ("http://127.0.0.1:9222", None))
+
+    async def _mock_ws(ep):
+        return "ws://127.0.0.1:9222"
+
+    monkeypatch.setattr(browser_service, "devtools_ws_url", _mock_ws)
+
+    prof = BrowserProfileConfig(kind="attach", endpoint="http://127.0.0.1:9222")
+
+    if expected_match:
+        with pytest.raises(expected_err_type, match=expected_match):
+            await svc._attach(prof)
+    else:
+        with pytest.raises(expected_err_type):
+            await svc._attach(prof)
+
+    assert svc._attached is False
+    assert svc._browser is None
+    assert svc._browser_cdp is None
+    assert closed == [True]
+    if fail_stage == "send":
+        assert detached == [True]
+    else:
+        assert detached == []
+    assert len(svc._attached_downloads) == 0
+    if isinstance(exc_to_raise, asyncio.CancelledError):
+        assert svc._last_error is None
+    else:
+        assert svc._last_error is not None
+
+
+async def test_attached_browser_cleanup_error_does_not_mask_original_error(monkeypatch):
+    svc = BrowserService(make_app())
+
+    class MockCDP:
+        def on(self, event, handler):
+            pass
+
+        async def send(self, command, params):
+            raise RuntimeError("original send failure")
+
+        async def detach(self):
+            raise RuntimeError("detach error")
+
+    class MockBrowser:
+        contexts = [object()]
+
+        def on(self, event, handler):
+            pass
+
+        async def new_browser_cdp_session(self):
+            return MockCDP()
+
+        async def close(self):
+            raise RuntimeError("close error")
+
+    class MockChromium:
+        async def connect_over_cdp(self, ws, timeout=None):
+            return MockBrowser()
+
+    svc._pw = type("MockPW", (), {"chromium": MockChromium()})()
+    monkeypatch.setattr(safety, "devtools_endpoint", lambda ep: ("http://127.0.0.1:9222", None))
+
+    async def _mock_ws(ep):
+        return "ws://127.0.0.1:9222"
+
+    monkeypatch.setattr(browser_service, "devtools_ws_url", _mock_ws)
+
+    prof = BrowserProfileConfig(kind="attach", endpoint="http://127.0.0.1:9222")
+    with pytest.raises(BrowserError, match=r"failed to set up download tracking.*original send failure"):
+        await svc._attach(prof)
+
+    assert svc._attached is False
+    assert svc._browser is None
+    assert svc._browser_cdp is None
+
+
 class _MockDownload:
     def __init__(self, filename="report.pdf", url="https://example.com/report.pdf", page=None):
         self.suggested_filename = filename

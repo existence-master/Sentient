@@ -201,6 +201,27 @@ def _friendly_playwright_error(exc: BaseException) -> str:
     return msg.splitlines()[0][:300] if msg else type(exc).__name__
 
 
+async def _shield_wait(aw: Any, timeout: float | None = None) -> None:
+    """Await a cleanup future or coroutine to completion even if the current task is cancelled."""
+    fut = asyncio.ensure_future(aw)
+    loop = asyncio.get_running_loop()
+    end_time = (loop.time() + timeout) if timeout is not None else None
+    while not fut.done():
+        remaining = (end_time - loop.time()) if end_time is not None else None
+        if remaining is not None and remaining <= 0:
+            fut.cancel()
+            break
+        try:
+            if remaining is not None:
+                await asyncio.wait_for(asyncio.shield(fut), timeout=remaining)
+            else:
+                await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            pass
+        except BaseException:
+            break
+
+
 class BrowserService(Service):
     name = "browser"
 
@@ -603,21 +624,50 @@ class BrowserService(Service):
             self._last_error = f"Couldn't attach to the browser at {endpoint}: {str(exc).splitlines()[0][:200]}"
             raise BrowserError(self._last_error) from exc
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
-        browser.on("disconnected", lambda *_: self._on_context_closed(context))
-        self._browser = browser
-        self._attached = True
-        self._engine = None
+        cdp = None
         try:
             cdp = await browser.new_browser_cdp_session()
-            self._browser_cdp = cdp
             cdp.on("Target.targetCreated", self._on_cdp_target_created)
             cdp.on("Target.targetInfoChanged", self._on_cdp_target_created)
             cdp.on("Browser.downloadWillBegin", self._on_cdp_download_will_begin)
             cdp.on("Browser.downloadProgress", self._on_cdp_download_progress)
             await cdp.send("Target.setDiscoverTargets", {"discover": True})
             await cdp.send("Browser.setDownloadBehavior", {"behavior": "default", "eventsEnabled": True})
-        except Exception:
-            pass
+        except BaseException as exc:
+            if cdp is not None:
+                detach_fn = getattr(cdp, "detach", None)
+                if callable(detach_fn):
+                    try:
+                        res = detach_fn()
+                        if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
+                            await _shield_wait(res)
+                    except BaseException:
+                        pass
+            self._browser_cdp = None
+            self._clear_attached_downloads()
+            self._attached = False
+            self._browser = None
+            close_fn = getattr(browser, "close", None)
+            if callable(close_fn):
+                try:
+                    res = close_fn()
+                    if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
+                        await _shield_wait(res, timeout=CLOSE_TIMEOUT_S)
+                except BaseException:
+                    pass
+            if isinstance(exc, asyncio.CancelledError) or not isinstance(exc, Exception):
+                raise
+            self._last_error = (
+                f"Couldn't attach to the browser at {endpoint}: "
+                f"failed to set up download tracking: {str(exc).splitlines()[0][:200]}"
+            )
+            raise BrowserError(self._last_error) from exc
+
+        browser.on("disconnected", lambda *_: self._on_context_closed(context))
+        self._browser = browser
+        self._browser_cdp = cdp
+        self._attached = True
+        self._engine = None
         return context
 
     async def _ensure(self, ctx: Any = None) -> Any:
