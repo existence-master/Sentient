@@ -92,7 +92,16 @@ const ROLE_ICON: Record<RoleName, Icon> = {
 }
 
 /** #149: one local model job at a time, your chats first. */
-const MODEL_QUEUE_KEYS = ['models.local_queue', 'models.background_quiet_s', 'models.background_on_battery']
+const MODEL_QUEUE_KEYS = [
+  'models.local_queue',
+  'models.background_quiet_s',
+  'models.background_on_battery',
+  'models.battery_min_percent',
+  'models.battery_critical_percent',
+  'models.battery_idle_s',
+  'models.battery_upkeep_every_s',
+  'models.battery_max_wait_s'
+]
 
 export function ModelsSection({ query }: SectionProps) {
   const { config } = useConfigEditor()

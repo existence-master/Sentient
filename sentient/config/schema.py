@@ -205,8 +205,32 @@ class ModelsConfig(BaseModel):
     )
     background_on_battery: bool = Field(
         False,
-        description="Let background work use a local model while this computer runs on battery. When off, it waits "
-        "until you plug in. Your chats always run.",
+        description="Let Sentient's own upkeep (memory, suggestions, skill review, chat titles) use a local model on "
+        "battery as freely as when plugged in. When off, upkeep still runs on battery, with the limits below. Your "
+        "chats and the tasks you scheduled always run on time.",
+    )
+    battery_min_percent: int = Field(
+        40, ge=0, le=100,
+        description="On battery, Sentient's own upkeep uses a local model only while the battery is above this "
+        "percent. Your tasks run on time at any level.",
+    )
+    battery_critical_percent: int = Field(
+        15, ge=0, le=100,
+        description="At or below this battery percent, upkeep waits even when it is allowed on battery. Your tasks "
+        "still run.",
+    )
+    battery_idle_s: int = Field(
+        300, ge=0, le=7200,
+        description="On battery, upkeep waits until you have not chatted for this many seconds.",
+    )
+    battery_upkeep_every_s: int = Field(
+        1800, ge=0, le=86400,
+        description="On battery, upkeep runs in short bursts at most this often, in seconds. 0 lets it run "
+        "whenever the other limits allow.",
+    )
+    battery_max_wait_s: int = Field(
+        7200, ge=60, le=86400,
+        description="Upkeep never waits longer than this many seconds because of the battery, whatever its level.",
     )
 
 
