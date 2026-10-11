@@ -17,7 +17,7 @@ If you need to change a shape, change this file in the same edit.
 ### Client → server
 | type | fields | meaning |
 |---|---|---|
-| `chat.send` | `session_id?`, `text`, `attachments?: string[]` (file names from `/api/files`), `model?` (override primary for this turn), `client_id?` | start a turn; omit `session_id` for a new chat |
+| `chat.send` | `session_id?`, `text`, `attachments?: string[]` (file names from `/api/files`), `model?` (override primary for this turn), `client_id?`, `incognito?: bool` | start a turn; omit `session_id` for a new chat. `incognito: true` makes that new chat an incognito chat (section 2); ignored with `session_id` |
 | `chat.steer` | `session_id`, `text`, `client_id?` | add to the reply in progress (section 10); without a running reply same as `chat.send` |
 | `chat.cancel` | `session_id` | stop the reply in progress |
 | `approval.respond` | `approval_id`, `decision: "allow"\|"allow_session"\|"deny"` | answer an approval request |
@@ -79,6 +79,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending"}`; `status: "pending"` means the memory waits in the review inbox (section 7); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE) |
 | `skill.updated` | `{name, state: "active"\|"pending_review"\|"stale"\|"archived"\|"rejected"\|"deleted"}` |
 | `session.updated` | `{session_id, title}` |
+| `session.deleted` | `{session_id, reason?: "incognito"}`: a chat was deleted (`DELETE /api/sessions/{id}`, or an incognito chat closed by the engine, section 2) |
 | `rule_proposal.updated` | **RuleProposal** (section 2, rules from chat): a new "Make this a rule?" card, or one the user answered |
 | `config.updated` | `{sections: string[]}` |
 | `voice.state` | `{state, session_id}` (mirrors voice socket for other windows) |
@@ -193,13 +194,15 @@ accept or loosen a rule.
   "From your message on <date>". An entry is dropped when its rule is changed or removed.
 
 ### Sessions (chats)
-- `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts}]` newest first
+- `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts, incognito}]` newest first
   (`untrusted`: the app whose content the chat read, e.g. `"Gmail"`, `""` when clean, `null` before its first turn;
-  `visited_hosts`: list of web hosts it loaded, or `null`; section 10)
-- `POST /api/sessions` → `{session_id}`
+  `visited_hosts`: list of web hosts it loaded, or `null`; section 10; `incognito`: bool, below. The window keeps
+  incognito chats out of its chat list)
+- `POST /api/sessions?incognito=false` → `{session_id}`
 - `PATCH /api/sessions/{id}` `{title}` → `{ok}`
-- `DELETE /api/sessions/{id}` → `{ok}`
-- `GET /api/sessions/{id}/messages?limit=500` → raw transcript rows, oldest first:
+- `DELETE /api/sessions/{id}` → `{ok}` (helpers the chat started are cancelled first; publishes `session.deleted`)
+- `GET /api/sessions/{id}/messages?limit=500` → raw transcript rows, oldest first (404 when the chat doesn't exist, e.g. a
+  closed incognito chat):
   ```json
   {"id": "...", "role": "user|assistant|tool", "content": "...", "thinking": "...|null",
    "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "memory_recall", "arguments": "{\"query\":\"sister\"}"}}],
@@ -217,8 +220,27 @@ accept or loosen a rule.
   first mention wins, at most 40. Only rows of a memory tool's result that fit in the run's tool result limit
   (`LoopResult.tool_result_limit`, section 10: the part the model read) count. Pending memories (section 7, review) never appear. Task runs record the same list
   (section 4, Run `memory_sources`).
-- `GET /api/sessions/search?q=` → `[{session_id, message_id, role, snippet, created_at}]`
-- `POST /api/chat` NDJSON fallback of the WebSocket turn: body `{text, session_id?, attachments?, model?}`; lines are the chat events above, first line `{type: "session", session_id}`.
+- `GET /api/sessions/search?q=` → `[{session_id, message_id, role, snippet, created_at}]` (never incognito chats)
+- `POST /api/chat` NDJSON fallback of the WebSocket turn: body `{text, session_id?, attachments?, model?, incognito?}`; lines are the chat events above, first line `{type: "session", session_id}`.
+- **Incognito chats** (#154). A chat created with `incognito: true` (`chat.send`, `POST /api/chat`,
+  `POST /api/sessions?incognito=true`) can't be switched later, and the engine enforces:
+  - nothing is learned from it: no fact extraction after a turn, no memory flush when it is compressed, and no
+    `chat.turn_completed` event, so skill review and repair, the user model and dreaming never see it. Its skill
+    views don't count as skill use.
+  - `memory_remember` and `skill_save` are not offered, and refuse with an error when called in it (also from a
+    helper it started). Nothing is stored, not even held for review.
+  - keyword search (`GET /api/sessions/search`, `memory_search_history`), conversation summaries,
+    `history_time_search`, the user model's evidence and skill review leave it out.
+  - reading memory follows `chat.incognito_uses_memory` (default `true`): recalled facts, user-model insights and
+    the memory tools work as usual, and the reply's `memory_sources` list them. Off, its prompt has no profile,
+    memory file, daily notes, facts or insights, and the memory look-up tools are not offered and return nothing.
+    The prompt also tells the model the chat is incognito.
+  - it is deleted: the window deletes it when the user leaves it; the engine deletes every incognito chat at start
+    and shutdown (after replies and background work have finished), and one with no new message for
+    `chat.incognito_delete_after_minutes` (default 30) within a minute; a reply still writing is never cut off.
+    Helpers it started keep refusing to save even if it is deleted first. Without memory, its prompt also leaves out
+    the configured name and location.
+    Each engine deletion publishes `session.deleted` with `reason: "incognito"`.
 - `POST /api/approvals` `{approval_id, decision}` → `{resolved}`
 
 ### Files (attachments + assistant outputs)

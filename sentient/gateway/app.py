@@ -159,7 +159,7 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                         await send({"type": "steer_ack", "session_id": session_id, "queued": False,
                                     "client_id": msg.get("client_id")})
                     session_id = session_id or await s.store.create_session(
-                        channel=str(msg.get("channel", "desktop"))
+                        channel=str(msg.get("channel", "desktop")), incognito=msg.get("incognito") is True
                     )
                     await send({"type": "session", "session_id": session_id, "client_id": msg.get("client_id")})
                     chain = turns.setdefault(session_id, [])
