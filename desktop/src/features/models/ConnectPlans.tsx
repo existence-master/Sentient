@@ -20,6 +20,7 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Card, IconButton, Input, SegmentedControl } from '@/components/ui'
 import { InstructionsGuide, openExternal } from '@/features/integrations/InstructionsGuide'
+import { ContinueWithChatGPT } from '@/features/models/ChatGPTBrand'
 import { usePresetSwitch } from '@/features/models/usePresetSwitch'
 import {
   useChatGPTStatus,
@@ -330,7 +331,17 @@ export function OpenRouterConnect() {
   )
 }
 
-/** Sign in with ChatGPT: a ChatGPT Plus or Pro plan's models for any job, through OpenAI's sign-in for open-source apps. */
+/**
+ * The plan's main and fast model by the engine's rule (docs/API.md §3, "The fast model rule"): the first listed
+ * model for both; fast jobs run it with the lightest reasoning. Never a guess from "mini" or "nano" in a name.
+ */
+export function chatgptPlanModels(models: string[]): { main: string; fast: string } | null {
+  const main = models.find((m) => !looksLikeEmbedding(m))
+  return main ? { main, fast: main } : null
+}
+
+/** Sign in with ChatGPT: a ChatGPT Plus or Pro plan's models for any job, through OpenAI's sign-in for open-source apps.
+ * Copy and button follow OpenAI's UI guidelines (https://developers.openai.com/siwc/ui-ux-guidelines). */
 export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string, fast: string) => void }) {
   const qc = useQueryClient()
   const status = useChatGPTStatus()
@@ -345,7 +356,7 @@ export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string
 
   useEffect(() => {
     if (flowStatus.data?.status === 'connected') {
-      toast.success("You're using your ChatGPT plan", {
+      toast.success("You're signed in with ChatGPT", {
         description: 'Your sign-in is kept in your system keychain. Pick ChatGPT models under Roles.'
       })
       setFlow(null)
@@ -368,9 +379,7 @@ export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string
     }
   }
 
-  const models = (catalog.data ?? []).map((m) => m.id).filter((m) => !looksLikeEmbedding(m))
-  const main = models[0]
-  const fast = models.find((m) => /mini|nano/i.test(m)) ?? main
+  const picked = chatgptPlanModels((catalog.data ?? []).map((m) => m.id))
 
   if (status.isError) {
     return (
@@ -396,11 +405,17 @@ export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string
   }
   return (
     <div className="space-y-3">
-      <p className="text-sm leading-relaxed text-fg-muted">
-        Use your ChatGPT Plus or Pro plan for chat and tasks. Your browser opens ChatGPT; sign in and allow Sentient. Usage counts against your plan, not
-        an API bill, and you can set a limit for Sentient in ChatGPT's settings. Your sign-in stays in your system keychain and renews on its own. ChatGPT
-        plans don't include models for memory search, so that keeps its current model.
-      </p>
+      <div>
+        <div className="text-sm font-medium text-fg">Use your ChatGPT plan</div>
+        <p className="mt-0.5 text-sm leading-relaxed text-fg-muted">
+          Complete eligible AI requests in this app with usage included in your ChatGPT plan or credits balance. It needs ChatGPT Plus or Pro, and it is
+          separate from Sentient, which has no charges of its own.
+        </p>
+        <p className="mt-1.5 text-xs leading-relaxed text-fg-subtle">
+          Your browser opens ChatGPT; sign in and allow Sentient. You can set a limit for Sentient in ChatGPT&apos;s settings. Your sign-in stays in your
+          system keychain and renews on its own. ChatGPT plans don&apos;t include models for memory search, so that keeps its current model.
+        </p>
+      </div>
       {signedIn ? (
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
@@ -446,9 +461,9 @@ export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string
               {check.data.ok ? check.data.detail : check.data.error}
             </Alert>
           )}
-          {main && onUseModels && (
+          {picked && onUseModels && (
             <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" variant="primary" onClick={() => onUseModels(main, fast ?? main)}>
+              <Button size="sm" variant="primary" onClick={() => onUseModels(picked.main, picked.fast)}>
                 Use ChatGPT for every job
               </Button>
               <span className="text-xs text-fg-subtle">You can still pick a model per job under Roles.</span>
@@ -482,9 +497,7 @@ export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string
           )}
         </div>
       ) : (
-        <Button variant="primary" leftIcon={<IconLogin size={15} />} loading={starting} onClick={() => void start()}>
-          Continue with ChatGPT
-        </Button>
+        <ContinueWithChatGPT loading={starting} onClick={() => void start()} />
       )}
     </div>
   )

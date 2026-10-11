@@ -11,6 +11,7 @@ import { ChatPage } from '@/features/chat/ChatPage'
 import { holdScreenShare } from '@/features/chat/screenShare'
 import { DevicesPage } from '@/features/devices/DevicesPage'
 import { IntegrationsPage } from '@/features/integrations/IntegrationsPage'
+import { ChatGPTWelcome } from '@/features/models/ChatGPTWelcome'
 import { MemoryPage } from '@/features/memory/MemoryPage'
 import { NotificationsPage } from '@/features/notifications/NotificationsPage'
 import { OnboardingPage } from '@/features/onboarding/OnboardingPage'
@@ -174,6 +175,7 @@ function BootstrapGate() {
     <>
       <SmokeReporter />
       <DictationShellSync />
+      <ChatGPTWelcome />
       <Outlet />
     </>
   )

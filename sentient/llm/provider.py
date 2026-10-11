@@ -393,8 +393,8 @@ class LiteLLMProvider:
         """A ChatGPT plan model through the Responses API with the signed-in user's token (issue #205)."""
         from sentient.llm import chatgpt, responses
 
-        body = responses.request_body(model.split("/", 1)[1], messages, tools,
-                                      reasoning_effort=self.config.models.reasoning.get(role))
+        effort = await chatgpt.reasoning_effort(self.config, model, self.config.models.reasoning.get(role))
+        body = responses.request_body(model.split("/", 1)[1], messages, tools, reasoning_effort=effort)
         url, timeout = chatgpt.responses_url(self.config), self.config.models.request_timeout_s
         try:
             token = await chatgpt.access_token(self.config)

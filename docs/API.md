@@ -380,8 +380,8 @@ accept or loosen a rule.
   stored: "Local only" (the `ModelRoles` defaults from `config/schema.py`, or, once the hardware is known, the
   recommended model for `primary` and `fast` plus its `context_length`, see `GET /api/system/hardware`; a local
   embedding model the user picked is kept), "Cloud" and "Mixed" (the first of Anthropic, OpenAI, OpenRouter with a key set, models from
-  `PRESET_CLOUD_MODELS` in `config/schema.py`, or else a ChatGPT sign-in, whose main model is the first on the plan's
-  list and whose fast model is the first "mini" or "nano" one; Cloud leaves the embedding model alone because changing it re-indexes
+  `PRESET_CLOUD_MODELS` in `config/schema.py`, or else a ChatGPT sign-in, whose models follow the fast model rule
+  under "Connecting plans" below; Cloud leaves the embedding model alone because changing it re-indexes
   memory; Mixed keeps `fast` and `embedding` local). Built-ins clear `models.fallbacks`. The user's own presets are in
   `models.presets` (`{name: {roles, fallbacks?, reasoning?, context_length?, context_length_per_role?}}`; a role left
   out keeps its model, a field left out keeps its value) and the last one applied is `models.active_preset`. Names are
@@ -469,12 +469,26 @@ is kept under `chatgpt`.
   Models are `chatgpt/<slug>` from `GET https://api.openai.com/v1/models` (entries with `visibility: "list"`, in
   OpenAI's order). They don't go through LiteLLM: `sentient/llm/responses.py` sends `POST /v1/responses` with the
   access token, always `stream: true` and `store: false`, the leading system prompts as `instructions` (later ones as
-  `developer` messages), function tools, and `reasoning` from the role's effort; never `temperature`,
+  `developer` messages), function tools, and `reasoning` from the role's effort (see the fast model rule); never `temperature`,
   `max_output_tokens`, `previous_response_id` or other refused fields. Text and JSON jobs collect the stream. Tool
   call ids are the Responses `call_id`. Plan usage has no embedding models (`embed` with a `chatgpt/` model fails).
   A usage limit (`subscription_sharing_usage_limit_exceeded`, 429 or mid-stream `response.failed`) becomes "Usage
   limit reached" with the Manage usage link (`https://chatgpt.com/settings/usage`); there is no silent switch to
   another way of paying, only the user's own fallbacks.
+  **The fast model rule** (issue #241). The plan's model list gives each model's slug, name, visibility and order
+  (https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) and says nothing about which
+  models are small or quick, so nothing is guessed from names. The Cloud and Mixed presets (and "Use ChatGPT for every
+  job") use the **first listed model** as the main model and **the same model** for the fast jobs. A role whose
+  `models.reasoning` effort is `none` (the fast jobs by default) gets the **lightest effort the list gives for that
+  model** (`supported_reasoning_levels`, lightest of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`,
+  `ultra`); a role with `low`, `medium` or `high` gets exactly that. When the list hasn't named the model's levels, a
+  plan call loads the list once (at most every 10 minutes); if it still doesn't say, no effort is sent and the model
+  uses its own default. The user can pick any plan model for any role under Settings > Models > Roles.
+  **OpenAI's UI guidelines** (https://developers.openai.com/siwc/ui-ux-guidelines): the sign-in button says "Continue
+  with ChatGPT" with OpenAI's ChatGPT logo (the white or black sign-in button logo from
+  https://developers.openai.com/siwc/website, unchanged), in Settings > Models and in first-run setup's cloud step;
+  after the first sign-in on a computer the window shows "You're using your ChatGPT plan" once; and while the model
+  for the next chat message is a `chatgpt/` model, the chat box shows "Using ChatGPT plan" with a Manage usage link.
 - **Nous Portal** has no sign-in for other apps, so it takes an API key. Models are `nous/<model>`, sent through
   LiteLLM's OpenAI-compatible client to `https://inference-api.nousresearch.com/v1` (override with
   `models.providers.nous.api_base`; env fallback `NOUS_API_KEY`).
@@ -483,8 +497,11 @@ Routes:
 - `POST /api/models/connect/openrouter` → `{auth_url, state}`. The window opens `auth_url` in the browser.
 - `GET /api/models/connect/openrouter/{state}` → `{status: "waiting"|"exchanging"|"connected"|"failed", error}`; 404
   for an unknown sign-in. On success the engine also publishes `config.updated` `{sections: ["secrets"]}`.
-- `GET /api/models/connect/chatgpt` → `{available, reason, signed_in, email, manage_usage_url}`. `available: false`
-  with a plain `reason` when `models.chatgpt_client_id` is empty.
+- `GET /api/models/connect/chatgpt` → `{available, reason, signed_in, email, manage_usage_url, welcome}`. `available: false`
+  with a plain `reason` when `models.chatgpt_client_id` is empty. `welcome` is true while signed in and the one-time
+  "You're using your ChatGPT plan" message has never been dismissed on this computer (store meta `chatgpt.welcomed`).
+- `POST /api/models/connect/chatgpt/welcome` → `{ok}`: the welcome message was shown; `welcome` stays false from now
+  on, through later sign-outs and sign-ins.
 - `POST /api/models/connect/chatgpt` → `{auth_url, state}` (409 with a plain `detail` when the sign-in is turned off).
   `GET /api/models/connect/chatgpt/{state}` → the same status as OpenRouter's; `config.updated`
   `{sections: ["secrets"]}` on success.

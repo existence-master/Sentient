@@ -39,6 +39,14 @@ def keychain(monkeypatch) -> dict[str, str]:
     return store
 
 
+@pytest.fixture(autouse=True)
+def fresh_model_info():
+    """What the last model list said lives in the module; every test starts without it."""
+    chatgpt.forget_models()
+    yield
+    chatgpt.forget_models()
+
+
 @pytest.fixture
 async def app(config, isolated_home):
     a = SentientApp(config, llm=FakeProvider(), db_path=isolated_home / "chatgpt.db", enable_background=False)
@@ -131,7 +139,7 @@ async def test_first_sign_in_registers_and_stores_tokens(app, keychain):
     assert saved["email"] == "maya@example.com" and saved["expires_at"] > time.time() + 3000
     assert await app.store.get_meta(chatgpt.CLIENT_META) == ISSUED
     assert app.connections.flow_status(started["state"]) == {"status": "connected", "error": None}
-    assert app.connections.chatgpt_status()["signed_in"] is True
+    assert (await app.connections.chatgpt_status())["signed_in"] is True
     assert any(e["type"] == "config.updated" and e["data"]["sections"] == ["secrets"] for e in seen)
 
     # the next sign-in reuses the issued client id and doesn't register again
@@ -240,12 +248,25 @@ async def test_sign_out_stops_sign_ins_in_flight(app, keychain):
 def test_turned_off_without_a_client_id(client):
     status = client.get("/api/models/connect/chatgpt").json()
     assert status == {"available": True, "reason": None, "signed_in": False, "email": None,
-                      "manage_usage_url": "https://chatgpt.com/settings/usage"}
+                      "manage_usage_url": "https://chatgpt.com/settings/usage", "welcome": False}
     assert client.patch("/api/config", json={"models": {"chatgpt_client_id": ""}}).status_code == 200
     status = client.get("/api/models/connect/chatgpt").json()
     assert status["available"] is False and "turned off" in status["reason"]
     r = client.post("/api/models/connect/chatgpt")
     assert r.status_code == 409 and "turned off" in r.json()["detail"]
+
+
+def test_welcome_message_shows_once(client, keychain):
+    assert client.get("/api/models/connect/chatgpt").json()["welcome"] is False  # not signed in: nothing to welcome
+    _signed_in(keychain)
+    assert client.get("/api/models/connect/chatgpt").json()["welcome"] is True
+    assert client.post("/api/models/connect/chatgpt/welcome").json() == {"ok": True}
+    assert client.get("/api/models/connect/chatgpt").json()["welcome"] is False
+    with respx.mock() as router:  # signing out and in again (any account) doesn't show it again
+        router.post(chatgpt.REVOKE_URL).mock(return_value=httpx.Response(200))
+        client.delete("/api/models/connect/chatgpt")
+    _signed_in(keychain)
+    assert client.get("/api/models/connect/chatgpt").json()["welcome"] is False
 
 
 # ---------------------------------------------------------------------------- tokens
@@ -373,6 +394,7 @@ async def test_json_jobs_stream_and_errors_are_plain(config, keychain):
     _signed_in(keychain)
     llm = LiteLLMProvider(config)
     with respx.mock() as router:
+        router.get(MODELS).mock(return_value=httpx.Response(200, json={"models": []}))
         route = router.post(RESPONSES).mock(return_value=httpx.Response(200, content=_sse(
             {"type": "response.output_text.delta", "delta": '{"facts": '},
             {"type": "response.output_text.delta", "delta": '["likes tea"]}'},
@@ -380,7 +402,7 @@ async def test_json_jobs_stream_and_errors_are_plain(config, keychain):
         assert await llm.complete_json("fast", [{"role": "user", "content": "Facts as JSON"}],
                                        model="chatgpt/gpt-test-mini") == {"facts": ["likes tea"]}
     body = json.loads(route.calls.last.request.content)
-    assert body["stream"] is True and "reasoning" not in body  # the fast role thinks with "none"
+    assert body["stream"] is True and "reasoning" not in body  # "none", and the list didn't name the model's levels
 
     with respx.mock() as router:
         router.post(RESPONSES).mock(return_value=httpx.Response(429, json={"error": {
@@ -448,7 +470,8 @@ async def test_plan_models_feed_the_catalog_and_cloud_preset(app, keychain):
     assert await llm.context_window("primary", "chatgpt/gpt-test-mini") is None
     cloud = items["Cloud"]
     assert cloud["available"] and cloud["provider"] == "chatgpt"
-    assert cloud["roles"]["primary"] == "chatgpt/gpt-test" and cloud["roles"]["fast"] == "chatgpt/gpt-test-mini"
+    # the fast jobs use the main model (lightest reasoning), never a guess from "mini" in a name
+    assert cloud["roles"]["primary"] == "chatgpt/gpt-test" and cloud["roles"]["fast"] == "chatgpt/gpt-test"
     assert result["missing"] == [] and app.config.models.roles.primary == "chatgpt/gpt-test"
 
     app.connections.forget("chatgpt")  # offline later: the list from last time still names the plan's models
@@ -462,3 +485,63 @@ async def test_plan_models_feed_the_catalog_and_cloud_preset(app, keychain):
         router.get(MODELS).mock(side_effect=httpx.ConnectError("offline"))
         items = {p["name"]: p for p in (await presets.listing(app))["presets"]}
     assert items["Cloud"]["available"] is False and "Couldn't load" in items["Cloud"]["reason"]
+
+
+# ---------------------------------------------------------------------------- the fast model rule (issue #241)
+# A realistic plan model list: the shape and models of OpenAI's published Codex model catalog
+# (github.com/openai/codex, codex-rs/models-manager/models.json, Apache-2.0), trimmed to the fields Sentient reads.
+# None of these names says "mini" or "nano", so the old name guess fell back to the first model anyway.
+REALISTIC = {"models": [
+    {"slug": "gpt-6-astra", "display_name": "GPT-6-Astra", "visibility": "list", "context_window": 272000,
+     "supported_reasoning_levels": [{"effort": e} for e in ("low", "medium", "high", "xhigh", "max", "ultra")]},
+    {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "visibility": "list", "context_window": 272000,
+     "supported_reasoning_levels": [{"effort": e} for e in ("low", "medium", "high", "xhigh", "max", "ultra")]},
+    {"slug": "gpt-6-luna", "display_name": "GPT-6-Luna", "visibility": "list", "context_window": 272000,
+     "supported_reasoning_levels": [{"effort": e} for e in ("low", "medium", "high", "xhigh", "max")]},
+    {"slug": "gpt-daybreak-blue-latest", "display_name": "Daybreak Blue", "visibility": "hide", "context_window": 272000,
+     "supported_reasoning_levels": [{"effort": "low"}]},
+    {"slug": "gpt-5.5", "display_name": "GPT-5.5", "visibility": "list", "context_window": 272000,
+     "supported_reasoning_levels": [{"effort": e} for e in ("low", "medium", "high", "xhigh")]},
+]}
+
+
+async def test_fast_model_rule_on_a_realistic_list(app, keychain):
+    _signed_in(keychain)
+    with respx.mock() as router:
+        router.get(MODELS).mock(return_value=httpx.Response(200, json=REALISTIC))
+        ids = [m["id"] for m in await app.connections.catalog("chatgpt")]
+    assert ids == ["chatgpt/gpt-6-astra", "chatgpt/gpt-6.1-sol", "chatgpt/gpt-6-luna", "chatgpt/gpt-5.5"]
+    assert chatgpt.pick_models(ids) == {"main": "chatgpt/gpt-6-astra", "fast": "chatgpt/gpt-6-astra"}
+    assert chatgpt.pick_models(["chatgpt/gpt-x", "chatgpt/gpt-x-mini"])["fast"] == "chatgpt/gpt-x"  # no name guess
+    assert chatgpt.pick_models([]) is None
+    assert chatgpt.lightest_effort("chatgpt/gpt-6-astra") == "low" and chatgpt.lightest_effort("chatgpt/other") is None
+
+
+async def test_fast_jobs_use_the_lightest_listed_effort(config, keychain):
+    _signed_in(keychain)
+    llm = LiteLLMProvider(config)
+    listing = {"models": [*REALISTIC["models"],
+                          {"slug": "gpt-off", "display_name": "Off", "visibility": "list",
+                           "supported_reasoning_levels": ["medium", "none", "low"]}]}
+    done = _sse({"type": "response.output_text.delta", "delta": "ok"}, {"type": "response.completed", "response": {}})
+    with respx.mock() as router:  # the first plan call learns the levels from the list, once
+        models = router.get(MODELS).mock(return_value=httpx.Response(200, json=listing))
+        route = router.post(RESPONSES).mock(side_effect=lambda req: httpx.Response(200, content=done))
+        await llm.complete_text("fast", [{"role": "user", "content": "Title?"}], model="chatgpt/gpt-6-astra")
+        fast = json.loads(route.calls.last.request.content)["reasoning"]
+        await llm.complete_text("primary", [{"role": "user", "content": "hi"}], model="chatgpt/gpt-6-astra")
+        primary = json.loads(route.calls.last.request.content)["reasoning"]
+        await llm.complete_text("fast", [{"role": "user", "content": "Title?"}], model="chatgpt/gpt-off")
+        off = json.loads(route.calls.last.request.content)["reasoning"]
+    assert models.call_count == 1
+    assert fast == {"effort": "low", "summary": "auto"}
+    assert primary == {"effort": "medium", "summary": "auto"}  # a role's own effort is kept
+    assert off == {"effort": "none"}  # a model that lists "none" can turn thinking off
+
+    chatgpt.forget_models()  # offline: no effort is sent, and the list isn't asked for again on every call
+    with respx.mock() as router:
+        models = router.get(MODELS).mock(side_effect=httpx.ConnectError("offline"))
+        route = router.post(RESPONSES).mock(side_effect=lambda req: httpx.Response(200, content=done))
+        for _ in range(2):
+            await llm.complete_text("fast", [{"role": "user", "content": "Title?"}], model="chatgpt/gpt-6-astra")
+    assert models.call_count == 1 and "reasoning" not in json.loads(route.calls.last.request.content)

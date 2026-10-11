@@ -106,8 +106,9 @@ def request_body(model: str, messages: list[dict], tools: list[dict] | None = No
     if sent_tools:
         body["tools"] = sent_tools
         body["tool_choice"] = "auto"
-    if reasoning_effort and reasoning_effort != "none":
-        body["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+    if reasoning_effort:  # "none" only when the model lists it (chatgpt.reasoning_effort); omitted means its default
+        body["reasoning"] = {"effort": reasoning_effort} if reasoning_effort == "none" else {
+            "effort": reasoning_effort, "summary": "auto"}
     return body
 
 

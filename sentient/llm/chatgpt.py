@@ -45,13 +45,20 @@ PREFIX = "chatgpt"
 CLIENT_META = "chatgpt.client_id"  # the issued client id (not a secret), kept after sign-out for the next sign-in
 HOST_META = "chatgpt.host_id"  # a stable random id for this computer (ext_agent_host_id), not a credential
 MODELS_META = "chatgpt.models"  # the plan's model list from last time (presets), cleared when the account changes
+WELCOME_META = "chatgpt.welcomed"  # "1" once the one-time "You're using your ChatGPT plan" message was shown
 REFRESH_MARGIN_S = 300
 TIMEOUT_S = 15
 # Refresh errors that mean the sign-in is gone for good (https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery)
 DEAD_REFRESH = {"invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired",
                 "refresh_token_invalidated", "refresh_token_reused"}
 
+# Reasoning efforts from lightest to heaviest. OpenAI lists a model's levels in this order too; unknown ones sort last.
+EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+MODEL_INFO_RETRY_S = 600  # how often a plan call may load the model list to learn a model's reasoning levels
+
 _windows: dict[str, int] = {}  # model -> context window, from the plan's last model list (for the context meter)
+_efforts: dict[str, list[str]] = {}  # model -> reasoning efforts it supports, from the plan's last model list
+_listed_at = 0.0  # when the model list was last loaded (or tried) for the reasoning levels
 _locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
 
 
@@ -324,6 +331,7 @@ async def finish_sign_in(store: Any, flow: dict, params: dict[str, str]) -> str:
         if not save_json(SECRET, record):
             raise ChatGPTError("Your system keychain is unavailable, so the sign-in can't be saved.")
     await store.set_meta(MODELS_META, "")  # a new sign-in can be another account with other models
+    forget_models()
     return record["email"] or ""
 
 
@@ -346,8 +354,12 @@ async def list_models(config: SentientConfig) -> list[dict]:
         data = None
     if not isinstance(data, dict):
         data = {}
+    global _listed_at
+    _listed_at = time.time()
     out = []
     for m in data.get("models") or data.get("data") or []:
+        if not isinstance(m, dict):
+            continue
         slug = m.get("slug") or m.get("id")
         if not slug or m.get("visibility", "list") != "list":
             continue
@@ -355,6 +367,9 @@ async def list_models(config: SentientConfig) -> list[dict]:
         window = int(window) if isinstance(window, int | float) and window > 0 else None
         if window:
             _windows[f"{PREFIX}/{slug}"] = window
+        levels = _levels(m.get("supported_reasoning_levels") or m.get("supported_reasoning_efforts"))
+        if levels:
+            _efforts[f"{PREFIX}/{slug}"] = levels
         out.append({"id": f"{PREFIX}/{slug}", "label": m.get("display_name") or slug, "free": False, "tools": True,
                     "context_length": window})
     return out
@@ -365,9 +380,62 @@ def context_window(model: str) -> int | None:
     return _windows.get(model)
 
 
+def _levels(raw: Any) -> list[str]:
+    """A model's reasoning efforts from its list entry: plain strings or ``{"effort": ...}`` objects."""
+    out = []
+    for level in raw if isinstance(raw, list) else []:
+        effort = level.get("effort") or level.get("reasoning_effort") if isinstance(level, dict) else level
+        if isinstance(effort, str) and effort:
+            out.append(effort)
+    return out
+
+
+def lightest_effort(model: str) -> str | None:
+    """The lightest reasoning effort the plan's model list says ``model`` supports; None when it didn't say."""
+    levels = _efforts.get(model)
+    if not levels:
+        return None
+    rank = {e: i for i, e in enumerate(EFFORT_ORDER)}
+    return min(levels, key=lambda e: rank.get(e, len(rank)))
+
+
+async def reasoning_effort(config: SentientConfig, model: str, wanted: str | None) -> str | None:
+    """The reasoning effort to send for a plan model, or None to send none (the model's own default).
+
+    A role set to ``low``, ``medium`` or ``high`` gets exactly that. A role set to ``none`` (the fast jobs) gets the
+    lightest effort the plan's model list gives for the model, because plan models may not turn thinking off. When
+    that isn't known yet the list is loaded once (at most every ``MODEL_INFO_RETRY_S``); if it still isn't known, no
+    effort is sent."""
+    global _listed_at
+    if wanted and wanted != "none":
+        return wanted
+    if model not in _efforts and time.time() - _listed_at > MODEL_INFO_RETRY_S:
+        try:
+            await list_models(config)
+        except Exception:  # offline or refused: the reply itself will say what went wrong
+            _listed_at = time.time()
+    return lightest_effort(model)
+
+
+def forget_models() -> None:
+    """Drop what the last model list said (a sign-out or another account)."""
+    global _listed_at
+    _windows.clear()
+    _efforts.clear()
+    _listed_at = 0.0
+
+
 def pick_models(models: list[str]) -> dict[str, str] | None:
-    """A main and a fast model from the plan's list: the first listed, and the first mini or nano one (or the same)."""
+    """The main and fast model for the plan's Cloud setups, by a fixed rule (docs/API.md §3, "Connecting plans").
+
+    OpenAI's model list gives each model's id, name, visibility and order, and says nothing about which models are
+    small or quick, so nothing is guessed from names. The rule:
+
+    - **main**: the first model in the list, in OpenAI's order (the order OpenAI asks apps to show).
+    - **fast**: the same model. Fast jobs (titles, memory, triage) run it with the lightest reasoning effort the list
+      gives for it (:func:`reasoning_effort`), which is what makes them quick on a plan model.
+
+    The user can still pick any plan model for the fast jobs under Settings > Models > Roles."""
     if not models:
         return None
-    fast = next((m for m in models if any(w in m.lower() for w in ("mini", "nano"))), models[0])
-    return {"main": models[0], "fast": fast}
+    return {"main": models[0], "fast": models[0]}

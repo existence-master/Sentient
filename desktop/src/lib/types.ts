@@ -538,6 +538,8 @@ export interface ChatGPTStatus {
   signed_in: boolean
   email: string | null
   manage_usage_url: string
+  /** True while the one-time "You're using your ChatGPT plan" message is still to be shown. */
+  welcome: boolean
 }
 
 /** `GET /api/models/connect/{openrouter|chatgpt}/{state}`. */

@@ -75,13 +75,16 @@ and versions follow [Semantic Versioning](https://semver.org/).
   your vision model when you set one. Both shortcuts are also in the tray menu and can be changed or turned off in
   Settings > General. Since a screen can show other people's text, a chat with a shared picture checks with you
   before sending anything. On a Mac, Sentient explains how to allow Screen Recording the first time.
-- **Sign in with ChatGPT** (Settings > Models > Use a plan you already have > ChatGPT plan): use your ChatGPT Plus or
-  Pro plan for chat, tasks and background work. Click **Continue with ChatGPT**, sign in in your browser and allow
-  Sentient; your plan's models then show up in every model picker, and **Use ChatGPT for every job** switches the
-  main and background models in one click (the Cloud preset uses your plan when you have no other cloud key). The
-  sign-in stays in your system keychain, renews on its own, and **Sign out** removes it. **Manage usage** opens your
-  ChatGPT usage settings, and reaching your plan's limit says so plainly. Memory search keeps its own model, because
-  ChatGPT plans don't include one for it.
+- **Sign in with ChatGPT** (Settings > Models > Use a plan you already have > ChatGPT plan, or **ChatGPT plan** in
+  first-run setup's cloud step): use your ChatGPT Plus or Pro plan for chat, tasks and background work. Click
+  **Continue with ChatGPT** (with OpenAI's ChatGPT logo), sign in in your browser and allow Sentient; your plan's
+  models then show up in every model picker, and **Use ChatGPT for every job** switches the main and background
+  models in one click (the Cloud preset uses your plan when you have no other cloud key). Background jobs use your
+  plan's first model with the lightest thinking it allows, so nothing is guessed from model names. After your first
+  sign-in Sentient says once that you're using your ChatGPT plan, and while your next message goes to a plan model
+  the chat box shows **Using ChatGPT plan** with a **Manage usage** link. The sign-in stays in your system keychain,
+  renews on its own, and **Sign out** removes it. **Manage usage** opens your ChatGPT usage settings, and reaching
+  your plan's limit says so plainly. Memory search keeps its own model, because ChatGPT plans don't include one for it.
 - **Models sized for your computer:** Sentient checks how much memory and graphics memory this computer has before
   anything is installed and recommends a local model and how much text it reads at once (for example qwen3:8b reading
   8,192 tokens on an 8 GB graphics card, qwen3:14b reading 16,384 on a 16 GB one). A computer with less than 8 GB of
