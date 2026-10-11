@@ -268,7 +268,6 @@ def create_archive(
                 "contents": contents,
                 "counts": counts,
                 "sign_ins": sign_ins or [],
-                "skipped": skipped,
             }
             with zipfile.ZipFile(part, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
                 if DB_NAME in contents:
@@ -286,14 +285,25 @@ def create_archive(
                         try:
                             zf.write(p, rel)
                         except OSError as exc:  # a file another program holds open
-                            log.warning("backup skipped %s: %s", rel, exc)
+                            log.warning("backup could not read %s: %s", rel, exc)
                             skipped.append(rel)
-                manifest["skipped"] = skipped
+                if skipped:
+                    # a backup is complete or not made: a restore replaces whole folders, so a missing file would
+                    # be lost from the restored data
+                    raise BackupError(_unreadable(skipped))
                 zf.writestr(MANIFEST, json.dumps(manifest, indent=2, ensure_ascii=False))
         os.replace(part, dest)
     finally:
         part.unlink(missing_ok=True)
     return entry(dest, manifest)
+
+
+def _unreadable(names: list[str]) -> str:
+    shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+    return (
+        f"The backup wasn't made, because Sentient couldn't read {shown}. It may be open in another program: close it "
+        "and try again."
+    )
 
 
 def create_snapshot(reason: str, *, keep: int, home: Path | None = None, db_path: Path | None = None) -> dict:

@@ -2100,7 +2100,8 @@ anything that changes the database's shape (issue #151). Code: `sentient/backup/
 backup API while the engine runs, never a raw copy of the live WAL file), `config.yaml`, `workspace/`, `skills/`,
 `files/` and `tls/` (the devices certificate, so paired devices keep trusting it). Never inside: keychain secrets (API
 keys, tokens, sign-ins), `gateway.token`, `logs/`, the browser profile, WhatsApp's link, downloaded voice models,
-scratch folders, the backups folder itself and open incognito chats (removed from the copy with secure delete). The manifest lists the sign-ins that were in the keychain (`sign_ins`)
+scratch folders, the backups folder itself and open incognito chats (removed from the copy with secure delete). A backup is complete or not made: if a file can't be read (open in another program), the backup fails with a plain
+`detail` naming it, since a restore replaces whole folders. The manifest lists the sign-ins that were in the keychain (`sign_ins`)
 so the window can say which to redo. Names: `sentient-backup-YYYYMMDD-HHMMSS.zip` (`-auto` for scheduled ones) and
 `sentient-snapshot-YYYYMMDD-HHMMSS.zip`.
 

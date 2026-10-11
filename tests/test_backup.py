@@ -475,3 +475,24 @@ async def test_the_overview_says_when_backups_sync_to_the_cloud(config, isolated
         assert (await app.backups.overview())["folder_cloud"] is None
     finally:
         await app.stop()
+
+
+async def test_a_file_that_cant_be_read_means_no_backup(config, isolated_home, monkeypatch):
+    app = await _app(config)
+    try:
+        (paths.files_dir() / "open-in-excel.xlsx").write_text("budget", encoding="utf-8")
+        real = zipfile.ZipFile.write
+
+        def locked(self, filename, arcname=None, *a, **k):
+            if str(arcname).endswith("open-in-excel.xlsx"):
+                raise PermissionError("in use")
+            return real(self, filename, arcname, *a, **k)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(zipfile.ZipFile, "write", locked)
+            with pytest.raises(BackupError, match=r"files/open-in-excel\.xlsx"):
+                await app.backups.backup_now()
+        assert list(archive.default_folder().glob("sentient-backup-*")) == []  # no partial file either
+        assert (await app.backups.backup_now())["includes_files"]  # once it can be read, the backup works
+    finally:
+        await app.stop()
