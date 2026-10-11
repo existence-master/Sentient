@@ -332,8 +332,8 @@ export function OpenRouterConnect() {
 }
 
 /**
- * The plan's main and fast model by the engine's rule (docs/API.md §3, "The fast model rule"): the first listed
- * model for both; fast jobs run it with the lightest reasoning. Never a guess from "mini" or "nano" in a name.
+ * The plan's main and fast model by the engine's rule (docs/API.md §3, "The fast model rule"): the first model
+ * of the plan's list, which the engine ranks by OpenAI's priority, for both; fast jobs run it with the lightest reasoning. Never a guess from "mini" or "nano" in a name.
  */
 export function chatgptPlanModels(models: string[]): { main: string; fast: string } | null {
   const main = models.find((m) => !looksLikeEmbedding(m))

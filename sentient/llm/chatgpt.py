@@ -337,7 +337,7 @@ async def finish_sign_in(store: Any, flow: dict, params: dict[str, str]) -> str:
 
 # ---------------------------------------------------------------------------- the plan's models
 async def list_models(config: SentientConfig) -> list[dict]:
-    """The plan's models in OpenAI's order as ``[{id, label, free, tools, context_length}]`` (listed ones only)."""
+    """The plan's listed models as ``[{id, label, free, tools, context_length}]``, best first (:func:`_ranked`)."""
     token = await access_token(config)
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_S) as http:
@@ -370,9 +370,22 @@ async def list_models(config: SentientConfig) -> list[dict]:
         levels = _levels(m.get("supported_reasoning_levels") or m.get("supported_reasoning_efforts"))
         if levels:
             _efforts[f"{PREFIX}/{slug}"] = levels
-        out.append({"id": f"{PREFIX}/{slug}", "label": m.get("display_name") or slug, "free": False, "tools": True,
-                    "context_length": window})
-    return out
+        out.append(({"id": f"{PREFIX}/{slug}", "label": m.get("display_name") or slug, "free": False, "tools": True,
+                     "context_length": window}, _rank(m)))
+    return _ranked(out)
+
+
+def _rank(entry: dict) -> float | None:
+    """OpenAI's own ranking of a model (``priority``: lower comes first), or None when the list gives none."""
+    value = entry.get("priority")
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
+def _ranked(models: list[tuple[dict, float | None]]) -> list[dict]:
+    """Models ordered by OpenAI's ranking when the list gives one: ranked models first, lowest ``priority`` first;
+    ties and models without a ranking keep the list's own order, which is also the order when nothing is ranked."""
+    order = sorted(range(len(models)), key=lambda i: (models[i][1] is None, models[i][1] or 0.0, i))
+    return [models[i][0] for i in order]
 
 
 def context_window(model: str) -> int | None:
@@ -429,10 +442,12 @@ def forget_models() -> None:
 def pick_models(models: list[str]) -> dict[str, str] | None:
     """The main and fast model for the plan's Cloud setups, by a fixed rule (docs/API.md §3, "Connecting plans").
 
-    OpenAI's model list gives each model's id, name, visibility and order, and says nothing about which models are
-    small or quick, so nothing is guessed from names. The rule:
+    OpenAI's model list gives each model's id, name, visibility and order (and may rank them with ``priority``), and
+    says nothing about which models are small or quick, so nothing is guessed from names. ``models`` comes from
+    :func:`list_models`, already ranked. The rule:
 
-    - **main**: the first model in the list, in OpenAI's order (the order OpenAI asks apps to show).
+    - **main**: the first model: the one OpenAI ranks first (lowest ``priority``) when the list ranks them, otherwise
+      the first in the list's own order (the order OpenAI asks apps to show).
     - **fast**: the same model. Fast jobs (titles, memory, triage) run it with the lightest reasoning effort the list
       gives for it (:func:`reasoning_effort`), which is what makes them quick on a plan model.
 

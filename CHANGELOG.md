@@ -79,11 +79,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   first-run setup's cloud step): use your ChatGPT Plus or Pro plan for chat, tasks and background work. Click
   **Continue with ChatGPT** (with OpenAI's ChatGPT logo), sign in in your browser and allow Sentient; your plan's
   models then show up in every model picker, and **Use ChatGPT for every job** switches the main and background
-  models in one click (the Cloud preset uses your plan when you have no other cloud key). Background jobs use your
-  plan's first model with the lightest thinking it allows, so nothing is guessed from model names. After your first
-  sign-in Sentient says once that you're using your ChatGPT plan, and while your next message goes to a plan model
-  the chat box shows **Using ChatGPT plan** with a **Manage usage** link. The sign-in stays in your system keychain,
-  renews on its own, and **Sign out** removes it. **Manage usage** opens your ChatGPT usage settings, and reaching
+  models in one click (the Cloud preset uses your plan when you have no other cloud key). Main and background jobs
+  use the everyday model OpenAI ranks first on your plan, background jobs with the lightest thinking it allows, so
+  nothing is guessed from model names. After your first sign-in Sentient says once that you're using your ChatGPT
+  plan, and while your next message goes to a plan model the chat box shows **Using ChatGPT plan** with a **Manage
+  usage** link. The sign-in stays in your system keychain, renews on its own, and **Sign out** removes it. **Manage usage** opens your ChatGPT usage settings, and reaching
   your plan's limit says so plainly. Memory search keeps its own model, because ChatGPT plans don't include one for it.
 - **Models sized for your computer:** Sentient checks how much memory and graphics memory this computer has before
   anything is installed and recommends a local model and how much text it reads at once (for example qwen3:8b reading

@@ -490,17 +490,18 @@ async def test_plan_models_feed_the_catalog_and_cloud_preset(app, keychain):
 # ---------------------------------------------------------------------------- the fast model rule (issue #241)
 # A realistic plan model list: the shape and models of OpenAI's published Codex model catalog
 # (github.com/openai/codex, codex-rs/models-manager/models.json, Apache-2.0), trimmed to the fields Sentient reads.
-# None of these names says "mini" or "nano", so the old name guess fell back to the first model anyway.
+# None of these names says "mini" or "nano", so the old name guess fell back to the first model anyway. The catalog
+# lists the frontier model first but ranks the everyday one first (``priority`` 1).
 REALISTIC = {"models": [
-    {"slug": "gpt-6-astra", "display_name": "GPT-6-Astra", "visibility": "list", "context_window": 272000,
+    {"slug": "gpt-6-astra", "display_name": "GPT-6-Astra", "visibility": "list", "context_window": 272000, "priority": 2,
      "supported_reasoning_levels": [{"effort": e} for e in ("low", "medium", "high", "xhigh", "max", "ultra")]},
-    {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "visibility": "list", "context_window": 272000,
+    {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "visibility": "list", "context_window": 272000, "priority": 1,
      "supported_reasoning_levels": [{"effort": e} for e in ("low", "medium", "high", "xhigh", "max", "ultra")]},
-    {"slug": "gpt-6-luna", "display_name": "GPT-6-Luna", "visibility": "list", "context_window": 272000,
+    {"slug": "gpt-6-luna", "display_name": "GPT-6-Luna", "visibility": "list", "context_window": 272000, "priority": 4,
      "supported_reasoning_levels": [{"effort": e} for e in ("low", "medium", "high", "xhigh", "max")]},
     {"slug": "gpt-daybreak-blue-latest", "display_name": "Daybreak Blue", "visibility": "hide", "context_window": 272000,
-     "supported_reasoning_levels": [{"effort": "low"}]},
-    {"slug": "gpt-5.5", "display_name": "GPT-5.5", "visibility": "list", "context_window": 272000,
+     "priority": 0, "supported_reasoning_levels": [{"effort": "low"}]},
+    {"slug": "gpt-5.5", "display_name": "GPT-5.5", "visibility": "list", "context_window": 272000, "priority": 13,
      "supported_reasoning_levels": [{"effort": e} for e in ("low", "medium", "high", "xhigh")]},
 ]}
 
@@ -510,10 +511,25 @@ async def test_fast_model_rule_on_a_realistic_list(app, keychain):
     with respx.mock() as router:
         router.get(MODELS).mock(return_value=httpx.Response(200, json=REALISTIC))
         ids = [m["id"] for m in await app.connections.catalog("chatgpt")]
-    assert ids == ["chatgpt/gpt-6-astra", "chatgpt/gpt-6.1-sol", "chatgpt/gpt-6-luna", "chatgpt/gpt-5.5"]
-    assert chatgpt.pick_models(ids) == {"main": "chatgpt/gpt-6-astra", "fast": "chatgpt/gpt-6-astra"}
+    # ranked by OpenAI's priority (the hidden model ranked 0 stays out), so the everyday model comes first
+    assert ids == ["chatgpt/gpt-6.1-sol", "chatgpt/gpt-6-astra", "chatgpt/gpt-6-luna", "chatgpt/gpt-5.5"]
+    assert chatgpt.pick_models(ids) == {"main": "chatgpt/gpt-6.1-sol", "fast": "chatgpt/gpt-6.1-sol"}
     assert chatgpt.pick_models(["chatgpt/gpt-x", "chatgpt/gpt-x-mini"])["fast"] == "chatgpt/gpt-x"  # no name guess
     assert chatgpt.pick_models([]) is None
+
+    # without a ranking the list's own order stands; unranked models follow ranked ones, ties keep list order
+    unranked = {"models": [{k: v for k, v in m.items() if k != "priority"} for m in REALISTIC["models"]]}
+    mixed = {"models": [{"slug": "a", "visibility": "list"}, {"slug": "b", "visibility": "list", "priority": 5},
+                        {"slug": "c", "visibility": "list", "priority": 5}, {"slug": "d", "visibility": "list",
+                                                                            "priority": True}]}
+    app.connections.forget("chatgpt")
+    with respx.mock() as router:
+        router.get(MODELS).mock(side_effect=[httpx.Response(200, json=unranked), httpx.Response(200, json=mixed)])
+        plain = [m["id"] for m in await app.connections.catalog("chatgpt")]
+        app.connections.forget("chatgpt")
+        both = [m["id"] for m in await app.connections.catalog("chatgpt")]
+    assert plain[0] == "chatgpt/gpt-6-astra"
+    assert both == ["chatgpt/b", "chatgpt/c", "chatgpt/a", "chatgpt/d"]  # a boolean is not a ranking
     assert chatgpt.lightest_effort("chatgpt/gpt-6-astra") == "low" and chatgpt.lightest_effort("chatgpt/other") is None
 
 

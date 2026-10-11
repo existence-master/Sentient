@@ -356,8 +356,8 @@ const checkupExample: CheckupRole[] = [
 let chatgptWelcomed = false
 // models in the shape of OpenAI's published Codex catalog (github.com/openai/codex, models-manager/models.json)
 const chatgptModels: CatalogModel[] = [
-  ['gpt-6-astra', 'GPT-6-Astra'],
   ['gpt-6.1-sol', 'GPT-6.1-Sol'],
+  ['gpt-6-astra', 'GPT-6-Astra'],
   ['gpt-6-luna', 'GPT-6-Luna'],
   ['gpt-5.5', 'GPT-5.5']
 ].map(([slug, label]) => ({ id: `chatgpt/${slug}`, label, free: false, tools: true, context_length: 272_000 }))

@@ -293,8 +293,8 @@ function CloudBrain() {
   const isChatGPT = selected?.id === 'chatgpt'
   const plan = useModelCatalog('chatgpt', isChatGPT && !!selected?.key_set)
 
-  // Signed in with ChatGPT: start from the plan's models by the same rule as Settings (first listed, for both), once
-  // each time the ChatGPT plan is picked, so a later refresh of the plan's list never undoes the user's own choice.
+  // Signed in with ChatGPT: start from the plan's models by the same rule as Settings (the plan's first model, for
+  // both), once each time the ChatGPT plan is picked, so a later refresh of the plan's list never undoes the user's own choice.
   const prefilled = useRef(false)
   useEffect(() => {
     if (!isChatGPT) {

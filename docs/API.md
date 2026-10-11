@@ -477,8 +477,11 @@ is kept under `chatgpt`.
   another way of paying, only the user's own fallbacks.
   **The fast model rule** (issue #241). The plan's model list gives each model's slug, name, visibility and order
   (https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) and says nothing about which
-  models are small or quick, so nothing is guessed from names. The Cloud and Mixed presets (and "Use ChatGPT for every
-  job") use the **first listed model** as the main model and **the same model** for the fast jobs. A role whose
+  models are small or quick, so nothing is guessed from names. When the list ranks its models with `priority` (lower
+  comes first, as in OpenAI's Codex model catalog), the catalog and model pickers order them by it, ranked models
+  first and the list's own order for ties and unranked ones; otherwise the list's own order stands. The Cloud and
+  Mixed presets (and "Use ChatGPT for every job") use the **first model in that order** (the everyday model OpenAI
+  ranks first) as the main model and **the same model** for the fast jobs. A role whose
   `models.reasoning` effort is `none` (the fast jobs by default) gets the **lightest effort the list gives for that
   model** (`supported_reasoning_levels`, lightest of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`,
   `ultra`); a role with `low`, `medium` or `high` gets exactly that. When the list hasn't named the model's levels, a
@@ -509,7 +512,7 @@ Routes:
 - `POST /api/models/connect/{provider}/check` (`anthropic`, `openrouter`, `nous`, `chatgpt`) → `{ok, detail}` or
   `{ok: false, error}` with a plain sentence. A free request with the saved key (the model list, or OpenRouter's key
   info); it spends no credits. Other providers → 404.
-- `GET /api/models/catalog/{provider}` (`openrouter`, `nous`, `anthropic`, `chatgpt`) → `[{id, label, free, tools, context_length}]`,
+- `GET /api/models/catalog/{provider}` (`openrouter`, `nous`, `anthropic`, `chatgpt`; `chatgpt` ranked as in the fast model rule) → `[{id, label, free, tools, context_length}]`,
   `id` a full model string such as `openrouter/meta-llama/llama-4-maverick:free`. OpenRouter's list is public;
   the others need the key (502 with a plain `detail` without one). Cached for 10 minutes; saving or removing the key clears it.
   The window only asks for a provider's list once that provider has a key.
