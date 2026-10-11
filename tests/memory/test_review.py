@@ -196,6 +196,21 @@ async def test_the_snippet_survives_more_than_a_page_of_failures_after_the_read(
     assert await _last_outside_result(ctx) == good
 
 
+async def test_a_falsey_error_field_is_still_a_successful_result(chat):
+    """A successful result may carry ``error`` with a falsey value (``false``/``0``/``{}``); it must still be
+    picked, and a decline whose ``declined`` reads as a non-empty string must still be skipped. Python truthiness
+    decides this, not SQLite's text coercion (which read ``false``/``{}`` as failures and ``"yes"`` as a success)."""
+    from sentient.tools.builtin.memory_tool import _last_outside_result
+
+    sid = await chat.store.create_session(channel="cli")
+    good = json.dumps({"from": "travel@example.com", "body": EMAIL, "error": False})  # falsey error == success
+    await chat.store.add_message(sid, "tool", good, name="mail_read")
+    await chat.store.add_message(sid, "tool", json.dumps({"declined": "yes"}), name="mail_read")  # newest, a decline
+    ctx = chat.agent.tool_context(sid, "cli")
+    ctx.untrusted = "Mail"
+    assert await _last_outside_result(ctx) == good
+
+
 async def test_work_nobody_asked_for_saves_memories_for_review(chat):
     for origin, label in (("proactive", "a proactive check"), ("heartbeat", "a background check")):
         ctx = chat.agent.tool_context(None, origin)
