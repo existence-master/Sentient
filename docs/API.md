@@ -339,7 +339,8 @@ accept or loosen a rule.
   three limits. At or below `models.battery_critical_percent` (default 15) upkeep is `"battery_low"` and waits even
   with that switch on. Whatever the battery, no call waits longer than `models.battery_max_wait_s` (default 7200)
   because of it; a call the cap lets go opens a burst too, so the rest of its pass follows at once (a burst lasts at
-  most 5 minutes). Work a running chat reply waits on is never held back, and a reply that has not used the model for
+  most 5 minutes). Upkeep a person starts from the window (`POST /api/memories/dreams/run`, Dream now) skips the usual
+  limits: on battery only `models.battery_critical_percent` (and the cap) holds it, as `"battery_low"`. Work a running chat reply waits on is never held back, and a reply that has not used the model for
   60 seconds stops holding background work back, so the queue can't deadlock. For tests and debugging only, the
   engine's `SENTIENT_DEBUG_BATTERY` environment variable fakes the reading: `ac` (plugged in), `battery` (on battery,
   level unknown) or a percent from 0 to 100 (on battery at that level).

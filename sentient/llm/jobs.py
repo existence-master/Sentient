@@ -32,6 +32,9 @@ Upkeep (``suggestions``, ``memory``, ``skills``, ``titles``, ``background``) on 
 None of these holds a call longer than ``models.battery_max_wait_s``: then it goes like it would plugged in, and opens
 a burst, so the rest of its pass follows instead of waiting the whole time again.
 
+Upkeep a person started from the window (Dream now) runs in ``detached(kind, requested=True)``: only a critical battery
+(and the cap) holds it, and it never opens a burst for scheduled upkeep to ride along.
+
 **Streams hold the slot until they end.** The provider holds it across a whole stream and lets it go just before
 the final chunk, so the caller can run tools that call the model again. Cancelling (Stop everything) releases it.
 
@@ -78,6 +81,7 @@ NOTIFY_DELAY_S = 0.2  # quick back-to-back changes are published once
 _kind: contextvars.ContextVar[str | None] = contextvars.ContextVar("sentient_model_kind", default=None)
 _turn: contextvars.ContextVar[_Turn | None] = contextvars.ContextVar("sentient_model_turn", default=None)
 _held: contextvars.ContextVar[Slot | None] = contextvars.ContextVar("sentient_model_slot", default=None)
+_requested: contextvars.ContextVar[bool] = contextvars.ContextVar("sentient_model_requested", default=False)
 
 
 def is_local(model: str | None) -> bool:
@@ -102,13 +106,15 @@ def as_kind(kind: str | None) -> Iterator[None]:
             _kind.reset(token)
 
 
-def detached(kind: str) -> contextvars.Context:
+def detached(kind: str, *, requested: bool = False) -> contextvars.Context:
     """A context for ``asyncio.create_task(..., context=detached(kind))``: work started from here that nobody waits
-    on (a memory note after a reply, a task run). Its calls count as ``kind``, not as the chat that started it."""
+    on (a memory note after a reply, a task run). Its calls count as ``kind``, not as the chat that started it.
+    ``requested``: a person asked for this upkeep (Dream now), so on battery only a critical level holds it (#296)."""
     ctx = contextvars.copy_context()
     ctx.run(_kind.set, kind)
     ctx.run(_turn.set, None)
     ctx.run(_held.set, None)
+    ctx.run(_requested.set, requested)
     return ctx
 
 
@@ -144,7 +150,7 @@ class Slot:
 
 
 class _Waiter:
-    __slots__ = ("fut", "held", "kind", "model", "rank", "seq", "since", "turn", "why")
+    __slots__ = ("fut", "held", "kind", "model", "rank", "requested", "seq", "since", "turn", "why")
 
     def __init__(self, kind: str, seq: int, model: str, turn: _Turn | None, since: float, fut: asyncio.Future):
         self.kind = kind
@@ -156,6 +162,7 @@ class _Waiter:
         self.fut = fut
         self.held: str | None = None  # the last reason it was held back for
         self.why: str | None = None  # which battery limit held it last (logged when it changes)
+        self.requested = _requested.get()  # a person asked for this upkeep: only a critical battery holds it
 
 
 class ModelJobs:
@@ -280,8 +287,8 @@ class ModelJobs:
         pct = self._battery_percent()
         if pct is not None and pct <= self._setting("battery_critical_percent", 15):
             return "battery_low", "at or below models.battery_critical_percent"
-        if self._battery_ok():
-            return None
+        if self._battery_ok() or w.requested:
+            return None  # the usual limits are lifted (the setting), or a person asked for this (Dream now)
         if pct is not None and pct <= self._setting("battery_min_percent", 40):
             return "battery", "not above models.battery_min_percent"
         if self._turns or now - self._last_chat_end < self._setting("battery_idle_s", 300):
@@ -310,7 +317,10 @@ class ModelJobs:
                 if w.kind == "chat":
                     self._last_chat_use = now
                 if w.rank >= UPKEEP_RANK and self._on_battery():
-                    self._start_burst(w, slot, now)
+                    if w.requested and w.held not in BATTERY_REASONS:
+                        log.info("model job on battery: %s you asked for goes (%s)", w.kind, self._battery_detail())
+                    else:
+                        self._start_burst(w, slot, now)
                 w.fut.set_result(slot)
                 deferred = sum(1 for x in self._waiters if self._deferral(x, now))
                 log.info("model job start: %s %s (waited %.1fs; %d more waiting, %d held back)", w.kind,

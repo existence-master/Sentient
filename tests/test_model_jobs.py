@@ -220,6 +220,49 @@ async def test_the_cap_releases_upkeep_held_at_critical_battery_and_its_pass_fol
     await asyncio.wait_for(later, WAIT)
 
 
+async def test_upkeep_a_person_asked_for_skips_the_battery_limits_but_not_critical(monkeypatch):
+    monkeypatch.setattr(jobs_mod, "RECHECK_S", 0.05)
+    jobs, meter = make_jobs(battery=True, percent=20, idle=60, every=3600, cap=0.4), Meter()
+    loop = asyncio.get_running_loop()
+
+    def asked(name: str) -> asyncio.Task:
+        return asyncio.create_task(meter.use(jobs, name), context=detached("memory", requested=True))
+
+    # 20% is below the minimum, and the idle and burst limits would hold scheduled upkeep: Dream now goes at once
+    await asyncio.wait_for(asked("dream"), WAIT)
+    scheduled = as_task("memory", meter.use(jobs, "nightly"))
+    await asyncio.sleep(0.1)
+    assert "nightly" not in meter.order  # scheduled upkeep keeps the limits, and Dream now opened no burst for it
+    scheduled.cancel()
+    # critical: held as battery_low until the cap, then the rest of the dream follows at once
+    jobs.test_battery["percent"] = 10  # type: ignore[attr-defined]
+    start = loop.time()
+    first = asked("dream 2")
+    await asyncio.sleep(0.1)
+    assert "dream 2" not in meter.order and jobs.status()["deferred_reason"] == "battery_low"
+    await asyncio.wait_for(first, WAIT)
+    assert loop.time() - start >= 0.35
+    released = loop.time()
+    await asyncio.wait_for(asked("dream 3"), WAIT)
+    assert loop.time() - released < 0.2
+
+
+async def test_dream_now_is_upkeep_a_person_asked_for(config, isolated_home, monkeypatch):
+    app = await start_app(config, isolated_home, FakeProvider(), "dream")
+    try:
+        seen: list[tuple[str, bool]] = []
+
+        async def execute(dream_id: str) -> None:
+            seen.append((current_kind(), jobs_mod._requested.get()))
+
+        monkeypatch.setattr(app.dreaming, "_execute", execute)
+        await app.dreaming.start_run("manual")
+        await asyncio.wait_for(app.dreaming._task, WAIT)
+        assert seen == [("memory", True)]
+    finally:
+        await app.stop()
+
+
 async def test_background_on_battery_lifts_the_limits_but_not_critical(monkeypatch):
     monkeypatch.setattr(jobs_mod, "RECHECK_S", 0.05)
     monkeypatch.setattr(jobs_mod, "BURST_GRACE_S", 0.05)
