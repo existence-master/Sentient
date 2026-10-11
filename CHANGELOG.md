@@ -6,6 +6,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Watches that only speak up when something important changed:** a check script can now **Tell me when something
+  important changes**. Each check is compared with the last one without any AI, so an unchanged page costs nothing
+  and stays silent; only when something changed does your fast AI model decide whether it matters, and then you get
+  one notification that says what changed. Every watch also keeps a quiet list of its recent checks ("Checked,
+  nothing new", "Something changed. You were told") under Runs.
+- **Fuzzy times for repeating tasks:** a daily or weekly task can run "in the morning", "afternoon", "evening" or "at
+  night" instead of at an exact time; Sentient picks a time inside that part of the day. Say it in your request
+  ("every weekday morning") or pick it in the schedule editor.
 - **Sources under answers:** when Sentient used the web, your email, a file or a connected app to answer, small
   chips under the reply show what it used: the page, the email's subject, the file or the app, next to the memories
   it had in mind. Click a chip to see the part Sentient read and open the page, email or file. Answers that used

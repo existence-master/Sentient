@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from typing import Any
@@ -161,6 +162,23 @@ def normalize_days(days: Any) -> list[str]:
 
 MIN_INTERVAL_MINUTES = 5
 
+# Fuzzy windows (#157): a daily or weekly schedule with ``window`` runs at a random minute inside that part of the
+# day instead of at ``time``, local time, ``[start, end)`` in minutes after midnight.
+WINDOWS: dict[str, tuple[int, int]] = {
+    "morning": (7 * 60, 10 * 60),
+    "afternoon": (12 * 60, 16 * 60),
+    "evening": (17 * 60, 20 * 60),
+    "night": (20 * 60, 23 * 60),
+}
+_window_random = random.Random()  # tests may seed it
+
+
+def window_of(schedule: dict | None) -> tuple[int, int] | None:
+    """``(start, end)`` minutes of a daily/weekly schedule's ``window``, or None."""
+    if not isinstance(schedule, dict) or str(schedule.get("frequency") or "").lower() == "interval":
+        return None
+    return WINDOWS.get(str(schedule.get("window") or "").strip().lower())
+
 
 def interval_minutes(schedule: dict) -> int:
     """Minutes between runs of an ``interval`` schedule (``interval_minutes``; ``every_minutes``/``hours`` accepted)."""
@@ -188,7 +206,8 @@ def calculate_next_run(schedule: dict | None, after: datetime | None = None) -> 
     # rrule arithmetic on naive wall-clock times; the zone is re-applied afterwards so
     # daylight-saving transitions keep the user's local HH:MM.
     naive_start = start_local.replace(tzinfo=None)
-    hour, minute = parse_time(schedule.get("time"))
+    window = window_of(schedule)
+    hour, minute = divmod(window[0], 60) if window else parse_time(schedule.get("time"))
     dtstart = naive_start.replace(hour=hour, minute=minute, second=0, microsecond=0)
     until = naive_start + timedelta(days=366)
     frequency = str(schedule.get("frequency") or "").lower()
@@ -204,6 +223,10 @@ def calculate_next_run(schedule: dict | None, after: datetime | None = None) -> 
         else:
             return None
         nxt = rule.after(naive_start)
+        if nxt is not None and window:
+            # the next window that has not started yet (so a run inside today's window is not repeated today),
+            # at a random minute inside it
+            nxt += timedelta(minutes=_window_random.randrange(window[1] - window[0]))
     except Exception as exc:
         log.error("could not calculate next run for %s: %s", schedule, exc)
         return None
@@ -257,6 +280,9 @@ def normalize_schedule(schedule: Any, tz_name: str, *, override_timezone: bool =
             return out
         hour, minute = parse_time(out.get("time"))
         out["time"] = f"{hour:02d}:{minute:02d}"
+        window = str(out.pop("window", None) or "").strip().lower()
+        if window in WINDOWS:  # a fuzzy window replaces the exact time (``time`` is kept for the editor)
+            out["window"] = window
         if freq == "weekly":
             out["days"] = normalize_days(out.get("days")) or ["Monday"]
         else:

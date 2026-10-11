@@ -56,6 +56,7 @@ Instructions:
     - Recurring tasks: If the task repeats ("every day", "each Monday", "every weekday", "daily"), use the `recurring` type.
         - `frequency` can be "daily" or "weekly". YOU CANNOT use "monthly" or "yearly". DO NOT use "hourly", "every minute" or "every second" as a frequency - if the user mentions a short timeframe like this, use "daily" by default.
         - `time` MUST be in "HH:MM" 24-hour format (9am is "09:00", 6:30pm is "18:30"). If no time is specified, default to `09:00`.
+        - If the user names only a part of the day without an exact time ("every morning", "weekday evenings"), also add `"window"`: "morning", "afternoon", "evening" or "night". The task then runs at some time in that part of the day.
         - For "weekly" frequency, `days` MUST be a list of full day names (e.g., ["Monday", "Wednesday"]). If no day is specified, default to `["Monday"]`.
         - "Every weekday" means frequency "weekly" with days ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"].
     - Triggered Workflows: Triggered workflows are supported for new calendar events and new emails. If the user tells you to do something "on every new email", "whenever I get an email from ...", or "when a new meeting is added", use the `triggered` type.
@@ -179,6 +180,7 @@ Core Directives:
     - Use only the Python standard library. Keep it short, and handle missing keys so the script does not crash.
     - `"condition": "alert"`: finish with `result({{"alert": True, "message": "What the user should know"}})` when the condition is met, otherwise `result({{"alert": False}})`.
     - `"condition": "changed"`: finish with `result(value)` where `value` is the small thing being watched (a price, a status, a list of titles); the job acts when it differs from the previous check.
+    - `"condition": "noteworthy"`: like "changed", but when the value differs a small AI check decides whether the change matters before acting. Prefer it for pages, news or lists where small changes (times, counters, ads) are noise.
     - `"condition": "every_run"`: finish with `result(value)` or print the report; the job acts after every check that produced something, even when it is the same as last time. Use it only when the user wants a report on every run.
     - `"then": "notify"` sends the alert message to the user. `"then": "run"` starts a normal run of your `plan` each time the condition fires, with the script result as its context; use it when real work must follow (writing, summarizing, sending).
     - If the schedule above is not already recurring or triggered, also return a `schedule`, for example {{"type": "recurring", "frequency": "interval", "interval_minutes": 60}} for "every hour" (minimum 5 minutes), or a daily/weekly schedule.
@@ -203,7 +205,7 @@ Your output MUST be a single, valid JSON object that follows this exact schema:
 }}
 
 For a watch job (directive 10) add these keys to the same object:
-  "script": {{"code": "from sentient_tools import tools, result\\n...", "condition": "alert, changed or every_run", "then": "notify or run"}},
+  "script": {{"code": "from sentient_tools import tools, result\\n...", "condition": "alert, changed, noteworthy or every_run", "then": "notify or run"}},
   "schedule": {{"type": "recurring", "frequency": "interval", "interval_minutes": 60}}
 Leave both keys out for every other task.
 

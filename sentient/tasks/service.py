@@ -1696,7 +1696,8 @@ class TaskService(Service):
         previous_error = script.get("last_error")
         error = scripts.outcome_error(outcome)
         if error:
-            await self._save_script_state(task_id, code, {"last_run_at": now, "last_error": error})
+            checks = scripts.add_check(script.get("checks"), "failed", now, error)
+            await self._save_script_state(task_id, code, {"last_run_at": now, "last_error": error, "checks": checks})
             await self._after_run(task_id, "error", error)
             await self.publish(task_id)
             if not previous_error:  # tell once; recovery is announced below
@@ -1707,15 +1708,25 @@ class TaskService(Service):
             return
         value = scripts.outcome_value(outcome)
         condition = script.get("condition") or "alert"
-        act = scripts.should_act(condition, value, script.get("last_result"))
-        state: dict[str, Any] = {"last_run_at": now, "last_error": None}
-        if value is not None or condition != "changed":  # an empty result keeps the baseline of a 'changed' job
+        previous = script.get("last_result")
+        act = scripts.should_act(condition, value, previous)
+        message = scripts.alert_message(name, condition, value) if act else ""
+        outcome_name, note = self._check_outcome(condition, act, value, previous)
+        if act and condition == "noteworthy":  # something changed: the fast model judges whether it matters
+            act, change = await self._judge_change(task, previous, value)
+            outcome_name, note = ("changed", change) if act else ("minor", change)
+            if act and change:
+                message = change
+        state: dict[str, Any] = {
+            "last_run_at": now, "last_error": None,
+            "checks": scripts.add_check(script.get("checks"), outcome_name, now, note),
+        }
+        if value is not None or condition not in scripts.COMPARING:  # an empty result keeps the baseline
             state["last_result"] = value
         await self._save_script_state(task_id, code, state)
         if previous_error:
             await self._notify(task, f"The check for '{name}' is working again.", "Check recovered", "script_recovered")
         if act:
-            message = scripts.alert_message(name, condition, value)
             if script.get("then") == "run":
                 context: dict[str, Any] = {"script_result": value, "message": message}
                 if trigger_data:
@@ -1726,6 +1737,34 @@ class TaskService(Service):
                 await self._notify(task, message, name, "script_alert", {"result": value})
         await self._after_run(task_id, "completed", None)
         await self.publish(task_id)
+
+    @staticmethod
+    def _check_outcome(condition: str, act: bool, value: Any, previous: Any) -> tuple[str, str]:
+        """The history entry of a successful check before any judging: ``(outcome, note)``."""
+        if condition in scripts.COMPARING:
+            if act:
+                return "changed", ""
+            return ("baseline", "") if previous is None and value is not None else ("nothing_new", "")
+        if condition == "alert":
+            message = value.get("message") if act and isinstance(value, dict) else None
+            return ("alert", message.strip() if isinstance(message, str) else "") if act else ("quiet", "")
+        return ("reported", "") if act else ("quiet", "")
+
+    async def _judge_change(self, task: dict, previous: Any, value: Any) -> tuple[bool, str]:
+        """Ask the ``fast`` model whether a change is worth telling the user: ``(noteworthy, change)``. If the model
+        gives no usable answer, the change is reported anyway: a missed change is worse than one extra message."""
+        goal = " ".join(str(x) for x in (task.get("name"), task.get("description")) if x)
+        try:
+            data = await complete_json_object(
+                self.app.llm, "fast", scripts.judge_messages(goal, previous, value), keys=("noteworthy",)
+            )
+        except Exception as exc:
+            log.warning("judging the change for task %s failed, reporting it: %s", task.get("id"), exc)
+            data = None
+        noteworthy, change = scripts.read_verdict(data)
+        if noteworthy is None:
+            return True, change
+        return noteworthy, change
 
     async def _regenerate_result(self, task_id: str, run_id: str, *, notify_status: str | None = None) -> None:
         """Produce the structured result for a completed run whose report was never written.
