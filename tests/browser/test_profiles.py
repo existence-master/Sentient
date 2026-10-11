@@ -1613,7 +1613,7 @@ async def test_attached_popup_download_associated_via_target_opener(tmp_path, mo
     assert (tmp_path / rel).read_text(encoding="utf-8") == "popup download text"
 
 
-async def test_attached_download_timeout_marks_stale_records_consumed(tmp_path, monkeypatch):
+async def test_concurrent_same_filename_different_url_timeout_does_not_consume_active_record(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
     svc = BrowserService(make_app())
     svc._attached = True
@@ -1621,24 +1621,35 @@ async def test_attached_download_timeout_marks_stale_records_consumed(tmp_path, 
     page_cdp = _MockPageCDP("sentient-frame-1")
     svc._context = _MockContext(page_cdp)
 
-    stale_fut = asyncio.get_running_loop().create_future()
-    stale_entry = {
-        "guid": "g-stale",
+    file_second = tmp_path / "browser_download_second.csv"
+    file_second.write_text("second download content", encoding="utf-8")
+
+    fut2 = asyncio.get_running_loop().create_future()
+    fut2.set_result(str(file_second))
+    entry2 = {
+        "guid": "g-second",
         "frameId": "sentient-frame-1",
-        "filename": "data.csv",
-        "url": "https://example.com/data.csv",
-        "future": stale_fut,
+        "filename": "export.csv",
+        "url": "https://example.com/second.csv",
+        "future": fut2,
         "consumed": False,
     }
-    svc._attached_downloads.append(stale_entry)
+    svc._attached_downloads.append(entry2)
 
-    # Download with conflicting URL arrives, so stale_entry is rejected
-    dl = _MockDownload("data.csv", url="https://example.com/different-url.csv", page=object())
+    # First download with conflicting URL arrives; its matching window expires
+    dl1 = _MockDownload("export.csv", url="https://example.com/first.csv", page=object())
     with pytest.raises(BrowserError, match="could not be associated with a browser download record"):
-        await svc._save_download(dl)
+        await svc._save_download(dl1)
 
-    # After fallback, stale record in page_frames matching filename was marked consumed
-    assert stale_entry["consumed"] is True
+    # The second download's record must not have been consumed by the first download's fallback
+    assert entry2["consumed"] is False
+
+    # Second download arrives and should match and save successfully
+    dl2 = _MockDownload("export.csv", url="https://example.com/second.csv", page=object())
+    rel2 = await svc._save_download(dl2)
+    assert rel2 == "downloads/export.csv"
+    assert entry2["consumed"] is True
+    assert (tmp_path / rel2).read_text(encoding="utf-8") == "second download content"
 
 
 async def test_attached_finalize_file_fallback_on_os_error(tmp_path, monkeypatch):

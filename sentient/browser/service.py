@@ -1161,17 +1161,6 @@ class BrowserService(Service):
                     elif self._context is None:
                         abort_closed_browser()
                     else:
-                        if page_frames:
-                            for entry in self._attached_downloads:
-                                if (
-                                    entry.get("frameId") in page_frames
-                                    and not entry.get("consumed")
-                                    and (
-                                        (dl_url and entry.get("url") == dl_url)
-                                        or (name and entry.get("filename") == name)
-                                    )
-                                ):
-                                    entry["consumed"] = True
                         abort_missing_attached_download()
                 else:
                     await download.save_as(str(target))
