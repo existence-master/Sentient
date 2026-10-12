@@ -570,12 +570,18 @@ class MCPManager:
         url = conn.spec.get("url")
         delete_json(tokens_secret(name, url))
         if url:
+            canon = canonical_url(url)
             leg_key = tokens_secret(name, None)
             leg = load_json(leg_key)
             if isinstance(leg, dict):
                 saved = leg.get(SERVER_URL_KEY)
-                if saved is not None and canonical_url(saved) == canonical_url(url):
+                if saved is not None and canonical_url(saved) == canon:
                     delete_json(leg_key)
+                elif saved is None:
+                    fresh = load_json(leg_key)
+                    fresh_mig = set(fresh.get("migrated_to") or []) if isinstance(fresh, dict) and isinstance(fresh.get("migrated_to"), (list, set, tuple)) else set()
+                    leg["migrated_to"] = sorted(fresh_mig | {canon})
+                    save_json(leg_key, leg)
         if _auth_of(conn.spec) == "oauth" and conn.spec.get("enabled", True):
             await self._shutdown(self.servers.pop(name))
             conn = self._launch(name, conn.spec)
@@ -730,7 +736,14 @@ class MCPManager:
         async def no_code() -> Any:
             raise NeedsSignIn(name)
 
-        registered = load_json(client_secret(name, url)) or load_json(client_secret(name, None)) or {}
+        registered = load_json(client_secret(name, url))
+        if not registered and url:
+            leg_cli = load_json(client_secret(name, None))
+            if isinstance(leg_cli, dict):
+                saved_cli = leg_cli.get(SERVER_URL_KEY)
+                if saved_cli is not None and canonical_url(saved_cli) == canonical_url(url):
+                    registered = leg_cli
+        registered = registered or {}
         redirect = (registered.get("redirect_uris") or ["http://127.0.0.1/oauth/callback"])[0]
         return SentientOAuthProvider(url, client_metadata(redirect), store, no_browser, no_code,
                                      discovery_transport=self.http_transport)

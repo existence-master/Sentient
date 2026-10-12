@@ -765,14 +765,71 @@ def test_migration_untagged_legacy_ambiguity(keychain):
     mcp_auth.save_json("mcp:Notes:client", untagged_cli)
 
     mcp_auth.migrate_server_credentials("Notes", URL)
-    # Legacy keys survive because ownership is unverified
+    # Legacy keys survive because ownership is unverified, but record that this URL was migrated
     assert "mcp:Notes:oauth" in keychain
     assert "mcp:Notes:client" in keychain
-    assert mcp_auth.load_json("mcp:Notes:oauth") == untagged_tok
+    assert mcp_auth.load_json("mcp:Notes:oauth")["tokens"] == untagged_tok["tokens"]
+    assert mcp_auth.canonical_url(URL) in mcp_auth.load_json("mcp:Notes:oauth").get("migrated_to", [])
+    assert mcp_auth.load_json("mcp:Notes:client")["client_id"] == untagged_cli["client_id"]
+    assert mcp_auth.canonical_url(URL) in mcp_auth.load_json("mcp:Notes:client").get("migrated_to", [])
     # Destination has copy tagged with this URL
     dest_tok = mcp_auth.load_json(mcp_auth.tokens_secret("Notes", URL))
     assert dest_tok["tokens"] == untagged_tok["tokens"]
     assert dest_tok["server_url"] == URL
+    assert dest_tok.get("migrated_to") is None
+
+
+async def test_sign_out_with_untagged_legacy_credentials_never_restores_token(app, keychain):
+    """Signing out of a server that migrated an untagged legacy token must NOT reconnect as authenticated (#269)."""
+    mock = MockServer(oauth=True)
+    app.integrations.mcp.http_transport = mock.transport()
+
+    untagged_tok = {"tokens": {"access_token": "legacy_tok", "token_type": "Bearer"}}
+    untagged_cli = {"client_id": "legacy_cli"}
+    mcp_auth.save_json("mcp:Notes:oauth", untagged_tok)
+    mcp_auth.save_json("mcp:Notes:client", untagged_cli)
+
+    # 1. Add server: untagged legacy token is migrated to this URL
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": URL})
+    tok_key = mcp_auth.tokens_secret("Notes", URL)
+    assert tok_key in keychain
+    assert mcp_auth.load_json(tok_key)["tokens"] == untagged_tok["tokens"]
+
+    # Legacy entries survive (ownership unverified) but are marked as migrated to URL
+    assert "mcp:Notes:oauth" in keychain
+    assert mcp_auth.canonical_url(URL) in mcp_auth.load_json("mcp:Notes:oauth").get("migrated_to", [])
+
+    # 2. Sign out: removes the URL-scoped token
+    out = await app.integrations.mcp.sign_out("Notes")
+    assert out["signed_in"] is False and out["status"] == "needs_sign_in"
+    assert tok_key not in keychain
+    # Legacy key still survives for other setups
+    assert "mcp:Notes:oauth" in keychain
+
+    # 3. Connection relaunch / describe must NOT resurrect the token
+    server = next(s for s in app.integrations.mcp.list() if s["name"] == "Notes")
+    assert server["signed_in"] is False
+    assert server["status"] == "needs_sign_in"
+    assert mcp_auth.KeychainTokenStorage("Notes", url=URL).has_tokens() is False
+    assert tok_key not in keychain
+
+    # 4. Sentient start / re-migration must NOT re-import the token
+    mcp_auth.migrate_server_credentials("Notes", URL)
+    assert tok_key not in keychain
+    assert mcp_auth.KeychainTokenStorage("Notes", url=URL).has_tokens() is False
+
+    # 5. Remove and re-add: still must NOT re-import the legacy token
+    await app.integrations.mcp.remove("Notes")
+    added2 = await app.integrations.mcp.add("Notes", {"transport": "http", "url": URL})
+    assert added2["signed_in"] is False and added2["status"] == "needs_sign_in"
+    assert tok_key not in keychain
+
+    # 6. Another setup with a different URL CAN still migrate the untagged legacy credential
+    url2 = "http://setup2.example.com/mcp"
+    tok2_key = mcp_auth.tokens_secret("Notes", url2)
+    mcp_auth.migrate_server_credentials("Notes", url2)
+    assert tok2_key in keychain
+    assert mcp_auth.load_json(tok2_key)["tokens"] == untagged_tok["tokens"]
 
 
 def test_stale_sign_in_cross_setup_protection(keychain):
@@ -889,6 +946,135 @@ async def test_two_engines_separate_homes_synthetic_server_isolation(keychain, t
         assert tool is not None
         res = await tool.call(ctx2, {})
         assert res["content"] == "hi there"
+
+    finally:
+        await app1.stop()
+        await app2.stop()
+
+
+def test_migration_concurrent_marker_merge(keychain):
+    """When another setup concurrently migrates or updates legacy records, markers are merged without clobbering."""
+    untagged_tok = {"tokens": {"access_token": "shared_tok", "token_type": "Bearer"}}
+    mcp_auth.save_json("mcp:Notes:oauth", untagged_tok)
+
+    url1 = "http://srv1.test/mcp"
+    url2 = "http://srv2.test/mcp"
+
+    # Setup 1 migrates
+    mcp_auth.migrate_server_credentials("Notes", url1)
+    rec1 = mcp_auth.load_json("mcp:Notes:oauth")
+    assert rec1["migrated_to"] == [mcp_auth.canonical_url(url1)]
+
+    # Setup 2 migrates (simulating another setup sharing the keychain)
+    mcp_auth.migrate_server_credentials("Notes", url2)
+    rec2 = mcp_auth.load_json("mcp:Notes:oauth")
+    # Both URLs are preserved in migrated_to
+    assert set(rec2["migrated_to"]) == {mcp_auth.canonical_url(url1), mcp_auth.canonical_url(url2)}
+
+    # Both destination keys exist independently
+    assert mcp_auth.tokens_secret("Notes", url1) in keychain
+    assert mcp_auth.tokens_secret("Notes", url2) in keychain
+
+
+async def test_reauthentication_after_sign_out_uses_new_token(app, keychain):
+    """After sign-out, explicit re-authentication writes fresh tokens without resurrecting the legacy token."""
+    mock = MockServer(oauth=True)
+    app.integrations.mcp.http_transport = mock.transport()
+
+    untagged_tok = {"tokens": {"access_token": "old_legacy_tok", "token_type": "Bearer"}}
+    untagged_cli = {"client_id": "old_client"}
+    mcp_auth.save_json("mcp:Notes:oauth", untagged_tok)
+    mcp_auth.save_json("mcp:Notes:client", untagged_cli)
+
+    # 1. Add server: untagged legacy token is migrated
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": URL})
+    tok_key = mcp_auth.tokens_secret("Notes", URL)
+    assert mcp_auth.load_json(tok_key)["tokens"]["access_token"] == "old_legacy_tok"
+
+    # 2. Sign out: token removed
+    out = await app.integrations.mcp.sign_out("Notes")
+    assert out["signed_in"] is False
+    assert tok_key not in keychain
+
+    # 3. Explicit re-authentication: sign in via OAuth flow
+    await _sign_in(app, mock, "Notes")
+    await _wait(app, "Notes", "connected")
+
+    # 4. Active tokens are now the fresh tokens issued by MockServer, NOT old_legacy_tok
+    fresh_rec = mcp_auth.load_json(tok_key)
+    assert fresh_rec is not None
+    assert fresh_rec["tokens"]["access_token"] != "old_legacy_tok"
+
+    # 5. Old legacy record remains untouched
+    assert mcp_auth.load_json("mcp:Notes:oauth")["tokens"]["access_token"] == "old_legacy_tok"
+
+    # 6. Sign out again: removes fresh tokens, does NOT fall back to old_legacy_tok
+    out2 = await app.integrations.mcp.sign_out("Notes")
+    assert out2["signed_in"] is False and out2["status"] == "needs_sign_in"
+    assert tok_key not in keychain
+    assert mcp_auth.KeychainTokenStorage("Notes", url=URL).has_tokens() is False
+
+
+async def test_two_engines_separate_homes_untagged_legacy_migration_and_sign_out(keychain, tmp_path, monkeypatch):
+    """Two engines with separate SENTIENT_HOME directories migrating an untagged legacy token.
+    Signing out in Engine 1 must keep Engine 2 signed in and working (#269)."""
+    home1 = tmp_path / "eng1_home"
+    home2 = tmp_path / "eng2_home"
+    home1.mkdir()
+    home2.mkdir()
+
+    server_name = "shared_legacy_srv"
+    url1 = "http://eng1-srv.test/mcp"
+    url2 = "http://eng2-srv.test/mcp"
+
+    untagged_tok = {"tokens": {"access_token": "shared_legacy_tok", "token_type": "Bearer"}}
+    untagged_cli = {"client_id": "shared_client_id"}
+    mcp_auth.save_json(f"mcp:{server_name}:oauth", untagged_tok)
+    mcp_auth.save_json(f"mcp:{server_name}:client", untagged_cli)
+
+    mock1 = MockServer(oauth=True, base="http://eng1-srv.test")
+    mock2 = MockServer(oauth=True, base="http://eng2-srv.test")
+
+    # Engine 1
+    monkeypatch.setenv("SENTIENT_HOME", str(home1))
+    cfg1 = SentientConfig()
+    app1 = SentientApp(cfg1, llm=FakeProvider(), db_path=home1 / "sentient.db", enable_background=False)
+    app1.integrations.mcp.http_transport = mock1.transport()
+    await app1.start()
+
+    # Engine 2
+    monkeypatch.setenv("SENTIENT_HOME", str(home2))
+    cfg2 = SentientConfig()
+    app2 = SentientApp(cfg2, llm=FakeProvider(), db_path=home2 / "sentient.db", enable_background=False)
+    app2.integrations.mcp.http_transport = mock2.transport()
+    await app2.start()
+
+    try:
+        # Both engines add the server with separate URLs
+        await app1.integrations.mcp.add(server_name, {"transport": "http", "url": url1})
+        await app2.integrations.mcp.add(server_name, {"transport": "http", "url": url2})
+
+        tok1_key = mcp_auth.tokens_secret(server_name, url1)
+        tok2_key = mcp_auth.tokens_secret(server_name, url2)
+        assert tok1_key != tok2_key
+        assert tok1_key in keychain
+        assert tok2_key in keychain
+
+        # Engine 1 signs out
+        out1 = await app1.integrations.mcp.sign_out(server_name)
+        assert out1["signed_in"] is False and out1["status"] == "needs_sign_in"
+        assert tok1_key not in keychain
+
+        # Engine 2 credentials and connection MUST remain intact
+        assert tok2_key in keychain
+        assert mcp_auth.load_json(tok2_key)["tokens"]["access_token"] == "shared_legacy_tok"
+        assert mcp_auth.KeychainTokenStorage(server_name, url=url2).has_tokens() is True
+
+        # Engine 1 relaunches/reconnects without restoring the token
+        assert mcp_auth.KeychainTokenStorage(server_name, url=url1).has_tokens() is False
+
+        # Legacy key survived in keychain
+        assert f"mcp:{server_name}:oauth" in keychain
 
     finally:
         await app1.stop()

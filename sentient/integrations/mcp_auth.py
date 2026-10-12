@@ -193,13 +193,22 @@ def migrate_server_credentials(server: str, url: str | None) -> None:
                             log.warning("Verification failed for migrated tokens for %s; preserving legacy entry", server)
                     else:
                         log.warning("Could not save migrated tokens for %s; preserving legacy entry", server)
-            elif saved is None and dest_data is None and _has_valid_tokens(leg_data):
+            elif saved is None and (dest_data is None or not _has_valid_tokens(dest_data)) and _has_valid_tokens(leg_data):
                 # Ambiguous legacy record without a server_url:
-                # Copy to destination if not present so this setup can attempt authentication,
+                # Copy to destination once so this setup can attempt authentication,
                 # but NEVER delete the legacy entry as its ownership is unverified.
-                new_rec = {**leg_data, SERVER_URL_KEY: url}
-                if not save_json(new_tok, new_rec) or load_json(new_tok) != new_rec:
-                    log.warning("Could not copy ambiguous legacy tokens for %s", server)
+                migrated_raw = leg_data.get("migrated_to")
+                migrated = set(migrated_raw) if isinstance(migrated_raw, (list, set, tuple)) else set()
+                if canon not in migrated:
+                    new_rec = {k: v for k, v in leg_data.items() if k != "migrated_to"}
+                    new_rec[SERVER_URL_KEY] = url
+                    if save_json(new_tok, new_rec) and load_json(new_tok) == new_rec:
+                        fresh = load_json(legacy_tok)
+                        fresh_mig = set(fresh.get("migrated_to") or []) if isinstance(fresh, dict) and isinstance(fresh.get("migrated_to"), (list, set, tuple)) else set()
+                        leg_data["migrated_to"] = sorted(migrated | fresh_mig | {canon})
+                        save_json(legacy_tok, leg_data)
+                    else:
+                        log.warning("Could not copy ambiguous legacy tokens for %s", server)
 
     # 2. Client info
     legacy_cli = client_secret(server, None)
@@ -227,10 +236,19 @@ def migrate_server_credentials(server: str, url: str | None) -> None:
                             log.warning("Verification failed for migrated client info for %s; preserving legacy entry", server)
                     else:
                         log.warning("Could not save migrated client info for %s; preserving legacy entry", server)
-            elif saved is None and dest_cli is None and _has_valid_client_info(leg_cli):
-                new_rec = {**leg_cli, SERVER_URL_KEY: url}
-                if not save_json(new_cli, new_rec) or load_json(new_cli) != new_rec:
-                    log.warning("Could not copy ambiguous legacy client info for %s", server)
+            elif saved is None and (dest_cli is None or not _has_valid_client_info(dest_cli)) and _has_valid_client_info(leg_cli):
+                migrated_raw = leg_cli.get("migrated_to")
+                migrated = set(migrated_raw) if isinstance(migrated_raw, (list, set, tuple)) else set()
+                if canon not in migrated:
+                    new_rec = {k: v for k, v in leg_cli.items() if k != "migrated_to"}
+                    new_rec[SERVER_URL_KEY] = url
+                    if save_json(new_cli, new_rec) and load_json(new_cli) == new_rec:
+                        fresh = load_json(legacy_cli)
+                        fresh_mig = set(fresh.get("migrated_to") or []) if isinstance(fresh, dict) and isinstance(fresh.get("migrated_to"), (list, set, tuple)) else set()
+                        leg_cli["migrated_to"] = sorted(migrated | fresh_mig | {canon})
+                        save_json(legacy_cli, leg_cli)
+                    else:
+                        log.warning("Could not copy ambiguous legacy client info for %s", server)
 
 
 def stale_sign_in(server: str, url: str | None, *, changed_here: bool) -> list[str]:
@@ -270,6 +288,11 @@ def forget_server(server: str, url: str | None = None) -> None:
                 # Never delete an untagged entry (saved is None) or another URL's entry!
                 if saved is not None and canonical_url(saved) == canon:
                     delete_json(leg_key)
+                elif saved is None:
+                    fresh = load_json(leg_key)
+                    fresh_mig = set(fresh.get("migrated_to") or []) if isinstance(fresh, dict) and isinstance(fresh.get("migrated_to"), (list, set, tuple)) else set()
+                    rec["migrated_to"] = sorted(fresh_mig | {canon})
+                    save_json(leg_key, rec)
 
 
 # ---------------------------------------------------------------------------- OAuth storage
@@ -306,12 +329,16 @@ class KeychainTokenStorage:
             rec = load_json(tokens_secret(self.server, url))
             if rec is not None:
                 return rec
+            # Only fall back to legacy key if it is explicitly tagged for this URL.
+            # Never fall back if saved is None!
+            leg = load_json(tokens_secret(self.server, None))
+            if isinstance(leg, dict):
+                saved = leg.get(SERVER_URL_KEY)
+                if saved is not None and canonical_url(saved) == canonical_url(url):
+                    return leg
+            return None
         rec = load_json(tokens_secret(self.server, None))
-        if isinstance(rec, dict):
-            saved = rec.get(SERVER_URL_KEY)
-            if url is None or saved is None or canonical_url(saved) == canonical_url(url):
-                return rec
-        return None
+        return rec if isinstance(rec, dict) else None
 
     def has_tokens(self) -> bool:
         rec = self.record()
@@ -373,14 +400,14 @@ class KeychainTokenStorage:
                 leg = load_json(client_secret(self.server, None))
                 if isinstance(leg, dict):
                     saved = leg.get(SERVER_URL_KEY)
-                    if saved is None or canonical_url(saved) == canonical_url(url):
+                    if saved is not None and canonical_url(saved) == canonical_url(url):
                         data = leg
         else:
             data = load_json(client_secret(self.server, None))
         if not data:
             return None
         try:
-            return OAuthClientInformationFull.model_validate({k: v for k, v in data.items() if k != SERVER_URL_KEY})
+            return OAuthClientInformationFull.model_validate({k: v for k, v in data.items() if k not in (SERVER_URL_KEY, "migrated_to")})
         except Exception:
             return None
 
