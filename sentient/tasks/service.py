@@ -38,6 +38,7 @@ from sentient.tasks.delivery import from_stored, stored
 from sentient.tasks.executor import RunFailed, RunPaused
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
+    CORE_HELPER_PLUGINS,
     EXCLUDED_PLUGINS,
     PLANNER_SYSTEM_PROMPT,
     RETRY_NOTE,
@@ -55,7 +56,7 @@ from sentient.tasks.schedule import (
     spoken_schedule,
     user_timezone_name,
 )
-from sentient.tasks.scripts import ScriptInvalid, normalize_script, validate_code
+from sentient.tasks.scripts import ScriptInvalid, normalize_script, tools_named, validate_code
 from sentient.tasks.triggers import event_matches_filter
 from sentient.tools.base import Risk
 
@@ -1307,16 +1308,14 @@ class TaskService(Service):
         )
         if not isinstance(data, dict):
             raise TypeError(f"Planner agent returned invalid JSON: {str(data)[:200]}")
-        script, data, no_script = await self._planned_script(task, data, system, parts)
+        script, data, script_tools = await self._planned_script(task, data, system, parts)
+        no_script = script_tools is not None
         raw_plan = data.get("plan") or data.get("steps")
         if raw_plan is None and data.get("tool"):  # a lone step object
             raw_plan = [data]
         plan = normalize_plan(raw_plan, self.app.registry)
-        if no_script and not (is_change and plan):
-            # the AI does the job itself at each run (#310). A plan written around a script loses what the script held
-            # (a page address) and small models fill it with guesses, so the step is the user's own request
-            request = task.get("original_prompt") or task.get("description") or task.get("name") or ""
-            plan = [{"tool": "", "description": request}]
+        if script_tools is not None and not (is_change and plan):
+            plan = self._no_script_plan(task, script_tools, plan)
         new_questions = normalize_questions(data.get("clarifying_questions"), start=len(questions) if answered else 0)
 
         current = await self.repo.get_task(task_id)
@@ -1377,19 +1376,20 @@ class TaskService(Service):
 
     async def _planned_script(
         self, task: dict, data: dict, system: str, parts: list[str]
-    ) -> tuple[dict | None, dict, bool]:
-        """``(script, data, no_script)``: the check script the planner proposed (validated), else the task's existing
-        one.
+    ) -> tuple[dict | None, dict, list[str] | None]:
+        """``(script, data, script_tools)``: the check script the planner proposed (validated), else the task's
+        existing one.
 
         A script that is rejected (it does not compile, loops, sleeps, uses memory...) gets one correction round with
-        the reason. If the second one is rejected too, ``no_script`` is True and the task becomes an ordinary AI-run
-        task instead of failing (#310); a change request keeps the plan of the re-plan, or else of the first reply."""
+        the reason. If the second one is rejected too, the task becomes an ordinary AI-run task instead of failing
+        (#310): ``script_tools`` is then the tools both scripts used (else None); a change request keeps the plan of
+        the re-plan, or else of the first reply."""
         previous = task.get("script") if task.get("task_type") == "script" else None
         raw = data.get("script")
         if not isinstance(raw, dict) or raw.get("code") is None:
-            return previous, data, False
+            return previous, data, None
         try:
-            return normalize_script(raw, previous, model_written=True), data, False
+            return normalize_script(raw, previous, model_written=True), data, None
         except ScriptInvalid as exc:
             log.info("planner script for task %s rejected, asking for a fix: %s", task["id"], exc)
             retry = [*parts, (
@@ -1404,16 +1404,34 @@ class TaskService(Service):
             )
         if not isinstance(fixed, dict):
             raise TypeError(f"Planner agent returned invalid JSON: {str(fixed)[:200]}")
+        first_code = raw.get("code")
         raw = fixed.get("script")
         if not isinstance(raw, dict) or raw.get("code") is None:
-            return previous, fixed, False
+            return previous, fixed, None
         try:
-            return normalize_script(raw, previous, model_written=True), fixed, False
+            return normalize_script(raw, previous, model_written=True), fixed, None
         except ScriptInvalid as exc:
             log.info("planner script for task %s rejected again, saving an AI-run task instead: %s", task["id"], exc)
         if not (fixed.get("plan") or fixed.get("steps")) and (data.get("plan") or data.get("steps")):
             fixed = {**fixed, "plan": data.get("plan") or data.get("steps")}
-        return None, fixed, True
+        return None, fixed, tools_named(f"{first_code}\n{raw.get('code')}")
+
+    def _no_script_plan(self, task: dict, script_tools: list[str], planned: list[dict]) -> list[dict]:
+        """The plan of an AI-run task that replaces a rejected check script (#310): the user's own request as the step,
+        since a plan written around a script loses what the script held (a page address) and small models fill it with
+        guesses. Its apps are the ones the scripts used (``tools.web_fetch``: Web pages), else the planner's."""
+        request = task.get("original_prompt") or task.get("description") or task.get("name") or ""
+        plugins = {p.id for p in self.app.registry.plugins()}
+
+
+        def apps(steps: list[dict]) -> list[str]:
+            return list(dict.fromkeys(
+                s["tool"] for s in steps if s["tool"] in plugins and s["tool"] not in CORE_HELPER_PLUGINS
+            ))
+
+        found = apps(normalize_plan([{"tool": n} for n in script_tools], self.app.registry)) or apps(planned) or [""]
+        return [{"tool": found[0], "description": request},
+                *({"tool": a, "description": "Use this where the request needs it."} for a in found[1:])]
 
     # ------------------------------------------------------------------ swarm
     async def _orchestrate_swarm(self, task_id: str) -> None:

@@ -311,7 +311,7 @@ async def test_planner_script_with_invalid_code_is_fixed_or_falls_back(make_app)
     rejected = await app.tasks.get(rejected["task_id"])
     assert rejected["status"] == "approval_pending" and rejected["error"] is None
     assert rejected["script"] is None and rejected["task_type"] == "single"
-    assert rejected["plan"] == [{"tool": "", "description": "Tell me when ether drops below 2k"}]
+    assert rejected["plan"] == [{"tool": "internet_search", "description": "Tell me when ether drops below 2k"}]
 
 
 async def test_script_validation_and_update(make_app):

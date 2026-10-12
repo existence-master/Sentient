@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import difflib
 import json
+import re
 import sys
 from typing import Any
 
@@ -62,6 +63,13 @@ def validate_code(code: Any) -> str:
 
 
 _SLEEPS = {"sleep", "time_sleep"}
+_TOOL_CALL = re.compile(r"\btools\.([A-Za-z_]\w*)")
+
+
+def tools_named(code: Any) -> list[str]:
+    """The tools a check script uses as ``tools.<name>``, in order and once each. Works on code that does not
+    compile, since it is read from the text."""
+    return list(dict.fromkeys(_TOOL_CALL.findall(str(code or ""))))
 _IMPORTABLE = set(sys.stdlib_module_names) | {"sentient_tools"}
 
 
