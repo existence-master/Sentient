@@ -6,6 +6,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Bring your memory from ChatGPT, Claude or OpenClaw:** Memory > Import > From another assistant reads a ChatGPT or
+  Claude data export (the zip they email you) or your OpenClaw workspace folder, right on your computer. Nothing is
+  uploaded and the export is never changed. You first see what's in it (saved memories, conversations, Claude's
+  memory and project instructions, OpenClaw's MEMORY.md, USER.md and daily notes) and pick what to bring over. Saved
+  memories come over as they are; for conversations and notes your fast AI model picks out lasting facts about you
+  in small batches. Everything waits in Memory > Review, and each card says which app, conversation and day it came
+  from. Things Sentient already knows are skipped, also across apps, and importing a newer export later only reads
+  what's new. You can stop an import, and remove everything from one app in one click.
+- **Export your memory:** Memory > ... > Export saves everything Sentient remembers about you as a readable Markdown
+  file or a SQLite database file in Sentient's files folder, grouped by topic and saying where each memory came
+  from. Nothing leaves your computer.
 - **Each chat remembers its model:** pick a model in a chat's message box and that chat keeps it, also after you
   reopen it or restart Sentient. Other chats keep following your default model, and switching the default (or a
   preset) in the title bar only changes those. **Use the default** puts a chat back on the default. The chat list
@@ -238,6 +249,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - **Watch requests no longer fail when a check script can't be written:** if the AI's check script is rejected twice
   (it loops, sleeps or uses memory, as small local models sometimes do), the task is saved as an ordinary recurring
   task that the AI runs each time, with a short note on the task saying so, instead of ending in an error.
+- **Rules from chat work with Claude Code for every model:** when your fast model is Claude Code, "From now on,
+  never delete my emails" proposes a rule again. The check now uses the chat's own model or your main model, since
+  it is part of answering your message. Apps that chat through `POST /api/chat` also get the "Make this a rule?" card.
 - With approvals set to **Never ask**, Sentient no longer stops to ask before just looking something up (a web page,
   a snapshot of the browser, a search) because something you said in the chat sounded like a "never" it offered to
   turn into a rule. Until you answer that suggestion it still checks with you before changing, sending, deleting or

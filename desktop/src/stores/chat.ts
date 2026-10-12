@@ -151,7 +151,10 @@ export const useChat = create<ChatState>((set, get) => ({
       let currentKey = key
       try {
         for await (const ev of api.chat.stream({ text: draft.text, session_id: sessionId ?? undefined, attachments, model: draft.model, channel: 'desktop', incognito }, abort.signal)) {
-          if (ev.type === 'session') {
+          if (ev.type === 'rule_proposal.updated') {
+            // the card is fetched like on /ws (lib/events.ts)
+            if (ev.data?.session_id) void queryClient.invalidateQueries({ queryKey: qk.ruleProposals(ev.data.session_id) })
+          } else if (ev.type === 'session') {
             get().handleEvent({ ...ev, client_id: clientId })
             currentKey = ev.session_id
           } else {

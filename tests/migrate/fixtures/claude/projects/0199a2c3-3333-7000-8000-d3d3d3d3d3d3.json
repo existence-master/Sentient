@@ -1,0 +1,14 @@
+{
+  "uuid": "0199a2c3-3333-7000-8000-d3d3d3d3d3d3",
+  "name": "Design critique",
+  "description": "Notes for the Wednesday critique I run at Northwind Studio.",
+  "is_private": true,
+  "is_starter_project": false,
+  "prompt_template": "Give feedback as numbered lists. I care most about accessibility.",
+  "created_at": "2026-08-11T10:00:00.000000Z",
+  "updated_at": "2026-09-01T10:00:00.000000Z",
+  "creator": {"uuid": "0199a000-0000-7000-8000-a0a0a0a0a0a0", "full_name": "Maya Rao"},
+  "docs": [
+    {"uuid": "0199a2c3-4444-7000-8000-e4e4e4e4e4e4", "filename": "critique-template.md", "content": "# Critique template\nKavya presents first.", "created_at": "2026-08-11T10:05:00.000000Z"}
+  ]
+}

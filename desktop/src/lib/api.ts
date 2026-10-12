@@ -30,6 +30,10 @@ import type {
   Dream,
   FeedStatus,
   HermesPart,
+  MemoryExport,
+  MemoryImportApp,
+  MemoryImportJob,
+  MemoryImportPreview,
   HermesPreview,
   HermesResult,
   Hook,
@@ -47,6 +51,7 @@ import type {
   StopState,
   ChatRequest,
   AgentEvent,
+  DomainEvent,
   CheckupEvent,
   ClarificationAnswer,
   ConfigPatchResponse,
@@ -450,9 +455,10 @@ export const api = {
   },
 
   chat: {
-    /** NDJSON fallback of a WebSocket turn. First line is `{type:"session", session_id}`. */
+    /** NDJSON fallback of a WebSocket turn. First line is `{type:"session", session_id}`; "Make this a rule?" cards
+     *  for the chat come as `rule_proposal.updated` lines in the /ws envelope (#311). */
     stream: (body: ChatRequest, signal?: AbortSignal) =>
-      streamNdjson<AgentEvent>('POST', '/api/chat', { body, signal })
+      streamNdjson<AgentEvent | DomainEvent<'rule_proposal.updated'>>('POST', '/api/chat', { body, signal })
   },
 
   approvals: {
@@ -634,6 +640,7 @@ export const api = {
     update: (id: number, content: string) => http.put<Memory>(`/api/memories/${id}`, { content }),
     delete: (id: number) => http.delete<{ deleted: boolean }>(`/api/memories/${id}`),
     deleteBySource: (source: string) => http.delete<{ deleted: number }>(`/api/memories/source/${enc(source)}`),
+    export: (format: 'markdown' | 'sqlite') => http.post<MemoryExport>('/api/memories/export', { format }),
     import: (file: File, opts?: UploadOptions) =>
       upload<MemoryImportResult>('/api/memories/import', file, file.name, opts),
     summaries: (limit?: number) => http.get<MemorySummary[]>('/api/memories/summaries', { query: { limit } }),
@@ -776,6 +783,15 @@ export const api = {
       preview: (path?: string) => http.post<HermesPreview>('/api/import/hermes/preview', { path: path || null }),
       apply: (body: { path?: string; parts: HermesPart[]; skip?: string[] }) => http.post<HermesResult>('/api/import/hermes/apply', body),
       removeMemories: () => http.delete<{ facts: number; insights: number }>('/api/import/hermes/memories')
+    },
+    memory: {
+      info: (app: MemoryImportApp) => http.get<{ path: string | null; exists: boolean }>(`/api/import/${app}`),
+      preview: (app: MemoryImportApp, path: string) => http.post<MemoryImportPreview>(`/api/import/${app}/preview`, { path }),
+      apply: (app: MemoryImportApp, body: { path: string; parts: string[]; skip?: string[] }) =>
+        http.post<MemoryImportJob>(`/api/import/${app}/apply`, body),
+      job: () => http.get<MemoryImportJob | null>('/api/import/memory/job'),
+      cancel: () => http.post<MemoryImportJob | null>('/api/import/memory/job/cancel', {}),
+      remove: (app: MemoryImportApp) => http.delete<{ facts: number; insights: number }>(`/api/import/${app}/memories`)
     }
   },
 
