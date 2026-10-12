@@ -80,6 +80,21 @@ export function ReviewTab() {
   )
 }
 
+/** Where in an export it was: "In “10K training plan” · 16 Sept 2026 · chatgpt-export.zip". */
+function ImportPlace({ item }: { item: MemoryReviewItem }) {
+  const day = item.dated ? new Date(`${item.dated}T12:00:00`) : null
+  const parts = [
+    item.title ? `In “${item.title}”` : null,
+    day && !Number.isNaN(day.getTime()) ? day.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : null,
+    item.export
+  ].filter(Boolean)
+  return (
+    <p className="mt-1.5 truncate pl-3.5 text-2xs text-fg-subtle" title={parts.join(' · ')}>
+      {parts.join(' · ')}
+    </p>
+  )
+}
+
 function ReviewCard({ item }: { item: MemoryReviewItem }) {
   const navigate = useNavigate()
   const { approve, discard } = useMemoryReviewActions()
@@ -142,6 +157,7 @@ function ReviewCard({ item }: { item: MemoryReviewItem }) {
           {item.snippet}
         </p>
       )}
+      {(item.title || item.export) && <ImportPlace item={item} />}
 
       {!editing && (
         <div className="mt-3 flex flex-wrap gap-2">

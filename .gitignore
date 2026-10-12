@@ -46,6 +46,7 @@ linkedin_cookies.json
 /site
 e2e-home/
 workspace/
+!tests/migrate/fixtures/openclaw/workspace/
 sentient_files/
 audio_debug_logs/
 *.db
