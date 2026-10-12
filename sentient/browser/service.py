@@ -69,6 +69,8 @@ DOWNLOAD_MAX_DURATION_S = 120.0
 DOWNLOAD_CANCEL_TIMEOUT_S = 5.0
 DOWNLOAD_TASK_RETENTION_S = 300.0
 DOWNLOAD_TASK_CLEANUP_INTERVAL_S = 30.0
+ATTACHED_MATCH_TIMEOUT_S = 2.0
+ATTACHED_UNCONSUMED_TTL_S = 30.0
 # models often pass the whole snapshot line ("[e4] button \"Place order\"") instead of just "e4"
 _REF_RE = re.compile(r"\b(e\d+)\b", re.IGNORECASE)
 
@@ -200,6 +202,27 @@ def _friendly_playwright_error(exc: BaseException) -> str:
     return msg.splitlines()[0][:300] if msg else type(exc).__name__
 
 
+async def _shield_wait(aw: Any, timeout: float | None = None) -> None:
+    """Await a cleanup future or coroutine to completion even if the current task is cancelled."""
+    fut = asyncio.ensure_future(aw)
+    loop = asyncio.get_running_loop()
+    end_time = (loop.time() + timeout) if timeout is not None else None
+    while not fut.done():
+        remaining = (end_time - loop.time()) if end_time is not None else None
+        if remaining is not None and remaining <= 0:
+            fut.cancel()
+            break
+        try:
+            if remaining is not None:
+                await asyncio.wait_for(asyncio.shield(fut), timeout=remaining)
+            else:
+                await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            pass
+        except BaseException:
+            break
+
+
 class BrowserService(Service):
     name = "browser"
 
@@ -238,6 +261,10 @@ class BrowserService(Service):
         self._download_completed_at: dict[asyncio.Task[str], float] = {}
         self._download_cleanup_task: asyncio.Task | None = None
         self._download_lock = asyncio.Lock()
+        self._browser_cdp: Any = None
+        self._attached_downloads: list[dict[str, Any]] = []
+        self._attached_match_timeout_s = ATTACHED_MATCH_TIMEOUT_S
+        self._target_openers: dict[str, tuple[str, ...]] = {}
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -598,8 +625,48 @@ class BrowserService(Service):
             self._last_error = f"Couldn't attach to the browser at {endpoint}: {str(exc).splitlines()[0][:200]}"
             raise BrowserError(self._last_error) from exc
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        cdp = None
+        try:
+            cdp = await browser.new_browser_cdp_session()
+            cdp.on("Target.targetCreated", self._on_cdp_target_created)
+            cdp.on("Target.targetInfoChanged", self._on_cdp_target_created)
+            cdp.on("Browser.downloadWillBegin", self._on_cdp_download_will_begin)
+            cdp.on("Browser.downloadProgress", self._on_cdp_download_progress)
+            await cdp.send("Target.setDiscoverTargets", {"discover": True})
+            await cdp.send("Browser.setDownloadBehavior", {"behavior": "default", "eventsEnabled": True})
+        except BaseException as exc:
+            if cdp is not None:
+                detach_fn = getattr(cdp, "detach", None)
+                if callable(detach_fn):
+                    try:
+                        res = detach_fn()
+                        if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
+                            await _shield_wait(res)
+                    except BaseException:
+                        pass
+            self._browser_cdp = None
+            self._clear_attached_downloads()
+            self._attached = False
+            self._browser = None
+            close_fn = getattr(browser, "close", None)
+            if callable(close_fn):
+                try:
+                    res = close_fn()
+                    if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
+                        await _shield_wait(res, timeout=CLOSE_TIMEOUT_S)
+                except BaseException:
+                    pass
+            if isinstance(exc, asyncio.CancelledError) or not isinstance(exc, Exception):
+                raise
+            self._last_error = (
+                f"Couldn't attach to the browser at {endpoint}: "
+                f"failed to set up download tracking: {str(exc).splitlines()[0][:200]}"
+            )
+            raise BrowserError(self._last_error) from exc
+
         browser.on("disconnected", lambda *_: self._on_context_closed(context))
         self._browser = browser
+        self._browser_cdp = cdp
         self._attached = True
         self._engine = None
         return context
@@ -657,6 +724,11 @@ class BrowserService(Service):
             self._focused = None
             self._download_pages.clear()
             self._internal_pages.clear()
+            if self._browser_cdp is not None:
+                with contextlib.suppress(Exception):
+                    await self._browser_cdp.detach()
+                self._browser_cdp = None
+            self._clear_attached_downloads()
 
     async def _flush_storage(self, ctx: Any) -> None:
         """Let a launched browser write site storage to disk before it closes: close its tabs with their unload
@@ -750,6 +822,8 @@ class BrowserService(Service):
         self._snap = None
         self._focused = None
         self._download_pages.clear()
+        self._browser_cdp = None
+        self._clear_attached_downloads()
         if not self._closing:  # the user closed the visible window (or their attached browser)
             self._spawn(self._publish_status())
 
@@ -865,9 +939,196 @@ class BrowserService(Service):
         finally:
             self._download_cleanup_task = None
 
+    def _clear_attached_downloads(self, exc: Exception | None = None) -> None:
+        """Safely fail and clear all tracked attached-browser CDP downloads during context shutdown."""
+        self._target_openers.clear()
+        entries = list(self._attached_downloads)
+        self._attached_downloads.clear()
+        err = exc or BrowserError("The browser closed before the download completed.")
+        for entry in entries:
+            fut = entry.get("future")
+            if fut is not None and not fut.done():
+                fut.set_exception(err)
+                with contextlib.suppress(Exception):
+                    fut.exception()
+
+    def _on_cdp_target_created(self, payload: dict[str, Any]) -> None:
+        """Record targetId -> opener associations so popup downloads can be linked to Sentient tabs."""
+        target_info = payload.get("targetInfo", {})
+        target_id = target_info.get("targetId")
+        opener_id = target_info.get("openerId")
+        opener_frame_id = target_info.get("openerFrameId")
+        openers = tuple(filter(None, (opener_id, opener_frame_id)))
+        if target_id and openers:
+            self._target_openers[target_id] = openers
+            if len(self._target_openers) > 500:
+                for k in list(self._target_openers.keys())[:100]:
+                    self._target_openers.pop(k, None)
+
+    def _expand_frames_with_popups(self, frames: set[str]) -> set[str]:
+        """Expand frame IDs to include popup targets opened by any frame in the tree."""
+        expanded = set(frames)
+        added = True
+        while added:
+            added = False
+            for target_id, openers in list(self._target_openers.items()):
+                if target_id not in expanded and any(op in expanded for op in openers):
+                    expanded.add(target_id)
+                    added = True
+        return expanded
+
+    def _prune_attached_downloads(self) -> None:
+        """Evict completed download records while keeping active in-flight downloads reachable."""
+        now = time.monotonic()
+        retained: list[dict[str, Any]] = []
+        for entry in self._attached_downloads:
+            fut = entry.get("future")
+            is_pending = fut is not None and not fut.done()
+            consumed = entry.get("consumed", False)
+            created_at = entry.get("created_at")
+
+            # Active in-flight download: consumed and awaiting completion
+            if consumed and is_pending:
+                retained.append(entry)
+                continue
+
+            # Unconsumed record: keep while within TTL
+            if not consumed:
+                if created_at is None or (now - created_at) <= ATTACHED_UNCONSUMED_TTL_S:
+                    retained.append(entry)
+                else:
+                    if is_pending:
+                        fut.set_exception(BrowserError("Download record expired without matching."))
+                        with contextlib.suppress(Exception):
+                            fut.exception()
+                continue
+
+            # Finished consumed record: retain recent for short retention
+            if created_at is None or (now - created_at) <= 10.0:
+                retained.append(entry)
+
+        if len(retained) > 100:
+            inflight = [e for e in retained if e.get("consumed") and e.get("future") is not None and not e["future"].done()]
+            unconsumed_pending = [e for e in retained if not e.get("consumed") and e.get("future") is not None and not e["future"].done()]
+            finished = [e for e in retained if e.get("future") is None or e["future"].done()]
+
+            keep_inflight = inflight[-100:]
+            evict_inflight = inflight[:-100]
+
+            remaining_slots = max(0, 100 - len(keep_inflight))
+            keep_unconsumed = unconsumed_pending[-remaining_slots:] if remaining_slots > 0 else []
+            evict_unconsumed = [e for e in unconsumed_pending if e not in keep_unconsumed]
+            remaining_slots -= len(keep_unconsumed)
+
+            keep_finished = finished[-remaining_slots:] if remaining_slots > 0 else []
+
+            for entry in evict_inflight + evict_unconsumed:
+                fut = entry.get("future")
+                if fut is not None and not fut.done():
+                    fut.set_exception(BrowserError("Download record evicted."))
+                    with contextlib.suppress(Exception):
+                        fut.exception()
+
+            kept_ids = {id(e) for e in keep_inflight} | {id(e) for e in keep_unconsumed} | {id(e) for e in keep_finished}
+            retained = [e for e in retained if id(e) in kept_ids]
+        self._attached_downloads = retained
+
+    def _on_cdp_download_will_begin(self, payload: dict[str, Any]) -> None:
+        """Record a CDP Browser.downloadWillBegin event to attribute downloads to frames."""
+        guid = payload.get("guid")
+        if not guid:
+            return
+        entry = {
+            "guid": guid,
+            "frameId": payload.get("frameId", ""),
+            "url": payload.get("url", ""),
+            "filename": self._download_filename(payload.get("suggestedFilename") or "download"),
+            "future": asyncio.get_running_loop().create_future(),
+            "consumed": False,
+            "created_at": time.monotonic(),
+        }
+        self._attached_downloads.append(entry)
+        self._prune_attached_downloads()
+
+    def _on_cdp_download_progress(self, payload: dict[str, Any]) -> None:
+        """Handle CDP Browser.downloadProgress events to complete or fail awaiting download tasks."""
+        guid = payload.get("guid")
+        state = payload.get("state")
+        file_path = payload.get("filePath")
+        if not guid:
+            return
+        for entry in self._attached_downloads:
+            if entry["guid"] == guid:
+                fut = entry.get("future")
+                if fut is not None and not fut.done():
+                    if state == "completed" and file_path:
+                        fut.set_result(file_path)
+                    elif state == "canceled":
+                        fname = entry.get("filename") or "download"
+                        fut.set_exception(BrowserError(f"Download '{fname}' was canceled by the browser."))
+                        with contextlib.suppress(Exception):
+                            fut.exception()
+                break
+
+    @staticmethod
+    def _match_cdp_entry(
+        entries: list[dict[str, Any]],
+        page_frames: set[str],
+        dl_url: str,
+        dl_name: str,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Find the best matching unconsumed CDP download entry for a given frame tree and download metadata."""
+        best_entry: dict[str, Any] | None = None
+        best_score = 0
+        current_time = now if now is not None else time.monotonic()
+        for entry in entries:
+            if entry.get("frameId") not in page_frames or entry.get("consumed"):
+                continue
+            created_at = entry.get("created_at")
+            if created_at is not None and (current_time - created_at) > ATTACHED_UNCONSUMED_TTL_S:
+                continue
+            e_url = entry.get("url", "")
+            e_name = entry.get("filename", "")
+
+            # Strict URL agreement when both are available
+            if dl_url and e_url and dl_url != e_url:
+                continue
+
+            url_matches = bool(dl_url and e_url and dl_url == e_url)
+            name_matches = bool(dl_name and e_name and dl_name not in {"", "download"} and dl_name == e_name)
+            name_conflicts = bool(
+                dl_name
+                and e_name
+                and dl_name not in {"", "download"}
+                and e_name not in {"", "download"}
+                and dl_name != e_name
+            )
+
+            if name_conflicts and not url_matches:
+                continue
+
+            score = 0
+            if url_matches and name_matches:
+                score = 3
+            elif url_matches or (name_matches and not (dl_url and e_url)):
+                score = 2
+            elif not name_conflicts:
+                score = 1
+
+            if score > best_score:
+                best_score = score
+                best_entry = entry
+                if score == 3:
+                    break
+        return best_entry
+
     @staticmethod
     def _download_filename(download: Any) -> str:
-        raw_name = str(getattr(download, "suggested_filename", None) or "download")
+        if isinstance(download, str):
+            raw_name = download
+        else:
+            raw_name = str(getattr(download, "suggested_filename", None) or "download")
         name = raw_name.replace("\\", "/").rsplit("/", 1)[-1]
         return re.sub(r"[^\w.\- ()]+", "_", name).strip(" .")[:160] or "download"
 
@@ -918,12 +1179,81 @@ class BrowserService(Service):
             reason = str(exc).strip().splitlines()[0][:300] or type(exc).__name__
             return f"Couldn't save downloaded file '{name}': {reason}"
 
+        def abort_closed_browser() -> None:
+            raise BrowserError("The browser closed before the download completed.")
+
+        def abort_missing_attached_download() -> None:
+            raise BrowserError(f"Download '{name}' could not be associated with a browser download record.")
+
         timeout = asyncio.timeout(DOWNLOAD_MAX_DURATION_S)
         target: Path | None = None
         try:
             async with timeout:
                 target = await reserve_target()
-                await download.save_as(str(target))
+                if self._attached:
+                    matched = None
+                    page = getattr(download, "page", None)
+                    page_frames: set[str] = set()
+                    dl_url = str(getattr(download, "url", "") or "")
+                    if self._context is not None:
+                        candidate_pages: list[Any] = []
+                        if page is not None and not getattr(page, "is_closed", lambda: False)():
+                            candidate_pages.append(page)
+                        else:
+                            for p in self._download_pages:
+                                if not getattr(p, "is_closed", lambda: False)():
+                                    candidate_pages.append(p)
+
+                        for cand in candidate_pages:
+                            try:
+                                page_cdp = await self._context.new_cdp_session(cand)
+                                try:
+                                    tree = await page_cdp.send("Page.getFrameTree")
+
+                                    def _collect_frame_ids(node: dict[str, Any]) -> set[str]:
+                                        fids = {node.get("frame", {}).get("id", "")}
+                                        for child in node.get("childFrames", []):
+                                            fids.update(_collect_frame_ids(child))
+                                        return fids
+
+                                    page_frames.update(_collect_frame_ids(tree.get("frameTree", {})))
+                                finally:
+                                    with contextlib.suppress(Exception):
+                                        await page_cdp.detach()
+                            except Exception:
+                                pass
+
+                        if page_frames:
+                            match_timeout = getattr(self, "_attached_match_timeout_s", ATTACHED_MATCH_TIMEOUT_S)
+                            match_deadline = time.monotonic() + match_timeout
+                            while True:
+                                active_frames = self._expand_frames_with_popups(page_frames)
+                                matched = self._match_cdp_entry(
+                                    self._attached_downloads, active_frames, dl_url, name
+                                )
+                                if matched is not None or time.monotonic() >= match_deadline or self._context is None:
+                                    break
+                                await asyncio.sleep(0.05)
+
+                    if matched is not None:
+                        matched["consumed"] = True
+                        file_path = await matched["future"]
+
+                        def _finalize_file() -> None:
+                            assert target is not None
+                            try:
+                                os.replace(file_path, str(target))
+                            except OSError:
+                                target.unlink(missing_ok=True)
+                                shutil.move(file_path, str(target))
+
+                        await asyncio.to_thread(_finalize_file)
+                    elif self._context is None:
+                        abort_closed_browser()
+                    else:
+                        abort_missing_attached_download()
+                else:
+                    await download.save_as(str(target))
         except asyncio.CancelledError as exc:
             try:
                 cancel_error = await request_download_cancel()
