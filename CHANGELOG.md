@@ -235,6 +235,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Rules from chat work with Claude Code for every model:** when your fast model is Claude Code, "From now on,
+  never delete my emails" proposes a rule again. The check now uses the chat's own model or your main model, since
+  it is part of answering your message. Apps that chat through `POST /api/chat` also get the "Make this a rule?" card.
 - With approvals set to **Never ask**, Sentient no longer stops to ask before just looking something up (a web page,
   a snapshot of the browser, a search) because something you said in the chat sounded like a "never" it offered to
   turn into a rule. Until you answer that suggestion it still checks with you before changing, sending, deleting or

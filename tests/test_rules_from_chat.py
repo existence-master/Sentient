@@ -17,8 +17,9 @@ from sentient.app import SentientApp
 from sentient.config.loader import load_config
 from sentient.config.schema import SentientConfig
 from sentient.gateway.app import create_app
+from sentient.llm import claude_code
 from sentient.llm.events import ApprovalRequest, ToolCallEvent, ToolResultEvent
-from sentient.llm.provider import ProviderError
+from sentient.llm.provider import ModelRefused, ProviderError
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from tests.conftest import FakeProvider, tool_call
 
@@ -171,6 +172,90 @@ async def test_a_failing_model_makes_no_card_and_the_turn_goes_on(config, isolat
         sid = await s.store.create_session(channel="cli")
         _, events = await _turn(s, sid, "never delete my emails")
         assert events[-1].type == "done" and events[-1].content == "Fine."
+        assert await s.chat_rules.list(sid, None) == []
+    finally:
+        await s.stop()
+
+
+class _FastRefuses(FakeProvider):
+    """The fast model is Claude Code: it refuses every text and JSON job (ADR 0022)."""
+
+    def __init__(self, *args, primary: str = "fake/primary", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.primary = primary
+        self.attended: list[bool] = []
+
+    def model_for(self, role: str) -> str:
+        return self.primary if role == "primary" else f"fake/{role}"
+
+    async def complete_json(self, role, messages, *, model=None):
+        if role == "fast":
+            raise ModelRefused(claude_code.background_refusal(role))
+        self.calls.append({"role": role, "messages": messages, "json": True, "model": model})
+        return self.json_replies.pop(0)
+
+    async def stream(self, role, messages, tools=None, *, model=None):
+        self.attended.append(claude_code.is_attended())
+        async for chunk in super().stream(role, messages, tools, model=model):
+            yield chunk
+
+
+async def test_a_fast_model_that_refuses_hands_the_check_to_the_primary_model(config, isolated_home):
+    """#311: the check is part of answering the chat, so the chat's model does it when the fast one can't."""
+    llm = _FastRefuses(replies=["Got it."], json_replies=[NEVER_DELETE])
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, "From now on, never delete my emails.")
+        [proposal] = await s.chat_rules.list(sid)
+        assert proposal["keys"] == ["mail_delete_email"]
+        [check] = _json_calls(llm)
+        assert check["role"] == "primary" and check["model"] is None
+    finally:
+        await s.stop()
+
+
+async def test_the_chats_own_model_does_the_check_when_the_fast_model_refuses(config, isolated_home, monkeypatch):
+    llm = _FastRefuses(replies=["Got it."], json_replies=[NEVER_DELETE])
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        async def chat_model(session, role="primary"):
+            return "ollama/llama3.2", None
+
+        monkeypatch.setattr(s.agent, "chat_model", chat_model)
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, "never delete my emails")
+        assert len(await s.chat_rules.list(sid)) == 1
+        [check] = _json_calls(llm)
+        assert check["model"] == "ollama/llama3.2"
+    finally:
+        await s.stop()
+
+
+async def test_claude_code_answers_the_check_as_part_of_the_chat(config, isolated_home):
+    """Every role on Claude Code: the check is a reply the user waits for, so it is streamed as attended work."""
+    reply = json.dumps(NEVER_DELETE)
+    llm = _FastRefuses(replies=[reply, "Got it."], primary="claude-code/sonnet")
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        sid = await s.store.create_session(channel="cli")
+        _, events = await _turn(s, sid, "From now on, never delete my emails.")
+        [proposal] = await s.chat_rules.list(sid)
+        assert proposal["keys"] == ["mail_delete_email"] and proposal["rule"] == "never"
+        check = llm.calls[0]
+        assert check["tools"] is None and "mail_delete_email" in check["messages"][1]["content"]
+        assert llm.attended[0] is True
+        assert events[-1].type == "done" and events[-1].content == "Got it."
+    finally:
+        await s.stop()
+
+
+async def test_claude_code_check_with_unusable_text_makes_no_card(config, isolated_home):
+    llm = _FastRefuses(replies=["I can't help with that.", "ok"], primary="claude-code/sonnet")
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, "never delete my emails")
         assert await s.chat_rules.list(sid, None) == []
     finally:
         await s.stop()
@@ -713,3 +798,14 @@ def test_rest_lists_and_decides_proposals(client):
     # changing the rule in Settings drops the origin note
     patched = client.patch("/api/config", json={"tools": {"approvals": {"rules": {"mail_delete_email": "ask"}}}}).json()
     assert patched["config"]["tools"]["approvals"]["rule_origins"] == {}
+
+
+def test_the_ndjson_chat_carries_the_rule_card(client):
+    """#311: a client on POST /api/chat sees the card (in the /ws envelope) before the reply ends."""
+    lines = [json.loads(x) for x in client.post("/api/chat", json={"text": "never delete my emails"}).text.splitlines()]
+    cards = [i for i, x in enumerate(lines) if x["type"] == "rule_proposal.updated"]
+    assert len(cards) == 1
+    card = lines[cards[0]]["data"]
+    assert card["status"] == "pending" and card["keys"] == ["mail_delete_email"]
+    assert card["session_id"] == lines[0]["session_id"]
+    assert cards[0] < next(i for i, x in enumerate(lines) if x["type"] == "done")
