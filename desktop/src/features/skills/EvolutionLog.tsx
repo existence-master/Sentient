@@ -155,6 +155,9 @@ function Entry({ entry, onOpenSkill }: { entry: EvolutionLogEntry; onOpenSkill: 
           <>You archived <SkillLink name={name} onOpenSkill={onOpenSkill} /></>
         )
       break
+    case 'skill_reset':
+      title = <>You put <SkillLink name={name} onOpenSkill={onOpenSkill} /> back to its original version</>
+      break
     case 'profile_updated': {
       const appended = num(d.learned_appended)
       title = 'Sentient refreshed your profile'

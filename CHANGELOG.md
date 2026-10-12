@@ -12,6 +12,16 @@ and versions follow [Semantic Versioning](https://semver.org/).
   in the app or a paired chat, keeps them running. **Resume routines** in that notification, in your chat app or on
   the Tasks page brings them all back. Turn on **Keep running while I'm away** on a task that should never pause.
   The day counts and the waiting time are in Settings > Tasks.
+- **Sentient never overwrites a skill you edited:** when you change a skill, in Skills or in any text editor, Sentient
+  notices and leaves your version alone. When it has a better idea it drafts the change for you to compare and
+  approve, and says plainly that your version is untouched. A proposal drafted before your edit warns that approving
+  would undo your changes. **Reset to original** puts back the version from before your edits.
+- **Skill checks:** Skills now point out problems in plain words: a missing or unreadable header, no description or
+  steps, a skill that is too long, links to files that aren't there, tools that aren't installed, a skill that reads
+  like a diary of past runs instead of a lesson, and risky instructions (skip approvals, ignore other instructions,
+  wipe folders, run a downloaded script, send passwords or keys). They show on each skill, on proposals, on skills
+  coming from Hermes, and a skill file that can't load at all is listed with what is wrong. A skill Sentient writes
+  with a risky instruction always waits for your review.
 - **Bring your memory from ChatGPT, Claude or OpenClaw:** Memory > Import > From another assistant reads a ChatGPT or
   Claude data export (the zip they email you) or your OpenClaw workspace folder, right on your computer. Nothing is
   uploaded and the export is never changed. You first see what's in it (saved memories, conversations, Claude's
@@ -252,6 +262,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- Editing, approving or importing a skill that needs a particular tool (for example `file_read`) no longer hides it
+  from Sentient until the next restart.
+- **Watch requests no longer fail when a check script can't be written:** if the AI's check script is rejected twice
+  (it loops, sleeps or uses memory, as small local models sometimes do), the task is saved as an ordinary recurring
+  task that the AI runs each time, with a short note on the task saying so, instead of ending in an error.
 - **Rules from chat work with Claude Code for every model:** when your fast model is Claude Code, "From now on,
   never delete my emails" proposes a rule again. The check now uses the chat's own model or your main model, since
   it is part of answering your message. Apps that chat through `POST /api/chat` also get the "Make this a rule?" card.

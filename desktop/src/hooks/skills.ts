@@ -30,6 +30,7 @@ export function useSkillActions() {
     reject: useMutation({ mutationFn: (name: string) => api.skills.reject(name), onSuccess: invalidate }),
     archive: useMutation({ mutationFn: (name: string) => api.skills.archive(name), onSuccess: invalidate }),
     restore: useMutation({ mutationFn: (name: string) => api.skills.restore(name), onSuccess: invalidate }),
+    reset: useMutation({ mutationFn: (name: string) => api.skills.reset(name), onSuccess: invalidate }),
     remove: useMutation({ mutationFn: (name: string) => api.skills.delete(name), onSuccess: invalidate }),
     reviewNow: useMutation({ mutationFn: (sessionId?: string) => api.skills.reviewNow(sessionId), onSuccess: invalidate })
   }

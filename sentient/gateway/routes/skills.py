@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/skills", tags=["skills"], dependencies=AUTH)
 
 
 async def _changed(s, name: str, state: str) -> None:
-    s.skills.reload({p.id for p in s.registry.plugins()})
+    s.skills.reload(s._available_tools())  # plugin ids and tool names, as at startup
     await s.skills.sync_stats(s.store)
     s.bus.publish("skill.updated", {"name": name, "state": state})
 
@@ -22,7 +22,12 @@ async def _skill(s, name: str) -> dict:
     if skill is None:
         raise HTTPException(404, f"no skill named {name}")
     stats = await s.skills.stats(s.store)
-    return skill.to_dict(stats.get(skill.name), body=True)
+    out = skill.to_dict(stats.get(skill.name), body=True)
+    if skill.state == "active" and skill.dir.parent == s.skills.root:
+        edit = await s.skills.edit_state(skill.name, s.store)
+        out.update(user_edited=edit["user_edited"], can_reset=edit["can_reset"])
+    out["lint"] = s.skills.lint(skill)
+    return out
 
 
 @router.get("")
@@ -74,6 +79,7 @@ async def create_skill(request: Request, body: dict):
         name, str(body.get("description", "")), str(body.get("body", "")), author="user",
         tags=list(body.get("tags") or []), requires_tools=list(body.get("requires_tools") or []),
     )
+    await s.skills.record_origin(name, s.store)  # what the user first saved is the version reset goes back to
     await _changed(s, name, "active")
     await log_event(s.store, "skill_created", {"name": name, "author": "user"})
     return await _skill(s, name)
@@ -88,6 +94,8 @@ async def get_skill(request: Request, name: str):
 async def update_skill(request: Request, name: str, body: dict):
     s = get_core(request)
     target = request.query_params.get("target") or body.get("target")
+    if target in (None, "active"):
+        await s.skills.edit_state(name, s.store)  # make sure the version before this edit is on record for reset
     try:
         skill = s.skills.edit(
             name,
@@ -104,7 +112,8 @@ async def update_skill(request: Request, name: str, body: dict):
     if target == "pending":
         # the proposal changed but nothing is active yet: return the proposal itself
         await _changed(s, skill.name, "pending_review")
-        return skill.to_dict((await s.skills.stats(s.store)).get(skill.name), body=True)
+        out = skill.to_dict((await s.skills.stats(s.store)).get(skill.name), body=True)
+        return {**out, "lint": s.skills.lint(skill)}
     if skill.state == "active":
         await s.skills.record_patch(skill.name, "active", s.store)
     await _changed(s, skill.name, skill.state)
@@ -120,9 +129,25 @@ async def approve_skill(request: Request, name: str):
     except FileNotFoundError as exc:
         raise HTTPException(404, f"no pending skill named {name}") from exc
     await s.skills.set_state(name, "active", s.store)
+    await s.skills.record_origin(name, s.store)  # the accepted version is the new original
     await _changed(s, name, "active")
     await log_event(s.store, "skill_patched" if had_active else "skill_created", {"name": name, "approved": True})
     return await _skill(s, name)
+
+
+@router.post("/{name}/reset")
+async def reset_skill(request: Request, name: str):
+    """Undo the user's edits: put back the version Sentient last wrote (or the one first saved)."""
+    s = get_core(request)
+    try:
+        skill = await s.skills.reset_to_original(name, s.store)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, f"no original version of {name} to go back to") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    await _changed(s, skill.name, "active")
+    await log_event(s.store, "skill_reset", {"name": skill.name, "by": "user"})
+    return await _skill(s, skill.name)
 
 
 @router.post("/{name}/reject")
@@ -177,6 +202,7 @@ async def delete_skill(request: Request, name: str):
 async def skill_diff(request: Request, name: str):
     s = get_core(request)
     try:
-        return s.skills.diff(name)
+        out = s.skills.diff(name)
     except FileNotFoundError as exc:
         raise HTTPException(404, f"no pending update for {name}") from exc
+    return {**out, **await s.skills.proposal_state(name, s.store)}

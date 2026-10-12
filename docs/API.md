@@ -1298,15 +1298,27 @@ facts). Bulk and consolidation changes publish `memory.updated` with `reason` (`
 that profile, section 12, and the result includes it.)
 (`success_count`/`failure_count` count chat turns and task runs that viewed the skill and went well or failed, see section 15)
 
-- `GET /api/skills` → `{active: [Skill], pending: [Skill & {reason, origin, proposed_at}], archived: [Skill]}` (`active` includes skills whose `state` is `stale`; a pending entry whose name also appears in `active` is a proposed update, see `/diff`; `origin` is `{session_id?, task_id?, run_id?, curator?, merged_from?, repair?: true}` or `null`)
-- `GET /api/skills/{name}` → `Skill & {body}` (active, else pending, else archived copy; 404 if none)
+**Lint finding** `{rule: "frontmatter|required|size|reference|danger|log_shaped|sections", level: "error|warning", message}`
+(plain sentences for the Skills screen; `sentient/skills/lint.py` lists the rules. `danger` is always an `error`.)
+
+**Edit protection (#164).** Sentient keeps a hash and a copy of each active SKILL.md as it last wrote it (or as first
+seen, or as the user first created it). A file that differs (edited in Skills or in any text editor) is
+`user_edited`. Sentient never writes over an edited skill or a skill whose author is `user`: `skill_save` stages its
+version in pending (whatever `skills.write_approval` says) with the notification "You changed X yourself, so Sentient
+didn't overwrite it" and `payload.user_edited: true`, and review, repair and curator proposals were pending already.
+`skill_save` also stages any skill with a `danger` finding. Approving a proposal makes it the new original.
+
+- `GET /api/skills` → `{active: [Skill & {user_edited, can_reset, lint: [Lint finding]}], pending: [Skill & {reason, origin, proposed_at, user_edited, changed_since_proposal, lint}], archived: [Skill & {lint}], broken: [{folder, state: "active|pending_review|archived", path, lint}]}`
+  (`broken` lists SKILL.md files in the skills folder that can't load, with why; pending `user_edited` is about the active skill it would replace, `changed_since_proposal` means that skill changed after the proposal was drafted, so approving would undo those changes; `active` includes skills whose `state` is `stale`; a pending entry whose name also appears in `active` is a proposed update, see `/diff`; `origin` is `{session_id?, task_id?, run_id?, curator?, merged_from?, repair?: true}` or `null`)
+- `GET /api/skills/{name}` → `Skill & {body, lint, user_edited?, can_reset?}` (active, else pending, else archived copy; 404 if none; `user_edited`/`can_reset` on active skills)
 - `POST /api/skills` `{name, description, body, tags?, requires_tools?}` → `Skill` (author `user`, active immediately; 400 invalid name, 409 exists)
-- `PUT /api/skills/{name}` `{description?, body?, tags?, requires_tools?}` → `Skill` (edits the active skill, else the pending proposal; bumps `version` of active skills)
+- `PUT /api/skills/{name}` `{description?, body?, tags?, requires_tools?}` → `Skill & {body, lint}` (edits the active skill, else the pending proposal; bumps `version` of active skills; an edit to the active skill makes it `user_edited`)
+- `POST /api/skills/{name}/reset` → `Skill & {body, lint}` (puts back the original, undoing the user's edits; 404 no active skill or no original, 409 nothing to undo; evolution log `skill_reset {name, by: "user"}`)
 - `POST /api/skills/{name}/approve` | `/archive` | `/restore` → `Skill`; `/reject` → `{ok}` (404 when there is nothing to act on; restore 409 if an active skill has that name)
 - `DELETE /api/skills/{name}` → `{ok}`
-- `GET /api/skills/{name}/diff` (pending update of an existing skill) → `{current, proposed}`
+- `GET /api/skills/{name}/diff` (pending update of an existing skill) → `{current, proposed, user_edited, changed_since_proposal}`
 - `POST /api/skills/review-now` `{session_id?}` → `{reviewed, proposed: [name]}` (with `session_id`: review that chat now; without: every chat with enough tool calls not yet reviewed, plus completed task runs seen on the bus)
-- `GET /api/skills/evolution-log?limit=` → `[{ts, kind: "skill_created|skill_patched|skill_repair_proposed|skill_archived|profile_updated|curator_run|summary_created", detail: {}}]` newest first. `detail` examples: `skill_created {name, pending, reason?, session_id?|task_id?}`, `skill_repair_proposed {name, pending: true, origin: "repair", failure: "tool_errors"|"user_correction"|"run_failed", reason, session_id?, turn_id?, task_id?, run_id?}`, `curator_run {staled: [], archived: [], merge_proposals: []}`, `profile_updated {learned_appended, facts_considered, summaries_considered, memory_chars}`, `summary_created {id, session_id, start_at, end_at}`.
+- `GET /api/skills/evolution-log?limit=` → `[{ts, kind: "skill_created|skill_patched|skill_repair_proposed|skill_archived|skill_reset|profile_updated|curator_run|summary_created", detail: {}}]` newest first. `detail` examples: `skill_created {name, pending, reason?, session_id?|task_id?, user_edited?: true}` (`user_edited` on a proposal for a skill the user edited, also on `skill_patched` and `skill_repair_proposed`), `skill_repair_proposed {name, pending: true, origin: "repair", failure: "tool_errors"|"user_correction"|"run_failed", reason, session_id?, turn_id?, task_id?, run_id?}`, `curator_run {staled: [], archived: [], merge_proposals: []}`, `profile_updated {learned_appended, facts_considered, summaries_considered, memory_chars}`, `summary_created {id, session_id, start_at, end_at}`.
 
 Skills proposed by the background reviewer or curator always land in pending with a `skill` notification `payload: {skill, action: "create"|"patch", origin}`.
 Repair proposals (section 15) send `payload: {skill, action: "patch", origin: "repair", reason, session_id?, turn_id?, task_id?, run_id?}` with title "Skill fix to review".
@@ -2041,8 +2053,13 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `script` (and a `schedule`, e.g. `interval`) to its reply. The code must use `from sentient_tools import tools, result` and
   read-only tools; it is checked with `ast.parse` and, because a model wrote it, also rejected when it imports a package
   outside the standard library (`requests`, `bs4`), uses `while True`, sleeps (`time.sleep`, `tools.time_sleep`), calls
-  memory functions (`memory_*`) or returns `{"alert": ...}` with a `changed`/`noteworthy` condition. The planner gets one chance to fix a rejected script with the reason, then planning
-  fails with a readable `error`. The same rules apply to script code changed by chat tools; code a person edits
+  memory functions (`memory_*`) or returns `{"alert": ...}` with a `changed`/`noteworthy` condition. The planner gets one chance to fix a rejected script with the reason. If
+  that one is rejected too (#310), the task is saved as an ordinary AI-run task instead of failing: `task_type: "single"`,
+  `script: null`, one plan step that is the user's own request (`original_prompt`, which keeps the page address the
+  script held) with the app the scripts called (`tools.web_fetch`: `web`; else the planner's app; one more step per
+  further app), a change request keeping the re-plan's steps, the same schedule rules as a script job, and an assistant note in `chat_history` ("I couldn't write a working check script
+  for this, so the AI will do it at each run instead."). Its runs use the recurring-task memory ("Recurring tasks
+  remember"). The same rules apply to script code changed by chat tools; code a person edits
   (`PATCH /api/tasks/{id}`) only has to compile. A script job the planner leaves on an immediate one-off schedule becomes `interval` 60.
 - `POST /api/tasks/{id}/script/test` → SandboxResult (does not change `last_result`); see section 4.
 
@@ -2213,7 +2230,7 @@ databases are never read, skill folders are copied without dotfiles or symlinks,
  "counts": {"skills": 2, "memory": 5, "persona": 1, "jobs": 3, "mcp": 3},
  "skills": [{"key": "skill:productivity/weekly-review", "action": "import|skip", "note": "Goes to Skills to review...",
              "name": "weekly-review", "folder": "productivity/weekly-review", "description": "...",
-             "target": "weekly-review", "changed_builtin": false}],
+             "target": "weekly-review", "changed_builtin": false, "lint": []}],
  "memory": [{"key": "fact:0", "action": "import", "note": "...", "kind": "fact|insight", "text": "..."}],
  "persona": {"key": "persona", "action": "import|skip", "note": "...", "current": "...", "proposed": "..."},
  "jobs": [{"key": "job:<hermes id>", "action": "import|skip", "note": "...", "name": "...", "prompt": "...",
@@ -2231,7 +2248,7 @@ databases are never read, skill folders are copied without dotfiles or symlinks,
 `schedule` is `null` and `script` is `null` when it has none; `then` and `condition` are only on script jobs; each
 suggestion may be `null`.
 
-- **Skills** are copied to `~/.sentient/skills/pending/<target>/` (never active; approve them under Skills). A skill
+- **Skills** are copied to `~/.sentient/skills/pending/<target>/` (never active; approve them under Skills). Each import item carries `lint` (Lint findings, section 8). A skill
   listed in `skills/.bundled_manifest` whose folder still has Hermes' hash is skipped; one the user changed is
   imported with `changed_builtin: true`. Hidden folders (`.archive`, `.hub`, `.curator_*`) are ignored. `target` is
   made unique (`<name>-hermes`, `<name>-hermes-2`...) when Sentient already has that name; a skill whose body Sentient
