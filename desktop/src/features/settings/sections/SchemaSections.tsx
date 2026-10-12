@@ -11,6 +11,7 @@ import { relativeTime } from '@/lib/utils'
 import { SchemaForm } from '../SchemaForm'
 import type { SectionProps } from '../SettingsPage'
 import { WAKE_KEYS, WakeWordSection } from './AbilitySections'
+import { ApprovalGrantsSection } from './ApprovalGrants'
 import { ApprovalRulesSection } from './ApprovalRules'
 import { DICTATION_KEYS, DictationSection } from './Dictation'
 
@@ -104,6 +105,7 @@ export function ApprovalsSection({ query }: SectionProps) {
   return (
     <div className="space-y-8">
       <SchemaForm section="tools" title="Approvals" filter={query} exclude={['tools.disabled']} />
+      <ApprovalGrantsSection query={query} />
       <ApprovalRulesSection query={query} />
       <FormSection title="Tools" description="Turn off tool groups Sentient shouldn't use at all.">
         {tools.isLoading ? (

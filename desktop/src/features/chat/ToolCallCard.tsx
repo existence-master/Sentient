@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { useState } from 'react'
 import { JsonView, Spinner } from '@/components/ui'
 import type { ApprovalView, ToolCallView } from '@/lib/chatFold'
+import type { ApprovalDecision } from '@/lib/types'
 import { cn, formatDuration } from '@/lib/utils'
 import { api } from '@/lib/api'
 import { ApprovalCard } from './ApprovalCard'
@@ -20,7 +21,7 @@ function GenericToolCard({
 }: {
   tool: ToolCallView
   approval?: ApprovalView
-  onApprove?: (approvalId: string, decision: 'allow' | 'allow_session' | 'deny') => void
+  onApprove?: (approvalId: string, decision: ApprovalDecision) => void
 }) {
   const [open, setOpen] = useState(false)
   const meta = toolMeta(tool.name)
@@ -123,7 +124,7 @@ function GenericToolCard({
   )
 }
 
-type ApproveFn = (approvalId: string, decision: 'allow' | 'allow_session' | 'deny') => void
+type ApproveFn = (approvalId: string, decision: ApprovalDecision) => void
 
 /** Picks a dedicated card for code runs, commands, helpers and device photos; everything else uses the generic row. */
 export function ToolCallCard({ tool, approval, onApprove }: { tool: ToolCallView; approval?: ApprovalView; onApprove?: ApproveFn }) {

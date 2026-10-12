@@ -42,6 +42,7 @@ import type {
   Subagent,
   TerminalStatus,
   ApprovalDecision,
+  ApprovalGrant,
   Bootstrap,
   StopResult,
   StopState,
@@ -457,7 +458,10 @@ export const api = {
 
   approvals: {
     respond: (approval_id: string, decision: ApprovalDecision) =>
-      http.post<{ resolved: boolean }>('/api/approvals', { approval_id, decision })
+      http.post<{ resolved: boolean }>('/api/approvals', { approval_id, decision }),
+    /** Live "Allow for this task" and "Allow for 1 hour" answers (#139). */
+    grants: () => http.get<{ grants: ApprovalGrant[] }>('/api/approvals/grants'),
+    revokeGrant: (id: string) => http.delete<OkResponse>(`/api/approvals/grants/${enc(id)}`)
   },
 
   files: {

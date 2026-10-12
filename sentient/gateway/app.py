@@ -18,6 +18,7 @@ import contextlib
 import json
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -76,6 +77,7 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
         # per session: the running turn plus turns queued behind it (a message sent while a turn was finishing)
         turns: dict[str, list[asyncio.Task]] = {}
         closed = False
+        presence_id = uuid.uuid4().hex  # this connection's "is the person looking?" answer (#139)
 
         async def send(obj: dict) -> None:
             if closed:
@@ -176,12 +178,15 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                 elif kind == "approval.respond":
                     ok = s.approvals.resolve(str(msg.get("approval_id")), str(msg.get("decision", "deny")))
                     await send({"type": "approval.ack", "approval_id": msg.get("approval_id"), "resolved": ok})
+                elif kind == "presence":  # the window is focused and visible, or not (#139)
+                    s.presence.set(presence_id, msg.get("active") is True)
                 else:
                     await send({"type": "error", "message": f"unknown message type {kind}"})
         except WebSocketDisconnect:
             pass
         finally:
             closed = True
+            s.presence.drop(presence_id)
             bus_task.cancel()
             # turns keep running to completion so nothing is lost; they just stop sending
 

@@ -9,13 +9,19 @@ task runs: the plugin is ``scoped``, so chat, subagents and the planner never se
 The same pause carries a held call (ADR 0018): a run that read outside content and then tries to send something
 asks "OK to ...?" instead. "Yes, go ahead" marks that exact call approved in the transcript and the executor runs
 it, once, when the run continues; any other answer fails the run.
+
+A call held by an "ask" rule (#139) pauses the same way, as an approval request: the options say how wide a yes is
+("Allow once", "Allow for this task", "Allow for 1 hour", "Always allow", "Deny"; ``sentient.agent.grants``). Both
+kinds of held call carry ``expires_at`` (``tools.approvals.task_request_minutes``): a late answer can't approve them.
 """
 
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sentient.agent import grants as grant_rules
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 
 ASK_TOOL = "ask_user"
@@ -106,7 +112,30 @@ def fill_result(messages: list[dict], call_id: str | None, content: str) -> list
     return out
 
 
-def untrusted_pending(needs_ok: dict) -> dict:
+EXPIRED_STOP = "Nobody answered the approval request in time, so the task stopped without doing that step."
+EXPIRED_LATE = (
+    "This approval request expired, so it can't be approved now. Open the task and choose Retry to run it again."
+)
+
+
+def _expiry(minutes: int, now: datetime | None = None) -> str:
+    return ((now or datetime.now(UTC)) + timedelta(minutes=max(1, int(minutes)))).isoformat()
+
+
+def expired(pending: dict, now: datetime | None = None) -> bool:
+    """True when a held call's approval request (``expires_at``) is past its time."""
+    raw = pending.get("expires_at") if isinstance(pending, dict) else None
+    if not raw:
+        return False
+    try:
+        at = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return True  # unreadable: fail closed, never approve late
+    at = at if at.tzinfo else at.replace(tzinfo=UTC)
+    return at <= (now or datetime.now(UTC))
+
+
+def untrusted_pending(needs_ok: dict, minutes: int = 240) -> dict:
     """The ``pending_question`` of a run holding a call because it read outside content (``LoopResult.needs_ok``)."""
     return {
         "question": str(needs_ok.get("question") or "")[:MAX_QUESTION_CHARS],
@@ -114,7 +143,38 @@ def untrusted_pending(needs_ok: dict) -> dict:
         "tool_call_id": str(needs_ok.get("call_id") or ""),
         "untrusted_call": True,
         "stop_error": DECLINED_STOP,
+        "expires_at": _expiry(minutes),
     }
+
+
+def approval_pending(needs_ok: dict, minutes: int = 240, grant_minutes: int = 60) -> dict:
+    """The ``pending_question`` of a run holding a call for an "ask" rule (#139): an approval request whose options
+    say how wide the yes is."""
+    offered = [c for c in needs_ok.get("choices") or [] if c in grant_rules.DECISIONS] or [
+        grant_rules.ALLOW, grant_rules.DENY,
+    ]
+    return {
+        "question": str(needs_ok.get("question") or "")[:MAX_QUESTION_CHARS],
+        "options": [grant_rules.decision_label(c, grant_minutes) for c in offered],
+        "tool_call_id": str(needs_ok.get("call_id") or ""),
+        "approval": {
+            "tool": str(needs_ok.get("tool") or ""),
+            "risk": str(needs_ok.get("risk") or "write"),
+            "label": str(needs_ok.get("label") or needs_ok.get("tool") or ""),
+            "choices": offered,
+            "grant_minutes": int(grant_minutes),
+        },
+        "stop_error": DECLINED_STOP,
+        "expires_at": _expiry(minutes),
+    }
+
+
+def held_pending(needs_ok: dict, approvals_config: Any) -> dict:
+    """``approval_pending`` or ``untrusted_pending`` for the call a run held (``LoopResult.needs_ok``)."""
+    minutes = int(getattr(approvals_config, "task_request_minutes", 240))
+    if needs_ok.get("approval"):
+        return approval_pending(needs_ok, minutes, int(getattr(approvals_config, "grant_minutes", 60)))
+    return untrusted_pending(needs_ok, minutes)
 
 
 def approves(answer: str) -> bool:

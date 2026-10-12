@@ -69,13 +69,17 @@ def _question_to_api(question: Any) -> dict | None:
     if not isinstance(question, dict) or not question.get("question"):
         return None
     options = question.get("options")
-    kind = "stuck" if question.get("stuck") else "limit" if question.get("limit") else "question"
+    kind = (
+        "stuck" if question.get("stuck") else "limit" if question.get("limit")
+        else "approval" if question.get("approval") or question.get("untrusted_call") else "question"
+    )
     return {
         "question": str(question["question"]),
         "options": [str(o) for o in options] if isinstance(options, list) else [],
         "asked_at": question.get("asked_at"),
         "kind": kind,
         "reason": (str(question.get("reason") or "") or None) if kind == "stuck" else None,
+        "expires_at": question.get("expires_at"),  # approvals only (#139): a late answer can't approve
     }
 
 

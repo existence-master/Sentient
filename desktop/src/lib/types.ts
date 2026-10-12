@@ -179,11 +179,32 @@ export interface ApprovalsConfig {
 }
 
 export interface RuleOrigin {
-  rule: 'ask' | 'never'
+  rule: 'allow' | 'ask' | 'never'
   /** The user's own words, shortened. */
   said: string
   at: ISODate | ''
   session_id: string | null
+  /** `approval`: the user chose "Always allow" when Sentient asked (#139). Older engines leave it out (chat). */
+  source?: 'chat' | 'approval'
+  /** Where an "Always allow" answer was given: desktop, telegram, discord or whatsapp. */
+  via?: string | null
+}
+
+/** A live "Allow for this task" or "Allow for 1 hour" answer (#139, `GET /api/approvals/grants`). */
+export interface ApprovalGrant {
+  id: string
+  tool: string
+  /** Plain name, e.g. `"Write file" in Files`. */
+  label: string
+  app: string | null
+  scope: 'task' | 'timed'
+  task_id: string | null
+  task_name: string | null
+  risk: Risk
+  via: string
+  created_at: ISODate
+  /** Set for `timed` grants. */
+  expires_at: ISODate | null
 }
 
 /** One app or tool a rule proposal covers: `label` is "Gmail > Trash", or just "Gmail" for the whole app. */
@@ -457,7 +478,8 @@ export interface ChatRequest {
   incognito?: boolean
 }
 
-export type ApprovalDecision = 'allow' | 'allow_session' | 'deny'
+/** How wide a yes is (#139): once, this chat, this task (task runs only), a while, or an Allow rule. */
+export type ApprovalDecision = 'allow' | 'allow_session' | 'allow_task' | 'allow_timed' | 'allow_always' | 'deny'
 
 // ---------------------------------------------------------------------------- files, tools, usage
 export interface UploadedFile {
@@ -788,6 +810,10 @@ export interface ApprovalRequestEvent extends TurnScoped {
   target?: string | null
   /** Why this asks although rules would let it run: the chat read outside content (ADR 0018). */
   untrusted?: string | null
+  /** The answers offered, in order (#139). Older engines leave it out: allow, allow_session, deny. */
+  choices?: ApprovalDecision[] | null
+  /** How long `allow_timed` lasts, in minutes. */
+  grant_minutes?: number | null
 }
 export interface UsageEvent extends TurnScoped {
   type: 'usage'
@@ -925,6 +951,10 @@ export interface DomainEventMap {
   /** A chat was deleted: by the user, or an incognito chat that was closed or left idle (#154). */
   'session.deleted': { session_id: string; reason?: 'incognito' }
   'rule_proposal.updated': RuleProposal
+  /** A task or timed grant was added, revoked or ran out (#139); refetch the list. */
+  'approval_grants.updated': { count: number }
+  /** Whether anyone is looking at the window now (#139). */
+  'presence.changed': { in_app: boolean }
   'config.updated': { sections: string[] }
   'voice.state': { state: VoiceState }
   // §10-14
@@ -972,6 +1002,8 @@ export type ClientMessage =
   | { type: 'chat.cancel'; session_id: string }
   | { type: 'chat.steer'; session_id: string; text: string }
   | { type: 'approval.respond'; approval_id: string; decision: ApprovalDecision }
+  /** The window is focused and visible, or not (#139): approval requests go to a paired chat only while it isn't. */
+  | { type: 'presence'; active: boolean }
   | { type: 'ping' }
 
 // ============================================================================ §10 Subagents
@@ -1334,9 +1366,12 @@ export interface RunQuestion {
   /** Suggested answers (0 to 6). A free-text answer is always allowed. */
   options: string[]
   asked_at: ISODate | null
-  /** `stuck`: the run stopped getting anywhere and asks what to do (`reason` says why); `limit`: it reached a limit. */
-  kind?: 'question' | 'limit' | 'stuck'
+  /** `stuck`: the run stopped getting anywhere and asks what to do (`reason` says why); `limit`: it reached a limit;
+   * `approval`: it holds a call until you allow it (a tool set to Ask, or sending after outside content, #139). */
+  kind?: 'question' | 'limit' | 'stuck' | 'approval'
   reason?: string | null
+  /** Approvals only: after this a late answer can't approve it. */
+  expires_at?: ISODate | null
 }
 
 export interface Run {

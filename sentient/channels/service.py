@@ -12,6 +12,12 @@ WhatsApp linked to the user's own account (their "Message yourself" chat).
 - Rules from chat (#130): a "Make this a rule?" proposal made in a paired chat is sent back to that chat with
   "Make it a rule" / "Not now" (numbered on WhatsApp); answering there decides it, and an answer given in the
   desktop app settles the message.
+- Approvals outside the app (#139): a task waiting for approval (a tool set to Ask, or sending after outside
+  content) is sent to the paired chats as buttons ("Allow once", "Allow for this task", "Allow for 1 hour",
+  "Always allow", "Deny"; numbered on WhatsApp), or answered by replying with a word. It goes out only while
+  nobody is looking at the app (``app.presence``); one raised while the window is in front waits and goes out when
+  the person leaves. Only a chat it was sent to can answer it (the delivered message is remembered per chat), and a
+  request past its time can't be approved.
 """
 
 from __future__ import annotations
@@ -42,6 +48,11 @@ TASK_RESULT_EVENTS = {
 }
 STATUS_LABELS = {
     "approved": "Approved", "declined": "Declined", "dismissed": "Dismissed", "answered": "Answered", "cancelled": "Cancelled",
+    "expired": "Expired",
+}
+APPROVAL_HINT = "Tap a button, or reply to this message with {words}."
+APPROVAL_WORDS = {
+    "allow": "once", "allow_task": "task", "allow_timed": "hour", "allow_always": "always", "deny": "no",
 }
 RULE_OUTCOMES = {"accepted": "Made it a rule. Change it in Settings > Approvals & safety.", "declined": "Not now"}
 QUESTION_ROW = 2  # option buttons per row (Discord allows 5 per row and 5 rows)
@@ -82,6 +93,8 @@ class ChannelService(Service):
         self._delivered: dict[str, list[tuple[str, str, str]]] = {}
         self._subagents_sent: set[tuple[str, str, str]] = set()
         self._rule_cards: dict[str, tuple[str, str, str]] = {}  # proposal id -> (channel, chat_id, message_id)
+        # approval requests held back while the person is in the app (#139): notification id -> notification
+        self._held: dict[str, dict] = {}
         self._listening = asyncio.Event()
         install_log_redaction()
 
@@ -273,7 +286,10 @@ class ChannelService(Service):
                     if kind == "notification.new":
                         await self.deliver_notification(data)
                     elif kind == "notification.updated":
+                        self._held.pop(str(data.get("id")), None)
                         await self.update_delivered(data)
+                    elif kind == "presence.changed" and not data.get("in_app"):
+                        await self.deliver_held()
                     elif kind == "subagent.updated":
                         await self.deliver_subagent(data)
                     elif kind == "rule_proposal.updated":
@@ -380,11 +396,40 @@ class ChannelService(Service):
         return None
 
     @staticmethod
+    def is_approval(note: dict) -> bool:
+        """A task's approval request (#139, ADR 0018), as opposed to an ordinary question."""
+        payload = note.get("payload") or {}
+        return note.get("kind") == "task" and payload.get("event") == "question" and isinstance(payload.get("approval"), dict)
+
+    @staticmethod
+    def _format_approval(note: dict) -> tuple[str, list[list[Button]] | None] | None:
+        """ "Approval needed" with one button per offered answer (``ta:<option index>:<run id>``)."""
+        payload = note.get("payload") or {}
+        run_id, question = payload.get("run_id"), str(payload.get("question") or note.get("message") or "").strip()
+        options = [str(o) for o in payload.get("options") or [] if str(o).strip()]
+        if not run_id or not question or not options:
+            return None
+        title = (note.get("title") or "").strip().replace(" needs your answer", " needs your OK") or "A task needs your OK"
+        approval = payload.get("approval") or {}
+        choices = [str(c) for c in approval.get("choices") or []]
+        timed = "hour" if int(approval.get("grant_minutes") or 60) % 60 == 0 else "minutes"  # matches the button
+        words = [timed if c == "allow_timed" else APPROVAL_WORDS[c] for c in choices if c in APPROVAL_WORDS]             if len(choices) == len(options) else []
+        said = (", ".join(words[:-1]) + f" or {words[-1]}") if len(words) > 1 else "yes or no"
+        md = f"**Approval needed: {title}**\n{summary_text(question, 900)}\n\n_{APPROVAL_HINT.format(words=said)}_"
+        buttons = [
+            Button(label[:60], f"ta:{i}:{run_id}", "danger" if label in {"Deny", "No, stop the task"} else "primary")
+            for i, label in enumerate(options)
+        ]
+        return md, [buttons[i:i + QUESTION_ROW] for i in range(0, len(buttons), QUESTION_ROW)]
+
+    @staticmethod
     def _format_question(note: dict) -> tuple[str, list[list[Button]] | None] | None:
         payload = note.get("payload") or {}
         run_id, question = payload.get("run_id"), str(payload.get("question") or note.get("message") or "").strip()
         if not run_id or not question or payload.get("status"):
             return None
+        if ChannelService.is_approval(note):
+            return ChannelService._format_approval(note)
         title = (note.get("title") or "").strip() or "A task needs your answer"
         options = [str(o) for o in payload.get("options") or [] if str(o).strip()]
         hint = "Tap an option, or reply to this message with your answer." if options else "Reply to this message with your answer."
@@ -394,7 +439,21 @@ class ChannelService(Service):
         buttons = [Button(label[:60], f"tq:{i}:{run_id}", "primary") for i, label in enumerate(options)]
         return md, [buttons[i:i + QUESTION_ROW] for i in range(0, len(buttons), QUESTION_ROW)]
 
+    async def deliver_held(self) -> int:
+        """The person left the app: send the approval requests held back while they were in it, if still waiting."""
+        sent = 0
+        for nid, note in list(self._held.items()):
+            self._held.pop(nid, None)
+            run_id = str((note.get("payload") or {}).get("run_id") or "")
+            if run_id and await self._waiting_question(run_id) is not None:
+                sent += await self.deliver_notification(note)
+        return sent
+
     async def deliver_notification(self, note: dict) -> int:
+        if self.is_approval(note) and getattr(self.app, "presence", None) is not None and self.app.presence.in_app():
+            if note.get("id") and not (note.get("payload") or {}).get("status"):
+                self._held[str(note["id"])] = note  # the person is looking at the app: ask there first (#139)
+            return 0
         where = await self._task_delivery(note) if note.get("kind") in {"task", "brief"} else "default"
         if where == "desktop":
             return 0
@@ -565,19 +624,28 @@ class ChannelService(Service):
         await ch.settle_buttons(chat_id, message_id, outcome)
         return outcome
 
-    async def act_on_question(self, ch: Channel, chat_id: str, message_id: str, run_id: str, index: str) -> str:
-        """An option button under a task's question: answer it with that option."""
+    async def act_on_question(
+        self, ch: Channel, chat_id: str, message_id: str, run_id: str, index: str, *, approval: bool = False
+    ) -> str:
+        """An option button under a task's question: answer it with that option. An approval request (``approval``,
+        #139) is only answered from the message that delivered it to this chat."""
+        if approval:
+            sent = await self.store.question_for(ch.id, chat_id, message_id)
+            if sent is None or sent["run_id"] != run_id:
+                return "This request wasn't sent to this chat, so it can't be answered here."
         found = await self._waiting_question(run_id)
         if found is None:
             await ch.settle_buttons(chat_id, message_id, "This question is no longer waiting")
             return "This question is no longer waiting."
+        if found.get("kind") == "approval" and not approval:  # an approval only answers through its own buttons
+            return "Unknown button."
         options = found.get("options") or []
         if not index.isdigit() or int(index) >= len(options):
             return "Unknown button."
         self._forget_delivered(ch.id, chat_id, message_id)
         answer = str(options[int(index)])
         try:
-            await self.app.tasks.answer_question(found["task_id"], run_id, answer)
+            await self.app.tasks.answer_question(found["task_id"], run_id, answer, via=ch.id)
         except Exception as exc:
             text = str(exc) or "That didn't work."
             await ch.settle_buttons(chat_id, message_id, text[:120])
@@ -616,7 +684,7 @@ class ChannelService(Service):
             if re.fullmatch(r"[0-9]{1,3}", choice) and 1 <= int(choice) <= len(options):
                 text = options[int(choice) - 1]  # "2" picks the second option (ASCII digits only)
             try:
-                await self.app.tasks.answer_question(waiting["task_id"], waiting["run_id"], text)
+                await self.app.tasks.answer_question(waiting["task_id"], waiting["run_id"], text, via=ch.id)
                 reply = f"Thanks! I passed your answer to '{summary_text(waiting['task_name'], 80)}'. It's carrying on now."
             except Exception as exc:
                 reply = f"I couldn't pass that on: {str(exc)[:200] or 'something went wrong'}"

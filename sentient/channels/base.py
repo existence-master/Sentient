@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sentient import paths
+from sentient.agent.grants import decision_label
 from sentient.channels.store import PairingResult
 from sentient.llm import availability
 from sentient.llm import presets as model_presets
@@ -70,8 +71,14 @@ ACTIVITY = {
     "discord": "Checking Discord",
 }
 
-APPROVAL_DECISIONS = {"a": "allow", "s": "allow_session", "d": "deny"}
-DECISION_LABEL = {"allow": "Allowed", "allow_session": "Allowed for this chat", "deny": "Denied"}
+# button codes for a chat's approval request (#139 adds the timed and "always" answers)
+APPROVAL_DECISIONS = {"a": "allow", "s": "allow_session", "h": "allow_timed", "w": "allow_always", "d": "deny"}
+APPROVAL_CODES = {v: k for k, v in APPROVAL_DECISIONS.items()}
+DECISION_LABEL = {
+    "allow": "Allowed", "allow_session": "Allowed for this chat", "allow_timed": "Allowed for a while",
+    "allow_always": "Always allowed", "deny": "Denied",
+}
+NOT_SENT_HERE = "This request wasn't sent to this chat, so it can't be answered here."
 _COMMAND_RE = re.compile(r"^/([A-Za-z_]+)(?:@\w+)?(?:\s+(.*))?$", re.S)
 
 
@@ -262,6 +269,8 @@ class Channel:
         self._tasks: set[asyncio.Task] = set()
         self._runtime: asyncio.Task | None = None
         self._button_text: dict[tuple[str, str], str] = {}
+        # approval id -> the chat its request was sent to; only that chat may answer it (#139)
+        self._approval_chats: dict[str, str] = {}
         self.qr: str | None = None  # a code to scan while linking (WhatsApp), else None
 
     # ------------------------------------------------------------------ config
@@ -779,14 +788,23 @@ class Channel:
             f"**Approval needed**\n{self.app.config.assistant.name} wants to use **{humanize_tool(event.name)}** "
             f"(risk: {event.risk}).\n```json\n{args}\n```"
         )
-        first = [Button("Allow", f"ap:a:{event.approval_id}", "success")]
         if event.untrusted:  # it read outside content: say why; "for this chat" would not cover the next one anyway
             md += f"\n{event.untrusted}"
-        else:
-            first.append(Button("Allow for this chat", f"ap:s:{event.approval_id}", "primary"))
-        buttons = [first, [Button("Deny", f"ap:d:{event.approval_id}", "danger")]]
+        offered = event.choices or (["allow", "deny"] if event.untrusted else ["allow", "allow_session", "deny"])
+        minutes = event.grant_minutes or self.app.config.tools.approvals.grant_minutes
+        allow = [
+            Button("Allow" if d == "allow" else decision_label(d, minutes), f"ap:{APPROVAL_CODES[d]}:{event.approval_id}",
+                   "success" if d == "allow" else "primary")
+            for d in offered if d in APPROVAL_CODES and d != "deny"
+        ]
+        buttons = [allow[i:i + 2] for i in range(0, len(allow), 2)]
+        buttons.append([Button("Deny", f"ap:d:{event.approval_id}", "danger")])
         try:
             ids = await self.send_markdown(chat_id, md, buttons)
+            if ids:
+                waiting = set(self.app.approvals.pending_ids())  # forget requests that ended unanswered
+                self._approval_chats = {k: v for k, v in self._approval_chats.items() if k in waiting}
+                self._approval_chats[event.approval_id] = str(chat_id)
             return ids[-1] if ids else None
         except Exception as exc:
             log.warning("%s: approval message failed: %s", self.id, self.redact(str(exc)))
@@ -806,11 +824,19 @@ class Channel:
             decision = APPROVAL_DECISIONS.get(code)
             if decision is None:
                 return "Unknown button."
-            if not self.app.approvals.resolve(ref, decision):
+            if ref not in self.app.approvals.pending_ids():
+                self._approval_chats.pop(ref, None)
                 await self.settle_buttons(chat_id, message_id, "This request is no longer waiting")
                 return "This request is no longer waiting."
+            if self._approval_chats.get(ref) != chat_id:  # only the chat the request was sent to answers it (#139)
+                return NOT_SENT_HERE
+            if not self.app.approvals.resolve(ref, decision, via=self.id):
+                return "Unknown button."
+            self._approval_chats.pop(ref, None)
             await self.settle_buttons(chat_id, message_id, DECISION_LABEL[decision])
             return DECISION_LABEL[decision]
+        if kind == "ta":  # a task's approval request (#139)
+            return await self.service.act_on_question(self, chat_id, message_id, ref, code, approval=True)
         if kind == "tp":
             return await self.service.act_on_plan(self, chat_id, message_id, ref, approve=code == "a")
         if kind == "sg":

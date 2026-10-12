@@ -40,6 +40,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from sentient import paths
+from sentient.agent import grants as grant_rules
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import pending_asks, standing_text
 from sentient.agent.prompt import build_system_prompt, mark_outside
@@ -94,14 +95,19 @@ from sentient.tools.base import (
 from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import (
+    PURCHASE_LABEL,
     SCREEN_SOURCE,
     address_carries_data,
     address_host,
+    approval_hold_message,
+    approval_question,
     brings_untrusted,
     call_address,
+    is_purchase,
     is_screen_capture,
     never_message,
     outside_source,
+    rule_label,
     sends_out,
     unattended_ask_message,
     untrusted_address_reason,
@@ -114,6 +120,9 @@ from sentient.tools.rules import (
 
 log = logging.getLogger(__name__)
 
+# ``ToolContext.extra`` flag: this run can pause and ask the user (a single task run), so an "ask" rule holds the
+# call and the run asks instead of stopping (#139)
+CAN_PAUSE_KEY = "can_pause_for_approval"
 MAX_ATTACHMENT_CHARS = 60_000
 # A tool result may fill at most ``chat.tool_result_context_share`` of the model's context (#264). Characters per
 # token is cautious: JSON, ids and escaped text take more tokens per character than prose.
@@ -299,6 +308,7 @@ class LoopResult:
     held: list[dict] = field(default_factory=list)
     # the first call held because this run read outside content and nobody could be asked (ADR 0018):
     # {tool, arguments, call_id, question}. A task run stops after that round and asks the question.
+    # A call held by an "ask" rule in a run that can pause (#139) adds {approval: True, risk, label, choices}.
     needs_ok: dict | None = None
     # the longest tool result the model read in this run (``Agent.tool_result_limit``); None before the loop starts
     tool_result_limit: int | None = None
@@ -409,6 +419,7 @@ class _CallPlan:
     held: bool = False  # refused because nobody asked for this work (ADR 0017)
     untrusted: str = ""  # why this call asks: the run read outside content (ADR 0018)
     wants_ok: bool = False  # held for the user's OK in a run nobody can be asked in (ADR 0018)
+    ask_rule: bool = False  # held by an "ask" rule in a task run that pauses and asks (#139)
     host: str = ""  # the web host this call loads, if any; remembered as visited once it ran
 
 
@@ -762,13 +773,19 @@ class Agent:
             waiting = next((p for p in plans if p.wants_ok), None)
             if waiting is not None and waiting.tool is not None and result.needs_ok is None:
                 wording = await describe_call(waiting.tool, waiting.tc.arguments, ctx, waiting.risk)
+                label = self.approvals.label(waiting.tool, self.registry)
                 result.needs_ok = {
                     "tool": waiting.tc.name, "arguments": waiting.tc.arguments, "call_id": waiting.tc.id,
-                    "question": untrusted_question(
-                        self.approvals.label(waiting.tool, self.registry), ctx.untrusted, waiting.tc.arguments,
-                        wording["target"],
-                    ),
+                    "question": untrusted_question(label, ctx.untrusted, waiting.tc.arguments, wording["target"]),
                 }
+                if waiting.ask_rule:  # an "ask" rule in a task run: pause and ask, with how wide a yes may be (#139)
+                    purchase = await is_purchase(waiting.tool, waiting.tc.arguments, ctx, waiting.risk)
+                    label = rule_label(waiting.tool, None, self.registry)  # the tool itself, which a grant covers
+                    result.needs_ok.update(
+                        approval=True, risk=waiting.risk.name, label=label,
+                        choices=grant_rules.choices(waiting.tool, waiting.risk, purchase=purchase, task=True),
+                        question=approval_question(label, waiting.tc.arguments, wording["target"]),
+                    )
             for group in self._groups(plans):
                 for p in group:
                     yield ToolCallEvent(call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments, **ev)
@@ -779,16 +796,23 @@ class Agent:
                     elif p.needs_approval:
                         assert p.tool is not None
                         approval_id = new_id()
-                        self.approvals.create(approval_id)
                         wording = await describe_call(p.tool, p.tc.arguments, ctx, p.risk)
+                        # how wide a yes may be (#139): only "once" for purchases, raised risks, code and outside content
+                        offered = grant_rules.choices(
+                            p.tool, p.risk, purchase=wording["risk_label"] == PURCHASE_LABEL and p.risk >= Risk.send,
+                            untrusted=bool(p.untrusted), chat=bool(ctx.session_id),
+                            remember_session=self.approvals.config.remember_session,
+                        )
+                        self.approvals.create(approval_id, offered)
                         yield ApprovalRequest(
                             approval_id=approval_id, call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments,
                             risk=p.risk.name, reason=f"{p.tool.plugin}: {p.tool.description[:160]}",
                             risk_label=wording["risk_label"], target=wording["target"],
-                            untrusted=p.untrusted or None, **ev,
+                            untrusted=p.untrusted or None, choices=offered,
+                            grant_minutes=self.approvals.config.grant_minutes, **ev,
                         )
                         decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)
-                        if decision in {"allow", "allow_session"}:
+                        if decision in grant_rules.ALLOWING:
                             runnable.append(p)
                         else:
                             p.outcome = ({"error": DECLINED, "declined": True}, True, 0)
@@ -926,9 +950,21 @@ class Agent:
             plan.needs_approval = rule == "ask" or await self.approvals.decide(
                 tool, ctx.session_id, plan.risk, tc.arguments, ctx
             )
-        elif rule == "ask":  # task runs and other unattended loops cannot stop to ask: the run stops here
-            plan.preset = ({"error": unattended_ask_message(self.approvals.label(tool, self.registry))}, True, 0)
-            plan.rule_stop = True
+            # a yes the user already gave for this task or for a while (#139); an undecided chat proposal still asks
+            if plan.needs_approval and chat_rule != "ask" and await self.approvals.granted(
+                tool, plan.risk, tc.arguments, ctx
+            ):
+                plan.needs_approval = False
+        elif rule == "ask":
+            label = self.approvals.label(tool, self.registry)
+            if await self.approvals.granted(tool, plan.risk, tc.arguments, ctx):
+                pass  # the user allowed it for this task or for a while (#139)
+            elif ctx.extra.get(CAN_PAUSE_KEY):  # a task run: hold the call, pause and ask (#139)
+                plan.preset = ({"error": approval_hold_message(label)}, True, 0)
+                plan.wants_ok = plan.ask_rule = True
+            else:  # subagents, swarm workers and other unattended loops cannot stop to ask: the run stops here
+                plan.preset = ({"error": unattended_ask_message(label)}, True, 0)
+                plan.rule_stop = True
         return plan
 
     async def _chat_rule(self, tool: Tool, session_id: str | None) -> str | None:

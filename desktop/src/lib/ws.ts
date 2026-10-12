@@ -115,6 +115,12 @@ export class LiveSocket {
     return () => this.stateListeners.delete(fn)
   }
 
+  /** Tell the engine whether the person is looking at the window (#139): focused and visible. */
+  sendPresence(): void {
+    if (typeof document === 'undefined') return
+    this.send({ type: 'presence', active: document.visibilityState === 'visible' && document.hasFocus() })
+  }
+
   // ------------------------------------------------------------------ internals
   private setState(s: SocketState) {
     if (this.state === s) return
@@ -139,6 +145,7 @@ export class LiveSocket {
       this.lastMessageAt = Date.now()
       this.setState('open')
       this.startPing()
+      this.sendPresence()
     }
     ws.onmessage = (ev) => {
       this.lastMessageAt = Date.now()
@@ -212,3 +219,10 @@ export class LiveSocket {
 
 /** The app-wide live socket. */
 export const live = new LiveSocket()
+
+if (typeof window !== 'undefined') {
+  const report = () => live.sendPresence()
+  window.addEventListener('focus', report)
+  window.addEventListener('blur', report)
+  document.addEventListener('visibilitychange', report)
+}

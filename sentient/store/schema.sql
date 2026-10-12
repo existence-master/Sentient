@@ -167,3 +167,17 @@ CREATE TABLE IF NOT EXISTS rule_proposals (
     decided_at  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_rule_proposals_session ON rule_proposals(session_id, status);
+
+-- ---------------------------------------------------------------- approval grants (owner: core, docs/API.md section 2)
+-- How wide a "yes" to an approval request was (#139): later calls of one tool in one task, or anywhere until
+-- expires_at. "Allow once" and "Allow for this chat" are not stored here; "Always allow" becomes an Allow rule.
+CREATE TABLE IF NOT EXISTS approval_grants (
+    id          TEXT PRIMARY KEY,
+    tool        TEXT NOT NULL,                    -- tool name
+    scope       TEXT NOT NULL,                    -- task | timed
+    task_id     TEXT,                             -- the task a "task" grant belongs to
+    risk        INTEGER NOT NULL,                 -- highest effective risk it covers (tools.base.Risk)
+    via         TEXT NOT NULL DEFAULT 'desktop',  -- where it was answered: desktop | telegram | discord | whatsapp
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT                              -- set for "timed"
+);

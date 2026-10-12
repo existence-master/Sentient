@@ -88,8 +88,21 @@ def read_only_message(tool: Tool, registry: Any = None) -> str:
 
 
 def unattended_ask_message(label: str) -> str:
-    """Why a task run stopped: an "ask" rule, and nobody to ask (tasks cannot pause for approval yet)."""
-    return f"{label} is set to Ask, and tasks can't ask yet. Change it in Settings > Approvals & safety."
+    """Why an unattended run (a subagent, a swarm worker) stopped: an "ask" rule, and nobody to ask. Single task
+    runs pause and ask instead (#139)."""
+    return f"{label} is set to Ask, and this work can't stop to ask. Change it in Settings > Approvals & safety."
+
+
+def approval_hold_message(label: str) -> str:
+    """What the model is told when a task run holds a call for an "ask" rule; the run then pauses and asks (#139)."""
+    return (f"Not done yet: {label} is set to Ask, so the user is being asked first. If it is still needed after "
+            "the user answers, it runs then; otherwise finish and say it is waiting for the user's OK.")
+
+
+def approval_question(label: str, arguments: dict, target: str | None = None) -> str:
+    """The question a task run asks before a call held by an "ask" rule (#139)."""
+    detail = target or _brief(arguments)
+    return f"This task wants to use {label}{f' ({detail})' if detail else ''}. You've set it to ask first. OK to go ahead?"
 
 
 # Apps whose "internal" changes turn into outside actions later (a task runs its plan on its own), so work nobody

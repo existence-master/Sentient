@@ -454,7 +454,9 @@ async def test_approval_buttons_allow(tg, llm):
     await until(lambda: bool(tg.api.button_messages()))
     msg = tg.api.button_messages()[-1]
     keyboard = msg["reply_markup"]["inline_keyboard"]
-    assert [b["text"] for row in keyboard for b in row] == ["Allow", "Allow for this chat", "Deny"]
+    assert [b["text"] for row in keyboard for b in row] == [
+        "Allow", "Allow for this chat", "Allow for 1 hour", "Always allow", "Deny",
+    ]
     assert "Approval needed" in msg["text"] and "current datetime" in msg["text"]
     tg.ch.dispatch(callback(42, msg["_id"], keyboard[0][0]["callback_data"]))
     await tg.ch.wait_idle()
@@ -471,7 +473,7 @@ async def test_approval_buttons_deny_and_stale(tg, llm):
     tg.ch.dispatch(update(42, "what time is it"))
     await until(lambda: bool(tg.api.button_messages()))
     msg = tg.api.button_messages()[-1]
-    deny = msg["reply_markup"]["inline_keyboard"][1][0]["callback_data"]
+    deny = msg["reply_markup"]["inline_keyboard"][-1][0]["callback_data"]
     tg.ch.dispatch(callback(42, msg["_id"], deny))
     await tg.ch.wait_idle()
     assert tg.api.sent("answerCallbackQuery")[-1]["text"] == "Denied"

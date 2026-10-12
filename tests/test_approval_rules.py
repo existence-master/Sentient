@@ -78,7 +78,7 @@ async def _turn(s: SentientApp, sid: str, text: str, decision: str = "allow") ->
         events.append(ev)
         if isinstance(ev, ApprovalRequest):
             asked.append(ev)
-            s.approvals.resolve(ev.approval_id, decision)
+            assert s.approvals.resolve(ev.approval_id, decision)
     return asked, events
 
 
@@ -123,8 +123,11 @@ async def test_allow_still_asks_for_purchases(config, isolated_home):
         assert [a.risk_label for a in asked] == ["Purchase"]
         res = next(e for e in events if isinstance(e, ToolResultEvent))
         assert res.is_error and log == ["Next", "Post review"]
-        # "Allow for this chat" never covers a purchase either
-        assert len((await _turn(s, sid, "buy", decision="allow_session"))[0]) == 1
+        # "Allow for this chat" (or any wider answer) is never offered for a purchase; one sent anyway is "once" (#139)
+        async for ev in s.agent.run_turn(sid, "buy", channel="cli"):
+            if isinstance(ev, ApprovalRequest):
+                assert ev.choices == ["allow", "deny"]
+                assert s.approvals.resolve(ev.approval_id, "allow_session")  # counts as "Allow once"
         assert len((await _turn(s, sid, "buy again", decision="allow"))[0]) == 1
         assert log == ["Next", "Post review", "Place order", "Place order"]
     finally:
@@ -199,7 +202,7 @@ async def test_ask_in_unattended_runs_is_refused(config, isolated_home):
         events = [e async for e in s.agent.run_loop(messages, ctx, result=result, use_approvals=False, source="task")]
         assert not any(isinstance(e, ApprovalRequest) for e in events)
         res = next(e for e in events if isinstance(e, ToolResultEvent))
-        stopped = "Postcards is set to Ask, and tasks can't ask yet. Change it in Settings > Approvals & safety."
+        stopped = "Postcards is set to Ask, and this work can't stop to ask. Change it in Settings > Approvals & safety."
         assert res.is_error and res.result["error"] == stopped
         assert result.stopped_by_rule == result.error == stopped  # the run ends at the refused call
         assert len(llm.calls) == 1 and log == []

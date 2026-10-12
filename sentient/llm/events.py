@@ -68,6 +68,10 @@ class ApprovalRequest(_Event):
     target: str | None = None      # short human label of what is acted on, e.g. "Place order"
     # why this asks although rules or modes would let it run: the chat read outside content (ADR 0018)
     untrusted: str | None = None
+    # the answers offered, in button order (#139): allow, allow_session, allow_timed, allow_always, deny. Only
+    # "allow" and "deny" for a purchase, a raised risk, running code or a call after outside content
+    choices: list[str] | None = None
+    grant_minutes: int | None = None  # how long allow_timed lasts ("Allow for 1 hour")
 
 
 class UserInterjection(_Event):

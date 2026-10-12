@@ -1,7 +1,8 @@
 /**
  * "Rules for apps and tools": lasting Allow / Ask / Never choices per app or per tool
  * (`tools.approvals.rules`, docs/API.md section 2, ADR 0016). "Default" means no rule. A rule made from a chat
- * message (#130) says so: "From your message on Oct 10, 2026".
+ * message (#130) says so: "From your message on Oct 10, 2026"; one made by answering "Always allow" (#139) says
+ * "From your answer on ...".
  */
 import { IconChevronDown, IconShoppingCart, IconTrash } from '@tabler/icons-react'
 import { useMemo, useState, type ReactNode } from 'react'
@@ -32,6 +33,10 @@ const RULE_WORDS: Record<ApprovalRule, string> = {
 function OriginNote({ origin }: { origin?: RuleOrigin }) {
   if (!origin) return null
   const day = parseDate(origin.at)?.toLocaleDateString(undefined, { dateStyle: 'medium' })
+  if (origin.source === 'approval') {
+    // "Always allow" chosen when Sentient asked (#139)
+    return <span className="block truncate text-xs text-fg-subtle">{day ? `From your answer on ${day}` : 'From your answer when Sentient asked'}</span>
+  }
   return (
     <span className="block truncate text-xs text-fg-subtle" title={origin.said ? `You said: "${origin.said}"` : undefined}>
       {day ? `From your message on ${day}` : 'From your message in a chat'}

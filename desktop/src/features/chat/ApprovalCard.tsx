@@ -23,6 +23,22 @@ import { cn, truncate } from '@/lib/utils'
 import { hostOf, refLabel } from './cards/bits'
 import { toolMeta } from './toolMeta'
 
+const STATUS_TEXT: Partial<Record<ApprovalView['status'], string>> = {
+  allow: 'You allowed this once',
+  allow_session: 'You allowed this for the rest of this chat',
+  allow_task: 'You allowed this for this task',
+  allow_always: 'You always allow this now. Change it in Settings > Approvals & safety.',
+  deny: 'You denied this',
+  expired: 'This request expired'
+}
+
+/** "1 hour", "2 hours", "30 minutes" for `allow_timed` (the engine's `tools.approvals.grant_minutes`). */
+export function duration(minutes?: number | null): string {
+  const m = Math.max(1, Math.round(minutes ?? 60))
+  if (m % 60 === 0) return `${m / 60} hour${m === 60 ? '' : 's'}`
+  return `${m} minute${m === 1 ? '' : 's'}`
+}
+
 interface EffectiveRisk {
   label: string
   /** "Sentient wants to ..." */
@@ -82,7 +98,7 @@ export function ApprovalCard({
   const meta = toolMeta(approval.name)
 
   if (approval.status !== 'pending') {
-    const allowed = approval.status === 'allow' || approval.status === 'allow_session'
+    const allowed = approval.status !== 'deny' && approval.status !== 'expired'
     return (
       <div className="flex items-center gap-2 px-1 text-xs text-fg-subtle">
         {approval.status === 'expired' ? (
@@ -92,13 +108,8 @@ export function ApprovalCard({
         ) : (
           <IconX size={13} className="text-danger" />
         )}
-        {approval.status === 'allow'
-          ? 'You allowed this once'
-          : approval.status === 'allow_session'
-            ? 'You allowed this for the rest of this chat'
-            : approval.status === 'deny'
-              ? 'You denied this'
-              : 'This request expired'}
+        {STATUS_TEXT[approval.status] ??
+          (approval.status === 'allow_timed' ? `You allowed this for ${duration(approval.grantMinutes)}` : 'This request expired')}
       </div>
     )
   }
@@ -111,9 +122,12 @@ export function ApprovalCard({
   const args = approval.arguments ?? {}
   const command = approval.name === 'terminal_run' ? String(args.command ?? '') : ''
   // A purchase, a deletion or a command on this computer asks for a single, deliberate "yes" every time: no blanket
-  // "allow for this chat" (the engine ignores it for commands too, ADR 0019). After outside content came in, every
-  // send asks anyway, so the blanket answer would not help either.
-  const allowSession = !(risk.label === 'Purchase' || risk.label === 'Deletes' || approval.name === 'terminal_run' || approval.untrusted)
+  // answer (the engine ignores it for commands too, ADR 0019). After outside content came in, every send asks
+  // anyway, so the blanket answer would not help either. The engine says which answers it offers (#139).
+  const single = risk.label === 'Purchase' || risk.label === 'Deletes' || approval.name === 'terminal_run' || !!approval.untrusted
+  const offered = (approval.choices?.length ? approval.choices : (['allow', 'allow_session', 'deny'] as ApprovalDecision[])).filter(
+    (c) => c !== 'allow' && c !== 'deny' && c !== 'allow_task' && !single
+  )
 
   return (
     <motion.div
@@ -181,11 +195,17 @@ export function ApprovalCard({
         <Button size="sm" variant="primary" leftIcon={<IconCheck size={14} />} onClick={() => onRespond?.(approval.approvalId, 'allow')}>
           {risk.label === 'Purchase' ? 'Yes, buy it' : 'Allow once'}
         </Button>
-        {allowSession && (
-          <Button size="sm" variant="secondary" onClick={() => onRespond?.(approval.approvalId, 'allow_session')}>
-            Allow for this chat
+        {offered.map((c) => (
+          <Button
+            key={c}
+            size="sm"
+            variant="secondary"
+            title={c === 'allow_always' ? 'Saves an Allow rule. Change it any time in Settings > Approvals & safety.' : undefined}
+            onClick={() => onRespond?.(approval.approvalId, c)}
+          >
+            {c === 'allow_session' ? 'Allow for this chat' : c === 'allow_timed' ? `Allow for ${duration(approval.grantMinutes)}` : 'Always allow'}
           </Button>
-        )}
+        ))}
         <Button size="sm" variant="ghost" onClick={() => onRespond?.(approval.approvalId, 'deny')}>
           {risk.label === 'Purchase' ? "Don't buy" : 'Deny'}
         </Button>
