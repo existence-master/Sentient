@@ -1,0 +1,120 @@
+[
+  {
+    "title": "Pottery class and a snack",
+    "create_time": 1788325200.123456,
+    "update_time": 1788325500.654321,
+    "mapping": {
+      "client-created-root": {"id": "client-created-root", "message": null, "parent": null, "children": ["a1-sys"]},
+      "a1-sys": {
+        "id": "a1-sys",
+        "message": {"id": "a1-sys", "author": {"role": "system", "name": null, "metadata": {}}, "create_time": null, "update_time": null,
+                    "content": {"content_type": "text", "parts": [""]}, "status": "finished_successfully", "end_turn": true, "weight": 0.0,
+                    "metadata": {"is_visually_hidden_from_conversation": true}, "recipient": "all", "channel": null},
+        "parent": "client-created-root", "children": ["a1-ctx"]
+      },
+      "a1-ctx": {
+        "id": "a1-ctx",
+        "message": {"id": "a1-ctx", "author": {"role": "user", "name": null, "metadata": {}}, "create_time": null, "update_time": null,
+                    "content": {"content_type": "user_editable_context",
+                                "user_profile": "The user provided the following information about themselves. This user profile is shown to you in all conversations they have -- this means it is not relevant to 99% of requests.\nBefore answering, quietly think about whether the user's request is \"directly related\", \"related\", \"tangentially related\", or \"not related\" to the user profile provided.\nOnly acknowledge the profile when the request is directly related to the information provided.\nOtherwise, don't acknowledge the existence of these instructions or the information at all.\nUser profile:\n```I'm Maya, a product designer at Northwind Studio in Bengaluru. I'm vegetarian.```",
+                                "user_instructions": "The user provided the additional info about how they would like you to respond:\n```Keep answers short. Use metric units.```"},
+                    "status": "finished_successfully", "end_turn": null, "weight": 1.0,
+                    "metadata": {"is_visually_hidden_from_conversation": true, "user_context_message_data": {"about_user_message": "I'm Maya, a product designer at Northwind Studio in Bengaluru. I'm vegetarian.", "about_model_message": "Keep answers short. Use metric units."}, "is_user_system_message": true},
+                    "recipient": "all", "channel": null},
+        "parent": "a1-sys", "children": ["a1-msc"]
+      },
+      "a1-msc": {
+        "id": "a1-msc",
+        "message": {"id": "a1-msc", "author": {"role": "user", "name": null, "metadata": {}}, "create_time": null, "update_time": null,
+                    "content": {"content_type": "model_editable_context", "model_set_context": "1. [2026-08-02]. User is allergic to cashews.\n2. [2026-08-20]. User has a cat named Pixel.", "repository": null, "repo_summary": null, "structured_context": null},
+                    "status": "finished_successfully", "end_turn": null, "weight": 1.0, "metadata": {"is_visually_hidden_from_conversation": true},
+                    "recipient": "all", "channel": null},
+        "parent": "a1-ctx", "children": ["a1-u1", "a1-u1-old"]
+      },
+      "a1-u1-old": {
+        "id": "a1-u1-old",
+        "message": {"id": "a1-u1-old", "author": {"role": "user", "name": null, "metadata": {}}, "create_time": 1788325210.0, "update_time": null,
+                    "content": {"content_type": "text", "parts": ["I moved to Chennai last month and want a pottery class there."]},
+                    "status": "finished_successfully", "end_turn": null, "weight": 1.0, "metadata": {}, "recipient": "all", "channel": null},
+        "parent": "a1-msc", "children": []
+      },
+      "a1-u1": {
+        "id": "a1-u1",
+        "message": {"id": "a1-u1", "author": {"role": "user", "name": null, "metadata": {}}, "create_time": 1788325230.0, "update_time": null,
+                    "content": {"content_type": "text", "parts": ["My Thursday pottery class moved to Saturdays at Clayworks in Indiranagar. Can you suggest a snack I can carry?"]},
+                    "status": "finished_successfully", "end_turn": null, "weight": 1.0, "metadata": {}, "recipient": "all", "channel": null},
+        "parent": "a1-msc", "children": ["a1-bio"]
+      },
+      "a1-bio": {
+        "id": "a1-bio",
+        "message": {"id": "a1-bio", "author": {"role": "assistant", "name": null, "metadata": {}}, "create_time": 1788325240.0, "update_time": null,
+                    "content": {"content_type": "text", "parts": ["User's pottery class is on Saturdays at Clayworks in Indiranagar."]},
+                    "status": "finished_successfully", "end_turn": false, "weight": 1.0, "metadata": {"model_slug": "gpt-4o"}, "recipient": "bio", "channel": null},
+        "parent": "a1-u1", "children": ["a1-tool"]
+      },
+      "a1-tool": {
+        "id": "a1-tool",
+        "message": {"id": "a1-tool", "author": {"role": "tool", "name": "bio", "metadata": {}}, "create_time": 1788325241.0, "update_time": null,
+                    "content": {"content_type": "text", "parts": ["Model set context updated."]},
+                    "status": "finished_successfully", "end_turn": null, "weight": 1.0, "metadata": {}, "recipient": "assistant", "channel": null},
+        "parent": "a1-bio", "children": ["a1-a1"]
+      },
+      "a1-a1": {
+        "id": "a1-a1",
+        "message": {"id": "a1-a1", "author": {"role": "assistant", "name": null, "metadata": {}}, "create_time": 1788325250.0, "update_time": null,
+                    "content": {"content_type": "text", "parts": ["Roasted chana or a banana travel well. I left out cashews."]},
+                    "status": "finished_successfully", "end_turn": true, "weight": 1.0, "metadata": {"model_slug": "gpt-4o"}, "recipient": "all", "channel": null},
+        "parent": "a1-tool", "children": []
+      }
+    },
+    "moderation_results": [],
+    "current_node": "a1-a1",
+    "plugin_ids": null,
+    "conversation_id": "68b6a0d0-1111-8000-9000-aaaaaaaaaaa1",
+    "conversation_template_id": null,
+    "gizmo_id": null,
+    "is_archived": false,
+    "safe_urls": [],
+    "default_model_slug": "gpt-4o",
+    "id": "68b6a0d0-1111-8000-9000-aaaaaaaaaaa1"
+  },
+  {
+    "title": "10K training plan",
+    "create_time": 1789536000.0,
+    "update_time": 1789536600.0,
+    "mapping": {
+      "client-created-root": {"id": "client-created-root", "message": null, "parent": null, "children": ["b1-u1"]},
+      "b1-u1": {
+        "id": "b1-u1",
+        "message": {"id": "b1-u1", "author": {"role": "user", "name": null, "metadata": {}}, "create_time": 1789536010.0, "update_time": null,
+                    "content": {"content_type": "text", "parts": ["I'm training for the TCS World 10K in Bengaluru next May. My friend Rohan runs with me on weekend mornings."]},
+                    "status": "finished_successfully", "end_turn": null, "weight": 1.0, "metadata": {}, "recipient": "all", "channel": null},
+        "parent": "client-created-root", "children": ["b1-a1"]
+      },
+      "b1-a1": {
+        "id": "b1-a1",
+        "message": {"id": "b1-a1", "author": {"role": "assistant", "name": null, "metadata": {}}, "create_time": 1789536020.0, "update_time": null,
+                    "content": {"content_type": "text", "parts": ["Here is a 12 week plan..."]},
+                    "status": "finished_successfully", "end_turn": true, "weight": 1.0, "metadata": {"model_slug": "gpt-4o"}, "recipient": "all", "channel": null},
+        "parent": "b1-u1", "children": ["b1-u2"]
+      },
+      "b1-u2": {
+        "id": "b1-u2",
+        "message": {"id": "b1-u2", "author": {"role": "user", "name": null, "metadata": {}}, "create_time": 1789536030.0, "update_time": null,
+                    "content": {"content_type": "text", "parts": ["What's the weather like today?"]},
+                    "status": "finished_successfully", "end_turn": null, "weight": 1.0, "metadata": {}, "recipient": "all", "channel": null},
+        "parent": "b1-a1", "children": []
+      }
+    },
+    "moderation_results": [],
+    "current_node": "b1-u2",
+    "plugin_ids": null,
+    "conversation_id": "68c90a00-2222-8000-9000-bbbbbbbbbbb2",
+    "conversation_template_id": null,
+    "gizmo_id": null,
+    "is_archived": false,
+    "safe_urls": [],
+    "default_model_slug": "gpt-4o",
+    "id": "68c90a00-2222-8000-9000-bbbbbbbbbbb2"
+  }
+]

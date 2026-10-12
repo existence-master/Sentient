@@ -46,6 +46,10 @@ export function useMemoryParams() {
     selected,
     addOpen: get('add') === '1',
     importOpen: get('import') === '1',
+    /** ?import=assistant: bring memory from ChatGPT, Claude or OpenClaw (with ?app=&path= it opens on the preview). */
+    assistantImportOpen: get('import') === 'assistant',
+    importApp: get('app'),
+    importPath: get('path'),
     forgetOpen: get('forget') === '1',
     set
   }
