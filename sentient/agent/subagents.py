@@ -1,8 +1,8 @@
 """Chat subagents: background and parallel workers spawned by the assistant (docs/API.md section 10).
 
 A subagent is one ``Agent.run_loop`` with its own message list, a focused system
-prompt, the ``subagents.role`` model, ``subagents.max_rounds`` rounds and a
-timeout. It cannot talk to the user, so it cannot run anything that would need
+prompt, the ``subagents.role`` model (the chat's own model where that is the primary one, #312),
+``subagents.max_rounds`` rounds and a timeout. It cannot talk to the user, so it cannot run anything that would need
 an approval, anything of effective risk ``send``/``exec``, or start subagents:
 those calls come back as refusals the model can relay.
 
@@ -304,7 +304,9 @@ class SubagentManager(Service):
 
         return check
 
-    async def _tool_names(self, goal: str, context: str, tools: list[str] | None, role: str) -> list[str]:
+    async def _tool_names(
+        self, goal: str, context: str, tools: list[str] | None, role: str, model: str | None = None
+    ) -> list[str]:
         reg = self.app.registry
         usable = [
             t for t in reg.tools()
@@ -322,7 +324,7 @@ class SubagentManager(Service):
                 return list(dict.fromkeys(wanted))
         try:
             selected = await self.app.agent.tool_selector.select(
-                f"{goal}\n{context}".strip(), model=self.app.llm.model_for(role)
+                f"{goal}\n{context}".strip(), model=model or self.app.llm.model_for(role)
             )
         except Exception as exc:
             log.debug("subagent tool selection failed: %s", exc)
@@ -385,11 +387,14 @@ class SubagentManager(Service):
                 ctx.incognito = incognito
                 ctx.untrusted = untrusted
                 ctx.extra["subagent_id"] = sub_id
-                names = await self._tool_names(goal, context, tools, cfg.role)
+                # where it would use the primary model, a helper uses the chat's own model (#312)
+                model = await agent.helper_model(session_id, cfg.role)
+                names = await self._tool_names(goal, context, tools, cfg.role, model)
                 narration = ""
                 async with asyncio.timeout(cfg.timeout_minutes * 60):
                     async for event in agent.run_loop(
-                        messages, ctx, result=result, role=cfg.role, tool_names=names, max_rounds=cfg.max_rounds,
+                        messages, ctx, result=result, role=cfg.role, model=model, tool_names=names,
+                        max_rounds=cfg.max_rounds,
                         use_approvals=False, policy=self.policy(session_id), source="subagent",
                         budget=Budget(max_tokens=cfg.max_tokens, max_cost_usd=cfg.max_cost_usd),
                     ):

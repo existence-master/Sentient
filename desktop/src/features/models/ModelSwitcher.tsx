@@ -99,6 +99,9 @@ export function ModelSwitcher({ primary, tip, children }: { primary: string | un
               Undo last switch
             </Row>
           )}
+          <p className="px-2.5 pb-1 pt-1.5 text-2xs leading-relaxed text-fg-subtle">
+            This changes the default. A chat with its own model, picked in its message box, keeps it.
+          </p>
 
           {sw.missing.length > 0 && (
             <>

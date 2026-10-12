@@ -66,6 +66,8 @@ export interface AssistantTurnView {
   approvals: ApprovalView[]
   status: TurnStatus
   error?: { message: string; recoverable: boolean }
+  /** Plain notes about this reply that aren't errors (#312: the chat's model couldn't answer), live only. */
+  notices?: string[]
   messageId?: string | null
   usage?: { model: string; prompt_tokens: number; completion_tokens: number }
   /** Memories the reply had in mind (from `done` live, from the final assistant row in history). */
@@ -314,6 +316,8 @@ export function applyAgentEvent(turn: AssistantTurnView, ev: AgentEvent): Assist
         }
       }
     }
+    case 'notice':
+      return turn.notices?.includes(ev.message) ? turn : { ...turn, notices: [...(turn.notices ?? []), ev.message] }
     case 'error':
       return { ...turn, error: { message: ev.message, recoverable: ev.recoverable ?? true }, status: turn.status === 'streaming' ? 'error' : turn.status }
     case 'done': {

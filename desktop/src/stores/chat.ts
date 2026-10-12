@@ -61,6 +61,8 @@ interface ChatState {
   dropLive: (key: string) => void
   /** Close an incognito chat: stop its reply and delete it (#154). */
   closeIncognito: (sessionId: string) => void
+  /** A chat this window created before its first message (one started with its own model, #312). */
+  adopt: (sessionId: string, opts: { incognito?: boolean }) => void
 }
 
 const pendingKey = (clientId: string) => `pending:${clientId}`
@@ -94,6 +96,7 @@ async function finishTurn(key: string, sessionId: string | null) {
   const persistedReply = rows.length > l.baseCount && rows[rows.length - 1]?.role !== 'user'
   if (!persistedReply && (l.turn.status === 'cancelled' || l.turn.status === 'error')) return
   if (l.unsent?.length || l.user.notSent) return // keep "your queued message wasn't sent" visible until the next send
+  if (l.turn.notices?.length) return // keep "the default model answered instead" (#312) visible until the next send
   store.dropLive(key)
 }
 
@@ -325,6 +328,10 @@ export const useChat = create<ChatState>((set, get) => ({
         if (finished) void finishTurn(key, get().live[key]?.sessionId ?? null)
       }
     }
+  },
+
+  adopt: (sessionId, opts) => {
+    if (opts.incognito) set({ incognito: { ...get().incognito, [sessionId]: true } })
   },
 
   dropLive: (key) => {

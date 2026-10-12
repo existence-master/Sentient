@@ -23,7 +23,7 @@ import type { AttachmentView } from '@/lib/chatFold'
 import type { ContextMeter } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { ContextGauge } from './ContextMeter'
-import { ModelOverride } from './ModelOverride'
+import { ChatModelMenu } from './ChatModelMenu'
 import { PlanIndicator } from './PlanIndicator'
 import { filterCommands, parseSlash, slashQuery, SlashMenu, type SlashCommand } from './slash'
 import type { useAttachments } from './useAttachments'
@@ -37,8 +37,11 @@ export interface ComposerProps {
   /** While a reply streams the composer stays usable: sending adds to the running reply (§10 steering). */
   streaming: boolean
   attachments: ReturnType<typeof useAttachments>
-  onSend: (text: string, attachments: AttachmentView[], model: string | undefined) => void
+  onSend: (text: string, attachments: AttachmentView[]) => void
   onStop: () => void
+  /** The chat's own model (#312), null when it follows the default. */
+  chatModel?: string | null
+  onChatModelChange?: (model: string | null) => void
   autoFocus?: boolean
   /** Imperative text injection (suggestions). */
   inject?: { text: string; nonce: number } | null
@@ -47,9 +50,21 @@ export interface ComposerProps {
   className?: string
 }
 
-export function Composer({ draftKey, assistantName, streaming, attachments, onSend, onStop, autoFocus, inject, context, className }: ComposerProps) {
+export function Composer({
+  draftKey,
+  assistantName,
+  streaming,
+  attachments,
+  onSend,
+  onStop,
+  autoFocus,
+  inject,
+  context,
+  className,
+  chatModel,
+  onChatModelChange
+}: ComposerProps) {
   const [text, setText] = useState(() => drafts.get(draftKey) ?? '')
-  const [model, setModel] = useState<string | undefined>()
   const [menuIndex, setMenuIndex] = useState(0)
   const [menuDismissed, setMenuDismissed] = useState(false)
   const textarea = useRef<HTMLTextAreaElement>(null)
@@ -173,7 +188,7 @@ export function Composer({ draftKey, assistantName, streaming, attachments, onSe
       return
     }
     if (!canSend) return
-    onSend(text.trim(), streaming ? [] : attachments.take(), model)
+    onSend(text.trim(), streaming ? [] : attachments.take())
     clear()
   }
 
@@ -308,8 +323,8 @@ export function Composer({ draftKey, assistantName, streaming, attachments, onSe
               e.target.value = ''
             }}
           />
-          <ModelOverride value={model} onChange={setModel} />
-          <PlanIndicator override={model} />
+          {onChatModelChange && <ChatModelMenu value={chatModel} onChange={onChatModelChange} />}
+          <PlanIndicator override={chatModel ?? undefined} />
 
           <div className="flex-1" />
           {context && <ContextGauge meter={context} className="mr-1.5" />}

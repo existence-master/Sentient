@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     context_upto    TEXT,                         -- watermark of the messages folded into the summary (store.db.next_watermark)
     untrusted       TEXT,                         -- app whose content this chat read ("Gmail"); sends then ask (ADR 0018)
     visited_hosts   TEXT,                         -- JSON list of web hosts this chat loaded (ADR 0018)
-    incognito       INTEGER NOT NULL DEFAULT 0    -- 1: nothing is learned from it and it is deleted when closed (#154)
+    incognito       INTEGER NOT NULL DEFAULT 0,   -- 1: nothing is learned from it and it is deleted when closed (#154)
+    model           TEXT                          -- the model picked for this chat; NULL follows the default (#312)
 );
 
 CREATE TABLE IF NOT EXISTS messages (

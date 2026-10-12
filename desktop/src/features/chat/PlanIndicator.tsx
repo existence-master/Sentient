@@ -10,7 +10,7 @@ const MANAGE_USAGE = 'https://chatgpt.com/settings/usage'
 /**
  * "Using ChatGPT plan" next to the model picker while the next message goes to a ChatGPT plan model, with the
  * Manage usage link (OpenAI's UI guidelines: https://developers.openai.com/siwc/ui-ux-guidelines).
- * `override` is the model picked for this message; without one the chat's main model answers.
+ * `override` is the chat's own model (#312); without one the default model answers.
  */
 export function PlanIndicator({ override, className }: { override: string | undefined; className?: string }) {
   const config = useConfig()

@@ -3,50 +3,68 @@ import { useState, type ReactNode } from 'react'
 import { Input, Popover, PopoverContent, PopoverTrigger, Tooltip } from '@/components/ui'
 import { useConfig } from '@/hooks/core'
 import { useLocalModels } from '@/hooks/models'
-import { localModelValue, looksLikeEmbedding, modelShortName, ROLE_META } from '@/lib/models'
+import { chatModelLabel, localModelValue, looksLikeEmbedding, modelShortName, ROLE_META } from '@/lib/models'
+import { recentChatModels, rememberChatModel } from '@/lib/recentModels'
 import type { RoleName } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
-/** Per-message model override: role models, installed local models, or any `provider/model`. */
-export function ModelOverride({ value, onChange }: { value: string | undefined; onChange: (v: string | undefined) => void }) {
+const CLAUDE_CODE = ['claude-code/sonnet', 'claude-code/opus']
+
+/**
+ * The chat's own model (#312): kept for every message in this chat, also after reopening it or restarting Sentient.
+ * `value` null follows the default model, which the title bar menu changes. Role models, Claude Code (when turned
+ * on), recent and installed local models, or any `provider/model`.
+ */
+export function ChatModelMenu({ value, onChange }: { value: string | null | undefined; onChange: (v: string | null) => void }) {
   const [open, setOpen] = useState(false)
   const [custom, setCustom] = useState('')
   const config = useConfig()
   const local = useLocalModels()
   const roles = config.data?.models.roles
+  const primary = roles?.primary ?? undefined
 
+  const seen = new Set<string>(primary ? [primary] : [])
+  const fresh = (m: string | null | undefined): m is string => !!m && !seen.has(m) && !!seen.add(m)
+  const claudeOptions = config.data?.models.experimental_claude_code ? CLAUDE_CODE.filter(fresh) : []
+  const recentOptions = recentChatModels().filter(fresh).slice(0, 4)
   const roleOptions = (['fast', 'voice', 'planner', 'executor', 'vision'] as RoleName[])
     .map((r) => ({ role: r, model: roles?.[r] }))
-    .filter((x): x is { role: RoleName; model: string } => !!x.model && x.model !== roles?.primary)
+    .filter((x): x is { role: RoleName; model: string } => fresh(x.model))
   const localOptions = (local.data?.ollama.models ?? [])
     .filter((m) => !(m.is_embedding ?? looksLikeEmbedding(m.name)))
     .map((m) => localModelValue('ollama', m, false))
+    .filter(fresh)
+  const other = value && !seen.has(value) ? value : null // typed in, or no longer listed
 
-  const pick = (v: string | undefined) => {
-    onChange(v)
+  const pick = (v: string | null) => {
+    if (v) rememberChatModel(v)
+    onChange(v === primary ? null : v)
     setOpen(false)
+    setCustom('')
   }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <Tooltip content={value ? `This message uses ${value}` : 'Model for this message'}>
+      <Tooltip content={value ? `This chat uses ${value}` : `This chat uses your default model${primary ? `, ${modelShortName(primary)}` : ''}`}>
         <PopoverTrigger asChild>
           <button
             type="button"
+            aria-label="Model for this chat"
+            data-chat-model={value ?? ''}
             className={cn(
-              'flex h-8 max-w-44 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors',
+              'flex h-8 max-w-48 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors',
               value ? 'bg-accent/12 text-accent-text hover:bg-accent/18' : 'text-fg-subtle hover:bg-hover hover:text-fg'
             )}
           >
             <IconCpu size={15} />
-            <span className="truncate">{value ? modelShortName(value) : 'Auto'}</span>
+            <span className="truncate">{value ? chatModelLabel(value) : 'Default'}</span>
             {value && (
               <span
                 role="button"
-                aria-label="Clear model override"
+                aria-label="Use the default model"
                 onClick={(e) => {
                   e.stopPropagation()
-                  onChange(undefined)
+                  onChange(null)
                 }}
                 className="-mr-0.5 flex rounded p-0.5 hover:bg-accent/20"
               >
@@ -57,10 +75,30 @@ export function ModelOverride({ value, onChange }: { value: string | undefined; 
         </PopoverTrigger>
       </Tooltip>
       <PopoverContent align="start" side="top" className="w-80 p-1.5">
-        <div className="px-2.5 pb-1.5 pt-1 text-xs text-fg-subtle">Model for this message</div>
-        <Option active={!value} onClick={() => pick(undefined)} hint={modelShortName(roles?.primary)}>
-          Default (primary)
+        <div className="px-2.5 pb-1.5 pt-1 text-xs text-fg-subtle">Model for this chat. It stays picked when you come back.</div>
+        <Option active={!value} onClick={() => pick(null)} hint={modelShortName(primary)}>
+          Use the default
         </Option>
+        {other && (
+          <Option active onClick={() => pick(other)}>
+            <span className="font-mono text-xs">{chatModelLabel(other)}</span>
+          </Option>
+        )}
+        {claudeOptions.map((m) => (
+          <Option key={m} active={value === m} onClick={() => pick(m)} hint="Claude Code">
+            {chatModelLabel(m)}
+          </Option>
+        ))}
+        {recentOptions.length > 0 && (
+          <>
+            <Heading>Recent</Heading>
+            {recentOptions.map((m) => (
+              <Option key={m} active={value === m} onClick={() => pick(m)}>
+                <span className="font-mono text-xs">{modelShortName(m)}</span>
+              </Option>
+            ))}
+          </>
+        )}
         {roleOptions.map((r) => (
           <Option key={r.role} active={value === r.model} onClick={() => pick(r.model)} hint={modelShortName(r.model)}>
             {ROLE_META[r.role].label}
@@ -68,7 +106,7 @@ export function ModelOverride({ value, onChange }: { value: string | undefined; 
         ))}
         {localOptions.length > 0 && (
           <>
-            <div className="mx-2.5 mb-1 mt-2 text-2xs font-medium uppercase tracking-wide text-fg-faint">Installed locally</div>
+            <Heading>Installed locally</Heading>
             <div className="max-h-44 overflow-y-auto">
               {localOptions.map((m) => (
                 <Option key={m} active={value === m} onClick={() => pick(m)}>
@@ -90,6 +128,10 @@ export function ModelOverride({ value, onChange }: { value: string | undefined; 
       </PopoverContent>
     </Popover>
   )
+}
+
+function Heading({ children }: { children: ReactNode }) {
+  return <div className="mx-2.5 mb-1 mt-2 text-2xs font-medium uppercase tracking-wide text-fg-faint">{children}</div>
 }
 
 function Option({ active, onClick, hint, children }: { active: boolean; onClick: () => void; hint?: string; children: ReactNode }) {

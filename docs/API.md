@@ -17,7 +17,7 @@ If you need to change a shape, change this file in the same edit.
 ### Client → server
 | type | fields | meaning |
 |---|---|---|
-| `chat.send` | `session_id?`, `text`, `attachments?: string[]` (file names from `/api/files`), `model?` (override primary for this turn), `client_id?`, `incognito?: bool` | start a turn; omit `session_id` for a new chat. `incognito: true` makes that new chat an incognito chat (section 2); ignored with `session_id` |
+| `chat.send` | `session_id?`, `text`, `attachments?: string[]` (file names from `/api/files`), `model?` (this message only: overrides the chat's own model and primary, with no fallback; the window doesn't send it, see Sessions, chat's model), `client_id?`, `incognito?: bool` | start a turn; omit `session_id` for a new chat. `incognito: true` makes that new chat an incognito chat (section 2); ignored with `session_id` |
 | `chat.steer` | `session_id`, `text`, `client_id?` | add to the reply in progress (section 10); without a running reply same as `chat.send` |
 | `chat.cancel` | `session_id` | stop the reply in progress |
 | `approval.respond` | `approval_id`, `decision: "allow"\|"allow_session"\|"deny"` | answer an approval request |
@@ -40,6 +40,7 @@ All carry `session_id` and `turn_id`.
 | `steer_ack` | `session_id`, `queued`, `client_id` (echo; no `turn_id`) |
 | `usage` | `model`, `prompt_tokens`, `completion_tokens`, `context_used`, `context_length`, `context_percent`, `context_warning` (context meter, below) |
 | `error` | `message`, `recoverable` |
+| `notice` | `message`, `code`, `model?`, `used?`: a plain note about this reply that is not an error, sent at most once per reply. `code: "model_fallback"`: the chat's own model (`model`) can't answer, so `used` (the default) answers (section 2, chat's model) |
 | `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `sources: [AnswerSource]` (pages, emails, files and apps it used, section 2; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id` and its `memory_sources` too (none when it was stopped before it started) |
 | `approval.ack` | `approval_id`, `resolved` |
 
@@ -78,7 +79,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `integration.updated` | **Integration** (§5) |
 | `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending"}`; `status: "pending"` means the memory waits in the review inbox (section 7); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE) |
 | `skill.updated` | `{name, state: "active"\|"pending_review"\|"stale"\|"archived"\|"rejected"\|"deleted"}` |
-| `session.updated` | `{session_id, title}` |
+| `session.updated` | `{session_id, title?, model?}`: only what changed. `title` after a rename or an automatic title; `model` (`null` = the default) after the chat's model was picked (section 2) |
 | `session.deleted` | `{session_id, reason?: "incognito"}`: a chat was deleted (`DELETE /api/sessions/{id}`, or an incognito chat closed by the engine, section 2) |
 | `rule_proposal.updated` | **RuleProposal** (section 2, rules from chat): a new "Make this a rule?" card, or one the user answered |
 | `config.updated` | `{sections: string[]}` |
@@ -204,12 +205,33 @@ accept or loosen a rule.
   "From your message on <date>". An entry is dropped when its rule is changed or removed.
 
 ### Sessions (chats)
-- `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts, incognito}]` newest first
+- `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts, incognito, model}]` newest first
   (`untrusted`: the app whose content the chat read, e.g. `"Gmail"`, `""` when clean, `null` before its first turn;
   `visited_hosts`: list of web hosts it loaded, or `null`; section 10; `incognito`: bool, below. The window keeps
-  incognito chats out of its chat list)
-- `POST /api/sessions?incognito=false` → `{session_id}`
-- `PATCH /api/sessions/{id}` `{title}` → `{ok}`
+  incognito chats out of its chat list; `model`: the chat's own model, `null` when it follows the default, below)
+- `POST /api/sessions?incognito=false&model=` → `{session_id}` (`model` optional: a new chat that starts on its own
+  model; 422 when it isn't `provider/model`)
+- `PATCH /api/sessions/{id}` `{title?, model?}` → `{ok, title?, model?}`: only the fields sent change. `model`
+  `"provider/model"` keeps that model for the chat; `null` or `""` makes it follow the default again ("Use the
+  default"). 404 unknown chat, 422 a `model` that isn't `provider/model`. Publishes `session.updated` with what changed.
+- **The chat's model** (#312). `sessions.model` is the one place a chat's model is kept: set it with `POST
+  /api/sessions?model=` (a new chat) or `PATCH /api/sessions/{id}` `{model}`, or `/model chat <model>` in a messaging
+  app (section 14). A `model` on `chat.send` or `POST /api/chat` is for that message only and never changes it.
+  - A turn's model: the message's own `model`, else the chat's model, else the role's model (`primary`; spoken turns
+    keep the `voice` model and turns with a picture the `vision` model). Steered messages run in the reply they join;
+    a turn started by a late steer resolves the same way. A chat model equal to the default is just the default.
+  - The title-bar model menu and presets change the default, so only chats without their own model follow them.
+  - When the chat's model can't answer, the turn uses the default model and sends one `notice`
+    (`code: "model_fallback"`) before the reply, e.g. `This chat uses Claude Sonnet, which can't answer right now, so
+    qwen3:8b is answering instead. Claude through your Claude Code is turned off. ...`. Checked before the turn
+    without calling the model (Claude Code off or not installed, an Ollama model that isn't downloaded, a provider key
+    or ChatGPT sign-in that isn't set); a model that fails when called (Claude Code not signed in, a provider error)
+    before it said anything falls back the same way, once per reply. The chat keeps its model, so it is used again as
+    soon as it works. Every reply that the default answered says so.
+  - Helpers the chat starts (subagents, section 10) use the chat's model where they would use the primary model
+    (`subagents.role: primary`), except Claude Code, which only answers chats. Background work after a reply (titles,
+    memory, rule checks, summaries) and tasks keep their own role models.
+  - Incognito chats keep a model the same way.
 - `DELETE /api/sessions/{id}` → `{ok}` (helpers the chat started are cancelled first; publishes `session.deleted`)
 - `GET /api/sessions/{id}/messages?limit=500` → raw transcript rows, oldest first (404 when the chat doesn't exist, e.g. a
   closed incognito chat):
@@ -244,7 +266,7 @@ accept or loosen a rule.
   Errors and declined calls never count; memories stay in `memory_sources`. Recorded deterministically from tool
   results (never asked of the model), first mention wins, at most 12. A reply that used none has `[]`.
 - `GET /api/sessions/search?q=` → `[{session_id, message_id, role, snippet, created_at}]` (never incognito chats)
-- `POST /api/chat` NDJSON fallback of the WebSocket turn: body `{text, session_id?, attachments?, model?, incognito?}`; lines are the chat events above, first line `{type: "session", session_id}`.
+- `POST /api/chat` NDJSON fallback of the WebSocket turn: body `{text, session_id?, attachments?, model?, incognito?}` (`model`: this message only, as on `chat.send`); lines are the chat events above, first line `{type: "session", session_id}`. A chat's own model applies here too.
 - **Incognito chats** (#154). A chat created with `incognito: true` (`chat.send`, `POST /api/chat`,
   `POST /api/sessions?incognito=true`) can't be switched later, and the engine enforces:
   - nothing is learned from it: no fact extraction after a turn, no memory flush when it is compressed, and no
@@ -425,7 +447,8 @@ accept or loosen a rule.
     lengths and makes it active. 400 bad or built-in name, 409 name taken (unless `overwrite`).
   - `PATCH /api/models/presets/{name}` `{name}` → Preset (rename; `active_preset` follows). 400 built-in, 404, 409.
   - `DELETE /api/models/presets/{name}` → `{ok}`; models stay as they are. 400 built-in, 404.
-  - Per-chat (`model` on a chat message) and per-task model overrides still win over the roles a preset sets.
+  - A chat's own model (section 2, #312), a message's `model` and per-task model overrides still win over the roles
+    a preset sets.
 - **Claude through your own Claude Code** (experimental, #206, ADR 0022). With `models.experimental_claude_code` on,
   a model `claude-code/<name>` (any Claude Code model alias or full name) is answered by the `claude` program on this
   computer under the user's own login, outside LiteLLM. Each reply starts `claude -p --input-format stream-json
@@ -1737,6 +1760,11 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   options). Choosing one applies it, settles the message to "Switched to <name>" and sends anything still missing
   ("Still needed: ..."). `/model <number or name>` applies directly (numbers count the usable presets in order),
   `/model undo` undoes the last switch. Paired chats only, like every command.
+- `/model chat <provider/model>` (#312) keeps a model for this conversation only (its `sessions.model`, section 2;
+  publishes `session.updated`); presets and other chats are untouched. It is refused with the plain reason when the
+  model can't answer right now (no key, Claude Code off, not downloaded). `/model chat default` follows the default
+  again; `/model chat` says which one the conversation uses. A reply the default answered instead starts with the
+  `notice` in italics.
 - A message sent while a reply runs calls `app.agent.steer(session_id, text)` (section 10); when that returns false (or the
   message has attachments) it is queued and answered as the next turn.
 - Voice notes and audio files are downloaded (20 MB max) and transcribed with `app.voice.transcribe_bytes`; the chat sees

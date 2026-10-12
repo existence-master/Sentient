@@ -6,6 +6,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Each chat remembers its model:** pick a model in a chat's message box and that chat keeps it, also after you
+  reopen it or restart Sentient. Other chats keep following your default model, and switching the default (or a
+  preset) in the title bar only changes those. **Use the default** puts a chat back on the default. The chat list
+  shows a small label on chats with their own model. If a chat's model can't answer (Claude Code is turned off or not
+  signed in, a local model was removed, a key is missing), the default model answers instead and the reply says so in
+  one plain line. Helpers a chat starts use its model too. In Telegram, Discord and WhatsApp, `/model chat <model>`
+  does the same for one conversation.
 - **Backups and restore:** Settings > Backups backs up everything Sentient keeps (chats, memory, tasks, settings,
   skills and files) to one file, by hand or every day or week. Backups go to Sentient Backups in your Documents
   folder (the one Windows really uses, also when it lives in OneDrive), apart from your data, or to a folder you

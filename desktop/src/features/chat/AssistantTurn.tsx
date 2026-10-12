@@ -6,6 +6,7 @@ import {
   IconClockHour4,
   IconCopy,
   IconCornerDownRight,
+  IconInfoCircle,
   IconPlayerStop,
   IconRefresh
 } from '@tabler/icons-react'
@@ -133,6 +134,14 @@ export const AssistantTurn = memo(function AssistantTurn({ turn, assistantName, 
             </span>
           )}
         </div>
+
+        {/* a plain note about this reply, such as the chat's model not being able to answer (#312) */}
+        {turn.notices?.map((n) => (
+          <div key={n} role="status" className="flex items-start gap-2 rounded-lg border border-border bg-sunken/35 px-3 py-2 text-xs leading-relaxed text-fg-muted">
+            <IconInfoCircle size={14} className="mt-px shrink-0 text-fg-subtle" />
+            <span className="selectable min-w-0">{n}</span>
+          </div>
+        ))}
 
         {visibleBlocks.map((b) => {
           if (b.kind === 'thinking') {

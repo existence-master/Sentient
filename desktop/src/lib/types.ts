@@ -375,6 +375,8 @@ export interface Session {
   updated_at: ISODate
   /** Nothing is learned from it and it is deleted when closed (#154). */
   incognito?: boolean
+  /** The model picked for this chat (#312); null or missing follows the default model. */
+  model?: string | null
   [key: string]: unknown
 }
 
@@ -815,6 +817,16 @@ export interface ErrorEvent extends TurnScoped {
   dropped?: boolean
   client_id?: string | null
 }
+/** §10 A plain note about this reply that is not an error, sent once before it (#312). */
+export interface NoticeEvent extends TurnScoped {
+  type: 'notice'
+  message: string
+  /** `model_fallback`: the chat's own model couldn't answer, so the default answered. */
+  code?: string
+  /** The chat's model that couldn't answer, and the one that answered instead. */
+  model?: string | null
+  used?: string | null
+}
 export interface DoneEvent extends TurnScoped {
   type: 'done'
   content: string
@@ -870,6 +882,7 @@ export type ChatEvent =
   | ApprovalRequestEvent
   | UsageEvent
   | ErrorEvent
+  | NoticeEvent
   | DoneEvent
   | ApprovalAckEvent
   | PongEvent
@@ -907,7 +920,8 @@ export interface DomainEventMap {
   'integration.updated': Integration
   'memory.updated': MemoryUpdatedData
   'skill.updated': { name: string; state: SkillState }
-  'session.updated': { session_id: string; title: string }
+  /** Only the fields that changed are sent: a rename (`title`) or the chat's own model (`model`, null = default). */
+  'session.updated': { session_id: string; title?: string; model?: string | null }
   /** A chat was deleted: by the user, or an incognito chat that was closed or left idle (#154). */
   'session.deleted': { session_id: string; reason?: 'incognito' }
   'rule_proposal.updated': RuleProposal

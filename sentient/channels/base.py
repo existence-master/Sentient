@@ -25,11 +25,13 @@ from typing import TYPE_CHECKING, Any
 
 from sentient import paths
 from sentient.channels.store import PairingResult
+from sentient.llm import availability
 from sentient.llm import presets as model_presets
 from sentient.llm.events import (
     ApprovalRequest,
     Done,
     Error,
+    Notice,
     TextDelta,
     ToolCallEvent,
     ToolResultEvent,
@@ -468,7 +470,10 @@ class Channel:
             await self.reply(chat_id, "Resumed. Scheduled tasks and suggestions are back on.")
             return
         if cmd == "model":
-            await self._model_command(chat_id, arg)
+            if arg.strip().lower().split(" ", 1)[0] == "chat":
+                await self._chat_model_command(chat, arg.strip()[4:].strip())
+            else:
+                await self._model_command(chat_id, arg)
             return
         if cmd == "stop":
             rt.queued.clear()
@@ -606,6 +611,7 @@ class Channel:
             "/stopall - stop everything Sentient is doing, on every device",
             "/resume - start scheduled tasks and suggestions again after /stopall",
             "/model - switch between local and cloud models",
+            "/model chat <model> - use a model in this chat only (/model chat default to go back)",
             "/help - show this message",
         ]
         if chat and chat.get("deliver"):
@@ -708,6 +714,8 @@ class Channel:
                         if (str(chat_id), mid) in self._button_text:  # answered elsewhere (desktop)
                             outcome = "Denied" if event.is_error and "declined" in json.dumps(event.result) else "Answered"
                             await self.settle_buttons(chat_id, mid, outcome)
+                elif isinstance(event, Notice):  # the chat's model couldn't answer: said once, before the reply
+                    await self.reply(chat_id, f"_{event.message}_")
                 elif isinstance(event, Error):
                     if event.recoverable:
                         await self.reply(chat_id, f"_{event.message}_")
@@ -856,6 +864,37 @@ class Channel:
             await self.send_markdown(chat_id, "\n\n".join(lines), buttons)
         except Exception as exc:
             log.warning("%s: /model failed: %s", self.id, self.redact(str(exc)))
+
+    async def _chat_model_command(self, chat: dict, value: str) -> None:
+        """``/model chat <provider/model>`` keeps a model for this conversation only (#312); ``/model chat default``
+        follows the default again; ``/model chat`` says which one it uses."""
+        chat_id = str(chat["chat_id"])
+        session_id = await self.ensure_session(chat)
+        default = availability.label(self.app.config.models.roles.primary)
+        if not value:
+            current = (await self.app.store.get_session(session_id) or {}).get("model")
+            head = (f"This chat uses {availability.label(current)} ({current})." if current
+                    else f"This chat follows your default model, {default}.")
+            await self.reply(chat_id, f"{head} Send /model chat <model> to change it, or /model chat default to go back.")
+            return
+        if value.lower() in {"default", "reset", "clear", "off", "none"}:
+            model = None
+        else:
+            try:
+                model = availability.model_id(value)
+            except ValueError as exc:
+                await self.reply(chat_id, str(exc))
+                return
+            reason = await availability.unavailable(self.app.config, model) if model else None
+            if reason:
+                await self.reply(chat_id, f"I can't use {value} right now. {reason}")
+                return
+        await self.app.store.set_session_model(session_id, model)
+        self.app.bus.publish("session.updated", {"session_id": session_id, "model": model})
+        if model is None:
+            await self.reply(chat_id, f"This chat follows your default model again, {default}.")
+        else:
+            await self.reply(chat_id, f"This chat now uses {availability.label(model)}. Send /model chat default to go back.")
 
     async def _preset_outcome(self, name: str | None) -> str:
         """Apply a preset (None = undo the last switch) and describe the result in plain words."""

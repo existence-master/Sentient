@@ -27,7 +27,7 @@ _PKG_ROOT = Path(__file__).resolve().parents[1]
 # Feature packages own their tables. Each file must be idempotent. Order matters for foreign keys.
 # Bump when a change to a schema.sql or an ensure_column needs existing databases updated. Opening a database
 # with another version takes a snapshot first (issue #151); so does the first column added to an existing one.
-SCHEMA_VERSION = 4  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292)
+SCHEMA_VERSION = 5  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
 PACKAGE_SCHEMAS = ["tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox"]
 
 
@@ -148,6 +148,7 @@ class Store:
         await self.ensure_column("sessions", "untrusted", "TEXT")
         await self.ensure_column("sessions", "visited_hosts", "TEXT")
         await self.ensure_column("sessions", "incognito", "INTEGER NOT NULL DEFAULT 0")
+        await self.ensure_column("sessions", "model", "TEXT")
         await self.ensure_column("messages", "attachments", "TEXT")
         await self.ensure_column("messages", "interjection", "INTEGER NOT NULL DEFAULT 0")
         await self.ensure_column("messages", "memory_sources", "TEXT")
@@ -211,14 +212,21 @@ class Store:
         )
 
     # ------------------------------------------------------------------ sessions & messages
-    async def create_session(self, channel: str = "web", title: str | None = None, *, incognito: bool = False) -> str:
+    async def create_session(
+        self, channel: str = "web", title: str | None = None, *, incognito: bool = False, model: str | None = None
+    ) -> str:
         sid = new_id()
         ts = now_iso()
         await self.execute(
-            "INSERT INTO sessions(id, title, channel, created_at, updated_at, incognito) VALUES(?,?,?,?,?,?)",
-            (sid, title, channel, ts, ts, int(bool(incognito))),
+            "INSERT INTO sessions(id, title, channel, created_at, updated_at, incognito, model) VALUES(?,?,?,?,?,?,?)",
+            (sid, title, channel, ts, ts, int(bool(incognito)), model or None),
         )
         return sid
+
+    async def set_session_model(self, session_id: str, model: str | None) -> bool:
+        """Pick the model for one chat (#312); None (or "") makes it follow the default again. False: no such chat."""
+        cur = await self.execute("UPDATE sessions SET model = ? WHERE id = ?", (model or None, session_id))
+        return cur.rowcount > 0
 
     async def is_incognito(self, session_id: str | None) -> bool:
         """True for an incognito chat (#154): nothing is learned from it and it is deleted when closed."""

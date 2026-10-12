@@ -22,6 +22,7 @@ from sentient.config import config_json_schema
 from sentient.config.schema import SentientConfig
 from sentient.gateway.auth import require_token
 from sentient.gateway.deps import get_core
+from sentient.llm import availability
 from sentient.memory.personas import render_persona
 from sentient.tools.rules import SCREEN_FOLDER
 
@@ -245,9 +246,17 @@ async def sessions(request: Request, limit: int = 100):
     return rows
 
 
+def _chat_model(value: str | None) -> str | None:
+    """A chat's model as given (``provider/model``), None for "follow the default" (#312). 422 when malformed."""
+    try:
+        return availability.model_id(value)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.post("/api/sessions", dependencies=_auth)
-async def create_session(request: Request, channel: str = "desktop", incognito: bool = False):
-    sid = await get_core(request).store.create_session(channel=channel, incognito=incognito)
+async def create_session(request: Request, channel: str = "desktop", incognito: bool = False, model: str | None = None):
+    sid = await get_core(request).store.create_session(channel=channel, incognito=incognito, model=_chat_model(model))
     return {"session_id": sid}
 
 
@@ -271,16 +280,28 @@ async def search_sessions(request: Request, q: str, limit: int = 30):
     ]
 
 
-class RenameBody(BaseModel):
-    title: str
+class SessionPatch(BaseModel):
+    title: str | None = None
+    # the chat's own model (#312): "provider/model" keeps it for this chat; null or "" follows the default again
+    model: str | None = None
 
 
 @router.patch("/api/sessions/{session_id}", dependencies=_auth)
-async def rename_session(request: Request, session_id: str, body: RenameBody):
+async def update_session(request: Request, session_id: str, body: SessionPatch):
+    """Rename a chat, or pick its model. Only the fields sent change."""
     s = get_core(request)
-    await s.store.rename_session(session_id, body.title.strip()[:120])
-    s.bus.publish("session.updated", {"session_id": session_id, "title": body.title.strip()[:120]})
-    return {"ok": True}
+    if await s.store.get_session(session_id) is None:
+        raise HTTPException(404, "no such chat")
+    changed: dict[str, Any] = {}
+    if body.title is not None:
+        changed["title"] = body.title.strip()[:120]
+        await s.store.rename_session(session_id, changed["title"])
+    if "model" in body.model_fields_set:
+        changed["model"] = _chat_model(body.model)
+        await s.store.set_session_model(session_id, changed["model"])
+    if changed:
+        s.bus.publish("session.updated", {"session_id": session_id, **changed})
+    return {"ok": True, **changed}
 
 
 @router.delete("/api/sessions/{session_id}", dependencies=_auth)

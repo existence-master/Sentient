@@ -15,7 +15,7 @@
  *   integration.updated   -> upsert into ['integrations'], refetch change feeds (+ ['hooks'] for the webhook integration)
  *   memory.updated        -> invalidate ['memories']
  *   skill.updated         -> invalidate ['skills']
- *   session.updated       -> rename in ['sessions']
+ *   session.updated       -> rename or set the chat's model in ['sessions']
  *   session.deleted       -> remove from ['sessions'] and refetch its transcript (an incognito chat that was closed)
  *   rule_proposal.updated -> refetch that chat's ['rule-proposals'] ("Make this a rule?" cards)
  *   config.updated        -> invalidate config/bootstrap/model presets/ChatGPT sign-in (+ secrets/providers)
@@ -172,13 +172,13 @@ export function installDomainEvents(qc: QueryClient): () => void {
 
   offs.push(
     live.onDomain('session.updated', (e) => {
-      const { session_id, title } = e.data
+      const { session_id, ...changed } = e.data
       let found = false
       qc.setQueryData<Session[]>(qk.sessions, (old) =>
         old?.map((s) => {
           if (s.id !== session_id) return s
           found = true
-          return { ...s, title }
+          return { ...s, ...changed }
         })
       )
       if (!found) void qc.invalidateQueries({ queryKey: qk.sessions })

@@ -48,13 +48,14 @@ from sentient.agent.toolselect import ToolSelector, is_local_model
 from sentient.config.schema import SentientConfig
 from sentient.files.extract import extract_text, is_image
 from sentient.integrations.base import IntegrationPlugin
-from sentient.llm import claude_code
+from sentient.llm import availability, claude_code
 from sentient.llm.errors import is_tool_support_error
 from sentient.llm.events import (
     AgentEvent,
     ApprovalRequest,
     Done,
     Error,
+    Notice,
     TextDelta,
     ThinkingDelta,
     ToolCallEvent,
@@ -610,6 +611,7 @@ class Agent:
         stop: Callable[[], bool] | None = None,
         budget: Budget | None = None,
         repeat_nudge: bool = False,
+        fallback: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         """Stream a tool-calling conversation. Mutates ``messages`` and fills ``result``.
 
@@ -629,6 +631,9 @@ class Agent:
         the same result that many times, the loop ends with ``result.stopped_by_repeat`` (and ``error``).
         With ``repeat_nudge`` (chat) the model is first told once to try something else, and a stop ends
         the turn with a plain reply instead of an error. Yields everything except ``Done``.
+
+        With ``fallback`` (a chat's own model, #312), a ``model`` that fails before it says anything is replaced by the
+        role's own model for the rest of the run, and a ``Notice`` says so once.
         """
         ev = ev or {}
         unprompted = is_unprompted(getattr(ctx, "origin", None)) or is_unprompted(source)
@@ -702,6 +707,15 @@ class Agent:
                         recoverable=True,
                         **ev,
                     )
+                    continue
+                if fallback and model and not text_acc and not think_acc:
+                    # the chat's own model couldn't answer: the default answers instead, and the user is told once
+                    fallback = False
+                    reason = str(exc) if isinstance(exc, PlainProviderError) else "It didn't answer."
+                    log.warning("chat model %s failed (%s); using the default model", model, exc)
+                    yield self.fallback_notice(model, role, reason, ev)
+                    model = None
+                    result.tool_result_limit = await self.tool_result_limit(role)
                     continue
                 result.error = str(exc)
                 yield Error(message=str(exc), recoverable=False, **ev)
@@ -1240,6 +1254,14 @@ class Agent:
             role = "voice" if channel in SPOKEN_CHANNELS else "primary"
             if attachments and any(is_image(paths.files_dir() / a) for a in attachments) and self.config.models.roles.vision:
                 role = "vision"
+            # the model for this turn: one picked for this message, else the chat's own model (#312), else the role's
+            notice: Notice | None = None
+            chat_model: str | None = None
+            if model is None and role == "primary":
+                chat_model, reason = await self.chat_model(session, role)
+                if reason:
+                    notice = self.fallback_notice(str((session or {}).get("model")), role, reason, ev)
+            turn_model = model or chat_model
             messages: list[dict] = [{"role": "system", "content": system}, *convo]
             ctx = self.tool_context(session_id, channel)
             ctx.incognito = incognito
@@ -1260,7 +1282,7 @@ class Agent:
                         recent_plugins.add(t.plugin)
             try:
                 tool_names = await self.tool_selector.select(
-                    user_text, model=model or self.llm.model_for(role), recent_plugins=recent_plugins
+                    user_text, model=turn_model or self.llm.model_for(role), recent_plugins=recent_plugins
                 )
             except Exception as exc:  # selection must never break a turn
                 log.warning("tool selection failed, offering all tools: %s", exc)
@@ -1278,9 +1300,11 @@ class Agent:
             if rule_check is not None:  # a pending proposal must already make this reply ask (#130)
                 await asyncio.wait({rule_check}, timeout=RULE_CHECK_WAIT_S)
 
+            if notice is not None:
+                yield notice
             async for event in self.run_loop(
-                messages, ctx, result=result, role=role, model=model, tool_names=tool_names,
-                persist=persist, source="chat", ev=ev, steer=steer, repeat_nudge=True,
+                messages, ctx, result=result, role=role, model=turn_model, tool_names=tool_names,
+                persist=persist, source="chat", ev=ev, steer=steer, repeat_nudge=True, fallback=chat_model is not None,
             ):
                 if isinstance(event, TextDelta):
                     partial += event.text
@@ -1362,6 +1386,39 @@ class Agent:
             # steer messages that arrived after the final round start a new turn
             async for event in self.run_turn(session_id, "\n\n".join(leftover), channel=channel, model=model):
                 yield event
+
+    # ------------------------------------------------------------------ the chat's own model (#312)
+    async def chat_model(self, session: dict | None, role: str = "primary") -> tuple[str | None, str | None]:
+        """``(model, reason)``: the model this chat keeps for ``role`` turns, or None when it follows the default.
+        ``reason`` is set when the chat has a model that can't answer right now; then the default answers."""
+        picked = str((session or {}).get("model") or "").strip()
+        if role != "primary" or not picked or picked == self.llm.model_for(role):
+            return None, None
+        try:
+            reason = await availability.unavailable(self.config, picked)
+        except Exception as exc:  # a check that breaks never stops a reply: the call itself is the real test
+            log.debug("could not check %s: %s", picked, exc)
+            reason = None
+        return (None, reason) if reason else (picked, None)
+
+    async def helper_model(self, session_id: str | None, role: str) -> str | None:
+        """The model a helper started from a chat (a subagent) uses instead of ``role``'s: the chat's own model, where
+        the helper would use the primary model. Claude Code only answers chats, so a helper never gets it."""
+        if role != "primary" or not session_id:
+            return None
+        picked, _ = await self.chat_model(await self.store.get_session(session_id), role)
+        if picked and picked.split("/", 1)[0] == claude_code.PREFIX:
+            return None
+        return picked
+
+    def fallback_notice(self, picked: str, role: str, reason: str, ev: dict) -> Notice:
+        """The one plain note a reply gets when the chat's model can't answer and the default answers instead."""
+        used = self.llm.model_for(role)
+        message = (
+            f"This chat uses {availability.label(picked)}, which can't answer right now, so "
+            f"{availability.label(used)} is answering instead. {reason}"
+        ).strip()
+        return Notice(message=message, code="model_fallback", model=picked, used=used, **ev)
 
     async def _chat_untrusted(self, session_id: str, session: dict | None) -> str:
         """The chat's outside-content mark (ADR 0018). A chat never checked yet (``NULL``, e.g. one from before this
