@@ -136,8 +136,13 @@ def standing_text(text: str) -> str:
     kept: list[str] = []
     for sentence in _SENTENCE.split((text or "").strip()):
         plain = _plain(sentence)
-        if not plain.strip() or _LOOSEN.search(plain) or _ONE_OFF.search(plain):
+        if not plain.strip() or _LOOSEN.search(plain):
             continue
+        if _ONE_OFF.search(plain):
+            # drop only the instructions limited to this request: "never delete my emails, but don't cc Maya this
+            # time" keeps "never delete my emails, but"
+            sentence = " ".join(c for c in _cut(sentence) if not _ONE_OFF.search(_plain(c)))
+            plain = _plain(sentence)
         plain = _BENIGN.sub(" ", plain)
         if _NEGATION.search(plain) or _ASK_FIRST.search(plain):
             kept.append(" ".join(sentence.split()))
@@ -210,12 +215,18 @@ def action_terms(text: str) -> set[str]:
     return out
 
 
-def _clauses(text: str) -> list[str]:
-    """``text`` cut before every "never", "don't", "always ask"...: one instruction per clause."""
+def _cut(text: str) -> list[str]:
+    """``text`` cut before every "never", "don't", "always ask"...: one instruction per part, in its own words."""
     plain = _plain(text)
+    source = text if len(text) == len(plain) else plain  # a rare letter whose lower case is longer: cut the plain text
     cuts = sorted({0, *(m.start() for m in _NEGATION.finditer(plain)), *(m.start() for m in _ASK_FIRST.finditer(plain))})
-    parts = [plain[a:b] for a, b in zip(cuts, [*cuts[1:], len(plain)], strict=True)]
+    parts = [source[a:b] for a, b in zip(cuts, [*cuts[1:], len(plain)], strict=True)]
     return [p for p in parts if p.strip()]
+
+
+def _clauses(text: str) -> list[str]:
+    """``text`` cut before every "never", "don't", "always ask"...: one instruction per clause, in plain words."""
+    return [_plain(p) for p in _cut(text)]
 
 
 def _app_named(clause: str, app_id: str, app_name: str) -> bool:

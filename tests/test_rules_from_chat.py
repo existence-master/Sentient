@@ -295,6 +295,8 @@ def test_prefilter_leaves_out_limits_on_this_request_only():
     assert standing_text("Send the invite, but don't cc Maya this time.") == ""
     assert standing_text("Don't archive anything for now.") == ""
     assert standing_text("Do not call browser_open.") == "Do not call browser_open."
+    # a standing instruction next to a one-off limit in the same sentence is kept, the limit is not
+    assert standing_text("Never delete my emails, but don't cc Maya this time.") == "Never delete my emails, but"
     assert standing_text("Never delete my emails, not even old ones.") == "Never delete my emails, not even old ones."
 
 

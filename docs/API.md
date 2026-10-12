@@ -183,7 +183,7 @@ accept or loosen a rule.
 - **Until the user decides**, a pending proposal makes its chat ask before every matched tool (`approval_request`),
   even under an Allow rule and after "Allow for this chat"; subagents of that chat refuse the call. With approvals
   mode `off` it asks only before calls whose effective risk is above `read` (changing, sending, deleting or running
-  something): look-ups run without a question (#306). The same holds for the tools a still-running check is weighing.
+  something): look-ups run without a question, and subagents of that chat run them too (#306). The same holds for the tools a still-running check is weighing.
   It is saved with the chat, so it survives a restart and summarizing, and only ever adds a question.
 - **RuleProposal**: `{id, session_id, message_id, said, rule: "never"|"ask", keys: string[], targets: [{key, app,
   tool, label}], status: "pending"|"accepted"|"declined", created_at, decided_at}`. `said` is the user's matching
