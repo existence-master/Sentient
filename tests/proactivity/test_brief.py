@@ -22,6 +22,12 @@ from tests.conftest import FakeProvider
 NOW = datetime(2026, 10, 12, 6, 0, tzinfo=UTC)  # a Monday, before the brief's 07:30
 DAY = NOW.date().isoformat()
 
+
+class _FrozenNow(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return NOW if tz is None else NOW.astimezone(tz)
+
 EVENTS = [
     {"id": "ev0", "summary": "Early gym", "start": f"{DAY}T05:00:00+00:00", "end": f"{DAY}T05:45:00+00:00"},
     {"id": "ev1", "summary": "Design review", "start": f"{DAY}T09:30:00+00:00", "end": f"{DAY}T10:00:00+00:00",
@@ -74,6 +80,8 @@ async def app(config, isolated_home, monkeypatch):
     a.fake = llm
     a.fakes = Fakes()
     a.fakes.install(a, monkeypatch)
+    # the brief reads the real clock when no time is given; keep it on NOW so the fake events are not over yet
+    monkeypatch.setattr(brief_mod, "datetime", _FrozenNow)
     yield a
     await a.stop()
 
