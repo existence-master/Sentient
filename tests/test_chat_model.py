@@ -260,3 +260,29 @@ def test_the_model_change_is_published(client):
         while ev.get("type") != "session.updated":
             ev = ws.receive_json()
         assert ev["data"] == {"session_id": sid, "model": PICKED}
+
+
+async def test_a_model_that_goes_away_after_a_tool_round_hands_over_the_results(config, isolated_home):
+    """Claude Code hitting a limit after one tool round: the default continues from the tool result, no tool reruns."""
+
+    class GoesAway(FakeProvider):
+        async def stream(self, role, messages, tools=None, *, model=None):
+            if model == PICKED and any(m.get("role") == "tool" for m in messages):
+                self.calls.append({"role": role, "messages": list(messages), "tools": tools, "model": model})
+                raise ProviderFailed("You've hit your limit for now.")
+            async for chunk in super().stream(role, messages, tools, model=model):
+                yield chunk
+
+    llm = GoesAway(replies=[[tool_call("current_datetime")], "It is noon, from the default."])
+    s = await start(config, isolated_home, llm, "away")
+    try:
+        sid = await s.store.create_session(channel="desktop", model=PICKED)
+        events = await turn(s, sid, "what time is it")
+        assert len([e for e in events if isinstance(e, Notice)]) == 1
+        assert [e.name for e in events if e.type == "tool_call"] == ["current_datetime"]  # ran once
+        calls = [c for c in llm.calls if not c.get("json")]
+        assert [c["model"] for c in calls] == [PICKED, PICKED, None]
+        assert calls[-1]["messages"][-1]["role"] == "tool"  # the default read the tool result
+        assert events[-1].type == "done" and events[-1].content == "It is noon, from the default."
+    finally:
+        await s.stop()
