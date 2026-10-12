@@ -584,8 +584,10 @@ Routes:
 `notepad` is the notes a recurring task's runs keep for the next run (see "Recurring tasks remember" below); `null` when empty.
 `error` holds the last planning/run failure message (v2 `task.error`).
 Each run embeds its most recent 200 progress updates; the full log is at the `/events` endpoint.
-`interval` schedules (every `interval_minutes`, minimum 5; `frequency: "hourly"` is normalized to 60) are additive; the
-task-creation prompt still only produces daily/weekly (v2), the planner uses `interval` for script jobs.
+`interval` schedules (every `interval_minutes`, minimum 5; `frequency: "hourly"` is normalized to 60) are additive. The
+task-creation prompt produces them for repeats measured in minutes or hours, and a request that says so ("every 10
+minutes", "every hour", "every 2 hours", "every 30 min", "hourly") is always saved as `interval`, whatever the model
+wrote (triggered schedules stay triggered). The planner also uses `interval` for script jobs.
 **Fuzzy windows:** a daily or weekly schedule with `window` runs at a random minute inside that part of the day, in its
 timezone, instead of at `time` (kept for the editor): `morning` 07:00-10:00, `afternoon` 12:00-16:00, `evening`
 17:00-20:00, `night` 20:00-23:00. `next_execution_at` is the next window that has not started yet (so a run inside
@@ -1961,8 +1963,11 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `approve` returns 409 when the code does not compile.
 - The planner may propose a script job for watch-style requests ("tell me when...", "check every hour whether...") by adding
   `script` (and a `schedule`, e.g. `interval`) to its reply. The code must use `from sentient_tools import tools, result` and
-  read-only tools; it is checked with `ast.parse`, the planner gets one chance to fix code that does not compile, then
-  planning fails with a readable `error`. A script job the planner leaves on an immediate one-off schedule becomes `interval` 60.
+  read-only tools; it is checked with `ast.parse` and, because a model wrote it, also rejected when it imports a package
+  outside the standard library (`requests`, `bs4`), uses `while True`, sleeps (`time.sleep`, `tools.time_sleep`), calls
+  memory functions (`memory_*`) or returns `{"alert": ...}` with a `changed`/`noteworthy` condition. The planner gets one chance to fix a rejected script with the reason, then planning
+  fails with a readable `error`. The same rules apply to script code changed by chat tools; code a person edits
+  (`PATCH /api/tasks/{id}`) only has to compile. A script job the planner leaves on an immediate one-off schedule becomes `interval` 60.
 - `POST /api/tasks/{id}/script/test` → SandboxResult (does not change `last_result`); see section 4.
 
 ### Wake word and talk mode (owner: voice)

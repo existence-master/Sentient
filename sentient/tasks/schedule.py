@@ -194,6 +194,54 @@ def spoken_window(schedule: dict, prompt: str) -> dict:
     return {k: v for k, v in schedule.items() if k != "window"}
 
 
+# "every 10 minutes", "every hour", "every 2 hours", "every 30 min" (#305): a request that repeats within a day is
+# an interval, whatever a small model wrote (they turn these into a daily 09:00 schedule).
+_NUMBER_WORDS = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+    "nine": 9, "ten": 10, "twelve": 12, "fifteen": 15, "twenty": 20, "thirty": 30, "forty": 40, "forty-five": 45,
+    "forty five": 45, "sixty": 60, "ninety": 90,
+}
+_UNIT_MINUTES = {"s": 1 / 60, "m": 1, "h": 60}
+_EVERY_N_RE = re.compile(
+    r"\b(?:every|each)\s+(\d+(?:\.\d+)?|" + "|".join(sorted(map(re.escape, _NUMBER_WORDS), key=len, reverse=True))
+    + r")[\s-]*(seconds?|secs?|minutes?|mins?|hours?|hrs?)\b"
+)
+_EVERY_UNIT_RE = re.compile(r"\b(?:every|each)\s+(?:(other|single)\s+)?(minute|hour)\b")  # not "every second Friday"
+_EVERY_PART_RE = re.compile(r"\bevery\s+(half|quarter)[\s-]+(?:of\s+)?(?:an\s+)?hour\b")
+_HOURLY_RE = re.compile(r"\bhourly\b")
+_DAY_LEVEL_RE = re.compile(r"\b(?:daily|weekly|every\s+(?:day|week|weekday|morning|evening|night)|weekdays?)\b")
+
+
+def spoken_interval(prompt: str) -> int | None:
+    """Minutes between runs when the request says so ("every 10 minutes", "every hour", "hourly"), else None.
+    At least ``MIN_INTERVAL_MINUTES``."""
+    text = str(prompt or "").lower()
+    minutes: float | None = None
+    if m := _EVERY_N_RE.search(text):
+        raw = m.group(1)
+        count = float(raw) if raw[0].isdigit() else _NUMBER_WORDS[raw]
+        minutes = count * _UNIT_MINUTES[m.group(2)[0]]
+    elif m := _EVERY_PART_RE.search(text):
+        minutes = 30 if m.group(1) == "half" else 15
+    elif m := _EVERY_UNIT_RE.search(text):
+        minutes = _UNIT_MINUTES[m.group(2)[0]] * (2 if m.group(1) == "other" else 1)
+    elif _HOURLY_RE.search(text) and not _DAY_LEVEL_RE.search(text):  # "weekly hourly" is weekly
+        minutes = 60
+    if minutes is None or minutes <= 0:
+        return None
+    return max(MIN_INTERVAL_MINUTES, round(minutes))
+
+
+def spoken_schedule(schedule: dict, prompt: str) -> dict:
+    """The refined schedule checked against the request's own words: an interval the user said wins over the
+    model's daily or one-off guess, and a ``window`` the user never named is dropped. Triggered schedules stay."""
+    minutes = spoken_interval(prompt)
+    if minutes is not None and isinstance(schedule, dict) and schedule.get("type") != "triggered":
+        keep = {k: schedule[k] for k in ("timezone", "catch_up") if k in schedule}
+        return {"type": "recurring", "frequency": "interval", "interval_minutes": minutes, **keep}
+    return spoken_window(schedule, prompt)
+
+
 def window_of(schedule: dict | None) -> tuple[int, int] | None:
     """``(start, end)`` minutes of a daily/weekly schedule's ``window``, or None."""
     if not isinstance(schedule, dict) or str(schedule.get("frequency") or "").lower() == "interval":
@@ -203,7 +251,10 @@ def window_of(schedule: dict | None) -> tuple[int, int] | None:
 
 def interval_minutes(schedule: dict) -> int:
     """Minutes between runs of an ``interval`` schedule (``interval_minutes``; ``every_minutes``/``hours`` accepted)."""
-    raw: Any = schedule.get("interval_minutes") or schedule.get("every_minutes") or schedule.get("minutes")
+    raw: Any = (
+        schedule.get("interval_minutes") or schedule.get("every_minutes") or schedule.get("minutes")
+        or schedule.get("interval")
+    )
     try:
         minutes = int(float(raw)) if raw is not None else 0
         if not minutes and schedule.get("hours") is not None:
@@ -294,7 +345,7 @@ def normalize_schedule(schedule: Any, tz_name: str, *, override_timezone: bool =
         out["frequency"] = freq
         if freq == "interval":  # additive: every N minutes (used by script jobs)
             out["interval_minutes"] = interval_minutes(out)
-            for key in ("days", "time", "every_minutes", "minutes", "hours"):
+            for key in ("days", "time", "window", "every_minutes", "minutes", "hours", "interval"):
                 out.pop(key, None)
             if override_timezone or not out.get("timezone"):
                 out["timezone"] = tz_name
