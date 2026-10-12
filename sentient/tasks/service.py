@@ -1404,17 +1404,24 @@ class TaskService(Service):
             )
         if not isinstance(fixed, dict):
             raise TypeError(f"Planner agent returned invalid JSON: {str(fixed)[:200]}")
-        first_code = raw.get("code")
+        codes = [str(raw.get("code"))]
         raw = fixed.get("script")
-        if not isinstance(raw, dict) or raw.get("code") is None:
-            return previous, fixed, None
-        try:
-            return normalize_script(raw, previous, model_written=True), fixed, None
-        except ScriptInvalid as exc:
-            log.info("planner script for task %s rejected again, saving an AI-run task instead: %s", task["id"], exc)
+        if isinstance(raw, dict) and raw.get("code") is not None:
+            try:
+                return normalize_script(raw, previous, model_written=True), fixed, None
+            except ScriptInvalid as exc:
+                log.info("planner script for task %s rejected again, saving an AI-run task instead: %s", task["id"], exc)
+            codes.append(str(raw.get("code")))
+        elif previous is not None:
+            return previous, fixed, None  # a change whose new script was dropped keeps the task's working one
+        else:
+            log.info("planner left out the fixed script for task %s, saving an AI-run task instead", task["id"])
+        # what the correction left out comes from the first reply
         if not (fixed.get("plan") or fixed.get("steps")) and (data.get("plan") or data.get("steps")):
             fixed = {**fixed, "plan": data.get("plan") or data.get("steps")}
-        return None, fixed, tools_named(f"{first_code}\n{raw.get('code')}")
+        if not fixed.get("schedule") and data.get("schedule"):
+            fixed = {**fixed, "schedule": data["schedule"]}
+        return None, fixed, tools_named("\n".join(codes))
 
     def _no_script_plan(self, task: dict, script_tools: list[str], planned: list[dict]) -> list[dict]:
         """The plan of an AI-run task that replaces a rejected check script (#310): the user's own request as the step,
@@ -1422,7 +1429,6 @@ class TaskService(Service):
         guesses. Its apps are the ones the scripts used (``tools.web_fetch``: Web pages), else the planner's."""
         request = task.get("original_prompt") or task.get("description") or task.get("name") or ""
         plugins = {p.id for p in self.app.registry.plugins()}
-
 
         def apps(steps: list[dict]) -> list[str]:
             return list(dict.fromkeys(

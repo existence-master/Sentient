@@ -220,3 +220,19 @@ async def test_a_change_request_keeps_the_re_plans_steps_without_a_script(make_a
 def test_tools_named_reads_broken_scripts_too():
     code = "tools.web_fetch(url=x)\nmytools.nope()\nif (:\n tools.web_fetch(); tools.gmail_search(q=1)"
     assert tools_named(code) == ["web_fetch", "gmail_search"]
+
+
+async def test_a_correction_without_a_script_also_falls_back_and_keeps_the_first_schedule(make_app):
+    refine = {"name": "Lamp watch", "description": "Tell me when the lamp is cheap", "priority": 1,
+              "schedule": {"type": "once", "run_at": None}}
+    first = {**PLAN_TIME, "schedule": {"type": "recurring", "frequency": "interval", "interval_minutes": 45},
+             "script": {"code": MEMORY_SCRIPT, "condition": "changed", "then": "notify"}}
+    llm = FakeProvider(json_replies=[refine, first, {"clarifying_questions": []}])
+    app = await make_app(llm)
+    created = await app.tasks.create_task("Tell me when the lamp is cheap")
+    await app.tasks.drain()
+    task = await app.tasks.get(created["task_id"])
+    assert task["status"] == "approval_pending" and task["task_type"] == "single"
+    assert task["plan"] == [{"tool": "web", "description": "Tell me when the lamp is cheap"}]
+    assert task["schedule"]["interval_minutes"] == 45  # the first reply's schedule, not the hourly default
+    assert service_mod.NO_SCRIPT_NOTE in [m["content"] for m in task["chat_history"]]
