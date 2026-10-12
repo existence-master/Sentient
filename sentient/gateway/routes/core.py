@@ -56,6 +56,15 @@ async def bootstrap(request: Request):
     }
 
 
+@router.post("/api/activity", dependencies=_auth)
+async def activity(request: Request):
+    """The window is in use (focused, clicked, typed). Resets the timer that pauses routines while away (#163)."""
+    s = get_core(request)
+    await s.user_seen("app")
+    last = await s.tasks.away.last_active()
+    return {"ok": True, "last_active_at": last.isoformat() if last else None}
+
+
 @router.get("/api/system/hardware", dependencies=_auth)
 async def system_hardware(request: Request, refresh: bool = False):
     """Memory, graphics cards and the local model that fits this computer (#131). Detected once, then cached."""

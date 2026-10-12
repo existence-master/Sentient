@@ -22,6 +22,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useMemo, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { Button, EmptyState, SegmentedControl, Skeleton } from '@/components/ui'
+import { AwayBanner } from '@/features/tasks/AwayBanner'
 import { BoardView } from '@/features/tasks/BoardView'
 import { CalendarView } from '@/features/tasks/CalendarView'
 import { DayView } from '@/features/tasks/DayView'
@@ -151,6 +152,7 @@ function TasksHome() {
               ]}
             />
           </div>
+          <AwayBanner tasks={all} />
           <TaskComposer className="mt-4" initialPrompt={url.params.get('prompt') ?? ''} autoFocus={url.params.get('compose') === '1'} />
           {all.length > 0 && (
             <div className="mt-4">

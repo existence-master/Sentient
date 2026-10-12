@@ -445,6 +445,7 @@ class Channel:
             if await store.refuse_once(self.id, chat_id):
                 await self.reply(chat_id, self.refusal_text())
             return
+        await self.app.user_seen(self.id)  # a message from a paired chat means the user is around (#163)
         if cmd in {"start", "help"}:
             await self.reply(chat_id, self.help_text(chat))
             return
@@ -802,6 +803,16 @@ class Channel:
         if len(parts) != 3:
             return "Unknown button."
         kind, code, ref = parts
+        await self.app.user_seen(self.id)
+        if kind == "aw":  # routines paused while away (#163): keep them running, or resume them
+            if code == "r":
+                done = await self.app.tasks.away.resume()
+                label = f"Resumed {done['resumed']}" if done["resumed"] else "Nothing to resume"
+            else:
+                await self.app.tasks.away.keep()
+                label = "Keeping them running"
+            await self.settle_buttons(chat_id, message_id, label)
+            return label
         if kind == "ap":
             decision = APPROVAL_DECISIONS.get(code)
             if decision is None:

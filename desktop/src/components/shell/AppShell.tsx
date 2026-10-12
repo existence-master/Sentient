@@ -5,6 +5,7 @@ import { useEffect } from 'react'
 import { toast } from 'sonner'
 import { BrowserPanel } from '@/features/browser/BrowserPanel'
 import { NotificationsPanel } from '@/features/notifications/NotificationsPanel'
+import { useActivityPing } from '@/hooks/useActivityPing'
 import { getBridge } from '@/lib/bridge'
 import { Button, Spinner } from '@/components/ui'
 import { useConnection } from '@/stores/connection'
@@ -32,6 +33,7 @@ function useCaptureNotices() {
 
 export function AppShell() {
   useCaptureNotices()
+  useActivityPing()
   return (
     <div className="flex h-full flex-col bg-bg">
       <TitleBar />

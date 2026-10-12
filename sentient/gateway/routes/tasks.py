@@ -78,6 +78,22 @@ async def preview_task(request: Request, body: PreviewBody):
     return await _guard(_tasks(request).preview(body.prompt))
 
 
+@router.get("/away")
+async def away_status(request: Request):
+    """Routines paused while the user was away (#163), before ``/{task_id}`` so "away" isn't read as an id."""
+    return await _tasks(request).away.status()
+
+
+@router.post("/away/resume")
+async def away_resume(request: Request):
+    return await _tasks(request).away.resume()
+
+
+@router.post("/away/keep")
+async def away_keep(request: Request):
+    return await _tasks(request).away.keep()
+
+
 @router.get("/{task_id}")
 async def get_task(request: Request, task_id: str):
     return await _guard(_tasks(request).get(task_id))

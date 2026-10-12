@@ -79,6 +79,7 @@ export function clickRoute(n: Notification): string | null {
   if (variant === 'dream') return '/about/dreams'
   if (variant === 'skill_repair') return `/skills?tab=pending${typeof p.skill === 'string' ? `&focus=${encodeURIComponent(p.skill)}` : ''}`
   if (n.kind === 'skill') return '/skills'
+  if (n.kind === 'task' && typeof p.event === 'string' && p.event.startsWith('away_')) return '/tasks'
   const sessionId = typeof p.session_id === 'string' ? p.session_id : null
   if (sessionId) return `/chat/${encodeURIComponent(sessionId)}`
   const taskId = n.task_id ?? (typeof p.task_id === 'string' ? p.task_id : null)

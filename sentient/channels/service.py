@@ -42,6 +42,7 @@ TASK_RESULT_EVENTS = {
 }
 STATUS_LABELS = {
     "approved": "Approved", "declined": "Declined", "dismissed": "Dismissed", "answered": "Answered", "cancelled": "Cancelled",
+    "kept": "Keeping them running", "paused": "Paused", "resumed": "Resumed",  # routines while away (#163)
 }
 RULE_OUTCOMES = {"accepted": "Made it a rule. Change it in Settings > Approvals & safety.", "declined": "Not now"}
 QUESTION_ROW = 2  # option buttons per row (Discord allows 5 per row and 5 rows)
@@ -354,6 +355,14 @@ class ChannelService(Service):
                 return md, [[Button("Approve plan", f"tp:a:{task_id}", "success"), Button("Decline", f"tp:d:{task_id}", "danger")]]
             if event == "question":
                 return self._format_question(note) if cfg.deliver_task_results else None
+            if event in {"away_check", "away_paused"}:  # #163: one message, with the answer as a button
+                if not cfg.deliver_task_results or payload.get("status"):
+                    return None
+                md = f"**{title or 'Your routines'}**\n{message}"
+                button = Button("Keep them running", "aw:k:0", "primary") if event == "away_check" else Button(
+                    "Resume routines", "aw:r:0", "success"
+                )
+                return md, [[button]]
             if event in TASK_RESULT_EVENTS and cfg.deliver_task_results:
                 md = f"**{title or 'Task update'}**\n{message}"
                 if event == "run_completed":
@@ -442,6 +451,8 @@ class ChannelService(Service):
         if note.get("kind") == "task" and payload.get("event") == "question":
             answer = summary_text(str(payload.get("answer") or ""), 80)
             label = f"Answered: {answer}" if status == "answered" and answer else label
+        elif note.get("kind") == "task" and str(payload.get("event") or "").startswith("away_"):
+            pass  # the label as it is
         elif note.get("kind") == "task":
             label = f"Plan {status}"
         for channel_id, chat_id, message_id in targets:

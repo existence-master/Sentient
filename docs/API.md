@@ -70,6 +70,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 |---|---|
 | `task.updated` | full **Task** (§4) |
 | `task.deleted` | `{task_id}` |
+| `tasks.away` | **AwayStatus** (section 4, routines pause while you are away) |
 | `task.run_progress` | `{task_id, run_id, update: ProgressUpdate}` (also moves the run's `last_activity_at` to `update.timestamp`) |
 | `task.run_activity` | `{task_id, run_id, last_activity_at}`: a working run is alive (the model is writing), at most every 10 s |
 | `task.run_context` | `{task_id, run_id, used, length, percent, warning}`: the running run's context meter after each model call (as `usage` above; all `null` when that model's context length is unknown; not stored). The first warning of a run is also logged as an `info` progress update |
@@ -597,7 +598,7 @@ Routes:
   "swarm_details": {"goal": "...", "items": [], "total_agents": 0, "completed_agents": 0,
                     "progress_updates": [{"worker_id": "agent-1|aggregator", "timestamp": "...", "status": "processing|completed|error|aggregating", "message": "..."}],
                     "aggregated_results": []} | null,
-  "enabled": true, "model": null, "browser_profile": "x-posting|null",
+  "enabled": true, "keep_running": false, "model": null, "browser_profile": "x-posting|null",
   "deliver_to": "default" | "desktop" | [{"channel": "telegram|discord|whatsapp", "chat_id": "..."}],
   "notepad": "...|null",
   "original_context": {"source": "manual_creation|chat|proactive|trigger", "...": "..."},
@@ -664,7 +665,8 @@ notifies skips the planner and goes straight to `approval_pending` with a one-st
 - `GET /api/tasks/{id}` → `Task`
 - `POST /api/tasks` `{prompt, is_swarm?: bool, assignee?: "ai", model?, browser_profile?}` → `Task` (status `planning`; refinement + planning continue in the background and arrive as `task.updated`)
 - `POST /api/tasks/preview` `{prompt}` → `{name, description, priority, schedule}` (v2 generate-plan)
-- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile, deliver_to, notepad}` → `Task`
+- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile, deliver_to, notepad, keep_running}` → `Task`
+  (`keep_running: true`: never paused while the user is away, see "Routines pause while you are away")
   (`notepad`: text, trimmed and cut to 1500 characters; `null` or `""` clears it)
   (`browser_profile`: a name from `browser.profiles`, 400 for an unknown one; `null`, `""` or `"default"` clear it)
   (`deliver_to`: `"default"` (or `null`), `"desktop"`, or a list of up to 10 `{channel, chat_id}`; an empty list is
@@ -710,7 +712,8 @@ Behaviour notes:
 - Task notification `payload.event` values: `approval_needed`, `clarification_needed`, `planning_failed`, `run_completed`,
   `run_failed` (with `run_id`), `disabled`, `script_alert` (with `result`), `script_failed`, `script_recovered`,
   `question` (with `run_id`, `question`, `options`; a stuck run adds `stuck: true` and `reason`; later
-  `status: "answered"|"cancelled"` and `answer`), `caught_up` (with `reason`, `ran`, `skipped`; see "Missed runs").
+  `status: "answered"|"cancelled"` and `answer`), `caught_up` (with `reason`, `ran`, `skipped`; see "Missed runs"),
+  `away_check` and `away_paused` (see "Routines pause while you are away").
 - Every way a run ends sends a notification or leaves a visible status: a run that crashes inside Sentient ends
   `error` with `Something went wrong inside Sentient while running this task.` and the usual `run_failed` notification.
 - Chat tools (plugin `tasks`): `create_task_from_prompt`, `search_tasks`, `get_task_status` (results include `script`),
@@ -858,6 +861,34 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
   ran: [{task_id, name, due_at}], skipped: [...], task_id?}` (`task_id` when only one task is listed).
 - Waking from sleep is a jump of the wall clock between scheduler ticks of more than `tick_seconds` + 120 s.
 - While Stop everything is on nothing is caught up; it happens on the first tick after Resume.
+
+### Routines pause while you are away (#163)
+Routines are enabled `active` tasks whose schedule is `recurring` or `triggered` (the Daily Brief is one), unless
+`keep_running` is true. They pause when the user has been away, so results don't pile up unread.
+- **Activity** is any chat turn on any surface (desktop, voice, Telegram, Discord, WhatsApp), a message or button
+  press from a paired chat, and `POST /api/activity` (the window sends it on focus, a click or a key press, at most
+  every 5 minutes). It is stored as meta `user.last_active_at`, written at most once a minute. Without a record the
+  first check starts counting from then.
+- **The check** runs every 10 minutes (the first one 10 minutes after start) and not while Stop everything is on. The
+  user is away when `tasks.away_pause_days` (default 7) days passed since the last activity, or
+  `tasks.away_pause_after_results` (default 20) task results and briefs (`kind: "task"|"brief"` notifications with a
+  `task_id`) arrived since then. `0` turns either rule off.
+- **Ask, then pause.** First one notification `kind: "task"`, title `Keep your routines running?`, `payload: {event:
+  "away_check", reason: "days"|"results", routines: n}`. Any activity cancels it (`payload.status: "kept"`). With no
+  activity for `tasks.away_ask_hours` (default 24; `0` pauses without asking) the routines are paused (`enabled:
+  false`), the question gets `status: "paused"`, and one notification follows: title `Routines paused while you were
+  away`, `payload: {event: "away_paused", reason, task_ids}`. Coming back doesn't resume them on its own.
+- Both notifications go to paired chats like task results (`channels.deliver_task_results`) with one button:
+  `Keep them running` (`aw:k:0`) or `Resume routines` (`aw:r:0`).
+- `GET /api/tasks/away` → **AwayStatus** `{state: "active"|"asked"|"paused", last_active_at, since, reason,
+  task_ids, notification_id, pause_at?, away_pause_days, away_pause_after_results, away_ask_hours}` (`pause_at` while
+  `asked`; `task_ids` while `paused`)
+- `POST /api/tasks/away/resume` → `{resumed: n, status: AwayStatus}`: turns the paused routines back on (a task
+  resumed or deleted by hand is skipped), the paused notification gets `status: "resumed"`. A task that can't be
+  turned back on stays `paused` in `task_ids` for another try, and the notification keeps its Resume action
+- `POST /api/tasks/away/keep` → AwayStatus: the user chose Keep them running (counts as activity)
+- `POST /api/activity` → `{ok, last_active_at}`
+- Event `tasks.away` carries the AwayStatus after every change.
 
 ---
 

@@ -5,6 +5,7 @@ import {
   IconCheck,
   IconInfoCircle,
   IconListCheck,
+  IconPlayerPlay,
   IconShieldCheck,
   IconShieldQuestion,
   IconSparkles,
@@ -21,7 +22,7 @@ import { toast } from 'sonner'
 import { Badge, Button, IconButton, Markdown } from '@/components/ui'
 import { qk } from '@/hooks/queryKeys'
 import { useNotificationActions } from '@/hooks/notifications'
-import { useTaskActions } from '@/hooks/tasks'
+import { useAwayActions, useTaskActions } from '@/hooks/tasks'
 import { api, errorMessage } from '@/lib/api'
 import type { ApprovalDecision, Notification, NotificationKind, NotificationList } from '@/lib/types'
 import { cn, formatTime, relativeTime, truncate } from '@/lib/utils'
@@ -146,6 +147,7 @@ export function NotificationItem({
                 {n.kind === 'approval' && <ApprovalActions n={n} />}
                 {n.kind === 'task' && n.payload?.event === 'approval_needed' && <PlanApprovalActions n={n} onNavigate={onNavigate} />}
                 {n.kind === 'task' && n.payload?.event === 'question' && <TaskQuestionActions n={n} onNavigate={onNavigate} />}
+                {n.kind === 'task' && (n.payload?.event === 'away_check' || n.payload?.event === 'away_paused') && <AwayActions n={n} />}
                 {n.kind === 'skill' && (
                   <Button
                     size="xs"
@@ -171,6 +173,40 @@ export function NotificationItem({
         <IconButton size="xs" label="Delete" icon={<IconTrash size={13} />} onClick={() => actions.remove.mutate(n.id)} />
       </div>
     </motion.li>
+  )
+}
+
+/** Routines and absence (#163): "Keep them running" before they pause, "Resume routines" after. */
+function AwayActions({ n }: { n: Notification }) {
+  const { markRead } = useNotificationActions()
+  const { keep, resume } = useAwayActions()
+  const p = (n.payload ?? {}) as Record<string, unknown>
+  const status = typeof p.status === 'string' ? p.status : null
+  const asking = p.event === 'away_check'
+  if (status) {
+    const label = status === 'kept' ? 'Kept running' : status === 'resumed' ? 'Resumed' : status === 'paused' ? 'Paused' : status
+    return (
+      <div className="mt-2">
+        <Badge tone={status === 'paused' ? 'neutral' : 'success'}>{label}</Badge>
+      </div>
+    )
+  }
+  const act = () => {
+    const m = asking ? keep : resume
+    m.mutate(undefined, {
+      onSuccess: () => {
+        if (!n.read) markRead.mutate(n.id)
+        toast.success(asking ? 'Your routines keep running' : 'Your routines are running again')
+      },
+      onError: (e) => toast.error(asking ? "Couldn't keep them running" : "Couldn't resume your routines", { description: errorMessage(e) })
+    })
+  }
+  return (
+    <div className="mt-2.5">
+      <Button size="sm" variant="primary" leftIcon={asking ? <IconCheck size={14} /> : <IconPlayerPlay size={14} />} loading={keep.isPending || resume.isPending} onClick={act}>
+        {asking ? 'Keep them running' : 'Resume routines'}
+      </Button>
+    </div>
   )
 }
 

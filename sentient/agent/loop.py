@@ -1225,6 +1225,8 @@ class Agent:
         used = AnswerSources()  # pages, emails, files and apps it used (#174)
         try:
             user_message_id = await self.store.add_message(session_id, "user", user_text, attachments=attachments)
+            if self.app is not None and hasattr(self.app, "user_seen"):
+                await self.app.user_seen(channel)  # a chat message on any surface means the user is around (#163)
             rule_check = self._start_rule_check(session_id, user_message_id, user_text)
             await self.store.touch_session(session_id, title=(user_text or (attachments[0] if attachments else ""))[:60])
 

@@ -59,6 +59,9 @@ export const LABELS: Record<string, FieldLabel> = {
   'tasks.max_cost_per_run_usd': { label: 'Most spending per run', unit: 'USD' },
   'tasks.require_plan_approval': { label: 'Approve plans before they run' },
   'tasks.swarm_max_agents': { label: 'Parallel agents per swarm', unit: 'agents' },
+  'tasks.away_pause_days': { label: 'Pause routines when you are away for', unit: 'days' },
+  'tasks.away_pause_after_results': { label: 'Or when unseen results reach', unit: 'results' },
+  'tasks.away_ask_hours': { label: 'Ask before pausing, then wait', unit: 'hours' },
   // proactivity
   'proactivity.enabled': { label: 'Proactive suggestions' },
   'proactivity.poll_interval_minutes': { label: 'Check connected apps every', unit: 'min' },

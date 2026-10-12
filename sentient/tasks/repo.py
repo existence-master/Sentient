@@ -19,8 +19,9 @@ TASK_COLUMNS = {
     "name", "description", "status", "priority", "task_type", "schedule", "plan", "original_prompt",
     "source", "enabled", "assignee", "model", "chat_history", "clarifying_questions", "swarm_details",
     "original_context", "script", "error", "next_execution_at", "last_execution_at", "created_at", "updated_at",
-    "browser_profile", "deliver_to", "notepad",
+    "browser_profile", "deliver_to", "notepad", "keep_running",
 }
+TASK_BOOL_FIELDS = {"enabled", "keep_running"}
 RUN_JSON_FIELDS = {"plan", "trigger_data", "messages", "result", "pending_question", "limits", "memory_sources"}
 RUN_COLUMNS = {
     "status", "plan", "trigger_data", "messages", "result", "error", "resume_count", "retry_of",
@@ -41,6 +42,7 @@ _ADDED_TASK_COLUMNS = {
     "browser_profile": "TEXT",
     "deliver_to": "TEXT",
     "notepad": "TEXT",
+    "keep_running": "INTEGER NOT NULL DEFAULT 0",  # never paused while the user is away (#163)
 }
 _ADDED_RUN_COLUMNS = {
     "plan": "TEXT", "resume_count": "INTEGER NOT NULL DEFAULT 0", "retry_of": "TEXT", "pending_question": "TEXT",
@@ -106,6 +108,7 @@ class TaskRepo:
         for f in TASK_JSON_FIELDS:
             d[f] = _loads(d.get(f))
         d["enabled"] = bool(d.get("enabled", 1))
+        d["keep_running"] = bool(d.get("keep_running") or 0)
         return d
 
     async def insert_task(self, fields: dict) -> str:
@@ -114,8 +117,8 @@ class TaskRepo:
         data["id"] = task_id
         for f in TASK_JSON_FIELDS & data.keys():
             data[f] = _dumps(data[f])
-        if "enabled" in data:
-            data["enabled"] = 1 if data["enabled"] else 0
+        for f in TASK_BOOL_FIELDS & data.keys():
+            data[f] = 1 if data[f] else 0
         cols = ", ".join(data)
         marks = ", ".join("?" for _ in data)
         await self.store.execute(f"INSERT INTO tasks({cols}) VALUES({marks})", tuple(data.values()))
@@ -138,8 +141,8 @@ class TaskRepo:
             return
         for f in TASK_JSON_FIELDS & data.keys():
             data[f] = _dumps(data[f])
-        if "enabled" in data:
-            data["enabled"] = 1 if data["enabled"] else 0
+        for f in TASK_BOOL_FIELDS & data.keys():
+            data[f] = 1 if data[f] else 0
         sets = ", ".join(f"{k} = ?" for k in data)
         await self.store.execute(f"UPDATE tasks SET {sets} WHERE id = ?", (*data.values(), task_id))
 
@@ -151,8 +154,8 @@ class TaskRepo:
             return False
         for f in TASK_JSON_FIELDS & data.keys():
             data[f] = _dumps(data[f])
-        if "enabled" in data:
-            data["enabled"] = 1 if data["enabled"] else 0
+        for f in TASK_BOOL_FIELDS & data.keys():
+            data[f] = 1 if data[f] else 0
         wanted = list(statuses)
         sets = ", ".join(f"{k} = ?" for k in data)
         marks = ", ".join("?" for _ in wanted)
@@ -356,6 +359,7 @@ class TaskRepo:
             "clarifying_questions": task.get("clarifying_questions") or [],
             "swarm_details": task.get("swarm_details"),
             "enabled": bool(task.get("enabled", True)),
+            "keep_running": bool(task.get("keep_running")),
             "model": task.get("model"),
             "browser_profile": task.get("browser_profile"),
             "deliver_to": from_stored(task.get("deliver_to")),
