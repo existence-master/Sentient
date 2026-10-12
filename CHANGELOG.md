@@ -258,6 +258,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 - Editing, approving or importing a skill that needs a particular tool (for example `file_read`) no longer hides it
   from Sentient until the next restart.
+- **Watch requests no longer fail when a check script can't be written:** if the AI's check script is rejected twice
+  (it loops, sleeps or uses memory, as small local models sometimes do), the task is saved as an ordinary recurring
+  task that the AI runs each time, with a short note on the task saying so, instead of ending in an error.
 - **Rules from chat work with Claude Code for every model:** when your fast model is Claude Code, "From now on,
   never delete my emails" proposes a rule again. The check now uses the chat's own model or your main model, since
   it is part of answering your message. Apps that chat through `POST /api/chat` also get the "Make this a rule?" card.
