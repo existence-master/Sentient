@@ -37,7 +37,7 @@ class FakeTasks(FakeService):
 
 
 class FakeIntegrations(FakeService):
-    def __init__(self, items=None, email="sarthak@example.com"):
+    def __init__(self, items=None, email="maya@example.com"):
         self.items = {"gmail": list(items or []), "gcalendar": []}
         self.email = email
         self.polls: list[tuple] = []
@@ -66,9 +66,9 @@ class FakeUserModel(FakeService):
 
 MEETING_EMAIL = {
     "id": "msg-1", "thread_id": "th-1", "from": "Jane Doe <jane@acme.com>", "sender_email": "jane@acme.com",
-    "to": "sarthak@example.com", "subject": "Meeting about Project Phoenix",
+    "to": "maya@example.com", "subject": "Meeting about Project Phoenix",
     "snippet": "Can we meet Tuesday at 2pm to go over the launch plan?",
-    "body": "Hi Sarthak, can we meet Tuesday at 2pm to go over the Project Phoenix launch plan? Thanks, Jane",
+    "body": "Hi Maya, can we meet Tuesday at 2pm to go over the Project Phoenix launch plan? Thanks, Jane",
     "date": "2026-09-15T08:00:00+00:00", "labels": ["INBOX", "IMPORTANT"],
     "url": "https://mail.google.com/mail/u/0/#inbox/th-1",
 }

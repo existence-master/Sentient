@@ -14,18 +14,18 @@ async def _collect(agent, sid, text, on_event=None):
 
 
 async def test_plain_reply_persists_and_streams(config, isolated_home):
-    llm = FakeProvider(replies=["Hello Sarthak!"])
+    llm = FakeProvider(replies=["Hello Maya!"])
     s = await SentientApp(config, llm=llm, db_path=isolated_home / "a.db").start()
     try:
         sid = await s.store.create_session(channel="cli")
         events = await _collect(s.agent, sid, "hi")
         text = "".join(e.text for e in events if isinstance(e, TextDelta))
-        assert text == "Hello Sarthak!"
-        assert isinstance(events[-1], Done) and events[-1].content == "Hello Sarthak!"
+        assert text == "Hello Maya!"
+        assert isinstance(events[-1], Done) and events[-1].content == "Hello Maya!"
         msgs = await s.store.recent_messages(sid, 10)
         assert [m["role"] for m in msgs] == ["user", "assistant"]
         system = llm.calls[0]["messages"][0]["content"]
-        assert "Sarthak" in system and "## Working rules" in system
+        assert "Maya" in system and "## Working rules" in system
         assert llm.calls[0]["tools"], "tools must be offered to the model"
     finally:
         await s.stop()
@@ -126,8 +126,8 @@ async def test_memory_remember_via_tool_then_recalled_in_prompt(config, isolated
     # (the fake bag-of-words embedder scores paraphrases low)
     config.memory.min_similarity = 0.0
     llm = FakeProvider(
-        replies=[[tool_call("memory_remember", fact="Sarthak's sister lives in Pune")], "Got it.", "Pune."],
-        json_replies=[{"action": "ADD", "fact_id": None, "content": "Sarthak's sister lives in Pune",
+        replies=[[tool_call("memory_remember", fact="Maya's sister lives in Pune")], "Got it.", "Pune."],
+        json_replies=[{"action": "ADD", "fact_id": None, "content": "Maya's sister lives in Pune",
                        "memory_type": "long-term", "duration": None, "topics": ["family"]}],
     )
     s = await SentientApp(config, llm=llm, db_path=isolated_home / "d.db").start()
@@ -137,7 +137,7 @@ async def test_memory_remember_via_tool_then_recalled_in_prompt(config, isolated
         assert await s.memory.count() == 1
         await _collect(s.agent, sid, "where does my sister live")
         system = llm.calls[-1]["messages"][0]["content"]
-        assert "Sarthak's sister lives in Pune" in system, "recalled facts must be injected into the prompt"
+        assert "Maya's sister lives in Pune" in system, "recalled facts must be injected into the prompt"
     finally:
         await s.stop()
 
@@ -146,8 +146,8 @@ async def test_background_extraction_runs(config, isolated_home):
     config.memory.extract_after_turn = True
     llm = FakeProvider(
         replies=["Nice, noted."],
-        json_replies=[{"facts": ["Sarthak drinks black coffee"]},
-                      {"action": "ADD", "fact_id": None, "content": "Sarthak drinks black coffee",
+        json_replies=[{"facts": ["Maya drinks black coffee"]},
+                      {"action": "ADD", "fact_id": None, "content": "Maya drinks black coffee",
                        "memory_type": "long-term", "duration": None, "topics": ["preferences"]}],
     )
     s = await SentientApp(config, llm=llm, db_path=isolated_home / "e.db").start()

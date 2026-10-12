@@ -32,20 +32,20 @@ async def test_flush_conversation_extracts_and_stores(app):
     app.config.memory.duplicate_similarity = 0.999
     llm.json_replies.extend(
         [
-            {"facts": ["Sarthak moved to Mumbai for a new office.", "Sarthak asked how the move is going",
-                       "Sarthak's sister Riya is joining him in December."]},
-            _add("Sarthak moved to Mumbai for a new office."),
-            _add("Sarthak's sister Riya is joining him in December."),
+            {"facts": ["Maya moved to Mumbai for a new office.", "Maya asked how the move is going",
+                       "Maya's sister Riya is joining him in December."]},
+            _add("Maya moved to Mumbai for a new office."),
+            _add("Maya's sister Riya is joining him in December."),
         ]
     )
     async with app.bus.subscribe() as q:
-        results = await mem.flush_conversation(TRANSCRIPT, "Sarthak")
+        results = await mem.flush_conversation(TRANSCRIPT, "Maya")
         events = drain(q)
     assert [r["action"] for r in results] == ["ADD", "ADD"]
     prompt = llm.calls[0]["messages"][1]["content"]
     assert "about to be compressed" in prompt and "Chennai" not in prompt
     assert {f["content"] for f in await mem.list_facts()} == {
-        "Sarthak moved to Mumbai for a new office.", "Sarthak's sister Riya is joining him in December."
+        "Maya moved to Mumbai for a new office.", "Maya's sister Riya is joining him in December."
     }
     assert sum(1 for e in events if e["type"] == "memory.updated" and e["data"]["action"] == "ADD") == 2
 
@@ -53,30 +53,30 @@ async def test_flush_conversation_extracts_and_stores(app):
 async def test_flush_conversation_is_bounded_and_tolerant(app):
     mem, llm = app.memory, app.fake
     app.config.memory.flush_enabled = False
-    assert await mem.flush_conversation(TRANSCRIPT, "Sarthak") == []
+    assert await mem.flush_conversation(TRANSCRIPT, "Maya") == []
     assert llm.calls == []
     app.config.memory.flush_enabled = True
-    assert await mem.flush_conversation("user: hi", "Sarthak") == []  # too short to be worth a call
+    assert await mem.flush_conversation("user: hi", "Maya") == []  # too short to be worth a call
     assert llm.calls == []
     llm.json_replies.append("definitely not a list of facts")
-    assert await mem.flush_conversation(TRANSCRIPT, "Sarthak") == []
+    assert await mem.flush_conversation(TRANSCRIPT, "Maya") == []
     app.config.memory.flush_max_facts = 1
-    llm.json_replies.extend([{"facts": [{"fact": "Sarthak lives in Mumbai."}, "Sarthak has a sister."]},
-                             _add("Sarthak lives in Mumbai.")])
-    out = await mem.flush_conversation(TRANSCRIPT, "Sarthak")
-    assert [r["content"] for r in out] == ["Sarthak lives in Mumbai."]
+    llm.json_replies.extend([{"facts": [{"fact": "Maya lives in Mumbai."}, "Maya has a sister."]},
+                             _add("Maya lives in Mumbai.")])
+    out = await mem.flush_conversation(TRANSCRIPT, "Maya")
+    assert [r["content"] for r in out] == ["Maya lives in Mumbai."]
 
 
 def test_keyword_helpers():
-    assert keyword_tokens("What is Sarthak's dentist called?") == ["sarthak", "dentist", "called"]
-    assert word_overlap("Sarthak lives in Pune", "Sarthak lives in Mumbai") == 0.5
+    assert keyword_tokens("What is Maya's dentist called?") == ["maya", "dentist", "called"]
+    assert word_overlap("Maya lives in Pune", "Maya lives in Mumbai") == 0.5
     assert word_overlap("", "x") == 0.0
 
 
 async def test_hybrid_recall_keyword_match_and_counters(app):
     mem = app.memory
-    dentist = await add_fact(mem, "Sarthak's dentist is Dr Mehta in Kothrud")
-    await add_fact(mem, "Sarthak enjoys playing chess on weekends")
+    dentist = await add_fact(mem, "Maya's dentist is Dr Mehta in Kothrud")
+    await add_fact(mem, "Maya enjoys playing chess on weekends")
     # a vector threshold nothing passes: the keyword match still surfaces the fact
     hits = await mem.recall("who is my dentist Mehta", min_similarity=0.999)
     assert [h["id"] for h in hits] == [dentist]
@@ -88,7 +88,7 @@ async def test_hybrid_recall_keyword_match_and_counters(app):
     row = await app.store.fetchone("SELECT recall_count FROM facts WHERE id = ?", (dentist,))
     assert row["recall_count"] == 1
     # the keyword index follows edits and deletes
-    await mem.update_content(dentist, "Sarthak's orthodontist is Dr Kulkarni", use_llm=False)
+    await mem.update_content(dentist, "Maya's orthodontist is Dr Kulkarni", use_llm=False)
     assert [h["id"] for h in await mem.recall("Kulkarni orthodontist", min_similarity=0.999)] == [dentist]
     assert await mem.recall("Mehta", min_similarity=0.999) == []
     await mem.forget(dentist)
@@ -103,7 +103,7 @@ async def test_existing_database_gets_keyword_index(config, isolated_home):
     store = await Store(path).open()
     await store.execute(
         "INSERT INTO facts(content, source, topics, memory_type, created_at, updated_at) VALUES(?,?,?,?,?,?)",
-        ("Sarthak collects vintage fountain pens", "manual", "[]", "long-term", "2026-01-01", "2026-01-01"),
+        ("Maya collects vintage fountain pens", "manual", "[]", "long-term", "2026-01-01", "2026-01-01"),
     )
     await store.close()
     store = await Store(path).open()

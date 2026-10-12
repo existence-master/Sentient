@@ -82,7 +82,7 @@ async def test_pairing_flow(tg):
     await tg.say(42, "/pair@sentient_test_bot " + code)
     assert "Paired!" in api.screen()[-1]
     chat = await app.channels.store.chat("telegram", "42")
-    assert chat["label"] == "Sarthak (@sk)" and chat["deliver"] is True
+    assert chat["label"] == "Maya (@maya)" and chat["deliver"] is True
     session = await app.store.get_session(chat["session_id"])
     assert session["channel"] == "telegram"
     # single use: the same code no longer works for another chat

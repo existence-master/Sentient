@@ -181,22 +181,22 @@ async def test_curator_merge_proposal(app):
 
 async def test_profile_upkeep_appends_without_clobbering(app):
     ws, mem = app.workspace, app.memory
-    ws.write("user", "# About Sarthak\n\nMy own words: I like quiet mornings.\n")
-    a = await mem.remember("Sarthak is training for a marathon", use_llm=False)
+    ws.write("user", "# About Maya\n\nMy own words: I like quiet mornings.\n")
+    a = await mem.remember("Maya is training for a marathon", use_llm=False)
     await app.store.execute("UPDATE facts SET topics = ? WHERE id = ?", ('["Health & Wellbeing"]', a["id"]))
-    await mem.remember("Sarthak random misc fact", use_llm=False)
-    app.fake.text_replies.append("# Long-term memory\n\n## Goals\n- Sarthak is training for a marathon.\n")
+    await mem.remember("Maya random misc fact", use_llm=False)
+    app.fake.text_replies.append("# Long-term memory\n\n## Goals\n- Maya is training for a marathon.\n")
     out = await app.evolution.update_profile(force=True)
     assert out["updated"] and out["learned_appended"] == 1
     user_md = ws.user.read_text(encoding="utf-8")
     assert "My own words: I like quiet mornings." in user_md
-    assert "## Learned\n\n- Sarthak is training for a marathon" in user_md
+    assert "## Learned\n\n- Maya is training for a marathon" in user_md
     assert "random misc" not in user_md
     assert ws.memory.read_text(encoding="utf-8").startswith("# Long-term memory")
     # nothing new: no rewrite, no duplicate bullets
     assert (await app.evolution.update_profile(force=True))["updated"] is False
     # the next fact may share that upkeep's clock tick; it is still picked up (#236)
-    b = await mem.remember("Sarthak mentors two junior developers", use_llm=False)
+    b = await mem.remember("Maya mentors two junior developers", use_llm=False)
     await app.store.execute("UPDATE facts SET topics = ? WHERE id = ?", ('["Work & Learning"]', b["id"]))
     app.fake.text_replies.append("no heading but long enough content for the memory file here")
     await app.evolution.update_profile(force=True)

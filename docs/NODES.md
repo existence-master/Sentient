@@ -74,7 +74,7 @@ Binary frames are only used as described in §4.4.
 The first message after connecting, within 15 seconds.
 
 ```json
-{"type": "hello", "protocol": 1, "name": "Sarthak's glasses", "kind": "glasses",
+{"type": "hello", "protocol": 1, "name": "Maya's glasses", "kind": "glasses",
  "platform": "esp32-s3", "app_version": "0.4.1",
  "capabilities": ["camera.photo", "display.text", "speak", "audio.play", "button.events", "battery"],
  "token": "…", "state": {"battery": 81, "charging": false, "worn": true}}
@@ -85,7 +85,7 @@ The first message after connecting, within 15 seconds.
 - `state` is optional (same fields as §4.3).
 
 ```json
-{"type": "welcome", "protocol": 1, "node_id": "9c1e0f3a2b4d6e71", "name": "Sarthak's glasses",
+{"type": "welcome", "protocol": 1, "node_id": "9c1e0f3a2b4d6e71", "name": "Maya's glasses",
  "assistant": "Sentient", "server_version": "3.0.0a0", "keepalive_s": 60, "idle_timeout_s": 180,
  "stopped": false, "token": "only-on-first-pairing"}
 ```

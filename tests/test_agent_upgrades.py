@@ -509,7 +509,7 @@ async def test_memory_flush_runs_before_compression(config, isolated_home):
         async def flush_conversation(transcript: str, user_name: str) -> list[dict]:
             order.append("flush")
             flushed.append((transcript, user_name))
-            return [{"action": "ADD", "id": 1, "content": "Sarthak likes tea"}]
+            return [{"action": "ADD", "id": 1, "content": "Maya likes tea"}]
 
         s.memory.flush_conversation = flush_conversation
         sid = await s.store.create_session(channel="cli")
@@ -519,7 +519,7 @@ async def test_memory_flush_runs_before_compression(config, isolated_home):
             await s.agent._maybe_compress(sid)
             published = [q.get_nowait() for _ in range(q.qsize())]
         assert order == ["flush", "summary"]
-        assert "message number 0" in flushed[0][0] and flushed[0][1] == "Sarthak"
+        assert "message number 0" in flushed[0][0] and flushed[0][1] == "Maya"
         # flush_conversation publishes its own changes; the agent does not send them a second time
         assert not any(e["type"] == "memory.updated" for e in published)
         assert (await s.store.get_session(sid))["context_summary"] == "Running summary."
@@ -657,7 +657,7 @@ async def test_selection_triggers_surface_new_capabilities():
 
 
 def test_capability_rules_follow_available_tools():
-    base = dict(snapshot={}, facts=[], skills_index="", assistant_name="Sentient", user_name="Sarthak",
+    base = dict(snapshot={}, facts=[], skills_index="", assistant_name="Sentient", user_name="Maya",
                 channel="desktop")
     plain = build_system_prompt(**base, tool_names=["memory_recall"])
     assert "Open browser button" not in plain and "execute_code" not in plain
@@ -733,7 +733,7 @@ async def test_steer_messages_are_marked_and_package_schemas_listed(config, isol
 
 
 async def test_messaging_and_phone_channels(config, isolated_home):
-    base = dict(snapshot={}, facts=[], skills_index="", assistant_name="Sentient", user_name="Sarthak")
+    base = dict(snapshot={}, facts=[], skills_index="", assistant_name="Sentient", user_name="Maya")
     assert "chatting in Telegram" in build_system_prompt(**base, channel="telegram")
     assert "No wide tables" in build_system_prompt(**base, channel="discord")
     llm = FakeProvider(replies=["Hi."])

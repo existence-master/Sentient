@@ -112,12 +112,12 @@ async def test_slack_auth_test_validation(app, keychain):
     with respx.mock() as router:
         router.get("https://slack.com/api/auth.test").mock(side_effect=[
             httpx.Response(200, json={"ok": False, "error": "invalid_auth"}),
-            httpx.Response(200, json={"ok": True, "user": "sarthak", "team": "Existence", "team_id": "T1", "user_id": "U1"}),
+            httpx.Response(200, json={"ok": True, "user": "maya", "team": "Existence", "team_id": "T1", "user_id": "U1"}),
         ])
         with pytest.raises(IntegrationError, match="rejected"):
             await app.integrations.connect("slack", {"token": "xoxp-bad"})
         integ = await app.integrations.connect("slack", {"token": "xoxp-good"})
-    assert integ["account_label"] == "sarthak @ Existence"
+    assert integ["account_label"] == "maya @ Existence"
     assert json.loads(keychain["integration:slack"])["token"] == "xoxp-good"
     with pytest.raises(IntegrationError, match="doesn't look like a Slack token"):
         await app.integrations.connect("slack", {"token": "hello"})
