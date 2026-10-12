@@ -30,6 +30,7 @@
  *   stop.updated          -> ['stop'] (Stop everything banner and title bar button; cancels dictation)
  *   model.busy            -> ['models', 'busy'] (the title bar's "model busy" indicator)
  *   backup.updated        -> refetch ['backups'] (Settings > Backups)
+ *   import.updated        -> ['import', 'memory', 'job'] (an import from ChatGPT, Claude or OpenClaw; + memory review when it ends)
  */
 import type { QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -307,6 +308,15 @@ export function installDomainEvents(qc: QueryClient): () => void {
   // #149 one local model job at a time
   offs.push(live.onDomain('model.busy', (e) => qc.setQueryData(qk.modelBusy, e.data)))
   offs.push(live.onDomain('backup.updated', () => void qc.invalidateQueries({ queryKey: qk.backups })))
+  offs.push(
+    live.onDomain('import.updated', (e) => {
+      qc.setQueryData(qk.memoryImportJob, e.data)
+      if (e.data?.status !== 'running') {
+        void qc.invalidateQueries({ queryKey: qk.memories.all })
+        void qc.invalidateQueries({ queryKey: qk.userModel })
+      }
+    })
+  )
 
   // After a reconnect we may have missed events: refresh lists (not transcripts).
   let prev: SocketState = live.state

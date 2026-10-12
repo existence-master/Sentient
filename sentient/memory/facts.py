@@ -1256,6 +1256,32 @@ class FactMemory:
         self.publish("ADD", fid, text, reason="approved")
         return await self.get_fact(fid)
 
+    async def classify_pending(self, fid: int) -> bool:
+        """Topics and long/short-term for a held fact that was saved without them (an import does this after its
+        model reads are done). False when ``fid`` is not pending."""
+        row = await self.store.fetchone("SELECT content FROM facts WHERE id = ? AND status = 'pending'", (fid,))
+        if row is None:
+            return False
+        topics, memory_type, duration = await self.analyze(row["content"])
+        await self.store.execute(
+            "UPDATE facts SET topics = ?, memory_type = ?, expires_at = ? WHERE id = ? AND status = 'pending'",
+            (json.dumps(topics), memory_type, expires_for(memory_type, duration), fid),
+        )
+        return True
+
+    async def reword_pending(self, fid: int, content: str, review: dict | None = None) -> bool:
+        """Put fuller wording on a fact that still waits for review (an import found the same thing with more
+        detail). Only a pending fact changes; nothing the user approved is touched. False when ``fid`` isn't pending."""
+        content = " ".join(content.split())
+        if not content:
+            return False
+        cur = await self.store.execute(
+            "UPDATE facts SET content = ?, previous_content = content, updated_at = ?,"
+            " review = COALESCE(?, review) WHERE id = ? AND status = 'pending'",
+            (content, now_iso(), reviews.dump(review), fid),
+        )
+        return bool(getattr(cur, "rowcount", 0))
+
     async def discard(self, fid: int) -> bool:
         """The user turned a held fact down: it is deleted. False when ``fid`` is not pending."""
         row = await self.store.fetchone("SELECT content FROM facts WHERE id = ? AND status = 'pending'", (fid,))
