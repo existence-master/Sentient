@@ -193,3 +193,28 @@ def test_routes(config, isolated_home, monkeypatch):
         kept = c.post("/api/tasks/away/keep").json()
         assert kept["state"] == "active"
         assert c.post("/api/tasks/away/resume").json() == {"resumed": 0, "status": c.get("/api/tasks/away").json()}
+
+
+async def test_resume_keeps_what_failed_for_another_try(make_app, clock, monkeypatch):
+    clock.dt = T0
+    app = await make_app(clock=clock)
+    await app.user_seen("app")
+    ids = await routines(app)
+    app.config.tasks.away_ask_hours = 0
+    await app.tasks.away.check(T0 + timedelta(days=7))
+    real_update = app.tasks.update
+
+    async def flaky(task_id, fields, **kw):
+        if task_id == ids["mail"] and fields.get("enabled"):
+            raise RuntimeError("database is locked")
+        return await real_update(task_id, fields, **kw)
+
+    monkeypatch.setattr(app.tasks, "update", flaky)
+    first = await app.tasks.away.resume()
+    assert first["resumed"] == 1 and first["status"]["state"] == "paused" and first["status"]["task_ids"] == [ids["mail"]]
+    [note] = await events(app, "away_paused")
+    assert "status" not in note["payload"]  # still offers Resume
+    monkeypatch.setattr(app.tasks, "update", real_update)
+    second = await app.tasks.away.resume()
+    assert second["resumed"] == 1 and second["status"]["state"] == "active"
+    assert (await app.notifications.get(note["id"]))["payload"]["status"] == "resumed"

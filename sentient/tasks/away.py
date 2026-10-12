@@ -17,6 +17,7 @@ State lives in store meta:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from datetime import datetime, timedelta
@@ -190,10 +191,12 @@ class AwayWatch:
         for task in routines:
             try:
                 await self.tasks.update(task["id"], {"enabled": False})
-                await self.tasks.publish(task["id"])
-                paused.append(task["id"])
             except Exception:
                 log.exception("could not pause task %s", task.get("id"))
+                continue
+            paused.append(task["id"])  # recorded as soon as it is off, so Resume finds it whatever happens next
+            with contextlib.suppress(Exception):
+                await self.tasks.publish(task["id"])
         if not paused:
             return
         if ask_note:  # the question is answered by the pause itself
@@ -218,6 +221,7 @@ class AwayWatch:
         """Turn the routines paused for absence back on. Returns ``{resumed: n, status}``."""
         state = await self._state()
         resumed = 0
+        failed: list[str] = []
         if state.get("state") == "paused":
             for task_id in state.get("task_ids") or []:
                 task = await self.tasks.repo.get_task(task_id)
@@ -225,10 +229,17 @@ class AwayWatch:
                     continue  # deleted, or resumed by hand already
                 try:
                     await self.tasks.update(task_id, {"enabled": True})
-                    await self.tasks.publish(task_id)
-                    resumed += 1
                 except Exception:
                     log.exception("could not resume task %s", task_id)
+                    failed.append(task_id)
+                    continue
+                resumed += 1
+                with contextlib.suppress(Exception):
+                    await self.tasks.publish(task_id)
+            if failed:  # keep what is still off for another try; the notification keeps its Resume button
+                await self._save_state({**state, "task_ids": failed})
+                self.app.bus.publish("tasks.away", await self.status())
+                return {"resumed": resumed, "status": await self.status()}
             await self._settle(state.get("notification_id"), "resumed")
         await self._save_state({})
         await self.seen("resume")

@@ -880,7 +880,8 @@ Routines are enabled `active` tasks whose schedule is `recurring` or `triggered`
   task_ids, notification_id, pause_at?, away_pause_days, away_pause_after_results, away_ask_hours}` (`pause_at` while
   `asked`; `task_ids` while `paused`)
 - `POST /api/tasks/away/resume` → `{resumed: n, status: AwayStatus}`: turns the paused routines back on (a task
-  resumed or deleted by hand is skipped), the paused notification gets `status: "resumed"`
+  resumed or deleted by hand is skipped), the paused notification gets `status: "resumed"`. A task that can't be
+  turned back on stays `paused` in `task_ids` for another try, and the notification keeps its Resume action
 - `POST /api/tasks/away/keep` → AwayStatus: the user chose Keep them running (counts as activity)
 - `POST /api/activity` → `{ok, last_active_at}`
 - Event `tasks.away` carries the AwayStatus after every change.
