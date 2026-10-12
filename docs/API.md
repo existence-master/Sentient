@@ -2010,8 +2010,13 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `script` (and a `schedule`, e.g. `interval`) to its reply. The code must use `from sentient_tools import tools, result` and
   read-only tools; it is checked with `ast.parse` and, because a model wrote it, also rejected when it imports a package
   outside the standard library (`requests`, `bs4`), uses `while True`, sleeps (`time.sleep`, `tools.time_sleep`), calls
-  memory functions (`memory_*`) or returns `{"alert": ...}` with a `changed`/`noteworthy` condition. The planner gets one chance to fix a rejected script with the reason, then planning
-  fails with a readable `error`. The same rules apply to script code changed by chat tools; code a person edits
+  memory functions (`memory_*`) or returns `{"alert": ...}` with a `changed`/`noteworthy` condition. The planner gets one chance to fix a rejected script with the reason. If
+  that one is rejected too (#310), the task is saved as an ordinary AI-run task instead of failing: `task_type: "single"`,
+  `script: null`, one plan step that is the user's own request (`original_prompt`, which keeps the page address the
+  script held) with the app the scripts called (`tools.web_fetch`: `web`; else the planner's app; one more step per
+  further app), a change request keeping the re-plan's steps, the same schedule rules as a script job, and an assistant note in `chat_history` ("I couldn't write a working check script
+  for this, so the AI will do it at each run instead."). Its runs use the recurring-task memory ("Recurring tasks
+  remember"). The same rules apply to script code changed by chat tools; code a person edits
   (`PATCH /api/tasks/{id}`) only has to compile. A script job the planner leaves on an immediate one-off schedule becomes `interval` 60.
 - `POST /api/tasks/{id}/script/test` → SandboxResult (does not change `last_result`); see section 4.
 
