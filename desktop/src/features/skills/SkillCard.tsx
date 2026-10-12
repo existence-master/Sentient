@@ -1,8 +1,9 @@
-import { IconChartBar, IconClock, IconEye, IconFilePencil, IconTool, IconZzz } from '@tabler/icons-react'
+import { IconAlertTriangle, IconChartBar, IconClock, IconEye, IconFilePencil, IconTool, IconUserEdit, IconZzz } from '@tabler/icons-react'
 import { motion } from 'motion/react'
 import { Badge, Tooltip } from '@/components/ui'
 import type { Skill } from '@/lib/types'
 import { cn, relativeTime } from '@/lib/utils'
+import { lintSummary } from './LintList'
 import { authorMeta } from './meta'
 
 export function AuthorBadge({ author, className }: { author: string; className?: string }) {
@@ -36,6 +37,8 @@ export function SkillStat({ icon, value, label }: { icon: React.ReactNode; value
 
 export function SkillCard({ skill, onOpen, hasUpdate }: { skill: Skill; onOpen: () => void; hasUpdate?: boolean }) {
   const stale = skill.state === 'stale'
+  const lint = lintSummary(skill.lint)
+  const problems = lint.errors + lint.warnings
   return (
     <motion.button
       layout="position"
@@ -89,6 +92,20 @@ export function SkillCard({ skill, onOpen, hasUpdate }: { skill: Skill; onOpen: 
         <SkillStat icon={<IconChartBar size={13} />} value={skill.use_count} label="Times used" />
         <SkillStat icon={<IconEye size={13} />} value={skill.view_count} label="Times read by Sentient" />
         <SkillStat icon={<IconFilePencil size={13} />} value={skill.patch_count} label="Times improved" />
+        {skill.user_edited && (
+          <Tooltip content="You changed this skill. Sentient shows you its changes instead of overwriting yours.">
+            <span className="inline-flex items-center gap-1 text-info">
+              <IconUserEdit size={13} /> Edited by you
+            </span>
+          </Tooltip>
+        )}
+        {problems > 0 && (
+          <Tooltip content={skill.lint?.[0]?.message ?? ''}>
+            <span className={cn('inline-flex items-center gap-1', lint.errors ? 'text-danger' : 'text-warning')}>
+              <IconAlertTriangle size={13} /> {problems} to check
+            </span>
+          </Tooltip>
+        )}
         <div className="flex-1" />
         <span className="inline-flex items-center gap-1">
           <IconClock size={12} />

@@ -6,6 +6,16 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Sentient never overwrites a skill you edited:** when you change a skill, in Skills or in any text editor, Sentient
+  notices and leaves your version alone. When it has a better idea it drafts the change for you to compare and
+  approve, and says plainly that your version is untouched. A proposal drafted before your edit warns that approving
+  would undo your changes. **Reset to original** puts back the version from before your edits.
+- **Skill checks:** Skills now point out problems in plain words: a missing or unreadable header, no description or
+  steps, a skill that is too long, links to files that aren't there, tools that aren't installed, a skill that reads
+  like a diary of past runs instead of a lesson, and risky instructions (skip approvals, ignore other instructions,
+  wipe folders, run a downloaded script, send passwords or keys). They show on each skill, on proposals, on skills
+  coming from Hermes, and a skill file that can't load at all is listed with what is wrong. A skill Sentient writes
+  with a risky instruction always waits for your review.
 - **Each chat remembers its model:** pick a model in a chat's message box and that chat keeps it, also after you
   reopen it or restart Sentient. Other chats keep following your default model, and switching the default (or a
   preset) in the title bar only changes those. **Use the default** puts a chat back on the default. The chat list
@@ -235,6 +245,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- Editing, approving or importing a skill that needs a particular tool (for example `file_read`) no longer hides it
+  from Sentient until the next restart.
 - With approvals set to **Never ask**, Sentient no longer stops to ask before just looking something up (a web page,
   a snapshot of the browser, a search) because something you said in the chat sounded like a "never" it offered to
   turn into a rule. Until you answer that suggestion it still checks with you before changing, sending, deleting or

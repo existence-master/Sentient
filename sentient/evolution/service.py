@@ -489,12 +489,20 @@ class EvolutionService(Service):
             pending=True, created_by_review=True,
         )
         await lib.record_patch(name, "pending_review", self.app.store)
+        user_edited = existing is not None and (await lib.edit_state(name, self.app.store))["user_edited"]
         kind = "skill_patched" if existing else "skill_created"
-        await log_event(
-            self.app.store, kind, {"name": name, "pending": True, "reason": raw.get("reason"), **origin}
-        )
+        detail = {"name": name, "pending": True, "reason": raw.get("reason"), **origin}
+        if user_edited:
+            detail["user_edited"] = True
+        await log_event(self.app.store, kind, detail)
         self.app.bus.publish("skill.updated", {"name": name, "state": "pending_review"})
-        if existing:
+        if user_edited:
+            msg = (
+                f"You changed **{name}** yourself, so I left it as it is and drafted an update for you to compare. "
+                "Review the change in Skills."
+            )
+            title = "Skill update to review"
+        elif existing:
             msg = f"I found a better way to do **{name}** and drafted an update. Review the change in Skills."
             title = "Skill update to review"
         else:
@@ -673,6 +681,10 @@ class EvolutionService(Service):
         now = datetime.now(UTC)
         if await self._repair_cooling_down(name, now):
             return None
+        user_edited = (await lib.edit_state(name, self.app.store))["user_edited"]
+        skill_text = f"description: {current.description}\n\n{current.body}"[:6000]
+        if user_edited:  # small models keep the user's wording when told plainly
+            skill_text += "\n\n(The user edited this skill by hand. Keep their changes; change only what fixes the problem.)"
         self._repairing.add(name)
         try:
             raw = await self.app.llm.complete_json(
@@ -682,7 +694,7 @@ class EvolutionService(Service):
                     {
                         "role": "user",
                         "content": prompts.REPAIR_USER.format(
-                            name=name, skill=f"description: {current.description}\n\n{current.body}"[:6000],
+                            name=name, skill=skill_text,
                             failure=failure[:2000], transcript=transcript or "(not available)",
                         ),
                     },
@@ -712,14 +724,15 @@ class EvolutionService(Service):
         )
         await lib.record_patch(name, "pending_review", self.app.store)
         clean_origin = {k: v for k, v in origin.items() if v is not None}
-        await log_event(
-            self.app.store, "skill_repair_proposed",
-            {"name": name, "pending": True, "origin": "repair", "failure": failure_kind, "reason": full_reason, **clean_origin},
-        )
+        detail = {"name": name, "pending": True, "origin": "repair", "failure": failure_kind, "reason": full_reason, **clean_origin}
+        if user_edited:
+            detail["user_edited"] = True
+        await log_event(self.app.store, "skill_repair_proposed", detail)
         self.app.bus.publish("skill.updated", {"name": name, "state": "pending_review"})
+        kept = " You edited it yourself, so I left your version in place." if user_edited else ""
         await self.app.notify(
             "skill",
-            f"**{name}** didn't work as planned: {reason.rstrip('.')}. I drafted a fix. Review the change in Skills.",
+            f"**{name}** didn't work as planned: {reason.rstrip('.')}.{kept} I drafted a fix. Review the change in Skills.",
             title="Skill fix to review",
             payload={"skill": name, "action": "patch", "origin": "repair", "reason": full_reason, **clean_origin},
         )
@@ -764,7 +777,7 @@ class EvolutionService(Service):
                 merges = await self._merge_suggestions(stats)
         lib.reload()
         with contextlib.suppress(Exception):
-            self.app.skills.reload({p.id for p in self.app.registry.plugins()})
+            self.app.skills.reload(self.app._available_tools())
         await store.set_meta("evolution.curator_last_run", now.isoformat())
         detail = {"staled": staled, "archived": archived, "merge_proposals": merges}
         await log_event(store, "curator_run", detail, ts=now.isoformat())
