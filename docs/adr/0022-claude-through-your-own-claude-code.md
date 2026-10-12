@@ -60,6 +60,7 @@ this is counted or allowed."
   reports; if any of its own tools are still there (other than EndConversation and ToolSearch, which can't act), or it
   doesn't report one, Sentient kills it and says why.
 - **Chats only.** Only a chat reply (`run_loop` with source `chat`, on any surface) or the Test button may use it.
+  The rules-from-chat check of a chat message counts as part of that reply, since the reply waits for it (#311).
   Tasks, subagents, proactivity, heartbeats, follow-ups, dreaming, briefs, memory notes, titles and summaries are
   refused with a plain message, so the role's fallback model takes over. It makes no embeddings. The check-up never
   calls it.

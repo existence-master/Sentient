@@ -169,7 +169,10 @@ accept or loosen a rule.
 - **Detection** (`sentient.agent.chat_rules`), on the user's message and on steer messages, in every chat channel:
   a deterministic pre-filter (never, don't, do not, must not, always ask, ask me first, without asking...; "don't ask
   me" and "stop asking" never count); then tools whose names or descriptions share a word with the message; then one
-  short `fast`-role prompt that returns `{"keys": [...], "rule": "never"|"ask"}`, parsed tolerantly. Keys must be
+  short `fast`-role prompt that returns `{"keys": [...], "rule": "never"|"ask"}`, parsed tolerantly. When every fast
+  model refuses the job (Claude Code only answers chats, ADR 0022), the chat's own model or else the primary model
+  answers it, as part of the reply (#311). Claude Code answers it only within the reply's 20 s wait; a slower Claude
+  Code check is stopped and makes no card. Keys must be
   tool names or app ids among those candidates (checked in code). Words that name a condition ("without asking me",
   "always ask") make the rule `ask`. Keys an equal or stricter rule already covers (also a pending proposal in the
   same chat) are dropped. A whole app is proposed only when the words name no specific action ("never use Slack",
@@ -267,7 +270,7 @@ accept or loosen a rule.
   Errors and declined calls never count; memories stay in `memory_sources`. Recorded deterministically from tool
   results (never asked of the model), first mention wins, at most 12. A reply that used none has `[]`.
 - `GET /api/sessions/search?q=` → `[{session_id, message_id, role, snippet, created_at}]` (never incognito chats)
-- `POST /api/chat` NDJSON fallback of the WebSocket turn: body `{text, session_id?, attachments?, model?, incognito?}` (`model`: this message only, as on `chat.send`); lines are the chat events above, first line `{type: "session", session_id}`. A chat's own model applies here too.
+- `POST /api/chat` NDJSON fallback of the WebSocket turn: body `{text, session_id?, attachments?, model?, incognito?}` (`model`: this message only, as on `chat.send`); lines are the chat events above, first line `{type: "session", session_id}`. A chat's own model applies here too. A "Make this a rule?" card made for this chat while the reply runs comes as a line in the `/ws` envelope, `{type: "rule_proposal.updated", data: RuleProposal, ts}`, before the `approval_request` it causes; answer it with `POST /api/rule-proposals/{id}`. A check that ends after the reply is only on `/ws` and `GET /api/sessions/{id}/rule-proposals`.
 - **Incognito chats** (#154). A chat created with `incognito: true` (`chat.send`, `POST /api/chat`,
   `POST /api/sessions?incognito=true`) can't be switched later, and the engine enforces:
   - nothing is learned from it: no fact extraction after a turn, no memory flush when it is compressed, and no

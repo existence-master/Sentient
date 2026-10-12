@@ -51,6 +51,7 @@ import type {
   StopState,
   ChatRequest,
   AgentEvent,
+  DomainEvent,
   CheckupEvent,
   ClarificationAnswer,
   ConfigPatchResponse,
@@ -454,9 +455,10 @@ export const api = {
   },
 
   chat: {
-    /** NDJSON fallback of a WebSocket turn. First line is `{type:"session", session_id}`. */
+    /** NDJSON fallback of a WebSocket turn. First line is `{type:"session", session_id}`; "Make this a rule?" cards
+     *  for the chat come as `rule_proposal.updated` lines in the /ws envelope (#311). */
     stream: (body: ChatRequest, signal?: AbortSignal) =>
-      streamNdjson<AgentEvent>('POST', '/api/chat', { body, signal })
+      streamNdjson<AgentEvent | DomainEvent<'rule_proposal.updated'>>('POST', '/api/chat', { body, signal })
   },
 
   approvals: {
