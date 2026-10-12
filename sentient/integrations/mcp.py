@@ -568,7 +568,10 @@ class MCPManager:
             raise KeyError(name)
         self._cancel_sign_in(conn)
         url = conn.spec.get("url")
-        delete_json(tokens_secret(name, url))
+        tok_key = tokens_secret(name, url)
+        delete_json(tok_key)
+        if load_json(tok_key) is not None:
+            raise ValueError(f"Could not remove credentials for '{name}' from keychain during sign-out.")
         if url:
             canon = canonical_url(url)
             leg_key = tokens_secret(name, None)
@@ -577,11 +580,8 @@ class MCPManager:
                 saved = leg.get(SERVER_URL_KEY)
                 if saved is not None and canonical_url(saved) == canon:
                     delete_json(leg_key)
-                elif saved is None:
-                    fresh = load_json(leg_key)
-                    fresh_mig = set(fresh.get("migrated_to") or []) if isinstance(fresh, dict) and isinstance(fresh.get("migrated_to"), (list, set, tuple)) else set()
-                    leg["migrated_to"] = sorted(fresh_mig | {canon})
-                    save_json(leg_key, leg)
+                    if load_json(leg_key) is not None:
+                        raise ValueError(f"Could not remove legacy credentials for '{name}' from keychain during sign-out.")
         if _auth_of(conn.spec) == "oauth" and conn.spec.get("enabled", True):
             await self._shutdown(self.servers.pop(name))
             conn = self._launch(name, conn.spec)

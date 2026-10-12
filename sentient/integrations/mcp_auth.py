@@ -193,22 +193,9 @@ def migrate_server_credentials(server: str, url: str | None) -> None:
                             log.warning("Verification failed for migrated tokens for %s; preserving legacy entry", server)
                     else:
                         log.warning("Could not save migrated tokens for %s; preserving legacy entry", server)
-            elif saved is None and (dest_data is None or not _has_valid_tokens(dest_data)) and _has_valid_tokens(leg_data):
-                # Ambiguous legacy record without a server_url:
-                # Copy to destination once so this setup can attempt authentication,
-                # but NEVER delete the legacy entry as its ownership is unverified.
-                migrated_raw = leg_data.get("migrated_to")
-                migrated = set(migrated_raw) if isinstance(migrated_raw, (list, set, tuple)) else set()
-                if canon not in migrated:
-                    new_rec = {k: v for k, v in leg_data.items() if k != "migrated_to"}
-                    new_rec[SERVER_URL_KEY] = url
-                    if save_json(new_tok, new_rec) and load_json(new_tok) == new_rec:
-                        fresh = load_json(legacy_tok)
-                        fresh_mig = set(fresh.get("migrated_to") or []) if isinstance(fresh, dict) and isinstance(fresh.get("migrated_to"), (list, set, tuple)) else set()
-                        leg_data["migrated_to"] = sorted(migrated | fresh_mig | {canon})
-                        save_json(legacy_tok, leg_data)
-                    else:
-                        log.warning("Could not copy ambiguous legacy tokens for %s", server)
+            # If saved is None: NEVER migrate untagged legacy bearer tokens across server URLs (CWE-522).
+            # The untagged legacy record is preserved without modification so other setups are not starved.
+            # Require explicit OAuth sign-in for each URL whose token ownership cannot be verified.
 
     # 2. Client info
     legacy_cli = client_secret(server, None)
@@ -288,11 +275,6 @@ def forget_server(server: str, url: str | None = None) -> None:
                 # Never delete an untagged entry (saved is None) or another URL's entry!
                 if saved is not None and canonical_url(saved) == canon:
                     delete_json(leg_key)
-                elif saved is None:
-                    fresh = load_json(leg_key)
-                    fresh_mig = set(fresh.get("migrated_to") or []) if isinstance(fresh, dict) and isinstance(fresh.get("migrated_to"), (list, set, tuple)) else set()
-                    rec["migrated_to"] = sorted(fresh_mig | {canon})
-                    save_json(leg_key, rec)
 
 
 # ---------------------------------------------------------------------------- OAuth storage
