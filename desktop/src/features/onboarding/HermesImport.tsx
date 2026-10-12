@@ -18,6 +18,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Dialog, Input, Skeleton, Switch } from '@/components/ui'
 import { DiffView } from '@/features/skills/DiffView'
+import { LintList } from '@/features/skills/LintList'
 import { scheduleSentence } from '@/features/tasks/schedule'
 import { qk } from '@/hooks/queryKeys'
 import { api, errorMessage } from '@/lib/api'
@@ -264,6 +265,7 @@ function ItemRow({ part, item }: { part: HermesPart; item: AnyItem }) {
           <div className="break-words text-fg">{title}</div>
           {detail && <div className="truncate font-mono text-2xs text-fg-subtle">{detail}</div>}
           <div className="text-xs text-fg-muted">{item.note}</div>
+          {part === 'skills' && !skip && 'lint' in item && <LintList compact findings={item.lint} className="mt-1" />}
           {code && (
             <button type="button" className="mt-1 text-xs font-medium text-accent-text" onClick={() => setShowCode((s) => !s)}>
               {showCode ? 'Hide the script' : 'Show the script'}

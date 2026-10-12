@@ -25,6 +25,7 @@ Usage counters and lifecycle state live in the ``skill_stats`` table.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ from typing import Any
 import yaml
 
 from sentient import paths
+from sentient.skills.lint import lint_file
 from sentient.store.db import now_iso
 
 _FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
@@ -50,6 +52,11 @@ def slugify(name: str) -> str:
 
 def valid_name(name: str) -> bool:
     return bool(_NAME_RE.match(name)) and name not in RESERVED
+
+
+def content_hash(text: str) -> str:
+    """Hash of a SKILL.md as written, ignoring line endings and surrounding blank space."""
+    return hashlib.sha256(text.replace("\r\n", "\n").strip().encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -407,6 +414,11 @@ class SkillLibrary:
         await store.ensure_column("skill_stats", "success_count", "INTEGER NOT NULL DEFAULT 0")
         await store.ensure_column("skill_stats", "failure_count", "INTEGER NOT NULL DEFAULT 0")
         await store.ensure_column("skill_stats", "last_failure_at", "TEXT")
+        # edit protection (#164): the SKILL.md as Sentient last wrote it (or as first seen), so a hand edit shows up
+        # as a different hash and reset can put the original back; and the active hash a proposal was drafted from
+        await store.ensure_column("skill_stats", "origin_hash", "TEXT")
+        await store.ensure_column("skill_stats", "origin_text", "TEXT")
+        await store.ensure_column("skill_stats", "proposal_base_hash", "TEXT")
         await store.db.commit()
         self._stats_ready = True
 
@@ -452,6 +464,9 @@ class SkillLibrary:
                     )
         for name in set(existing) - set(on_disk):
             await store.execute("DELETE FROM skill_stats WHERE name = ?", (name,))
+        for s in self._list_dir(self.root):  # first sight of an active skill: what is on disk is the baseline
+            if not (existing.get(s.name) or {}).get("origin_hash"):
+                await self.record_origin(s.name, store)
 
     async def mark_used(self, name: str, store: Any = None, *, viewed: bool = True, when: datetime | None = None) -> None:
         store = store or self.store
@@ -522,6 +537,105 @@ class SkillLibrary:
             " THEN skill_stats.state ELSE excluded.state END",
             (name.strip().lower(), state, now_iso()),
         )
+        if state == "pending_review":  # remember which version of the active skill the proposal was drafted from
+            active = self._file(self.root, name.strip().lower())
+            base = content_hash(active.read_text(encoding="utf-8", errors="replace")) if active.exists() else None
+            await store.execute("UPDATE skill_stats SET proposal_base_hash = ? WHERE name = ?", (base, name.strip().lower()))
+
+    # ------------------------------------------------------------------ edit protection (#164)
+    async def record_origin(self, name: str, store: Any = None, *, text: str | None = None) -> None:
+        """Remember the active SKILL.md (or ``text``) as the version Sentient wrote. Call it after every write
+        Sentient makes to an active skill, so only the user's own edits change the hash afterwards."""
+        store = store or self.store
+        name = name.strip().lower()
+        if store is None:
+            return
+        if text is None:
+            f = self._file(self.root, name)
+            if not f.exists():
+                return
+            text = f.read_text(encoding="utf-8", errors="replace")
+        await self._ensure_stats(store)
+        await store.execute(
+            "INSERT INTO skill_stats(name, state, created_at, origin_hash, origin_text) VALUES(?, 'active', ?, ?, ?)"
+            " ON CONFLICT(name) DO UPDATE SET origin_hash = excluded.origin_hash, origin_text = excluded.origin_text",
+            (name, now_iso(), content_hash(text), text),
+        )
+
+    async def edit_state(self, name: str, store: Any = None) -> dict:
+        """``{user_edited, can_reset, protected}`` for the active skill. ``user_edited``: its file differs from the
+        version Sentient last wrote (an edit in the Skills screen or in any editor). ``protected``: Sentient must
+        propose changes instead of writing them (edited by the user, or the user's own skill)."""
+        store = store or self.store
+        name = name.strip().lower()
+        f = self._file(self.root, name)
+        if store is None or not f.exists():
+            return {"user_edited": False, "can_reset": False, "protected": False}
+        text = f.read_text(encoding="utf-8", errors="replace")
+        await self._ensure_stats(store)
+        row = await store.fetchone("SELECT origin_hash, origin_text FROM skill_stats WHERE name = ?", (name,))
+        if row is None or not row["origin_hash"]:
+            await self.record_origin(name, store, text=text)  # first sight: this is the baseline
+            edited = can_reset = False
+        else:
+            edited = content_hash(text) != row["origin_hash"]
+            can_reset = edited and bool(row["origin_text"])
+        skill = parse_skill_file(f)
+        own = skill is not None and skill.author == "user"
+        return {"user_edited": edited, "can_reset": can_reset, "protected": edited or own}
+
+    async def reset_to_original(self, name: str, store: Any = None) -> Skill:
+        """Put back the version Sentient last wrote, undoing the user's edits. FileNotFoundError when there is
+        no active skill or nothing to go back to; ValueError when the skill has no edits."""
+        store = store or self.store
+        name = name.strip().lower()
+        f = self._file(self.root, name)
+        if store is None or not f.exists():
+            raise FileNotFoundError(name)
+        state = await self.edit_state(name, store)
+        if not state["user_edited"]:
+            raise ValueError("this skill has no edits to undo")
+        row = await store.fetchone("SELECT origin_text FROM skill_stats WHERE name = ?", (name,))
+        if row is None or not row["origin_text"]:
+            raise FileNotFoundError(name)
+        f.write_text(row["origin_text"], encoding="utf-8")
+        skill = parse_skill_file(f)
+        if skill is None:
+            raise FileNotFoundError(name)
+        return skill
+
+    async def proposal_state(self, name: str, store: Any = None) -> dict:
+        """For a pending proposal: ``{user_edited, changed_since_proposal}``. ``changed_since_proposal`` means the
+        active skill changed after the proposal was drafted, so approving would undo those changes."""
+        store = store or self.store
+        name = name.strip().lower()
+        f = self._file(self.root, name)
+        if store is None or not f.exists():
+            return {"user_edited": False, "changed_since_proposal": False}
+        state = await self.edit_state(name, store)
+        row = await store.fetchone("SELECT proposal_base_hash FROM skill_stats WHERE name = ?", (name,))
+        base = row["proposal_base_hash"] if row else None
+        current = content_hash(f.read_text(encoding="utf-8", errors="replace"))
+        return {"user_edited": state["user_edited"], "changed_since_proposal": bool(base) and base != current}
+
+    # ------------------------------------------------------------------ lint (#164)
+    def lint(self, skill: Skill) -> list[dict]:
+        return lint_file(skill.path, known_tools=self._available)
+
+    def broken(self) -> list[dict]:
+        """SKILL.md files in the writable library that can't load, with what is wrong (for the Skills screen)."""
+        out = []
+        for base, state in ((self.root, "active"), (self.pending_dir, "pending_review"), (self.archived_dir, "archived")):
+            if not base.exists():
+                continue
+            for f in sorted(base.glob("*/SKILL.md")):
+                if f.parent.name in RESERVED or parse_skill_file(f) is not None:
+                    continue
+                problems = lint_file(f, known_tools=self._available)
+                if not any(p["level"] == "error" for p in problems):
+                    problems.insert(0, {"rule": "required", "level": "error", "message": "Sentient can't load this skill."})
+                out.append({"folder": f.parent.name, "state": state, "path": str(f), "lint": problems})
+        return out
 
     async def catalog(self, store: Any = None) -> dict[str, list[dict]]:
         """Shape of GET /api/skills."""
@@ -529,8 +643,23 @@ class SkillLibrary:
         active = {s.name: s for s in self._list_dir(self.root)}
         for s in self.list():
             active.setdefault(s.name, s)
+        active_out = []
+        for n, s in sorted(active.items()):
+            item = s.to_dict(stats.get(n))
+            if s.dir.parent == self.root:
+                edit = await self.edit_state(n, store)
+                item.update(user_edited=edit["user_edited"], can_reset=edit["can_reset"])
+            item["lint"] = self.lint(s)
+            active_out.append(item)
+        pending_out = []
+        for s in self.list_pending():
+            item = s.to_dict(stats.get(s.name))
+            item.update(await self.proposal_state(s.name, store))
+            item["lint"] = self.lint(s)
+            pending_out.append(item)
         return {
-            "active": [s.to_dict(stats.get(n)) for n, s in sorted(active.items())],
-            "pending": [s.to_dict(stats.get(s.name)) for s in self.list_pending()],
-            "archived": [s.to_dict(stats.get(s.name)) for s in self.list_archived()],
+            "active": active_out,
+            "pending": pending_out,
+            "archived": [{**s.to_dict(stats.get(s.name)), "lint": self.lint(s)} for s in self.list_archived()],
+            "broken": self.broken(),
         }

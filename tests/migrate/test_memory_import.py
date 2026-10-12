@@ -503,14 +503,16 @@ def test_routes(app, chatgpt_zip, openclaw_home, monkeypatch):
 
 async def test_stop_everything_stops_an_import_and_blocks_new_ones(app, chatgpt_zip, monkeypatch):
     gate = asyncio.Event()
+    reading = asyncio.Event()
 
     async def slow(*a, **k):
+        reading.set()  # the saved memories are in; it now waits on the model for the conversations
         await gate.wait()
         return {"facts": []}
 
     monkeypatch.setattr(app.fake, "complete_json", slow)
     await app.memory_imports.start("chatgpt", str(chatgpt_zip), ["memories", "conversations"])
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(reading.wait(), 10)  # not a fixed sleep: slow CI machines took longer than 50 ms
     out = await app.stop_all("test")
     assert out["cancelled"] >= 1
     assert app.memory_imports.current()["status"] == "cancelled"
