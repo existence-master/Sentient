@@ -83,6 +83,16 @@ export const LABELS: Record<string, FieldLabel> = {
     description: "After you allow a tool for a chat, Sentient won't ask again for that tool in the same chat."
   },
   'tools.approvals.timeout_s': { label: 'Deny unanswered requests after', unit: 's' },
+  'tools.approvals.grant_minutes': {
+    label: '“Allow for a while” lasts',
+    unit: 'min',
+    description: 'When you answer a request with a timed yes, Sentient skips asking about that tool for this long. 60 shows as “Allow for 1 hour”.'
+  },
+  'tools.approvals.task_request_minutes': {
+    label: 'Stop a task waiting for your OK after',
+    unit: 'min',
+    description: "If nobody answers a task's request in time, the task stops without doing that step. A late answer can't approve it."
+  },
   'tools.repeated_call_limit': { label: 'Stop when the same step repeats', unit: 'times' },
   'tools.disabled': { label: 'Disabled tools', hidden: true },
   'tools.approvals.rules': { label: 'Rules for apps and tools', hidden: true },
