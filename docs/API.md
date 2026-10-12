@@ -149,6 +149,11 @@ applied in code before every call and take effect at once:
 - Purchases ask in every approvals mode, `off` included (only `browser.confirm_purchases: false` turns that off),
   and scripts refuse them in every mode. Rules are read again right before a tool runs and on every script tool call,
   so a rule changed while a call waits for approval, or while a script runs, applies to it.
+- **What still asks with approvals mode `off`** (the complete list; everything else runs without a question, look-ups
+  included, #306): a purchase (above); a tool or app with an `ask` rule; in a chat that read outside content, a call
+  that can send data out or a data-carrying address to a new site (section 10, ADR 0018); a call that changes, sends,
+  deletes or runs something while an undecided rule proposal from that chat covers it (below). `never` rules and Read
+  only connections (section 5) refuse instead of asking.
 Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`, `app.approvals.is_hidden(tool)` (never
 rules plus Read only connections, section 5), `app.approvals.read_only_refusal(tool, risk, registry)`,
 `await app.approvals.decide(tool, session_id, risk, arguments, ctx) -> bool`, pure helpers in `sentient.tools.rules`.
@@ -170,12 +175,16 @@ accept or loosen a rule.
   replaced in code by that app's tools whose names match the action, or dropped when none do ("never delete my emails"
   -> Gmail > Trash, never all of Gmail). Each app is judged by the instruction that mentions it ("never delete my
   emails. never use Slack" gives Gmail > Trash and all of Slack), and a word after "my" or a noun is an object, not an
-  action ("my email messages" is not "message"). Nothing left, no proposal. A message that fails the pre-filter or has no matching tools
+  action ("my email messages" is not "message"). Words that name a tool exactly ("don't call browser_open") give that
+  tool, never its whole app. A sentence limited to the request at hand ("this time", "just this once", "for now",
+  "in part A", "in step 2") is not a standing instruction and is skipped by the pre-filter. Nothing left, no proposal. A message that fails the pre-filter or has no matching tools
   never calls a model. The check runs before the reply's model call (it waits at most 20 s; a slower check finishes
   in the background, and until it does every tool it is weighing asks first in that chat).
 - **Until the user decides**, a pending proposal makes its chat ask before every matched tool (`approval_request`),
-  even under an Allow rule, with approvals mode `off` and after "Allow for this chat"; subagents of that chat refuse
-  the call. It is saved with the chat, so it survives a restart and summarizing, and only ever adds a question.
+  even under an Allow rule and after "Allow for this chat"; subagents of that chat refuse the call. With approvals
+  mode `off` it asks only before calls whose effective risk is above `read` (changing, sending, deleting or running
+  something): look-ups run without a question (#306). The same holds for the tools a still-running check is weighing.
+  It is saved with the chat, so it survives a restart and summarizing, and only ever adds a question.
 - **RuleProposal**: `{id, session_id, message_id, said, rule: "never"|"ask", keys: string[], targets: [{key, app,
   tool, label}], status: "pending"|"accepted"|"declined", created_at, decided_at}`. `said` is the user's matching
   words (at most 300 characters); `label` is `"Gmail > Trash"` for a tool or `"Gmail"` for a whole app; `message_id`

@@ -90,3 +90,21 @@ effective risk. MCP tools that run other tools named by a slug with their argume
 runs is a plain look-up. This also means those look-ups no longer ask in approvals mode "ask"; they still ask once
 the chat has read outside content (ADR 0018), because the tool stays marked as one that can send data out.
 
+
+## Amendment (2026-10-12): approvals off and undecided proposals (#306)
+
+With approvals mode "off", a test chat whose message said "Do not call browser_open." still asked before a read-only
+`browser_snapshot`, and the request waited ten minutes and was declined; another that said "do not call browser_open
+again in part A" asked before `browser_open`. The rules-from-chat check had turned those words into proposals (the
+first for the whole Web Browser app), and an undecided proposal asked before every matched tool, look-ups included,
+whatever the mode said. A proposal is a guess from the chat that the user has not confirmed, so it
+no longer outweighs "off" for reading: with approvals off, an undecided proposal (and a check that is still running)
+asks only before calls whose effective risk is above `read`. A call that changes, sends, deletes or runs something
+still asks until the user answers the card, because that is the harm the feature guards against ("never delete my
+emails" said a moment ago). Modes "ask" and "always" keep asking before every matched tool. The detection also got
+tighter: words that name a tool exactly give that tool, never its whole app, and a sentence limited to the request at
+hand ("this time", "just this once", "for now", "in part A", "in step 2") is not a standing instruction.
+
+"Off" now means no questions apart from this complete list: purchases, tools or apps set to Ask, sending after outside
+content was read ([ADR 0018](0018-untrusted-content-gates-sending.md)), and changes covered by an undecided proposal.
+Never rules and Read only connections refuse instead of asking.

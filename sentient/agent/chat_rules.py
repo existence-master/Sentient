@@ -9,18 +9,23 @@ accept or loosen a rule.
 Checks, cheapest first:
 
 1. ``standing_text``: a deterministic pre-filter (never, don't, do not, always ask, ask me first ...). Most messages
-   stop here without a model call.
+   stop here without a model call. A sentence that limits itself to this request ("don't cc her this time", "do
+   not open it again in part A") is no standing instruction and is left out.
 2. ``candidate_tools``: tools whose names or descriptions share a word with the message (plus a few synonyms). No
    candidates, no model call ("I never eat breakfast").
 3. One short ``fast``-role prompt maps the words to candidate keys and a level, parsed tolerantly. Keys outside the
    candidates, and keys an equal or stricter rule already covers, are dropped. Nothing valid, no card.
 4. ``narrow_app_keys``: a whole app is proposed only when the words name no specific action ("never use Slack").
-   When they do ("never delete my emails"), an app key becomes that app's tools whose names match the action. A tool
-   key stands only when the words name an action, its app or the tool itself.
+   When they do ("never delete my emails"), an app key becomes that app's tools whose names match the action, and
+   when they name a tool exactly ("don't call browser_open"), that tool. A tool key stands only when the words name
+   an action, its app or the tool itself.
 
 Until the user decides, a pending proposal makes its chat ask before the matched tools (``chat_rule``), also after a
 restart or once the conversation has been summarized. While a check is still running (a slow fast model), the tools
-it is weighing ask too, so a reply that stops waiting for it fails closed. Both only ever add a question.
+it is weighing ask too, so a reply that stops waiting for it fails closed. Both only ever add a question. With
+approvals mode "off" they ask only before calls that would change, send, delete or run something (``pending_asks``):
+a proposal is a guess from the chat that the user has not confirmed, and a look-up can't do what it guards against,
+so "off" keeps meaning no questions for reading (#306).
 """
 
 from __future__ import annotations
@@ -64,6 +69,9 @@ _LOOSEN = re.compile(r"\b(don't|dont|do not|never|no need to|stop|quit) (ask|ask
 _ASK_HINT = re.compile(
     r"\b(ask|asking|check with me|checking with me|my (ok|okay|permission|approval|go-ahead)|unless i)\b"
 )
+# a limit on this request only ("don't cc her this time", "do not open it again in part A"): a one-off instruction for
+# the reply at hand, never a standing rule. Kept narrow: a missed standing rule costs more than a needless card
+_ONE_OFF = re.compile(r"\b(this time|just this once|for now|in (part|step) [a-z0-9]{1,3})\b")
 _SENTENCE = re.compile(r"(?<=[.!?;\n])\s+")
 _WORD = re.compile(r"[a-z0-9]+")
 _STOP = frozenset({
@@ -128,12 +136,19 @@ def standing_text(text: str) -> str:
     kept: list[str] = []
     for sentence in _SENTENCE.split((text or "").strip()):
         plain = _plain(sentence)
-        if not plain.strip() or _LOOSEN.search(plain):
+        if not plain.strip() or _LOOSEN.search(plain) or _ONE_OFF.search(plain):
             continue
         plain = _BENIGN.sub(" ", plain)
         if _NEGATION.search(plain) or _ASK_FIRST.search(plain):
             kept.append(" ".join(sentence.split()))
     return " ".join(kept)[:MAX_SAID].strip()
+
+
+def pending_asks(mode: str, risk: Risk) -> bool:
+    """True when an undecided proposal (or a running check) makes a call with effective risk ``risk`` ask, in
+    approvals mode ``mode``. With approvals "off" only calls that change, send, delete or run something ask: a
+    proposal is not a rule the user confirmed, and a look-up can't do what it guards against (#306)."""
+    return mode != "off" or Risk(risk) > Risk.read
 
 
 def asks_first(text: str) -> bool:
@@ -208,6 +223,12 @@ def _app_named(clause: str, app_id: str, app_name: str) -> bool:
     return any(_match(term, tok) for term in _terms(clause) for tok in tokens)
 
 
+def _exact_tools(clause: str, tools: Iterable[Tool]) -> list[str]:
+    """Tools named exactly by their name in ``clause`` ("don't call browser_open")."""
+    words = set(re.findall(r"[a-z0-9_]+", clause))
+    return [t.name for t in tools if "_" in t.name and t.name in words]
+
+
 def _tool_named(clause: str, tool: Tool) -> bool:
     tokens = {_stem(w) for w in tool.name.split("_") if len(w) >= 3}
     return any(_match(term, tok) for term in _terms(clause) for tok in tokens)
@@ -237,6 +258,10 @@ def narrow_app_keys(
                 out.append(key)
             continue
         own = [c for c in clauses if _app_named(c, key, names.get(key, ""))]
+        exact = [n for c in (own or clauses) for n in _exact_tools(c, by_name.values()) if by_name[n].plugin == key]
+        if exact:  # the words name the app's tool itself: that tool, never the whole app
+            out.extend(exact)
+            continue
         actions = set().union(*(action_terms(c) for c in own)) if own else action_terms(said)
         if not actions:
             out.append(key)

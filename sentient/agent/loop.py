@@ -41,7 +41,7 @@ from pydantic import ValidationError
 
 from sentient import paths
 from sentient.agent.approvals import ApprovalBroker
-from sentient.agent.chat_rules import standing_text
+from sentient.agent.chat_rules import pending_asks, standing_text
 from sentient.agent.prompt import build_system_prompt, mark_outside
 from sentient.agent.sources import AnswerSources
 from sentient.agent.toolselect import ToolSelector, is_local_model
@@ -868,13 +868,15 @@ class Agent:
                 return _CallPlan(tc=tc, tool=None, preset=({"error": refusal}, True, 0))
         if tool is None or not (tool_names is None or tc.name in tool_names):
             return _CallPlan(tc=tc, tool=None, preset=({"error": f"unknown tool {tc.name}"}, True, 0))
-        if chat_rule == "ask":
-            rule = "ask"  # ask first while the user hasn't answered the proposal, whatever else says yes
         plan = _CallPlan(tc=tc, tool=tool, risk=tool.risk)
         if "_raw" in tc.arguments and len(tc.arguments) == 1:
             plan.preset = self._raw_arguments_error(tool, tc)
             return plan
         plan.risk = risk if risk is not None else await effective_risk(tool, tc.arguments, ctx)
+        if chat_rule == "ask" and pending_asks(self.approvals.config.mode, plan.risk):
+            # ask first while the user hasn't answered the proposal, whatever else says yes; with approvals off
+            # only for calls that change something, so look-ups never wait on a guess from the chat (#306)
+            rule = "ask"
         address = call_address(tool, tc.arguments, ctx)
         plan.host = address_host(address)
         if unprompted:  # work nobody asked for: look-ups and Sentient-internal changes only, before any rule
