@@ -218,3 +218,37 @@ async def test_resume_keeps_what_failed_for_another_try(make_app, clock, monkeyp
     second = await app.tasks.away.resume()
     assert second["resumed"] == 1 and second["status"]["state"] == "active"
     assert (await app.notifications.get(note["id"]))["payload"]["status"] == "resumed"
+
+
+async def test_activity_during_a_pause_waits_for_it(make_app, clock, monkeypatch):
+    """A message arriving while routines are being paused doesn't interleave with the pause: it waits, then finds
+    them paused (one consistent state, resumable in one click)."""
+    import asyncio
+
+    clock.dt = T0
+    app = await make_app(clock=clock)
+    await app.user_seen("app")
+    await routines(app)
+    app.config.tasks.away_ask_hours = 0
+    gate, inside = asyncio.Event(), asyncio.Event()
+    real_update = app.tasks.update
+
+    async def slow(task_id, fields, **kw):
+        inside.set()
+        await gate.wait()
+        return await real_update(task_id, fields, **kw)
+
+    monkeypatch.setattr(app.tasks, "update", slow)
+    pausing = asyncio.create_task(app.tasks.away.check(T0 + timedelta(days=7)))
+    await inside.wait()
+    clock.dt = T0 + timedelta(days=7, minutes=5)
+    seen = asyncio.create_task(app.user_seen("telegram"))
+    await asyncio.sleep(0.05)
+    assert not seen.done()  # waits for the pause
+    gate.set()
+    assert (await pausing)["state"] == "paused"
+    await seen
+    status = await app.tasks.away.status()
+    assert status["state"] == "paused" and len(status["task_ids"]) == 2
+    for task_id in status["task_ids"]:
+        assert not (await app.tasks.get(task_id))["enabled"]

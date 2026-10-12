@@ -17,6 +17,7 @@ State lives in store meta:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -43,6 +44,9 @@ class AwayWatch:
         self.tasks = tasks
         self.app = tasks.app
         self._last_written: datetime | None = None
+        # one change of state at a time: activity arriving while routines are being paused waits for the pause
+        # to finish (and finds them paused) instead of interleaving with it
+        self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ state
     async def last_active(self) -> datetime | None:
@@ -84,6 +88,10 @@ class AwayWatch:
     async def seen(self, surface: str = "app") -> None:
         """The user did something. Resets the away timer and cancels a pending question (paused routines stay
         paused until the user resumes them)."""
+        async with self._lock:
+            await self._seen(surface)
+
+    async def _seen(self, surface: str) -> None:
         now = self.tasks.now()
         if self._last_written is None or (now - self._last_written).total_seconds() >= WRITE_EVERY_S:
             self._last_written = now
@@ -124,6 +132,10 @@ class AwayWatch:
 
     async def check(self, now: datetime | None = None) -> dict:
         """Ask, then pause, when the user has been away. Returns ``status()``."""
+        async with self._lock:
+            return await self._check(now)
+
+    async def _check(self, now: datetime | None) -> dict:
         cfg = self.app.config.tasks
         now = now or self.tasks.now()
         if self.app.stopped or (cfg.away_pause_days <= 0 and cfg.away_pause_after_results <= 0):
@@ -219,6 +231,14 @@ class AwayWatch:
 
     async def resume(self) -> dict:
         """Turn the routines paused for absence back on. Returns ``{resumed: n, status}``."""
+        async with self._lock:
+            resumed, failed = await self._resume()
+        if not failed:
+            await self.seen("resume")  # resuming is a sign of the user too
+        self.app.bus.publish("tasks.away", await self.status())
+        return {"resumed": resumed, "status": await self.status()}
+
+    async def _resume(self) -> tuple[int, list[str]]:
         state = await self._state()
         resumed = 0
         failed: list[str] = []
@@ -238,13 +258,10 @@ class AwayWatch:
                     await self.tasks.publish(task_id)
             if failed:  # keep what is still off for another try; the notification keeps its Resume button
                 await self._save_state({**state, "task_ids": failed})
-                self.app.bus.publish("tasks.away", await self.status())
-                return {"resumed": resumed, "status": await self.status()}
+                return resumed, failed
             await self._settle(state.get("notification_id"), "resumed")
         await self._save_state({})
-        await self.seen("resume")
-        self.app.bus.publish("tasks.away", await self.status())
-        return {"resumed": resumed, "status": await self.status()}
+        return resumed, failed
 
     async def keep(self) -> dict:
         """The user chose Keep them running."""
