@@ -22,6 +22,14 @@ from tests.conftest import FakeProvider
 NOW = datetime(2026, 10, 12, 6, 0, tzinfo=UTC)  # a Monday, before the brief's 07:30
 DAY = NOW.date().isoformat()
 
+
+class FixedClock(datetime):
+    """``datetime`` whose ``now`` is the tests' fixed morning: the fixture events are on NOW's day, before 09:30."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return NOW if tz is None else NOW.astimezone(tz)
+
 EVENTS = [
     {"id": "ev0", "summary": "Early gym", "start": f"{DAY}T05:00:00+00:00", "end": f"{DAY}T05:45:00+00:00"},
     {"id": "ev1", "summary": "Design review", "start": f"{DAY}T09:30:00+00:00", "end": f"{DAY}T10:00:00+00:00",
@@ -265,7 +273,9 @@ async def test_setup_creates_one_editable_recurring_task(app):
     assert (await b.state())["set_up"] is False
 
 
-async def test_scheduled_run_delivers_the_brief_without_a_task_completed_note(app):
+async def test_scheduled_run_delivers_the_brief_without_a_task_completed_note(app, monkeypatch):
+    monkeypatch.setattr(brief_mod, "datetime", FixedClock)  # build from the test's fixed morning, not the real time
+    app.tasks.clock = lambda: NOW
     state = await app.proactivity.brief.setup({"sections": ["calendar", "weather"]})
     task = await app.tasks.get(state["task_id"])
     due = datetime.fromisoformat(task["next_execution_at"])
@@ -304,7 +314,8 @@ async def test_brief_expires_at_the_end_of_the_day(app):
     assert (await b.today(NOW))["id"] == third["id"]
 
 
-async def test_read_my_brief_tool_reads_today_or_builds_one(app):
+async def test_read_my_brief_tool_reads_today_or_builds_one(app, monkeypatch):
+    monkeypatch.setattr(brief_mod, "datetime", FixedClock)
     tool = app.registry.get(brief_mod.READ_TOOL)
     ctx = app.agent.tool_context(None, "voice")
     fresh = await tool.call(ctx, {})

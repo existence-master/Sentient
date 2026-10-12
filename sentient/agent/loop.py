@@ -42,7 +42,7 @@ from pydantic import ValidationError
 from sentient import paths
 from sentient.agent import grants as grant_rules
 from sentient.agent.approvals import ApprovalBroker
-from sentient.agent.chat_rules import pending_asks, standing_text
+from sentient.agent.chat_rules import WAIT_S, pending_asks, standing_text
 from sentient.agent.prompt import build_system_prompt, mark_outside
 from sentient.agent.sources import AnswerSources
 from sentient.agent.toolselect import ToolSelector, is_local_model
@@ -134,8 +134,8 @@ EMPTY_ANSWER_NUDGE = (
 )
 USER_MODEL_TIMEOUT_S = 2.0
 # longest a reply waits for the rule check of its message (chat_rules); a slower check finishes in the background,
-# and until it does the tools it is weighing ask first in that chat
-RULE_CHECK_WAIT_S = 20.0
+# and until it does the tools it is weighing ask first in that chat (one with Claude Code stops instead, ADR 0022)
+RULE_CHECK_WAIT_S = WAIT_S
 SPOKEN_CHANNELS = {"voice", "glasses", "phone"}  # these turns use the voice role
 # Real qwen3:8b told the user "the Place order button was clicked" after a plain decline, so say it bluntly.
 DECLINED = (

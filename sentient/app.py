@@ -46,6 +46,7 @@ from sentient.memory.dreaming import DreamingService
 from sentient.memory.facts import FactMemory
 from sentient.memory.usermodel import UserModelService
 from sentient.memory.workspace import Workspace
+from sentient.migrate.memory_import import MemoryImports
 from sentient.nodes import NodeService
 from sentient.notifications import NotificationService
 from sentient.presence import Presence
@@ -121,6 +122,7 @@ class SentientApp:
         self.user_model = UserModelService(self)
         self.dreaming = DreamingService(self)
         self.backups = BackupService(self)
+        self.memory_imports = MemoryImports(self)  # memory from ChatGPT, Claude and OpenClaw exports (#156)
         self.incognito = IncognitoSweeper(self)  # incognito chats are deleted when closed (#154)
         self._started = False
         self.stop_state: dict[str, Any] = {"stopped": False, "stopped_at": None, "source": None}
@@ -201,6 +203,10 @@ class SentientApp:
                     cancelled += await svc.halt()
                 except Exception:
                     log.exception("service %s failed to halt", svc.name)
+            try:  # an import from ChatGPT, Claude or OpenClaw stops too; what it saved stays for review
+                cancelled += await self.memory_imports.halt()
+            except Exception:
+                log.exception("stopping the memory import failed")
             claude_code.kill_all()  # a Claude Code reply left running by anything above (ADR 0022)
             if changed:  # devices hear about it after the work is cancelled, never before
                 await self._tell_devices()
@@ -295,6 +301,7 @@ class SentientApp:
     async def stop(self) -> None:
         if self._hardware_warmup is not None and not self._hardware_warmup.done():
             self._hardware_warmup.cancel()
+        await self.memory_imports.stop()
         for svc in reversed(self.services):
             try:
                 await svc.stop()

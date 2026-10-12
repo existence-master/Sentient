@@ -37,12 +37,23 @@ UNPROMPTED_LABELS = {
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
-def note(source: str, snippet: str | None = None, session_id: str | None = None) -> dict:
-    """A review note. ``source`` is the plain name of where the memory came from."""
+def note(
+    source: str,
+    snippet: str | None = None,
+    session_id: str | None = None,
+    *,
+    title: str | None = None,
+    dated: str | None = None,
+    export: str | None = None,
+) -> dict:
+    """A review note. ``source`` is the plain name of where the memory came from. An import from another assistant
+    also says where in it: ``title`` (the conversation or note), ``dated`` (its day) and ``export`` (the file)."""
     text = " ".join(str(snippet or "").split())
     if len(text) > SNIPPET_CHARS:
         text = text[: SNIPPET_CHARS - 3].rstrip() + "..."
-    return {"from": str(source or "somewhere outside").strip(), "snippet": text or None, "session_id": session_id}
+    out = {"from": str(source or "somewhere outside").strip(), "snippet": text or None, "session_id": session_id}
+    extra = {"title": " ".join(str(title or "").split())[:200] or None, "dated": dated or None, "export": export or None}
+    return out | {k: v for k, v in extra.items() if v}
 
 
 def for_context(ctx: Any) -> dict | None:
@@ -107,6 +118,7 @@ def _item(kind: str, mid: Any, text: str, source: str, review: dict | None, crea
     return {
         "kind": kind, "id": mid, "text": text, "source": source,
         "from": review.get("from") or source, "snippet": review.get("snippet"), "session_id": review.get("session_id"),
+        "title": review.get("title"), "dated": review.get("dated"), "export": review.get("export"),
         "created_at": created_at, "expires_at": _expires(created_at, days),
     }
 
