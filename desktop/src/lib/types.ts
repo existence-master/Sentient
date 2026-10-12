@@ -1922,6 +1922,29 @@ export interface Skill {
   reason?: string | null
   origin?: { session_id?: string; task_id?: string; run_id?: string; curator?: boolean; merged_from?: string } | null
   proposed_at?: string | null
+  /** Active skills: the file differs from the version Sentient last wrote (edited in Skills or any editor).
+   * Pending proposals: the skill it would replace was edited by the user. */
+  user_edited?: boolean
+  /** Active skills: `POST /api/skills/{name}/reset` can put the original back. */
+  can_reset?: boolean
+  /** Pending proposals: the active skill changed after this was drafted, so approving undoes those changes. */
+  changed_since_proposal?: boolean
+  /** What the skill linter found (#164). */
+  lint?: SkillLintFinding[]
+}
+
+export interface SkillLintFinding {
+  rule: 'frontmatter' | 'required' | 'size' | 'reference' | 'danger' | 'log_shaped' | 'sections' | string
+  level: 'error' | 'warning'
+  message: string
+}
+
+/** A SKILL.md in the skills folder that can't load. */
+export interface BrokenSkill {
+  folder: string
+  state: 'active' | 'pending_review' | 'archived'
+  path: string
+  lint: SkillLintFinding[]
 }
 
 export type SkillDetail = Skill & { body: string }
@@ -1930,6 +1953,7 @@ export interface SkillsList {
   active: Skill[]
   pending: Skill[]
   archived: Skill[]
+  broken?: BrokenSkill[]
 }
 
 export interface SkillCreate {
@@ -1952,6 +1976,8 @@ export interface SkillUpdate {
 export interface SkillDiff {
   current: string
   proposed: string
+  user_edited?: boolean
+  changed_since_proposal?: boolean
 }
 
 export interface SkillReviewResult {
@@ -1963,6 +1989,7 @@ export type EvolutionKind =
   | 'skill_created'
   | 'skill_patched'
   | 'skill_archived'
+  | 'skill_reset'
   | 'profile_updated'
   | 'curator_run'
   | 'summary_created'
@@ -2223,6 +2250,8 @@ export interface HermesSkillItem extends HermesItem {
   /** The name it gets in Sentient (made unique). */
   target?: string
   changed_builtin?: boolean
+  /** What the skill linter found in it. */
+  lint?: SkillLintFinding[]
 }
 export interface HermesMemoryItem extends HermesItem {
   kind: 'fact' | 'insight'

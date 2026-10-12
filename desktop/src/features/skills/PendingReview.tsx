@@ -1,4 +1,4 @@
-import { IconArrowUpRight, IconCheck, IconCode, IconEyeCheck, IconFileDescription, IconFilePencil, IconFirstAidKit, IconPencil, IconSparkles, IconX } from '@tabler/icons-react'
+import { IconAlertTriangle, IconArrowUpRight, IconCheck, IconCode, IconEyeCheck, IconFileDescription, IconFilePencil, IconFirstAidKit, IconPencil, IconSparkles, IconUserEdit, IconX } from '@tabler/icons-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -12,6 +12,7 @@ import type { EvolutionLogEntry, Skill, SkillsList } from '@/lib/types'
 import { cn, relativeTime } from '@/lib/utils'
 import { ReviewNowButton } from './actions'
 import { DiffView } from './DiffView'
+import { LintList } from './LintList'
 import { AuthorBadge } from './SkillCard'
 import { SkillBody } from './SkillDetail'
 import { SkillEditor, splitList, type SkillDraft } from './SkillEditor'
@@ -133,6 +134,8 @@ function ReviewCard({
   const origin = pending.origin && typeof pending.origin === 'object' ? pending.origin : null
   const sessionId = typeof entry?.detail?.session_id === 'string' ? entry.detail.session_id : (origin?.session_id ?? null)
   const taskId = typeof entry?.detail?.task_id === 'string' ? entry.detail.task_id : (origin?.task_id ?? null)
+  const changedSince = isUpdate && !!(diff.data?.changed_since_proposal ?? pending.changed_since_proposal)
+  const userEdited = isUpdate && !!(diff.data?.user_edited ?? pending.user_edited)
 
   const dropFromPending = () => {
     const prev = qc.getQueryData<SkillsList>(qk.skills.all)
@@ -233,6 +236,17 @@ function ReviewCard({
           )}
         </div>
 
+        {changedSince ? (
+          <Alert tone="warning" icon={<IconAlertTriangle />} title="You changed this skill after Sentient drafted this">
+            Approving replaces your version with the proposed one on the right, so your recent changes would be lost. Edit the proposal first to keep them.
+          </Alert>
+        ) : userEdited ? (
+          <Alert tone="info" icon={<IconUserEdit />} title="Your edited version is untouched">
+            You changed this skill yourself, so Sentient left it as it is and drafted this instead. Approve to switch, or reject to keep yours.
+          </Alert>
+        ) : null}
+        <LintList findings={pending.lint} title={pending.lint?.some((f) => f.level === 'error') ? 'Check this proposal carefully' : 'Suggestions for this proposal'} />
+
         {/* content */}
         {draft ? (
           <SkillEditor draft={draft} onChange={setDraft} minHeight={360} />
@@ -271,7 +285,7 @@ function ReviewCard({
 
       {/* actions */}
       <div className="flex flex-wrap items-center gap-2 border-t border-border bg-elevated/40 px-5 py-3">
-        <p className="mr-auto text-xs text-fg-subtle">{repair ? 'Approving updates the skill so the same problem doesn’t happen again.' : isUpdate ? 'Approving replaces the current version.' : 'Nothing is used until you approve.'}</p>
+        <p className="mr-auto text-xs text-fg-subtle">{userEdited ? 'Approving replaces your edited version.' : repair ? 'Approving updates the skill so the same problem doesn’t happen again.' : isUpdate ? 'Approving replaces the current version.' : 'Nothing is used until you approve.'}</p>
         {draft ? (
           <>
             <Button variant="ghost" leftIcon={<IconX size={15} />} onClick={() => setDraft(null)}>

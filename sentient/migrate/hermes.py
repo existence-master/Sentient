@@ -48,6 +48,7 @@ from typing import Any
 import yaml
 
 from sentient.memory import review as memory_review
+from sentient.skills.lint import lint_file
 from sentient.skills.loader import slugify, valid_name
 from sentient.tasks.delivery import MAX_CHATS, WHATSAPP_SELF
 from sentient.tasks.schedule import DAY_NAMES, MIN_INTERVAL_MINUTES, normalize_schedule, parse_iso
@@ -262,7 +263,9 @@ def _plan_skills(app: Any, home: Path) -> list[dict]:
             note = f"Saved as {target} because Sentient already has a skill named {base}. " + note
         if changed:
             note = "You changed this built-in Hermes skill. " + note
-        items.append(_item(key, "import", note, target=target, changed_builtin=changed, **info))
+        # lint on import (#164): the review screen shows these again next to the skill
+        lint = lint_file(folder / "SKILL.md", check_name=False)
+        items.append(_item(key, "import", note, target=target, changed_builtin=changed, lint=lint, **info))
     return items
 
 
@@ -788,7 +791,7 @@ async def apply(app: Any, path: str | None, parts: list[str] | None, skip: list[
                 log.warning("could not import Hermes skill %s: %s", item["folder"], exc)
                 failed.append({"key": item["key"], "name": item["name"], "note": "Couldn't copy it."})
         if imported:
-            app.skills.reload({p.id for p in app.registry.plugins()})
+            app.skills.reload(app._available_tools())
             await app.skills.sync_stats(app.store)
             for name in imported:
                 app.bus.publish("skill.updated", {"name": name, "state": "pending_review"})

@@ -673,6 +673,7 @@ export const api = {
     reject: (name: string) => http.post<OkResponse>(`/api/skills/${enc(name)}/reject`),
     archive: (name: string) => http.post<Skill>(`/api/skills/${enc(name)}/archive`),
     restore: (name: string) => http.post<Skill>(`/api/skills/${enc(name)}/restore`),
+    reset: (name: string) => http.post<SkillDetail>(`/api/skills/${enc(name)}/reset`),
     delete: (name: string) => http.delete<OkResponse>(`/api/skills/${enc(name)}`),
     diff: (name: string) => http.get<SkillDiff>(`/api/skills/${enc(name)}/diff`),
     reviewNow: (session_id?: string) => http.post<SkillReviewResult>('/api/skills/review-now', { session_id }),
