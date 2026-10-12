@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
 from sentient.gateway.deps import AUTH, get_core
+from sentient.memory import export as memory_export
 from sentient.memory import review as memory_review
 from sentient.memory.episodic import EpisodicMemory
 from sentient.memory.personas import PERSONAS, render_persona
@@ -122,6 +123,15 @@ async def import_document(request: Request, file: UploadFile = File(...)):
             return await mem.import_document(path, username=s.config.assistant.user_name, source=f"file:{name}")
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/export")
+async def export_memory(request: Request, body: dict):
+    """Everything Sentient remembers as a Markdown or SQLite file in ``<home>/files/exports`` (issue #156)."""
+    try:
+        return await memory_export.export(get_core(request), str(body.get("format") or "markdown"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/review")

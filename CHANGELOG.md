@@ -16,6 +16,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
   wipe folders, run a downloaded script, send passwords or keys). They show on each skill, on proposals, on skills
   coming from Hermes, and a skill file that can't load at all is listed with what is wrong. A skill Sentient writes
   with a risky instruction always waits for your review.
+- **Bring your memory from ChatGPT, Claude or OpenClaw:** Memory > Import > From another assistant reads a ChatGPT or
+  Claude data export (the zip they email you) or your OpenClaw workspace folder, right on your computer. Nothing is
+  uploaded and the export is never changed. You first see what's in it (saved memories, conversations, Claude's
+  memory and project instructions, OpenClaw's MEMORY.md, USER.md and daily notes) and pick what to bring over. Saved
+  memories come over as they are; for conversations and notes your fast AI model picks out lasting facts about you
+  in small batches. Everything waits in Memory > Review, and each card says which app, conversation and day it came
+  from. Things Sentient already knows are skipped, also across apps, and importing a newer export later only reads
+  what's new. You can stop an import, and remove everything from one app in one click.
+- **Export your memory:** Memory > ... > Export saves everything Sentient remembers about you as a readable Markdown
+  file or a SQLite database file in Sentient's files folder, grouped by topic and saying where each memory came
+  from. Nothing leaves your computer.
 - **Each chat remembers its model:** pick a model in a chat's message box and that chat keeps it, also after you
   reopen it or restart Sentient. Other chats keep following your default model, and switching the default (or a
   preset) in the title bar only changes those. **Use the default** puts a chat back on the default. The chat list

@@ -946,6 +946,7 @@ export interface DomainEventMap {
   'model.busy': ModelBusy
   // §20
   'backup.updated': BackupUpdated
+  'import.updated': MemoryImportJob
 }
 
 export type DomainEventType = keyof DomainEventMap
@@ -1806,6 +1807,10 @@ export interface MemoryReviewItem {
   from: string
   snippet: string | null
   session_id: string | null
+  /** An import from another assistant: the conversation, note or file it was in, its day and the export's name. */
+  title?: string | null
+  dated?: string | null
+  export?: string | null
   created_at: ISODate
   /** When it is let go if nobody reviews it. */
   expires_at: ISODate | null
@@ -2303,6 +2308,84 @@ export interface HermesResult {
   persona?: { updated: boolean }
   jobs?: { created: Array<{ task_id: string; name: string }>; skipped: HermesSkipped[] }
   mcp?: { added: string[]; skipped: HermesSkipped[] }
+}
+
+/** POST /api/memories/export: the file written in Sentient's files folder (§7). */
+export interface MemoryExport {
+  path: string
+  folder: string
+  name: string
+  format: 'markdown' | 'sqlite'
+  memories: number
+  about_you: number
+  waiting: number
+}
+
+// §19 memory from ChatGPT, Claude and OpenClaw ---------------------------------------------
+export type MemoryImportApp = 'chatgpt' | 'claude' | 'openclaw'
+
+export interface MemoryImportItem {
+  key: string
+  action: 'import' | 'skip'
+  note: string
+  kind: 'fact' | 'insight'
+  text: string
+  title: string
+  dated: string | null
+}
+
+export interface MemoryImportSource {
+  key: string
+  title: string
+  dated: string | null
+  messages: number
+  action: 'import' | 'skip'
+  note: string
+  snippet?: string
+}
+
+export interface MemoryImportPart {
+  id: string
+  label: string
+  /** Memories plus conversations or notes to import. */
+  count: number
+  items: MemoryImportItem[]
+  sources: MemoryImportSource[]
+  sources_total: number
+  batches: number
+  messages: number
+}
+
+export interface MemoryImportPreview {
+  app: MemoryImportApp
+  label: string
+  path: string
+  export: string
+  counts: Record<string, number>
+  batches: number
+  parts: MemoryImportPart[]
+  stats: Record<string, number>
+  never_read: string[]
+}
+
+export interface MemoryImportJob {
+  id: string
+  app: MemoryImportApp
+  label: string
+  export: string
+  path: string
+  parts: string[]
+  status: 'running' | 'done' | 'cancelled' | 'error'
+  total: number
+  done: number
+  facts: number
+  insights: number
+  merged: number
+  skipped: number
+  failed: number
+  started_at: ISODate
+  finished_at: ISODate | null
+  message: string
 }
 
 // §20 backups, restore and snapshots ------------------------------------------------------

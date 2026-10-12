@@ -86,6 +86,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `voice.state` | `{state, session_id}` (mirrors voice socket for other windows) |
 | `stop.updated` | **StopState** (section 17): Stop everything was turned on or off |
 | `model.busy` | **ModelBusy** (section 3, `GET /api/models/busy`): what the local model is doing changed (#149). Quick changes are published once (after 0.2 s), and only when something other than `since` changed |
+| `import.updated` | **MemoryImportJob** (section 19): an import from ChatGPT, Claude or OpenClaw started, read a batch or finished |
 | `backup.updated` | `{what: "backup"\|"snapshot"\|"restore_staged"\|"restore_cancelled"\|"restore_dismissed", name?, source?}` (section 20): refetch `GET /api/backups` |
 
 ---
@@ -1176,8 +1177,11 @@ offered to proactive look-ups.
 
 **Memory** `{id: int, content, topics: string[], source, memory_type: "long-term|short-term", created_at, updated_at, expires_at, previous_content: string|null, status: "active"|"pending", review: ReviewNote|null}` (`previous_content` is the text before the last UPDATE; `review` says where a held memory came from)
 
-**ReviewNote** `{from, snippet: string|null, session_id: string|null}`: `from` names the source in plain words
-("Gmail", "Hermes", "resume.pdf", "a proactive check"), `snippet` is the text it came from (at most 400 characters).
+**ReviewNote** `{from, snippet: string|null, session_id: string|null, title?, dated?, export?}`: `from` names the source
+in plain words ("Gmail", "Hermes", "ChatGPT", "resume.pdf", "a proactive check"), `snippet` is the text it came from
+(at most 400 characters). A memory imported from another assistant (section 19) also says where in it: `title` (the
+conversation, note or file it was in, such as "10K training plan" or "Saved memories"), `dated` (that day,
+`YYYY-MM-DD`) and `export` (the export's file or folder name); each is left out when unknown.
 
 Topics are the v2 set: Personal Identity, Interests & Lifestyle, Work & Learning, Health & Wellbeing,
 Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
@@ -1189,6 +1193,14 @@ Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)
 - `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
 - `DELETE /api/memories/source/{source}` → `{deleted: n}`
+- `POST /api/memories/export` `{format: "markdown"|"sqlite"}` → `{path, folder, name, format, memories, about_you,
+  waiting}`: writes everything Sentient remembers to a new file in `<home>/files/exports/`
+  (`sentient-memory-YYYYMMDD-HHMMSS.md|.db`, never overwriting one). Markdown: active facts grouped by first topic,
+  then insights ("About <name>"), then what waits for review, each line saying where it came from and when. SQLite:
+  tables `memories (id, content, source, topics, memory_type, status, created_at, updated_at, expires_at, came_from)`
+  and `about_you (id, dimension, statement, confidence, status, source, created_at, updated_at, came_from)`
+  (`came_from` = the ReviewNote JSON or null). Retired insights and embeddings are left out. `memories` and
+  `about_you` count active ones, `waiting` held ones. 400 for another format. Code: `sentient/memory/export.py`.
 - `POST /api/memories/import` multipart `file` (pdf/txt/md/docx) → `{added, updated, skipped, pending, source}` (`source` = `file:<name>`; the facts wait for review, `pending` counts them, and existing memories are kept; 400 for other types)
 - `GET /api/memories/summaries?limit=` → `[{id, content, start_at, end_at, session_id, untrusted}]` (`untrusted` = the app whose content that chat read, else `null`; such summaries are listed here but kept out of other chats, see below)
 - `GET /api/memories/workspace` → `{soul, user, memory, today, yesterday}` (full file contents, not the prompt-budgeted snapshot)
@@ -1203,7 +1215,8 @@ When sqlite-vec cannot load, list/topics/graph return empty data and write route
 A memory that did not come from the user's own words in a clean chat is held: `status: "pending"` for facts, status
 `pending` for insights (section 15). Held: facts extracted after a turn of a chat marked untrusted (section 10,
 "Outside content") and facts saved when such a chat is compressed; `memory_remember` while `ToolContext.untrusted`
-is set or `ToolContext.origin` is unprompted; document imports; Hermes imports (section 19); insights a refresh draws
+is set or `ToolContext.origin` is unprompted; document imports; imports from Hermes, ChatGPT, Claude and OpenClaw
+(section 19); insights a refresh draws
 only from outside material (section 15). A held memory is never in a prompt, `memory_recall`,
 `memory_search_by_source`, `GET /api/memories`, topics, the graph, proactivity, a user-model refresh or dreaming, and
 a held fact never updates or deletes another fact (duplicates of any fact are skipped). Only these routes move one
@@ -1211,8 +1224,9 @@ out of pending; no model output can:
 
 - `GET /api/memories/review` → `{items: [ReviewItem], count, expire_days}` newest first (at most 500 facts and 500
   insights; `count` covers all of them).
-  **ReviewItem** `{kind: "fact"|"insight", id: int|string, text, source, from, snippet, session_id, created_at, expires_at}`
-  (`expires_at` = `created_at` + `memory.review_expire_days`)
+  **ReviewItem** `{kind: "fact"|"insight", id: int|string, text, source, from, snippet, session_id, title, dated, export,
+  created_at, expires_at}` (`expires_at` = `created_at` + `memory.review_expire_days`; `title`, `dated` and `export`
+  are `null` unless the ReviewNote has them)
 - `POST /api/memories/review/{kind}/{id}/approve` `{content?}` → `{ok: true}`: becomes active (a fact gets its
   vector; a fact already remembered in the same words is not added twice). With `content` it is saved in the user's
   words first (a fact keeps the old text as `previous_content`; an insight becomes source `user`, `confirmed`).
@@ -2152,7 +2166,7 @@ Off by default ([ADR 0019](adr/0019-host-terminal.md)). Settings > Terminal (con
 - Engine API: `await app.terminal.run(command, cwd, ctx) -> dict` (TerminalResult), `app.terminal.check(command, cwd,
   ctx)`, `app.terminal.stop_command(id) -> bool`, `app.terminal.status() -> dict`; pure checks in `sentient.terminal.guard`.
 
-## 19. Moving from Hermes (owner: core)
+## 19. Moving from Hermes and other assistants (owner: core)
 
 Brings a Hermes Agent home folder (default `~/.hermes`) into Sentient in one step: preview first, then apply the parts
 the user picks. Code: `sentient/migrate/hermes.py`; the Hermes file formats it relies on are listed in its docstring.
@@ -2238,6 +2252,98 @@ suggestion may be `null`.
 ```
 Applying publishes the usual events: `skill.updated` (`state: "pending_review"`), `memory.updated`,
 `user_model.updated`, `task.updated` and `config.updated`.
+
+### Memory from ChatGPT, Claude and OpenClaw (issue #156)
+
+Reads a ChatGPT or Claude data export (the zip the app emails, the folder it was unzipped into, or its
+`conversations.json`) or an OpenClaw workspace folder, and holds what it finds in the memory review inbox (section 7,
+`from: "ChatGPT" | "Claude" | "OpenClaw"`, source `import:<app>`). The export is only read, on this computer; nothing
+is uploaded. Code: `sentient/migrate/exports.py` (the formats it relies on are in its docstring) and
+`sentient/migrate/memory_import.py`.
+
+What is read, per app (`<app>` is `chatgpt`, `claude` or `openclaw`):
+
+| app | part | from | how |
+|---|---|---|---|
+| `chatgpt` | `memories` | saved memories: the newest `model_editable_context` (`model_set_context`) and every memory the assistant saved (`recipient: "bio"`) in `conversations.json` | one memory each, as written |
+| `chatgpt` | `profile` | custom instructions (`user_editable_context`: `user_profile`, `user_instructions`) | fast model |
+| `chatgpt` | `conversations` | the user's own messages on each conversation's open branch | fast model |
+| `claude` | `memories` | `memories.json`: `conversations_memory` and `project_memories` | fast model |
+| `claude` | `projects` | each project's description and instructions (`projects/<uuid>.json` or `projects.json`; starter projects skipped, project files counted but not read) | fast model |
+| `claude` | `conversations` | the user's own messages (`sender: "human"`, text blocks only; attachments not read) | fast model |
+| `openclaw` | `memories` | `MEMORY.md` (each bullet or paragraph; longer than 300 characters goes to the model) | one memory each, as written |
+| `openclaw` | `profile` | `USER.md` active directives ("Prefer short answers" becomes the insight "Maya prefers short answers."; superseded ones skipped; old `Key: value` lines go to the model) | user-model insights, as written |
+| `openclaw` | `notes` | daily notes `memory/YYYY-MM-DD.md` and `memory/YYYY-MM-DD-<slug>.md` | fast model |
+
+Never read: `user.json`, `users.json`, `openclaw.json`, `.env`, `DREAMS.md`, `memory/dreaming/`, `memory/imports/`,
+`chat.html` and anything else not listed above. Each message is cut to 1000 characters (long ones are mostly pasted
+documents); a JSON file over 400 MB is refused with a plain `detail`.
+
+The fast model reads batches of at most `memory.import_chunk_chars` characters, newest first, with the extraction
+system prompt (section 7) and the conversation or note each line came from. A fact sharing no word with any line of its
+batch (besides the user's name) is dropped as made up. Each fact is then held for review with
+`ReviewNote {from: <app>, snippet: <the line it came from>, title, dated, export}`, unless Sentient already has it:
+the same words, a fact that already says it in full with no new name, place or number (the same rule as `SKIP` in
+`POST /api/memories`), or a near-identical fact. A new fact that says more than one still waiting from an import
+replaces that card's wording (`merged`) instead of adding a second card. A conversation, note or memory summary that
+was read (`memory_import_seen`) is skipped by the next import of the same app; a batch the model failed on is read
+again next time. A snapshot (section 20) is taken before an import starts.
+
+Paraphrases count as the same thing too, never across different people, a negation on one side, or names and numbers
+that disagree: facts of the same kind with the same names and places and no other words ("is based in Bengaluru",
+"lives in Bengaluru"), or facts sharing at least 70% of the shorter one's words (plurals ignored). An imported
+insight that says in full what a held imported fact says replaces that fact's card. Once the reading is done, the
+fast model sorts each new held fact into topics and long/short-term (`FactMemory.classify_pending`), one call each;
+the job's `message` then says "Sorting N memories into topics."
+
+- `GET /api/import/{app}` → `{path: string|null, exists}`: where that app keeps its memory on this computer
+  (`~/.openclaw/workspace` for OpenClaw; `null` for ChatGPT and Claude, whose exports are downloads). 404 for another app.
+- `POST /api/import/{app}/preview` `{path?}` → **MemoryImportPreview** (no model calls). 400 with a plain `detail`
+  when the path is missing, isn't that app's export, or memory is turned off.
+- `POST /api/import/{app}/apply` `{path?, parts: [part], skip?: [item or source key]}` → **MemoryImportJob** with
+  `status: "running"`: the import runs in the background (its model calls count as `memory` work and wait while a
+  chat is answering). 400 when `parts` is empty or the export can't be used; 409 while another import runs or Sentient is stopped (section 17). Stop everything cancels a running import
+  (what it saved stays for review; it counts in `cancelled`).
+- `GET /api/import/memory/job` → **MemoryImportJob**, the running or last import since Sentient started (`null` when
+  none).
+- `POST /api/import/memory/job/cancel` → **MemoryImportJob**: stops after the batch being read (`message: "Stopping
+  after this batch."`, then `status: "cancelled"`); what was saved stays.
+- `DELETE /api/import/{app}/memories` → `{facts, insights}`: deletes every fact and insight with source `import:<app>`,
+  approved or not, and forgets what was read, so the export can be imported again. 409 while an import from that app
+  is running.
+
+**MemoryImportPreview**
+```json
+{"app": "chatgpt", "label": "ChatGPT", "path": "C:/Users/me/Downloads/3f9a...-2026-10-01.zip", "export": "3f9a...-2026-10-01.zip",
+ "counts": {"memories": 3, "profile": 1, "conversations": 42},
+ "batches": 12,
+ "parts": [
+   {"id": "memories", "label": "Saved memories", "count": 3, "batches": 0, "messages": 0, "sources_total": 0, "sources": [],
+    "items": [{"key": "saved:0", "action": "import|skip", "note": "Becomes a memory once you approve it in Memory > Review.",
+               "kind": "fact|insight", "text": "Maya is allergic to cashews.", "title": "Saved memories", "dated": "2026-08-02"}]},
+   {"id": "conversations", "label": "Conversations", "count": 42, "batches": 11, "messages": 180, "sources_total": 42, "items": [],
+    "sources": [{"key": "conv:<id>:<messages>", "title": "10K training plan", "dated": "2026-09-16", "messages": 2,
+                 "action": "import|skip", "note": "Sentient reads it for facts about you.|Read in an earlier import.",
+                 "snippet": "I'm training for the TCS World 10K..."}]}],
+ "stats": {"conversations": 42, "messages": 180, "saved_memories": 3},
+ "never_read": ["user.json", "users.json", "openclaw.json", ".env"]}
+```
+`counts` per part = items plus sources to import; `items` are memories kept one by one (a skipped one says why:
+"Sentient already knows this.", "It's in there twice.", "Not something to remember."); `sources` (newest first, at most
+500 listed, `sources_total` counts all) are read by the model, and the first six carry a `snippet`. `stats` keys depend
+on the app: ChatGPT `conversations, messages, saved_memories`; Claude `conversations, messages, projects,
+project_files`; OpenClaw `memories, superseded, notes`.
+
+**MemoryImportJob**
+```json
+{"id": "a1b2c3d4e5f6", "app": "chatgpt", "label": "ChatGPT", "export": "...zip", "path": "...", "parts": ["memories", "conversations"],
+ "status": "running|done|cancelled|error", "total": 12, "done": 5, "facts": 14, "insights": 0, "merged": 1, "skipped": 6,
+ "failed": 0, "started_at": "...", "finished_at": null, "message": "Reading 10K training plan."}
+```
+`total`/`done` count model batches; `facts` and `insights` were added to the review inbox, `merged` filled in a card
+already waiting, `skipped` were already known or unusable, `failed` batches the model couldn't read. `message` is a plain
+sentence for the window. Each change publishes `import.updated` with the job; when it ends, `memory.updated`
+`{action: "ADD", id: null, source: "import:<app>", count, status: "pending"}`.
 
 ## 20. Backups, restore and snapshots (owner: core)
 
