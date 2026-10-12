@@ -235,6 +235,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Watch requests no longer fail when a check script can't be written:** if the AI's check script is rejected twice
+  (it loops, sleeps or uses memory, as small local models sometimes do), the task is saved as an ordinary recurring
+  task that the AI runs each time, with a short note on the task saying so, instead of ending in an error.
 - With approvals set to **Never ask**, Sentient no longer stops to ask before just looking something up (a web page,
   a snapshot of the browser, a search) because something you said in the chat sounded like a "never" it offered to
   turn into a rule. Until you answer that suggestion it still checks with you before changing, sending, deleting or

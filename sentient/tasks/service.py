@@ -77,6 +77,8 @@ PROVIDER_DOWN = "Sorry, the AI model is unavailable right now. Check Settings > 
 MAX_RESUMES = 2
 BUSY = ("processing", "waiting_for_user")
 STOPPED_NOTE = "Run stopped by Stop everything."
+# on a task whose check script was rejected twice (#310): the AI does the job at each run instead
+NO_SCRIPT_NOTE = "I couldn't write a working check script for this, so the AI will do it at each run instead."
 WAITING_CONFLICT = "This task is waiting for your answer. Answer the question or cancel the run first."
 _KEEP: Any = object()
 
@@ -1305,11 +1307,16 @@ class TaskService(Service):
         )
         if not isinstance(data, dict):
             raise TypeError(f"Planner agent returned invalid JSON: {str(data)[:200]}")
-        script, data = await self._planned_script(task, data, system, parts)
+        script, data, no_script = await self._planned_script(task, data, system, parts)
         raw_plan = data.get("plan") or data.get("steps")
         if raw_plan is None and data.get("tool"):  # a lone step object
             raw_plan = [data]
         plan = normalize_plan(raw_plan, self.app.registry)
+        if no_script and not (is_change and plan):
+            # the AI does the job itself at each run (#310). A plan written around a script loses what the script held
+            # (a page address) and small models fill it with guesses, so the step is the user's own request
+            request = task.get("original_prompt") or task.get("description") or task.get("name") or ""
+            plan = [{"tool": "", "description": request}]
         new_questions = normalize_questions(data.get("clarifying_questions"), start=len(questions) if answered else 0)
 
         current = await self.repo.get_task(task_id)
@@ -1337,13 +1344,17 @@ class TaskService(Service):
         fields: dict[str, Any] = {"plan": plan, "status": "approval_pending", "error": None}
         if script is not None:
             fields.update(task_type="script", script=script)
-            if schedule.get("type") not in {"recurring", "triggered"}:
-                proposed = data.get("schedule")
-                sched = normalize_schedule(proposed, tz) if isinstance(proposed, dict) and proposed else None
-                if sched is None or (sched["type"] == "once" and not sched.get("run_at")):
-                    # a watch job that would check only once is almost never what was meant
-                    sched = normalize_schedule({"type": "recurring", "frequency": "interval", "interval_minutes": 60}, tz)
-                fields["schedule"] = sched
+        elif no_script:  # no usable check script after the re-plan: an ordinary AI-run task, with a plain note (#310)
+            fields.update(task_type="single", script=None)
+            history = [*history, {"role": "assistant", "content": NO_SCRIPT_NOTE, "timestamp": self.now_iso()}]
+            fields["chat_history"] = history
+        if (script is not None or no_script) and schedule.get("type") not in {"recurring", "triggered"}:
+            proposed = data.get("schedule")
+            sched = normalize_schedule(proposed, tz) if isinstance(proposed, dict) and proposed else None
+            if sched is None or (sched["type"] == "once" and not sched.get("run_at")):
+                # a watch job that would check only once is almost never what was meant
+                sched = normalize_schedule({"type": "recurring", "frequency": "interval", "interval_minutes": 60}, tz)
+            fields["schedule"] = sched
         if is_change:
             fields["chat_history"] = [*history, {
                 "role": "assistant",
@@ -1364,17 +1375,21 @@ class TaskService(Service):
         short = display_name[:50] + ("..." if len(display_name) > 50 else "")
         await self._notify(task, f"I've created a new plan for you: '{short}'", "Plan ready for approval", "approval_needed")
 
-    async def _planned_script(self, task: dict, data: dict, system: str, parts: list[str]) -> tuple[dict | None, dict]:
-        """The check script the planner proposed (validated), else the task's existing one.
+    async def _planned_script(
+        self, task: dict, data: dict, system: str, parts: list[str]
+    ) -> tuple[dict | None, dict, bool]:
+        """``(script, data, no_script)``: the check script the planner proposed (validated), else the task's existing
+        one.
 
-        Code that does not compile gets one correction round; if it still does not compile,
-        planning fails with a readable message (ScriptInvalid is a ValueError)."""
+        A script that is rejected (it does not compile, loops, sleeps, uses memory...) gets one correction round with
+        the reason. If the second one is rejected too, ``no_script`` is True and the task becomes an ordinary AI-run
+        task instead of failing (#310); a change request keeps the plan of the re-plan, or else of the first reply."""
         previous = task.get("script") if task.get("task_type") == "script" else None
         raw = data.get("script")
         if not isinstance(raw, dict) or raw.get("code") is None:
-            return previous, data
+            return previous, data, False
         try:
-            return normalize_script(raw, previous, model_written=True), data
+            return normalize_script(raw, previous, model_written=True), data, False
         except ScriptInvalid as exc:
             log.info("planner script for task %s rejected, asking for a fix: %s", task["id"], exc)
             retry = [*parts, (
@@ -1391,8 +1406,14 @@ class TaskService(Service):
             raise TypeError(f"Planner agent returned invalid JSON: {str(fixed)[:200]}")
         raw = fixed.get("script")
         if not isinstance(raw, dict) or raw.get("code") is None:
-            return previous, fixed
-        return normalize_script(raw, previous, model_written=True), fixed
+            return previous, fixed, False
+        try:
+            return normalize_script(raw, previous, model_written=True), fixed, False
+        except ScriptInvalid as exc:
+            log.info("planner script for task %s rejected again, saving an AI-run task instead: %s", task["id"], exc)
+        if not (fixed.get("plan") or fixed.get("steps")) and (data.get("plan") or data.get("steps")):
+            fixed = {**fixed, "plan": data.get("plan") or data.get("steps")}
+        return None, fixed, True
 
     # ------------------------------------------------------------------ swarm
     async def _orchestrate_swarm(self, task_id: str) -> None:

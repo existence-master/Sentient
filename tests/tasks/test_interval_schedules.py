@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from sentient.tasks import service as service_mod
 from sentient.tasks.schedule import spoken_interval, spoken_schedule
 from sentient.tasks.scripts import ScriptInvalid, check_rules, normalize_script
 from tests.conftest import FakeProvider
@@ -145,3 +146,70 @@ async def test_chat_tool_script_edits_follow_the_rules_but_ui_edits_do_not(make_
         await app.tasks.update(created, {"script": {"code": sleepy}}, reapprove_script=True)
     edited = await app.tasks.update(created, {"script": {"code": sleepy}})
     assert edited["script"]["code"] == sleepy
+
+
+# ---------------------------------------------------------------------------- no script after two tries (#310)
+MEMORY_SCRIPT = "from sentient_tools import tools, result\nold = tools.memory_recall(query='price')\nresult(old)\n"
+BROKEN_SCRIPT = "from sentient_tools import tools, result\nwhile True:\n    pass\n"
+
+
+async def test_a_script_rejected_twice_becomes_an_ai_run_recurring_task(make_app):
+    """What qwen3:8b did in the real run: memory_recall again, then broken code. The task is saved, not failed."""
+    prompt = "Monitor Sapiens book price on http://127.0.0.1:8000/sapiens every 30 minutes and remind me what it was last time"
+    refine = {"name": "Sapiens price", "description": prompt, "priority": 1, "schedule": {"type": "once", "run_at": None}}
+    first = {**PLAN_TIME, "plan": [{"tool": "web", "description": "Read the Sapiens price from the given URL"}],
+             "script": {"code": MEMORY_SCRIPT, "condition": "changed", "then": "notify"}}
+    second = {"name": "Sapiens price", "clarifying_questions": [], "script": {"code": BROKEN_SCRIPT, "condition": "changed", "then": "notify"}}
+    result = {"summary": "Sapiens costs 499. Last time it was 549.", "links_created": [], "links_found": [],
+              "files_created": [], "tools_used": []}
+    llm = FakeProvider(replies=["Sapiens costs 499. Last time it was 549."], json_replies=[refine, first, second, result])
+    app = await make_app(llm)
+    created = await app.tasks.create_task(prompt)
+    await app.tasks.drain()
+    task = await app.tasks.get(created["task_id"])
+    assert task["status"] == "approval_pending" and task["error"] is None
+    assert task["task_type"] == "single" and task["script"] is None
+    assert task["plan"] == [{"tool": "", "description": prompt}]  # the request itself: it has the page address
+    assert task["schedule"]["frequency"] == "interval" and task["schedule"]["interval_minutes"] == 30
+    assert [m["content"] for m in task["chat_history"]] == [service_mod.NO_SCRIPT_NOTE]
+    assert len(json_calls(llm, "planner")) == 3  # refine, plan, one re-plan
+
+    await app.tasks.approve(task["task_id"])
+    await app.tasks.run_now(task["task_id"])
+    await app.tasks.drain()
+    ran = await app.tasks.get(task["task_id"])
+    assert ran["runs"][-1]["status"] == "completed" and ran["status"] == "active"
+    assert ran["runs"][-1]["result"]["summary"].startswith("Sapiens costs 499")
+
+
+REFINE_LAMP = {"name": "Lamp watch", "description": "Check the lamp price every hour", "priority": 1,
+               "schedule": {"type": "once", "run_at": None}}
+
+
+async def test_no_plan_at_all_still_gives_a_one_step_ai_task(make_app):
+    refine = REFINE_LAMP
+    bad = {"name": "Lamp watch", "clarifying_questions": [], "script": {"code": BROKEN_SCRIPT, "condition": "changed", "then": "notify"}}
+    llm = FakeProvider(json_replies=[refine, bad, bad])
+    app = await make_app(llm)
+    created = await app.tasks.create_task("Check the lamp price every hour")
+    await app.tasks.drain()
+    task = await app.tasks.get(created["task_id"])
+    assert task["status"] == "approval_pending" and task["task_type"] == "single"
+    assert task["plan"] == [{"tool": "", "description": "Check the lamp price every hour"}]
+    assert task["schedule"]["interval_minutes"] == 60
+
+
+async def test_a_change_request_keeps_the_re_plans_steps_without_a_script(make_app):
+    llm = FakeProvider(json_replies=[REFINE_LAMP, {**PLAN_TIME}])
+    app = await make_app(llm)
+    created = await app.tasks.create_task("Check the lamp price every hour")
+    await app.tasks.drain()
+    steps = [{"tool": "web", "description": "Read the lamp page at http://shop.example/lamp"}]
+    bad = {"clarifying_questions": [], "plan": steps,
+           "script": {"code": BROKEN_SCRIPT, "condition": "changed", "then": "notify"}}
+    llm.json_replies += [bad, bad]
+    await app.tasks.chat(created["task_id"], "Also read the lamp page at http://shop.example/lamp")
+    await app.tasks.drain()
+    task = await app.tasks.get(created["task_id"])
+    assert task["status"] == "approval_pending" and task["task_type"] == "single" and task["plan"] == steps
+    assert service_mod.NO_SCRIPT_NOTE in [m["content"] for m in task["chat_history"]]

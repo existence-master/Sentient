@@ -295,7 +295,7 @@ async def test_planner_produces_script_job(make_app):
     assert "approval_needed" in _events(await app.notifications.list(), task["task_id"])
 
 
-async def test_planner_script_with_invalid_code_is_fixed_or_rejected(make_app):
+async def test_planner_script_with_invalid_code_is_fixed_or_falls_back(make_app):
     bad = {**PLAN_SCRIPT, "script": {**PLAN_SCRIPT["script"], "code": "def broken(:\n"}}
     llm = FakeProvider(json_replies=[REFINE_ONCE, bad, PLAN_SCRIPT, REFINE_ONCE, bad, bad])
     app = await make_app(llm)
@@ -305,11 +305,13 @@ async def test_planner_script_with_invalid_code_is_fixed_or_rejected(make_app):
     assert fixed["status"] == "approval_pending" and fixed["script"]["code"] == PLAN_SCRIPT["script"]["code"]
     assert "cannot be used" in json_calls(llm, "planner")[2]["messages"][1]["content"]
 
+    # rejected twice: an ordinary AI-run task instead of an error (#310)
     rejected = await app.tasks.create_task("Tell me when ether drops below 2k")
     await app.tasks.drain()
     rejected = await app.tasks.get(rejected["task_id"])
-    assert rejected["status"] == "error" and "not valid Python" in rejected["error"]
-    assert rejected["script"] is None
+    assert rejected["status"] == "approval_pending" and rejected["error"] is None
+    assert rejected["script"] is None and rejected["task_type"] == "single"
+    assert rejected["plan"] == [{"tool": "", "description": "Tell me when ether drops below 2k"}]
 
 
 async def test_script_validation_and_update(make_app):
