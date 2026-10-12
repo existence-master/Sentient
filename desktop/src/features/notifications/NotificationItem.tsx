@@ -299,7 +299,7 @@ function TaskQuestionActions({ n, onNavigate }: { n: Notification; onNavigate?: 
   const runId = typeof p.run_id === 'string' ? p.run_id : null
   const options = Array.isArray(p.options) ? p.options.filter((o): o is string => typeof o === 'string' && !!o.trim()) : []
   // the engine marks the card when the question was answered or the run cancelled anywhere (task page, a chat app)
-  const status = p.status === 'answered' || p.status === 'cancelled' ? p.status : null
+  const status = p.status === 'answered' || p.status === 'cancelled' || p.status === 'expired' ? p.status : null
   const shown = answered ?? (status === 'answered' && typeof p.answer === 'string' ? p.answer : null)
   if (!taskId || !runId) return null
 
@@ -319,8 +319,14 @@ function TaskQuestionActions({ n, onNavigate }: { n: Notification; onNavigate?: 
   return (
     <div className="mt-2.5 flex flex-wrap items-center gap-2">
       {shown !== null || status ? (
-        <Badge tone={status === 'cancelled' && shown === null ? 'neutral' : 'success'}>
-          {shown !== null ? `You answered: ${truncate(shown, 60)}` : status === 'cancelled' ? 'Run cancelled' : 'Answered'}
+        <Badge tone={status && status !== 'answered' && shown === null ? 'neutral' : 'success'}>
+          {shown !== null
+            ? `You answered: ${truncate(shown, 60)}`
+            : status === 'cancelled'
+              ? 'Run cancelled'
+              : status === 'expired'
+                ? 'Request expired'
+                : 'Answered'}
         </Badge>
       ) : (
         options.map((o) => (

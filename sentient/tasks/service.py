@@ -30,6 +30,7 @@ from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sentient.agent import grants as grant_rules
 from sentient.llm.jobs import detached
 from sentient.llm.provider import PlainProviderError, ProviderError
 from sentient.services import Service, cancel_tasks
@@ -620,6 +621,8 @@ class TaskService(Service):
                 t.cancel()
         await self.repo.delete_task(task_id)
         await self._delete_notifications(task_id)
+        if self.app.approvals.grants is not None:  # "Allow for this task" ends with the task (#139)
+            await self.app.approvals.grants.revoke_task(task_id)
         self._locks.pop(task_id, None)
         self.app.bus.publish("task.deleted", {"task_id": task_id})
         return {"ok": True}
@@ -847,8 +850,12 @@ class TaskService(Service):
         self._dispatch(task_id, new_run_id, resume=bool(checkpoint))
         return await self.get_and_publish(task_id)
 
-    async def answer_question(self, task_id: str, run_id: str, answer: str) -> dict:
-        """Resume a run that is ``waiting_for_user``: the answer becomes the result of its ``ask_user`` call."""
+    async def answer_question(self, task_id: str, run_id: str, answer: str, *, via: str = "desktop") -> dict:
+        """Resume a run that is ``waiting_for_user``: the answer becomes the result of its ``ask_user`` call.
+
+        A held call (an "ask" rule, #139, or outside content, ADR 0018) is an approval request: past its
+        ``expires_at`` the run stops and the answer is refused; an approval answer that isn't one of the offered
+        choices raises ``ValueError`` and the run keeps waiting. ``via`` says where it was answered (a grant's note)."""
         text = str(answer or "").strip()[: ask.MAX_ANSWER_CHARS]
         if not text:
             raise ValueError("An answer is required.")
@@ -864,7 +871,23 @@ class TaskService(Service):
         if pending.get("stuck"):
             return await self._answer_stuck(task_id, run, pending, text)
         call_id = pending.get("tool_call_id")
-        if pending.get("untrusted_call"):  # a held call after outside content (ADR 0018): only a clear yes runs it
+        granted: tuple[dict, str] | None = None  # saved only once this answer has claimed the run
+        if (pending.get("untrusted_call") or pending.get("approval")) and ask.expired(pending):
+            await self._expire_question(task_id, run_id)
+            raise TaskConflict(ask.EXPIRED_LATE)
+        if isinstance(pending.get("approval"), dict):  # a tool set to Ask (#139): the answer says how wide the yes is
+            approval = pending["approval"]
+            minutes = int(approval.get("grant_minutes") or self.app.config.tools.approvals.grant_minutes)
+            offered = [str(c) for c in approval.get("choices") or [grant_rules.ALLOW, grant_rules.DENY]]
+            decision = grant_rules.parse_answer(text, offered, minutes)
+            if decision is None:
+                raise ValueError("Answer with one of: " + ", ".join(pending.get("options") or []) + ".")
+            if decision == grant_rules.DENY:
+                return await self._stop_at_question(task_id, run_id, pending, text)
+            granted = (approval, decision)
+            messages = ask.approve_call(run.get("messages") or [], call_id)
+            text = grant_rules.decision_label(decision, minutes)
+        elif pending.get("untrusted_call"):  # a held call after outside content (ADR 0018): only a clear yes runs it
             if not ask.approves(text):
                 return await self._stop_at_question(task_id, run_id, pending, text)
             messages = ask.approve_call(run.get("messages") or [], call_id)
@@ -872,11 +895,44 @@ class TaskService(Service):
             messages = ask.fill_result(run.get("messages") or [], call_id, ask.answer_content(text))
         if not await self.repo.resume_run(run_id, messages):
             raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
+        if granted is not None:  # a losing answer (desktop and phone at once) never leaves a grant or rule behind
+            await self._grant(task_id, *granted, via)
         await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
         await self._set(task_id, {"status": "processing", "error": None})
         await self._resolve_question_notifications(run_id, "answered", answer=text)
         self._dispatch(task_id, run_id, resume=True, answered=True)
         return await self.get_and_publish(task_id)
+
+    async def _grant(self, task_id: str, approval: dict, decision: str, via: str) -> None:
+        """Save how wide the user's yes was (#139): this task, a while, or an Allow rule. "Allow once" saves nothing.
+        A choice the request did not offer never gets here (``parse_answer`` only returns offered ones)."""
+        grants = self.app.approvals.grants
+        name = str(approval.get("tool") or "")
+        if grants is None or not name or decision == grant_rules.ALLOW:
+            return
+        risk = Risk[str(approval.get("risk") or "write")] if str(approval.get("risk")) in Risk.__members__ else Risk.write
+        if decision == grant_rules.ALLOW_TASK:
+            await grants.add(name, "task", risk, task_id=task_id, via=via)
+        elif decision == grant_rules.ALLOW_TIMED:
+            await grants.add(name, "timed", risk, via=via, minutes=approval.get("grant_minutes"))
+        elif decision == grant_rules.ALLOW_ALWAYS:
+            await grants.allow_always(name, via=via)
+
+    async def _expire_question(self, task_id: str, run_id: str) -> None:
+        """A held call's approval request ran out of time: the run stops without doing it (#139)."""
+        await self._resolve_question_notifications(run_id, "expired")
+        await self.progress(task_id, run_id, {"type": "info", "content": "The approval request expired."})
+        await self._finish_run(task_id, run_id, "error", error=ask.EXPIRED_STOP, from_statuses=("waiting_for_user",))
+
+    async def expire_approvals(self) -> int:
+        """Stop runs whose approval request is past its time (every scheduler tick). Returns how many stopped."""
+        stopped = 0
+        for run in await self.repo.waiting_runs():
+            pending = run.get("pending_question") or {}
+            if (pending.get("approval") or pending.get("untrusted_call")) and ask.expired(pending):
+                await self._expire_question(run["task_id"], run["id"])
+                stopped += 1
+        return stopped
 
     async def _answer_limit(self, task_id: str, run: dict, pending: dict, text: str) -> dict:
         """A run waiting at a limit: "Keep going" raises that limit for this run; anything else fails the run."""
@@ -934,6 +990,9 @@ class TaskService(Service):
                 "question": question["question"],
                 "options": list(question.get("options") or []),
                 "asked_at": question.get("asked_at"),
+                # an approval request (#139, ADR 0018) answers only through its own buttons or words
+                "kind": "approval" if question.get("approval") or question.get("untrusted_call") else "question",
+                "expires_at": question.get("expires_at"),
             })
         return out
 
@@ -1094,6 +1153,10 @@ class TaskService(Service):
         return run_ids
 
     async def _tick_job(self) -> None:
+        try:
+            await self.expire_approvals()
+        except Exception:
+            log.exception("could not expire approval requests")
         await self.tick()
 
     async def _catch_up(self) -> dict[str, list[dict]]:
@@ -1651,6 +1714,11 @@ class TaskService(Service):
         name = task.get("name") or "Untitled task"
         short = name[:60] + ("..." if len(name) > 60 else "")
         extra: dict[str, Any] = {"run_id": run_id, "question": text, "options": list(question.get("options") or [])}
+        if question.get("approval") or question.get("untrusted_call"):  # an approval request (#139, ADR 0018)
+            extra.update(
+                approval=question.get("approval") or {"choices": ["allow", "deny"], "untrusted": True},
+                expires_at=question.get("expires_at"),
+            )
         if reason:  # stuck (tasks/stuck.py): the same answerable question, with the reason up front
             extra.update(stuck=True, reason=reason)
             await self._notify(task, stuck.notice(name, reason), f"{short} is stuck", "question", extra)

@@ -18,6 +18,7 @@
  *   session.updated       -> rename or set the chat's model in ['sessions']
  *   session.deleted       -> remove from ['sessions'] and refetch its transcript (an incognito chat that was closed)
  *   rule_proposal.updated -> refetch that chat's ['rule-proposals'] ("Make this a rule?" cards)
+ *   approval_grants.updated -> refetch ['approval-grants'] (Settings > Approvals, #139)
  *   config.updated        -> invalidate config/bootstrap/model presets/ChatGPT sign-in (+ secrets/providers)
  *   voice.state           -> ['voice', 'state']
  *   subagent.updated      -> ['subagents', ...] (+ toast when a background helper finishes)
@@ -192,6 +193,12 @@ export function installDomainEvents(qc: QueryClient): () => void {
       qc.setQueryData<Session[]>(qk.sessions, (old) => old?.filter((s) => s.id !== session_id))
       // an open chat that was deleted (an incognito chat left idle) shows "This chat doesn't exist anymore"
       void qc.invalidateQueries({ queryKey: qk.messages(session_id) })
+    })
+  )
+
+  offs.push(
+    live.onDomain('approval_grants.updated', () => {
+      void qc.invalidateQueries({ queryKey: qk.approvalGrants })
     })
   )
 

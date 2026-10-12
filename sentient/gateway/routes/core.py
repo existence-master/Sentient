@@ -410,6 +410,21 @@ async def approve(request: Request, body: ApprovalBody):
     return {"resolved": True}
 
 
+@router.get("/api/approvals/grants", dependencies=_auth)
+async def list_grants(request: Request):
+    """Live "Allow for this task" and "Allow for a while" answers (#139)."""
+    grants = get_core(request).approvals.grants
+    return {"grants": await grants.list() if grants is not None else []}
+
+
+@router.delete("/api/approvals/grants/{grant_id}", dependencies=_auth)
+async def revoke_grant(request: Request, grant_id: str):
+    grants = get_core(request).approvals.grants
+    if grants is None or not await grants.revoke(grant_id):
+        raise HTTPException(404, "no such grant")
+    return {"ok": True}
+
+
 # ----------------------------------------------------------------------------- files
 def uploads_dir(folder: str = "uploads") -> Path:
     d = paths.files_dir() / folder

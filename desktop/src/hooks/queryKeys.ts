@@ -10,6 +10,7 @@ export const qk = {
   config: ['config'] as const,
   backups: ['backups'] as const,
   configSchema: ['config-schema'] as const,
+  approvalGrants: ['approval-grants'] as const,
 
   sessions: ['sessions'] as const,
   /** Kept outside `sessions` so invalidating the list doesn't refetch transcripts mid-stream. */

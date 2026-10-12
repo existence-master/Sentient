@@ -336,9 +336,11 @@ async def test_approval_by_numbered_reply(wa, llm):
     await wa.say("what time is it", wait=False)
     await until(lambda: wa.hub.message_with("Approval needed") is not None)
     msg = wa.hub.message_with("Approval needed")
-    assert msg["text"].endswith("Reply with a number:\n*1* Allow\n*2* Allow for this chat\n*3* Deny")
+    assert msg["text"].endswith(
+        "Reply with a number:\n*1* Allow\n*2* Allow for this chat\n*3* Allow for 1 hour\n*4* Always allow\n*5* Deny"
+    )
     await wa.say("7", reply_to=msg["id"], wait=False)
-    await until(lambda: wa.hub.last() == "Reply with a number from 1 to 3.")
+    await until(lambda: wa.hub.last() == "Reply with a number from 1 to 5.")
     await wa.say("1", reply_to=msg["id"])
     await wa.ch.wait_idle()
     edits = [s for s in wa.hub.sent if s["op"] == "edit" and s["id"] == msg["id"]]
@@ -353,7 +355,7 @@ async def test_a_bare_number_answers_the_waiting_approval(wa, llm):
     llm.replies = [[tool_call("current_datetime")], "Okay, I won't."]
     await wa.say("what time is it", wait=False)
     await until(lambda: wa.hub.message_with("Approval needed") is not None)
-    await wa.say("3")
+    await wa.say("5")
     await wa.ch.wait_idle()
     assert "_Denied._" in wa.hub.screen() and wa.hub.last() == "Okay, I won't."
     llm.replies = ["Three it is."]

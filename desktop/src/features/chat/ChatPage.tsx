@@ -13,7 +13,7 @@ import { api, errorMessage, isApiError } from '@/lib/api'
 import { foldTranscript, type AttachmentView, type TimelineItem } from '@/lib/chatFold'
 import { chatModelLabel } from '@/lib/models'
 import { queryClient } from '@/lib/queryClient'
-import type { Session } from '@/lib/types'
+import type { ApprovalDecision, Session } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { liveItems, useChat } from '@/stores/chat'
 import { AssistantTurn } from './AssistantTurn'
@@ -177,7 +177,7 @@ function ChatView({
   }, [retry, sessionId])
 
   const onApprove = useCallback(
-    (approvalId: string, decision: 'allow' | 'allow_session' | 'deny') => {
+    (approvalId: string, decision: ApprovalDecision) => {
       if (liveSession) void respondApproval(liveSession.key, approvalId, decision)
     },
     [respondApproval, liveSession]

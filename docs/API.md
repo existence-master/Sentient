@@ -20,7 +20,8 @@ If you need to change a shape, change this file in the same edit.
 | `chat.send` | `session_id?`, `text`, `attachments?: string[]` (file names from `/api/files`), `model?` (this message only: overrides the chat's own model and primary, with no fallback; the window doesn't send it, see Sessions, chat's model), `client_id?`, `incognito?: bool` | start a turn; omit `session_id` for a new chat. `incognito: true` makes that new chat an incognito chat (section 2); ignored with `session_id` |
 | `chat.steer` | `session_id`, `text`, `client_id?` | add to the reply in progress (section 10); without a running reply same as `chat.send` |
 | `chat.cancel` | `session_id` | stop the reply in progress |
-| `approval.respond` | `approval_id`, `decision: "allow"\|"allow_session"\|"deny"` | answer an approval request |
+| `approval.respond` | `approval_id`, `decision: "allow"\|"allow_session"\|"allow_timed"\|"allow_always"\|"deny"` (one of the request's `choices`, section 2 "Scoped answers") | answer an approval request |
+| `presence` | `active: bool` | the window is focused and visible (`true`) or not (#139). Sent on connect and on every focus, blur and visibility change. Approval requests of waiting tasks go to paired chats only while no window says `true` (section 14) |
 | `ping` | | keepalive |
 
 ### Server → client: chat/agent events (no dot in `type`)
@@ -35,7 +36,7 @@ All carry `session_id` and `turn_id`.
 | `tool_call` | `call_id`, `name`, `arguments` |
 | `tool_progress` | `call_id`, `name`, `kind: stdout\|stderr\|status\|frame\|subagent`, `text?`, `image?`, `data?` (section 10) |
 | `tool_result` | `call_id`, `name`, `result`, `is_error`, `duration_ms` (a call the user declined has `result: {error, declined: true}`) |
-| `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10) |
+| `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10), `choices?: string[]` (the answers offered, in order, section 2 "Scoped answers"), `grant_minutes?` (how long `allow_timed` lasts) |
 | `user_interjection` | `text` (a steer message the model just received, section 10) |
 | `steer_ack` | `session_id`, `queued`, `client_id` (echo; no `turn_id`) |
 | `usage` | `model`, `prompt_tokens`, `completion_tokens`, `context_used`, `context_length`, `context_percent`, `context_warning` (context meter, below) |
@@ -83,6 +84,8 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `session.updated` | `{session_id, title?, model?}`: only what changed. `title` after a rename or an automatic title; `model` (`null` = the default) after the chat's model was picked (section 2) |
 | `session.deleted` | `{session_id, reason?: "incognito"}`: a chat was deleted (`DELETE /api/sessions/{id}`, or an incognito chat closed by the engine, section 2) |
 | `rule_proposal.updated` | **RuleProposal** (section 2, rules from chat): a new "Make this a rule?" card, or one the user answered |
+| `approval_grants.updated` | `{count}`: a task or timed grant was added, revoked or ran out (section 2, "Scoped answers"); refetch `GET /api/approvals/grants` |
+| `presence.changed` | `{in_app: bool}`: whether any window says it is in front (`presence`, section 1) |
 | `config.updated` | `{sections: string[]}` |
 | `voice.state` | `{state, session_id}` (mirrors voice socket for other windows) |
 | `stop.updated` | **StopState** (section 17): Stop everything was turned on or off |
@@ -141,10 +144,12 @@ applied in code before every call and take effect at once:
   `{error: "You've set Sentient to never use <name>. Change this in Settings > Approvals & safety."}` (`<name>` is the
   app's display name for a plugin rule, e.g. `Slack`, else the tool's plain name and app, e.g. `"Post message" in Slack`).
 - `ask`: an `approval_request` every time, even with approvals mode `off`, after "Allow for this chat", and for `read`
-  tools. Where nobody can be asked the call does not run: a task run or swarm worker stops there and fails with
-  `"<name> is set to Ask, and tasks can't ask yet. Change it in Settings > Approvals & safety."` (the run's `error`,
-  and the usual `run_failed` notification; `LoopResult.stopped_by_rule` and `LoopResult.error` carry the same text).
-  Subagents and scripts refuse the call, and proactive look-ups leave the tool out.
+  tools, unless a live task or timed grant the user gave when asked covers the call ("Scoped answers" below). A single
+  task run pauses and asks instead (#139, section 4 "Tasks that ask you a question"). Where nobody can be asked the
+  call does not run: a swarm worker stops there and fails with
+  `"<name> is set to Ask, and this work can't stop to ask. Change it in Settings > Approvals & safety."` (the run's
+  `error`, and the usual `run_failed` notification; `LoopResult.stopped_by_rule` and `LoopResult.error` carry the same
+  text). Subagents and scripts refuse the call, and proactive look-ups leave the tool out.
 - `allow`: runs without asking in modes `ask` and `always`, except a purchase (effective risk `send` or higher whose
   approval wording `risk_label` is "Purchase", such as a browser click on "Place order"), which asks every time.
   "Allow for this chat" never covers a purchase. `allow` does not widen what scripts may call
@@ -160,6 +165,31 @@ applied in code before every call and take effect at once:
 Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`, `app.approvals.is_hidden(tool)` (never
 rules plus Read only connections, section 5), `app.approvals.read_only_refusal(tool, risk, registry)`,
 `await app.approvals.decide(tool, session_id, risk, arguments, ctx) -> bool`, pure helpers in `sentient.tools.rules`.
+
+### Scoped answers to approval requests (#139, ADR 0016)
+An answer can be wider than one call. `decision` values (`sentient.agent.grants`):
+
+| decision | label | what it covers |
+|---|---|---|
+| `allow` | Allow once | this call only |
+| `allow_session` | Allow for this chat | the tool in this chat, up to the approved risk (ADR 0008); chats only |
+| `allow_task` | Allow for this task | later calls of the tool in the same task, up to the approved risk, until revoked or the task is deleted; task runs only |
+| `allow_timed` | Allow for 1 hour | later calls of the tool anywhere (chats and tasks), up to the approved risk, for `tools.approvals.grant_minutes` (default 60; 30 shows as "Allow for 30 minutes") |
+| `allow_always` | Always allow | saves `tools.approvals.rules["<tool>"] = "allow"` with `rule_origins["<tool>"] = {rule: "allow", source: "approval", via, at}` |
+| `deny` | Deny | |
+
+- Each request says which answers it offers (`approval_request.choices`; a task's `pending_question.options`). A
+  wider yes than offered counts as `allow` (once), so no client can widen a request; a task answer that isn't one of
+  its options is refused (below). Only `allow` and `deny` are
+  offered for a purchase, a call after outside content (ADR 0018), a tool that asks every time (`allow_for_chat=False`,
+  the terminal), a call a `risk_fn` raised to `send` or `exec`, and anything whose effective risk is `exec`.
+- A task or timed grant also covers a tool set to `ask` (the user was asked about that tool and chose how wide the yes
+  is), but never an undecided rule proposal, a `never` rule, a Read only connection, the unprompted-work limit or the
+  outside-content check, which all come first. Grants are checked in code; no model sees or changes them.
+- `GET /api/approvals/grants` → `{grants: [{id, tool, label, app, scope: "task"|"timed", task_id, task_name, risk, via,
+  created_at, expires_at}]}` newest first, expired ones dropped. `via`: `desktop`, `telegram`, `discord` or `whatsapp`.
+- `DELETE /api/approvals/grants/{id}` → `{ok: true}` (404 unknown). Both publish `approval_grants.updated`.
+- Stored in the `approval_grants` table. Settings > Approvals lists them under "Allowed for now" with **Revoke**.
 
 ### Rules from chat (#130)
 When a chat message reads like a standing "never" or "ask me first" about an action ("never delete my emails",
@@ -206,8 +236,9 @@ accept or loosen a rule.
   rule** / **Not now** (callback `rp:a:<id>` / `rp:d:<id>`; WhatsApp: reply to the message with 1 or 2). Answering
   there is the same decision as `POST /api/rule-proposals/{id}`; an answer from anywhere replaces the buttons with the
   outcome.
-- `tools.approvals.rule_origins`: `{"<key>": {rule: "never"|"ask", said, at, session_id}}`, default `{}`. Settings shows
-  "From your message on <date>". An entry is dropped when its rule is changed or removed.
+- `tools.approvals.rule_origins`: `{"<key>": {rule: "allow"|"never"|"ask", said, at, session_id, source: "chat"|"approval",
+  via}}`, default `{}`. Settings shows "From your message on <date>" (`source: "approval"`, an "Always allow" answer:
+  "From your answer on <date>"). An entry is dropped when its rule is changed or removed.
 
 ### Sessions (chats)
 - `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts, incognito, model}]` newest first
@@ -291,7 +322,9 @@ accept or loosen a rule.
     Helpers it started keep refusing to save even if it is deleted first. Without memory, its prompt also leaves out
     the configured name and location.
     Each engine deletion publishes `session.deleted` with `reason: "incognito"`.
-- `POST /api/approvals` `{approval_id, decision}` → `{resolved}`
+- `POST /api/approvals` `{approval_id, decision}` → `{resolved}`; a yes wider than the request offers counts as
+  `allow` (section 2, "Scoped answers"); 404 when nothing is waiting or the decision is unknown. `GET /api/approvals/grants`, `DELETE
+  /api/approvals/grants/{id}`: section 2.
 
 ### Files (attachments + assistant outputs)
 - `POST /api/files` multipart `file`, optional form field `source: "upload"|"screen"` (default `upload`) →
@@ -768,7 +801,22 @@ far with `task_notepad`. The first run is told it is the first. When there is an
   a final `.`/`!` ignored) runs exactly the held call once when the run continues (its result replaces the
   placeholder; a restart in the middle never repeats it); any other answer fails the run with
   `You said no, so the task stopped without doing that step.` and the usual `Task failed` notification.
-  `pending_question` also stores `untrusted_call: true` and `stop_error`; the API shows only `{question, options, asked_at}`.
+  `pending_question` also stores `untrusted_call: true`, `stop_error` and `expires_at`.
+- A run that reaches a tool set to `ask` (section 2) pauses the same way instead of failing (#139), unless a task or
+  timed grant covers the call: the question is `This task wants to use <tool> (<details>). You've set it to ask first.
+  OK to go ahead?` with the offered answers as `options` (`Allow once`, `Allow for this task`, `Allow for 1 hour`,
+  `Always allow`, `Deny`; only `Allow once` and `Deny` where section 2 says so). An answer is the option text or a key
+  word (`yes`/`once`/`ok`, `task`, `hour`/`minutes`, `always`, `no`/`deny`/`stop`); anything else is a 400 (`Answer
+  with one of: ...`) and the run keeps waiting. Any allowing answer runs the held call once when the run continues and
+  saves the grant; `Deny` fails the run with `You said no, so the task stopped without doing that step.`
+- Both kinds of held call are approval requests: the API shows them as `kind: "approval"` with `expires_at`
+  (`tools.approvals.task_request_minutes` after asking, default 240). Past it, the scheduler stops the run with
+  `Nobody answered the approval request in time, so the task stopped without doing that step.`, the notification
+  gets `payload.status = "expired"`, and a late answer is a 409 (`This approval request expired, so it can't be
+  approved now. Open the task and choose Retry to run it again.`). Their notification payload adds
+  `approval: {tool, risk, label, choices, grant_minutes}` (outside content: `{choices: ["allow", "deny"], untrusted:
+  true}`) and `expires_at`.
+- `POST .../answer` (and answers from a paired chat) record where the yes was given on the grant (`via`).
   A run asks one question at a time: its own `ask_user` question first, then a held call, then a stuck step
   (a stuck step in the same round shows up again later if it still is).
 - While a task waits: `approve`, `chat`, `run-now` and `retry` on a one-off task return 409; recurring tasks are not
@@ -1346,7 +1394,7 @@ Client → server:
 - JSON `{"type": "wake"}` in standby: wake without the phrase (device button, UI tap) → `wake` with `source: "client"`
 - JSON `{"type": "interrupt"}` (barge-in: stop speaking)
 - JSON `{"type": "text", "text"}` (typed input into the voice conversation; skips STT)
-- JSON `{"type": "approval.respond", "approval_id", "decision": "allow"|"allow_session"|"deny"}` → `approval.ack`
+- JSON `{"type": "approval.respond", "approval_id", "decision": "allow"|"allow_session"|"allow_timed"|"allow_always"|"deny"}` (one of the request's `choices`; a wider yes counts as `allow`, section 2) → `approval.ack`
 - JSON `{"type": "ping"}` → `{"type": "pong"}`
 - JSON `{"type": "stop"}` → cancels any turn in progress, sends `state: idle`, closes the socket
 
@@ -1830,8 +1878,19 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 - Voice notes and audio files are downloaded (20 MB max) and transcribed with `app.voice.transcribe_bytes`; the chat sees
   "Heard: ..." first. With `voice_replies` on, a voice note is also answered with `app.voice.speak` audio. Photos and
   documents are saved to `files/uploads/` and passed as attachments.
-- Approvals arrive as messages with **Allow**, **Allow for this chat** and **Deny** buttons (resolving through
-  `app.approvals`); the message is edited to show the answer, also when it was answered on the desktop.
+- Approvals arrive as messages with a button per offered answer (**Allow**, **Allow for this chat**, **Allow for 1
+  hour**, **Always allow**, **Deny**; callback `ap:<a|s|h|w|d>:<approval_id>`; only Allow and Deny where section 2 says
+  so), resolving through `app.approvals.resolve(..., via=<channel>)`; the message is edited to show the answer, also
+  when it was answered on the desktop. Only the chat the request was sent to can answer it; any other chat gets "This
+  request wasn't sent to this chat, so it can't be answered here."
+- **Approvals of waiting tasks outside the app (#139)**: a task question that is an approval request (`payload.approval`,
+  section 4) is sent as "**Approval needed: <task> needs your OK**" with one button per option, callback
+  `ta:<option index>:<run_id>`, and "Tap a button, or reply to this message with once, task, hour, always or no."
+  It is sent only while no window reports `presence: true` (section 1); one raised while the window is in front is held
+  and sent when `presence.changed` says the person left, if it is still waiting. A button only answers from the message
+  that delivered it to that chat (`channel_questions`); `tq:` buttons never answer an approval. A reply with a word or
+  an option number answers it like any task question. Unpaired chats are refused as always. A request past its time
+  can't be approved (the toast and the message say it expired).
 - Delivery (chats with `deliver: true`, from `notification.new`; a task's `deliver_to` can keep its notifications on
   the desktop or send them only to chosen chats instead, section 4 "Where results go"): task results and failures
   (`payload.event` in `run_completed`, `run_failed`, `planning_failed`, `clarification_needed`, `disabled`,

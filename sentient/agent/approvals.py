@@ -26,16 +26,23 @@ it may only read and make Sentient-internal changes, whatever the mode or rules 
 Once a run has read outside content (``ToolContext.untrusted``, ADR 0018), the agent loop asks for every call that
 can send data out (``rules.sends_out``) after "never" rules and before this broker's modes and rules, so an Allow
 rule, mode "off" or "Allow for this chat" never skip that question.
+
+Scoped grants (#139, ``sentient.agent.grants``): an answer can be wider than one call ("Allow for this task", "Allow
+for 1 hour", "Always allow"). ``create`` records the answers a request offers and ``resolve`` refuses any other, so a
+client can't widen a purchase or a call after outside content. ``granted`` says whether a live grant covers a call;
+the agent loop asks it after modes and rules decided to ask.
 """
 
 from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from typing import Any
 
+from sentient.agent import grants as grant_rules
 from sentient.config.schema import ApprovalsConfig
 from sentient.tools.base import Risk, Tool, ToolContext, effective_risk
 from sentient.tools.rules import (
@@ -49,7 +56,9 @@ from sentient.tools.rules import (
     unprompted_message,
 )
 
-Decision = str  # "allow" | "allow_session" | "deny"
+log = logging.getLogger(__name__)
+
+Decision = str  # "allow" | "allow_session" | "allow_task" | "allow_timed" | "allow_always" | "deny" (grants.DECISIONS)
 
 
 def _sync_effective_risk(tool: Tool, arguments: dict, ctx: Any) -> Risk:
@@ -82,6 +91,12 @@ class ApprovalBroker:
     # the app ids of connections set to Read only (``integrations.read_only``), read on every check so a switch
     # applies at once (#141)
     read_only_source: Callable[[], Collection[str] | None] | None = None
+    # task and timed grants, and "Always allow" (#139); None in bare tests
+    grants: grant_rules.GrantStore | None = None
+    # approval id -> the answers that request offered; an answer outside them is refused
+    _choices: dict[str, list[str]] = field(default_factory=dict)
+    # approval id -> where it was answered ("desktop", "telegram"...), for the grant's note
+    _via: dict[str, str] = field(default_factory=dict)
 
     # ------------------------------------------------------------------ lasting rules
     def rule(self, tool: Tool) -> str | None:
@@ -175,10 +190,24 @@ class ApprovalBroker:
         # memory, skills (reviewed separately), files folder and task list do not interrupt.
         return risk >= Risk.write and not (tool.internal and risk < Risk.send)
 
-    def create(self, approval_id: str) -> asyncio.Future:
+    async def granted(self, tool: Tool, risk: Risk, arguments: dict, ctx: Any) -> bool:
+        """True when a live task or timed grant covers this call (#139). Never for a call a grant may not cover:
+        a purchase, a tool that asks every time, a raised risk or running code (``grants.grantable``)."""
+        if self.grants is None:
+            return False
+        if not grant_rules.grantable(tool, risk):
+            return False
+        task_id = (getattr(ctx, "extra", None) or {}).get("task_id")
+        if self.grants.covers(tool.name, risk, str(task_id) if task_id else None) is None:
+            return False
+        return not await is_purchase(tool, arguments, ctx, risk)
+
+    def create(self, approval_id: str, choices: list[str] | None = None) -> asyncio.Future:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
         self._pending[approval_id] = fut
+        if choices:
+            self._choices[approval_id] = list(choices)
         return fut
 
     async def wait(
@@ -191,16 +220,35 @@ class ApprovalBroker:
             decision = "deny"
         finally:
             self._pending.pop(approval_id, None)
+            self._choices.pop(approval_id, None)
+            via = self._via.pop(approval_id, "desktop")
+        level = Risk.exec if risk is None else Risk(risk)
         if decision == "allow_session" and session_id:
-            level = Risk.exec if risk is None else Risk(risk)
             key = (session_id, tool_name)
             self._session_allow[key] = max(level, self._session_allow.get(key, Risk.read))
+        elif decision in {grant_rules.ALLOW_TIMED, grant_rules.ALLOW_ALWAYS} and self.grants is not None:
+            try:
+                if decision == grant_rules.ALLOW_TIMED:
+                    await self.grants.add(tool_name, "timed", level, via=via)
+                else:
+                    await self.grants.allow_always(tool_name, via=via)
+            except Exception:  # the call itself was allowed; a grant that failed to save just asks again later
+                log.exception("could not save the approval grant for %s", tool_name)
         return decision
 
-    def resolve(self, approval_id: str, decision: Decision) -> bool:
+    def resolve(self, approval_id: str, decision: Decision, via: str = "desktop") -> bool:
+        """Answer a pending request. False when it is no longer waiting or the answer is unknown. A yes wider than
+        the request offers (a client asking "for this chat" on a purchase) counts as "Allow once", so no client can
+        widen a request; that was also what such an answer did before scoped answers (#139)."""
         fut = self._pending.get(approval_id)
         if fut is None or fut.done():
             return False
+        if decision not in grant_rules.DECISIONS:
+            return False
+        offered = self._choices.get(approval_id) or [grant_rules.ALLOW, grant_rules.ALLOW_SESSION, grant_rules.DENY]
+        if decision not in offered:
+            decision = grant_rules.ALLOW
+        self._via[approval_id] = via or "desktop"
         fut.set_result(decision)
         return True
 

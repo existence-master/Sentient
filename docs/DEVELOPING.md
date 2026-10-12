@@ -109,6 +109,11 @@ To check how background work behaves on battery on a computer that is plugged in
 engine logs a warning while it is set). The engine log then shows `model job held: ... (on battery ...)`,
 `upkeep burst on battery` and `model job released: ...` lines.
 
+To try the Telegram channel without a real bot, point the engine at a Bot API server on this computer with
+`SENTIENT_TELEGRAM_API=http://127.0.0.1:<port>` (a test double, or Telegram's own local Bot API server). Every Bot API
+call, file downloads included, then goes there instead of `https://api.telegram.org`. Use it with a test
+`SENTIENT_HOME`, whose keychain namespace keeps a made-up token away from your real one.
+
 No test touches the network; the LLM is a scripted, deterministic fake
 (`tests/conftest.py`). Browser tests drive a hidden local Edge or Chrome against local pages and skip
 when none can start; Docker sandbox tests skip when Docker is not running. The suite is large: on a busy

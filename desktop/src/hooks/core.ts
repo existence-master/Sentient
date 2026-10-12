@@ -165,3 +165,28 @@ export function useTools() {
 export function useUsage(days = 30) {
   return useQuery({ queryKey: qk.usage(days), queryFn: () => api.usage.get(days) })
 }
+
+/** Live "Allow for this task" and "Allow for 1 hour" answers (#139). Empty on engines without them. */
+export function useApprovalGrants() {
+  return useQuery({
+    queryKey: qk.approvalGrants,
+    queryFn: async () => {
+      try {
+        return (await api.approvals.grants()).grants
+      } catch (err) {
+        if (isNotImplemented(err)) return []
+        throw err
+      }
+    },
+    // a timed grant runs out on its own: look again now and then while Settings is open
+    refetchInterval: 60_000
+  })
+}
+
+export function useRevokeGrant() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.approvals.revokeGrant(id),
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.approvalGrants })
+  })
+}

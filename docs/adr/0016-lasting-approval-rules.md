@@ -108,3 +108,29 @@ hand ("this time", "just this once", "for now", "in part A", "in step 2") is not
 "Off" now means no questions apart from this complete list: purchases, tools or apps set to Ask, sending after outside
 content was read ([ADR 0018](0018-untrusted-content-gates-sending.md)), and changes covered by an undecided proposal.
 Never rules and Read only connections refuse instead of asking.
+
+## Amendment (2026-10-12): tasks ask, scoped answers and approvals outside the app (#139)
+
+A task run that reached an Ask tool failed ("tasks can't ask yet"), so a scheduled task could not use a tool its owner
+only wanted to be asked about, and every approval was a one-call yes or "for this chat". Now:
+
+- **Tasks pause and ask.** A single task run that reaches an Ask tool holds the call and pauses with the same machinery
+  as the outside-content check (ADR 0018); the answer runs exactly that call once and the run carries on. Swarm
+  workers and subagents still cannot ask, so they keep refusing.
+- **Scoped answers.** The answer says how wide the yes is: once, this chat, this task, for a while
+  (`tools.approvals.grant_minutes`, "Allow for 1 hour"), or always (an Allow rule with an origin note). A task or timed
+  grant covers later calls of that one tool up to the risk approved, and it does cover the tool's Ask rule: the person
+  was asked about that tool and chose the width themselves, as they could by setting Allow in Settings. Purchases,
+  calls after outside content, tools that ask every time, raised risks and running code are only ever offered "once";
+  never rules, Read only connections, undecided proposals and the unprompted-work limit come before any grant. A yes
+  wider than a request offers counts as "once", so no client can widen it. Grants are listed in Settings >
+  Approvals with Revoke; a task's grants end with the task.
+- **Outside the app.** A waiting task's approval request goes to the paired messaging chats as buttons (numbered on
+  WhatsApp) or reply words, only while nobody is looking at the window (the window reports focus over `/ws`). Only the
+  chat a request was delivered to can answer it, and only through that message; outside content can never answer
+  one because answers come only from button presses and replies in paired chats, never from a model or a tool. Each
+  request expires (`tools.approvals.task_request_minutes`): the run stops and a late answer is refused.
+
+The alternative of time-limited "Allow for this chat" only would have kept tasks unable to ask. Letting grants cover
+purchases or code would make a phone tap a standing permission for spending or running code, which ADR 0008 and ADR
+0019 rule out.

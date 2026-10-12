@@ -6,7 +6,8 @@ and maps its typed events to v2 ProgressUpdates. The transcript is checkpointed 
 A run that calls ``ask_user`` stops after that round and raises ``RunPaused``; the
 service parks it as ``waiting_for_user`` until the answer arrives (``tasks/ask.py``).
 A run that read outside content (a tool result, or the event that started it) and then tries
-to send something pauses the same way and asks first (ADR 0018).
+to send something pauses the same way and asks first (ADR 0018). So does a run that reaches a tool set to Ask
+(#139), unless the user already allowed that tool for this task or for a while (``sentient.agent.grants``).
 A run that gets stuck (``tasks/stuck.py``) pauses the same way with a plain reason.
 The memories a run had in mind (facts in its prompt, facts memory tools returned that the model read) are kept on
 the run as ``memory_sources``, merged across pauses, resumes and restarts (``sentient/memory/sources.py``).
@@ -21,7 +22,7 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
-from sentient.agent.loop import Budget, LoopResult, history_to_openai
+from sentient.agent.loop import CAN_PAUSE_KEY, Budget, LoopResult, history_to_openai
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
 from sentient.llm.provider import ToolCall
 from sentient.memory.sources import MemorySources
@@ -362,7 +363,8 @@ async def execute_single(
                 })
 
             ctx = app.agent.tool_context(None, "task")
-            ctx.extra.update({"task_id": task_id, "run_id": run_id, ask.STATE_KEY: asking})
+            # CAN_PAUSE_KEY: an "ask" rule holds the call and the run pauses to ask, instead of failing (#139)
+            ctx.extra.update({"task_id": task_id, "run_id": run_id, ask.STATE_KEY: asking, CAN_PAUSE_KEY: True})
             if task.get("browser_profile"):  # the browser tools use the task's profile (docs/API.md section 12)
                 ctx.extra["browser_profile"] = task["browser_profile"]
             if continuity.applies(task):
@@ -458,7 +460,7 @@ async def execute_single(
     _spent(state, budget, started)
     await svc.repo.update_run(run_id, {"limits": state, **({"messages": messages} if messages else {})})
 
-    if result.stopped_by_rule:  # an "ask" rule stopped the run; say which and how to change it (ADR 0016)
+    if result.stopped_by_rule:  # an "ask" rule stopped a run that can't pause; say which and how to change it
         raise RunFailed(result.stopped_by_rule)
     # the loop breaker: the same call kept getting the same result. A repeated error is stuck; anything else fails.
     if result.stopped_by_repeat and not watch.repeated():
@@ -466,7 +468,8 @@ async def execute_single(
     # One question at a time, each with its own pending_question keys: ask_user's own question first, then a call
     # held after outside content (its yes runs that exact call), then stuck (seen again later if it still is).
     if result.paused and result.needs_ok is not None and not asking.get("question"):
-        raise RunPaused(ask.untrusted_pending(result.needs_ok))  # it read outside content: ask before sending
+        # it read outside content, or a tool is set to Ask (#139): ask before that call
+        raise RunPaused(ask.held_pending(result.needs_ok, app.config.tools.approvals))
     if watch.reason and not asking.get("question"):  # stuck: ask what to do (tasks/stuck.py)
         raise RunPaused(stuck.pending(watch.kind or "stalled", watch.reason))
     if result.paused:

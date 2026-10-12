@@ -26,6 +26,7 @@ from typing import Any
 from sentient import paths, secrets
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import ChatRules
+from sentient.agent.grants import GrantStore
 from sentient.agent.incognito import IncognitoSweeper
 from sentient.agent.loop import Agent
 from sentient.agent.subagents import SubagentManager
@@ -48,6 +49,7 @@ from sentient.memory.workspace import Workspace
 from sentient.migrate.memory_import import MemoryImports
 from sentient.nodes import NodeService
 from sentient.notifications import NotificationService
+from sentient.presence import Presence
 from sentient.proactivity import ProactiveEngine
 from sentient.sandbox import SandboxService
 from sentient.services import Service
@@ -94,6 +96,9 @@ class SentientApp:
         # "never" rules and the write tools of Read only connections are hidden from the model (ADR 0016)
         self.registry.set_blocked(self.approvals.is_hidden)
         self.chat_rules = ChatRules(self)  # "never delete my emails" in chat -> a proposed rule (#130)
+        # how wide a yes to an approval request is: this task, a while, or an Allow rule (#139)
+        self.approvals.grants = GrantStore(self)
+        self.presence = Presence(self.bus)  # is the person looking at the window? (#139)
         self.memory: FactMemory | None = None
         self.agent: Agent | None = None
 
@@ -257,6 +262,8 @@ class SentientApp:
         await asyncio.to_thread(claude_code.sweep_scratch)  # folders an earlier run couldn't remove (ADR 0022)
         await self.store.open()
         await self._load_stop_state()  # before services start: a stopped Sentient starts paused
+        assert self.approvals.grants is not None
+        await self.approvals.grants.load()
         self.workspace.ensure_defaults(
             self.config.assistant.name, self.config.assistant.user_name, self.config.assistant.timezone
         )

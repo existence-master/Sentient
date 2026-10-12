@@ -290,12 +290,17 @@ class ChatConfig(BaseModel):
 
 
 class RuleOrigin(BaseModel):
-    """Where a lasting rule came from when the user made it from a chat message (#130)."""
+    """Where a lasting rule came from when the user made it from a chat message (#130) or an answer to an approval
+    request (#139)."""
 
-    rule: Literal["ask", "never"] = Field(description="The rule the user accepted.")
+    rule: Literal["allow", "ask", "never"] = Field(description="The rule the user accepted.")
     said: str = Field("", description="The user's own words, shortened.")
     at: str = Field("", description="When the user accepted it (ISO time).")
     session_id: str | None = Field(None, description="The chat it was said in.")
+    source: Literal["chat", "approval"] = Field(
+        "chat", description="chat: made from a chat message. approval: you chose Always allow when Sentient asked (#139)."
+    )
+    via: str | None = Field(None, description="Where an Always allow answer was given: desktop, telegram, discord or whatsapp.")
 
 
 class ApprovalsConfig(BaseModel):
@@ -307,7 +312,16 @@ class ApprovalsConfig(BaseModel):
         "(its own memory, files and task list never interrupt). always: confirm every tool call.",
     )
     remember_session: bool = Field(True, description="'Allow for this chat' answers are honored.")
-    timeout_s: int = Field(600, ge=10, description="Unanswered approvals are denied after this long.")
+    timeout_s: int = Field(600, ge=10, description="Unanswered approvals in a chat are denied after this long.")
+    grant_minutes: int = Field(
+        60, ge=1, le=24 * 60,
+        description="How many minutes a timed yes to an approval request lasts. 60 shows as \"Allow for 1 hour\".",
+    )
+    task_request_minutes: int = Field(
+        240, ge=1, le=7 * 24 * 60,
+        description="A task waiting for your approval stops if nobody answers within this many minutes. "
+        "A late answer can't approve it.",
+    )
     rules: dict[str, Literal["allow", "ask", "never"]] = Field(
         default_factory=dict,
         description="Lasting rules for apps and tools. The key is a tool name (gmail_send_email) or an app id "

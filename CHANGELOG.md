@@ -6,6 +6,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Approve from your phone, and choose how far a yes goes:** when a task needs your OK and you're away from the
+  app, the request goes to your paired Telegram, Discord or WhatsApp chat with buttons (or reply with once, task,
+  hour, always or no). Only the chat it was sent to can answer it, and a request that waits too long (4 hours by
+  default) stops the task instead of being approved late. Every approval now lets you pick **Allow once**, **Allow
+  for this chat** or **Allow for this task**, **Allow for 1 hour**, or **Always allow** (which saves an Allow rule).
+  Purchases, running code and anything after Sentient read an email or web page still ask every time. Settings >
+  Approvals & safety lists what you allowed for a task or for a while, with **Revoke**. Tasks that reach a tool you set to
+  Ask now pause and ask you instead of failing.
 - **Routines pause while you're away:** when you haven't used Sentient for a week (the app or a chat), or 20 results
   have piled up since you were last around, Sentient asks once whether to keep your recurring tasks and briefs
   running. If you don't come back within a day, it pauses them and tells you in one notification. Any sign of you,

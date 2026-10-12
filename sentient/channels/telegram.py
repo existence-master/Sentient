@@ -6,6 +6,7 @@ import asyncio
 import io
 import logging
 import mimetypes
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,14 @@ from sentient.channels.formatting import TELEGRAM_LIMIT, html_to_plain, render_t
 log = logging.getLogger(__name__)
 
 API = "https://api.telegram.org"
+# A different Bot API server (Telegram's own local server, or a test double on this computer). Unset in normal use.
+API_ENV = "SENTIENT_TELEGRAM_API"
+
+
+def api_base() -> str:
+    """Where Bot API calls go: ``SENTIENT_TELEGRAM_API`` when it is an http(s) address, else Telegram's own."""
+    custom = os.environ.get(API_ENV, "").strip().rstrip("/")
+    return custom if custom.startswith(("http://", "https://")) else API
 TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
 
 INSTRUCTIONS = """\
@@ -138,7 +147,7 @@ class TelegramChannel(Channel):
         if not token:
             raise ChannelError("Telegram isn't connected.", 409)
         params = {k: v for k, v in params.items() if v is not None}
-        url = f"{API}/bot{token}/{method}"
+        url = f"{api_base()}/bot{token}/{method}"
         http = self.http or self._client()
         try:
             if files:
@@ -322,7 +331,7 @@ class TelegramChannel(Channel):
                 raise ChannelError("Telegram didn't give me that file. Please send it again.")
             http = self.http or self._client()
             try:
-                r = await http.get(f"{API}/file/bot{self.token}/{path}", timeout=120.0)
+                r = await http.get(f"{api_base()}/file/bot{self.token}/{path}", timeout=120.0)
             except httpx.HTTPError:
                 raise ChannelError("I couldn't download that file from Telegram. Please try again.") from None
             finally:
