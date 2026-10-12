@@ -44,6 +44,18 @@ WEATHER = {"location": "Pune, India", "current": {"condition": "Light rain", "te
 NEWS = {"articles": [{"title": "Monsoon ends early", "source": "Example Times", "url": "https://news.example.com/1"}]}
 
 
+class _FrozenDatetime(datetime):
+    """``datetime`` whose ``now()`` is NOW, so a brief built "now" sees the fixed day's events as upcoming."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
+
+
+def freeze_brief_clock(monkeypatch) -> None:
+    monkeypatch.setattr(brief_mod, "datetime", _FrozenDatetime)
+
+
 class Fakes:
     def __init__(self):
         self.calls: list[str] = []
@@ -265,7 +277,8 @@ async def test_setup_creates_one_editable_recurring_task(app):
     assert (await b.state())["set_up"] is False
 
 
-async def test_scheduled_run_delivers_the_brief_without_a_task_completed_note(app):
+async def test_scheduled_run_delivers_the_brief_without_a_task_completed_note(app, monkeypatch):
+    freeze_brief_clock(monkeypatch)  # the run builds the brief with the wall clock; the fake events are on NOW's day
     state = await app.proactivity.brief.setup({"sections": ["calendar", "weather"]})
     task = await app.tasks.get(state["task_id"])
     due = datetime.fromisoformat(task["next_execution_at"])
@@ -304,7 +317,8 @@ async def test_brief_expires_at_the_end_of_the_day(app):
     assert (await b.today(NOW))["id"] == third["id"]
 
 
-async def test_read_my_brief_tool_reads_today_or_builds_one(app):
+async def test_read_my_brief_tool_reads_today_or_builds_one(app, monkeypatch):
+    freeze_brief_clock(monkeypatch)
     tool = app.registry.get(brief_mod.READ_TOOL)
     ctx = app.agent.tool_context(None, "voice")
     fresh = await tool.call(ctx, {})

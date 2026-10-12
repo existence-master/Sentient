@@ -910,6 +910,7 @@ export interface MemoryUpdatedData {
 export interface DomainEventMap {
   'task.updated': Task
   'task.deleted': { task_id: string }
+  'tasks.away': AwayStatus
   'task.run_progress': { task_id: string; run_id: string; update: ProgressUpdate }
   'task.run_activity': { task_id: string; run_id: string; last_activity_at: ISODate }
   'task.run_context': { task_id: string; run_id: string; used: number | null; length: number | null; percent: number | null; warning: string | null }
@@ -1409,6 +1410,8 @@ export interface Task {
   /** `null` for single tasks. */
   swarm_details: SwarmDetails | null
   enabled: boolean
+  /** Never paused while you are away (#163). Older engines leave it out (false). */
+  keep_running?: boolean
   model: string | null
   /** Named browser profile its browser steps use (§12); `null` is the default one. */
   browser_profile?: string | null
@@ -1459,7 +1462,24 @@ export interface DeliveryChat {
 /** `default`: paired chats with delivery on; `desktop`: the app only; a list: only those chats. */
 export type TaskDeliverTo = 'default' | 'desktop' | DeliveryChat[]
 
-export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'deliver_to' | 'notepad'>>
+export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'deliver_to' | 'notepad' | 'keep_running'>>
+
+/** `GET /api/tasks/away` (#163): routines pause after a long absence and resume with one click. */
+export interface AwayStatus {
+  state: 'active' | 'asked' | 'paused'
+  last_active_at: ISODate | null
+  /** When the question was asked (`asked`) or the routines were paused (`paused`). */
+  since: ISODate | null
+  reason: 'days' | 'results' | null
+  /** `paused`: the tasks paused for absence. */
+  task_ids: string[]
+  notification_id: string | null
+  /** `asked`: when they pause if you don't come back. */
+  pause_at?: ISODate
+  away_pause_days: number
+  away_pause_after_results: number
+  away_ask_hours: number
+}
 
 export interface ClarificationAnswer {
   question_id: string

@@ -138,6 +138,14 @@ class SentientApp:
     async def notify(self, kind: str, message: str, *, title: str | None = None, payload: dict | None = None) -> dict:
         return await self.notifications.create(kind, message, title=title, payload=payload)
 
+    async def user_seen(self, surface: str) -> None:
+        """The user did something (a chat message anywhere, the app in use, a paired chat): resets the away timer
+        that pauses routines (#163). Never raises."""
+        try:
+            await self.tasks.away.seen(surface)
+        except Exception:
+            log.exception("could not record activity from %s", surface)
+
     def save_config(self, config: SentientConfig | None = None) -> None:
         """Persist and hot-apply configuration."""
         if config is not None:
