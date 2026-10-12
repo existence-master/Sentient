@@ -862,6 +862,7 @@ class TaskService(Service):
         if pending.get("stuck"):
             return await self._answer_stuck(task_id, run, pending, text)
         call_id = pending.get("tool_call_id")
+        granted: tuple[dict, str] | None = None  # saved only once this answer has claimed the run
         if (pending.get("untrusted_call") or pending.get("approval")) and ask.expired(pending):
             await self._expire_question(task_id, run_id)
             raise TaskConflict(ask.EXPIRED_LATE)
@@ -874,7 +875,7 @@ class TaskService(Service):
                 raise ValueError("Answer with one of: " + ", ".join(pending.get("options") or []) + ".")
             if decision == grant_rules.DENY:
                 return await self._stop_at_question(task_id, run_id, pending, text)
-            await self._grant(task_id, approval, decision, via)
+            granted = (approval, decision)
             messages = ask.approve_call(run.get("messages") or [], call_id)
             text = grant_rules.decision_label(decision, minutes)
         elif pending.get("untrusted_call"):  # a held call after outside content (ADR 0018): only a clear yes runs it
@@ -885,6 +886,8 @@ class TaskService(Service):
             messages = ask.fill_result(run.get("messages") or [], call_id, ask.answer_content(text))
         if not await self.repo.resume_run(run_id, messages):
             raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
+        if granted is not None:  # a losing answer (desktop and phone at once) never leaves a grant or rule behind
+            await self._grant(task_id, *granted, via)
         await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
         await self._set(task_id, {"status": "processing", "error": None})
         await self._resolve_question_notifications(run_id, "answered", answer=text)

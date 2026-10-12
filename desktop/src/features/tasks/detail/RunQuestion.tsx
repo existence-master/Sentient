@@ -15,6 +15,7 @@ export function RunQuestion({ task, run, className }: { task: Task; run: Run; cl
   const id = task.task_id
   const stuck = q.kind === 'stuck'
   const approval = q.kind === 'approval' // a call held until you allow it (#139)
+  const typed = !approval || q.options.length === 0 // approvals answer with their buttons; typing only without them
   const sending = ops.isBusy('answerQuestion', id)
   const send = (answer: string) => {
     const a = answer.trim()
@@ -63,7 +64,7 @@ export function RunQuestion({ task, run, className }: { task: Task; run: Run; cl
             ))}
           </div>
         )}
-        {!approval && (
+        {typed && (
           <Textarea
           autoGrow
           rows={1}
@@ -89,7 +90,7 @@ export function RunQuestion({ task, run, className }: { task: Task; run: Run; cl
             : 'You can also answer from the notification or a paired Telegram or Discord chat.'}
         </span>
         <span className="flex-1" />
-        {!approval && (
+        {typed && (
         <Button type="submit" size="sm" variant="primary" leftIcon={<IconSend size={14} />} disabled={!text.trim() || sending} loading={sending && picked === text.trim()}>
           Send answer
         </Button>

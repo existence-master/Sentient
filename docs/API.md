@@ -1334,7 +1334,7 @@ Client → server:
 - JSON `{"type": "wake"}` in standby: wake without the phrase (device button, UI tap) → `wake` with `source: "client"`
 - JSON `{"type": "interrupt"}` (barge-in: stop speaking)
 - JSON `{"type": "text", "text"}` (typed input into the voice conversation; skips STT)
-- JSON `{"type": "approval.respond", "approval_id", "decision": "allow"|"allow_session"|"deny"}` → `approval.ack`
+- JSON `{"type": "approval.respond", "approval_id", "decision": "allow"|"allow_session"|"allow_timed"|"allow_always"|"deny"}` (one of the request's `choices`; a wider yes counts as `allow`, section 2) → `approval.ack`
 - JSON `{"type": "ping"}` → `{"type": "pong"}`
 - JSON `{"type": "stop"}` → cancels any turn in progress, sends `state: idle`, closes the socket
 
