@@ -71,6 +71,7 @@ export function installDomainEvents(qc: QueryClient): () => void {
       if (e.data.original_context?.source === 'brief') refreshBrief()
     })
   )
+  offs.push(live.onDomain('tasks.away', (e) => void qc.setQueryData(qk.tasks.away, e.data)))
   offs.push(
     live.onDomain('task.deleted', (e) => {
       removeTask(qc, e.data.task_id)

@@ -44,7 +44,7 @@ import {
   Textarea,
   Tooltip
 } from '@/components/ui'
-import { useTask, useTasks } from '@/hooks/tasks'
+import { useAway, useTask, useTasks } from '@/hooks/tasks'
 import { isApiError } from '@/lib/api'
 import { modelShortName } from '@/lib/models'
 import type { Task, TaskSchedule } from '@/lib/types'
@@ -448,6 +448,8 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
   const last = latestRun(task)
   const kind = taskKind(task)
   const waiting = waitingRun(task)
+  const away = useAway()
+  const pausedWhileAway = away.data?.state === 'paused' && away.data.task_ids.includes(id)
 
   return (
     <>
@@ -500,7 +502,9 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
         >
           {task.original_context?.imported_from && !task.plan.length
             ? 'Brought over from Hermes. Resume it and Sentient makes a plan for you to approve before it runs.'
-            : "It won't run on its schedule or triggers until you resume it."}
+            : pausedWhileAway
+              ? "Sentient paused it while you were away. It won't run until you resume it."
+              : "It won't run on its schedule or triggers until you resume it."}
         </Alert>
       )}
 
@@ -683,6 +687,10 @@ function PropertiesCard({ task, tz, ops, compact }: { task: Task; tz: string; op
   const next = nextRunDate(task, now)
   const kind = taskKind(task)
   const toggleable = kind === 'recurring' || kind === 'triggered' || kind === 'script' || task.status === 'pending'
+  // routines pause on their own after a long absence (#163) unless they are set to keep running
+  const routine = kind === 'recurring' || kind === 'triggered' || kind === 'script'
+  const keepRunning = (v: boolean) =>
+    void ops.update(task.task_id, { keep_running: v }, v ? 'It keeps running while you are away' : 'It pauses if you are away for a long time')
   const rows = useMemo(
     () =>
       [
@@ -706,8 +714,14 @@ function PropertiesCard({ task, tz, ops, compact }: { task: Task; tz: string; op
         ))}
         <BrowserProfileRow task={task} ops={ops} compact />
         <DeliverToRow task={task} ops={ops} compact />
+        {routine && (
+          <label className="ml-auto flex items-center gap-2 text-fg-muted" title="Routines pause on their own when you haven't used Sentient for a while">
+            Keep running while I'm away
+            <Switch size="sm" checked={!!task.keep_running} onCheckedChange={keepRunning} aria-label="Keep running while I'm away" />
+          </label>
+        )}
         {toggleable && (
-          <label className="ml-auto flex items-center gap-2 text-fg-muted">
+          <label className={cn('flex items-center gap-2 text-fg-muted', !routine && 'ml-auto')}>
             {task.enabled ? 'Enabled' : 'Paused'}
             <Switch size="sm" checked={task.enabled} onCheckedChange={(v) => void ops.setEnabled(task.task_id, v)} aria-label="Enabled" />
           </label>
@@ -725,6 +739,17 @@ function PropertiesCard({ task, tz, ops, compact }: { task: Task; tz: string; op
             <dt className="text-fg-subtle">Enabled</dt>
             <dd>
               <Switch size="sm" checked={task.enabled} onCheckedChange={(v) => void ops.setEnabled(task.task_id, v)} aria-label="Enabled" />
+            </dd>
+          </div>
+        )}
+        {routine && (
+          <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+            <dt className="text-fg-subtle">
+              Keep running while I'm away
+              <span className="block text-2xs text-fg-faint">Otherwise it pauses when you haven't used Sentient for a while</span>
+            </dt>
+            <dd>
+              <Switch size="sm" checked={!!task.keep_running} onCheckedChange={keepRunning} aria-label="Keep running while I'm away" />
             </dd>
           </div>
         )}

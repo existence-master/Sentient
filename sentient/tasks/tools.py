@@ -38,6 +38,7 @@ def _compact(task: dict) -> dict:
         "task_type": task["task_type"],
         "schedule": task["schedule"],
         "enabled": task["enabled"],
+        "keep_running": task.get("keep_running", False),
         "next_execution_at": task["next_execution_at"],
         "last_execution_at": task["last_execution_at"],
         "plan": task["plan"],
@@ -121,11 +122,13 @@ async def update_task(
     description: str | None = None,
     enabled: bool | None = None,
     schedule: dict | None = None,
+    keep_running: bool | None = None,
     script_code: str | None = None,
     script_condition: str | None = None,
     script_then: str | None = None,
 ) -> dict:
     """Change an existing task directly: rename it, edit its description, turn it on or off (`enabled`),
+    keep a routine running even while the user is away (`keep_running`; others pause after a long absence),
     change its `schedule` (same shape as in search_tasks results; every N minutes is
     {"type": "recurring", "frequency": "interval", "interval_minutes": N}), or edit a watch job's check
     script (`script_code`, `script_condition` "alert"|"changed"|"noteworthy"|"every_run", `script_then` "notify"|"run").
@@ -137,7 +140,8 @@ async def update_task(
     from sentient.tasks.service import TaskConflict, TaskNotFound
 
     fields: dict[str, Any] = {}
-    for key, value in (("name", name), ("description", description), ("enabled", enabled), ("schedule", schedule)):
+    for key, value in (("name", name), ("description", description), ("enabled", enabled), ("schedule", schedule),
+                       ("keep_running", keep_running)):
         if value is not None:
             fields[key] = value
     script = {k: v for k, v in (("code", script_code), ("condition", script_condition), ("then", script_then)) if v}

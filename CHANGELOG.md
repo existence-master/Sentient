@@ -14,6 +14,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
   Purchases, running code and anything after Sentient read an email or web page still ask every time. Settings >
   Approvals & safety lists what you allowed for a task or for a while, with **Revoke**. Tasks that reach a tool you set to
   Ask now pause and ask you instead of failing.
+- **Routines pause while you're away:** when you haven't used Sentient for a week (the app or a chat), or 20 results
+  have piled up since you were last around, Sentient asks once whether to keep your recurring tasks and briefs
+  running. If you don't come back within a day, it pauses them and tells you in one notification. Any sign of you,
+  in the app or a paired chat, keeps them running. **Resume routines** in that notification, in your chat app or on
+  the Tasks page brings them all back. Turn on **Keep running while I'm away** on a task that should never pause.
+  The day counts and the waiting time are in Settings > Tasks.
 - **Sentient never overwrites a skill you edited:** when you change a skill, in Skills or in any text editor, Sentient
   notices and leaves your version alone. When it has a better idea it drafts the change for you to compare and
   approve, and says plainly that your version is untouched. A proposal drafted before your edit warns that approving

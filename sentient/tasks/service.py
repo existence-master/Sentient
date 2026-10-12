@@ -34,7 +34,8 @@ from sentient.agent import grants as grant_rules
 from sentient.llm.jobs import detached
 from sentient.llm.provider import PlainProviderError, ProviderError
 from sentient.services import Service, cancel_tasks
-from sentient.tasks import ask, catchup, continuity, executor, limits, scripts, stuck, swarm
+from sentient.tasks import ask, away, catchup, continuity, executor, limits, scripts, stuck, swarm
+from sentient.tasks.away import AwayWatch
 from sentient.tasks.delivery import from_stored, stored
 from sentient.tasks.executor import RunFailed, RunPaused
 from sentient.tasks.jsonio import complete_json_object
@@ -69,7 +70,7 @@ STATUSES = {
 }
 UPDATABLE_FIELDS = {
     "name", "description", "priority", "schedule", "plan", "enabled", "status", "model", "assignee", "script",
-    "browser_profile", "deliver_to", "notepad",
+    "browser_profile", "deliver_to", "notepad", "keep_running",
 }
 SANDBOX_RESULT = {
     "ok": False, "backend": None, "stdout": "", "stderr": "", "result": None, "files_created": [],
@@ -177,6 +178,7 @@ class TaskService(Service):
         self._items: asyncio.Queue[dict] = asyncio.Queue()
         self._last_tick: datetime | None = None  # wall clock of the last scheduler tick (a big jump means sleep)
         self._catch_up_reason: str | None = "start"  # what the next catch-up notice says it caught up after
+        self.away = AwayWatch(self)  # pause routines while the user is away (#163)
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -201,6 +203,8 @@ class TaskService(Service):
             if not self.app.stopped:  # stopped: interrupted work is picked up on resume (app.resume)
                 await self.recover_interrupted()
             self.run_every(cfg.tick_seconds, self._tick_job, name="scheduler", initial_delay=min(5, cfg.tick_seconds))
+            # the first check waits so a user opening the app after a long break counts as back first
+            self.run_every(away.CHECK_EVERY_S, self.away.check_job, name="away", initial_delay=away.CHECK_EVERY_S)
 
     async def stop(self) -> None:
         await super().stop()
@@ -568,6 +572,8 @@ class TaskService(Service):
             changes["plan"] = normalize_plan(data["plan"], self.app.registry)
         if "enabled" in data:
             changes["enabled"] = bool(data["enabled"])
+        if "keep_running" in data:
+            changes["keep_running"] = bool(data["keep_running"])
         if "status" in data:
             if data["status"] not in STATUSES:
                 raise ValueError(f"Unknown status '{data['status']}'.")

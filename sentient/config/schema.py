@@ -478,6 +478,18 @@ class TasksConfig(BaseModel):
         "when Sentient is back if it is less than this many hours late. Later ones are skipped and you're told. "
         "A task never runs more than once to catch up. 0 always skips.",
     )
+    away_pause_days: int = Field(
+        7, ge=0, le=365, description="Pause recurring tasks and briefs after you haven't used Sentient (the app or a "
+        "chat) for this many days. Tasks set to keep running are never paused. 0 never pauses for this.",
+    )
+    away_pause_after_results: int = Field(
+        20, ge=0, le=1000, description="Also pause them when this many results arrived since you were last around. "
+        "0 never pauses for this.",
+    )
+    away_ask_hours: int = Field(
+        24, ge=0, le=168, description="Before pausing, ask once and wait this many hours for any sign of you. "
+        "0 pauses without asking.",
+    )
 
 
 # ----------------------------------------------------------------------------- integrations (owner: integrations agent)

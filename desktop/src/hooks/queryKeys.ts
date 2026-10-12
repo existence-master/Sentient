@@ -34,7 +34,9 @@ export const qk = {
   tasks: {
     all: ['tasks'] as const,
     detail: (id: string) => ['tasks', id] as const,
-    runEvents: (id: string, runId: string) => ['tasks', id, 'runs', runId, 'events'] as const
+    runEvents: (id: string, runId: string) => ['tasks', id, 'runs', runId, 'events'] as const,
+    /** Kept outside the ['tasks'] prefix so task list updates never touch it. */
+    away: ['tasks-away'] as const
   },
 
   integrations: {

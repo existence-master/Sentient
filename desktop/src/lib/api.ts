@@ -12,6 +12,7 @@
  *   engine does not have them yet; whenever the engine answers, its data is used.
  */
 import type {
+  AwayStatus,
   BackupEntry,
   BackupInspect,
   BackupOverview,
@@ -416,6 +417,8 @@ export const api = {
   health: () => http.get<Health>('/api/health'),
   bootstrap: () => http.get<Bootstrap>('/api/bootstrap'),
   onboarding: (body: OnboardingRequest) => http.post<OkResponse>('/api/onboarding', body),
+  /** The window is in use: resets the timer that pauses routines while you are away (#163). */
+  activity: () => http.post<{ ok: boolean; last_active_at: string | null }>('/api/activity'),
 
   // §17 stop everything
   stop: {
@@ -542,6 +545,9 @@ export const api = {
   // §4 tasks -------------------------------------------------------------------
   tasks: {
     list: () => http.get<Task[]>('/api/tasks'),
+    away: () => http.get<AwayStatus>('/api/tasks/away'),
+    awayResume: () => http.post<{ resumed: number; status: AwayStatus }>('/api/tasks/away/resume'),
+    awayKeep: () => http.post<AwayStatus>('/api/tasks/away/keep'),
     get: (id: string) => http.get<Task>(`/api/tasks/${enc(id)}`),
     create: (body: TaskCreateRequest) => http.post<Task>('/api/tasks', body),
     preview: (prompt: string) => http.post<TaskPreview>('/api/tasks/preview', { prompt }),
