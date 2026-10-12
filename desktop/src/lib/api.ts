@@ -428,9 +428,14 @@ export const api = {
 
   sessions: {
     list: (limit = 100) => http.get<Session[]>('/api/sessions', { query: { limit } }),
-    create: (opts: { incognito?: boolean } = {}) =>
-      http.post<{ session_id: string }>('/api/sessions', undefined, { query: opts.incognito ? { incognito: true } : undefined }),
+    create: (opts: { incognito?: boolean; model?: string | null } = {}) =>
+      http.post<{ session_id: string }>('/api/sessions', undefined, {
+        query: opts.incognito || opts.model ? { ...(opts.incognito ? { incognito: true } : {}), ...(opts.model ? { model: opts.model } : {}) } : undefined
+      }),
     rename: (id: string, title: string) => http.patch<OkResponse>(`/api/sessions/${enc(id)}`, { title }),
+    /** The chat's own model (#312); null follows the default again. */
+    setModel: (id: string, model: string | null) =>
+      http.patch<OkResponse & { model: string | null }>(`/api/sessions/${enc(id)}`, { model }),
     delete: (id: string) => http.delete<OkResponse>(`/api/sessions/${enc(id)}`),
     messages: (id: string, limit = 500) =>
       http.get<TranscriptMessage[]>(`/api/sessions/${enc(id)}/messages`, { query: { limit } }),

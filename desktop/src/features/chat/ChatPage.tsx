@@ -2,13 +2,18 @@ import { IconArrowDown, IconFileUpload, IconMessageOff, IconSpy, IconWorldWww } 
 import { AnimatePresence, motion } from 'motion/react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router'
+import { toast } from 'sonner'
 import { Button, EmptyState, IconButton, Skeleton } from '@/components/ui'
 import { useBrowserView } from '@/features/browser/state'
 import { ChannelBadge } from '@/features/channels/meta'
 import { HelpersTray } from './HelpersTray'
-import { useBootstrap, useConfig, useMessages, useRuleProposals, useSessions } from '@/hooks/core'
-import { isApiError } from '@/lib/api'
+import { useBootstrap, useConfig, useMessages, useRuleProposals, useSessions, useSetChatModel } from '@/hooks/core'
+import { qk } from '@/hooks/queryKeys'
+import { api, errorMessage, isApiError } from '@/lib/api'
 import { foldTranscript, type AttachmentView, type TimelineItem } from '@/lib/chatFold'
+import { chatModelLabel } from '@/lib/models'
+import { queryClient } from '@/lib/queryClient'
+import type { Session } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { liveItems, useChat } from '@/stores/chat'
 import { AssistantTurn } from './AssistantTurn'
@@ -79,6 +84,28 @@ function ChatView({
   const incognito = newIncognito || knownIncognito || !!session?.incognito || !!liveSession?.request.incognito
   const usesMemory = config.data?.chat.incognito_uses_memory ?? true
 
+  // The chat's own model (#312). A new chat keeps the pick here until its first message creates it.
+  const [newChatModel, setNewChatModel] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false) // a new chat with its own model is being created
+  const setModel = useSetChatModel()
+  const chatModel = sessionId ? ((session?.model as string | null | undefined) ?? null) : newChatModel
+  const onChatModelChange = useCallback(
+    (model: string | null) => {
+      if (!sessionId) {
+        setNewChatModel(model)
+        return
+      }
+      setModel.mutate(
+        { id: sessionId, model },
+        {
+          onSuccess: () => toast.success(model ? `This chat now uses ${chatModelLabel(model)}` : 'This chat uses the default model again'),
+          onError: (e) => toast.error("Couldn't change this chat's model", { description: errorMessage(e) })
+        }
+      )
+    },
+    [sessionId, setModel]
+  )
+
   // A brand-new chat navigates to its session once the engine assigns an id.
   useEffect(() => {
     if (!sessionId && resolvedId) navigate(`/chat/${resolvedId}`, { replace: true })
@@ -94,15 +121,36 @@ function ChatView({
   const lastAssistantIndex = items.map((i) => i.kind).lastIndexOf('assistant')
 
   const onSend = useCallback(
-    async (text: string, files: AttachmentView[], model: string | undefined) => {
-      const key = await send(sessionId ?? null, { text, attachments: files, model, incognito: !sessionId && newIncognito })
+    async (text: string, files: AttachmentView[]) => {
+      if (!sessionId && newChatModel) {
+        // a new chat with its own model: create it first so even its first reply uses that model (#312)
+        if (creating) return
+        let id: string
+        setCreating(true) // until this view moves to the new chat, so a second message can't start another one
+        try {
+          id = (await api.sessions.create({ incognito: newIncognito, model: newChatModel })).session_id
+        } catch (err) {
+          setCreating(false)
+          setInject({ text, nonce: Date.now() }) // the message box was cleared: put the text back
+          toast.error("Couldn't start the chat", { description: errorMessage(err) })
+          return
+        }
+        useChat.getState().adopt(id, { incognito: newIncognito })
+        const now = new Date().toISOString()
+        const row: Session = { id, title: null, channel: 'desktop', created_at: now, updated_at: now, incognito: newIncognito, model: newChatModel }
+        queryClient.setQueryData<Session[]>(qk.sessions, (old) => [row, ...(old ?? []).filter((s) => s.id !== id)])
+        await send(id, { text, attachments: files })
+        navigate(`/chat/${id}`, { replace: true })
+        return
+      }
+      const key = await send(sessionId ?? null, { text, attachments: files, incognito: !sessionId && newIncognito })
       if (!sessionId) setPendingKey(key)
     },
-    [send, sessionId, newIncognito]
+    [send, sessionId, newIncognito, newChatModel, navigate, creating]
   )
 
   const onPick = (s: Pick<Suggestion, 'prompt' | 'autoSend'>) => {
-    if (s.autoSend) void onSend(s.prompt, [], undefined)
+    if (s.autoSend) void onSend(s.prompt, [])
     else setInject({ text: s.prompt, nonce: Date.now() })
   }
 
@@ -191,11 +239,14 @@ function ChatView({
                 draftKey="new"
                 assistantName={assistantName}
                 streaming={false}
+                busy={creating}
                 attachments={attachments}
                 onSend={onSend}
                 onStop={() => undefined}
                 autoFocus
                 inject={inject}
+                chatModel={chatModel}
+                onChatModelChange={onChatModelChange}
               />
             </div>
           </div>
@@ -255,6 +306,8 @@ function ChatView({
                 onStop={() => liveSession && cancel(liveSession.key)}
                 autoFocus
                 inject={inject}
+                chatModel={chatModel}
+                onChatModelChange={sessionId ? onChatModelChange : undefined}
               />
             </div>
           </div>

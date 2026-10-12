@@ -96,6 +96,17 @@ class Error(_Event):
     recoverable: bool = True
 
 
+class Notice(_Event):
+    """A plain note about this reply that is not an error, shown once above it. ``code`` says what it is about:
+    ``model_fallback`` when the chat's own model couldn't answer and the default model answered instead (#312)."""
+
+    type: Literal["notice"] = "notice"
+    message: str
+    code: str = ""
+    model: str | None = None  # the chat's model that couldn't answer
+    used: str | None = None  # the model that answered instead
+
+
 class Done(_Event):
     type: Literal["done"] = "done"
     content: str = ""
@@ -117,6 +128,7 @@ AgentEvent = (
     | UserInterjection
     | Usage
     | Error
+    | Notice
     | Done
 )
 

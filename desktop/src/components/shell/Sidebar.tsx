@@ -44,7 +44,7 @@ import { SkillsNavBadge } from '@/features/skills/SkillsNavBadge'
 import { MemoryNavBadge } from '@/features/memory/MemoryNavBadge'
 import { useBootstrap, useDeleteSession, useRenameSession, useSessionSearch, useSessions } from '@/hooks/core'
 import { errorMessage } from '@/lib/api'
-import { modelShortName } from '@/lib/models'
+import { chatModelLabel, modelShortName } from '@/lib/models'
 import type { Session } from '@/lib/types'
 import { cn, dateBucket, modKey } from '@/lib/utils'
 import { useChat } from '@/stores/chat'
@@ -294,6 +294,14 @@ function ChatListItem({ session }: { session: Session }) {
           {streaming && <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent" />}
           <ChannelBadge channel={session.channel} />
           <span className="min-w-0 flex-1 truncate">{title}</span>
+          {typeof session.model === 'string' && session.model && (
+            <span
+              title={`This chat uses ${session.model}`}
+              className="max-w-26 shrink-0 truncate rounded bg-accent/10 px-1.5 py-px text-2xs font-medium text-accent-text"
+            >
+              {chatModelLabel(session.model)}
+            </span>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button

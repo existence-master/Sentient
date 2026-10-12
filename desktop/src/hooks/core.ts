@@ -127,6 +127,18 @@ export function useRenameSession() {
   })
 }
 
+/** Pick a chat's own model, or null to follow the default (#312). */
+export function useSetChatModel() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, model }: { id: string; model: string | null }) => api.sessions.setModel(id, model),
+    onMutate: ({ id, model }) => {
+      qc.setQueryData<Session[]>(qk.sessions, (old) => old?.map((s) => (s.id === id ? { ...s, model } : s)))
+    },
+    onError: () => void qc.invalidateQueries({ queryKey: qk.sessions })
+  })
+}
+
 export function useDeleteSession() {
   const qc = useQueryClient()
   return useMutation({

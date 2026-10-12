@@ -97,6 +97,15 @@ export function modelShortName(model: string | null | undefined): string {
   return i > 0 ? model.slice(i + 1) : model
 }
 
+/** A chat model's name as people know it: "Claude Sonnet" for `claude-code/sonnet`, else the short name. */
+export function chatModelLabel(model: string | null | undefined): string {
+  const short = modelShortName(model)
+  if (providerOf(model) === 'claude-code' && /^(sonnet|opus|haiku|fable)$/.test(short)) {
+    return `Claude ${short[0].toUpperCase()}${short.slice(1)}`
+  }
+  return short
+}
+
 export function isLocalModel(model: string | null | undefined): boolean {
   return ['ollama', 'ollama_chat', 'lm_studio'].includes(providerOf(model))
 }

@@ -31,7 +31,9 @@ ollama pull nomic-embed-text
 into your system keychain, never into a file.
 
 You can mix both and change your mind any time in **Settings → Models**: for example a cloud model for chat and a
-local one for background work. **Test** next to each model checks that it works and can use tools.
+local one for background work. **Test** next to each model checks that it works and can use tools. One chat can
+also keep its own model: pick it with the model button in that chat's message box, and pick **Use the default** to
+go back.
 
 ## 3. Things to try
 
