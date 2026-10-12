@@ -228,6 +228,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- "Every 10 minutes", "every hour", "every 2 hours" and "every 30 min" now really repeat that often. Before, a local
+  model could save these as once a day at 09:00. Repeats are at least 5 minutes apart.
+- Check scripts written by the AI that can't work are sent back with the reason and rewritten once: scripts that use
+  packages that are not installed, loop forever, wait or sleep, use memory, or raise an alert where Sentient should
+  compare results. Scripts you edit yourself are not limited this way.
 - A second Sentient data folder (a test or demo profile set with `SENTIENT_HOME`) no longer shares the keychain with
   your own: it gets its own place for API keys, tokens and sign-ins, so it can't use, change or remove yours, and a
   seeded demo can't message anyone through your Telegram bot. Your own data folder (`~/.sentient`) keeps every key

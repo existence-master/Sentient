@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import difflib
 import json
+import sys
 from typing import Any
 
 CONDITIONS = ("alert", "changed", "noteworthy", "every_run")
@@ -60,8 +61,57 @@ def validate_code(code: Any) -> str:
     return code
 
 
-def normalize_script(raw: Any, previous: dict | None = None) -> dict:
-    """Merge user/planner input over ``previous``. Changing the code resets the stored state."""
+_SLEEPS = {"sleep", "time_sleep"}
+_IMPORTABLE = set(sys.stdlib_module_names) | {"sentient_tools"}
+
+
+def check_rules(code: str, condition: str) -> None:
+    """Reject what small models write into check scripts that cannot work (#305), with a plain reason the planner
+    can act on: a package that is not installed, an endless loop, a wait, memory calls, or an alert result on a
+    comparing condition."""
+    tree = ast.parse(code)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            names = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""]
+            for module in names:
+                top = module.split(".")[0]
+                if top and not getattr(node, "level", 0) and top not in _IMPORTABLE:
+                    raise ScriptInvalid(
+                        f"The check script imports `{top}`, which is not installed. Use only the Python standard "
+                        "library and `tools.<function>` (read a page with `tools.web_fetch(url=...)`)."
+                    )
+        if isinstance(node, ast.While) and isinstance(node.test, ast.Constant) and node.test.value:
+            raise ScriptInvalid(
+                "The check script loops forever (`while True`). It must run once and finish; Sentient runs it "
+                "again on the schedule."
+            )
+        name = node.attr if isinstance(node, ast.Attribute) else ""  # tools.memory_recall, even uncalled
+        if isinstance(node, ast.Call):
+            func = node.func
+            called = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else ""
+            if called in _SLEEPS:
+                raise ScriptInvalid(
+                    f"The check script waits (`{ast.unparse(func)}`). It must not sleep; Sentient runs it again "
+                    "on the schedule."
+                )
+            name = name or called
+        if name.startswith("memory_"):
+            raise ScriptInvalid(
+                f"The check script calls `{name}`. Check scripts must not use memory; for \"changed\" and "
+                "\"noteworthy\" Sentient remembers the last result and compares it for you."
+            )
+        if condition in COMPARING and isinstance(node, ast.Dict) and any(
+            isinstance(k, ast.Constant) and k.value == "alert" for k in node.keys
+        ):
+            raise ScriptInvalid(
+                f"The check script returns an alert (`{{\"alert\": ...}}`) but its condition is \"{condition}\". "
+                f"Use the condition \"alert\", or return only the watched value and let Sentient compare it."
+            )
+
+
+def normalize_script(raw: Any, previous: dict | None = None, *, model_written: bool = False) -> dict:
+    """Merge user/planner input over ``previous``. Changing the code resets the stored state. Code a model wrote
+    (the planner, chat tools) must also pass ``check_rules``; a person may write what they like."""
     if not isinstance(raw, dict):
         raise ScriptInvalid("script must be an object with code, condition and then.")
     prev = dict(previous or {})
@@ -73,6 +123,8 @@ def normalize_script(raw: Any, previous: dict | None = None) -> dict:
     then = str(raw.get("then") or prev.get("then") or "notify").strip().lower()
     if then not in THEN:
         raise ScriptInvalid("script.then must be 'notify' or 'run'.")
+    if model_written:
+        check_rules(code, condition)
     out = {"code": code, "condition": condition, "then": then}
     same_code = previous is not None and prev.get("code") == code
     # switching between changed and noteworthy keeps the baseline: both compare the same result

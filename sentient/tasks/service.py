@@ -52,7 +52,7 @@ from sentient.tasks.schedule import (
     normalize_schedule,
     parse_iso,
     parse_run_at,
-    spoken_window,
+    spoken_schedule,
     user_timezone_name,
 )
 from sentient.tasks.scripts import ScriptInvalid, normalize_script, validate_code
@@ -534,7 +534,7 @@ class TaskService(Service):
                     changes.update(task_type="single", script=None)
             else:
                 previous = task.get("script") if task.get("task_type") == "script" else None
-                script = normalize_script(data["script"], previous)
+                script = normalize_script(data["script"], previous, model_written=reapprove_script)
                 changes.update(task_type="script", script=script)
                 code_changed = (previous or {}).get("code") != script["code"]
                 if reapprove_script and code_changed and self.app.config.tasks.require_plan_approval:
@@ -1214,11 +1214,16 @@ class TaskService(Service):
         )
         if not isinstance(data, dict):
             raise TypeError("The model did not return task details.")
+        proposed = normalize_schedule(data.get("schedule"), tz)
+        schedule = spoken_schedule(proposed, prompt)
+        if schedule.get("frequency") == "interval" and proposed.get("interval_minutes") != schedule["interval_minutes"]:
+            log.info("the request says every %s minutes; saving an interval instead of %s",
+                     schedule["interval_minutes"], json.dumps(proposed))
         return {
             "name": str(data.get("name") or "").strip()[:200] or _title(prompt),
             "description": str(data.get("description") or "").strip() or prompt,
             "priority": _priority(data.get("priority", 1)),
-            "schedule": spoken_window(normalize_schedule(data.get("schedule"), tz), prompt),
+            "schedule": schedule,
         }
 
     async def _refine_and_plan(self, task_id: str, *, auto_approve: bool = False) -> None:
@@ -1230,7 +1235,7 @@ class TaskService(Service):
             details = await self._refine(prompt)
         except Exception as exc:  # v2: proceed with the raw description
             log.warning("could not refine task %s, planning from the raw prompt: %s", task_id, exc)
-            details = {"schedule": normalize_schedule(None, self.tz_name())}
+            details = {"schedule": spoken_schedule(normalize_schedule(None, self.tz_name()), prompt)}
         await self._set(task_id, details)
         await self.publish(task_id)
         await self._plan_job(task_id, auto_approve=auto_approve)
@@ -1369,12 +1374,13 @@ class TaskService(Service):
         if not isinstance(raw, dict) or raw.get("code") is None:
             return previous, data
         try:
-            return normalize_script(raw, previous), data
+            return normalize_script(raw, previous, model_written=True), data
         except ScriptInvalid as exc:
             log.info("planner script for task %s rejected, asking for a fix: %s", task["id"], exc)
             retry = [*parts, (
-                f"Your previous reply included a `script` that cannot be used: {exc}. "
-                "Reply again with the complete JSON object and corrected script code."
+                f"Your previous reply included this `script` code:\n```python\n{str(raw.get('code'))[:4000]}\n```\n"
+                f"It cannot be used: {exc}\n"
+                "Reply again with the complete JSON object and the script code fixed."
             )]
             fixed = await complete_json_object(self.app.llm,
                 "planner",
@@ -1386,7 +1392,7 @@ class TaskService(Service):
         raw = fixed.get("script")
         if not isinstance(raw, dict) or raw.get("code") is None:
             return previous, fixed
-        return normalize_script(raw, previous), fixed
+        return normalize_script(raw, previous, model_written=True), fixed
 
     # ------------------------------------------------------------------ swarm
     async def _orchestrate_swarm(self, task_id: str) -> None:
