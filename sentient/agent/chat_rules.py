@@ -451,13 +451,15 @@ class ChatRules:
     # ------------------------------------------------------------------ detection
     async def check(self, session_id: str, message_id: str | None, text: str) -> dict | None:
         """Propose a rule for ``text`` when it is a standing instruction about known tools. Never raises."""
+        # the reply starts waiting for this check after it starts, so its wait ends after this deadline
+        deadline = asyncio.get_running_loop().time() + self.attended_s
         try:
-            return await self._check(session_id, message_id, text)
+            return await self._check(session_id, message_id, text, deadline)
         except Exception as exc:  # a missed proposal must never break a chat turn
             log.warning("rule check skipped: %s", exc)
             return None
 
-    async def _check(self, session_id: str, message_id: str | None, text: str) -> dict | None:
+    async def _check(self, session_id: str, message_id: str | None, text: str, deadline: float) -> dict | None:
         said = standing_text(text)
         if not said:
             return None
@@ -468,18 +470,18 @@ class ChatRules:
         weighing = frozenset(t.name for t in candidates)
         self._checking.setdefault(session_id, []).append(weighing)  # fail closed until this check ends
         try:
-            return await self._propose(session_id, message_id, said, candidates, names)
+            return await self._propose(session_id, message_id, said, candidates, names, deadline)
         finally:
             running = self._checking.get(session_id, [])
             running.remove(weighing)
             if not running:
                 self._checking.pop(session_id, None)
 
-    async def detect(self, session_id: str, messages: list[dict]) -> Any:
+    async def detect(self, session_id: str, messages: list[dict], deadline: float | None = None) -> Any:
         """The model's answer to the detection prompt. The fast model gives it; when every fast model refuses this
         job (Claude Code only answers chats), the chat's own model or the primary model does (#311), since the check
         is part of answering this chat: the reply waits for it. Claude Code answers it as part of that reply, so only
-        within that wait (``attended_s``); a slower check ends with no card."""
+        until ``deadline`` (event-loop time, before the reply stops waiting); a slower check ends with no card."""
         llm = self.app.llm
         try:
             return await llm.complete_json("fast", messages)
@@ -491,6 +493,7 @@ class ChatRules:
             model, _ = await agent.chat_model(await self.app.store.get_session(session_id), "primary")
         if (model or llm.model_for("primary")).split("/", 1)[0] != claude_code.PREFIX:
             return await llm.complete_json("primary", messages, model=model)
+
         async def reply() -> str:
             text = ""
             with claude_code.attended():  # part of a reply the user is waiting for (ADR 0022)
@@ -499,13 +502,17 @@ class ChatRules:
             return text
 
         # only while the reply waits for this check: a slower answer is stopped, never left running in the background
-        return parse_json_loose(await asyncio.wait_for(reply(), self.attended_s), ("keys",))
+        left = (deadline - asyncio.get_running_loop().time()) if deadline is not None else self.attended_s
+        if left <= 0:
+            raise TimeoutError("the reply stopped waiting for this check")
+        return parse_json_loose(await asyncio.wait_for(reply(), left), ("keys",))
 
     async def _propose(
-        self, session_id: str, message_id: str | None, said: str, candidates: list[Tool], names: dict[str, str]
+        self, session_id: str, message_id: str | None, said: str, candidates: list[Tool], names: dict[str, str],
+        deadline: float | None = None,
     ) -> dict | None:
         try:
-            data = await self.detect(session_id, detection_messages(said, candidates, names))
+            data = await self.detect(session_id, detection_messages(said, candidates, names), deadline)
         except Exception as exc:
             log.info("rule check: the model gave no usable answer (%s)", exc)
             return None

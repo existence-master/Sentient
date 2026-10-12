@@ -290,6 +290,29 @@ async def test_a_slow_claude_code_check_stops_instead_of_running_on(config, isol
         await s.stop()
 
 
+async def test_the_claude_code_deadline_counts_from_when_the_check_started(config, isolated_home, monkeypatch):
+    """Time spent before Claude Code is asked (the refusing fast model, the chat's model) comes off its time."""
+    import asyncio
+
+    llm = _FastRefuses(replies=["Got it."], primary="claude-code/sonnet")
+    s = await _start(config, isolated_home, llm, [])
+    s.chat_rules.attended_s = 0.2
+    try:
+        slow_lookup = s.agent.chat_model
+
+        async def chat_model(session, role="primary"):
+            await asyncio.sleep(0.3)  # past the deadline before Claude Code would start
+            return await slow_lookup(session, role)
+
+        monkeypatch.setattr(s.agent, "chat_model", chat_model)
+        sid = await s.store.create_session(channel="cli")
+        assert await s.chat_rules.check(sid, None, "never delete my emails") is None
+        assert llm.attended == []  # Claude Code was never started
+        assert await s.chat_rules.list(sid, None) == []
+    finally:
+        await s.stop()
+
+
 def test_parse_detection_checks_keys_in_code():
     log: list[str] = []
     tools = _mail(log).tools
