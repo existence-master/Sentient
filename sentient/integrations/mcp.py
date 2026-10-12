@@ -32,16 +32,19 @@ from urllib.parse import parse_qs, urlsplit
 from sentient.integrations.base import IntegrationError, JsonSchemaTool
 from sentient.integrations.common import delete_secret, load_secret_json, store_secret_json
 from sentient.integrations.mcp_auth import (
+    SERVER_URL_KEY,
     KeychainTokenStorage,
     NeedsSignIn,
     SentientOAuthProvider,
     SignInFailed,
+    canonical_url,
     client_metadata,
     client_secret,
     delete_json,
     forget_server,
     headers_secret,
     load_json,
+    migrate_server_credentials,
     save_json,
     stale_sign_in,
     tokens_secret,
@@ -259,7 +262,10 @@ class MCPManager:
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
         for name, spec in dict(self.app.config.integrations.mcp_servers).items():
-            self._launch(name, dict(spec or {}))
+            spec_dict = dict(spec or {})
+            if spec_dict.get("transport") == "http" and spec_dict.get("url"):
+                migrate_server_credentials(name, spec_dict.get("url"))
+            self._launch(name, spec_dict)
 
     async def stop(self) -> None:
         for conn in list(self.servers.values()):
@@ -287,7 +293,7 @@ class MCPManager:
             "auth": auth,
             "header_keys": sorted(spec.get("header_keys") or []),
             "missing_values": self._missing_values(conn.name, spec),
-            "signed_in": auth == "oauth" and KeychainTokenStorage(conn.name).has_tokens(),
+            "signed_in": auth == "oauth" and KeychainTokenStorage(conn.name, url=conn.spec.get("url")).has_tokens(),
             "signing_in": conn.signin is not None,
             "enabled": bool(spec.get("enabled", True)),
             "access": self.mgr.access(plugin_id_for(conn.name)),
@@ -351,6 +357,8 @@ class MCPManager:
             # so only clear one saved for another address, never one another setup made for this same server.
             for secret in stale_sign_in(name, stored["url"] if transport == "http" else None, changed_here=changed_here):
                 delete_json(secret)
+            if transport == "http" and stored.get("url"):
+                migrate_server_credentials(name, stored["url"])
             if name in self.servers:
                 old = self.servers.pop(name)
                 self._cancel_sign_in(old)
@@ -491,12 +499,14 @@ class MCPManager:
                 await self._shutdown(conn)
             cfg = self.app.config
             existed = name in cfg.integrations.mcp_servers
+            spec = cfg.integrations.mcp_servers.get(name) or (conn.spec if conn else {})
+            url = spec.get("url") if spec else None
             if existed:
                 cfg.integrations.mcp_servers = {k: v for k, v in cfg.integrations.mcp_servers.items() if k != name}
                 cfg.integrations.read_only = [p for p in cfg.integrations.read_only if p != plugin_id_for(name)]
                 self.app.save_config()
             delete_secret(f"mcp:{name}")
-            forget_server(name)
+            forget_server(name, url=url)
             return existed or conn is not None
 
     async def test(self, name: str) -> dict:
@@ -538,7 +548,7 @@ class MCPManager:
         store = KeychainTokenStorage(name, fresh=True, url=conn.spec.get("url"))
         registered = await store.get_client_info()
         if registered is not None and redirect_uri not in [str(u) for u in registered.redirect_uris or []]:
-            delete_json(client_secret(name))  # registered for another port: register again
+            delete_json(client_secret(name, conn.spec.get("url")))  # registered for another port: register again
         loop = asyncio.get_running_loop()
         flow = SignInFlow(server=name, url=loop.create_future(), code=loop.create_future())
         conn.signin = flow
@@ -557,7 +567,15 @@ class MCPManager:
         if conn is None:
             raise KeyError(name)
         self._cancel_sign_in(conn)
-        delete_json(tokens_secret(name))
+        url = conn.spec.get("url")
+        delete_json(tokens_secret(name, url))
+        if url:
+            leg_key = tokens_secret(name, None)
+            leg = load_json(leg_key)
+            if isinstance(leg, dict):
+                saved = leg.get(SERVER_URL_KEY)
+                if saved is not None and canonical_url(saved) == canonical_url(url):
+                    delete_json(leg_key)
         if _auth_of(conn.spec) == "oauth" and conn.spec.get("enabled", True):
             await self._shutdown(self.servers.pop(name))
             conn = self._launch(name, conn.spec)
@@ -712,7 +730,7 @@ class MCPManager:
         async def no_code() -> Any:
             raise NeedsSignIn(name)
 
-        registered = load_json(client_secret(name)) or {}
+        registered = load_json(client_secret(name, url)) or load_json(client_secret(name, None)) or {}
         redirect = (registered.get("redirect_uris") or ["http://127.0.0.1/oauth/callback"])[0]
         return SentientOAuthProvider(url, client_metadata(redirect), store, no_browser, no_code,
                                      discovery_transport=self.http_transport)
@@ -752,7 +770,7 @@ class MCPManager:
             except Exception as exc:
                 auth = _auth_of(conn.spec)
                 if probe.unauthorized or _has(exc, NeedsSignIn):
-                    if auth == "oauth" and not conn.refresh_tried and KeychainTokenStorage(conn.name).mark_expired():
+                    if auth == "oauth" and not conn.refresh_tried and KeychainTokenStorage(conn.name, url=conn.spec.get("url")).mark_expired():
                         conn.refresh_tried = True  # the token may have died early: refresh once before asking
                         retry_now = True
                     conn.status, conn.error = "needs_sign_in", SIGN_IN_MESSAGES[auth]
