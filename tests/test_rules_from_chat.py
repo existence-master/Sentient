@@ -285,6 +285,19 @@ def test_narrow_app_keys_is_deterministic():
     assert narrow_app_keys(["mail_search", "mail"], "don't archive my emails", tools) == ["mail_search"]
     # an object that could be a verb ("messages") is not a second action
     assert narrow_app_keys(["mail"], "never delete my email messages", tools) == ["mail_delete_email"]
+    # a tool named exactly is that tool, never its whole app (#306: "Do not call browser_open." was all of Browser)
+    assert narrow_app_keys(["mail"], "Do not call mail_search.", tools) == ["mail_search"]
+
+
+def test_prefilter_leaves_out_limits_on_this_request_only():
+    """#306: "do not call browser_open again in part A" is an instruction for this reply, not a standing rule."""
+    assert standing_text("Then click Next (but do not call browser_open again in part A).") == ""
+    assert standing_text("Send the invite, but don't cc Maya this time.") == ""
+    assert standing_text("Don't archive anything for now.") == ""
+    assert standing_text("Do not call browser_open.") == "Do not call browser_open."
+    # a standing instruction next to a one-off limit in the same sentence is kept, the limit is not
+    assert standing_text("Never delete my emails, but don't cc Maya this time.") == "Never delete my emails, but"
+    assert standing_text("Never delete my emails, not even old ones.") == "Never delete my emails, not even old ones."
 
 
 @pytest.mark.parametrize(
@@ -511,6 +524,76 @@ async def test_a_slow_check_fails_closed_until_it_finishes(config, isolated_home
         await s.agent.drain()
         [proposal] = await s.chat_rules.list(sid)  # the proposal still arrives
         assert proposal["keys"] == ["mail_delete_email"] and s.chat_rules._checking == {}
+    finally:
+        await s.stop()
+
+
+NEVER_MAIL = {"keys": ["mail"], "rule": "never"}
+
+
+async def test_with_approvals_off_a_pending_proposal_lets_look_ups_run(config, isolated_home):
+    """#306: approvals "off" means no questions for reading. A pending proposal is a guess the user has not confirmed,
+    so it no longer makes a look-up wait; a call that changes something still asks until the user answers."""
+    log: list[str] = []
+    llm = FakeProvider(
+        replies=[
+            [tool_call("mail_search", query="invoices")], "Searched.",
+            [tool_call("mail_delete_email", message_id="m1")], "Not deleted.",
+        ],
+        json_replies=[NEVER_MAIL],
+    )
+    s = await _start(config, isolated_home, llm, log)
+    try:
+        assert s.config.tools.approvals.mode == "off"
+        sid = await s.store.create_session(channel="cli")
+        asked, _ = await _turn(s, sid, "Never use my mail. Look for invoices.")
+        [proposal] = await s.chat_rules.list(sid)
+        assert proposal["keys"] == ["mail"] and asked == [] and log == ["search:invoices"]
+        asked, _ = await _turn(s, sid, "delete m1", decision="deny")
+        assert [a.name for a in asked] == ["mail_delete_email"] and log == ["search:invoices"]
+    finally:
+        await s.stop()
+
+
+async def test_with_approvals_on_a_pending_proposal_still_asks_before_look_ups(config, isolated_home):
+    log: list[str] = []
+    config.tools.approvals.mode = "ask"
+    llm = FakeProvider(replies=[[tool_call("mail_search", query="invoices")], "Not searched."], json_replies=[NEVER_MAIL])
+    s = await _start(config, isolated_home, llm, log)
+    try:
+        sid = await s.store.create_session(channel="cli")
+        asked, _ = await _turn(s, sid, "Never use my mail. Look for invoices.", decision="deny")
+        assert [a.name for a in asked] == ["mail_search"] and log == []
+    finally:
+        await s.stop()
+
+
+async def test_with_approvals_off_a_slow_check_lets_look_ups_run(config, isolated_home, monkeypatch):
+    import asyncio
+
+    import sentient.agent.loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "RULE_CHECK_WAIT_S", 0.05)
+    release = asyncio.Event()
+
+    class Slow(FakeProvider):
+        async def complete_json(self, role, messages, *, model=None):
+            await release.wait()
+            return NEVER_MAIL
+
+    log: list[str] = []
+    llm = Slow(replies=[
+        [tool_call("mail_search", query="invoices")],
+        [tool_call("mail_delete_email", message_id="m1")], "Done.",
+    ])
+    s = await _start(config, isolated_home, llm, log)
+    try:
+        sid = await s.store.create_session(channel="cli")
+        asked, _ = await _turn(s, sid, "Never use my mail. Look for invoices, then delete m1.", decision="deny")
+        # the check is still weighing both tools: the look-up runs, the delete asks
+        assert [a.name for a in asked] == ["mail_delete_email"] and log == ["search:invoices"]
+        release.set()
+        await s.agent.drain()
     finally:
         await s.stop()
 

@@ -228,6 +228,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- With approvals set to **Never ask**, Sentient no longer stops to ask before just looking something up (a web page,
+  a snapshot of the browser, a search) because something you said in the chat sounded like a "never" it offered to
+  turn into a rule. Until you answer that suggestion it still checks with you before changing, sending, deleting or
+  running anything it covers. It also reads your words more carefully: naming one tool ("don't call browser_open")
+  suggests a rule for that tool only, never the whole app, and a limit on the request at hand ("don't cc her this
+  time", "in part A") is no longer taken as a lasting rule. Settings now lists what Never ask still checks: purchases,
+  apps you set to Ask, sending anything once a chat has read an email or web page, and a change you just told it never
+  to make until you answer its suggested rule.
 - "Every 10 minutes", "every hour", "every 2 hours" and "every 30 min" now really repeat that often. Before, a local
   model could save these as once a day at 09:00. Repeats are at least 5 minutes apart.
 - Check scripts written by the AI that can't work are sent back with the reason and rewritten once: scripts that use

@@ -301,8 +301,10 @@ class RuleOrigin(BaseModel):
 class ApprovalsConfig(BaseModel):
     mode: Literal["off", "ask", "always"] = Field(
         "ask",
-        description="off: never ask. ask: confirm actions that change things outside Sentient, send, "
-        "delete or run code (its own memory, files and task list never interrupt). always: confirm every tool call.",
+        description="off: don't ask, except before a purchase, for apps and tools set to Ask, before sending anything "
+        "once a chat has read an email or web page, and before a change you just told it never to make until you "
+        "answer that suggestion. ask: confirm actions that change things outside Sentient, send, delete or run code "
+        "(its own memory, files and task list never interrupt). always: confirm every tool call.",
     )
     remember_session: bool = Field(True, description="'Allow for this chat' answers are honored.")
     timeout_s: int = Field(600, ge=10, description="Unanswered approvals are denied after this long.")
