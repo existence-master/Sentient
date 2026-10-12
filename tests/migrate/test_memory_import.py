@@ -499,3 +499,32 @@ def test_routes(app, chatgpt_zip, openclaw_home, monkeypatch):
         assert {i["title"] for i in items} == {"Saved memories"} and {i["export"] for i in items} == {chatgpt_zip.name}
         assert c.post("/api/import/memory/job/cancel").json()["status"] == "done"
         assert c.delete("/api/import/chatgpt/memories").json() == {"facts": 3, "insights": 0}
+
+
+async def test_stop_everything_stops_an_import_and_blocks_new_ones(app, chatgpt_zip, monkeypatch):
+    gate = asyncio.Event()
+
+    async def slow(*a, **k):
+        await gate.wait()
+        return {"facts": []}
+
+    monkeypatch.setattr(app.fake, "complete_json", slow)
+    await app.memory_imports.start("chatgpt", str(chatgpt_zip), ["memories", "conversations"])
+    await asyncio.sleep(0.05)
+    out = await app.stop_all("test")
+    assert out["cancelled"] >= 1
+    assert app.memory_imports.current()["status"] == "cancelled"
+    assert app.memory_imports.current()["facts"] == 3  # what it saved stays for review
+    with pytest.raises(memory_import.ImportBusy, match="Resume"):
+        await app.memory_imports.start("chatgpt", str(chatgpt_zip), ["conversations"])
+    await app.resume("test")
+
+
+async def test_two_starts_at_once_run_one_import(app, chatgpt_zip):
+    results = await asyncio.gather(
+        app.memory_imports.start("chatgpt", str(chatgpt_zip), ["memories"]),
+        app.memory_imports.start("chatgpt", str(chatgpt_zip), ["memories"]),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(r, memory_import.ImportBusy) for r in results) == 1
+    await app.memory_imports._task

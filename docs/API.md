@@ -2290,7 +2290,8 @@ the job's `message` then says "Sorting N memories into topics."
   when the path is missing, isn't that app's export, or memory is turned off.
 - `POST /api/import/{app}/apply` `{path?, parts: [part], skip?: [item or source key]}` → **MemoryImportJob** with
   `status: "running"`: the import runs in the background (its model calls count as `memory` work and wait while a
-  chat is answering). 400 when `parts` is empty or the export can't be used; 409 while another import runs.
+  chat is answering). 400 when `parts` is empty or the export can't be used; 409 while another import runs or Sentient is stopped (section 17). Stop everything cancels a running import
+  (what it saved stays for review; it counts in `cancelled`).
 - `GET /api/import/memory/job` → **MemoryImportJob**, the running or last import since Sentient started (`null` when
   none).
 - `POST /api/import/memory/job/cancel` → **MemoryImportJob**: stops after the batch being read (`message: "Stopping

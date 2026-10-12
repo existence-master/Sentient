@@ -145,12 +145,18 @@ async def export(app: Any, fmt: str, now: datetime | None = None) -> dict:
     now = now or datetime.now().astimezone()
     facts, insights = await _rows(app)
     folder = paths.files_dir() / "exports"
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"sentient-memory-{now.strftime('%Y%m%d-%H%M%S')}{FORMATS[fmt]}"
-    n = 1
-    while path.exists():
-        n += 1
-        path = path.with_name(f"sentient-memory-{now.strftime('%Y%m%d-%H%M%S')}-{n}{FORMATS[fmt]}")
+    stamp = now.strftime("%Y%m%d-%H%M%S")
+
+    def unique() -> Path:
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"sentient-memory-{stamp}{FORMATS[fmt]}"
+        n = 1
+        while path.exists():
+            n += 1
+            path = folder / f"sentient-memory-{stamp}-{n}{FORMATS[fmt]}"
+        return path
+
+    path = await asyncio.to_thread(unique)
     if fmt == "markdown":
         text = markdown(app.config.assistant.user_name, facts, insights, now)
         await asyncio.to_thread(path.write_text, text, encoding="utf-8")

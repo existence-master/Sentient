@@ -89,7 +89,7 @@ export function AssistantImportDialog({
   const [watching, setWatching] = useState(false)
   const auto = useRef(false)
 
-  const info = useQuery({ queryKey: ['import', app], queryFn: () => api.imports.memory.info(app), enabled: open && app === 'openclaw' })
+  const info = useQuery({ queryKey: qk.memoryImportInfo(app), queryFn: () => api.imports.memory.info(app), enabled: open && app === 'openclaw' })
   const job = useQuery({
     queryKey: qk.memoryImportJob,
     queryFn: api.imports.memory.job,
@@ -101,7 +101,8 @@ export function AssistantImportDialog({
     onSuccess: (plan) => setPicked(new Set(plan.parts.filter((p) => p.count > 0).map((p) => p.id)))
   })
   const apply = useMutation({
-    mutationFn: () => api.imports.memory.apply(app, { path: preview.data?.path ?? path, parts: [...picked] }),
+    // the previewed export, even if the app picker changed since (a link can open straight on a preview)
+    mutationFn: () => api.imports.memory.apply(preview.data?.app ?? app, { path: preview.data?.path ?? path, parts: [...picked] }),
     onSuccess: (j) => {
       qc.setQueryData(qk.memoryImportJob, j)
       setWatching(true)

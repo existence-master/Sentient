@@ -359,13 +359,14 @@ class MemoryImports:
         self.job: dict | None = None
         self._task: asyncio.Task | None = None
         self._cancel = False
+        self._starting = False  # claimed before start() awaits anything, so two clicks can't start two imports
         self._added: set[int] = set()  # facts this job added (an insight may take one's place)
 
     def current(self) -> dict | None:
         return dict(self.job) if self.job else None
 
     def running(self) -> bool:
-        return self._task is not None and not self._task.done()
+        return self._starting or (self._task is not None and not self._task.done())
 
     def cancel(self) -> dict | None:
         if self.running():
@@ -376,12 +377,17 @@ class MemoryImports:
         return self.current()
 
     async def stop(self) -> None:
-        if self.running():
-            self._cancel = True
-            assert self._task is not None
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._task
+        await self.halt()
+
+    async def halt(self) -> int:
+        """Stop a running import now (Stop everything, shutdown): what it saved stays. Returns 1 when one ran."""
+        if self._task is None or self._task.done():
+            return 0
+        self._cancel = True
+        self._task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await self._task
+        return 1
 
     def _publish(self) -> None:
         if self.job is not None:
@@ -390,10 +396,19 @@ class MemoryImports:
     async def start(self, kind: str, path: str | None, parts: list[str] | None, skip: list[str] | None = None) -> dict:
         if self.running():
             raise ImportBusy("An import is already running. Wait for it to finish or stop it first.")
+        if getattr(self.app, "stopped", False):
+            raise ImportBusy("Sentient is stopped. Resume it first, then import.")
         valid = {p for p, _ in PARTS.get(kind, [])}
         chosen = [p for p in (parts or []) if p in valid]
         if not chosen:
             raise ExportError("Pick at least one thing to import.")
+        self._starting = True
+        try:
+            return await self._start(kind, path, chosen, skip)
+        finally:
+            self._starting = False
+
+    async def _start(self, kind: str, path: str | None, chosen: list[str], skip: list[str] | None) -> dict:
         export = await _read(self.app, kind, path)
         plan = await _plan(self.app, export)
         left_out = set(skip or [])

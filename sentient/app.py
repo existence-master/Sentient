@@ -198,6 +198,10 @@ class SentientApp:
                     cancelled += await svc.halt()
                 except Exception:
                     log.exception("service %s failed to halt", svc.name)
+            try:  # an import from ChatGPT, Claude or OpenClaw stops too; what it saved stays for review
+                cancelled += await self.memory_imports.halt()
+            except Exception:
+                log.exception("stopping the memory import failed")
             claude_code.kill_all()  # a Claude Code reply left running by anything above (ADR 0022)
             if changed:  # devices hear about it after the work is cancelled, never before
                 await self._tell_devices()
