@@ -52,6 +52,9 @@ PENDING, ACCEPTED, DECLINED = "pending", "accepted", "declined"
 LEVELS = ("ask", "never")
 # how strict a rule is; a proposal is only made (and only applied) where it tightens
 STRICTNESS: dict[str | None, int] = {"allow": 0, None: 1, "ask": 2, "never": 3}
+# longest a reply waits for its message's rule check (loop.RULE_CHECK_WAIT_S). Claude Code answers the check only
+# inside that wait: it never works on after the reply moved on (ADR 0022)
+WAIT_S = 20.0
 MAX_CANDIDATES = 24
 MAX_KEYS = 8
 MAX_SAID = 300
@@ -363,6 +366,7 @@ class ChatRules:
         self._pending: dict[str, dict[str, str]] = {}  # session_id -> {key: level} of undecided proposals
         self._checking: dict[str, list[frozenset[str]]] = {}  # session_id -> candidate tools of running checks
         self._deciding = asyncio.Lock()  # the desktop and a messaging app can answer at the same moment
+        self.attended_s = WAIT_S  # how long Claude Code may answer a check (``detect``)
 
     # ------------------------------------------------------------------ lookups
     def _app_names(self) -> dict[str, str]:
@@ -474,7 +478,8 @@ class ChatRules:
     async def detect(self, session_id: str, messages: list[dict]) -> Any:
         """The model's answer to the detection prompt. The fast model gives it; when every fast model refuses this
         job (Claude Code only answers chats), the chat's own model or the primary model does (#311), since the check
-        is part of answering this chat: the reply waits for it. Claude Code answers it as part of that reply."""
+        is part of answering this chat: the reply waits for it. Claude Code answers it as part of that reply, so only
+        within that wait (``attended_s``); a slower check ends with no card."""
         llm = self.app.llm
         try:
             return await llm.complete_json("fast", messages)
@@ -486,11 +491,15 @@ class ChatRules:
             model, _ = await agent.chat_model(await self.app.store.get_session(session_id), "primary")
         if (model or llm.model_for("primary")).split("/", 1)[0] != claude_code.PREFIX:
             return await llm.complete_json("primary", messages, model=model)
-        text = ""
-        with claude_code.attended():  # part of a reply the user is waiting for (ADR 0022)
-            async for chunk in llm.stream("primary", messages, None, model=model):
-                text += chunk.text or ""
-        return parse_json_loose(text, ("keys",))
+        async def reply() -> str:
+            text = ""
+            with claude_code.attended():  # part of a reply the user is waiting for (ADR 0022)
+                async for chunk in llm.stream("primary", messages, None, model=model):
+                    text += chunk.text or ""
+            return text
+
+        # only while the reply waits for this check: a slower answer is stopped, never left running in the background
+        return parse_json_loose(await asyncio.wait_for(reply(), self.attended_s), ("keys",))
 
     async def _propose(
         self, session_id: str, message_id: str | None, said: str, candidates: list[Tool], names: dict[str, str]

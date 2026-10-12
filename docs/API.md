@@ -170,7 +170,8 @@ accept or loosen a rule.
   me" and "stop asking" never count); then tools whose names or descriptions share a word with the message; then one
   short `fast`-role prompt that returns `{"keys": [...], "rule": "never"|"ask"}`, parsed tolerantly. When every fast
   model refuses the job (Claude Code only answers chats, ADR 0022), the chat's own model or else the primary model
-  answers it, as part of the reply (#311). Keys must be
+  answers it, as part of the reply (#311). Claude Code answers it only within the reply's 20 s wait; a slower Claude
+  Code check is stopped and makes no card. Keys must be
   tool names or app ids among those candidates (checked in code). Words that name a condition ("without asking me",
   "always ask") make the rule `ask`. Keys an equal or stricter rule already covers (also a pending proposal in the
   same chat) are dropped. A whole app is proposed only when the words name no specific action ("never use Slack",

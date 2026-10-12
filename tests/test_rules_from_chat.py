@@ -261,6 +261,35 @@ async def test_claude_code_check_with_unusable_text_makes_no_card(config, isolat
         await s.stop()
 
 
+async def test_a_slow_claude_code_check_stops_instead_of_running_on(config, isolated_home):
+    """ADR 0022: Claude Code works on the check only while the reply waits for it, never in the background."""
+    import asyncio
+
+    stopped: list[bool] = []
+
+    class Slow(_FastRefuses):
+        async def stream(self, role, messages, tools=None, *, model=None):
+            if tools is None:  # the check
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    stopped.append(True)
+                    raise
+            async for chunk in super().stream(role, messages, tools, model=model):
+                yield chunk
+
+    llm = Slow(replies=["Got it."], primary="claude-code/sonnet")
+    s = await _start(config, isolated_home, llm, [])
+    s.chat_rules.attended_s = 0.05
+    try:
+        sid = await s.store.create_session(channel="cli")
+        _, events = await _turn(s, sid, "never delete my emails")
+        assert stopped == [True] and not s.chat_rules._checking
+        assert events[-1].type == "done" and await s.chat_rules.list(sid, None) == []
+    finally:
+        await s.stop()
+
+
 def test_parse_detection_checks_keys_in_code():
     log: list[str] = []
     tools = _mail(log).tools
