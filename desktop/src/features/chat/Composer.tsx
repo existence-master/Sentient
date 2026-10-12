@@ -36,6 +36,8 @@ export interface ComposerProps {
   assistantName: string
   /** While a reply streams the composer stays usable: sending adds to the running reply (§10 steering). */
   streaming: boolean
+  /** Sending waits (the text stays) while the chat is being created (#312). */
+  busy?: boolean
   attachments: ReturnType<typeof useAttachments>
   onSend: (text: string, attachments: AttachmentView[]) => void
   onStop: () => void
@@ -54,6 +56,7 @@ export function Composer({
   draftKey,
   assistantName,
   streaming,
+  busy = false,
   attachments,
   onSend,
   onStop,
@@ -116,7 +119,7 @@ export function Composer({
 
   const hasText = text.trim().length > 0
   // While streaming only text can be added; attachments wait for the next message.
-  const canSend = !attachments.uploading && (hasText || (!streaming && attachments.ready > 0))
+  const canSend = !busy && !attachments.uploading && (hasText || (!streaming && attachments.ready > 0))
 
   const clear = () => {
     setText('')

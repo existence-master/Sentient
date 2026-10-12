@@ -86,6 +86,7 @@ function ChatView({
 
   // The chat's own model (#312). A new chat keeps the pick here until its first message creates it.
   const [newChatModel, setNewChatModel] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false) // a new chat with its own model is being created
   const setModel = useSetChatModel()
   const chatModel = sessionId ? ((session?.model as string | null | undefined) ?? null) : newChatModel
   const onChatModelChange = useCallback(
@@ -123,10 +124,14 @@ function ChatView({
     async (text: string, files: AttachmentView[]) => {
       if (!sessionId && newChatModel) {
         // a new chat with its own model: create it first so even its first reply uses that model (#312)
+        if (creating) return
         let id: string
+        setCreating(true) // until this view moves to the new chat, so a second message can't start another one
         try {
           id = (await api.sessions.create({ incognito: newIncognito, model: newChatModel })).session_id
         } catch (err) {
+          setCreating(false)
+          setInject({ text, nonce: Date.now() }) // the message box was cleared: put the text back
           toast.error("Couldn't start the chat", { description: errorMessage(err) })
           return
         }
@@ -141,7 +146,7 @@ function ChatView({
       const key = await send(sessionId ?? null, { text, attachments: files, incognito: !sessionId && newIncognito })
       if (!sessionId) setPendingKey(key)
     },
-    [send, sessionId, newIncognito, newChatModel, navigate]
+    [send, sessionId, newIncognito, newChatModel, navigate, creating]
   )
 
   const onPick = (s: Pick<Suggestion, 'prompt' | 'autoSend'>) => {
@@ -234,6 +239,7 @@ function ChatView({
                 draftKey="new"
                 assistantName={assistantName}
                 streaming={false}
+                busy={creating}
                 attachments={attachments}
                 onSend={onSend}
                 onStop={() => undefined}
