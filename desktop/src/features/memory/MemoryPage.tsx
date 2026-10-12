@@ -1,7 +1,9 @@
 import {
   IconBrain,
   IconChartDots3,
+  IconDatabaseExport,
   IconDots,
+  IconFileExport,
   IconFileImport,
   IconFilterOff,
   IconHourglassHigh,
@@ -12,6 +14,7 @@ import {
   IconSearch,
   IconSparkles,
   IconTimeline,
+  IconTransfer,
   IconTrashX,
   IconUserCircle,
   IconUserHeart,
@@ -21,12 +24,14 @@ import { useNavigate } from 'react-router'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { toast } from 'sonner'
 import {
   Alert,
   Button,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
   EmptyState,
   IconButton,
@@ -42,6 +47,7 @@ import {
   TabsTrigger
 } from '@/components/ui'
 import { ConversationsTab } from '@/features/memory/ConversationsTab'
+import { AssistantImportDialog } from '@/features/memory/AssistantImport'
 import { AddMemoryDialog, ForgetSourceDialog, ImportDialog } from '@/features/memory/dialogs'
 import { useDebounced, useMemoryParams, useNow } from '@/features/memory/hooks'
 import { MemoryDetail } from '@/features/memory/MemoryDetail'
@@ -52,6 +58,7 @@ import { ReviewTab } from '@/features/memory/ReviewTab'
 import { useMemories, useMemoryGraph, useMemoryReview, useMemorySummaries, useMemoryTopics } from '@/hooks/memory'
 import { qk } from '@/hooks/queryKeys'
 import { api, errorMessage } from '@/lib/api'
+import { getBridge } from '@/lib/bridge'
 import type { Memory } from '@/lib/types'
 import { cn, relativeTime, truncate } from '@/lib/utils'
 import { live } from '@/lib/ws'
@@ -147,6 +154,17 @@ export function MemoryPage() {
   }, [flash])
 
   const select = (id: number | null) => p.set({ m: id }, false)
+  const exportMemory = async (format: 'markdown' | 'sqlite') => {
+    try {
+      const r = await api.memories.export(format)
+      toast.success(`Saved ${r.name}`, {
+        description: `${r.memories} memories and ${r.about_you} things about you, in Sentient's files folder. Nothing left this computer.`,
+        action: { label: 'Show folder', onClick: () => void getBridge().showInFolder(r.folder) }
+      })
+    } catch (e) {
+      toast.error("Couldn't export your memory", { description: errorMessage(e) })
+    }
+  }
   const clearFilters = () => {
     setSearch('')
     p.set({ topic: null, source: null, type: null, q: null })
@@ -163,9 +181,21 @@ export function MemoryPage() {
             <Button variant="ghost" leftIcon={<IconUserHeart size={15} />} onClick={() => navigate('/about')}>
               About you
             </Button>
-            <Button variant="secondary" leftIcon={<IconFileImport size={15} />} onClick={() => p.set({ import: 1 }, false)}>
-              Import
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="secondary" leftIcon={<IconFileImport size={15} />}>
+                  Import
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem icon={<IconFileImport />} onSelect={() => p.set({ import: 1 }, false)}>
+                  A document…
+                </DropdownMenuItem>
+                <DropdownMenuItem icon={<IconTransfer />} onSelect={() => p.set({ import: 'assistant' }, false)}>
+                  From ChatGPT, Claude or OpenClaw…
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button variant="primary" leftIcon={<IconPlus size={15} />} onClick={() => p.set({ add: 1 }, false)}>
               Add memory
             </Button>
@@ -174,6 +204,13 @@ export function MemoryPage() {
                 <IconButton label="More" variant="ghost" icon={<IconDots size={16} />} />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                <DropdownMenuItem icon={<IconFileExport />} onSelect={() => void exportMemory('markdown')}>
+                  Export as a readable file (Markdown)
+                </DropdownMenuItem>
+                <DropdownMenuItem icon={<IconDatabaseExport />} onSelect={() => void exportMemory('sqlite')}>
+                  Export as a database file (SQLite)
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem icon={<IconTrashX />} danger disabled={!sources.length} onSelect={() => (setForgetInitial(undefined), p.set({ forget: 1 }, false))}>
                   Forget everything from a source…
                 </DropdownMenuItem>
@@ -210,11 +247,14 @@ export function MemoryPage() {
             <EmptyState
               icon={<IconBrain />}
               title="Sentient doesn't remember anything yet"
-              description="Tell it about yourself in chat, add a memory yourself, or import a document like your resume or notes."
+              description="Tell it about yourself in chat, add a memory yourself, import a document like your resume, or bring what ChatGPT, Claude or OpenClaw knows about you."
               action={
                 <>
                   <Button variant="secondary" leftIcon={<IconFileImport size={15} />} onClick={() => p.set({ import: 1 }, false)}>
                     Import a document
+                  </Button>
+                  <Button variant="secondary" leftIcon={<IconTransfer size={15} />} onClick={() => p.set({ import: 'assistant' }, false)}>
+                    From another assistant
                   </Button>
                   <Button variant="primary" leftIcon={<IconPlus size={15} />} onClick={() => p.set({ add: 1 }, false)}>
                     Add memory
@@ -372,6 +412,12 @@ export function MemoryPage() {
       />
       <AddMemoryDialog open={p.addOpen} onOpenChange={(o) => p.set({ add: o ? 1 : null })} onShow={(id) => p.set({ add: null, m: id })} />
       <ImportDialog open={p.importOpen} onOpenChange={(o) => p.set({ import: o ? 1 : null })} />
+      <AssistantImportDialog
+        open={p.assistantImportOpen}
+        onOpenChange={(o) => p.set({ import: o ? 'assistant' : null, app: null, path: null })}
+        initialApp={p.importApp}
+        initialPath={p.importPath}
+      />
       <ForgetSourceDialog key={forgetInitial ?? 'none'} open={p.forgetOpen} onOpenChange={(o) => p.set({ forget: o ? 1 : null })} sources={sources} initial={forgetInitial} />
     </div>
   )

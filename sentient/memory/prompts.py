@@ -194,6 +194,12 @@ Conversation:
 {transcript}"""
 
 
+IMPORT_USER = """This comes from {username}'s {app} account: messages {username} wrote to {app}, and notes {app} kept about {username}. Extract only lasting facts about {username}: who they are, their people, work, home, health, habits, preferences and plans.
+Ignore questions, requests and tasks {username} wanted help with (and their budgets or formats), and the content of documents, code or emails they pasted.
+
+{sections}"""
+
+
 # ---------------------------------------------------------------- user model (dialectic refresh)
 USER_MODEL_DIMENSIONS = [
     "preferences", "communication", "goals", "routines", "relationships", "values", "work_style", "dislikes", "context",

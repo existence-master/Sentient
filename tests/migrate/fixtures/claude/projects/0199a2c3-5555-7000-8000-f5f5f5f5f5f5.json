@@ -1,0 +1,12 @@
+{
+  "uuid": "0199a2c3-5555-7000-8000-f5f5f5f5f5f5",
+  "name": "How to use Claude",
+  "description": "An example project that also doubles as a how-to guide for using Claude.",
+  "is_private": false,
+  "is_starter_project": true,
+  "prompt_template": "",
+  "created_at": "2026-08-01T10:00:00.000000Z",
+  "updated_at": "2026-08-01T10:00:00.000000Z",
+  "creator": {"uuid": "0199a000-0000-7000-8000-a0a0a0a0a0a0", "full_name": "Maya Rao"},
+  "docs": []
+}

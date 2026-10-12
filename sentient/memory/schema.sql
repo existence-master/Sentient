@@ -55,3 +55,12 @@ CREATE TABLE IF NOT EXISTS dreams (
     error       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_dreams_started ON dreams(started_at);
+
+-- What an import from another assistant has already read (issue #156): a conversation, note or memory summary is
+-- read once, so importing a newer export of the same account only reads what's new.
+CREATE TABLE IF NOT EXISTS memory_import_seen (
+    app         TEXT NOT NULL,                        -- chatgpt | claude | openclaw
+    item        TEXT NOT NULL,                        -- the export's own key: conv:<id>:<messages>, note:<file>:<hash>
+    imported_at TEXT NOT NULL,
+    PRIMARY KEY (app, item)
+);

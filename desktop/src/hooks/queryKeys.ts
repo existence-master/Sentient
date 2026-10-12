@@ -64,6 +64,7 @@ export const qk = {
     dreams: ['memories', 'dreams'] as const
   },
   userModel: ['user-model'] as const,
+  memoryImportJob: ['import', 'memory', 'job'] as const,
 
   skills: {
     all: ['skills'] as const,
