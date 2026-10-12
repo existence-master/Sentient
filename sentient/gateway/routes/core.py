@@ -373,10 +373,26 @@ async def chat(request: Request, body: ChatBody):
 
     async def gen():
         yield json.dumps({"type": "session", "session_id": session_id}) + "\n"
-        async for event in s.agent.run_turn(
-            session_id, body.text, channel=body.channel, attachments=body.attachments, model=body.model
-        ):
-            yield event.model_dump_json() + "\n"
+        # "Make this a rule?" cards for this chat ride along in the /ws envelope (#311): a client without /ws can
+        # show and answer them, before the approval requests they cause
+        async with s.bus.subscribe() as q:
+
+            def proposals() -> list[str]:
+                out = []
+                while not q.empty():
+                    e = q.get_nowait()
+                    if e["type"] == "rule_proposal.updated" and (e["data"] or {}).get("session_id") == session_id:
+                        out.append(json.dumps(e, default=str) + "\n")
+                return out
+
+            async for event in s.agent.run_turn(
+                session_id, body.text, channel=body.channel, attachments=body.attachments, model=body.model
+            ):
+                for line in proposals():
+                    yield line
+                yield event.model_dump_json() + "\n"
+            for line in proposals():
+                yield line
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
 

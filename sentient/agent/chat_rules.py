@@ -14,7 +14,9 @@ Checks, cheapest first:
 2. ``candidate_tools``: tools whose names or descriptions share a word with the message (plus a few synonyms). No
    candidates, no model call ("I never eat breakfast").
 3. One short ``fast``-role prompt maps the words to candidate keys and a level, parsed tolerantly. Keys outside the
-   candidates, and keys an equal or stricter rule already covers, are dropped. Nothing valid, no card.
+   candidates, and keys an equal or stricter rule already covers, are dropped. Nothing valid, no card. When the fast
+   model can't do this job (Claude Code only answers chats, ADR 0022), the chat's own model or the primary model does
+   (``detect``, #311): the check is part of answering the user's chat, which waits for it.
 4. ``narrow_app_keys``: a whole app is proposed only when the words name no specific action ("never use Slack").
    When they do ("never delete my emails"), an app key becomes that app's tools whose names match the action, and
    when they name a tool exactly ("don't call browser_open"), that tool. A tool key stands only when the words name
@@ -38,7 +40,8 @@ from collections.abc import Iterable
 from typing import Any
 
 from sentient.config.schema import RuleOrigin
-from sentient.llm.provider import parse_json_loose
+from sentient.llm import claude_code
+from sentient.llm.provider import ModelRefused, parse_json_loose
 from sentient.store.db import new_id, now_iso
 from sentient.tools.base import Risk, Tool
 from sentient.tools.rules import rule_for, tool_title
@@ -49,6 +52,9 @@ PENDING, ACCEPTED, DECLINED = "pending", "accepted", "declined"
 LEVELS = ("ask", "never")
 # how strict a rule is; a proposal is only made (and only applied) where it tightens
 STRICTNESS: dict[str | None, int] = {"allow": 0, None: 1, "ask": 2, "never": 3}
+# longest a reply waits for its message's rule check (loop.RULE_CHECK_WAIT_S). Claude Code answers the check only
+# inside that wait: it never works on after the reply moved on (ADR 0022)
+WAIT_S = 20.0
 MAX_CANDIDATES = 24
 MAX_KEYS = 8
 MAX_SAID = 300
@@ -360,6 +366,7 @@ class ChatRules:
         self._pending: dict[str, dict[str, str]] = {}  # session_id -> {key: level} of undecided proposals
         self._checking: dict[str, list[frozenset[str]]] = {}  # session_id -> candidate tools of running checks
         self._deciding = asyncio.Lock()  # the desktop and a messaging app can answer at the same moment
+        self.attended_s = WAIT_S  # how long Claude Code may answer a check (``detect``)
 
     # ------------------------------------------------------------------ lookups
     def _app_names(self) -> dict[str, str]:
@@ -444,13 +451,15 @@ class ChatRules:
     # ------------------------------------------------------------------ detection
     async def check(self, session_id: str, message_id: str | None, text: str) -> dict | None:
         """Propose a rule for ``text`` when it is a standing instruction about known tools. Never raises."""
+        # the reply starts waiting for this check after it starts, so its wait ends after this deadline
+        deadline = asyncio.get_running_loop().time() + self.attended_s
         try:
-            return await self._check(session_id, message_id, text)
+            return await self._check(session_id, message_id, text, deadline)
         except Exception as exc:  # a missed proposal must never break a chat turn
             log.warning("rule check skipped: %s", exc)
             return None
 
-    async def _check(self, session_id: str, message_id: str | None, text: str) -> dict | None:
+    async def _check(self, session_id: str, message_id: str | None, text: str, deadline: float) -> dict | None:
         said = standing_text(text)
         if not said:
             return None
@@ -461,20 +470,51 @@ class ChatRules:
         weighing = frozenset(t.name for t in candidates)
         self._checking.setdefault(session_id, []).append(weighing)  # fail closed until this check ends
         try:
-            return await self._propose(session_id, message_id, said, candidates, names)
+            return await self._propose(session_id, message_id, said, candidates, names, deadline)
         finally:
             running = self._checking.get(session_id, [])
             running.remove(weighing)
             if not running:
                 self._checking.pop(session_id, None)
 
+    async def detect(self, session_id: str, messages: list[dict], deadline: float | None = None) -> Any:
+        """The model's answer to the detection prompt. The fast model gives it; when every fast model refuses this
+        job (Claude Code only answers chats), the chat's own model or the primary model does (#311), since the check
+        is part of answering this chat: the reply waits for it. Claude Code answers it as part of that reply, so only
+        until ``deadline`` (event-loop time, before the reply stops waiting); a slower check ends with no card."""
+        llm = self.app.llm
+        try:
+            return await llm.complete_json("fast", messages)
+        except ModelRefused as exc:
+            log.info("rule check: the fast model can't do it (%s), so the chat's model does", exc)
+        agent = getattr(self.app, "agent", None)
+        model = None
+        if agent is not None:
+            model, _ = await agent.chat_model(await self.app.store.get_session(session_id), "primary")
+        if (model or llm.model_for("primary")).split("/", 1)[0] != claude_code.PREFIX:
+            return await llm.complete_json("primary", messages, model=model)
+
+        async def reply() -> str:
+            text = ""
+            with claude_code.attended():  # part of a reply the user is waiting for (ADR 0022)
+                async for chunk in llm.stream("primary", messages, None, model=model):
+                    text += chunk.text or ""
+            return text
+
+        # only while the reply waits for this check: a slower answer is stopped, never left running in the background
+        left = (deadline - asyncio.get_running_loop().time()) if deadline is not None else self.attended_s
+        if left <= 0:
+            raise TimeoutError("the reply stopped waiting for this check")
+        return parse_json_loose(await asyncio.wait_for(reply(), left), ("keys",))
+
     async def _propose(
-        self, session_id: str, message_id: str | None, said: str, candidates: list[Tool], names: dict[str, str]
+        self, session_id: str, message_id: str | None, said: str, candidates: list[Tool], names: dict[str, str],
+        deadline: float | None = None,
     ) -> dict | None:
         try:
-            data = await self.app.llm.complete_json("fast", detection_messages(said, candidates, names))
+            data = await self.detect(session_id, detection_messages(said, candidates, names), deadline)
         except Exception as exc:
-            log.info("rule check: the fast model gave no usable answer (%s)", exc)
+            log.info("rule check: the model gave no usable answer (%s)", exc)
             return None
         keys, level = parse_detection(data, candidates)
         keys = narrow_app_keys(keys, said, self.app.registry.tools(include_hidden=True), names)
