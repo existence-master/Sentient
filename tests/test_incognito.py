@@ -209,7 +209,7 @@ async def test_without_memory_the_prompt_has_no_personal_details(app):
     await _turn(app, sid, "hi there")
     system = app.fake.calls[-1]["messages"][0]["content"]
     # the configured name and place stay out (the persona the user wrote is kept as it is)
-    assert "Koramangala" not in system and "- User: Sarthak" not in system
+    assert "Koramangala" not in system and "- User: Maya" not in system
 
 
 async def test_a_reply_still_writing_is_not_swept_and_deleting_cancels_helpers(app, monkeypatch):
@@ -286,5 +286,5 @@ async def test_deleting_a_chat_stops_its_running_reply_first(app):
 
 async def test_helpers_of_a_private_incognito_chat_do_not_get_the_name(app):
     app.config.chat.incognito_uses_memory = False
-    assert "Sarthak" in app.subagents._system_prompt()
-    assert "Sarthak" not in app.subagents._system_prompt(private=True)
+    assert "Maya" in app.subagents._system_prompt()
+    assert "Maya" not in app.subagents._system_prompt(private=True)
