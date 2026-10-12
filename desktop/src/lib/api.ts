@@ -12,6 +12,10 @@
  *   engine does not have them yet; whenever the engine answers, its data is used.
  */
 import type {
+  BackupEntry,
+  BackupInspect,
+  BackupOverview,
+  RestoreStaged,
   BrowserProfileCreate,
   BrowserProfilePatch,
   BrowserProfiles,
@@ -132,7 +136,7 @@ import type {
   WorkspaceSnapshot
 } from './types'
 import type { Connection } from '@/types/bridge'
-import { DEMO_FEEDS, demo, isDemoMode } from './demo'
+import { DEMO_FEEDS, demo, isDemoChatGPT, isDemoMode } from './demo'
 
 // ---------------------------------------------------------------------------- connection
 let connection: Connection | null = null
@@ -424,7 +428,8 @@ export const api = {
 
   sessions: {
     list: (limit = 100) => http.get<Session[]>('/api/sessions', { query: { limit } }),
-    create: () => http.post<{ session_id: string }>('/api/sessions'),
+    create: (opts: { incognito?: boolean } = {}) =>
+      http.post<{ session_id: string }>('/api/sessions', undefined, { query: opts.incognito ? { incognito: true } : undefined }),
     rename: (id: string, title: string) => http.patch<OkResponse>(`/api/sessions/${enc(id)}`, { title }),
     delete: (id: string) => http.delete<OkResponse>(`/api/sessions/${enc(id)}`),
     messages: (id: string, limit = 500) =>
@@ -490,14 +495,18 @@ export const api = {
     connectOpenRouter: () => http.post<ProviderSignIn>('/api/models/connect/openrouter'),
     signInStatus: (state: string, provider: 'openrouter' | 'chatgpt' = 'openrouter') =>
       http.get<ProviderSignInStatus>(`/api/models/connect/${provider}/${enc(state)}`),
-    /** Sign in with ChatGPT to use a ChatGPT plan: status, start (open `auth_url`, poll `signInStatus`), sign out. */
+    /** Sign in with ChatGPT to use a ChatGPT plan: status, start (open `auth_url`, poll `signInStatus`), sign out.
+     * In dev demo mode with `chatgpt=1` the status and model list are a fake sign-in (lib/demo.ts). */
     chatgpt: {
-      status: () => http.get<ChatGPTStatus>('/api/models/connect/chatgpt'),
+      status: () => (isDemoChatGPT() ? Promise.resolve(demo.chatgptStatus()) : http.get<ChatGPTStatus>('/api/models/connect/chatgpt')),
       connect: () => http.post<ProviderSignIn>('/api/models/connect/chatgpt'),
-      signOut: () => http.delete<OkResponse>('/api/models/connect/chatgpt')
+      signOut: () => http.delete<OkResponse>('/api/models/connect/chatgpt'),
+      /** The one-time welcome message was shown. */
+      welcomed: () => (isDemoChatGPT() ? Promise.resolve(demo.chatgptWelcomed()) : http.post<OkResponse>('/api/models/connect/chatgpt/welcome'))
     },
     checkKey: (provider: string) => http.post<ProviderKeyCheck>(`/api/models/connect/${enc(provider)}/check`),
-    catalog: (provider: string) => http.get<CatalogModel[]>(`/api/models/catalog/${enc(provider)}`),
+    catalog: (provider: string) =>
+      provider === 'chatgpt' && isDemoChatGPT() ? Promise.resolve(demo.chatgptCatalog()) : http.get<CatalogModel[]>(`/api/models/catalog/${enc(provider)}`),
     /** Model presets: switch every role at once, save your own, undo the last switch. */
     presets: {
       list: () => http.get<ModelPresetList>('/api/models/presets'),
@@ -763,6 +772,16 @@ export const api = {
       apply: (body: { path?: string; parts: HermesPart[]; skip?: string[] }) => http.post<HermesResult>('/api/import/hermes/apply', body),
       removeMemories: () => http.delete<{ facts: number; insights: number }>('/api/import/hermes/memories')
     }
+  },
+
+  // §20 backups, restore and snapshots ------------------------------------------------------
+  backups: {
+    get: () => http.get<BackupOverview>('/api/backups'),
+    create: (folder?: string) => http.post<BackupEntry>('/api/backups', { folder: folder || null }),
+    inspect: (path: string) => http.post<BackupInspect>('/api/backups/inspect', { path }),
+    restore: (path: string) => http.post<RestoreStaged>('/api/backups/restore', { path }),
+    cancelRestore: () => http.delete<{ cancelled: boolean }>('/api/backups/restore'),
+    dismissLastRestore: () => http.delete<{ ok: boolean }>('/api/backups/last-restore')
   },
 
   // §16 webhooks --------------------------------------------------------------------------

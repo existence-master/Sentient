@@ -300,7 +300,9 @@ async def test_large_tool_result_is_cut_and_saved(config, isolated_home):
         saved = isolated_home / "files" / "outputs" / "tool-call_big_dump.txt"
         assert saved.read_text(encoding="utf-8") == "x" * 5000
         rows = await s.store.recent_messages(sid, 10)
-        assert next(r for r in rows if r["role"] == "tool")["content"] == tool_msg["content"]
+        stored = next(r for r in rows if r["role"] == "tool")["content"]
+        # stored as cut; the model reads it marked as outside content (ADR 0023)
+        assert s.agent.outside_content(stored, s.registry.get("big_dump")) == tool_msg["content"]
     finally:
         await s.stop()
 
@@ -345,7 +347,8 @@ async def test_long_result_is_cut_to_the_context_share(config, isolated_home):
         events = [ev async for ev in s.agent.run_turn(sid, "page", channel="cli")]
         assert next(e for e in events if isinstance(e, ToolResultEvent)).result == "y" * 13000
         content = llm.calls[1]["messages"][-1]["content"]
-        assert content.startswith('"yyy') and "y" * 6143 in content and "y" * 6200 not in content
+        body = content.split("\n", 1)[1]  # after the outside-content marker (ADR 0023)
+        assert body.startswith('"yyy') and "y" * 6143 in content and "y" * 6200 not in content
         assert "[Result cut: this is only the first 6144 of 13002 characters." in content
         assert "files/outputs/tool-call_big_page.txt" in content
     finally:
@@ -392,7 +395,7 @@ async def test_a_tools_shortener_replaces_the_plain_cut(config, isolated_home):
         sid = await s.store.create_session(channel="cli")
         _ = [ev async for ev in s.agent.run_turn(sid, "search", channel="cli")]
         content = llm.calls[1]["messages"][-1]["content"]
-        assert content.startswith('{"plan": ["call LIST_EVENTS"]}')
+        assert content.split("\n", 1)[1].startswith('{"plan": ["call LIST_EVENTS"]}')  # after the outside marker
         assert "[Result shortened from 20045 characters to its main parts." in content and "zzz" not in content
         saved = isolated_home / "files" / "outputs" / "tool-call_search_catalog.txt"
         assert "z" * 20000 in saved.read_text(encoding="utf-8")

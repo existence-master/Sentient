@@ -7,11 +7,16 @@
  * - installDemoData() also adds (never replaces) clearly-labelled demo rows with demo-only ids to the
  *   React Query caches (a script job task, a skill repair proposal, notifications) so the Tasks, Skills and
  *   notification screens can be captured before those engine features exist.
+ * - With `chatgpt=1` as well (`#/settings/models?demo=1&chatgpt=1`), Sign in with ChatGPT answers as if Maya Rao were
+ *   signed in with a ChatGPT plan, so its screens (the welcome message, the signed-in panel) can be captured without
+ *   an eligible account. This one replaces the engine's answer on purpose; nothing is saved and no token exists.
  * - Packaged builds load from app.asar and can never enable it.
  */
 import type { QueryClient } from '@tanstack/react-query'
 import { qk } from '@/hooks/queryKeys'
 import type {
+  CatalogModel,
+  ChatGPTStatus,
   CheckupRole,
   Dream,
   FeedStatus,
@@ -43,6 +48,21 @@ export function isDemoMode(): boolean {
     enabled = false
   }
   return enabled
+}
+
+let chatgptFlag: boolean | null = null
+
+/** Demo mode with a fake ChatGPT sign-in (`chatgpt=1`), for capturing those screens. Never in a packaged build. */
+export function isDemoChatGPT(): boolean {
+  if (chatgptFlag !== null) return chatgptFlag
+  if (!isDemoMode()) return (chatgptFlag = false)
+  try {
+    chatgptFlag = /[?&]chatgpt=1\b/.test(window.location.hash) || sessionStorage.getItem('sentient.demo.chatgpt') === '1'
+    if (chatgptFlag) sessionStorage.setItem('sentient.demo.chatgpt', '1')
+  } catch {
+    chatgptFlag = false
+  }
+  return chatgptFlag
 }
 
 const now = Date.now()
@@ -332,10 +352,33 @@ const checkupExample: CheckupRole[] = [
   }
 ]
 
+// ---------------------------------------------------------------------------- fake ChatGPT sign-in
+let chatgptWelcomed = false
+// models in the shape of OpenAI's published Codex catalog (github.com/openai/codex, models-manager/models.json)
+const chatgptModels: CatalogModel[] = [
+  ['gpt-6.1-sol', 'GPT-6.1-Sol'],
+  ['gpt-6-astra', 'GPT-6-Astra'],
+  ['gpt-6-luna', 'GPT-6-Luna'],
+  ['gpt-5.5', 'GPT-5.5']
+].map(([slug, label]) => ({ id: `chatgpt/${slug}`, label, free: false, tools: true, context_length: 272_000 }))
+
 // ---------------------------------------------------------------------------- mutable demo API
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T
 
 export const demo = {
+  chatgptStatus: (): ChatGPTStatus => ({
+    available: true,
+    reason: null,
+    signed_in: true,
+    email: 'maya.rao@example.com',
+    manage_usage_url: 'https://chatgpt.com/settings/usage',
+    welcome: !chatgptWelcomed
+  }),
+  chatgptWelcomed: () => {
+    chatgptWelcomed = true
+    return { ok: true }
+  },
+  chatgptCatalog: (): CatalogModel[] => clone(chatgptModels),
   modelCheckup: (): CheckupRole[] => clone(checkupExample),
   userModel: (): UserModel => clone({ summary: SUMMARY, updated_at: ago(2 * H), insights, questions }),
   addInsight: (statement: string, dimension: string): Insight => {

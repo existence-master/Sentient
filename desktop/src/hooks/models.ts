@@ -41,6 +41,15 @@ export function useChatGPTStatus() {
   return useQuery({ queryKey: qk.chatgpt, queryFn: api.models.chatgpt.status, staleTime: 30_000 })
 }
 
+/** Dismiss the one-time "You're using your ChatGPT plan" message for good. */
+export function useChatGPTWelcomed() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.models.chatgpt.welcomed(),
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.chatgpt })
+  })
+}
+
 export function useSignOutChatGPT() {
   const qc = useQueryClient()
   return useMutation({

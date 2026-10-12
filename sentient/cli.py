@@ -107,6 +107,45 @@ def claude_code_tools(tools_file: str):
 
 
 @app.command()
+def backup(
+    to: Path | None = typer.Option(None, "--to", help="Folder for the backup (default: Documents/Sentient Backups)."),
+):
+    """Back up the data folder (database, config, workspace, skills, files) to one zip file."""
+    from sentient.backup import archive
+
+    folder = to or Path(load_config().backups.folder or archive.default_folder()).expanduser()
+    made = archive.create_archive(archive.new_backup_path(folder), kind="manual")
+    console.print(f"[green]backed up[/green] {made['path']} ({made['size']:,} bytes)")
+    console.print("API keys and sign-ins stay in this computer's keychain and are not in the backup.")
+
+
+@app.command()
+def restore(
+    archive_path: Path = typer.Argument(..., help="A backup or snapshot zip."),
+    now: bool = typer.Option(False, "--now", help="Replace the data at once. Only while Sentient is closed."),
+):
+    """Restore a backup. It replaces the data the next time Sentient starts (or at once with --now)."""
+    from sentient.backup import BackupError, apply_pending_restore, archive
+
+    try:
+        staged = archive.stage_restore(archive_path)
+    except BackupError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print(f"backup from {staged.get('created_at')} checked: {', '.join(staged['contents'])}")
+    if not now:
+        console.print("It replaces your current data the next time Sentient starts.")
+        return
+    result = apply_pending_restore() or {}
+    if result.get("error"):
+        console.print(f"[red]{result['error']}[/red]")
+        raise typer.Exit(1)
+    kept = f"; your data from before is in snapshot {result['snapshot']}" if result.get("snapshot") else ""
+    console.print(f"[green]restored[/green]{kept}")
+    console.print("API keys and sign-ins are not in backups: sign in again to anything that asks.")
+
+
+@app.command()
 def doctor(
     models: bool = typer.Option(
         False, "--models", help="Also run the model check-up: a reply, a tool call, JSON, context and GPU per role."

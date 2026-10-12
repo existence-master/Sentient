@@ -36,7 +36,7 @@ from sentient.memory.topics import TOPIC_NAMES
 from sentient.memory.vectors import cosine
 from sentient.services import Service, cancel_tasks
 from sentient.skills.loader import slugify, valid_name
-from sentient.store.db import now_iso
+from sentient.store.db import after_watermark, next_watermark, now_iso
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +48,8 @@ DONE_STATUSES = {"completed", "completed_with_errors"}
 FAILED_RUN_STATUSES = {"error", "failed", "completed_with_errors"}
 REPAIR_TRANSCRIPT_BUDGET = 6_000
 MAX_TRACKED_TURNS = 200
+PROFILE_FACTS_MARK = "evolution.profile_facts_mark"  # what profile upkeep read last (store.db.next_watermark)
+PROFILE_SUMMARIES_MARK = "evolution.profile_summaries_mark"
 
 # cheap first pass before one fast-model confirmation; false positives are fine, misses are not
 _CORRECTION_RE = re.compile(
@@ -246,6 +248,7 @@ class EvolutionService(Service):
             "SELECT s.id, s.updated_at, r.activity_at FROM sessions s"
             " LEFT JOIN evolution_reviews r ON r.target = 'session:' || s.id"
             " WHERE s.updated_at <= ? AND s.updated_at >= ? AND (r.activity_at IS NULL OR r.activity_at < s.updated_at)"
+            " AND s.incognito = 0"  # skills are never learned from an incognito chat (#154)
             " ORDER BY s.updated_at",
             (cutoff, lookback),
         )
@@ -335,6 +338,8 @@ class EvolutionService(Service):
 
     async def review_session(self, session_id: str, *, force: bool = False) -> dict:
         store = self.app.store
+        if await store.is_incognito(session_id):  # never learned from (#154)
+            return {"reviewed": False, "decision": "skipped"}
         target = f"session:{session_id}"
         prev = await store.fetchone("SELECT activity_at FROM evolution_reviews WHERE target = ?", (target,))
         since = (prev["activity_at"] if prev else None) or ""
@@ -521,6 +526,8 @@ class EvolutionService(Service):
         if not sid:
             return []
         lib, store = self.app.skills, self.app.store
+        if await store.is_incognito(sid):  # an incognito chat never shapes skills (#154)
+            return []
         proposed: list[str] = []
         prev = self._last_skill_turn.pop(sid, None)
         user_text = str(data.get("user_text") or "")
@@ -820,18 +827,30 @@ class EvolutionService(Service):
             return {"updated": False}
         since = (last or now - timedelta(days=30)).isoformat()
         nowiso = now.isoformat()
+        # what upkeep read last time: rows saved in the same clock tick as that read are still picked up (#236)
+        facts_mark = await store.get_meta(PROFILE_FACTS_MARK) or since
+        summaries_mark = await store.get_meta(PROFILE_SUMMARIES_MARK) or since
+        after, params = after_watermark(facts_mark, "updated_at", "id")
         new_facts = await store.fetchall(
-            "SELECT content, topics, source FROM facts WHERE status = 'active' AND memory_type = 'long-term' AND updated_at > ?"
-            " AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at",
-            (since, nowiso),
+            "SELECT id, content, topics, source, updated_at FROM facts WHERE status = 'active'"
+            f" AND memory_type = 'long-term' AND {after} AND (expires_at IS NULL OR expires_at > ?)"
+            " ORDER BY updated_at, id",
+            (*params, nowiso),
         )
         # chats that read outside content never feed MEMORY.md (ADR 0021): their facts wait for review and their
         # summaries are left out
+        after, params = after_watermark(summaries_mark, "created_at", "id")
         new_summaries = await store.fetchall(
-            f"SELECT content FROM summaries WHERE created_at > ? AND {CLEAN_SUMMARY} ORDER BY end_at DESC LIMIT 8",
-            (since,),
+            f"SELECT id, content, created_at FROM summaries WHERE {after} AND {CLEAN_SUMMARY}"
+            " ORDER BY created_at, id LIMIT 8",  # in watermark order, so the limit never jumps over a summary
+            params,
         )
         await store.set_meta("evolution.profile_last_run", nowiso)
+        # saved after every read, also an empty one: the next read starts where this one did, never at this run's time
+        await store.set_meta(PROFILE_FACTS_MARK, next_watermark(facts_mark, new_facts, "updated_at", "id"))
+        await store.set_meta(
+            PROFILE_SUMMARIES_MARK, next_watermark(summaries_mark, new_summaries, "created_at", "id")
+        )
         if not new_facts and not new_summaries:
             return {"updated": False}
 
@@ -844,11 +863,11 @@ class EvolutionService(Service):
         budget = cfg.memory.workspace_budget_chars
         all_facts = await store.fetchall(
             "SELECT content FROM facts WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?)"
-            " ORDER BY updated_at DESC LIMIT 80",
+            " ORDER BY updated_at DESC, id DESC LIMIT 80",
             (nowiso,),
         )
         summaries = await store.fetchall(
-            f"SELECT content FROM summaries WHERE {CLEAN_SUMMARY} ORDER BY end_at DESC LIMIT 8"
+            f"SELECT content FROM summaries WHERE {CLEAN_SUMMARY} ORDER BY end_at DESC, rowid DESC LIMIT 8"
         )
         current = app.workspace.read_full()["memory"]
         memory_chars = 0

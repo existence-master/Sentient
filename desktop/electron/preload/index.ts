@@ -60,6 +60,7 @@ const bridge: SentientBridge = {
   pickFiles: (options) => ipcRenderer.invoke(CH.pickFiles, options) as Promise<string[]>,
   isFocused: () => ipcRenderer.invoke(CH.isFocused) as Promise<boolean>,
   openFile: (name: string) => ipcRenderer.invoke(CH.openFile, name) as Promise<boolean>,
+  showInFolder: (path: string) => ipcRenderer.invoke(CH.showInFolder, path) as Promise<boolean>,
   getDevicePrivacy: () => ipcRenderer.invoke(CH.getDevicePrivacy) as Promise<DevicePrivacy>,
   setDevicePrivacy: (patch) => ipcRenderer.invoke(CH.setDevicePrivacy, patch) as Promise<DevicePrivacy>,
   onCaptureNotice: (cb) => subscribe<CaptureNotice>(CH.captureNotice, cb),

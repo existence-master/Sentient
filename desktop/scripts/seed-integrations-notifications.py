@@ -31,9 +31,12 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import seed_safety  # next to this script
 
 
 def _parse_args() -> argparse.Namespace:
@@ -42,6 +45,7 @@ def _parse_args() -> argparse.Namespace:
                    help="SENTIENT_HOME folder to seed (created if missing); defaults to the SENTIENT_HOME variable")
     p.add_argument("--keep-db", action="store_true",
                    help="keep the existing sentient.db and add to it instead of starting from an empty database")
+    p.add_argument(seed_safety.KEEP_LIVE_FLAG, action="store_true", help=seed_safety.KEEP_LIVE_HELP)
     args = p.parse_args()
     if not args.home:
         p.error("pass a folder or set SENTIENT_HOME")
@@ -52,6 +56,7 @@ ARGS = _parse_args()
 HOME = Path(ARGS.home).expanduser()
 KEEP_DB: bool = ARGS.keep_db
 os.environ["SENTIENT_HOME"] = str(HOME)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # this checkout's engine, like the other seeders
 
 # Import after SENTIENT_HOME is set.
 from sentient.app import SentientApp  # noqa: E402
@@ -193,6 +198,8 @@ async def seed() -> None:
     finally:
         await app.stop()
     print(f"seeded {HOME}" + (" (kept existing database)" if KEEP_DB else ""))
+    if not ARGS.keep_live:
+        seed_safety.announce(seed_safety.quiet(HOME))
 
 
 async def seed_integrations(app: SentientApp) -> None:

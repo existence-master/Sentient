@@ -605,7 +605,8 @@ class UserModelService(Service):
             rows = await store.fetchall(
                 "SELECT m.id, m.content, m.created_at, s.untrusted FROM messages m LEFT JOIN sessions s"
                 " ON s.id = m.session_id WHERE m.role = 'user' AND m.content IS NOT NULL"
-                " AND m.content != '' AND m.created_at > ? ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
+                " AND m.content != '' AND m.created_at > ? AND COALESCE(s.incognito, 0) = 0"  # never incognito (#154)
+                " ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
                 (since, cfg.recent_messages),
             )
             lines = []
@@ -619,7 +620,7 @@ class UserModelService(Service):
         if cfg.recent_facts:
             rows = await store.fetchall(
                 "SELECT id, content, updated_at FROM facts WHERE status = 'active' AND updated_at > ?"
-                " AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC LIMIT ?",
+                " AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id DESC LIMIT ?",
                 (since, now_iso(), cfg.recent_facts),
             )
             lines = []
@@ -632,7 +633,7 @@ class UserModelService(Service):
             rows = await store.fetchall(
                 "SELECT m.id, m.content, m.end_at, COALESCE(NULLIF(m.untrusted, ''), s.untrusted) AS untrusted"
                 " FROM summaries m LEFT JOIN sessions s"
-                " ON s.id = m.session_id WHERE m.created_at > ? ORDER BY m.created_at DESC LIMIT ?",
+                " ON s.id = m.session_id WHERE m.created_at > ? ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
                 (since, cfg.recent_summaries),
             )
             lines = []

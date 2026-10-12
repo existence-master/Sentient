@@ -18,8 +18,23 @@ start (``Service.model_kind``); work spawned from a chat that must not count as 
 ``detached(kind)``.
 
 **Background work yields.** Kinds from ``task`` down wait while you chat (a reply is running, or ended less than
-``models.background_quiet_s`` ago) and while the computer is on battery (``models.background_on_battery`` off).
-Calls already running finish; nothing is cut off.
+``models.background_quiet_s`` ago). Calls already running finish; nothing is cut off.
+
+**On battery (#296) only Sentient's own upkeep goes easy.** Tasks you scheduled run on time at any battery level.
+Upkeep (``suggestions``, ``memory``, ``skills``, ``titles``, ``background``) on battery goes only while:
+
+- the battery is above ``models.battery_min_percent`` (unless ``models.background_on_battery`` lifts the limits),
+  and never at or below ``models.battery_critical_percent``;
+- you have not chatted for ``models.battery_idle_s``;
+- in short bursts at most every ``models.battery_upkeep_every_s``: a burst stays open while upkeep keeps using the
+  model (a gap under ``BURST_GRACE_S``, for at most ``BURST_MAX_S``), so a pass of several calls finishes together.
+
+None of these holds a call longer than ``models.battery_max_wait_s``: then it goes like it would plugged in, and opens
+a burst, so the rest of its pass follows instead of waiting the whole time again.
+
+Upkeep a person started from the window (Dream now) runs in ``detached(kind, requested=True)``: only a critical battery
+(and the cap) holds it. When the cap lets it go it gets a burst of its own, so the rest of it follows, and it never
+opens a burst that scheduled upkeep could ride along.
 
 **Streams hold the slot until they end.** The provider holds it across a whole stream and lets it go just before
 the final chunk, so the caller can run tools that call the model again. Cancelling (Stop everything) releases it.
@@ -55,14 +70,21 @@ RANKS = {"chat": 0, "interactive": 1, "task": 2, "suggestions": 3, "memory": 3, 
          "background": 3}
 KINDS = tuple(RANKS)
 DEFAULT_KIND = "interactive"
-GATED_RANK = 2  # kinds from here down wait while you chat or on battery
+GATED_RANK = 2  # kinds from here down wait while you chat
+UPKEEP_RANK = 3  # kinds from here down are Sentient's own upkeep: they go easy on battery (#296)
 STALL_S = 60.0  # a running reply that has not used the model this long stops holding background work back
 RECHECK_S = 15.0  # how often deferred work looks at the battery again
+BURST_GRACE_S = 60.0  # on battery, an upkeep burst stays open while upkeep used the model less than this ago
+BURST_MAX_S = 300.0  # ... but no longer than this
+BATTERY_REASONS = ("battery_low", "battery")  # most telling first
 NOTIFY_DELAY_S = 0.2  # quick back-to-back changes are published once
 
 _kind: contextvars.ContextVar[str | None] = contextvars.ContextVar("sentient_model_kind", default=None)
 _turn: contextvars.ContextVar[_Turn | None] = contextvars.ContextVar("sentient_model_turn", default=None)
 _held: contextvars.ContextVar[Slot | None] = contextvars.ContextVar("sentient_model_slot", default=None)
+# a person asked for this upkeep (#296): None, or one id per request so a burst the cap opened serves only that request
+_requested: contextvars.ContextVar[int | None] = contextvars.ContextVar("sentient_model_requested", default=None)
+_request_ids = itertools.count(1)
 
 
 def is_local(model: str | None) -> bool:
@@ -87,13 +109,15 @@ def as_kind(kind: str | None) -> Iterator[None]:
             _kind.reset(token)
 
 
-def detached(kind: str) -> contextvars.Context:
+def detached(kind: str, *, requested: bool = False) -> contextvars.Context:
     """A context for ``asyncio.create_task(..., context=detached(kind))``: work started from here that nobody waits
-    on (a memory note after a reply, a task run). Its calls count as ``kind``, not as the chat that started it."""
+    on (a memory note after a reply, a task run). Its calls count as ``kind``, not as the chat that started it.
+    ``requested``: a person asked for this upkeep (Dream now), so on battery only a critical level holds it (#296)."""
     ctx = contextvars.copy_context()
     ctx.run(_kind.set, kind)
     ctx.run(_turn.set, None)
     ctx.run(_held.set, None)
+    ctx.run(_requested.set, next(_request_ids) if requested else None)
     return ctx
 
 
@@ -120,6 +144,8 @@ class Slot:
         self.waited = waited
         self.started = time.monotonic()
         self.started_at = _now_iso()
+        self.burst = False  # upkeep that went on battery: it keeps the burst open until it ends
+        self.asked_burst = False  # the same for upkeep a person asked for, after the cap let it go
 
     def release(self) -> None:
         jobs, self._jobs = self._jobs, None
@@ -128,7 +154,7 @@ class Slot:
 
 
 class _Waiter:
-    __slots__ = ("fut", "kind", "model", "rank", "seq", "since", "turn")
+    __slots__ = ("fut", "held", "kind", "model", "rank", "requested", "seq", "since", "turn", "why")
 
     def __init__(self, kind: str, seq: int, model: str, turn: _Turn | None, since: float, fut: asyncio.Future):
         self.kind = kind
@@ -138,6 +164,9 @@ class _Waiter:
         self.turn = turn
         self.since = since
         self.fut = fut
+        self.held: str | None = None  # the last reason it was held back for
+        self.why: str | None = None  # which battery limit held it last (logged when it changes)
+        self.requested = _requested.get()  # the request id when a person asked for this upkeep, else None
 
 
 class ModelJobs:
@@ -148,12 +177,14 @@ class ModelJobs:
         settings: Callable[[], Any],
         *,
         on_battery: Callable[[], bool] = power.on_battery,
+        battery_percent: Callable[[], int | None] = power.percent,
         clock: Callable[[], float] = time.monotonic,
         on_change: Callable[[dict], None] | None = None,
     ):
         self._settings = settings  # () -> the current ModelsConfig (config can be replaced while running)
         self.on_change = on_change
         self._on_battery = on_battery
+        self._battery_percent = battery_percent
         self._clock = clock
         self._waiters: list[_Waiter] = []
         self._current: Slot | None = None
@@ -161,6 +192,11 @@ class ModelJobs:
         self._turns = 0
         self._last_chat_end = float("-inf")
         self._last_chat_use = float("-inf")
+        self._last_upkeep_use = float("-inf")  # on battery: when upkeep last used the model (a burst is open)
+        self._burst_start = float("-inf")  # on battery: when the last upkeep burst began
+        self._asked_use = float("-inf")  # the same two for upkeep a person asked for, released by the cap
+        self._asked_start = float("-inf")
+        self._asked_owner: int | None = None  # the one request that burst belongs to
         self._timer: asyncio.TimerHandle | None = None
         self._notify: asyncio.TimerHandle | None = None
         self._published: dict | None = None
@@ -175,6 +211,9 @@ class ModelJobs:
 
     def _battery_ok(self) -> bool:
         return bool(getattr(self._settings(), "background_on_battery", False))
+
+    def _setting(self, name: str, default: float) -> float:
+        return float(getattr(self._settings(), name, default))
 
     # ------------------------------------------------------------------ the slot
     @contextlib.asynccontextmanager
@@ -220,20 +259,64 @@ class ModelJobs:
         self._current = None
         if slot.kind == "chat":
             self._last_chat_use = now
+        if slot.burst:
+            self._last_upkeep_use = now
+        if slot.asked_burst:
+            self._asked_use = now
         log.info("model job done: %s %s after %.1fs", slot.kind, _short(slot.model), now - slot.started)
         self._dispatch()
 
     def _deferral(self, w: _Waiter, now: float) -> str | None:
-        """Why ``w`` must wait although the slot is free: ``"chat"``, ``"battery"`` or None (it may go)."""
+        """Why ``w`` must wait although the slot is free: ``"chat"``, ``"battery"``, ``"battery_low"`` or None."""
         if w.rank < GATED_RANK or (w.turn is not None and w.turn.active):
             return None
         if self._turns and now - self._last_chat_use >= STALL_S:
-            return None  # the safety valve: the running reply is not using the model, maybe waiting on this
-        if not self._battery_ok() and self._on_battery():
-            return "battery"
+            # the safety valve: the running reply is not using the model, maybe waiting on this. It comes before the
+            # battery holds on purpose: a reply stuck behind held upkeep would otherwise hang until the cap (#296)
+            return None
+        if w.rank >= UPKEEP_RANK and (hold := self._battery_hold(w, now)):
+            return hold
         if self._turns or now - self._last_chat_end < self._quiet_s():
             return "chat"
         return None
+
+    def _battery_hold(self, w: _Waiter, now: float) -> str | None:
+        """Why upkeep ``w`` waits on battery (#296): ``"battery_low"``, ``"battery"`` or None. Tasks never get here."""
+        hold = self._battery_check(w, now)
+        return hold[0] if hold else None
+
+    def _battery_check(self, w: _Waiter, now: float) -> tuple[str, str] | None:
+        """``(reason, which limit holds it)`` for upkeep on battery, or None when it may go."""
+        if not self._on_battery():
+            return None
+        if now - w.since >= self._setting("battery_max_wait_s", 7200):
+            return None  # the cap: never held longer than this, whatever the battery
+        if self._burst_open(now):
+            return None  # a burst is under way (maybe one the cap let go): the rest of its pass goes with it
+        if w.requested is not None and w.requested == self._asked_owner and self._asked_open(now):
+            return None  # the cap let part of what a person asked for go: the rest follows (never scheduled upkeep)
+        pct = self._battery_percent()
+        if pct is not None and pct <= self._setting("battery_critical_percent", 15):
+            return "battery_low", "at or below models.battery_critical_percent"
+        if self._battery_ok() or w.requested is not None:
+            return None  # the usual limits are lifted (the setting), or a person asked for this (Dream now)
+        if pct is not None and pct <= self._setting("battery_min_percent", 40):
+            return "battery", "not above models.battery_min_percent"
+        if self._turns or now - self._last_chat_end < self._setting("battery_idle_s", 300):
+            return "battery", "chatted less than models.battery_idle_s ago"
+        if now - self._burst_start < self._setting("battery_upkeep_every_s", 1800):
+            return "battery", "last burst less than models.battery_upkeep_every_s ago"
+        return None
+
+    def _burst_open(self, now: float) -> bool:
+        return now - self._last_upkeep_use < BURST_GRACE_S and now - self._burst_start < BURST_MAX_S
+
+    def _asked_open(self, now: float) -> bool:
+        return now - self._asked_use < BURST_GRACE_S and now - self._asked_start < BURST_MAX_S
+
+    def _battery_detail(self) -> str:
+        pct = self._battery_percent()
+        return f"on battery at {pct}%" if pct is not None else "on battery"
 
     def _dispatch(self) -> None:
         now = self._clock()
@@ -247,12 +330,54 @@ class ModelJobs:
                 self._current = slot
                 if w.kind == "chat":
                     self._last_chat_use = now
+                if w.rank >= UPKEEP_RANK and self._on_battery():
+                    if w.requested is not None:
+                        self._start_asked(w, slot, now)
+                    else:
+                        self._start_burst(w, slot, now)
                 w.fut.set_result(slot)
                 deferred = sum(1 for x in self._waiters if self._deferral(x, now))
                 log.info("model job start: %s %s (waited %.1fs; %d more waiting, %d held back)", w.kind,
                          _short(w.model), slot.waited, len(self._waiters) - deferred, deferred)
+        self._log_holds(now)
         self._schedule_recheck(now)
         self._changed()
+
+    def _start_burst(self, w: _Waiter, slot: Slot, now: float) -> None:
+        """Upkeep goes on battery: open a burst (or keep the open one going) and say why it went."""
+        slot.burst = True
+        if w.held in BATTERY_REASONS and slot.waited >= self._setting("battery_max_wait_s", 7200):
+            log.info("model job released: %s waited %.0fs %s, the most it may wait (models.battery_max_wait_s)",
+                     w.kind, slot.waited, self._battery_detail())
+        if not self._burst_open(now):
+            self._burst_start = now
+            log.info("upkeep burst on battery: %s goes (%s)", w.kind, self._battery_detail())
+        self._last_upkeep_use = now
+
+    def _start_asked(self, w: _Waiter, slot: Slot, now: float) -> None:
+        """Upkeep a person asked for goes on battery. Released by the cap, it opens a burst of its own for the rest."""
+        if w.held in BATTERY_REASONS and slot.waited >= self._setting("battery_max_wait_s", 7200):
+            log.info("model job released: %s you asked for waited %.0fs %s, the most it may wait "
+                     "(models.battery_max_wait_s)", w.kind, slot.waited, self._battery_detail())
+            if not self._asked_open(now) or self._asked_owner != w.requested:
+                self._asked_start, self._asked_owner = now, w.requested
+        else:
+            log.info("model job on battery: %s you asked for goes (%s)", w.kind, self._battery_detail())
+        if self._asked_owner == w.requested and (self._asked_open(now) or self._asked_start == now):
+            slot.asked_burst = True
+            self._asked_use = now
+
+    def _log_holds(self, now: float) -> None:
+        """Log when a waiting call starts being held back for the battery, once per change."""
+        for w in self._waiters:
+            w.held = self._deferral(w, now)
+            hold = self._battery_check(w, now) if w.held in BATTERY_REASONS else None
+            why = hold[1] if hold else None
+            if why and why != w.why:
+                log.info("model job held: %s %s (%s, %s: %s; goes within %.0fs at the latest)", w.kind,
+                         _short(w.model), w.held, self._battery_detail(), why,
+                         max(0.0, w.since + self._setting("battery_max_wait_s", 7200) - now))
+            w.why = why
 
     def _schedule_recheck(self, now: float) -> None:
         """Wake deferred work when the quiet time ends, the valve opens, or to look at the battery again."""
@@ -266,8 +391,13 @@ class ModelJobs:
             waits.append(self._last_chat_use + STALL_S - now)
         else:
             waits.append(self._last_chat_end + self._quiet_s() - now)
+            waits.append(self._last_chat_end + self._setting("battery_idle_s", 300) - now)
+        cap = self._setting("battery_max_wait_s", 7200)
+        waits.extend(w.since + cap - now for w in self._waiters if w.held in BATTERY_REASONS)
+        waits.append(self._burst_start + self._setting("battery_upkeep_every_s", 1800) - now)
+        soonest = min((x for x in waits if x > 0), default=0.05)
         with contextlib.suppress(RuntimeError):  # no running loop
-            self._timer = asyncio.get_running_loop().call_later(max(0.05, min(waits)), self._dispatch)
+            self._timer = asyncio.get_running_loop().call_later(max(0.05, soonest), self._dispatch)
 
     # ------------------------------------------------------------------ chat activity
     @contextlib.contextmanager
@@ -304,7 +434,7 @@ class ModelJobs:
             "since": cur.started_at if cur else None,
             "waiting": len(reasons) - len(held),
             "deferred": len(held),
-            "deferred_reason": ("battery" if "battery" in held else "chat") if held else None,
+            "deferred_reason": next((r for r in (*BATTERY_REASONS, "chat") if r in held), None),
         }
 
     def _changed(self) -> None:

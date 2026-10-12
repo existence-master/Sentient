@@ -6,6 +6,37 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Backups and restore:** Settings > Backups backs up everything Sentient keeps (chats, memory, tasks, settings,
+  skills and files) to one file, by hand or every day or week. Backups go to Sentient Backups in your Documents
+  folder (the one Windows really uses, also when it lives in OneDrive), apart from your data, or to a folder you
+  pick. Settings says when that folder syncs to OneDrive, Dropbox, Google Drive or iCloud, since the backups are
+  then copied to the cloud too. A backup holds the certificate your devices trust, so keep
+  backups somewhere private. Restore one from the list or from
+  a file: you see what is in it and confirm, Sentient keeps a snapshot of what you have now, then restarts with the
+  backup. Passwords, API keys and sign-ins stay in your computer's keychain and are never in a backup; after a restore
+  Sentient lists the ones to sign in to again. Sentient also takes a snapshot on its own before it updates its
+  database, before a Hermes import and before a restore, keeps the last five, and any of them can be restored.
+- **Recurring tasks remember their last runs:** each run of a recurring task now reads a short note of what its last
+  three runs found, sent or decided, plus the task's own notes, so it tells you only what is new instead of repeating
+  yesterday's news. Runs keep those notes up to date themselves; see, edit or clear them under **Notes between runs**
+  on the task.
+- **Watches that only speak up when something important changed:** a check script can now **Tell me when something
+  important changes**. Each check is compared with the last one without any AI, so an unchanged page costs nothing
+  and stays silent; only when something changed does your fast AI model decide whether it matters, and then you get
+  one notification that says what changed. Every watch also keeps a quiet list of its recent checks ("Checked,
+  nothing new", "Something changed. You were told") under Runs.
+- **Fuzzy times for repeating tasks:** a daily or weekly task can run "in the morning", "afternoon", "evening" or "at
+  night" instead of at an exact time; Sentient picks a time inside that part of the day. Say it in your request
+  ("every weekday morning") or pick it in the schedule editor.
+- **Sources under answers:** when Sentient used the web, your email, a file or a connected app to answer, small
+  chips under the reply show what it used: the page, the email's subject, the file or the app, next to the memories
+  it had in mind. Click a chip to see the part Sentient read and open the page, email or file. Answers that used
+  nothing show no chips.
+- **Incognito chats:** start one from the button next to New chat, the command palette or Ctrl+Shift+N
+  (Cmd+Shift+N on a Mac). Nothing you say in it is remembered: Sentient saves no memories from it, learns no skills
+  from it, leaves it out of what it learns about you and of chat search, and deletes it when you leave it or close
+  Sentient (or after 30 minutes without a message). The chat has a tinted header and an Incognito label so you always
+  know. It can still use what Sentient already knows about you; turn that off in Settings > General > Conversations.
 - **One local model job at a time, your chats first:** a local Ollama model now works on one thing at a time, so
   background work no longer pushes it off the graphics card and slows your chat to a crawl. Your chat always goes
   next; tasks, suggestions, memory upkeep and chat titles wait while you are chatting (and for 30 seconds after), and
@@ -44,13 +75,16 @@ and versions follow [Semantic Versioning](https://semver.org/).
   your vision model when you set one. Both shortcuts are also in the tray menu and can be changed or turned off in
   Settings > General. Since a screen can show other people's text, a chat with a shared picture checks with you
   before sending anything. On a Mac, Sentient explains how to allow Screen Recording the first time.
-- **Sign in with ChatGPT** (Settings > Models > Use a plan you already have > ChatGPT plan): use your ChatGPT Plus or
-  Pro plan for chat, tasks and background work. Click **Continue with ChatGPT**, sign in in your browser and allow
-  Sentient; your plan's models then show up in every model picker, and **Use ChatGPT for every job** switches the
-  main and background models in one click (the Cloud preset uses your plan when you have no other cloud key). The
-  sign-in stays in your system keychain, renews on its own, and **Sign out** removes it. **Manage usage** opens your
-  ChatGPT usage settings, and reaching your plan's limit says so plainly. Memory search keeps its own model, because
-  ChatGPT plans don't include one for it.
+- **Sign in with ChatGPT** (Settings > Models > Use a plan you already have > ChatGPT plan, or **ChatGPT plan** in
+  first-run setup's cloud step): use your ChatGPT Plus or Pro plan for chat, tasks and background work. Click
+  **Continue with ChatGPT** (with OpenAI's ChatGPT logo), sign in in your browser and allow Sentient; your plan's
+  models then show up in every model picker, and **Use ChatGPT for every job** switches the main and background
+  models in one click (the Cloud preset uses your plan when you have no other cloud key). Main and background jobs
+  use the everyday model OpenAI ranks first on your plan, background jobs with the lightest thinking it allows, so
+  nothing is guessed from model names. After your first sign-in Sentient says once that you're using your ChatGPT
+  plan, and while your next message goes to a plan model the chat box shows **Using ChatGPT plan** with a **Manage
+  usage** link. The sign-in stays in your system keychain, renews on its own, and **Sign out** removes it. **Manage usage** opens your ChatGPT usage settings, and reaching
+  your plan's limit says so plainly. Memory search keeps its own model, because ChatGPT plans don't include one for it.
 - **Models sized for your computer:** Sentient checks how much memory and graphics memory this computer has before
   anything is installed and recommends a local model and how much text it reads at once (for example qwen3:8b reading
   8,192 tokens on an 8 GB graphics card, qwen3:14b reading 16,384 on a 16 GB one). A computer with less than 8 GB of
@@ -192,6 +226,24 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- A second Sentient data folder (a test or demo profile set with `SENTIENT_HOME`) no longer shares the keychain with
+  your own: it gets its own place for API keys, tokens and sign-ins, so it can't use, change or remove yours, and a
+  seeded demo can't message anyone through your Telegram bot. Your own data folder (`~/.sentient`) keeps every key
+  and sign-in as it is, with nothing to redo. `SENTIENT_KEYCHAIN_NAMESPACE=default` shares yours on purpose. The demo
+  seed scripts and `scripts/smoke.mjs` now pause the seeded tasks and turn off messaging deliveries unless given
+  `--keep-live`.
+- Chats using Claude through your own Claude Code now show the context meter and the "getting long" warning at
+  85%: the context length is read from the matching Anthropic model, which LiteLLM knows, instead of nothing.
+- **Background work on a laptop that stays on battery:** Sentient's own upkeep (memory, what it learns about you,
+  dreams, suggestions, skill review, chat titles) used to wait for the charger, so a laptop used all day on battery
+  never ran it. It now runs on battery too, gently: while the battery is above 40%, after you have not chatted for
+  five minutes, in short bursts at most every 30 minutes, and never held more than two hours. At 15% or below it
+  waits. Tasks you scheduled always run on time, whatever the battery, and so does Dream now unless the battery is
+  low. The title bar says "Waiting: on battery" (or
+  "Waiting: battery low") while upkeep waits, and every limit is in Settings > Models > Sharing your local model.
+- Messages and memories saved at the same moment now always keep their order, and the daily upkeep of MEMORY.md and
+  USER.md no longer misses a memory saved while it was reading. Summarizing a long chat no longer skips messages
+  saved at the same moment as the last summary.
 - When a cloud model says no, chat and tasks now say why in a plain sentence and what to do, instead of showing the
   provider's raw reply. For example: "OpenRouter's free models have reached today's limit. Add credits on
   openrouter.ai, wait until tomorrow, or pick another model in Settings > Models." This covers rate limits, an
@@ -245,6 +297,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Edge's downloads hub no longer replaces the active page or appears as a browser tab when a download starts.
 
 ### Security
+- Text from web pages, emails, messages and other apps now reaches the AI clearly marked as outside content, with a
+  standing rule to treat it as information and never follow instructions hidden in it. A page can't fake the end of
+  the marked part. Your own messages are not marked. To compare, turn it off in Settings > General > Conversations
+  ("Mark outside content").
 - Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before
   sending, posting, inviting people to an event, typing into a web page, running code or opening an address that
   could carry your data to a new site, even for apps set to Allow and with approvals off. The

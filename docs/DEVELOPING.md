@@ -47,6 +47,19 @@ SENTIENT_HOME=/tmp/sentient-dev npm run dev
 
 Override the Python interpreter with `SENTIENT_PYTHON=/path/to/python`.
 
+### Test homes and the keychain
+
+API keys, tokens and sign-ins live in the OS keychain, never in the data folder. Each data folder has its own
+keychain namespace (issue #302): the default `~/.sentient` uses the service `sentient`, and any other
+`SENTIENT_HOME` uses `sentient-<hash of the folder>`, so a test or demo home starts with no keys and can't read,
+overwrite or delete yours. The engine logs which service it uses when it starts (`keychain service '...'`).
+
+To test against your real sign-ins on purpose (for example your Composio sign-in), start the engine with
+`SENTIENT_KEYCHAIN_NAMESPACE=default`; it then shares the default folder's entries, so anything it changes or removes
+changes yours. Any other value (`SENTIENT_KEYCHAIN_NAMESPACE=e2e`) gives a named namespace (`sentient-e2e`) that
+several test homes can share. Remove test entries when you are done (Windows: Credential Manager, entries ending in
+`@sentient-<namespace>`).
+
 ### Renderer in a normal browser
 
 ```bash
@@ -72,7 +85,10 @@ In Git Bash write smoke routes without a leading slash (`settings/models`), or M
 turns them into Windows paths. Set `SENTIENT_HOME` to a seeded profile to capture
 realistic screens. Demo data seeders live in `desktop/scripts/seed-*.py` (`seed-chats-devices-channels.py` for
 chat tool cards, devices, helpers and messaging channels; `seed-automations-usermodel.py` for About you, dreams,
-watcher jobs and webhooks).
+watcher jobs and webhooks). When they finish, the seeders pause every task in the home and turn off messaging apps
+and every paired chat's delivery (`desktop/scripts/seed_safety.py`), and `smoke.mjs` does the same before it starts
+the app on a `SENTIENT_HOME`, so a demo never runs a task or messages anyone. Pass `--keep-live` to either to keep
+them as seeded. `seed_safety.py` refuses the default `~/.sentient`.
 
 When several people build and capture screenshots at once, take `desktop/.build.lock`
 (write your name, delete it when done) because `desktop/out` is shared.
@@ -87,6 +103,11 @@ When several people build and capture screenshots at once, take `desktop/.build.
 .venv/Scripts/python.exe -m pytest -q
 .venv/Scripts/ruff.exe check sentient tests
 ```
+
+To check how background work behaves on battery on a computer that is plugged in, start the engine with
+`SENTIENT_DEBUG_BATTERY` set: `ac`, `battery`, or a percent such as `35` or `10` (tests and debugging only; the
+engine logs a warning while it is set). The engine log then shows `model job held: ... (on battery ...)`,
+`upkeep burst on battery` and `model job released: ...` lines.
 
 No test touches the network; the LLM is a scripted, deterministic fake
 (`tests/conftest.py`). Browser tests drive a hidden local Edge or Chrome against local pages and skip

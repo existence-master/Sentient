@@ -205,8 +205,32 @@ class ModelsConfig(BaseModel):
     )
     background_on_battery: bool = Field(
         False,
-        description="Let background work use a local model while this computer runs on battery. When off, it waits "
-        "until you plug in. Your chats always run.",
+        description="Let Sentient's own upkeep (memory, suggestions, skill review, chat titles) use a local model on "
+        "battery as freely as when plugged in, except when the battery is low (below). When off, upkeep still runs on "
+        "battery, with the limits below. Your chats and the tasks you scheduled always run on time.",
+    )
+    battery_min_percent: int = Field(
+        40, ge=0, le=100,
+        description="On battery, Sentient's own upkeep uses a local model only while the battery is above this "
+        "percent. Your tasks run on time at any level.",
+    )
+    battery_critical_percent: int = Field(
+        15, ge=0, le=100,
+        description="At or below this battery percent, upkeep waits even when it is allowed on battery. Your tasks "
+        "still run.",
+    )
+    battery_idle_s: int = Field(
+        300, ge=0, le=7200,
+        description="On battery, upkeep waits until you have not chatted for this many seconds.",
+    )
+    battery_upkeep_every_s: int = Field(
+        1800, ge=0, le=86400,
+        description="On battery, upkeep runs in short bursts at most this often, in seconds. 0 lets it run "
+        "whenever the other limits allow.",
+    )
+    battery_max_wait_s: int = Field(
+        7200, ge=60, le=86400,
+        description="Upkeep never waits longer than this many seconds because of the battery, whatever its level.",
     )
 
 
@@ -245,6 +269,23 @@ class ChatConfig(BaseModel):
     )
     parallel_read_tools: bool = Field(
         True, description="Run look-up tools the model asks for in the same step at the same time."
+    )
+    incognito_uses_memory: bool = Field(
+        True,
+        description="Incognito chats can use what Sentient already knows about you. Nothing from an incognito chat "
+        "is ever remembered either way.",
+    )
+    incognito_delete_after_minutes: int = Field(
+        30,
+        ge=1,
+        le=1440,
+        description="An incognito chat is deleted when you leave it or close Sentient, or after this many minutes "
+        "without a new message.",
+    )
+    mark_outside_content: bool = Field(
+        True,
+        description="Mark text from web pages, emails, messages and other apps to help the assistant treat it as "
+        "information, not as instructions.",
     )
 
 
@@ -977,6 +1018,28 @@ class DreamingConfig(BaseModel):
     notify: bool = Field(True, description="Send a notification when a dream changed something meaningful.")
 
 
+class BackupsConfig(BaseModel):
+    folder: str | None = Field(
+        None,
+        description="Folder for backups. Empty uses Sentient Backups in your Documents folder (or the backups folder "
+        "inside Sentient's data folder when Documents can't be used). A folder on another drive or a synced cloud "
+        "folder keeps them safe if this computer fails.",
+    )
+    schedule: Literal["off", "daily", "weekly"] = Field(
+        "off", description="Back up automatically every day or every week, while Sentient is running."
+    )
+    keep: int = Field(
+        5, ge=1, le=100,
+        description="How many automatic backups to keep. Older automatic ones are deleted; backups you make yourself "
+        "are never deleted.",
+    )
+    snapshots_keep: int = Field(
+        5, ge=1, le=50,
+        description="How many snapshots to keep. Sentient takes one before it updates its database, before an import "
+        "and before a restore.",
+    )
+
+
 class SentientConfig(BaseModel):
     """Root configuration, persisted at ``~/.sentient/config.yaml``."""
 
@@ -1000,4 +1063,5 @@ class SentientConfig(BaseModel):
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     user_model: UserModelConfig = Field(default_factory=UserModelConfig)
     dreaming: DreamingConfig = Field(default_factory=DreamingConfig)
+    backups: BackupsConfig = Field(default_factory=BackupsConfig)
     ui: UIConfig = Field(default_factory=UIConfig)

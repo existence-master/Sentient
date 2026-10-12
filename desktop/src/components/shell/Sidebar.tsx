@@ -13,6 +13,7 @@ import {
   IconSearch,
   IconSettings,
   IconSparkles,
+  IconSpy,
   IconTrash,
   IconUserHeart,
   IconX,
@@ -88,18 +89,29 @@ export function Sidebar() {
             className="mb-1.5"
           />
         ) : (
-          <button
-            type="button"
-            onClick={() => navigate('/chat', { state: { fresh: Date.now() } })}
-            className="group mb-1.5 flex h-8.5 items-center gap-2 rounded-lg border border-border-strong bg-surface px-2.5 text-sm font-medium text-fg shadow-soft transition-colors hover:bg-elevated"
-          >
-            <IconEdit size={16} className="text-accent-text" />
-            <span className="flex-1 text-left">New chat</span>
-            <span className="flex gap-0.5 opacity-70 transition-opacity group-hover:opacity-100">
-              <Kbd>{modKey}</Kbd>
-              <Kbd>N</Kbd>
-            </span>
-          </button>
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => navigate('/chat', { state: { fresh: Date.now() } })}
+              className="group flex h-8.5 min-w-0 flex-1 items-center gap-2 rounded-lg border border-border-strong bg-surface px-2.5 text-sm font-medium text-fg shadow-soft transition-colors hover:bg-elevated"
+            >
+              <IconEdit size={16} className="text-accent-text" />
+              <span className="flex-1 text-left">New chat</span>
+              <span className="flex gap-0.5 opacity-70 transition-opacity group-hover:opacity-100">
+                <Kbd>{modKey}</Kbd>
+                <Kbd>N</Kbd>
+              </span>
+            </button>
+            <IconButton
+              label="New incognito chat"
+              shortcut={`${modKey}+Shift+N`}
+              variant="secondary"
+              size="md"
+              icon={<IconSpy size={16} className="text-incognito" />}
+              onClick={() => navigate('/chat', { state: { fresh: Date.now(), incognito: true } })}
+              className="size-8.5"
+            />
+          </div>
         )}
         {NAV.map((item) => (
           <NavItem key={item.to} {...item} collapsed={collapsed} active={location.pathname.startsWith(item.match)} />
@@ -149,9 +161,10 @@ function ChatList() {
 
   const filtered = useMemo(() => {
     if (!sessions) return []
-    if (!q) return sessions
+    const kept = sessions.filter((s) => !s.incognito) // incognito chats never show up in your history (#154)
+    if (!q) return kept
     const hitIds = new Set((search.data ?? []).map((h) => h.session_id))
-    return sessions.filter((s) => (s.title ?? 'New chat').toLowerCase().includes(q) || hitIds.has(s.id))
+    return kept.filter((s) => (s.title ?? 'New chat').toLowerCase().includes(q) || hitIds.has(s.id))
   }, [sessions, q, search.data])
 
   const groups = useMemo(() => {

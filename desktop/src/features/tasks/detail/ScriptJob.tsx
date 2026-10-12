@@ -16,6 +16,7 @@ import {
   IconRepeat,
   IconRocket,
   IconShieldCheck,
+  IconSparkles,
   IconX,
   type Icon
 } from '@tabler/icons-react'
@@ -43,7 +44,8 @@ interface Choice<T extends string> {
 }
 
 const CONDITIONS: Array<Choice<ScriptCondition>> = [
-  { value: 'changed', title: 'Tell me when something changes', body: 'Each check is compared with the one before.', icon: IconArrowsDiff },
+  { value: 'noteworthy', title: 'Tell me when something important changes', body: 'Each check is compared with the one before. When something changed, AI decides if it matters.', icon: IconSparkles },
+  { value: 'changed', title: 'Tell me when anything changes', body: 'Each check is compared with the one before.', icon: IconArrowsDiff },
   { value: 'alert', title: 'Tell me when the script raises an alert', body: 'The script decides, for example when a price drops below your target.', icon: IconBellRinging },
   { value: 'every_run', title: 'Report every run', body: 'You hear about each check that prints something, even if it is the same as last time.', icon: IconRepeat }
 ]
@@ -361,8 +363,9 @@ function describeOutcome(r: SandboxResult, s: TaskScript): { accent: boolean; ic
     return { accent: false, icon: IconCircleCheck, title: 'This would be the first check', body: 'I’ll remember the result and tell you when a later check is different.' }
   }
   const same = JSON.stringify(r.result ?? null) === JSON.stringify(s.last_result)
-  return same
-    ? { accent: false, icon: IconCircleCheck, title: 'Same as last time', body: 'Nothing changed, so you wouldn’t hear from me.' }
+  if (same) return { accent: false, icon: IconCircleCheck, title: 'Same as last time', body: 'Nothing changed, so you wouldn’t hear from me.' }
+  return s.condition === 'noteworthy'
+    ? { accent: true, icon: IconSparkles, title: 'Something changed since the last check', body: `AI would decide whether it matters. If it does, ${then.charAt(0).toLowerCase() + then.slice(1)}.` }
     : { accent: true, icon: IconArrowsDiff, title: 'Something changed since the last check', body: `So ${then}.` }
 }
 
