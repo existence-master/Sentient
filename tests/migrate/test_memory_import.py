@@ -520,6 +520,35 @@ async def test_stop_everything_stops_an_import_and_blocks_new_ones(app, chatgpt_
     await app.resume("test")
 
 
+async def test_stop_everything_while_an_import_starts_and_removing_while_it_runs(app, chatgpt_zip, monkeypatch):
+    real = memory_import._plan
+
+    async def slow_plan(*a, **k):
+        await asyncio.sleep(0.05)
+        return await real(*a, **k)
+
+    monkeypatch.setattr(memory_import, "_plan", slow_plan)
+    starting = asyncio.create_task(app.memory_imports.start("chatgpt", str(chatgpt_zip), ["memories"]))
+    await asyncio.sleep(0.01)
+    assert await app.memory_imports.halt() == 1
+    with pytest.raises(memory_import.ImportBusy):
+        await starting
+    assert app.memory_imports.current() is None and not app.memory_imports.running()
+
+    gate = asyncio.Event()
+
+    async def slow(*a, **k):
+        await gate.wait()
+        return {"facts": []}
+
+    monkeypatch.setattr(app.fake, "complete_json", slow)
+    await app.memory_imports.start("chatgpt", str(chatgpt_zip), ["conversations"])
+    with pytest.raises(memory_import.ImportBusy):
+        await memory_import.remove(app, "chatgpt")
+    gate.set()
+    await app.memory_imports._task
+
+
 async def test_two_starts_at_once_run_one_import(app, chatgpt_zip):
     results = await asyncio.gather(
         app.memory_imports.start("chatgpt", str(chatgpt_zip), ["memories"]),

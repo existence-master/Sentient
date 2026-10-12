@@ -148,13 +148,16 @@ async def export(app: Any, fmt: str, now: datetime | None = None) -> dict:
     stamp = now.strftime("%Y%m%d-%H%M%S")
 
     def unique() -> Path:
+        """Reserve a new file name (created empty, never an existing file), even when two exports run at once."""
         folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"sentient-memory-{stamp}{FORMATS[fmt]}"
         n = 1
-        while path.exists():
-            n += 1
-            path = folder / f"sentient-memory-{stamp}-{n}{FORMATS[fmt]}"
-        return path
+        while True:
+            path = folder / f"sentient-memory-{stamp}{'' if n == 1 else f'-{n}'}{FORMATS[fmt]}"
+            try:
+                with path.open("x"):
+                    return path
+            except FileExistsError:
+                n += 1
 
     path = await asyncio.to_thread(unique)
     if fmt == "markdown":

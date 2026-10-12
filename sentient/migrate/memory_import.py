@@ -338,6 +338,9 @@ async def remove(app: Any, kind: str) -> dict:
     imported again)."""
     if kind not in APPS:
         raise ExportError("Pick ChatGPT, Claude or OpenClaw.")
+    imports = getattr(app, "memory_imports", None)
+    if imports is not None and imports.running() and (imports.current() or {}).get("app") in (kind, None):
+        raise ImportBusy("An import from this app is still running. Stop it first, then remove what it brought.")
     source = source_of(kind)
     facts = await app.memory.forget_source(source) if app.memory is not None else 0
     insights = await app.user_model.delete_by_source(source)
@@ -360,6 +363,7 @@ class MemoryImports:
         self._task: asyncio.Task | None = None
         self._cancel = False
         self._starting = False  # claimed before start() awaits anything, so two clicks can't start two imports
+        self._halted = False  # Stop everything arrived while an import was still starting
         self._added: set[int] = set()  # facts this job added (an insight may take one's place)
 
     def current(self) -> dict | None:
@@ -381,6 +385,9 @@ class MemoryImports:
 
     async def halt(self) -> int:
         """Stop a running import now (Stop everything, shutdown): what it saved stays. Returns 1 when one ran."""
+        if self._starting:
+            self._halted = True  # the starting import gives up before its task is created
+            return 1
         if self._task is None or self._task.done():
             return 0
         self._cancel = True
@@ -403,6 +410,7 @@ class MemoryImports:
         if not chosen:
             raise ExportError("Pick at least one thing to import.")
         self._starting = True
+        self._halted = False
         try:
             return await self._start(kind, path, chosen, skip)
         finally:
@@ -425,6 +433,8 @@ class MemoryImports:
         backups = getattr(self.app, "backups", None)
         if backups is not None:  # an import can be undone by restoring this snapshot (issue #151)
             await backups.snapshot(f"before importing from {export.label}")
+        if self._halted or getattr(self.app, "stopped", False):
+            raise ImportBusy("Sentient is stopped. Resume it first, then import.")
         self._cancel = False
         self._added = set()
         self.job = {

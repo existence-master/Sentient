@@ -104,4 +104,7 @@ async def memory_apply(request: Request, app: str, body: MemoryApplyBody):
 
 @router.delete("/{app}/memories")
 async def memory_remove(request: Request, app: str):
-    return await memory_import.remove(get_core(request), _app_name(app))
+    try:
+        return await memory_import.remove(get_core(request), _app_name(app))
+    except memory_import.ImportBusy as exc:
+        raise HTTPException(409, str(exc)) from exc

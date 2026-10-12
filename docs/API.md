@@ -2297,7 +2297,8 @@ the job's `message` then says "Sorting N memories into topics."
 - `POST /api/import/memory/job/cancel` → **MemoryImportJob**: stops after the batch being read (`message: "Stopping
   after this batch."`, then `status: "cancelled"`); what was saved stays.
 - `DELETE /api/import/{app}/memories` → `{facts, insights}`: deletes every fact and insight with source `import:<app>`,
-  approved or not, and forgets what was read, so the export can be imported again.
+  approved or not, and forgets what was read, so the export can be imported again. 409 while an import from that app
+  is running.
 
 **MemoryImportPreview**
 ```json
