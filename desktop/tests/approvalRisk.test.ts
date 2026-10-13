@@ -63,3 +63,24 @@ test('purchases, commands, code and reads keep their wording', () => {
   assert.equal(approvalRisk({ risk: 'write', name: 'file_write', reason: 'write a file' }).label, 'Changes things')
   assert.equal(approvalRisk({ risk: 'read', name: 'file_read', reason: 'read a file' }).label, 'Reads')
 })
+
+test('a voicemail tool is not misread as sending an email', () => {
+  const w = approvalRisk({ risk: 'send', name: 'send_voicemail', reason: 'Send a voice message', arguments: {} })
+  assert.equal(w.label, 'Sends')
+})
+
+test('an unrecognized tool whose description says it sends email reads as sending an email', () => {
+  const w = approvalRisk({
+    risk: 'send',
+    name: 'send_message',
+    reason: 'Send an email to one address',
+    arguments: {}
+  })
+  assert.equal(w.label, 'Sends an email')
+  assert.equal(w.verb, 'send an email')
+})
+
+test('"Discard draft" is not misread as a purchase', () => {
+  const w = approvalRisk({ risk: 'send', name: 'browser_click', reason: 'Click "Discard draft"', arguments: {} })
+  assert.equal(w.label, 'Sends')
+})
