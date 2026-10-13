@@ -13,6 +13,7 @@ Days, weeks (from Monday) and months follow this computer's clock; the usage tab
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -61,6 +62,7 @@ def month_key(now: datetime | None = None) -> str:
 class Spending:
     def __init__(self, app: SentientApp):
         self.app = app
+        self._notify_lock = asyncio.Lock()  # parallel calls must not both claim the same threshold
 
     @property
     def models(self) -> Any:
@@ -147,17 +149,19 @@ class Spending:
                    else "Raise the budget in Settings > Usage, or use a local model."))
 
     async def _maybe_notify(self) -> None:
-        """One notification at 80% and one at 100% each month."""
-        state = await self.budget()
-        level = {"warning": WARN_PERCENT, "reached": 100}.get(state["state"])
-        if level is None:
-            return
-        month = state["month"]
-        last = await self.app.store.get_meta(NOTIFIED_META) or ""
-        done = int(last.split(":", 1)[1]) if last.startswith(f"{month}:") and last.split(":", 1)[1].isdigit() else 0
-        if done >= level:
-            return
-        await self.app.store.set_meta(NOTIFIED_META, f"{month}:{level}")
+        """One notification at 80% and one at 100% each month. A single call that jumps past 100% gets only the
+        100% one: it already says the budget is used up."""
+        async with self._notify_lock:
+            state = await self.budget()
+            level = {"warning": WARN_PERCENT, "reached": 100}.get(state["state"])
+            if level is None:
+                return
+            month = state["month"]
+            last = await self.app.store.get_meta(NOTIFIED_META) or ""
+            mark = last.split(":", 1)[1] if last.startswith(f"{month}:") else ""
+            if (int(mark) if mark.isdigit() else 0) >= level:
+                return
+            await self.app.store.set_meta(NOTIFIED_META, f"{month}:{level}")
         try:
             await self.app.notify("budget", state["message"], title="Model budget",
                                   payload={"percent": state["percent"], "state": state["state"]})

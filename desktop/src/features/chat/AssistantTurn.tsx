@@ -17,7 +17,7 @@ import { memo, useEffect, useState } from 'react'
 import { Logo } from '@/components/brand/Logo'
 import { toast } from 'sonner'
 import { Button, IconButton, Markdown, Tooltip } from '@/components/ui'
-import { useKeepGoing } from '@/hooks/core'
+import { useConfig, useKeepGoing } from '@/hooks/core'
 import { errorMessage } from '@/lib/api'
 import { turnText, type AssistantTurnView, type TurnSegment } from '@/lib/chatFold'
 import { modelShortName } from '@/lib/models'
@@ -35,6 +35,8 @@ const ERROR_TITLES: Record<string, string> = {
 /** Lifts the stop for the rest of the month when the budget is set to ask, then tries the reply again. */
 function KeepGoing({ onDone }: { onDone?: () => void }) {
   const keep = useKeepGoing()
+  const atLimit = useConfig().data?.models.budget_at_limit
+  if (atLimit === 'stop') return null // only a bigger budget lifts it: the message says so
   return (
     <Button
       size="sm"

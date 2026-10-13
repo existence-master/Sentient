@@ -347,7 +347,7 @@ accept or loosen a rule.
   (connected apps and built-in tools; tools behind a `never` rule are still listed so Settings can show and change the rule)
 
 ### Usage (insights)
-- `GET /api/usage?days=30` → `{totals: {prompt_tokens, completion_tokens, cost_usd}, by_model: [{model, prompt_tokens, completion_tokens, calls, cost_usd}], by_source: [...], by_day: [{day, prompt_tokens, completion_tokens, cost_usd}]}`.
+- `GET /api/usage?days=30` → `{totals: {prompt_tokens, completion_tokens, cost_usd}, by_model: [{model, prompt_tokens, completion_tokens, calls, cost_usd}], by_source: [...], by_day: [{day, prompt_tokens, completion_tokens, calls, cost_usd}]}`.
   `cost_usd` is `null` for rows with no priced call. Every model call is counted by the provider (chat, tasks,
   background jobs, cloud embeddings), with `source` `chat`, `task`... from the agent loop and `background` otherwise.
 
@@ -373,7 +373,9 @@ accept or loosen a rule.
   speech engines are replaced by the local ones.
 - **Budget**: once this month's spending reaches the budget, a paid cloud model is refused before anything is sent
   (`error.code: "budget_reached"`), and a role falls back to its next model. Plan and local models never count. One
-  `budget` notification at 80% and one at 100% each month.
+  `budget` notification at 80% and one at 100% each month. It is a soft limit: a call's price is known only when it
+  ends, so calls already running when the budget is reached (a swarm's workers, a chat and a task at once) still
+  finish, and spending can go past the budget by what they cost.
 
 ---
 
