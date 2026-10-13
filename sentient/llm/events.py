@@ -68,6 +68,8 @@ class ApprovalRequest(_Event):
     target: str | None = None      # short human label of what is acted on, e.g. "Place order"
     # why this asks although rules or modes would let it run: the chat read outside content (ADR 0018)
     untrusted: str | None = None
+    # what a second look found off about this call (#143): "You asked to email Arjun, but this goes to x@..."
+    warning: str | None = None
     # the answers offered, in button order (#139): allow, allow_session, allow_timed, allow_always, deny. Only
     # "allow" and "deny" for a purchase, a raised risk, running code or a call after outside content
     choices: list[str] | None = None

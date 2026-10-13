@@ -47,6 +47,8 @@ export interface ApprovalView {
   riskLabel?: string | null
   /** Why this asks although rules would let it run: the chat read outside content (ADR 0018), live only. */
   untrusted?: string | null
+  /** What a second look found off about this call (#143), live only. */
+  warning?: string | null
   /** The answers offered (#139), live only. */
   choices?: ApprovalDecision[] | null
   grantMinutes?: number | null
@@ -282,6 +284,7 @@ export function applyAgentEvent(turn: AssistantTurnView, ev: AgentEvent): Assist
             target: ev.target ?? null,
             riskLabel: ev.risk_label ?? null,
             untrusted: ev.untrusted ?? null,
+            warning: ev.warning ?? null,
             choices: ev.choices ?? null,
             grantMinutes: ev.grant_minutes ?? null,
             status: 'pending'

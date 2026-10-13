@@ -862,6 +862,8 @@ export interface ApprovalRequestEvent extends TurnScoped {
   target?: string | null
   /** Why this asks although rules would let it run: the chat read outside content (ADR 0018). */
   untrusted?: string | null
+  /** What a second look found off about this call (#143), e.g. "You asked to email Arjun, but this goes to ...". */
+  warning?: string | null
   /** The answers offered, in order (#139). Older engines leave it out: allow, allow_session, deny. */
   choices?: ApprovalDecision[] | null
   /** How long `allow_timed` lasts, in minutes. */

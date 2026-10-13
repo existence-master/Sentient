@@ -36,7 +36,7 @@ All carry `session_id` and `turn_id`.
 | `tool_call` | `call_id`, `name`, `arguments` |
 | `tool_progress` | `call_id`, `name`, `kind: stdout\|stderr\|status\|frame\|subagent`, `text?`, `image?`, `data?` (section 10) |
 | `tool_result` | `call_id`, `name`, `result`, `is_error`, `duration_ms` (a call the user declined has `result: {error, declined: true}`) |
-| `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10), `choices?: string[]` (the answers offered, in order, section 2 "Scoped answers"), `grant_minutes?` (how long `allow_timed` lasts) |
+| `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10), `warning?` (what a second look found off, section 10, #143), `choices?: string[]` (the answers offered, in order, section 2 "Scoped answers"), `grant_minutes?` (how long `allow_timed` lasts) |
 | `user_interjection` | `text` (a steer message the model just received, section 10) |
 | `steer_ack` | `session_id`, `queued`, `client_id` (echo; no `turn_id`) |
 | `usage` | `model`, `prompt_tokens`, `completion_tokens`, `context_used`, `context_length`, `context_percent`, `context_warning` (context meter, below) |
@@ -161,8 +161,9 @@ applied in code before every call and take effect at once:
 - **What still asks with approvals mode `off`** (the complete list; everything else runs without a question, look-ups
   included, #306): a purchase (above); a tool or app with an `ask` rule; in a chat that read outside content, a call
   that can send data out or a data-carrying address to a new site (section 10, ADR 0018); a call that changes, sends,
-  deletes or runs something while an undecided rule proposal from that chat covers it (below). `never` rules and Read
-  only connections (section 5) refuse instead of asking.
+  deletes or runs something while an undecided rule proposal from that chat covers it (below); a call a second look
+  flagged (section 10, "Second look", #143, ADR 0024). `never` rules and Read only connections (section 5) refuse
+  instead of asking.
 Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`, `app.approvals.is_hidden(tool)` (never
 rules plus Read only connections, section 5), `app.approvals.read_only_refusal(tool, risk, registry)`,
 `await app.approvals.decide(tool, session_id, risk, arguments, ctx) -> bool`, pure helpers in `sentient.tools.rules`.
@@ -182,8 +183,9 @@ An answer can be wider than one call. `decision` values (`sentient.agent.grants`
 - Each request says which answers it offers (`approval_request.choices`; a task's `pending_question.options`). A
   wider yes than offered counts as `allow` (once), so no client can widen a request; a task answer that isn't one of
   its options is refused (below). Only `allow` and `deny` are
-  offered for a purchase, a call after outside content (ADR 0018), a tool that asks every time (`allow_for_chat=False`,
-  the terminal), a call a `risk_fn` raised to `send` or `exec`, and anything whose effective risk is `exec`.
+  offered for a purchase, a call after outside content (ADR 0018), a call a second look flagged (#143), a tool that
+  asks every time (`allow_for_chat=False`, the terminal), a call a `risk_fn` raised to `send` or `exec`, and anything
+  whose effective risk is `exec`.
 - A task or timed grant also covers a tool set to `ask` (the user was asked about that tool and chose how wide the yes
   is), but never an undecided rule proposal, a `never` rule, a Read only connection, the unprompted-work limit or the
   outside-content check, which all come first. Grants are checked in code; no model sees or changes them.
@@ -1666,6 +1668,38 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   Stored `messages` rows keep the unmarked result; `app.agent.mark_outside_messages(messages)` marks a transcript
   read back from storage (chat history, task checkpoints; a `file_read` is matched to its call's arguments) and
   `app.agent.outside_content(content, tool, arguments)` one tool message. `run_tool` returns the marked content. The user's own messages are never marked.
+
+### Second look at outgoing actions (#143, ADR 0024)
+- Before any call where `rules.sends_out` is true runs (after `never` rules, Read only connections, the
+  unprompted-work limit and a `policy`), `run_loop` compares it with what the user asked (`sentient.agent.second_look`):
+  - **Always, no model** (`second_look.deterministic`, skipped for effective risk `exec`): every email address or phone
+    number in an argument whose key names a recipient (`to`, `cc`, `bcc`, `recipient_email`, `attendees`, `guests`,
+    `phone`...; nested arguments such as Composio's multi-execute are walked) must appear in the user's own words
+    (user messages, without outside-content blocks or the time note; in a task run, also its brief in the system
+    prompt), in trusted records read in the run (results of tools that bring no outside content, Google Contacts, a
+    chat's system prompt) or in an active saved memory, or belong to a name the user gave ("email Arjun" and
+    `arjun.mehta@...`; the user's own name counts). Every amount of money (`$1,200`, `500 rupees`, a number in an
+    `amount`/`price`/`total`... field) must appear there too. After outside content, a link in the call that came
+    from that content is flagged.
+  - **Model** (`second_look.model_check`, only for effective risk `send`/`exec` of tools that are not `internal`,
+    `tools.approvals.second_look_model`, default on): when nothing was flagged yet and the call would otherwise run
+    without asking, or the run read outside content. One tool-free `fast`-role prompt sees only the user's own words
+    (the last 1500 characters) and the action (its approval wording and arguments) and answers
+    `{"match": bool, "reason": str}`, parsed tolerantly. When the fast model refuses the job, the primary model (or the
+    chat's model) answers; Claude Code answers only inside a chat reply (ADR 0022). No usable answer within 45 seconds
+    (an error, a refusal, unreadable JSON) fails closed with
+    `"Sentient couldn't double-check this against what you asked, so it checks with you first."`
+- A flagged call is raised to at least `send` and asks whatever the approvals mode, Allow rules, "Allow for this
+  chat" or a task or timed grant say. Its `approval_request` carries `warning`, one plain sentence such as
+  `"You asked to email Arjun, but this goes to x@evil.example. That address came from Web, not from you."`,
+  `"This includes $5,000, an amount that isn't in what you asked."`,
+  `"This includes a link to evil.example that came from Web, not from you."` or
+  `"A second look found this may not match what you asked: <the model's reason>."`, and offers only `allow` and
+  `deny`. Without approvals the call is held like an outside-content call: a single task run pauses and asks
+  (`LoopResult.needs_ok.question` starts with the warning; the pending question is a one-call yes), and subagents and
+  swarm workers get `{error: "Not done: a second look found a problem, so <tool> needs the user's OK first. ..."}`.
+  Messaging-app approval messages add `**Check this:** <warning>`, and voice reads it out. A second look only ever
+  adds a question; nothing it finds lowers a risk or skips another check.
 
 ### Subagents
 - Tools (plugin `subagents`):
