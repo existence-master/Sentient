@@ -1327,3 +1327,68 @@ async def test_record_and_get_client_info_do_not_call_migration(monkeypatch):
     storage.record()
     await storage.get_client_info()
     assert migrated == []
+
+
+async def test_redirect_port_change_deletes_matching_tagged_legacy_client_record(app, keychain):
+    """When the redirect port changes, sign_in removes the matching tagged legacy client record."""
+    mock = MockServer(oauth=True)
+    app.integrations.mcp.http_transport = mock.transport()
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": URL})
+
+    # Set up stale client records registered for old port 9999
+    cli_url_key = mcp_auth.client_secret("Notes", URL)
+    cli_leg_key = mcp_auth.client_secret("Notes", None)
+    stale_cb = "http://127.0.0.1:9999/oauth/callback"
+
+    mcp_auth.save_json(cli_url_key, {"client_id": "c-url-old", "redirect_uris": [stale_cb], "server_url": URL})
+    mcp_auth.save_json(cli_leg_key, {"client_id": "c-leg-old", "redirect_uris": [stale_cb], "server_url": URL})
+
+    # An untagged legacy client for another server must NOT be deleted
+    mcp_auth.save_json("mcp:Untagged:client", {"client_id": "c-untagged", "redirect_uris": [stale_cb]})
+    # A legacy client tagged for a different server URL must NOT be deleted
+    mcp_auth.save_json("mcp:Other:client", {"client_id": "c-other", "redirect_uris": [stale_cb], "server_url": "http://other.test/mcp"})
+
+    # Populate mock server with the old clients so we can verify dynamic re-registration
+    mock.clients["c-url-old"] = {"redirect_uris": [stale_cb]}
+    mock.clients["c-leg-old"] = {"redirect_uris": [stale_cb]}
+
+    res = await _sign_in(app, mock, "Notes")
+    assert res.status_code == 200
+
+    # Matching tagged legacy client record must be deleted
+    assert cli_leg_key not in keychain
+
+    # URL-scoped client record is updated with new client and new redirect URI
+    new_cli = mcp_auth.load_json(cli_url_key)
+    assert new_cli is not None
+    assert new_cli["client_id"] not in ("c-url-old", "c-leg-old")
+    assert all(":9999" not in str(u) for u in new_cli.get("redirect_uris", []))
+
+    # Untagged record and other-URL record were preserved
+    assert "mcp:Untagged:client" in keychain
+    assert "mcp:Other:client" in keychain
+
+
+async def test_redirect_port_change_preserves_untagged_legacy_client_record(app, keychain):
+    """When the redirect port changes, an untagged legacy client is not deleted."""
+    mock = MockServer(oauth=True)
+    app.integrations.mcp.http_transport = mock.transport()
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": URL})
+
+    cli_url_key = mcp_auth.client_secret("Notes", URL)
+    cli_leg_key = mcp_auth.client_secret("Notes", None)
+    stale_cb = "http://127.0.0.1:9999/oauth/callback"
+
+    # URL-scoped record for this server on old port
+    mcp_auth.save_json(cli_url_key, {"client_id": "c-url-old", "redirect_uris": [stale_cb], "server_url": URL})
+    # Untagged legacy record (e.g. from an older version sharing the keychain)
+    mcp_auth.save_json(cli_leg_key, {"client_id": "c-leg-untagged", "redirect_uris": [stale_cb]})
+
+    mock.clients["c-url-old"] = {"redirect_uris": [stale_cb]}
+
+    res = await _sign_in(app, mock, "Notes")
+    assert res.status_code == 200
+
+    # Untagged legacy client is preserved for backward compatibility
+    assert cli_leg_key in keychain
+    assert mcp_auth.load_json(cli_leg_key)["client_id"] == "c-leg-untagged"

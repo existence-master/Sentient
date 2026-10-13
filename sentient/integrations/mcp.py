@@ -554,7 +554,15 @@ class MCPManager:
         store = KeychainTokenStorage(name, fresh=True, url=conn.spec.get("url"))
         registered = await store.get_client_info()
         if registered is not None and redirect_uri not in [str(u) for u in registered.redirect_uris or []]:
-            delete_json(client_secret(name, conn.spec.get("url")))  # registered for another port: register again
+            url = conn.spec.get("url")
+            delete_json(client_secret(name, url))  # registered for another port: register again
+            if url:
+                leg_key = client_secret(name, None)
+                leg = load_json(leg_key)
+                if isinstance(leg, dict):
+                    saved = leg.get(SERVER_URL_KEY)
+                    if saved is not None and canonical_url(saved) == canonical_url(url):
+                        delete_json(leg_key)
         loop = asyncio.get_running_loop()
         flow = SignInFlow(server=name, url=loop.create_future(), code=loop.create_future())
         conn.signin = flow
