@@ -4,6 +4,7 @@ under files/outputs/ and a download under files/downloads/ are marked too when r
 from __future__ import annotations
 
 import json
+import sys
 
 from sentient import paths
 from sentient.agent.prompt import (
@@ -158,7 +159,10 @@ def test_task_trigger_data_is_marked_in_the_executor_prompt():
 def test_only_saved_results_and_downloads_count():
     assert saved_outside_source("file_read", {"name": "outputs/tool-call_1.txt"}) == "a saved tool result"
     assert saved_outside_source("file_read", {"name": "downloads/invoice.pdf"}) == "a downloaded file"
-    assert saved_outside_source("file_read", {"name": "./Downloads\\invoice.pdf"}) == "a downloaded file"
+    # read as file_read reads it: backslashes and any case on Windows, one odd file name on POSIX
+    windows = sys.platform == "win32"
+    assert saved_outside_source("file_read", {"name": "./Downloads\\invoice.pdf"}) == ("a downloaded file" if windows else "")
+    assert saved_outside_source("file_read", {"name": "outputs\\report.txt"}) == ("a saved tool result" if windows else "")
     assert saved_outside_source("file_read", {"name": "notes/../outputs/x.txt"}) == "a saved tool result"
     assert saved_outside_source("file_read", {"name": "notes/outputs.txt"}) == ""
     for outside_files in ("/outputs/x.txt", "../outputs/x.txt", "C:/outputs/x.txt", "outputs/../../x.txt"):

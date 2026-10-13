@@ -18,8 +18,8 @@ which calls can send data out, and the plain wording for the questions that foll
 
 from __future__ import annotations
 
-import posixpath
 from collections.abc import Collection, Mapping
+from pathlib import PurePath
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -250,11 +250,21 @@ def saved_outside_source(name: str, arguments: Any) -> str:
     else "". Only those folders: the user's own files and Sentient's notes are not outside content."""
     if name != "file_read" or not isinstance(arguments, dict):
         return ""
-    raw = str(arguments.get("name") or "").replace("\\", "/")
-    path = posixpath.normpath(raw)
-    if raw.startswith("/") or ":" in path.split("/", 1)[0] or path.startswith(".."):
-        return ""  # outside the files folder: file_read refuses it, so nothing is read
-    return SAVED_OUTSIDE_FOLDERS.get(path.split("/", 1)[0].lower(), "")
+    path = PurePath(str(arguments.get("name") or ""))  # read the way file_read's own path check reads it
+    if path.anchor:
+        return ""  # absolute or another drive: file_read refuses it, so nothing is read
+    parts: list[str] = []
+    for part in path.parts:
+        if part == "..":
+            if not parts:
+                return ""  # escapes the files folder
+            parts.pop()
+        elif part != ".":
+            parts.append(part)
+    if not parts:
+        return ""
+    top = PurePath(parts[0])  # case-insensitive on Windows, like the file system
+    return next((source for folder, source in SAVED_OUTSIDE_FOLDERS.items() if top == PurePath(folder)), "")
 
 
 SCREEN_FOLDER = "screens"  # files/screens: what the user shared from their screen (window or region hotkey)
