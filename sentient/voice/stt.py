@@ -426,8 +426,10 @@ def build_stt(config: Any) -> STTProvider:
     """``config`` is the root SentientConfig."""
     v = config.voice
     language = stt_language(v.stt_language or config.assistant.language)
-    if v.stt_provider == "faster_whisper":
-        return FasterWhisperSTT(v.stt_model, v.stt_device, language)
+    if v.stt_provider == "faster_whisper" or config.models.local_only:
+        # Local only (#148): speech never goes to a cloud service; the local engine listens instead
+        model = v.stt_model if v.stt_provider == "faster_whisper" else ""
+        return FasterWhisperSTT(model or "base", v.stt_device, language)
     if v.stt_provider == "openai":
         pc = config.models.providers.get("openai")
         return OpenAISTT(v.stt_model, language, pc.api_base if pc is not None else None)

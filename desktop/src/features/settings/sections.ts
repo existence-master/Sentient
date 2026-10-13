@@ -142,9 +142,9 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   {
     id: 'usage',
     label: 'Usage',
-    description: 'Tokens by model, source and day.',
+    description: 'What your models cost, a monthly budget, and tokens by model and day.',
     icon: IconChartBar,
-    keywords: ['tokens', 'cost', 'insights', 'statistics']
+    keywords: ['tokens', 'cost', 'insights', 'statistics', 'budget', 'spend', 'money', 'dollars', 'price', 'bill']
   },
   {
     id: 'backups',

@@ -126,6 +126,9 @@ export function ModelsSection({ query }: SectionProps) {
 
   return (
     <div className="space-y-10">
+      {(!q || 'local only cloud privacy offline where ai runs'.includes(q)) && (
+        <SchemaForm section="models" title="Where AI runs" include={['models.local_only']} />
+      )}
       {(!q || 'presets preset local cloud mixed switch setup'.includes(q)) && <PresetsPanel />}
       {(!q || 'check my models check-up checkup test tools gpu graphics card'.includes(q)) && <ModelCheckup autoStart={autoCheck} />}
       <section className="space-y-3">

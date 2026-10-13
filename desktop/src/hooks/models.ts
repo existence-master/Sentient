@@ -103,6 +103,18 @@ export function useSetRoles() {
   })
 }
 
+/** Local only or May use cloud (#148): saved at once, not debounced, because it is a promise about privacy. */
+export function useSetLocalOnly() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (on: boolean) => api.config.patch({ models: { local_only: on } }),
+    onSuccess: (res) => {
+      qc.setQueryData<SentientConfig>(qk.config, res.config)
+      void qc.invalidateQueries({ queryKey: ['usage'] })
+    }
+  })
+}
+
 export function useModelPresets() {
   return useQuery({ queryKey: qk.modelPresets, queryFn: api.models.presets.list, staleTime: 10_000 })
 }

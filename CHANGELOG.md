@@ -6,6 +6,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **See what your models cost, and keep everything on this computer:** Settings > Usage now shows what paid cloud
+  models cost today, this week and this month, by model and by job. Models on your Claude or ChatGPT plan show as
+  **On your plan** instead of dollars, and local models as free. Set a **monthly budget** there: you get a
+  notification at 80%, and at 100% paid cloud models pause until you choose **Keep going this month** (or, if you
+  prefer, until next month). The model menu in the title bar has a new **Local only / May use cloud** switch. In
+  Local only, nothing is sent to a model outside this computer: not a backup model, not a chat with its own cloud
+  model, not tasks, memory search or voice. Anything that would have used the cloud says so in plain words, or a
+  local model answers instead.
 - **Approve from your phone, and choose how far a yes goes:** when a task needs your OK and you're away from the
   app, the request goes to your paired Telegram, Discord or WhatsApp chat with buttons (or reply with once, task,
   hour, always or no). Only the chat it was sent to can answer it, and a request that waits too long (4 hours by
