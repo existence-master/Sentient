@@ -21,13 +21,14 @@ import { AnimatePresence, motion } from 'motion/react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, EmptyState, JsonView, Markdown, Tooltip } from '@/components/ui'
+import { AnswerSources } from '@/features/chat/AnswerSources'
 import { ContextGauge } from '@/features/chat/ContextMeter'
 import { MemorySources } from '@/features/chat/MemorySources'
 import { useBootstrap } from '@/hooks/core'
 import { api, errorMessage } from '@/lib/api'
 import { useRetryRun } from '@/hooks/tasks'
 import { getBridge } from '@/lib/bridge'
-import type { MemorySource, Run, Task, TaskRunResult } from '@/lib/types'
+import type { AnswerSource, MemorySource, Run, Task, TaskRunResult } from '@/lib/types'
 import { cn, formatDuration, parseDate, relativeTime, truncate } from '@/lib/utils'
 import { useNow } from '../hooks'
 import { retryOf, runDurationMs, scriptOf } from '../meta'
@@ -222,7 +223,11 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
                   {retryButton}
                 </div>
               )}
-              {run.result && <RunResult result={run.result} memorySources={run.memory_sources} />}
+              {run.result ? (
+                <RunResult result={run.result} memorySources={run.memory_sources} sources={run.sources} />
+              ) : (
+                !!run.sources?.length && <RunSources sources={run.sources} /> // read so far, or before it failed
+              )}
               <div>
                 <div className="mb-2 flex items-center gap-2 text-2xs font-semibold uppercase tracking-wider text-fg-subtle">Execution log</div>
                 <RunLog taskId={task.task_id} run={run} live={live} tz={tz} />
@@ -356,7 +361,27 @@ export function TriggerEventCard({ source, data, tz }: { source?: string; data: 
 }
 
 // ---------------------------------------------------------------------------- result
-export function RunResult({ result, memorySources }: { result: TaskRunResult; memorySources?: MemorySource[] }) {
+/** The pages, emails, files and apps a run used (#291), as the same chips a chat reply has. */
+function RunSources({ sources }: { sources: AnswerSource[] }) {
+  const { data: boot } = useBootstrap()
+  return (
+    <div className="space-y-1.5">
+      <div className="text-xs text-fg-subtle">Sources</div>
+      <AnswerSources sources={sources} assistantName={boot?.assistant.name || 'Sentient'} />
+    </div>
+  )
+}
+
+export function RunResult({
+  result,
+  memorySources,
+  sources
+}: {
+  result: TaskRunResult
+  memorySources?: MemorySource[]
+  /** Pages, emails, files and apps the run used (#291). */
+  sources?: AnswerSource[]
+}) {
   const { names } = useToolNames()
   const { data: boot } = useBootstrap()
   const open = (url: string) => /^https?:/.test(url) && void getBridge().openExternal(url)
@@ -426,6 +451,7 @@ export function RunResult({ result, memorySources }: { result: TaskRunResult; me
           ))}
         </div>
       )}
+      {!!sources?.length && <RunSources sources={sources} />}
       {!!memorySources?.length && <MemorySources sources={memorySources} assistantName={boot?.assistant.name || 'Sentient'} task />}
     </div>
   )

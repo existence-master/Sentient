@@ -322,6 +322,9 @@ accept or loosen a rule.
     Helpers it started keep refusing to save even if it is deleted first. Without memory, its prompt also leaves out
     the configured name and location.
     Each engine deletion publishes `session.deleted` with `reason: "incognito"`.
+  - long tool results it (or a helper it started) read are saved under `files/outputs/incognito-<session id>/`
+    instead of `files/outputs/`, and that folder is deleted with the chat (#291). Files it wrote on request and tasks
+    it created stay. A folder whose chat is already gone is removed at the next start.
 - `POST /api/approvals` `{approval_id, decision}` → `{resolved}`; a yes wider than the request offers counts as
   `allow` (section 2, "Scoped answers"); 404 when nothing is waiting or the decision is unknown. `GET /api/approvals/grants`, `DELETE
   /api/approvals/grants/{id}`: section 2.
@@ -665,7 +668,8 @@ task-creation prompt sets it for requests like "every morning"; a window the req
  "pending_question": {"question": "Which flight should I book?", "options": ["IndiGo 07:10", "Air India 09:40"], "asked_at": "...",
                       "kind": "question|limit|stuck", "reason": "...|null"} | null,
  "last_activity_at": "...|null",
- "memory_sources": [MemorySource]}
+ "memory_sources": [MemorySource],
+ "sources": [AnswerSource]}
 ```
 `pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question", "Limits on a run"
 and "Stuck runs" below). `kind` says why it waits; `reason` is set for `stuck` only. `last_activity_at` is when the run
@@ -674,6 +678,9 @@ last showed any sign of work (a progress update, or streamed model output; falls
 prompt (`via: "prompt"`) and facts `memory_recall` / `memory_search_by_source` returned that the model read
 (`via: "tool"`). Saved on the run as they are found, merged across pauses (questions, limits, stuck), resumes and
 restarts, and copied to a Retry that continues the transcript; `[]` when none, and for swarm and one-call runs.
+`sources` (section 2, "Answer sources", #291) are the pages, emails, files and apps the run used, recorded the same
+way as a chat reply's (from tool results, never asked of the model, at most 12) and kept the same way as
+`memory_sources`; the run history shows them as chips.
 Already approved one-call tasks (a follow-up's Send, section 6) carry `original_context.fixed_call = {tool, arguments,
 done_text}` and a one-step `plan`. They are created `pending`, start a run at once with no planner and no executor model,
 and the run makes exactly that call with exactly those arguments (`tool_call`, `tool_result`, `final_answer` updates). A
@@ -1504,7 +1511,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - Consecutive tool calls of effective risk `read` that need no approval run concurrently (`chat.parallel_read_tools`,
   default on); others run in order. Their `tool_call` events come first, `tool_progress` may interleave, and
   `tool_result` events, tool messages and persisted rows keep the order the model asked for.
-- A tool result longer than the run's limit is cut, the full text is saved under `files/outputs/tool-<call_id>.txt`,
+- A tool result longer than the run's limit is cut, the full text is saved under `files/outputs/tool-<call_id>.txt`
+  (`files/outputs/incognito-<session id>/tool-<call_id>.txt` in an incognito chat, section 2),
   and the model is told plainly (`[Result cut: this is only the first N of M characters. The full result is saved as
   ...]`). The limit (`await app.agent.tool_result_limit(role, model)`, kept on `LoopResult.tool_result_limit` and worked out again for a fallback model that answered) is
   `chat.tool_result_max_chars` (default 16000), and at most `chat.tool_result_context_share` (default 0.25) of the
