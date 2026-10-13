@@ -55,7 +55,8 @@ export interface NativeApproval {
   taskId: string
   runId: string
   untrusted?: boolean
-  /** The request's `expires_at`: tells it apart from a later request of the same run. */
+  /** The request's `expires_at`, sent with the answer so it can't land on a later request of the same run.
+   *  Without it the notification has no buttons. */
   expiresAt?: string
 }
 
@@ -239,7 +240,7 @@ export interface SentientBridge {
   /** Native open dialog. Returns absolute paths (drag and drop is the primary path). `directory` picks a folder
    *  (hidden folders such as ~/.hermes are shown); `filters` limits files by extension (a backup's `.zip`). */
   pickFiles(options?: PickFilesOptions): Promise<string[]>
-  /** Whether the window currently has OS focus. */
+  /** Whether the window is on screen and has OS focus (false while minimized or hidden in the tray). */
   isFocused(): Promise<boolean>
   /** Open a file from Sentient's files folder (`outputs/chart.png`) with the default app. */
   openFile(name: string): Promise<boolean>

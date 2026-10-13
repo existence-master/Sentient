@@ -38,10 +38,8 @@ import {
   approvalNotificationId,
   approvalRoute,
   type ApprovalTarget,
-  cleanApproval,
-  NOT_WAITING,
-  stillWaiting,
-  taskPath
+  answerBody,
+  cleanApproval
 } from './approval-notify'
 import { BackendManager } from './backend'
 import { CH } from './channels'
@@ -80,6 +78,12 @@ function showWindow(): void {
   if (win.isMinimized()) win.restore()
   if (!win.isVisible()) win.show()
   win.focus()
+}
+
+/** The window is on screen and has focus. Windows can report a minimized window as focused when nothing else took
+ *  focus, so minimized or hidden never counts (#323: a task's approval then shows as a notification). */
+function inFront(): boolean {
+  return !!win && !win.isDestroyed() && win.isVisible() && !win.isMinimized() && win.isFocused()
 }
 
 function sendCommand(cmd: AppCommand): void {
@@ -336,7 +340,7 @@ function showApprovalNotification(n: NativeNotification, target: ApprovalTarget)
   // notifications turned off in the system settings: flash the taskbar button instead, until the window is focused
   note.on('failed', () => {
     forget()
-    if (win && !win.isDestroyed() && !win.isFocused()) win.flashFrame(true)
+    if (win && !win.isDestroyed() && !inFront()) win.flashFrame(true)
   })
   note.show()
 }
@@ -344,21 +348,15 @@ function showApprovalNotification(n: NativeNotification, target: ApprovalTarget)
 /** Answer the run the way the approval card does. A refused answer (expired, already answered) says why. */
 async function answerApproval(target: ApprovalTarget, answer: string): Promise<void> {
   let problem: string | null = null
-  const headers = { Authorization: `Bearer ${backend.token}`, 'Content-Type': 'application/json' }
   try {
-    // only the request this notification showed: never a later one the same run reached meanwhile
-    const now = await fetch(`${backend.baseUrl}${taskPath(target)}`, { headers, signal: AbortSignal.timeout(10_000) })
-    if (!now.ok) problem = answerProblem(now.status, await now.json().catch(() => null))
-    else if (!stillWaiting(await now.json().catch(() => null), target)) problem = NOT_WAITING
-    else {
-      const r = await fetch(`${backend.baseUrl}${answerPath(target)}`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ answer }),
-        signal: AbortSignal.timeout(10_000)
-      })
-      if (!r.ok) problem = answerProblem(r.status, await r.json().catch(() => null))
-    }
+    // scoped to the request this notification showed: the engine refuses it when the run now waits on another one
+    const r = await fetch(`${backend.baseUrl}${answerPath(target)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${backend.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(answerBody(target, answer)),
+      signal: AbortSignal.timeout(10_000)
+    })
+    if (!r.ok) problem = answerProblem(r.status, await r.json().catch(() => null))
   } catch {
     problem = "Sentient isn't reachable right now. Open the task to answer there."
   }
@@ -447,7 +445,7 @@ function registerIpc(): void {
   })
   ipcMain.handle(CH.winClose, () => win?.close())
   ipcMain.handle(CH.winIsMaximized, () => win?.isMaximized() ?? false)
-  ipcMain.handle(CH.isFocused, () => win?.isFocused() ?? false)
+  ipcMain.handle(CH.isFocused, () => inFront())
   ipcMain.handle(CH.getVersion, () => ({
     app: app.getVersion(),
     electron: process.versions.electron,

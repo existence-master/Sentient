@@ -9,9 +9,8 @@ import {
   approvalAnswer,
   approvalNotificationId,
   approvalRoute,
-  cleanApproval,
-  stillWaiting,
-  taskPath
+  answerBody,
+  cleanApproval
 } from '../electron/main/approval-notify.ts'
 import { approvalTarget, settledApprovalRun } from '../src/lib/nativeApproval.ts'
 
@@ -31,19 +30,9 @@ test('the request carries its expiry, which tells it apart from a later one', ()
   assert.equal(cleanApproval({ taskId: 'a', runId: 'b', expiresAt: 'x'.repeat(65) })?.expiresAt, undefined)
 })
 
-test('an answer goes only to the very request the notification showed', () => {
+test('the answer is scoped to the request the notification showed', () => {
   const t = { taskId: 't1', runId: 'r1', expiresAt: 'E1' }
-  const task = (status: string, kind: string, expires: string) => ({
-    runs: [{ run_id: 'r0', status: 'completed' }, { run_id: 'r1', status, pending_question: { kind, expires_at: expires } }]
-  })
-  assert.equal(stillWaiting(task('waiting_for_user', 'approval', 'E1'), t), true)
-  assert.equal(stillWaiting(task('waiting_for_user', 'approval', 'E2'), t), false) // a later request of the run
-  assert.equal(stillWaiting(task('processing', 'approval', 'E1'), t), false) // answered meanwhile
-  assert.equal(stillWaiting(task('waiting_for_user', 'question', 'E1'), t), false) // now a plain question
-  assert.equal(stillWaiting(task('waiting_for_user', 'approval', 'E9'), { taskId: 't1', runId: 'r1' }), true)
-  assert.equal(stillWaiting({ runs: [] }, t), false)
-  assert.equal(stillWaiting(null, t), false)
-  assert.equal(taskPath(t), '/api/tasks/t1')
+  assert.deepEqual(answerBody(t, 'Allow once'), { answer: 'Allow once', expires_at: 'E1' })
 })
 
 test('a call held after outside content is marked untrusted', () => {
@@ -79,15 +68,16 @@ test('the buttons only ever allow one call or deny', () => {
 })
 
 test('the target from the renderer is checked before it reaches a URL', () => {
-  assert.deepEqual(cleanApproval({ taskId: 'abc', runId: 'def' }), { taskId: 'abc', runId: 'def', untrusted: false })
-  assert.equal(cleanApproval({ taskId: '../x', runId: 'def' }), null)
+  assert.deepEqual(cleanApproval({ taskId: 'abc', runId: 'def', expiresAt: 'E' }), { taskId: 'abc', runId: 'def', untrusted: false, expiresAt: 'E' })
+  assert.equal(cleanApproval({ taskId: 'abc', runId: 'def' }), null) // no request to scope the answer to: no buttons
+  assert.equal(cleanApproval({ taskId: '../x', runId: 'def', expiresAt: 'E' }), null)
   assert.equal(cleanApproval({ taskId: 'abc' }), null)
   assert.equal(cleanApproval(null), null)
   assert.equal(cleanApproval('abc'), null)
 })
 
 test('paths, ids and routes', () => {
-  const t = { taskId: 'abc', runId: 'def' }
+  const t = { taskId: 'abc', runId: 'def', expiresAt: 'E' }
   assert.equal(answerPath(t), '/api/tasks/abc/runs/def/answer')
   assert.equal(approvalRoute(t), '/tasks/abc')
   assert.equal(approvalNotificationId('def'), 'approval-def')

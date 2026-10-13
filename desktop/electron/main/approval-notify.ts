@@ -11,44 +11,29 @@
 /** The button labels, in order. Index 0 allows this one call, index 1 denies it. */
 export const APPROVAL_BUTTONS = ['Allow once', 'Deny'] as const
 
-/** Which waiting run a notification answers. `untrusted`: a call held after outside content (ADR 0018).
- *  `expiresAt` tells this request apart from a later one in the same run (each held call gets its own). */
+/** Which waiting request a notification answers. `untrusted`: a call held after outside content (ADR 0018).
+ *  `expiresAt` is the request's own `expires_at`: sent with the answer, so the engine refuses it when the run now
+ *  waits on a later request (a notification can stay in the notification center long after it was shown). */
 export interface ApprovalTarget {
   taskId: string
   runId: string
   untrusted?: boolean
-  expiresAt?: string
+  expiresAt: string
 }
 
 const ID = /^[\w-]{1,128}$/
 
-/** The approval target from the renderer, or null when it is missing or malformed (the click still opens the app). */
+/** The approval target from the renderer, or null when it is missing or malformed, or has no `expiresAt` to scope
+ *  the answer to (then it is a plain notification whose click opens the app). */
 export function cleanApproval(raw: unknown): ApprovalTarget | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const taskId = typeof r.taskId === 'string' ? r.taskId : ''
   const runId = typeof r.runId === 'string' ? r.runId : ''
-  if (!ID.test(taskId) || !ID.test(runId)) return null
-  const expiresAt = typeof r.expiresAt === 'string' && r.expiresAt.length <= 64 ? r.expiresAt : undefined
-  return { taskId, runId, untrusted: r.untrusted === true, ...(expiresAt ? { expiresAt } : {}) }
+  const expiresAt = typeof r.expiresAt === 'string' && r.expiresAt.length <= 64 ? r.expiresAt : ''
+  if (!ID.test(taskId) || !ID.test(runId) || !expiresAt) return null
+  return { taskId, runId, untrusted: r.untrusted === true, expiresAt }
 }
-
-/** True when the task (`GET /api/tasks/{id}`) still waits on the very request this notification showed. An answer
- *  is only sent then, so a notification left in the notification center can never approve a later request of the
- *  same run (the engine answers whatever the run waits on now). */
-export function stillWaiting(task: unknown, t: ApprovalTarget): boolean {
-  const runs = task && typeof task === 'object' ? (task as { runs?: unknown }).runs : undefined
-  if (!Array.isArray(runs)) return false
-  const run = runs.find((r) => r && typeof r === 'object' && (r as { run_id?: unknown }).run_id === t.runId) as
-    | { status?: unknown; pending_question?: { kind?: unknown; expires_at?: unknown } | null }
-    | undefined
-  const q = run?.pending_question
-  if (run?.status !== 'waiting_for_user' || !q || q.kind !== 'approval') return false
-  return !t.expiresAt || q.expires_at === t.expiresAt
-}
-
-/** What a stale notification says: its request was answered, or the run now waits on something else. */
-export const NOT_WAITING = 'This request was already answered or has changed. Open the task to see what it is waiting for.'
 
 /** The answer a button sends, worded the way the engine reads it for this kind of request; null for other indexes. */
 export function approvalAnswer(actionIndex: number, untrusted = false): string | null {
@@ -57,9 +42,9 @@ export function approvalAnswer(actionIndex: number, untrusted = false): string |
   return null
 }
 
-/** The REST path of the task, to check it still waits before answering. */
-export function taskPath(t: ApprovalTarget): string {
-  return `/api/tasks/${encodeURIComponent(t.taskId)}`
+/** The body of the answer: the button's words, scoped to the request the notification showed. */
+export function answerBody(t: ApprovalTarget, answer: string): { answer: string; expires_at: string } {
+  return { answer, expires_at: t.expiresAt }
 }
 
 /** The REST path that answers the run. */
