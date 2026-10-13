@@ -15,13 +15,44 @@ import { BrowserCard, isBrowserTool } from './cards/BrowserCard'
 import { AnimatePresence, motion } from 'motion/react'
 import { memo, useEffect, useState } from 'react'
 import { Logo } from '@/components/brand/Logo'
+import { toast } from 'sonner'
 import { Button, IconButton, Markdown, Tooltip } from '@/components/ui'
+import { useConfig, useKeepGoing } from '@/hooks/core'
+import { errorMessage } from '@/lib/api'
 import { turnText, type AssistantTurnView, type TurnSegment } from '@/lib/chatFold'
 import { modelShortName } from '@/lib/models'
 import type { ApprovalDecision } from '@/lib/types'
 import { cn, copyText, formatNumber } from '@/lib/utils'
 import { AnswerSources } from './AnswerSources'
 import { ToolCallCard } from './ToolCallCard'
+
+/** Titles for errors the chat can explain (#148); anything else is "Something went wrong". */
+const ERROR_TITLES: Record<string, string> = {
+  local_only: 'Kept on this computer',
+  budget_reached: "This month's budget is used up"
+}
+
+/** Lifts the stop for the rest of the month when the budget is set to ask, then tries the reply again. */
+function KeepGoing({ onDone }: { onDone?: () => void }) {
+  const keep = useKeepGoing()
+  const atLimit = useConfig().data?.models.budget_at_limit
+  if (atLimit === 'stop') return null // only a bigger budget lifts it: the message says so
+  return (
+    <Button
+      size="sm"
+      variant="secondary"
+      loading={keep.isPending}
+      onClick={() =>
+        keep.mutate(undefined, {
+          onSuccess: () => onDone?.(),
+          onError: (e) => toast.error("Couldn't keep going", { description: errorMessage(e) })
+        })
+      }
+    >
+      Keep going this month
+    </Button>
+  )
+}
 
 export interface AssistantTurnProps {
   turn: AssistantTurnView
@@ -188,9 +219,10 @@ export const AssistantTurn = memo(function AssistantTurn({ turn, assistantName, 
           <div className="flex items-start gap-3 rounded-xl border border-danger/25 bg-danger/[0.07] px-3.5 py-3 text-sm">
             <IconAlertCircle size={17} className="mt-0.5 shrink-0 text-danger" />
             <div className="min-w-0 flex-1">
-              <div className="font-medium text-fg">Something went wrong</div>
+              <div className="font-medium text-fg">{ERROR_TITLES[turn.error.code ?? ''] ?? 'Something went wrong'}</div>
               <div className="selectable mt-0.5 break-words text-fg-muted">{turn.error.message}</div>
             </div>
+            {isLast && turn.error.code === 'budget_reached' && <KeepGoing onDone={onRetry} />}
             {isLast && onRetry && (
               <Button size="sm" variant="secondary" leftIcon={<IconRefresh size={14} />} onClick={onRetry}>
                 Retry

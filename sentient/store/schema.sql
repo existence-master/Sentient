@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS usage (
     source            TEXT NOT NULL DEFAULT 'chat',     -- chat | task | memory | proactive | evolution | voice
     prompt_tokens     INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd          REAL,                             -- the call's price when known (#148); NULL: free, plan or unknown
     created_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_usage_created ON usage(created_at);

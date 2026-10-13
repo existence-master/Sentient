@@ -570,8 +570,9 @@ class ElevenLabsTTS(TTSProvider):
 def build_tts(config: Any) -> TTSProvider:
     """``config`` is the root SentientConfig."""
     v = config.voice
-    if v.tts_provider == "system":
-        return SystemTTS(v.tts_voice, v.tts_speed)
+    if v.tts_provider == "system" or (config.models.local_only and v.tts_provider in {"openai", "elevenlabs"}):
+        # Local only (#148): replies are never read aloud by a cloud service; the system voice speaks instead
+        return SystemTTS(v.tts_voice if v.tts_provider == "system" else "", v.tts_speed)
     if v.tts_provider == "kokoro":
         return KokoroTTS(v.tts_voice, v.tts_speed, v.kokoro_variant)
     if v.tts_provider == "openai":

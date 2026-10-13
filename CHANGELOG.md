@@ -8,6 +8,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ### Added
 - **Sources for tasks:** each run in a task's history now shows the pages, emails, files and apps it used as small
   chips, like the ones under chat replies. Click one to see what Sentient read and open it.
+- **See what your models cost, and keep everything on this computer:** Settings > Usage now shows what paid cloud
+  models cost today, this week and this month, by model and by job. Models on your Claude or ChatGPT plan show as
+  **On your plan** instead of dollars, and local models as free. Set a **monthly budget** there: you get a
+  notification at 80%, and at 100% paid cloud models pause until you choose **Keep going this month** (or, if you
+  prefer, until next month). The model menu in the title bar has a new **Local only / May use cloud** switch. In
+  Local only, nothing is sent to a model outside this computer: not a backup model, not a chat with its own cloud
+  model, not tasks, memory search or voice. Anything that would have used the cloud says so in plain words, or a
+  local model answers instead.
 - **Ask about selected text, in any app:** select text anywhere (an email, a web page, a document) and press
   Ctrl+Alt+Shift+A (Command+Option+Shift+A on a Mac). A small window opens by your pointer and shows exactly what
   Sentient copied, with Explain, Summarize, Translate and Reply, or ask your own question. The answer streams in, and
@@ -281,6 +289,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Tasks no longer fail with "no final answer" after looking something up:** small local models sometimes went
+  quiet after a memory look-up. Sentient now asks once more for the answer, and if there still is none, the run
+  completes with a short list of what it found instead of failing. Chat replies do the same instead of staying empty.
 - Editing, approving or importing a skill that needs a particular tool (for example `file_read`) no longer hides it
   from Sentient until the next restart.
 - **Watch requests no longer fail when a check script can't be written:** if the AI's check script is rejected twice
