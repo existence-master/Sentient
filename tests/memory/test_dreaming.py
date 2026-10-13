@@ -5,7 +5,13 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from sentient.memory.dreaming import DreamingService, covers, parse_hhmm
-from sentient.memory.facts import attribute_families, fact_subjects
+from sentient.memory.facts import (
+    _FAMILY_PROTOTYPES,  # white-box: the real prototype text per family
+    attribute_families,
+    embedding_attribute_families,
+    fact_subjects,
+    profile_fact_async,
+)
 from tests.memory.helpers import add_fact, drain
 
 
@@ -34,6 +40,54 @@ def test_subjects_and_families():
     assert attribute_families("Riya got a job at Google") == {"job"}
     assert attribute_families("Maya started eating fish") == {"diet"}
     assert "residence" in attribute_families("Maya moved to Bengaluru last month")
+
+
+def test_subject_in_non_english_script():
+    # Devanagari has no upper/lower case, so the English capitalization signal doesn't exist here - both
+    # facts still resolve to the same subject because it leads the sentence in both (#95).
+    assert fact_subjects("माया पुणे में रहती है") == {"माया"}  # "Maya lives in Pune"
+    assert fact_subjects("माया बेंगलुरु चली गई") == {"माया"}  # "Maya moved to Bengaluru"
+
+
+def test_subject_past_a_long_leading_clause():
+    # "March" and "wedding" used to be mistaken for (or block) the subject: "March" is capitalized but is a
+    # month, not a name, and the old code gave up entirely on the first lowercase, unrecognised word (#95).
+    assert fact_subjects("Last year in March, after the wedding, Riya moved to Mumbai.") == {"riya"}
+
+
+async def test_embedding_attribute_families_matches_the_closest_prototype():
+    # One-hot vectors per family: the fact text lands exactly on "residence" and nowhere else.
+    names = list(_FAMILY_PROTOTYPES)
+    one_hot = {name: [1.0 if n == name else 0.0 for n in names] for name in names}
+    fact_text = "माया बेंगलुरु चली गई"  # "Maya moved to Bengaluru"
+
+    async def embed_one(text: str) -> list[float]:
+        for name, proto in _FAMILY_PROTOTYPES.items():
+            if text == proto:
+                return one_hot[name]
+        return one_hot["residence"]  # the fact text itself
+
+    assert await embedding_attribute_families(fact_text, embed_one, "test-model", threshold=0.5) == {"residence"}
+    # orthogonal to every other family, and even "residence" isn't similar enough above its own score
+    assert await embedding_attribute_families(fact_text, embed_one, "test-model", threshold=1.5) == set()
+
+
+async def test_profile_fact_async_only_falls_back_when_keywords_find_nothing():
+    calls: list[str] = []
+
+    async def embed_one(text: str) -> list[float]:
+        calls.append(text)
+        return [1.0, 0.0, 0.0]
+
+    # English text: the keyword family already matches, so the embedder is never called
+    prof = await profile_fact_async("Maya moved to Bengaluru", embed_one, "Maya", "test-model")
+    assert prof.families == {"residence"} and calls == []
+
+    # non-English text with no keyword match: falls back, calling the embedder for the
+    # prototypes (once, then cached) plus the fact text
+    prof = await profile_fact_async("माया बेंगलुरु चली गई", embed_one, "Maya", "test-model-2", threshold=0.5)
+    assert calls  # the fallback ran
+    assert prof.families  # every family ties with this embedder, but at least one was assigned
 
 
 EXAMPLES = [

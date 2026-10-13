@@ -425,6 +425,12 @@ class MemoryConfig(BaseModel):
         6000, ge=500, description="Max characters injected from each workspace markdown file."
     )
     graph_link_similarity: float = Field(0.80, ge=0.0, le=1.0, description="Memory graph edge threshold.")
+    family_similarity: float = Field(
+        0.78, ge=0.0, le=1.0,
+        description="When the English keyword attribute families (residence, job, ...) find nothing in a fact - "
+        "often because it isn't English - a family is assigned instead above this embedding similarity to a short "
+        "description of it. Local embedding models score unrelated text around 0.65, so keep it high.",
+    )
     summarize_after_minutes: int = Field(
         60, ge=5, description="Conversation chunks older than this are summarized into episodic memory."
     )
