@@ -7,6 +7,7 @@ export const CH = {
   openExternal: 'sentient:open-external',
   openPath: 'sentient:open-path',
   showNotification: 'sentient:show-notification',
+  closeApprovalNotification: 'sentient:close-approval-notification',
   setLaunchAtLogin: 'sentient:set-launch-at-login',
   getLaunchAtLogin: 'sentient:get-launch-at-login',
   syncPrefs: 'sentient:sync-prefs',

@@ -44,6 +44,7 @@ const bridge: SentientBridge = {
   openExternal: (url: string) => ipcRenderer.invoke(CH.openExternal, url),
   openPath: (target: OpenPathTarget) => ipcRenderer.invoke(CH.openPath, target),
   showNotification: (n: NativeNotification) => ipcRenderer.invoke(CH.showNotification, n),
+  closeApprovalNotification: (runId: string) => ipcRenderer.invoke(CH.closeApprovalNotification, runId),
   setLaunchAtLogin: (enabled: boolean) => ipcRenderer.invoke(CH.setLaunchAtLogin, enabled),
   getLaunchAtLogin: () => ipcRenderer.invoke(CH.getLaunchAtLogin) as Promise<boolean>,
   syncPrefs: (prefs: ShellPrefs) => ipcRenderer.invoke(CH.syncPrefs, prefs),

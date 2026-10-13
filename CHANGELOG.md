@@ -6,6 +6,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Answer approvals from the notification:** when a task needs your OK while Sentient is in the background or
+  minimized, the notification on your computer has **Allow once** and **Deny** buttons (Windows and macOS), so the
+  task carries on without opening the app. Clicking the notification itself opens the task with its approval card,
+  where the wider choices are. If the request already expired or was answered, a second notification says so. With
+  notifications turned off in Windows, the Sentient taskbar button flashes instead.
 - **Approve from your phone, and choose how far a yes goes:** when a task needs your OK and you're away from the
   app, the request goes to your paired Telegram, Discord or WhatsApp chat with buttons (or reply with once, task,
   hour, always or no). Only the chat it was sent to can answer it, and a request that waits too long (4 hours by

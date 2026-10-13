@@ -30,6 +30,16 @@ import type {
   ShortcutId
 } from '../../src/types/bridge'
 import notificationIcon from '../../resources/icon.png?asset'
+import {
+  answerPath,
+  answerProblem,
+  APPROVAL_BUTTONS,
+  approvalAnswer,
+  approvalNotificationId,
+  approvalRoute,
+  type ApprovalTarget,
+  cleanApproval
+} from './approval-notify'
 import { BackendManager } from './backend'
 import { CH } from './channels'
 import { DictationController, dictationSettingsFromConfig } from './dictation'
@@ -290,6 +300,69 @@ function installSecurity(): void {
   })
 }
 
+// ------------------------------------------------------------------ approvals from a notification (#323)
+/** The approval notification of each waiting run. Kept after the toast closes, because Windows keeps it in the
+ *  notification center and its buttons still work from there; dropped once answered here or in the app. */
+const approvalNotes = new Map<string, Notification>()
+
+function showApprovalNotification(n: NativeNotification, target: ApprovalTarget): void {
+  approvalNotes.get(target.runId)?.close()
+  const note = new Notification({
+    id: approvalNotificationId(target.runId),
+    title: String(n.title || 'Sentient needs your OK'),
+    body: String(n.body ?? ''),
+    icon: notificationIcon,
+    timeoutType: 'never', // it waits with the task until someone answers
+    actions: APPROVAL_BUTTONS.map((text) => ({ type: 'button' as const, text }))
+  })
+  approvalNotes.set(target.runId, note)
+  const forget = () => {
+    if (approvalNotes.get(target.runId) === note) approvalNotes.delete(target.runId)
+  }
+  // a click on the notification itself (or a system without buttons): open the task, where the approval card waits
+  note.on('click', () => {
+    forget()
+    sendCommand({ type: 'navigate', route: approvalRoute(target) })
+  })
+  note.on('action', (details) => {
+    forget()
+    const answer = approvalAnswer(details.actionIndex, target.untrusted)
+    if (answer) void answerApproval(target, answer)
+    else sendCommand({ type: 'navigate', route: approvalRoute(target) })
+  })
+  // notifications turned off in the system settings: flash the taskbar button instead, until the window is focused
+  note.on('failed', () => {
+    forget()
+    if (win && !win.isDestroyed() && !win.isFocused()) win.flashFrame(true)
+  })
+  note.show()
+}
+
+/** Answer the run the way the approval card does. A refused answer (expired, already answered) says why. */
+async function answerApproval(target: ApprovalTarget, answer: string): Promise<void> {
+  let problem: string | null = null
+  try {
+    const r = await fetch(`${backend.baseUrl}${answerPath(target)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${backend.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answer }),
+      signal: AbortSignal.timeout(10_000)
+    })
+    if (!r.ok) problem = answerProblem(r.status, await r.json().catch(() => null))
+  } catch {
+    problem = "Sentient isn't reachable right now. Open the task to answer there."
+  }
+  if (!problem || !Notification.isSupported()) return
+  const note = new Notification({ title: "Your answer didn't go through", body: problem, silent: true, icon: notificationIcon })
+  liveNotifications.add(note)
+  note.on('click', () => {
+    liveNotifications.delete(note)
+    sendCommand({ type: 'navigate', route: approvalRoute(target) })
+  })
+  note.on('close', () => liveNotifications.delete(note))
+  note.show()
+}
+
 // ------------------------------------------------------------------ IPC
 function registerIpc(): void {
   ipcMain.handle(CH.getConnection, () => ({ baseUrl: backend.baseUrl, token: backend.token }))
@@ -308,6 +381,11 @@ function registerIpc(): void {
   })
   ipcMain.handle(CH.showNotification, (_e, n: NativeNotification) => {
     if (!Notification.isSupported()) return
+    const approval = cleanApproval(n.approval)
+    if (approval) {
+      showApprovalNotification(n, approval)
+      return
+    }
     const note = new Notification({
       title: String(n.title ?? 'Sentient'),
       body: String(n.body ?? ''),
@@ -322,6 +400,12 @@ function registerIpc(): void {
     })
     note.on('close', () => liveNotifications.delete(note))
     note.show()
+  })
+  ipcMain.handle(CH.closeApprovalNotification, (_e, runId: string) => {
+    if (typeof runId !== 'string') return
+    const note = approvalNotes.get(runId)
+    approvalNotes.delete(runId)
+    note?.close()
   })
   ipcMain.handle(CH.setLaunchAtLogin, (_e, enabled: boolean) => {
     app.setLoginItemSettings({ openAtLogin: !!enabled, args: ['--hidden'] })
