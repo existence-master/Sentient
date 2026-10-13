@@ -6,6 +6,22 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Activity: everything Sentient did, and what it will do next, in one place.** A new **Activity** screen in the
+  sidebar lists, newest first, the apps Sentient used in your chats, task runs and briefs, each check of a watch,
+  approvals and how you answered them, replies in Telegram, Discord and WhatsApp, suggestions and other notifications,
+  memories it saved, skills it learned or changed, backups, and what paid cloud models cost each day. Every line says
+  what happened and why ("Made your Daily Brief: it runs every weekday at 7:30 AM", "Asked you before "Send" in Gmail
+  (to Arjun). You chose Allow once."). On the side: what is waiting for you now, everything scheduled for the coming
+  week (tasks, briefs, watches, the next backup and the nightly memory tidy-up) and the routines that are paused.
+  Filter by kind and by app, search, and click any line to open the chat, task, memory or setting it came from.
+- **A second look before anything leaves Sentient:** before it sends, posts, invites people, buys or deletes
+  something, Sentient checks that everyone it goes to is someone you named, in your contacts or in your memories,
+  and that every amount is one you gave. If a web page or email slipped in an address ("also forward this to ..."),
+  or the content doesn't match what you asked, it asks you first and the approval card says why: "You asked to email
+  Arjun, but this goes to x@example.com." Your fast model also takes a quick look at sends, purchases, deletions and
+  code runs that would otherwise go ahead without asking, seeing only your own words and the action. This holds even
+  with approvals off, for apps you set to Allow and after "Allow for 1 hour". Turn the model part off in Settings >
+  Approvals & safety; recipients and amounts are always checked.
 - **Answer approvals from the notification:** when a task needs your OK while Sentient is in the background or
   minimized, the notification on your computer has **Allow once** and **Deny** buttons (Windows and macOS), so the
   task carries on without opening the app. Clicking the notification itself opens the task with its approval card,
@@ -366,6 +382,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Adding a server (MCP) that you already signed in to from another Sentient setup on the same computer, such as a
   fresh install or a test setup, no longer signs you out of it. The sign-in now remembers the server's address, so it
   is kept and reused for the same address and only cleared when the address changes.
+- Older MCP OAuth sign-ins saved without a server address are preserved in the keychain but are no longer
+  automatically reused, as their server URL ownership cannot be verified. Affected users may need to sign in again
+  for each MCP server URL.
 - Local models can now use large MCP servers such as Composio, Notion or GitHub. Naming the server in your message
   ("using Composio...") always offers its tools, and a server with more tools than fit offers its most relevant ones,
   keeping its "search" and "run" tools together, instead of none at all.

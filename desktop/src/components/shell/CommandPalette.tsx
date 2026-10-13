@@ -1,5 +1,6 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import {
+  IconActivity,
   IconBell,
   IconDeviceMobile,
   IconDevices,
@@ -138,6 +139,9 @@ function PaletteBody({ close }: { close: () => void }) {
           </Item>
           <Item icon={IconListCheck} onSelect={() => go('/tasks')}>
             Tasks
+          </Item>
+          <Item icon={IconActivity} onSelect={() => go('/activity')} keywords={['timeline', 'history', 'log', 'what did it do']}>
+            Activity
           </Item>
           <Item icon={IconBrain} onSelect={() => go('/memory')}>
             Memory

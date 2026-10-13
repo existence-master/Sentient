@@ -40,7 +40,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from sentient import paths
-from sentient.agent import findings
+from sentient.agent import findings, second_look
 from sentient.agent import grants as grant_rules
 from sentient.agent import incognito as incognito_outputs
 from sentient.agent.approvals import ApprovalBroker
@@ -84,7 +84,7 @@ from sentient.memory.sources import MemorySources
 from sentient.memory.workspace import Workspace
 from sentient.services import cancel_tasks
 from sentient.skills.loader import SkillLibrary
-from sentient.store.db import Store, after_watermark, new_id, next_watermark
+from sentient.store.db import Store, after_watermark, new_id, next_watermark, now_iso
 from sentient.tools.base import (
     UNPROMPTED_ORIGINS,
     Risk,
@@ -446,6 +446,8 @@ class _CallPlan:
     wants_ok: bool = False  # held for the user's OK in a run nobody can be asked in (ADR 0018)
     ask_rule: bool = False  # held by an "ask" rule in a task run that pauses and asks (#139)
     host: str = ""  # the web host this call loads, if any; remembered as visited once it ran
+    approval: dict | None = None  # how the user answered this call's approval request (the activity timeline, #147)
+    warning: str = ""  # what a second look found off about this call (#143); it then asks, whatever else says
 
 
 class Agent:
@@ -804,16 +806,26 @@ class Agent:
             if persist:
                 await persist("assistant", text_acc or None, tool_calls=assistant_msg["tool_calls"], thinking=think_acc or None)
 
-            plans = [await self._plan_call(tc, ctx, tool_names, use_approvals, policy, unprompted) for tc in tool_calls]
+            attended = source == "chat" and not unprompted
+            plans = [
+                await self._plan_call(tc, ctx, tool_names, use_approvals, policy, unprompted, messages=messages,
+                                      attended=attended, model=model)
+                for tc in tool_calls
+            ]
             result.tool_calls += len(plans)
             result.held.extend({"tool": p.tc.name, "arguments": p.tc.arguments} for p in plans if p.held)
             waiting = next((p for p in plans if p.wants_ok), None)
             if waiting is not None and waiting.tool is not None and result.needs_ok is None:
                 wording = await describe_call(waiting.tool, waiting.tc.arguments, ctx, waiting.risk)
                 label = self.approvals.label(waiting.tool, self.registry)
+                if ctx.untrusted:  # read outside content; a second look's warning follows it (#143)
+                    question = untrusted_question(label, ctx.untrusted, waiting.tc.arguments, wording["target"])
+                    question += f" {waiting.warning}" if waiting.warning else ""
+                else:
+                    question = second_look.question(label, waiting.warning, waiting.tc.arguments, wording["target"])
                 result.needs_ok = {
                     "tool": waiting.tc.name, "arguments": waiting.tc.arguments, "call_id": waiting.tc.id,
-                    "question": untrusted_question(label, ctx.untrusted, waiting.tc.arguments, wording["target"]),
+                    "question": question,
                 }
                 if waiting.ask_rule:  # an "ask" rule in a task run: pause and ask, with how wide a yes may be (#139)
                     purchase = await is_purchase(waiting.tool, waiting.tc.arguments, ctx, waiting.risk)
@@ -834,10 +846,11 @@ class Agent:
                         assert p.tool is not None
                         approval_id = new_id()
                         wording = await describe_call(p.tool, p.tc.arguments, ctx, p.risk)
-                        # how wide a yes may be (#139): only "once" for purchases, raised risks, code and outside content
+                        # how wide a yes may be (#139): only "once" for purchases, raised risks, code, outside content
+                        # and calls a second look flagged (#143)
                         offered = grant_rules.choices(
                             p.tool, p.risk, purchase=wording["risk_label"] == PURCHASE_LABEL and p.risk >= Risk.send,
-                            untrusted=bool(p.untrusted), chat=bool(ctx.session_id),
+                            untrusted=bool(p.untrusted or p.warning), chat=bool(ctx.session_id),
                             remember_session=self.approvals.config.remember_session,
                         )
                         self.approvals.create(approval_id, offered)
@@ -845,10 +858,16 @@ class Agent:
                             approval_id=approval_id, call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments,
                             risk=p.risk.name, reason=f"{p.tool.plugin}: {p.tool.description[:160]}",
                             risk_label=wording["risk_label"], target=wording["target"],
-                            untrusted=p.untrusted or None, choices=offered,
+                            untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
                             grant_minutes=self.approvals.config.grant_minutes, **ev,
                         )
+                        asked_at = now_iso()
                         decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)
+                        p.approval = {
+                            "decision": decision, "asked_at": asked_at, "answered_at": now_iso(),
+                            "target": wording["target"], "risk_label": wording["risk_label"],
+                            "untrusted": p.untrusted or None, "rule": self.approvals.rule(p.tool),
+                        }
                         if decision in grant_rules.ALLOWING:
                             runnable.append(p)
                         else:
@@ -927,6 +946,10 @@ class Agent:
         use_approvals: bool,
         policy: PolicyFn | None,
         unprompted: bool = False,
+        *,
+        messages: list[dict] | None = None,
+        attended: bool = False,
+        model: str | None = None,
     ) -> _CallPlan:
         tool = self.registry.get(tc.name)
         # an undecided rule proposal in this chat (#130) is looked up first (it may read the database), so the
@@ -971,14 +994,22 @@ class Agent:
             if refusal:
                 plan.preset = ({"error": str(refusal)}, True, 0)
                 return plan
+        outgoing = sends_out(tool, plan.risk, tc.arguments, ctx)
+        look = second_look.Look(self, tool, tc, ctx, plan, messages, attended=attended, model=model) if outgoing else None
+        if look is not None:
+            plan.warning = await look.deterministic()  # who it goes to, amounts, links: always, no model
         reason = ""
-        if ctx.untrusted and sends_out(tool, plan.risk, tc.arguments, ctx):
+        if ctx.untrusted and outgoing:
             reason = untrusted_reason(ctx.untrusted)
         elif ctx.untrusted and plan.host and plan.host not in ctx.visited and address_carries_data(address):
             reason = untrusted_address_reason(ctx.untrusted, plan.host)  # the address itself could carry data out
         if reason:
             # the run read outside content: anything that can send data out needs the user's own yes, whatever the
             # mode, Allow rules or "Allow for this chat" say (ADR 0018). Nothing a model says can clear it.
+            if look is not None and not plan.warning:  # the case a second look exists for: content that steers
+                plan.warning = await look.model()
+            if plan.warning:
+                plan.risk = max(plan.risk, Risk.send)
             if use_approvals:
                 plan.needs_approval = True
                 plan.untrusted = reason
@@ -1006,6 +1037,21 @@ class Agent:
             else:  # subagents, swarm workers and other unattended loops cannot stop to ask: the run stops here
                 plan.preset = ({"error": unattended_ask_message(label)}, True, 0)
                 plan.rule_stop = True
+        unasked = not plan.needs_approval if use_approvals else plan.preset is None
+        if look is not None and not plan.warning and unasked:
+            # a send, post, purchase, delete or code run about to go ahead without a question: the fast model takes
+            # a second look; when the user is being asked anyway, they are looking at this exact call themselves
+            plan.warning = await look.model()
+        if plan.warning:
+            # something looks off (#143): the call asks, whatever the mode, Allow rules, "Allow for this chat" or a
+            # grant say, and only for this one call. A second look only ever adds a question.
+            plan.risk = max(plan.risk, Risk.send)
+            if use_approvals:
+                plan.needs_approval = True
+            elif not plan.rule_stop:
+                label = self.approvals.label(tool, self.registry)
+                plan.preset = ({"error": second_look.hold_message(label, plan.warning)}, True, 0)
+                plan.wants_ok, plan.ask_rule = True, False
         return plan
 
     async def _chat_rule(self, tool: Tool, session_id: str | None) -> str | None:
@@ -1140,7 +1186,8 @@ class Agent:
         model_content = self.outside_content(content, p.tool, tc.arguments) if p.tool is not None else content
         messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": model_content})
         if persist:  # stored as it is; marked again when the transcript is read back (mark_outside_messages)
-            await persist("tool", content, tool_call_id=tc.id, name=tc.name)
+            extra = {"approval": p.approval} if p.approval else {}
+            await persist("tool", content, tool_call_id=tc.id, name=tc.name, **extra)
         yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
 
     def outside_content(self, content: str, tool: Tool, arguments: dict | None = None) -> str:

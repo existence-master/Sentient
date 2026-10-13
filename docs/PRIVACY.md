@@ -55,6 +55,14 @@ service name `sentient`.
   clean address is the one way out it doesn't check. This holds even for apps you set to Allow and with approvals
   switched off, and no email or web page can talk it out of asking. In a chat it lasts until you start a new chat; a
   task asks with a notification and waits for your yes.
+- Before Sentient sends, posts, invites people, buys or deletes something, it takes a second look: everyone it sends
+  to must be someone you named, in your contacts or in your memories, and every amount must be one you gave. Before a
+  send, purchase, deletion or code run that would otherwise go ahead without asking, or after it read an email or web
+  page, your fast model also compares the action with what you asked. That check sees only your own words in the
+  chat or task and the action's details, never the email or page, and goes to whichever model you chose for the fast
+  role (a local one keeps it on this computer). If anything looks off, or the check gets no answer, Sentient asks you
+  first and says why, even for apps you set to Allow, with approvals off or after "Allow for 1 hour". Settings >
+  Approvals & safety can turn the model part off; recipients and amounts are always checked.
 - Memories that come from something other people wrote (an email, a web page, a message, a tool's result), from work
   Sentient did on its own, or from an import (a document, Hermes) wait for you in Memory > Review. Sentient doesn't
   use them anywhere until you approve them, and no email or web page can approve them for you. Ones you don't review

@@ -140,18 +140,18 @@ def test_chunked_values_stay_in_their_namespace(kr, user_home, monkeypatch, tmp_
 
 async def test_mcp_sign_in_records_under_a_namespace(kr, user_home, monkeypatch, tmp_path):
     url = "https://mcp.example.test/mcp"
+    tok_key = mcp_auth.tokens_secret("composio", url)
     real = '1\n{"tokens":{"access_token":"real"},"server_url":"' + url + '"}'
-    kr.set_password("sentient", "mcp:composio:oauth", real)
+    kr.set_password("sentient", tok_key, real)
     use_home(monkeypatch, tmp_path / "demo")
     store = mcp_auth.KeychainTokenStorage("composio", url=url)
     assert await store.get_tokens() is None  # the default home's sign-in is not visible here
     await store.set_tokens(OAuthToken(access_token="t" * 2500, token_type="Bearer", expires_in=3600))
-    rec = secrets.load_json("mcp:composio:oauth")
+    rec = secrets.load_json(tok_key)
     assert rec["server_url"] == url and rec["expires_at"] > time.time()
     assert (await store.get_tokens()).access_token == "t" * 2500
-    assert mcp_auth.stale_sign_in("composio", "https://elsewhere.test/mcp", changed_here=False) == ["mcp:composio:oauth"]
-    mcp_auth.forget_server("composio")
-    assert kr.entries == {("sentient", "mcp:composio:oauth"): real}  # removing it here leaves the default home's
+    mcp_auth.forget_server("composio", url=url)
+    assert kr.entries == {("sentient", tok_key): real}  # removing it here leaves the default home's
 
 
 async def test_backup_lists_only_this_homes_sign_ins(kr, user_home, monkeypatch, config, isolated_home):

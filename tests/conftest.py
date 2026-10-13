@@ -102,6 +102,8 @@ def config():
     cfg = SentientConfig()
     cfg.assistant.user_name = "Maya"
     cfg.tools.approvals.mode = "off"
+    # the second look's model check (#143) is a model call: tests that cover it turn it on and script the answer
+    cfg.tools.approvals.second_look_model = False
     cfg.memory.extract_after_turn = False
     cfg.chat.auto_title = False
     return cfg
