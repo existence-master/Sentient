@@ -125,6 +125,22 @@ def test_an_address_in_the_request_trusted_records_or_memory_passes():
     assert sl.deterministic({"to": "team@corp.example"}, ev) == ""
 
 
+async def test_an_address_counts_only_as_a_whole(config, isolated_home):
+    """"sam@example.com" in the request or a memory never vouches for "am@example.com" (review of #341)."""
+    assert sl.mentions("send it to sam@example.com.", "sam@example.com")
+    assert not sl.mentions("send it to sam@example.com", "am@example.com")
+    assert not sl.mentions("write to bob@example.community", "bob@example.com")
+    assert not sl.mentions("see notevil.example", "evil.example")
+    ev = _evidence("send the notes to sam@example.com")
+    assert "isn't in what you asked" in sl.deterministic({"to": "am@example.com"}, ev)
+    s = await SentientApp(config, llm=FakeProvider(), db_path=isolated_home / "whole.db", enable_background=False).start()
+    try:
+        await s.memory.remember("Sam's email is sam@example.com", use_llm=False)
+        assert await sl.known_addresses(s.store, ["am@example.com", "sam@example.com"]) == {"sam@example.com"}
+    finally:
+        await s.stop()
+
+
 def test_amounts_must_be_ones_the_user_gave():
     ev = _evidence("pay Arjun $1,200 for rent at arjun@example.com")
     assert sl.deterministic({"to": "arjun@example.com", "body": "Here is 1200 dollars"}, ev) == ""

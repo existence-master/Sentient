@@ -123,6 +123,15 @@ _FREE_MAIL = frozenset({
 })
 
 
+def mentions(text: str, item: str) -> bool:
+    """True when ``text`` names ``item`` (an address or a host) as a whole, not as part of a longer one:
+    "sam@example.com" does not mention "am@example.com", and "notevil.example" does not mention "evil.example"."""
+    needle = re.escape((item or "").lower())
+    if not needle:
+        return False
+    return re.search(rf"(?<![\w.%+\-]){needle}(?![\w\-]|\.[a-z0-9])", (text or "").lower()) is not None
+
+
 @dataclass
 class Evidence:
     """What the second look compares a call with. Built from the run's messages by ``gather``."""
@@ -134,8 +143,7 @@ class Evidence:
     name_words: set[str] = field(default_factory=set)  # lower-case names a recipient may match
 
     def knows(self, text: str) -> bool:
-        needle = text.lower()
-        return needle in self.request.lower() or needle in self.trusted.lower()
+        return mentions(self.request, text) or mentions(self.trusted, text)
 
     def outside_source(self, text: str) -> str:
         needle = text.lower()
@@ -392,15 +400,15 @@ async def known_addresses(store: Any, items: Iterable[str]) -> set[str]:
         if "@" not in item:
             continue
         try:
-            row = await store.fetchone(
-                "SELECT 1 FROM facts WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?)"
-                " AND lower(content) LIKE ? LIMIT 1",
+            rows = await store.fetchall(
+                "SELECT content FROM facts WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?)"
+                " AND lower(content) LIKE ? LIMIT 20",
                 (now_iso(), f"%{item.lower()}%"),
             )
         except Exception as exc:  # no memory table (bare tests): nothing is known
             log.debug("second look: memory lookup skipped: %s", exc)
             return out
-        if row is not None:
+        if any(mentions(str(r["content"] or ""), item) for r in rows):  # "sam@x" must not count for "am@x"
             out.add(item.lower())
     return out
 
