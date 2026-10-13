@@ -996,8 +996,9 @@ class Timeline:
         """The apps the timeline can be filtered by: tools used in chats, messaging apps and task triggers."""
         found: set[str] = set()
         rows = await self.store.fetchall(
-            "SELECT DISTINCT name FROM messages INDEXED BY idx_messages_tool_time WHERE role = 'tool'"
-            " AND created_at > ?", ((datetime.now(UTC) - timedelta(days=90)).isoformat(),),
+            "SELECT DISTINCT m.name FROM messages m INDEXED BY idx_messages_tool_time JOIN sessions s ON s.id = m.session_id"
+            " WHERE m.role = 'tool' AND s.incognito = 0 AND m.created_at > ?",
+            ((datetime.now(UTC) - timedelta(days=90)).isoformat(),),
         )
         for row in rows:
             plugin = self._tool_app(str(row["name"] or ""))

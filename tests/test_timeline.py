@@ -155,6 +155,7 @@ async def test_incognito_chats_never_show(config, isolated_home):
         await _turn(s, sid, "allow")
         assert await s.store.fetchone("SELECT 1 FROM messages WHERE role = 'tool'") is not None
         assert (await s.timeline.past())["items"] == []
+        assert await s.timeline.apps() == []  # not even which apps an incognito chat used
     finally:
         await s.stop()
 
