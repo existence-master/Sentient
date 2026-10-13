@@ -12,7 +12,8 @@ export function approvalTarget(n: Pick<Notification, 'kind' | 'task_id' | 'paylo
   const taskId = n.task_id ?? (typeof p.task_id === 'string' ? p.task_id : null)
   const runId = typeof p.run_id === 'string' ? p.run_id : null
   if (!taskId || !runId) return undefined
-  return { taskId, runId, untrusted: (approval as { untrusted?: unknown }).untrusted === true }
+  const expiresAt = typeof p.expires_at === 'string' ? p.expires_at : undefined
+  return { taskId, runId, untrusted: (approval as { untrusted?: unknown }).untrusted === true, ...(expiresAt ? { expiresAt } : {}) }
 }
 
 /** The run whose approval notification should close: its request was answered, cancelled or expired. */

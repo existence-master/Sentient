@@ -9,7 +9,9 @@ import {
   approvalAnswer,
   approvalNotificationId,
   approvalRoute,
-  cleanApproval
+  cleanApproval,
+  stillWaiting,
+  taskPath
 } from '../electron/main/approval-notify.ts'
 import { approvalTarget, settledApprovalRun } from '../src/lib/nativeApproval.ts'
 
@@ -21,6 +23,27 @@ const waiting = {
 
 test('a task waiting for an OK becomes an approval notification', () => {
   assert.deepEqual(approvalTarget(waiting), { taskId: 't1', runId: 'r1', untrusted: false })
+})
+
+test('the request carries its expiry, which tells it apart from a later one', () => {
+  const n = { ...waiting, payload: { ...waiting.payload, expires_at: '2026-10-13T12:00:00+00:00' } }
+  assert.deepEqual(approvalTarget(n), { taskId: 't1', runId: 'r1', untrusted: false, expiresAt: '2026-10-13T12:00:00+00:00' })
+  assert.equal(cleanApproval({ taskId: 'a', runId: 'b', expiresAt: 'x'.repeat(65) })?.expiresAt, undefined)
+})
+
+test('an answer goes only to the very request the notification showed', () => {
+  const t = { taskId: 't1', runId: 'r1', expiresAt: 'E1' }
+  const task = (status: string, kind: string, expires: string) => ({
+    runs: [{ run_id: 'r0', status: 'completed' }, { run_id: 'r1', status, pending_question: { kind, expires_at: expires } }]
+  })
+  assert.equal(stillWaiting(task('waiting_for_user', 'approval', 'E1'), t), true)
+  assert.equal(stillWaiting(task('waiting_for_user', 'approval', 'E2'), t), false) // a later request of the run
+  assert.equal(stillWaiting(task('processing', 'approval', 'E1'), t), false) // answered meanwhile
+  assert.equal(stillWaiting(task('waiting_for_user', 'question', 'E1'), t), false) // now a plain question
+  assert.equal(stillWaiting(task('waiting_for_user', 'approval', 'E9'), { taskId: 't1', runId: 'r1' }), true)
+  assert.equal(stillWaiting({ runs: [] }, t), false)
+  assert.equal(stillWaiting(null, t), false)
+  assert.equal(taskPath(t), '/api/tasks/t1')
 })
 
 test('a call held after outside content is marked untrusted', () => {

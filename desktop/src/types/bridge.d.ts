@@ -55,6 +55,8 @@ export interface NativeApproval {
   taskId: string
   runId: string
   untrusted?: boolean
+  /** The request's `expires_at`: tells it apart from a later request of the same run. */
+  expiresAt?: string
 }
 
 /** Commands pushed from the shell (tray, global shortcut, notification click). */

@@ -38,7 +38,10 @@ import {
   approvalNotificationId,
   approvalRoute,
   type ApprovalTarget,
-  cleanApproval
+  cleanApproval,
+  NOT_WAITING,
+  stillWaiting,
+  taskPath
 } from './approval-notify'
 import { BackendManager } from './backend'
 import { CH } from './channels'
@@ -341,14 +344,21 @@ function showApprovalNotification(n: NativeNotification, target: ApprovalTarget)
 /** Answer the run the way the approval card does. A refused answer (expired, already answered) says why. */
 async function answerApproval(target: ApprovalTarget, answer: string): Promise<void> {
   let problem: string | null = null
+  const headers = { Authorization: `Bearer ${backend.token}`, 'Content-Type': 'application/json' }
   try {
-    const r = await fetch(`${backend.baseUrl}${answerPath(target)}`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${backend.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ answer }),
-      signal: AbortSignal.timeout(10_000)
-    })
-    if (!r.ok) problem = answerProblem(r.status, await r.json().catch(() => null))
+    // only the request this notification showed: never a later one the same run reached meanwhile
+    const now = await fetch(`${backend.baseUrl}${taskPath(target)}`, { headers, signal: AbortSignal.timeout(10_000) })
+    if (!now.ok) problem = answerProblem(now.status, await now.json().catch(() => null))
+    else if (!stillWaiting(await now.json().catch(() => null), target)) problem = NOT_WAITING
+    else {
+      const r = await fetch(`${backend.baseUrl}${answerPath(target)}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ answer }),
+        signal: AbortSignal.timeout(10_000)
+      })
+      if (!r.ok) problem = answerProblem(r.status, await r.json().catch(() => null))
+    }
   } catch {
     problem = "Sentient isn't reachable right now. Open the task to answer there."
   }
