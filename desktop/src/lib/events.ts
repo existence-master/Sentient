@@ -48,6 +48,7 @@ import { useChat } from '@/stores/chat'
 import { useNotificationStore } from '@/stores/notifications'
 import { useUI } from '@/stores/ui'
 import { getBridge } from './bridge'
+import { approvalTarget, settledApprovalRun } from './nativeApproval'
 import type { DeviceNode, Dream, Notification, NotificationList, Session, Task } from './types'
 import { live, type SocketState } from './ws'
 
@@ -125,7 +126,8 @@ export function installDomainEvents(qc: QueryClient): () => void {
       })
       const bridge = getBridge()
       void bridge.isFocused().then((focused) => {
-        if (!focused) void bridge.showNotification({ title, body: plain(n.message, 240), route: notificationRoute(n) })
+        // a task waiting for your OK gets Allow once and Deny right on the notification (#323)
+        if (!focused) void bridge.showNotification({ title, body: plain(n.message, 240), route: notificationRoute(n), approval: approvalTarget(n) })
       })
     })
   )
@@ -151,6 +153,8 @@ export function installDomainEvents(qc: QueryClient): () => void {
       )
       useNotificationStore.getState().update(n)
       if (n.kind === 'brief') refreshBrief()
+      const settled = settledApprovalRun(n)
+      if (settled) void getBridge().closeApprovalNotification(settled)
     })
   )
   offs.push(

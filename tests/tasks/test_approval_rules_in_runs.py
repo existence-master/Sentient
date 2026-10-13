@@ -250,3 +250,29 @@ def test_grant_choices_and_answers():
     assert grant_rules.parse_answer("task", ["allow", "deny"]) is None
     assert grant_rules.decision_label("allow_timed", 30) == "Allow for 30 minutes"
     assert grant_rules.decision_label("allow_timed", 120) == "Allow for 2 hours"
+
+
+async def test_an_answer_scoped_to_an_earlier_request_never_lands_on_a_later_one(make_app, config, isolated_home):
+    """The desktop notification sends the request's ``expires_at`` with its answer (#323): a notification left over
+    from request A can't approve request B of the same run."""
+    config.tools.approvals.rules = {"files": "ask"}
+    llm = FakeProvider(replies=[WRITE_A, WRITE_B, "Saved both."], json_replies=[dict(RESULT)])
+    app = await make_app(llm)
+    task_id, run_id = await _start(app)
+    first = (await _pending(app, run_id))["expires_at"]
+
+    await app.tasks.answer_question(task_id, run_id, "Allow once", expect=first)
+    await app.tasks.drain()
+    second = await _pending(app, run_id)
+    assert (isolated_home / "files" / "a.txt").is_file() and second["question"].startswith(
+        'This task wants to use "File write" in Files (name: b.txt'
+    )
+    with pytest.raises(TaskConflict, match="already answered or has changed"):
+        await app.tasks.answer_question(task_id, run_id, "Allow once", expect=first)  # the old notification
+    assert not (isolated_home / "files" / "b.txt").exists()
+    assert (await _pending(app, run_id))["expires_at"] == second["expires_at"]  # still waiting on B
+
+    await app.tasks.answer_question(task_id, run_id, "Deny", expect=second["expires_at"])
+    await app.tasks.drain()
+    assert (await app.tasks.get(task_id))["runs"][-1]["status"] == "error"
+    assert not (isolated_home / "files" / "b.txt").exists()

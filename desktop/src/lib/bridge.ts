@@ -124,6 +124,7 @@ function createBrowserBridge(): SentientBridge {
         }
       }
     },
+    closeApprovalNotification: async () => undefined,
     setLaunchAtLogin: async () => undefined,
     getLaunchAtLogin: async () => false,
     syncPrefs: async () => undefined,

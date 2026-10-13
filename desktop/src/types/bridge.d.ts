@@ -45,6 +45,19 @@ export interface NativeNotification {
   /** Hash route to open when clicked, e.g. `/tasks?task=abc`. */
   route?: string
   silent?: boolean
+  /** A task waiting for your OK (#323): the notification shows **Allow once** and **Deny** (Windows and macOS) and
+   *  answers the run itself; its click opens the task's approval card. One notification per run. */
+  approval?: NativeApproval
+}
+
+/** Which waiting run an approval notification answers. `untrusted`: a call held after outside content (ADR 0018). */
+export interface NativeApproval {
+  taskId: string
+  runId: string
+  untrusted?: boolean
+  /** The request's `expires_at`, sent with the answer so it can't land on a later request of the same run.
+   *  Without it the notification has no buttons. */
+  expiresAt?: string
 }
 
 /** Commands pushed from the shell (tray, global shortcut, notification click). */
@@ -252,6 +265,8 @@ export interface SentientBridge {
   /** Open one of Sentient's folders in the OS file manager. */
   openPath(target: OpenPathTarget): Promise<void>
   showNotification(n: NativeNotification): Promise<void>
+  /** Remove the approval notification of a run that was answered or ended elsewhere (#323). */
+  closeApprovalNotification(runId: string): Promise<void>
   setLaunchAtLogin(enabled: boolean): Promise<void>
   getLaunchAtLogin(): Promise<boolean>
   /** Keep the shell's copy of theme / tray / proactivity prefs in sync. */
@@ -264,7 +279,7 @@ export interface SentientBridge {
   /** Native open dialog. Returns absolute paths (drag and drop is the primary path). `directory` picks a folder
    *  (hidden folders such as ~/.hermes are shown); `filters` limits files by extension (a backup's `.zip`). */
   pickFiles(options?: PickFilesOptions): Promise<string[]>
-  /** Whether the window currently has OS focus. */
+  /** Whether the window is on screen and has OS focus (false while minimized or hidden in the tray). */
   isFocused(): Promise<boolean>
   /** Open a file from Sentient's files folder (`outputs/chart.png`) with the default app. */
   openFile(name: string): Promise<boolean>

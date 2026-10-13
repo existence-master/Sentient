@@ -152,11 +152,13 @@ async def cancel_run(request: Request, task_id: str, run_id: str):
 
 class AnswerBody(BaseModel):
     answer: str = ""
+    # the request being answered (its ``expires_at``): set, a run now waiting on another request refuses (#323)
+    expires_at: str | None = None
 
 
 @router.post("/{task_id}/runs/{run_id}/answer")
 async def answer_question(request: Request, task_id: str, run_id: str, body: AnswerBody):
-    return await _guard(_tasks(request).answer_question(task_id, run_id, body.answer))
+    return await _guard(_tasks(request).answer_question(task_id, run_id, body.answer, expect=body.expires_at))
 
 
 @router.post("/{task_id}/runs/{run_id}/retry")

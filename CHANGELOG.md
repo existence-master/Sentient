@@ -6,6 +6,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Answer approvals from the notification:** when a task needs your OK while Sentient is in the background or
+  minimized, the notification on your computer has **Allow once** and **Deny** buttons (Windows and macOS), so the
+  task carries on without opening the app. Clicking the notification itself opens the task with its approval card,
+  where the wider choices are. If the request already expired or was answered, a second notification says so. With
+  notifications turned off in Windows, the Sentient taskbar button flashes instead.
 - **Sources for tasks:** each run in a task's history now shows the pages, emails, files and apps it used as small
   chips, like the ones under chat replies. Click one to see what Sentient read and open it.
 - **See what your models cost, and keep everything on this computer:** Settings > Usage now shows what paid cloud

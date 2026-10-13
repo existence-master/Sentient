@@ -773,7 +773,9 @@ A run that called no tool and answers nothing still fails. Chat replies (`done.c
   withdraws its question)
 - `POST /api/tasks/{id}/runs/{run_id}/answer` `{answer}` → `Task` (answers the question of a `waiting_for_user` run; the run
   goes back to `processing` and continues from where it stopped, with the answer as the result of its `ask_user` call.
-  400 empty answer, 404 unknown task/run, 409 the run is not waiting, for example already answered or cancelled)
+  400 empty answer, 404 unknown task/run, 409 the run is not waiting, for example already answered or cancelled).
+  Optional `expires_at`: the `pending_question.expires_at` of the request being answered (the desktop notification's
+  Allow once and Deny send it, #323); when the run now waits on a different request, 409 and nothing is answered
 - `POST /api/tasks/{id}/runs/{run_id}/retry` → `Task` (failed or cancelled run of a non-swarm task: a new run with `retry_of`
   continues from the old run's transcript, telling the model what went wrong, so finished steps are not repeated; without a
   transcript it starts fresh with the same plan and trigger data. 409 for other statuses, swarm tasks, or a one-off task that is already running)
