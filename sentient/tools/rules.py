@@ -18,6 +18,7 @@ which calls can send data out, and the plain wording for the questions that foll
 
 from __future__ import annotations
 
+import json
 from collections.abc import Collection, Mapping
 from pathlib import PurePath
 from typing import Any
@@ -219,12 +220,33 @@ def untrusted_in(messages: list[dict] | None, registry: Any) -> str:
     """The source of the first tool result in a transcript that brought outside content in, else "".
 
     A result whose tool is no longer registered (an MCP server that was removed) counts as outside content, since
-    its kind can't be checked any more; only the engine's own "unknown tool" refusal for a made-up name does not."""
+    its kind can't be checked any more; only the engine's own "unknown tool" refusal for a made-up name does not.
+    A ``file_read`` of a saved result or a download counts too, matched to its call's arguments (#336)."""
+    calls = {  # call id -> arguments, from the assistant messages that asked for them
+        str(tc.get("id")): (tc.get("function") or {}).get("arguments")
+        for m in messages or [] if isinstance(m, dict) and m.get("role") == "assistant"
+        for tc in m.get("tool_calls") or [] if isinstance(tc, dict)
+    }
     for m in messages or []:
-        source = outside_source(m, registry)
+        source = outside_source(m, registry) or _saved_read(m, calls)
         if source:
             return source
     return ""
+
+
+def _saved_read(message: Any, calls: dict[str, Any]) -> str:
+    """``saved_outside_source`` of a stored ``file_read`` tool message that read something, else ""."""
+    if not isinstance(message, dict) or message.get("role") != "tool" or message.get("name") != "file_read":
+        return ""
+    if str(message.get("content") or "").startswith('{"error"'):
+        return ""
+    raw = calls.get(str(message.get("tool_call_id")))
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except ValueError:
+            return ""
+    return saved_outside_source("file_read", raw)
 
 
 def outside_source(message: Any, registry: Any) -> str:

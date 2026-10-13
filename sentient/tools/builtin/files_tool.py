@@ -6,12 +6,15 @@ legacy file_management MCP, minus textract/OCR which will return as an optional 
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from sentient import paths
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 
-_MAX_READ = 200_000
+_MAX_TEXT = 50_000_000  # a text file is read whole up to this many characters; parts come from it
+_DEFAULT_PART = 16_000  # one part when nothing says how much the model reads at once
+_MIN_PART = 1_000
 
 
 def _safe(name: str) -> Path:
@@ -36,21 +39,69 @@ async def file_list(ctx: ToolContext, subdir: str = "") -> list[dict]:
 
 
 @tool("file_read", risk=Risk.read)
-async def file_read(ctx: ToolContext, name: str) -> dict:
+async def file_read(ctx: ToolContext, name: str, offset: int = 0, limit: int = 0) -> dict:
     """Read a file from the files folder by relative name (text, markdown, CSV, JSON, PDF, DOCX).
-    Uploaded attachments live under uploads/."""
+    Uploaded attachments live under uploads/. A long file comes in parts: `offset` is the character to start at
+    (0 = the start) and `limit` the most characters to return (0 = as much as fits). When `more` is true, call
+    again with offset = `next_offset` for the next part."""
     import asyncio
 
-    from sentient.files.extract import extract_text
+    from sentient.files.extract import extract_text, is_text_like
 
     p = _safe(name)
     if not p.is_file():
         return {"error": "not found"}
+    offset = max(0, int(offset or 0))
+    budget = part_budget(ctx)
+    want = min(int(limit) if limit and int(limit) > 0 else budget, budget)
+    # text files are read whole, so the total is known; a PDF or document only as far as this part needs
+    cap = _MAX_TEXT if is_text_like(p) else offset + want + 1
     try:
-        text = await asyncio.to_thread(extract_text, p, _MAX_READ + 1)
+        text = await asyncio.to_thread(extract_text, p, cap)
     except ValueError as exc:
         return {"error": str(exc), "name": name, "bytes": p.stat().st_size}
-    return {"name": name, "content": text[:_MAX_READ], "truncated": len(text) > _MAX_READ}
+    cut = len(text) > cap  # extract_text added its own note after the first ``cap`` characters
+    if cut:
+        text = text[:cap]
+    if offset >= len(text) and not cut:
+        return {"name": name, "offset": offset, "content": "", "total": len(text), "more": False,
+                "note": f"The file has {len(text)} characters, so there is nothing at offset {offset}."}
+    return _fit_part(name, text, offset, want, budget, None if cut else len(text))
+
+
+def part_budget(ctx: ToolContext) -> int:
+    """The most characters one tool result may hold for the model reading it: the run's own limit (set by the
+    agent loop), else ``chat.tool_result_max_chars``."""
+    limit = int(getattr(ctx, "result_limit", 0) or 0)
+    if not limit:
+        chat = getattr(getattr(ctx, "config", None), "chat", None)
+        limit = int(getattr(chat, "tool_result_max_chars", 0) or _DEFAULT_PART)
+    return max(_MIN_PART, limit)
+
+
+def _fit_part(name: str, text: str, offset: int, want: int, budget: int, total: int | None) -> dict:
+    """The part of ``text`` from ``offset``, at most ``want`` characters, cut further so the whole result (as JSON,
+    where line breaks and quotes take two characters) fits in ``budget``. It says where the next part starts."""
+
+    def build(k: int) -> dict:
+        end = offset + k
+        more = end < len(text) or total is None
+        out: dict = {"name": name, "offset": offset, "content": text[offset:end]}
+        if total is not None:
+            out["total"] = total
+        out["more"] = more
+        if more:
+            out["next_offset"] = end
+        return out
+
+    k = max(0, min(want, len(text) - offset))
+    res = build(k)
+    size = len(json.dumps(res, ensure_ascii=False))
+    while size > budget and k > 1:
+        k = max(1, min(k - 1, int(k * budget / size) - 16))
+        res = build(k)
+        size = len(json.dumps(res, ensure_ascii=False))
+    return res
 
 
 @tool("file_write", risk=Risk.write, internal=True)

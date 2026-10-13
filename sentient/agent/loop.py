@@ -274,6 +274,19 @@ def _json_safe(value: Any) -> str:
         return json.dumps(str(value))
 
 
+def _shown_text(text: str, limit: int) -> int:
+    """How many characters of ``text`` the first ``limit`` characters of its JSON form show in full (a line break or
+    a quote takes two there), so reading the saved text on from that offset misses nothing."""
+    lo, hi = 0, min(len(text), limit)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(json.dumps(text[:mid], ensure_ascii=False)) - 1 <= limit:  # without the closing quote
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
 def _shorten(tool: Tool | None, res: Any) -> str | None:
     """The tool's own shorter version of a long result (``Tool.shorten_fn``), as text; None without one."""
     fn = getattr(tool, "shorten_fn", None)
@@ -761,6 +774,7 @@ class Agent:
                 yield Error(message=str(exc), recoverable=False, code=getattr(exc, "code", None), **ev)
                 return
             result.thinking += think_acc
+            ctx.result_limit = result.tool_result_limit  # a tool returning a part sizes it to fit (#336)
 
             if not tool_calls:
                 pending = steer.take() if steer is not None else []
@@ -1122,9 +1136,12 @@ class Agent:
         ran = p.tool is not None and p.preset is None and not declined
         if ran and p.host:
             ctx.visited.add(p.host)
-        if ran and p.tool is not None and not ctx.untrusted and brings_untrusted(p.tool):
-            ctx.untrusted = untrusted_source(p.tool, self.registry)
         err = _error_text(res)
+        if ran and p.tool is not None and not ctx.untrusted:
+            if brings_untrusted(p.tool):
+                ctx.untrusted = untrusted_source(p.tool, self.registry)
+            elif not is_error and not err and (saved := saved_outside_source(tc.name, tc.arguments)):
+                ctx.untrusted = saved  # a saved result or a download read back counts like the tool that brought it (#336)
         if (is_error or err) and err != DECLINED:
             result.tool_errors.append({"name": tc.name, "error": err or str(res)[:500]})
         elif (
@@ -1215,7 +1232,8 @@ class Agent:
         short = _shorten(tool, res)
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", call_id or "")[:80] or new_id()
         rel = f"{folder}/tool-{safe}.txt"
-        full = res if isinstance(res, str) else json.dumps(res, ensure_ascii=False, indent=2, default=str)
+        # the saved text is what the model reads (a text result as it is), so a part read back carries on exactly
+        full = res if isinstance(res, str) else content
 
         def write() -> None:
             path = paths.files_dir() / rel
@@ -1224,15 +1242,23 @@ class Agent:
 
         try:
             await asyncio.to_thread(write)
-            saved = f' The full result is saved as files/{rel}; read it with file_read(name="{rel}") if you need the rest.'
+            saved = True
         except OSError as exc:
             log.warning("could not save long tool result: %s", exc)
-            saved = ""
+            saved = False
+
+        def note(start: int) -> str:
+            if not saved:
+                return ""
+            return (f' The full result is saved as files/{rel} ({len(full)} characters). Read on with '
+                    f'file_read(name="{rel}", offset={start}); each part gives the next_offset to continue from.')
+
         if short is not None and len(short) < len(content):
             if len(short) <= limit:
-                return short + f"\n\n[Result shortened from {len(content)} characters to its main parts.{saved}]"
-            content = short
-        return content[:limit] + f"\n\n[Result cut: this is only the first {limit} of {len(content)} characters.{saved}]"
+                return short + f"\n\n[Result shortened from {len(content)} characters to its main parts.{note(0)}]"
+            return short[:limit] + f"\n\n[Result cut: this is only the first {limit} of {len(short)} characters.{note(0)}]"
+        start = _shown_text(res, limit) if isinstance(res, str) else limit
+        return content[:limit] + f"\n\n[Result cut: this is only the first {limit} of {len(content)} characters.{note(start)}]"
 
     # ------------------------------------------------------------------ chat turn
     async def _user_content(self, text: str, attachments: list[str]) -> str | list[dict]:
@@ -1611,8 +1637,9 @@ class Agent:
     ) -> tuple[Any, bool, str]:
         """Run one call the user approved outside the loop (a task's held call, ADR 0018); lasting rules still apply.
         Returns ``(result, is_error, content)``, where ``content`` is the tool message the model in ``role`` reads."""
-        res, is_error, _ = await self._run_tool(call, ctx)
         limit = await self.tool_result_limit(role, model)
+        ctx.result_limit = limit
+        res, is_error, _ = await self._run_tool(call, ctx)
         tool = self.registry.get(call.name)
         content = await self._tool_content(res, call.id, tool=tool, limit=limit)
         return res, is_error, self.outside_content(content, tool, call.arguments) if tool is not None else content

@@ -294,6 +294,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Sentient can now read a long result to its end:** when a web page or another result is too long to read at
+  once, Sentient reads the rest of the saved copy part by part instead of seeing only its start again. Reading a
+  file you downloaded, or that saved copy, now also counts as reading outside content, so Sentient asks before
+  sending anything afterwards in that chat.
 - A long web or email result that Sentient saved to read later, and files you downloaded, are now marked as
   outside content when Sentient reads them back, so instructions hidden in them are treated as plain text.
 - Learning about you and skill reviews no longer skip a message or fact saved at the same moment as the last one
