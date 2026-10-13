@@ -400,11 +400,11 @@ async def chat(request: Request, body: ChatBody):
                     ended = isinstance(event, Done)
             except Exception as exc:
                 log.exception("chat turn failed")
-                if ended:  # it broke after its done: the turn already ended
-                    return
-                # a turn that broke still ends with error, then done (docs/API.md section 1, #334)
-                yield Error(message=str(exc), recoverable=False, session_id=session_id).model_dump_json() + "\n"
-                yield Done(content="", error=str(exc), session_id=session_id).model_dump_json() + "\n"
+                if not ended:  # a turn that broke still ends with error, then done (docs/API.md section 1, #334)
+                    for line in proposals():  # rule cards made before it broke still come first
+                        yield line
+                    yield Error(message=str(exc), recoverable=False, session_id=session_id).model_dump_json() + "\n"
+                    yield Done(content="", error=str(exc), session_id=session_id).model_dump_json() + "\n"
             for line in proposals():
                 yield line
 
