@@ -744,7 +744,7 @@ class Channel:
                         replies.append(final)
                     if replies:
                         self.publish_message(chat_id, session_id, "out", "\n\n".join(replies))
-                    if voice_in and cfg.voice_replies and final:
+                    if voice_in and cfg.voice_replies and final and not event.error:
                         await self._voice_reply(chat_id, final)
         except asyncio.CancelledError:
             with contextlib.suppress(Exception):

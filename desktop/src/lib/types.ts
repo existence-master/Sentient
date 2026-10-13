@@ -912,6 +912,8 @@ export interface DoneEvent extends TurnScoped {
   content: string
   message_id: string | null
   cancelled?: boolean
+  /** §1: the turn ended in an error before any reply (the `error` event before it has the message). Nothing was saved. */
+  error?: string | null
   memory_sources?: MemorySource[]
   sources?: AnswerSource[]
   /** §17: a queued message dropped by Stop everything (its text; never sent). Comes with the `client_id` it was sent with. */
