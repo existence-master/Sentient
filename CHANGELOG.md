@@ -363,6 +363,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Adding a server (MCP) that you already signed in to from another Sentient setup on the same computer, such as a
   fresh install or a test setup, no longer signs you out of it. The sign-in now remembers the server's address, so it
   is kept and reused for the same address and only cleared when the address changes.
+- Older MCP OAuth sign-ins saved without a server address are preserved in the keychain but are no longer
+  automatically reused, as their server URL ownership cannot be verified. Affected users may need to sign in again
+  for each MCP server URL.
 - Local models can now use large MCP servers such as Composio, Notion or GitHub. Naming the server in your message
   ("using Composio...") always offers its tools, and a server with more tools than fit offers its most relevant ones,
   keeping its "search" and "run" tools together, instead of none at all.
