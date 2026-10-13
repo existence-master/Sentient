@@ -285,6 +285,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Tasks no longer fail with "no final answer" after looking something up:** small local models sometimes went
+  quiet after a memory look-up. Sentient now asks once more for the answer, and if there still is none, the run
+  completes with a short list of what it found instead of failing. Chat replies do the same instead of staying empty.
 - Editing, approving or importing a skill that needs a particular tool (for example `file_read`) no longer hides it
   from Sentient until the next restart.
 - **Watch requests no longer fail when a check script can't be written:** if the AI's check script is rejected twice

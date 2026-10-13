@@ -393,6 +393,9 @@ async def execute_single(
             if continuity.applies(task) and app.registry.get(continuity.NOTEPAD_TOOL) is not None:
                 tool_names = [*tool_names, continuity.NOTEPAD_TOOL]
             mapper = ProgressMapper(svc, task_id, run_id)
+            checked = (run.get("trigger_data") or {}).get("script_result")
+            if checked is not None:  # a check script started this run: what it found is part of an answer (#322)
+                result.findings.append(("check_script", "The check", checked))
             for attempt in range(MAX_CONTINUE_NUDGES + 1):
                 rounds = int(limit["steps"]) - budget.steps
                 if rounds <= 0:  # every step of this run is used
@@ -424,6 +427,12 @@ async def execute_single(
                             await svc.repo.update_run(run_id, {"memory_sources": await sources.resolve(app.store)})
                 await mapper.flush_thought()
                 if result.paused or result.stopped_by_budget:
+                    break
+                if result.from_findings:  # no answer even after asking again: the loop answered from the results
+                    await svc.progress(task_id, run_id, {
+                        "type": "info",
+                        "content": "The executor gave no final answer, so the answer lists what its steps found.",
+                    })
                     break
                 announced = (result.text or "").strip()
                 if (

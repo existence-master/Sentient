@@ -733,6 +733,12 @@ notifies skips the planner and goes straight to `approval_pending` with a one-st
 `await app.tasks.create_imported(*, name, prompt, schedule, script=None, context=None, deliver_to=None)` → Task.
 **ProgressUpdate** `{"timestamp": "...", "message": {"type": "info|thought|tool_call|tool_result|final_answer|error", "content": "...", "tool_name": "...", "parameters": {}, "result": "...", "is_error": false}}`
 
+A run whose model answers nothing after its tool calls is asked once more ("Give your final answer now, based on what
+you found."). If it still answers nothing, the run completes instead of failing: its `final_answer` starts with "I
+couldn't put together a full answer, so here is what I found:" and lists, one line per tool, what the calls that worked
+returned (and a check script's `script_result`), with an `info` update saying so (`sentient/agent/findings.py`, #322).
+A run that called no tool and answers nothing still fails. Chat replies (`done.content`) work the same way.
+
 ### Endpoints
 - `GET /api/tasks` → `[Task]`
 - `GET /api/tasks/{id}` → `Task`
