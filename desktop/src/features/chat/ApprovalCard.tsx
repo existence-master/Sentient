@@ -1,4 +1,5 @@
 import {
+  IconAlertTriangle,
   IconCheck,
   IconClockX,
   IconCreditCard,
@@ -124,7 +125,9 @@ export function ApprovalCard({
   // A purchase, a deletion or a command on this computer asks for a single, deliberate "yes" every time: no blanket
   // answer (the engine ignores it for commands too, ADR 0019). After outside content came in, every send asks
   // anyway, so the blanket answer would not help either. The engine says which answers it offers (#139).
-  const single = risk.label === 'Purchase' || risk.label === 'Deletes' || approval.name === 'terminal_run' || !!approval.untrusted
+  // A call a second look flagged (#143) asks for this one call only, too.
+  const single =
+    risk.label === 'Purchase' || risk.label === 'Deletes' || approval.name === 'terminal_run' || !!approval.untrusted || !!approval.warning
   const offered = (approval.choices?.length ? approval.choices : (['allow', 'allow_session', 'deny'] as ApprovalDecision[])).filter(
     (c) => c !== 'allow' && c !== 'deny' && c !== 'allow_task' && !single
   )
@@ -147,6 +150,15 @@ export function ApprovalCard({
             </Badge>
           </div>
           {action && <div className="mt-1 text-md font-medium text-fg">{action}</div>}
+          {approval.warning && (
+            <div
+              role="alert"
+              className="mt-2 flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/[0.08] px-2.5 py-2 text-sm font-medium text-fg"
+            >
+              <IconAlertTriangle size={16} className="mt-px shrink-0 text-danger" />
+              <span className="selectable min-w-0 break-words">{approval.warning}</span>
+            </div>
+          )}
           <p className="mt-0.5 text-sm text-fg-muted">
             {(command && 'It runs on this computer with your permissions, in this folder:') ||
               purpose ||
