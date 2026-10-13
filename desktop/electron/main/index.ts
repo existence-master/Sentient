@@ -41,6 +41,7 @@ import {
   answerBody,
   cleanApproval
 } from './approval-notify'
+import { AskController } from './ask'
 import { BackendManager } from './backend'
 import { CH } from './channels'
 import { DictationController, dictationSettingsFromConfig } from './dictation'
@@ -68,6 +69,7 @@ let quitting = false
 let smokeRunner: SmokeRunner | null = null
 let engineStopped: boolean | undefined // §17 Stop everything, as the engine last reported it
 let dictation: DictationController | null = null // #169 push to talk and dictation into any app
+let ask: AskController | null = null // #173 ask about selected text
 const liveNotifications = new Set<Notification>()
 
 function showWindow(): void {
@@ -171,7 +173,10 @@ async function toggleProactivity(): Promise<void> {
 // ------------------------------------------------------------------ stop everything (§17)
 /** Stop or resume from the tray or the global shortcut. Works with the window hidden; never asks the model. */
 async function setStopped(stop: boolean, source: 'tray' | 'hotkey'): Promise<void> {
-  if (stop) dictation?.cancel() // the microphone goes off at once, before the engine answers
+  if (stop) {
+    dictation?.cancel() // the microphone goes off at once, before the engine answers
+    ask?.close()
+  }
   try {
     const state = await api<{ stopped: boolean; cancelled?: number }>(stop ? '/api/stop-all' : '/api/resume', {
       method: 'POST',
@@ -209,7 +214,10 @@ const desktopNode = new DesktopNode({
   },
   onStopState: (stopped) => {
     engineStopped = stopped
-    if (stopped) dictation?.cancel()
+    if (stopped) {
+      dictation?.cancel()
+      ask?.close()
+    }
     tray?.refresh()
   },
   notice: (kind) => {
@@ -520,6 +528,22 @@ function registerIpc(): void {
   ipcMain.handle(CH.dictationCancel, () => dictation?.cancel())
   ipcMain.handle(CH.dictationPermission, (_e, kind: 'microphone' | 'accessibility') => dictation?.openPermissionSettings(kind))
   ipcMain.on(CH.dictationEvent, (e, ev: DictationEvent) => dictation?.onPillEvent(e.sender.id, ev))
+  // #173 ask about selected text: only the ask window may use these
+  const fromAsk = (e: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent) => !!ask && ask.ownsWebContents(e.sender.id)
+  ipcMain.handle(CH.askGetState, (e) => (fromAsk(e) ? ask?.currentState() ?? null : null))
+  ipcMain.handle(CH.askCopy, (e, text: string) => (fromAsk(e) && typeof text === 'string' ? ask?.copy(text) : false))
+  ipcMain.handle(CH.askReplace, (e, text: string) =>
+    fromAsk(e) && typeof text === 'string' ? ask?.replace(text) ?? 'failed' : 'failed'
+  )
+  ipcMain.handle(CH.askClose, (e) => {
+    if (fromAsk(e)) ask?.hide()
+  })
+  ipcMain.handle(CH.askOpenChat, (e, sessionId: string) => {
+    if (fromAsk(e) && typeof sessionId === 'string' && /^[\w-]{1,80}$/.test(sessionId)) ask?.openChat(sessionId)
+  })
+  ipcMain.on(CH.askResize, (e, height: number) => {
+    if (fromAsk(e) && typeof height === 'number') ask?.resize(height)
+  })
 }
 
 const DICTATION_OFF: DictationStatus = { accessibility: null, microphone: null }
@@ -576,6 +600,12 @@ function boot(): void {
       micChanged: () => tray?.refresh()
     })
 
+    ask = new AskController({
+      shortcut: () => shortcuts.accelerator('askSelection'),
+      openChat: (sessionId) => sendCommand({ type: 'navigate', route: `/chat/${sessionId}` }),
+      notice: (text) => tray?.flash(text)
+    })
+
     shortcuts.registerFixed(NEW_CHAT_ACCELERATOR, () => sendCommand({ type: 'new-chat' }))
     // Stop only: resuming is always a deliberate click.
     shortcuts.registerFixed(STOP_ACCELERATOR, () => {
@@ -586,7 +616,8 @@ function boot(): void {
       shareRegion: () => void sharer.shareRegion(),
       // Called on every press and every autorepeat of a held key: the controller tells holding from pressing.
       pushToTalk: () => dictation?.trigger('talk'),
-      dictate: () => dictation?.trigger('dictate')
+      dictate: () => dictation?.trigger('dictate'),
+      askSelection: () => void ask?.trigger()
     })
   })
 
@@ -595,6 +626,7 @@ function boot(): void {
   app.on('before-quit', () => {
     quitting = true
     dictation?.dispose()
+    ask?.dispose()
     shortcuts.stopAll()
     desktopNode.stop()
     backend.stop()

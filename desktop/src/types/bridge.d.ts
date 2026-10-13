@@ -84,7 +84,7 @@ export interface ScreenShare {
 }
 
 /** Global shortcuts people can change in Settings > General. */
-export type ShortcutId = 'shareWindow' | 'shareRegion' | 'pushToTalk' | 'dictate'
+export type ShortcutId = 'shareWindow' | 'shareRegion' | 'pushToTalk' | 'dictate' | 'askSelection'
 
 export interface ShortcutInfo {
   id: ShortcutId
@@ -204,6 +204,45 @@ export interface DictationBridge {
   report(event: DictationEvent): void
 }
 
+/** What the ask window shows (#173). The shell copies the selection only when the shortcut is pressed. */
+export type AskState =
+  /** The shortcut was pressed: the shell is copying the selection. */
+  | { phase: 'reading' }
+  | {
+      phase: 'ready'
+      /** The selected text (line ends made plain); `""` when nothing was selected or it couldn't be read. */
+      text: string
+      /** The app it came from, e.g. "Notepad"; "another app" when unknown. */
+      app: string
+      /** The text was longer than Sentient sends on, so it was cut. */
+      truncated: boolean
+      /** Why there is no text: nothing selected, a password box, copying failed, or Sentient itself had focus. */
+      empty?: 'nothing' | 'password' | 'failed' | 'own-window'
+      /** The answer can be pasted back over the selection. */
+      canReplace: boolean
+      /** The shortcut, for the privacy note, e.g. `CommandOrControl+Alt+Shift+A`. */
+      shortcut: string
+      /** When it was captured (ISO), so each capture starts a new chat. */
+      capturedAt: string
+    }
+
+export interface AskBridge {
+  /** Ask window only. The latest state (on load). */
+  state(): Promise<AskState | null>
+  /** Ask window only. A new capture or the reading state. */
+  onState(cb: (state: AskState) => void): () => void
+  /** Put the answer on the clipboard (on purpose: the user pressed Copy). */
+  copy(text: string): Promise<boolean>
+  /** Paste the answer over the selection in the app it came from, then put the clipboard back. */
+  replace(text: string): Promise<'pasted' | 'password' | 'failed'>
+  /** Hide the ask window. */
+  close(): Promise<void>
+  /** Open this chat in the main window. */
+  openChat(sessionId: string): Promise<void>
+  /** The ask window's content height changed. */
+  resize(height: number): void
+}
+
 export interface WindowControls {
   minimize(): Promise<void>
   /** Toggles maximize / restore. */
@@ -262,6 +301,8 @@ export interface SentientBridge {
   notifyWake(): Promise<void>
   /** Push to talk and dictation into any app (#169). */
   dictation: DictationBridge
+  /** Ask about selected text (#173): the small ask window. */
+  ask: AskBridge
   /** Global shortcuts that can be changed (Share this window, Share a region). */
   getShortcuts(): Promise<ShortcutInfo[]>
   /** Set a shortcut (an accelerator, `""` to turn it off, `null` for the default). */
