@@ -27,8 +27,8 @@ _PKG_ROOT = Path(__file__).resolve().parents[1]
 # Feature packages own their tables. Each file must be idempotent. Order matters for foreign keys.
 # Bump when a change to a schema.sql or an ensure_column needs existing databases updated. Opening a database
 # with another version takes a snapshot first (issue #151); so does the first column added to an existing one.
-SCHEMA_VERSION = 6  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
-# 6: approval_grants (#139)
+SCHEMA_VERSION = 7  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
+# 6: approval_grants (#139); 7: evolution_reviews.activity_mark (#297)
 PACKAGE_SCHEMAS = ["tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox"]
 
 

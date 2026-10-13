@@ -270,6 +270,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- A long web or email result that Sentient saved to read later, and files you downloaded, are now marked as
+  outside content when Sentient reads them back, so instructions hidden in them are treated as plain text.
+- Learning about you and skill reviews no longer skip a message or fact saved at the same moment as the last one
+  they read.
 - Editing, approving or importing a skill that needs a particular tool (for example `file_read`) no longer hides it
   from Sentient until the next restart.
 - **Watch requests no longer fail when a check script can't be written:** if the AI's check script is rejected twice

@@ -18,6 +18,7 @@ which calls can send data out, and the plain wording for the questions that foll
 
 from __future__ import annotations
 
+import posixpath
 from collections.abc import Collection, Mapping
 from typing import Any
 from urllib.parse import urlsplit
@@ -237,6 +238,20 @@ def outside_source(message: Any, registry: Any) -> str:
             return UNAVAILABLE_SOURCE
         return ""
     return untrusted_source(t, registry) if brings_untrusted(t) else ""
+
+
+# Folders under files/ that hold text someone else wrote (#297): the rest of a long tool result (agent/loop.py
+# ``_tool_content``) and browser downloads. ``file_read`` of a file there is marked as outside content (ADR 0023).
+SAVED_OUTSIDE_FOLDERS = {"outputs": "a saved tool result", "downloads": "a downloaded file"}
+
+
+def saved_outside_source(name: str, arguments: Any) -> str:
+    """Where a ``file_read`` result came from when it reads a saved result or a download ("a downloaded file"),
+    else "". Only those folders: the user's own files and Sentient's notes are not outside content."""
+    if name != "file_read" or not isinstance(arguments, dict):
+        return ""
+    path = posixpath.normpath(str(arguments.get("name") or "").replace("\\", "/")).lstrip("/")
+    return SAVED_OUTSIDE_FOLDERS.get(path.split("/", 1)[0].lower(), "")
 
 
 SCREEN_FOLDER = "screens"  # files/screens: what the user shared from their screen (window or region hotkey)

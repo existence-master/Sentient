@@ -108,6 +108,7 @@ from sentient.tools.rules import (
     never_message,
     outside_source,
     rule_label,
+    saved_outside_source,
     sends_out,
     unattended_ask_message,
     untrusted_address_reason,
@@ -276,6 +277,17 @@ def _shorten(tool: Tool | None, res: Any) -> str | None:
         log.debug("shortening a %s result failed: %s", getattr(tool, "name", "?"), exc)
         return None
     return None if short is None else _json_safe(short)
+
+
+def _arguments(raw: Any) -> dict:
+    """A stored tool call's arguments as a dict (they are kept as a JSON string); {} when unreadable."""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        value = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _error_text(res: Any) -> str | None:
@@ -1095,26 +1107,37 @@ class Agent:
         # record the result before yielding so a checkpoint taken on this event is complete
         p.seen = _json_safe(res)
         content = await self._tool_content(res, tc.id, tool=p.tool, limit=result.tool_result_limit)
-        model_content = self.outside_content(content, p.tool) if p.tool is not None else content
+        model_content = self.outside_content(content, p.tool, tc.arguments) if p.tool is not None else content
         messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": model_content})
         if persist:  # stored as it is; marked again when the transcript is read back (mark_outside_messages)
             await persist("tool", content, tool_call_id=tc.id, name=tc.name)
         yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
 
-    def outside_content(self, content: str, tool: Tool) -> str:
+    def outside_content(self, content: str, tool: Tool, arguments: dict | None = None) -> str:
         """A tool message as the model reads it: wrapped as outside content when ``tool`` brings text someone else
-        wrote and ``chat.mark_outside_content`` is on (ADR 0023)."""
-        if not self.config.chat.mark_outside_content or not brings_untrusted(tool):
+        wrote, or reads a saved result or a download back (``rules.saved_outside_source``, #297), and
+        ``chat.mark_outside_content`` is on (ADR 0023)."""
+        if not self.config.chat.mark_outside_content:
             return content
-        return mark_outside(content, untrusted_source(tool, self.registry))
+        if brings_untrusted(tool):
+            return mark_outside(content, untrusted_source(tool, self.registry))
+        source = saved_outside_source(tool.name, arguments)
+        return mark_outside(content, source) if source else content
 
     def mark_outside_messages(self, messages: list[dict]) -> list[dict]:
         """Wrap the tool messages in a transcript read back from storage that brought outside content in (ADR 0023);
         text already wrapped is left as it is. Changes ``messages`` in place and returns it."""
         if not self.config.chat.mark_outside_content:
             return messages
+        calls = {  # call id -> arguments, for a saved result or a download read back with file_read (#297)
+            str(tc.get("id")): (tc.get("function") or {}).get("arguments")
+            for m in messages if m.get("role") == "assistant" for tc in m.get("tool_calls") or []
+        }
         for m in messages:
-            source = outside_source(m, self.registry)
+            source = outside_source(m, self.registry) or (
+                saved_outside_source(str(m.get("name") or ""), _arguments(calls.get(str(m.get("tool_call_id")))))
+                if m.get("role") == "tool" else ""
+            )
             if source:
                 m["content"] = mark_outside(str(m.get("content") or ""), source)
         return messages
@@ -1552,7 +1575,7 @@ class Agent:
         limit = await self.tool_result_limit(role, model)
         tool = self.registry.get(call.name)
         content = await self._tool_content(res, call.id, tool=tool, limit=limit)
-        return res, is_error, self.outside_content(content, tool) if tool is not None else content
+        return res, is_error, self.outside_content(content, tool, call.arguments) if tool is not None else content
 
     # ------------------------------------------------------------------ background
     def _spawn(self, coro, kind: str = "background") -> None:

@@ -118,3 +118,64 @@ async def test_profile_upkeep_after_an_empty_read_still_learns_a_same_tick_fact(
         assert (await s.evolution.update_profile(now, force=True))["learned_appended"] == 1
     finally:
         await s.stop()
+
+
+async def test_user_model_refresh_reads_rows_saved_in_the_same_tick(config, isolated_home, monkeypatch):
+    """#297: the refresh starts after what it read last time, not at its own time."""
+    from sentient.memory import facts as facts_mod
+
+    freeze(monkeypatch, store_db, facts_mod)
+    llm = FakeProvider()
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "um.db", enable_background=False).start()
+    try:
+        assert s.memory is not None
+        sid = await s.store.create_session(channel="cli")
+        await s.store.add_message(sid, "user", "keep answers short please")
+        await s.memory.remember("Maya runs every morning", use_llm=False)
+        llm.json_replies.append({"operations": [], "summary": "Maya likes short answers."})
+        await s.user_model.refresh()
+        first = llm.calls[-1]["messages"][1]["content"]
+        assert "keep answers short" in first and "runs every morning" in first
+        # saved after that read, in the same clock tick
+        await s.store.add_message(sid, "user", "I'm moving to Lisbon in spring")
+        await s.memory.remember("Maya mentors two junior developers", use_llm=False)
+        llm.json_replies.append({"operations": [], "summary": "Maya likes short answers."})
+        await s.user_model.refresh()
+        second = llm.calls[-1]["messages"][1]["content"]
+        assert "Lisbon" in second and "mentors two junior" in second
+        assert "keep answers short" not in second and "runs every morning" not in second  # never read twice
+        calls = len(llm.calls)
+        await s.user_model.refresh()
+        assert len(llm.calls) == calls  # nothing new: no model call
+        marks = json.loads(await s.store.get_meta("user_model.messages_mark") or "{}")
+        assert marks["at"] == TICK and len(marks["ids"]) == 2
+    finally:
+        await s.stop()
+
+
+async def test_session_review_reads_messages_saved_in_the_same_tick(config, isolated_home, monkeypatch):
+    """#297: the skill review of a chat starts after the messages it reviewed, not after their timestamp."""
+    from tests.evolution.conftest import add_tool_chat
+
+    freeze(monkeypatch, store_db)
+    llm = FakeProvider()
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "evo.db", enable_background=False).start()
+    try:
+        config.evolution.review_idle_minutes = 0
+        sid = await add_tool_chat(s, tool_calls=3)
+        llm.json_replies.append({"decision": "none", "reason": "nothing reusable"})
+        assert (await s.evolution.review_session(sid))["decision"] == "none"
+        # three more tool calls in the same clock tick as the last reviewed message
+        for i in range(3):
+            call = {"id": f"d{i}", "type": "function", "function": {"name": "gmail_read", "arguments": "{}"}}
+            await s.store.add_message(sid, "assistant", None, tool_calls=[call])
+            await s.store.add_message(sid, "tool", '{"thread": "ok"}', tool_call_id=f"d{i}", name="gmail_read")
+        now = datetime.fromisoformat(TICK)
+        assert await s.evolution.sessions_due(now, idle_minutes=0) == [sid]
+        llm.json_replies.append({"decision": "none", "reason": "nothing reusable"})
+        assert (await s.evolution.review_session(sid))["reviewed"] is True
+        transcript = llm.calls[-1]["messages"][1]["content"]
+        assert "gmail_read" in transcript and "gmail_search" not in transcript  # only the new part
+        assert await s.evolution.sessions_due(now, idle_minutes=0) == []  # all reviewed now
+    finally:
+        await s.stop()

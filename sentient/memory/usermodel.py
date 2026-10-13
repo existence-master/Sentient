@@ -36,7 +36,7 @@ from sentient.memory.facts import FactMemory, word_overlap
 from sentient.memory.schema import ensure_memory_schema
 from sentient.memory.vectors import VecTable, cosine
 from sentient.services import Service, cancel_tasks
-from sentient.store.db import new_id, now_iso
+from sentient.store.db import after_watermark, new_id, next_watermark, now_iso
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.app import SentientApp
@@ -49,6 +49,11 @@ PENDING = "pending"  # held for the user's review; never one of STATUSES, so no 
 VEC_TABLE = "user_insights_vec"
 MAX_EVIDENCE = 8
 SUMMARY_MAX_WORDS = 180
+# what the last refresh read, per kind of evidence (store.db watermarks): rows saved in the same clock tick as the
+# last one read are still new (#297, #236)
+REFRESH_MARKS = {
+    "messages": "user_model.messages_mark", "facts": "user_model.facts_mark", "summaries": "user_model.summaries_mark",
+}
 _COLUMNS = "rid, id, dimension, statement, confidence, status, source, evidence, created_at, updated_at, review"
 
 _DIMENSION_ALIASES = {
@@ -594,21 +599,31 @@ class UserModelService(Service):
         return {"ok": True, "verdict": verdict, "insight": _public(out) if out else None, "fact": stored}
 
     # ------------------------------------------------------------------ refresh
-    async def _gather(self, since: str) -> tuple[dict[str, dict], dict[str, str], dict[str, str]]:
+    async def _gather(
+        self, since: str | dict[str, str | None]
+    ) -> tuple[dict[str, dict], dict[str, str], dict[str, str]]:
         """Evidence since the last refresh: aliases (m1, f12, s1) -> evidence dict, prompt sections, and the aliases
-        that are outside material (from a chat that read outside content, ADR 0018) -> where it came from."""
+        that are outside material (from a chat that read outside content, ADR 0018) -> where it came from.
+
+        ``since`` is a watermark per kind (``REFRESH_MARKS``: what the last refresh read, ``store.db.next_watermark``),
+        or one for all three. The marks after this read are left in ``self._read_marks`` for ``_refresh`` to save."""
         cfg, store = self.cfg, self.app.store
+        marks = since if isinstance(since, dict) else dict.fromkeys(REFRESH_MARKS, since)
+        self._read_marks = dict(marks)
         evidence: dict[str, dict] = {}
         outside: dict[str, str] = {}
         sections = {"messages": "", "facts": "", "summaries": ""}
         if cfg.recent_messages:
+            mark = marks.get("messages")
+            after, params = after_watermark(mark, "m.created_at", "m.id")  # same-tick rows are not skipped (#236)
             rows = await store.fetchall(
                 "SELECT m.id, m.content, m.created_at, s.untrusted FROM messages m LEFT JOIN sessions s"
                 " ON s.id = m.session_id WHERE m.role = 'user' AND m.content IS NOT NULL"
-                " AND m.content != '' AND m.created_at > ? AND COALESCE(s.incognito, 0) = 0"  # never incognito (#154)
+                f" AND m.content != '' AND {after} AND COALESCE(s.incognito, 0) = 0"  # never incognito (#154)
                 " ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
-                (since, cfg.recent_messages),
+                (*params, cfg.recent_messages),
             )
+            self._read_marks["messages"] = next_watermark(mark, rows, "created_at", "id")
             lines = []
             for i, r in enumerate(reversed(rows), 1):
                 text = " ".join(r["content"].split())[:300]
@@ -618,11 +633,14 @@ class UserModelService(Service):
                 lines.append(f"- m{i}: {text}")
             sections["messages"] = "\n".join(lines)
         if cfg.recent_facts:
+            mark = marks.get("facts")
+            after, params = after_watermark(mark, "updated_at", "id")
             rows = await store.fetchall(
-                "SELECT id, content, updated_at FROM facts WHERE status = 'active' AND updated_at > ?"
+                f"SELECT id, content, updated_at FROM facts WHERE status = 'active' AND {after}"
                 " AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id DESC LIMIT ?",
-                (since, now_iso(), cfg.recent_facts),
+                (*params, now_iso(), cfg.recent_facts),
             )
+            self._read_marks["facts"] = next_watermark(mark, rows, "updated_at", "id")
             lines = []
             for r in reversed(rows):
                 alias = f"f{int(r['id'])}"
@@ -630,12 +648,15 @@ class UserModelService(Service):
                 lines.append(f"- {alias}: {r['content'][:240]}")
             sections["facts"] = "\n".join(lines)
         if cfg.recent_summaries:
+            mark = marks.get("summaries")
+            after, params = after_watermark(mark, "m.created_at", "m.id")
             rows = await store.fetchall(
-                "SELECT m.id, m.content, m.end_at, COALESCE(NULLIF(m.untrusted, ''), s.untrusted) AS untrusted"
-                " FROM summaries m LEFT JOIN sessions s"
-                " ON s.id = m.session_id WHERE m.created_at > ? ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
-                (since, cfg.recent_summaries),
+                "SELECT m.id, m.content, m.end_at, m.created_at,"
+                " COALESCE(NULLIF(m.untrusted, ''), s.untrusted) AS untrusted FROM summaries m LEFT JOIN sessions s"
+                f" ON s.id = m.session_id WHERE {after} ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
+                (*params, cfg.recent_summaries),
             )
+            self._read_marks["summaries"] = next_watermark(mark, rows, "created_at", "id")
             lines = []
             for i, r in enumerate(reversed(rows), 1):
                 text = " ".join(r["content"].split())[:400]
@@ -669,7 +690,9 @@ class UserModelService(Service):
     async def _refresh(self, counts: dict, trigger: str, now: datetime) -> dict:
         cfg, store = self.cfg, self.app.store
         await ensure_memory_schema(store)
-        since = await store.get_meta("user_model.last_refresh_at") or ""
+        # what the last refresh read, per kind; an older build saved only the refresh time ("newer than", #236)
+        last = await store.get_meta("user_model.last_refresh_at") or ""
+        since = {kind: await store.get_meta(key) or last for kind, key in REFRESH_MARKS.items()}
         await store.set_meta("user_model.turns_since_refresh", "0")
         evidence, sections, outside = await self._gather(since)
         if not evidence:
@@ -824,6 +847,9 @@ class UserModelService(Service):
         if summary_changed:
             await store.set_meta("user_model.summary", new_summary)
         await store.set_meta("user_model.last_refresh_at", now.isoformat())
+        for kind, key in REFRESH_MARKS.items():  # the next refresh starts after what this one read, not at its time
+            if self._read_marks.get(kind):
+                await store.set_meta(key, str(self._read_marks[kind]))
         if summary_changed or changed_ids or counts["questions"]:
             await self._touch(summary_changed=summary_changed, changed=len(changed_ids))
         log.info("user model refresh (%s): %s", trigger, counts)
