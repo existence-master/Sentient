@@ -1453,6 +1453,8 @@ export interface Run {
   context?: ContextMeter | null
   /** Memories the run had in mind: facts in its instructions or found by a memory look-up (docs/API.md §4). */
   memory_sources?: MemorySource[]
+  /** Pages, emails, files and apps the run used (#291), like a chat reply's sources. Older engines leave it out. */
+  sources?: AnswerSource[]
 }
 
 export interface TaskChatMessage {

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from sentient import paths, secrets
+from sentient.agent import incognito as incognito_outputs
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import ChatRules
 from sentient.agent.grants import GrantStore
@@ -252,7 +253,13 @@ class SentientApp:
             await self.subagents.cancel_for_session(session_id)
         except Exception:
             log.exception("stopping the work of chat %s failed", session_id)
+        incognito = await self.store.is_incognito(session_id)
         await self.store.delete_session(session_id)
+        if incognito:  # the long tool results it saved go with it (#291); files it wrote on request stay
+            try:
+                await asyncio.to_thread(incognito_outputs.delete_outputs, session_id)
+            except OSError:
+                log.exception("removing the saved results of incognito chat %s failed", session_id)
         self.bus.publish("session.deleted", {"session_id": session_id, **({"reason": reason} if reason else {})})
 
     def tool_extra(self) -> dict[str, Any]:

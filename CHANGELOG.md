@@ -6,6 +6,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Sources for tasks:** each run in a task's history now shows the pages, emails, files and apps it used as small
+  chips, like the ones under chat replies. Click one to see what Sentient read and open it.
 - **See what your models cost, and keep everything on this computer:** Settings > Usage now shows what paid cloud
   models cost today, this week and this month, by model and by job. Models on your Claude or ChatGPT plan show as
   **On your plan** instead of dollars, and local models as free. Set a **monthly budget** there: you get a
@@ -282,6 +284,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
   skip. Nothing catches up while Stop everything is on; it happens when you resume.
 
 ### Changed
+- **Incognito chats leave nothing behind:** when an incognito chat is deleted, the long results it saved
+  while reading pages or files go with it. Files you asked it to write and tasks it created stay.
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
