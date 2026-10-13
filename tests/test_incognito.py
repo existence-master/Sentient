@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from sentient.app import SentientApp
 from sentient.gateway.app import create_app
 from sentient.llm.events import Done, ToolResultEvent
+from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from tests.conftest import FakeProvider, tool_call
 from tests.memory.helpers import add_fact, drain
 
@@ -288,3 +289,55 @@ async def test_helpers_of_a_private_incognito_chat_do_not_get_the_name(app):
     app.config.chat.incognito_uses_memory = False
     assert "Maya" in app.subagents._system_prompt()
     assert "Maya" not in app.subagents._system_prompt(private=True)
+
+
+# ---------------------------------------------------------------------------- saved long results (#291)
+def _register_big_dump(app) -> None:
+    @tool("big_dump", risk=Risk.read)
+    async def big_dump(ctx: ToolContext) -> str:
+        """Return a lot of text."""
+        return "x" * 5000
+
+    class Dump(ToolPlugin):
+        id = "dump"
+        tools = [big_dump]
+
+    app.registry.register(Dump())
+
+
+async def test_an_incognito_chats_long_results_go_with_it(app, isolated_home):
+    app.config.chat.tool_result_max_chars = 1000
+    _register_big_dump(app)
+    outputs = isolated_home / "files" / "outputs"
+    (outputs / "report.md").parent.mkdir(parents=True, exist_ok=True)
+    (outputs / "report.md").write_text("a file Maya asked for", encoding="utf-8")
+
+    sid = await app.store.create_session(channel="desktop", incognito=True)
+    app.fake.replies.extend([[tool_call("big_dump")], "done"])
+    await _turn(app, sid, "dump it")
+    folder = outputs / f"incognito-{sid}"
+    saved = folder / "tool-call_big_dump.txt"
+    assert saved.read_text(encoding="utf-8") == "x" * 5000
+    assert f"files/outputs/incognito-{sid}/tool-call_big_dump.txt" in app.fake.calls[1]["messages"][-1]["content"]
+
+    normal = await app.store.create_session(channel="desktop")
+    app.fake.replies.extend([[tool_call("big_dump")], "done"])
+    await _turn(app, normal, "dump it")
+    assert (outputs / "tool-call_big_dump.txt").is_file()  # a normal chat saves where it always did
+
+    await app.delete_chat(sid, reason="incognito")
+    assert not folder.exists()
+    assert (outputs / "report.md").is_file() and (outputs / "tool-call_big_dump.txt").is_file()  # the rest stays
+    await app.delete_chat(normal)
+    assert (outputs / "tool-call_big_dump.txt").is_file()  # only incognito chats take their results with them
+
+
+async def test_leftover_incognito_output_folders_are_removed_at_start(app, isolated_home):
+    outputs = isolated_home / "files" / "outputs"
+    live = await app.store.create_session(channel="desktop", incognito=True)
+    for name in (f"incognito-{live}", "incognito-gone", "keep-me"):
+        (outputs / name).mkdir(parents=True, exist_ok=True)
+        (outputs / name / "tool-x.txt").write_text("x", encoding="utf-8")
+    assert await app.incognito.remove_stray_outputs() == ["incognito-gone"]
+    assert (outputs / f"incognito-{live}").is_dir() and (outputs / "keep-me").is_dir()
+    assert not (outputs / "incognito-gone").exists()

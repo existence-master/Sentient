@@ -40,7 +40,9 @@ from typing import Any
 from pydantic import ValidationError
 
 from sentient import paths
+from sentient.agent import findings
 from sentient.agent import grants as grant_rules
+from sentient.agent import incognito as incognito_outputs
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import WAIT_S, pending_asks, standing_text
 from sentient.agent.prompt import build_system_prompt, mark_outside
@@ -67,6 +69,7 @@ from sentient.llm.events import (
     tool_progress_event,
 )
 from sentient.llm.jobs import as_kind, detached
+from sentient.llm.locality import usage_source
 from sentient.llm.meter import measure
 from sentient.llm.provider import (
     LLMProvider,
@@ -110,6 +113,7 @@ from sentient.tools.rules import (
     never_message,
     outside_source,
     rule_label,
+    saved_outside_source,
     sends_out,
     unattended_ask_message,
     untrusted_address_reason,
@@ -134,6 +138,9 @@ EMPTY_ANSWER_NUDGE = (
     "You have not replied yet. If the request still needs a tool call, make it now; "
     "otherwise answer the user now, based on the tool results above."
 )
+# after tool results (#322): short and direct; still empty after it, the loop answers from the results (agent/findings.py)
+FINAL_ANSWER_NUDGE = "You have not replied yet. Give your final answer now, based on what you found."
+NUDGES = (EMPTY_ANSWER_NUDGE, FINAL_ANSWER_NUDGE)
 USER_MODEL_TIMEOUT_S = 2.0
 # longest a reply waits for the rule check of its message (chat_rules); a slower check finishes in the background,
 # and until it does the tools it is weighing ask first in that chat (one with Claude Code stops instead, ADR 0022)
@@ -280,6 +287,17 @@ def _shorten(tool: Tool | None, res: Any) -> str | None:
     return None if short is None else _json_safe(short)
 
 
+def _arguments(raw: Any) -> dict:
+    """A stored tool call's arguments as a dict (they are kept as a JSON string); {} when unreadable."""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        value = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _error_text(res: Any) -> str | None:
     if isinstance(res, dict) and res.get("error"):
         return str(res["error"])[:500]
@@ -314,6 +332,11 @@ class LoopResult:
     needs_ok: dict | None = None
     # the longest tool result the model read in this run (``Agent.tool_result_limit``); None before the loop starts
     tool_result_limit: int | None = None
+    # [(tool name, plain label, result)] of the calls that worked, for an answer built from them when the model
+    # gives none (#322); kept across ``run_loop`` calls that share this result
+    findings: list[tuple[str, str, Any]] = field(default_factory=list)
+    # True when ``text`` was built from ``findings`` because the model answered nothing (#322)
+    from_findings: bool = False
 
 
 def _hosts(raw: Any) -> set[str]:
@@ -649,6 +672,7 @@ class Agent:
         role's own model for the rest of the run, and a ``Notice`` says so once.
         """
         ev = ev or {}
+        result.from_findings = False
         unprompted = is_unprompted(getattr(ctx, "origin", None)) or is_unprompted(source)
         if unprompted and not is_unprompted(getattr(ctx, "origin", None)):
             ctx.origin = str(source).strip().lower()  # tools this run starts (a subagent) must see it as unprompted too
@@ -680,7 +704,8 @@ class Agent:
             think_acc = ""
             tool_calls: list[ToolCall] = []
             try:
-                async for chunk in self._model_stream(role, messages, tools, model, source == "chat" and not unprompted):
+                async for chunk in self._model_stream(role, messages, tools, model, source == "chat" and not unprompted,
+                                                      source):
                     if chunk.thinking:
                         think_acc += chunk.thinking
                         yield ThinkingDelta(text=chunk.thinking, **ev)
@@ -703,11 +728,13 @@ class Agent:
                             result.completion_tokens += chunk.usage.get("completion_tokens", 0)
                             if budget is not None:
                                 budget.add(chunk.model, chunk.usage, getattr(chunk, "cost", None))
-                            with contextlib.suppress(Exception):
-                                await self.store.record_usage(
-                                    chunk.model, chunk.usage.get("prompt_tokens", 0),
-                                    chunk.usage.get("completion_tokens", 0), role=role, source=source,
-                                )
+                            if not getattr(self.llm, "records_usage", False):  # the provider counts its own
+                                with contextlib.suppress(Exception):
+                                    await self.store.record_usage(
+                                        chunk.model, chunk.usage.get("prompt_tokens", 0),
+                                        chunk.usage.get("completion_tokens", 0), role=role, source=source,
+                                        cost_usd=getattr(chunk, "cost", None),
+                                    )
             except ProviderError as exc:
                 if tools and not tools_disabled and not text_acc and not think_acc and is_tool_format_error(exc):
                     # degrade instead of failing the whole turn: answer without tools
@@ -731,7 +758,7 @@ class Agent:
                     result.tool_result_limit = await self.tool_result_limit(role)
                     continue
                 result.error = str(exc)
-                yield Error(message=str(exc), recoverable=False, **ev)
+                yield Error(message=str(exc), recoverable=False, code=getattr(exc, "code", None), **ev)
                 return
             result.thinking += think_acc
 
@@ -752,10 +779,18 @@ class Agent:
                 if not text_acc.strip() and not empty_nudged and round_no < rounds:
                     # small local models sometimes end a round with only hidden thinking: ask once for a reply
                     empty_nudged = True
-                    messages.append({"role": "user", "content": EMPTY_ANSWER_NUDGE})
+                    nudge = FINAL_ANSWER_NUDGE if result.findings else EMPTY_ANSWER_NUDGE
+                    log.info("%s: the model gave an empty answer; asking once more", source)
+                    messages.append({"role": "user", "content": nudge})
                     continue
-                if empty_nudged and messages and messages[-1].get("content") == EMPTY_ANSWER_NUDGE:
+                if empty_nudged and messages and messages[-1].get("content") in NUDGES:
                     messages.pop()  # the nudge is scaffolding, not part of the conversation
+                if not text_acc.strip() and result.findings:
+                    # still nothing (real qwen3:8b after a memory look-up, #322): answer from what the tools returned
+                    text_acc = findings.summarize(result.findings)
+                    result.from_findings = True
+                    log.info("%s: the model gave no answer after its tool calls; answering from the results", source)
+                    yield TextDelta(text=text_acc, **ev)
                 result.text = text_acc
                 result.messages = messages
                 return
@@ -826,6 +861,9 @@ class Agent:
                 for p in group:
                     async for e in self._record(p, messages, persist, result, ev, ctx):
                         yield e
+                    res, is_error, _ms = p.outcome or (None, True, 0)
+                    if p.tool is not None and p.preset is None and not is_error and not _error_text(res):
+                        result.findings.append((p.tc.name, untrusted_source(p.tool, self.registry), res))
             ruled = next((p for p in plans if p.rule_stop), None)
             if ruled is not None:  # an "ask" rule and nobody to ask: end the run and say why
                 assert ruled.preset is not None
@@ -863,11 +901,12 @@ class Agent:
         result.messages = messages
 
     async def _model_stream(
-        self, role: str, messages: list[dict], tools: list[dict] | None, model: str | None, attended: bool
+        self, role: str, messages: list[dict], tools: list[dict] | None, model: str | None, attended: bool,
+        source: str = "chat",
     ) -> AsyncIterator[StreamChunk]:
         """``llm.stream``, marked as a reply someone is waiting for only in a chat: Claude Code answers nothing
-        else (ADR 0022)."""
-        with claude_code.attended(attended):
+        else (ADR 0022). Its usage is counted under ``source``."""
+        with claude_code.attended(attended), usage_source(source):
             async for chunk in self.llm.stream(role, messages, tools, model=model):
                 yield chunk
 
@@ -1096,27 +1135,39 @@ class Agent:
             result.skills_viewed.append(tc.arguments["name"])
         # record the result before yielding so a checkpoint taken on this event is complete
         p.seen = _json_safe(res)
-        content = await self._tool_content(res, tc.id, tool=p.tool, limit=result.tool_result_limit)
-        model_content = self.outside_content(content, p.tool) if p.tool is not None else content
+        folder = incognito_outputs.outputs_folder(ctx.session_id) if ctx.incognito and ctx.session_id else "outputs"
+        content = await self._tool_content(res, tc.id, tool=p.tool, limit=result.tool_result_limit, folder=folder)
+        model_content = self.outside_content(content, p.tool, tc.arguments) if p.tool is not None else content
         messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": model_content})
         if persist:  # stored as it is; marked again when the transcript is read back (mark_outside_messages)
             await persist("tool", content, tool_call_id=tc.id, name=tc.name)
         yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
 
-    def outside_content(self, content: str, tool: Tool) -> str:
+    def outside_content(self, content: str, tool: Tool, arguments: dict | None = None) -> str:
         """A tool message as the model reads it: wrapped as outside content when ``tool`` brings text someone else
-        wrote and ``chat.mark_outside_content`` is on (ADR 0023)."""
-        if not self.config.chat.mark_outside_content or not brings_untrusted(tool):
+        wrote, or reads a saved result or a download back (``rules.saved_outside_source``, #297), and
+        ``chat.mark_outside_content`` is on (ADR 0023)."""
+        if not self.config.chat.mark_outside_content:
             return content
-        return mark_outside(content, untrusted_source(tool, self.registry))
+        if brings_untrusted(tool):
+            return mark_outside(content, untrusted_source(tool, self.registry))
+        source = saved_outside_source(tool.name, arguments)
+        return mark_outside(content, source) if source else content
 
     def mark_outside_messages(self, messages: list[dict]) -> list[dict]:
         """Wrap the tool messages in a transcript read back from storage that brought outside content in (ADR 0023);
         text already wrapped is left as it is. Changes ``messages`` in place and returns it."""
         if not self.config.chat.mark_outside_content:
             return messages
+        calls = {  # call id -> arguments, for a saved result or a download read back with file_read (#297)
+            str(tc.get("id")): (tc.get("function") or {}).get("arguments")
+            for m in messages if m.get("role") == "assistant" for tc in m.get("tool_calls") or []
+        }
         for m in messages:
-            source = outside_source(m, self.registry)
+            source = outside_source(m, self.registry) or (
+                saved_outside_source(str(m.get("name") or ""), _arguments(calls.get(str(m.get("tool_call_id")))))
+                if m.get("role") == "tool" else ""
+            )
             if source:
                 m["content"] = mark_outside(str(m.get("content") or ""), source)
         return messages
@@ -1151,17 +1202,19 @@ class Agent:
             keep += 1
         return res[:keep]
 
-    async def _tool_content(self, res: Any, call_id: str, *, tool: Tool | None = None, limit: int | None = None) -> str:
+    async def _tool_content(
+        self, res: Any, call_id: str, *, tool: Tool | None = None, limit: int | None = None, folder: str = "outputs"
+    ) -> str:
         """The tool message the model reads. A result longer than ``limit`` (default ``chat.tool_result_max_chars``)
         is shortened by the tool's ``shorten_fn`` when it has one, then cut from the end; the full text goes to
-        files/outputs/ and the model is told plainly."""
+        files/outputs/ (an incognito chat's own folder in it, ``folder``) and the model is told plainly."""
         content = _json_safe(res)
         limit = limit or self.config.chat.tool_result_max_chars
         if not limit or len(content) <= limit:
             return content
         short = _shorten(tool, res)
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", call_id or "")[:80] or new_id()
-        rel = f"outputs/tool-{safe}.txt"
+        rel = f"{folder}/tool-{safe}.txt"
         full = res if isinstance(res, str) else json.dumps(res, ensure_ascii=False, indent=2, default=str)
 
         def write() -> None:
@@ -1359,7 +1412,7 @@ class Agent:
                     partial = ""  # text before a tool call or a steer was already persisted
                     if isinstance(event, ToolResultEvent) and not event.is_error:
                         sources.add_tool_result(event.name, self.delivered_rows(event.result, result.tool_result_limit))
-                        self._add_answer_source(used, event.name, event.result)
+                        self.add_answer_source(used, event.name, event.result)
                     if ctx.untrusted and not marked:  # remember it for the rest of this chat, also after a restart
                         marked = True
                         await self.store.execute(
@@ -1492,8 +1545,9 @@ class Agent:
         )
         return {"message_id": message_id, "memory_sources": memory_sources, "sources": items}
 
-    def _add_answer_source(self, used: AnswerSources, name: str, res: Any) -> None:
-        """Record what a successful tool result brought into the reply (#174). Never breaks a turn."""
+    def add_answer_source(self, used: AnswerSources, name: str, res: Any) -> None:
+        """Record what a successful tool result brought into the reply (#174) or a task run (#291). Never breaks a
+        turn."""
         tool = self.registry.get(name)
         plugin = self.registry.plugin(tool.plugin) if tool is not None else None
         is_app = isinstance(plugin, IntegrationPlugin) or getattr(plugin, "auth", None) == "mcp"
@@ -1561,7 +1615,7 @@ class Agent:
         limit = await self.tool_result_limit(role, model)
         tool = self.registry.get(call.name)
         content = await self._tool_content(res, call.id, tool=tool, limit=limit)
-        return res, is_error, self.outside_content(content, tool) if tool is not None else content
+        return res, is_error, self.outside_content(content, tool, call.arguments) if tool is not None else content
 
     # ------------------------------------------------------------------ background
     def _spawn(self, coro, kind: str = "background") -> None:

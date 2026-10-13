@@ -134,6 +134,23 @@ class ModelsConfig(BaseModel):
     active_preset: str | None = Field(
         None, description="The model setup chosen last, shown with a check in the model menu."
     )
+    local_only: bool = Field(
+        False,
+        description="No request ever goes to an AI model outside this computer, not even a backup model, a "
+        "chat's own model, a task, memory search or voice. Anything that would have used the cloud stops with a "
+        "plain message, or a local model answers instead. Switched from the model menu in the title bar.",
+    )
+    monthly_budget_usd: float = Field(
+        0.0, ge=0,
+        description="Most you want to spend on paid cloud models each month, in US dollars. You get a notification "
+        "at 80%. 0 means no budget. Models on your Claude or ChatGPT plan and local models don't count.",
+    )
+    budget_at_limit: Literal["ask", "stop"] = Field(
+        "ask",
+        description="What happens when the monthly budget is used up. ask: paid cloud models pause until you choose "
+        "Keep going this month, in a chat or in Settings > Usage. stop: they stay paused until next month or until "
+        "you raise the budget.",
+    )
     fallbacks: dict[str, list[str]] = Field(
         default_factory=dict,
         description="Per-role ordered fallback models tried when the role's model fails.",

@@ -10,7 +10,8 @@ to send something pauses the same way and asks first (ADR 0018). So does a run t
 (#139), unless the user already allowed that tool for this task or for a while (``sentient.agent.grants``).
 A run that gets stuck (``tasks/stuck.py``) pauses the same way with a plain reason.
 The memories a run had in mind (facts in its prompt, facts memory tools returned that the model read) are kept on
-the run as ``memory_sources``, merged across pauses, resumes and restarts (``sentient/memory/sources.py``).
+the run as ``memory_sources``, merged across pauses, resumes and restarts (``sentient/memory/sources.py``). The pages,
+emails, files and apps it used are kept the same way as ``sources`` (``sentient/agent/sources.py``, #291).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from sentient.agent.loop import CAN_PAUSE_KEY, Budget, LoopResult, history_to_openai
+from sentient.agent.sources import AnswerSources
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
 from sentient.llm.provider import ToolCall
 from sentient.memory.sources import MemorySources
@@ -331,6 +333,7 @@ async def execute_single(
     messages: list[dict] = []
     asking: dict[str, Any] = {}
     sources = MemorySources(run.get("memory_sources"))  # what the run had in mind so far (before a pause or restart)
+    read = AnswerSources(run.get("sources"))  # pages, emails, files and apps it used so far (#291)
     # active time only (waiting for an answer is not counted), plus a grace so a slow call can finish first
     hard = asyncio.timeout(remaining_s + HARD_DEADLINE_GRACE_S)
     cfg = app.config.tasks
@@ -393,6 +396,9 @@ async def execute_single(
             if continuity.applies(task) and app.registry.get(continuity.NOTEPAD_TOOL) is not None:
                 tool_names = [*tool_names, continuity.NOTEPAD_TOOL]
             mapper = ProgressMapper(svc, task_id, run_id)
+            checked = (run.get("trigger_data") or {}).get("script_result")
+            if checked is not None:  # a check script started this run: what it found is part of an answer (#322)
+                result.findings.append(("check_script", "The check", checked))
             for attempt in range(MAX_CONTINUE_NUDGES + 1):
                 rounds = int(limit["steps"]) - budget.steps
                 if rounds <= 0:  # every step of this run is used
@@ -416,14 +422,26 @@ async def execute_single(
                     await alive(event)
                     await mapper.handle(event, messages)
                     if isinstance(event, ToolResultEvent) and not event.is_error:
-                        seen = len(sources)
+                        seen, read_before = len(sources), read.items()
                         sources.add_tool_result(
                             event.name, app.agent.delivered_rows(event.result, result.tool_result_limit)
                         )
+                        app.agent.add_answer_source(read, event.name, event.result)
+                        changed: dict[str, Any] = {}
                         if len(sources) > seen:  # saved at once, so a restart keeps it
-                            await svc.repo.update_run(run_id, {"memory_sources": await sources.resolve(app.store)})
+                            changed["memory_sources"] = await sources.resolve(app.store)
+                        if (read_now := read.items()) != read_before:  # a new page, email or file, or an app's tool
+                            changed["sources"] = read_now
+                        if changed:
+                            await svc.repo.update_run(run_id, changed)
                 await mapper.flush_thought()
                 if result.paused or result.stopped_by_budget:
+                    break
+                if result.from_findings:  # no answer even after asking again: the loop answered from the results
+                    await svc.progress(task_id, run_id, {
+                        "type": "info",
+                        "content": "The executor gave no final answer, so the answer lists what its steps found.",
+                    })
                     break
                 announced = (result.text or "").strip()
                 if (

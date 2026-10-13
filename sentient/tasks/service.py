@@ -846,6 +846,7 @@ class TaskService(Service):
             problem = run.get("error") or "the run was cancelled before it finished"
             fields["messages"] = [*checkpoint, {"role": "user", "content": RETRY_NOTE.format(error=problem)}]
             fields["memory_sources"] = run.get("memory_sources")  # the transcript it continues had these in mind
+            fields["sources"] = run.get("sources")  # and had read these
         await self.repo.update_run(new_run_id, fields)
         await self._set(task_id, {"status": "processing", "last_execution_at": now, "error": None})
         self._dispatch(task_id, new_run_id, resume=bool(checkpoint))

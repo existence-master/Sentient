@@ -98,6 +98,9 @@ class Error(_Event):
     type: Literal["error"] = "error"
     message: str
     recoverable: bool = True
+    # what stopped the reply when the chat can offer a fix (#148): "local_only" (Local only is on and the model is
+    # in the cloud) or "budget_reached" (this month's model budget is used up)
+    code: str | None = None
 
 
 class Notice(_Event):
