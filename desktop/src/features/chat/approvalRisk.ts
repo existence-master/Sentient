@@ -76,6 +76,27 @@ export function approvalRisk(approval: {
     if (/(submit|confirm|form)/.test(text)) return { label: 'Submits', verb: 'submit something for you', tone: 'danger' }
     return { label: 'Sends', verb: 'send something on your behalf', tone: 'danger' }
   }
-  if (approval.risk === 'write') return { label: 'Changes things', verb: 'make a change', tone: 'warning' }
+  if (approval.risk === 'write') {
+    // MCP tools without annotations default to `write` (see MCPManager._risk_for), so a
+    // send-like email tool (mcp_mailer_send_email) or a mail delete (mcp_gmail_gmail_delete)
+    // can arrive here. Name them from the tool name first; drafts and other write-only
+    // mail tools keep the generic wording.
+    if (isEmailSendingTool(approval.name))
+      return { label: 'Sends an email', verb: 'send an email', tone: 'danger' }
+    const text = `${approval.name} ${approval.reason ?? ''}`.toLowerCase()
+    if (/(delete|remove|erase|unsubscribe|cancel (my|the|this) )/.test(text))
+      return { label: 'Deletes', verb: 'delete something', tone: 'danger' }
+    return { label: 'Changes things', verb: 'make a change', tone: 'warning' }
+  }
   return { label: 'Reads', verb: 'look something up', tone: 'neutral' }
+}
+
+/**
+ * An email tool whose name says it sends: send_email, gmail_send, mcp_mailer_send_email.
+ * Used for the `write`-risk branch, where MCP tools without annotations land — a draft
+ * creator (gmail_draft_create) has no send verb and keeps the generic wording.
+ */
+function isEmailSendingTool(name: string): boolean {
+  const tokens = name.toLowerCase().split(/[^a-z0-9]+/)
+  return isEmailTool(name) && tokens.some((t) => /^(send|sends|sending|sent|reply|forward|mailer)$/.test(t))
 }

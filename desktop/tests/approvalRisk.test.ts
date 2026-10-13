@@ -84,3 +84,29 @@ test('"Discard draft" is not misread as a purchase', () => {
   const w = approvalRisk({ risk: 'send', name: 'browser_click', reason: 'Click "Discard draft"', arguments: {} })
   assert.equal(w.label, 'Sends')
 })
+
+test('a write-risk MCP email tool that sends reads as sending an email', () => {
+  const w = approvalRisk({
+    risk: 'write',
+    name: 'mcp_mailer_send_email',
+    reason: 'Send an email',
+    arguments: {}
+  })
+  assert.equal(w.label, 'Sends an email')
+  assert.equal(w.verb, 'send an email')
+})
+
+test('a write-risk MCP draft tool keeps the generic change wording', () => {
+  const w = approvalRisk({ risk: 'write', name: 'gmail_draft_create', reason: 'Create a draft', arguments: {} })
+  assert.equal(w.label, 'Changes things')
+})
+
+test('a write-risk MCP mail delete reads as deletion', () => {
+  const w = approvalRisk({
+    risk: 'write',
+    name: 'mcp_gmail_gmail_delete',
+    reason: 'Delete a message',
+    arguments: {}
+  })
+  assert.equal(w.label, 'Deletes')
+})
