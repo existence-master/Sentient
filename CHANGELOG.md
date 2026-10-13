@@ -6,6 +6,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Activity: everything Sentient did, and what it will do next, in one place.** A new **Activity** screen in the
+  sidebar lists, newest first, the apps Sentient used in your chats, task runs and briefs, each check of a watch,
+  approvals and how you answered them, replies in Telegram, Discord and WhatsApp, suggestions and other notifications,
+  memories it saved, skills it learned or changed, backups, and what paid cloud models cost each day. Every line says
+  what happened and why ("Made your Daily Brief: it runs every weekday at 7:30 AM", "Asked you before "Send" in Gmail
+  (to Arjun). You chose Allow once."). On the side: what is waiting for you now, everything scheduled for the coming
+  week (tasks, briefs, watches, the next backup and the nightly memory tidy-up) and the routines that are paused.
+  Filter by kind and by app, search, and click any line to open the chat, task, memory or setting it came from.
 - **Answer approvals from the notification:** when a task needs your OK while Sentient is in the background or
   minimized, the notification on your computer has **Allow once** and **Deny** buttons (Windows and macOS), so the
   task carries on without opening the app. Clicking the notification itself opens the task with its approval card,

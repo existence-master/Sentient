@@ -33,6 +33,7 @@
  *   model.busy            -> ['models', 'busy'] (the title bar's "model busy" indicator)
  *   backup.updated        -> refetch ['backups'] (Settings > Backups)
  *   import.updated        -> ['import', 'memory', 'job'] (an import from ChatGPT, Claude or OpenClaw; + memory review when it ends)
+ *   (most of the above, and a finished chat reply, also refetch ['timeline'] once things settle: the Activity screen)
  */
 import type { QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -346,5 +347,38 @@ export function installDomainEvents(qc: QueryClient): () => void {
     })
   )
 
+  // The Activity screen (§21) reads what these events change; refetch it once a burst of them settles.
+  let timelineTimer: number | undefined
+  const refreshTimeline = () => {
+    window.clearTimeout(timelineTimer)
+    timelineTimer = window.setTimeout(() => void qc.invalidateQueries({ queryKey: qk.timeline.all }), 1500)
+  }
+  offs.push(
+    live.onDomain('*', (e) => {
+      if (TIMELINE_EVENTS.has(e.type)) refreshTimeline()
+    })
+  )
+  offs.push(
+    live.onChat((e) => {
+      if (e.type === 'done') refreshTimeline()
+    })
+  )
+  offs.push(() => window.clearTimeout(timelineTimer))
+
   return () => offs.forEach((off) => off())
 }
+
+const TIMELINE_EVENTS = new Set<string>([
+  'task.updated',
+  'task.deleted',
+  'tasks.away',
+  'notification.new',
+  'notification.updated',
+  'memory.updated',
+  'skill.updated',
+  'dream.updated',
+  'backup.updated',
+  'approval_grants.updated',
+  'channel.message',
+  'budget.updated'
+])

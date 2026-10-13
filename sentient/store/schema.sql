@@ -39,10 +39,15 @@ CREATE TABLE IF NOT EXISTS messages (
     interjection  INTEGER NOT NULL DEFAULT 0,     -- 1 for user messages sent while a reply was running (steering)
     memory_sources TEXT,                          -- JSON list: memories a final assistant reply had in mind
     sources       TEXT,                           -- JSON list: pages, emails, files and apps a final reply used (#174)
+    approval      TEXT,                           -- JSON (tool messages): how the user answered the call's approval
+                                                  -- request {decision, asked_at, answered_at, target, risk_label,
+                                                  -- untrusted, rule}; NULL when it did not ask (activity timeline, #147)
     created_at    TEXT NOT NULL,
     summarized    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
+-- the activity timeline (#147) reads tool calls newest first across every chat
+CREATE INDEX IF NOT EXISTS idx_messages_tool_time ON messages(created_at) WHERE role = 'tool';
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content, content='messages', content_rowid='rowid'
@@ -84,6 +89,7 @@ CREATE TABLE IF NOT EXISTS facts (
 );
 CREATE INDEX IF NOT EXISTS idx_facts_expires ON facts(expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_facts_source ON facts(source);
+CREATE INDEX IF NOT EXISTS idx_facts_created ON facts(created_at);   -- the activity timeline (#147)
 
 -- ---------------------------------------------------------------- notifications / approvals
 CREATE TABLE IF NOT EXISTS notifications (

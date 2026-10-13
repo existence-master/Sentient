@@ -84,7 +84,7 @@ from sentient.memory.sources import MemorySources
 from sentient.memory.workspace import Workspace
 from sentient.services import cancel_tasks
 from sentient.skills.loader import SkillLibrary
-from sentient.store.db import Store, after_watermark, new_id, next_watermark
+from sentient.store.db import Store, after_watermark, new_id, next_watermark, now_iso
 from sentient.tools.base import (
     UNPROMPTED_ORIGINS,
     Risk,
@@ -446,6 +446,7 @@ class _CallPlan:
     wants_ok: bool = False  # held for the user's OK in a run nobody can be asked in (ADR 0018)
     ask_rule: bool = False  # held by an "ask" rule in a task run that pauses and asks (#139)
     host: str = ""  # the web host this call loads, if any; remembered as visited once it ran
+    approval: dict | None = None  # how the user answered this call's approval request (the activity timeline, #147)
 
 
 class Agent:
@@ -848,7 +849,13 @@ class Agent:
                             untrusted=p.untrusted or None, choices=offered,
                             grant_minutes=self.approvals.config.grant_minutes, **ev,
                         )
+                        asked_at = now_iso()
                         decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)
+                        p.approval = {
+                            "decision": decision, "asked_at": asked_at, "answered_at": now_iso(),
+                            "target": wording["target"], "risk_label": wording["risk_label"],
+                            "untrusted": p.untrusted or None, "rule": self.approvals.rule(p.tool),
+                        }
                         if decision in grant_rules.ALLOWING:
                             runnable.append(p)
                         else:
@@ -1140,7 +1147,8 @@ class Agent:
         model_content = self.outside_content(content, p.tool, tc.arguments) if p.tool is not None else content
         messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": model_content})
         if persist:  # stored as it is; marked again when the transcript is read back (mark_outside_messages)
-            await persist("tool", content, tool_call_id=tc.id, name=tc.name)
+            extra = {"approval": p.approval} if p.approval else {}
+            await persist("tool", content, tool_call_id=tc.id, name=tc.name, **extra)
         yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
 
     def outside_content(self, content: str, tool: Tool, arguments: dict | None = None) -> str:

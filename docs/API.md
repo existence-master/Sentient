@@ -276,9 +276,12 @@ accept or loosen a rule.
   {"id": "...", "role": "user|assistant|tool", "content": "...", "thinking": "...|null",
    "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "memory_recall", "arguments": "{\"query\":\"sister\"}"}}],
    "tool_call_id": "call_1", "name": "memory_recall", "attachments": ["report.pdf"], "interjection": false,
-   "memory_sources": [], "sources": [], "created_at": "..."}
+   "memory_sources": [], "sources": [], "approval": null, "created_at": "..."}
   ```
   The UI folds each `assistant` message with `tool_calls` plus its following `tool` messages into one assistant turn.
+  `approval` (tool messages, #147) is how the user answered that call's approval request, `null` when it did not ask:
+  `{decision: "allow"|"allow_session"|"allow_timed"|"allow_always"|"deny", asked_at, answered_at, target, risk_label,
+  untrusted, rule}` (a request nobody answered in time is `deny`). The activity timeline (section 21) reads it.
 - **Memory sources.** The final assistant message of a chat turn (also a stopped one) carries `memory_sources`, the
   memories that reply had in mind, also sent on its `done` event. Every other row has `[]`. A **MemorySource** is
   `{kind: "fact"|"insight", id, text, source, via: "prompt"|"tool"}`: `id` is the Memory id (int, section 7) or the
@@ -2594,3 +2597,71 @@ signed_in` is checked live (`null`: Sentient can't tell, e.g. browser sign-ins).
 **CLI**: `sentient backup [--to FOLDER]` (default: the folder above), `sentient restore FILE [--now]` (stages; `--now` applies at once and must only
 be used while Sentient is closed).
 
+---
+
+## 21. Activity timeline (owner: core, #147)
+
+One list of what Sentient did and what it will do, for the **Activity** screen. Code: `sentient/activity/`. It is
+read from what the other packages already keep; the only thing stored for it is `messages.approval` (section 2),
+because how the user answered an approval in a chat was kept nowhere else. Incognito chats are never read. Nothing
+here calls a model or changes anything.
+
+**TimelineItem**
+```json
+{"id": "run:<run id>", "kind": "tasks", "at": "2026-10-13T07:30:04+00:00",
+ "title": "Made your Daily Brief", "why": "It runs every weekday at 7:30 AM", "detail": "3 events today",
+ "status": "done|failed|waiting|declined|running|stopped|scheduled|paused|null",
+ "app": "gmail|null", "app_label": "Gmail|null",
+ "ref": {"type": "chat|task|memory|dream|skill|about|backups|usage|approvals|notification", "id": "...",
+         "run_id": "...", "message_id": "...", "notification_id": "...", "review": true},
+ "upcoming": false}
+```
+`title` says what happened and `why` says why, in plain words. `ref` is where the item came from (the window opens
+that chat, task, memory, dream, skill or Settings section). `at` is UTC; `null` only for a paused routine.
+`kind` (also the filter values, in this order): `chat` (tools a chat used), `tasks` (task runs, questions, plans,
+routines paused while away, catch-up), `briefs` (Daily and Evening Brief runs), `monitors` (each check of a script job
+and the runs it started), `approvals` (approval requests in chats and tasks with the answer, plans waiting for an OK,
+**Always allow** answers, timed OKs ending), `channels` (Sentient's replies in Telegram, Discord and WhatsApp chats),
+`notifications` (suggestions and other notifications), `memory` (memories saved, nightly dreams, profile updates),
+`skills` (skills learned, drafted, improved, archived), `backups` (backups and safety snapshots), `cost` (one line per
+day with paid cloud model spending, and budget notices).
+
+What each source gives (past):
+
+| Source | Item |
+|---|---|
+| `messages` (role `tool`, not incognito) | "Used Gmail: Search" + the call's first arguments; an answered approval is an `approvals` item ("Asked you before "Send" in Gmail (to Arjun)", detail "You chose Allow once." or "You said no, so it was not done.") |
+| `messages` (assistant replies in channel chats) | "Replied to you on Telegram" |
+| `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked |
+| `tasks.script.checks` | "Checked X: nothing new (3 checks)", "X changed. You were told" |
+| `notifications` | questions and approvals from tasks (with the answer), plans waiting, suggestions, routines paused, backup and budget notices. Not shown again: `run_completed`, `run_failed` and `script_alert` (the run or check is shown), `brief` (the run), `skill` (the skills log) and dream notices (the dream) |
+| `facts` | "Remembered something about you" (or "Saved a memory for your review"), `why` from its source |
+| `dreams`, `evolution_log` | memory tidy-ups; skill changes; profile updates |
+| backup folders | backups and snapshots (`kind` manual, scheduled, snapshot) |
+| `tools.approvals.rule_origins` | "You chose Always allow for ..." |
+| `usage` (`cost_usd > 0`) | "Spent $0.42 on cloud models", one per local day |
+
+- `GET /api/timeline?before=&limit=50&kinds=&app=&q=` → `{items: [TimelineItem], next: "<cursor>"|null}`: newest
+  first, strictly before the cursor `before` (`next` of the previous page; omit for the newest). `limit` 1 to 200.
+  `kinds` is a comma list of kinds (none: all); `app` an app id (`gmail`, `telegram`...: tool calls of that app and
+  in that messaging app, runs that used it or were started by it, suggestions about it); `q` words matched in names,
+  messages, results and memories. A page can hold fewer than `limit` items while `next` is set (a filter skipped many
+  rows); the window then asks for the next page.
+- `GET /api/timeline/upcoming?days=7&kinds=&app=&q=` → `{items: [TimelineItem], paused: [TimelineItem]}`. `items`:
+  first what is waiting for the user now (task questions and approvals, plans waiting for an OK; `status: "waiting"`),
+  then, soonest first, every enabled task with a next run within `days` (1 to 31; recurring ones up to 7 times,
+  interval ones once), the next scheduled backup, the next nightly dream and timed approvals that end. `paused`:
+  routines (recurring and triggered tasks) that are turned off, `why` "Paused while you were away" (section 4,
+  "Routines pause") or "You paused it".
+- `GET /api/timeline/apps` → `{apps: [{id, label}]}`: apps to filter by (tools used in chats in the last 90 days,
+  messaging apps with chats, task triggers).
+
+**Paging.** Every past item has the key `(at, id)`. A page asks each source for its newest items before the cursor and
+merges them, so rows saved in the same moment are never skipped or shown twice. A source that drops rows in code (an
+app filter on runs, kinds of notifications) reads in batches and may stop early; the page then never goes below how
+far it read. Indexes: `idx_messages_tool_time` (`messages(created_at) WHERE role = 'tool'`), `idx_runs_created`,
+`idx_facts_created`, plus the existing ones on notifications, the skills log and dreams.
+
+The window refetches the timeline a moment after the events that change it (`task.*`, `notification.*`,
+`memory.updated`, `skill.updated`, `dream.updated`, `backup.updated`, `approval_grants.updated`, `channel.message`,
+`budget.updated`, and a finished chat reply).

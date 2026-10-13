@@ -2,7 +2,7 @@
  * Every React Query key in one place. Invalidate by prefix, e.g.
  * `queryClient.invalidateQueries({ queryKey: qk.tasks.all })`.
  */
-import type { MemoryQuery } from '@/lib/types'
+import type { MemoryQuery, TimelineFilters } from '@/lib/types'
 
 export const qk = {
   bootstrap: ['bootstrap'] as const,
@@ -83,5 +83,13 @@ export const qk = {
   usage: (days: number) => ['usage', days] as const,
   usageCost: ['usage', 'cost'] as const,
   files: ['files'] as const,
-  tools: ['tools'] as const
+  tools: ['tools'] as const,
+
+  /** The activity timeline (§21). Invalidated by most domain events (lib/events.ts). */
+  timeline: {
+    all: ['timeline'] as const,
+    past: (f: TimelineFilters) => ['timeline', 'past', f] as const,
+    upcoming: (f: TimelineFilters) => ['timeline', 'upcoming', f] as const,
+    apps: ['timeline', 'apps'] as const
+  }
 }
