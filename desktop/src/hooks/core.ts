@@ -166,6 +166,20 @@ export function useUsage(days = 30) {
   return useQuery({ queryKey: qk.usage(days), queryFn: () => api.usage.get(days) })
 }
 
+/** The cost meter and the monthly budget (#148). Refreshed every minute while shown. */
+export function useUsageCost() {
+  return useQuery({ queryKey: qk.usageCost, queryFn: api.usage.cost, refetchInterval: 60_000 })
+}
+
+/** "Keep going this month" once the budget (set to ask) is used up. */
+export function useKeepGoing() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: api.usage.keepGoing,
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['usage'] })
+  })
+}
+
 /** Live "Allow for this task" and "Allow for 1 hour" answers (#139). Empty on engines without them. */
 export function useApprovalGrants() {
   return useQuery({

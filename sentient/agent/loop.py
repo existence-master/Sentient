@@ -67,6 +67,7 @@ from sentient.llm.events import (
     tool_progress_event,
 )
 from sentient.llm.jobs import as_kind, detached
+from sentient.llm.locality import usage_source
 from sentient.llm.meter import measure
 from sentient.llm.provider import (
     LLMProvider,
@@ -680,7 +681,8 @@ class Agent:
             think_acc = ""
             tool_calls: list[ToolCall] = []
             try:
-                async for chunk in self._model_stream(role, messages, tools, model, source == "chat" and not unprompted):
+                async for chunk in self._model_stream(role, messages, tools, model, source == "chat" and not unprompted,
+                                                      source):
                     if chunk.thinking:
                         think_acc += chunk.thinking
                         yield ThinkingDelta(text=chunk.thinking, **ev)
@@ -703,11 +705,13 @@ class Agent:
                             result.completion_tokens += chunk.usage.get("completion_tokens", 0)
                             if budget is not None:
                                 budget.add(chunk.model, chunk.usage, getattr(chunk, "cost", None))
-                            with contextlib.suppress(Exception):
-                                await self.store.record_usage(
-                                    chunk.model, chunk.usage.get("prompt_tokens", 0),
-                                    chunk.usage.get("completion_tokens", 0), role=role, source=source,
-                                )
+                            if not getattr(self.llm, "records_usage", False):  # the provider counts its own
+                                with contextlib.suppress(Exception):
+                                    await self.store.record_usage(
+                                        chunk.model, chunk.usage.get("prompt_tokens", 0),
+                                        chunk.usage.get("completion_tokens", 0), role=role, source=source,
+                                        cost_usd=getattr(chunk, "cost", None),
+                                    )
             except ProviderError as exc:
                 if tools and not tools_disabled and not text_acc and not think_acc and is_tool_format_error(exc):
                     # degrade instead of failing the whole turn: answer without tools
@@ -731,7 +735,7 @@ class Agent:
                     result.tool_result_limit = await self.tool_result_limit(role)
                     continue
                 result.error = str(exc)
-                yield Error(message=str(exc), recoverable=False, **ev)
+                yield Error(message=str(exc), recoverable=False, code=getattr(exc, "code", None), **ev)
                 return
             result.thinking += think_acc
 
@@ -863,11 +867,12 @@ class Agent:
         result.messages = messages
 
     async def _model_stream(
-        self, role: str, messages: list[dict], tools: list[dict] | None, model: str | None, attended: bool
+        self, role: str, messages: list[dict], tools: list[dict] | None, model: str | None, attended: bool,
+        source: str = "chat",
     ) -> AsyncIterator[StreamChunk]:
         """``llm.stream``, marked as a reply someone is waiting for only in a chat: Claude Code answers nothing
-        else (ADR 0022)."""
-        with claude_code.attended(attended):
+        else (ADR 0022). Its usage is counted under ``source``."""
+        with claude_code.attended(attended), usage_source(source):
             async for chunk in self.llm.stream(role, messages, tools, model=model):
                 yield chunk
 

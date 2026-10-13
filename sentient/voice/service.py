@@ -80,13 +80,14 @@ class VoiceService(Service):
         v = cfg.voice
         openai = cfg.models.providers.get("openai")
         return (v.stt_provider, v.stt_model, v.stt_device, v.stt_language or cfg.assistant.language,
-                openai.api_base if openai else None)
+                openai.api_base if openai else None, cfg.models.local_only)
 
     def _tts_signature(self) -> tuple:
         cfg = self.app.config
         v = cfg.voice
         openai = cfg.models.providers.get("openai")
-        return (v.tts_provider, v.tts_model, v.kokoro_variant, openai.api_base if openai else None)
+        return (v.tts_provider, v.tts_model, v.kokoro_variant, openai.api_base if openai else None,
+                cfg.models.local_only)
 
     def _wake_stt_signature(self) -> tuple:
         cfg = self.app.config

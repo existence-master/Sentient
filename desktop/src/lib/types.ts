@@ -132,6 +132,12 @@ export interface ModelsConfig {
   /** The user's own saved model setups (built-ins are not stored). */
   presets: Record<string, Omit<ModelPreset, 'name' | 'builtin' | 'available' | 'reason' | 'provider' | 'description' | 'active'>>
   active_preset: string | null
+  /** #148: no request goes to a model outside this computer (switched from the title bar model menu). */
+  local_only?: boolean
+  /** #148: most to spend on paid cloud models per month in US dollars; 0 means no budget. */
+  monthly_budget_usd?: number
+  /** #148: at 100%, `ask` pauses paid cloud models until Keep going, `stop` until next month or a bigger budget. */
+  budget_at_limit?: 'ask' | 'stop'
   /** Experimental: claude-code/<model> answers chats through the user's own Claude Code (ADR 0022). */
   experimental_claude_code?: boolean
   max_tool_rounds: number
@@ -518,10 +524,56 @@ export interface TokenCounts {
 }
 
 export interface UsageReport {
-  totals: TokenCounts
-  by_model: Array<TokenCounts & { model: string; calls: number }>
+  totals: TokenCounts & { cost_usd?: number }
+  by_model: Array<TokenCounts & { model: string; calls: number; cost_usd?: number | null }>
   by_source: Array<TokenCounts & { source: string; calls: number }>
   by_day: Array<TokenCounts & { day: string; calls?: number }>
+}
+
+/** How a model is paid for (#148): free on this computer, on the user's Claude or ChatGPT plan, or per token. */
+export type Billing = 'local' | 'plan' | 'paid'
+
+export interface CostRow extends TokenCounts {
+  calls: number
+  /** US dollars from priced calls; null when none of its calls had a known price (plan, local or unpriced). */
+  cost_usd: number | null
+  /** Paid calls whose price LiteLLM's list doesn't know. */
+  unpriced_calls: number
+}
+
+export interface CostPeriod {
+  key: 'today' | 'week' | 'month'
+  label: string
+  since: string
+  cost_usd: number
+  calls: number
+  tokens: number
+  paid_calls: number
+  unpriced_calls: number
+  plan_calls: number
+  plan_tokens: number
+  local_calls: number
+  local_tokens: number
+  by_model: Array<CostRow & { model: string; billing: Billing }>
+  by_role: Array<CostRow & { role: string; plan_calls: number; local_calls: number }>
+}
+
+export interface BudgetState {
+  monthly_usd: number
+  at_limit: 'ask' | 'stop'
+  spent_usd: number
+  month: string
+  percent: number | null
+  state: 'off' | 'ok' | 'warning' | 'reached'
+  kept_going: boolean
+  message: string | null
+}
+
+/** `GET /api/usage/cost` (#148). */
+export interface CostReport {
+  local_only: boolean
+  periods: CostPeriod[]
+  budget: BudgetState
 }
 
 // ============================================================================ §3 Models & secrets
@@ -839,6 +891,8 @@ export interface ErrorEvent extends TurnScoped {
   type: 'error'
   message: string
   recoverable?: boolean
+  /** #148: `local_only` (Local only kept a cloud model from being used) or `budget_reached` (monthly budget used up). */
+  code?: 'local_only' | 'budget_reached' | string | null
   /** §17: a queued message was dropped by Stop everything (echoes the `client_id` it was sent with). */
   dropped?: boolean
   client_id?: string | null
@@ -957,6 +1011,8 @@ export interface DomainEventMap {
   /** Whether anyone is looking at the window now (#139). */
   'presence.changed': { in_app: boolean }
   'config.updated': { sections: string[] }
+  /** #148: the monthly budget crossed 80% or 100%, or the user chose Keep going. */
+  'budget.updated': BudgetState
   'voice.state': { state: VoiceState }
   // §10-14
   'subagent.updated': Subagent

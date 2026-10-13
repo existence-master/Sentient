@@ -42,6 +42,7 @@ from sentient.llm.connect import ProviderConnections
 from sentient.llm.hardware import HardwareProbe
 from sentient.llm.jobs import ModelJobs, as_kind
 from sentient.llm.provider import LiteLLMProvider, LLMProvider
+from sentient.llm.spending import Spending
 from sentient.memory.dreaming import DreamingService
 from sentient.memory.facts import FactMemory
 from sentient.memory.usermodel import UserModelService
@@ -81,6 +82,10 @@ class SentientApp:
         self.bus = EventBus()
         self.store = Store(db_path, before_migration=self._snapshot_before_migration)
         self.llm: LLMProvider = llm or LiteLLMProvider(self.config)
+        # the cost meter and the monthly budget (#148): the provider checks and counts every call through it
+        self.spending = Spending(self)
+        if isinstance(self.llm, LiteLLMProvider) and self.llm.meter is None:
+            self.llm.meter = self.spending
         # one local model job at a time, chats first (#149): the provider's scheduler, or an idle one for status
         jobs = getattr(self.llm, "jobs", None)
         self.model_jobs: ModelJobs = jobs if isinstance(jobs, ModelJobs) else ModelJobs(lambda: self.config.models)

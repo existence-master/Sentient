@@ -20,6 +20,7 @@
  *   rule_proposal.updated -> refetch that chat's ['rule-proposals'] ("Make this a rule?" cards)
  *   approval_grants.updated -> refetch ['approval-grants'] (Settings > Approvals, #139)
  *   config.updated        -> invalidate config/bootstrap/model presets/ChatGPT sign-in (+ secrets/providers)
+ *   budget.updated        -> invalidate ['usage'] (the cost meter, #148)
  *   voice.state           -> ['voice', 'state']
  *   subagent.updated      -> ['subagents', ...] (+ toast when a background helper finishes)
  *   browser.updated       -> ['browser', 'status'] (+ refetch ['browser', 'profiles']); browser.frame -> useBrowserView (live view)
@@ -222,6 +223,8 @@ export function installDomainEvents(qc: QueryClient): () => void {
       void qc.invalidateQueries({ queryKey: qk.bootstrap })
     })
   )
+
+  offs.push(live.onDomain('budget.updated', () => void qc.invalidateQueries({ queryKey: ['usage'] })))
 
   offs.push(live.onDomain('voice.state', (e) => qc.setQueryData(['voice', 'state'], e.data.state)))
 
