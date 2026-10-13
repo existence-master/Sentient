@@ -121,6 +121,9 @@ class Done(_Event):
     content: str = ""
     message_id: str | None = None
     cancelled: bool = False
+    # set when the turn ended in an error before any reply (the ``error`` event before it has the message to show);
+    # nothing was saved then and ``message_id`` is null
+    error: str | None = None
     # memories this reply had in mind (sentient.memory.sources): what was in its prompt or returned by memory tools
     memory_sources: list[dict[str, Any]] = Field(default_factory=list)
     # pages, emails, files and apps this reply used (sentient.agent.sources, #174)

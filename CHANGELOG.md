@@ -310,6 +310,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **A reply that fails no longer looks stuck:** when the model can't answer (it is unreachable, out of credits or
+  turns the request down), the chat shows the error and goes back to ready at once, instead of showing "replying"
+  and the stop button until your next message.
 - A long web or email result that Sentient saved to read later, and files you downloaded, are now marked as
   outside content when Sentient reads them back, so instructions hidden in them are treated as plain text.
 - Learning about you and skill reviews no longer skip a message or fact saved at the same moment as the last one

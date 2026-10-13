@@ -42,8 +42,15 @@ All carry `session_id` and `turn_id`.
 | `usage` | `model`, `prompt_tokens`, `completion_tokens`, `context_used`, `context_length`, `context_percent`, `context_warning` (context meter, below) |
 | `error` | `message`, `recoverable`, `code?`: `"local_only"` (Local only kept a cloud model from being used) or `"budget_reached"` (this month's model budget is used up; offer **Keep going this month**, section 2 "Cost meter") |
 | `notice` | `message`, `code`, `model?`, `used?`: a plain note about this reply that is not an error, sent at most once per reply. `code: "model_fallback"`: the chat's own model (`model`) can't answer, so `used` (the default) answers (section 2, chat's model) |
-| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `sources: [AnswerSource]` (pages, emails, files and apps it used, section 2; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id` and its `memory_sources` too (none when it was stopped before it started) |
+| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `sources: [AnswerSource]` (pages, emails, files and apps it used, section 2; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id` and its `memory_sources` too (none when it was stopped before it started). `error?`: set when the turn failed (the `error` event just before it has the message to show); nothing was saved then and `message_id` is `null` |
 | `approval.ack` | `approval_id`, `resolved` |
+
+**Every turn ends with exactly one `done`** (#334). That holds on `/ws`, on `POST /api/chat` and in the messaging
+apps: a finished reply, a stopped one (`cancelled: true`) and a failed one alike. A turn that fails sends `error` with
+`recoverable: false`, then `done` with `error` set, `content: ""` and `message_id: null`: nothing of that reply is saved. A
+`recoverable: true` error is only a note: the turn goes on and its `done` comes later. A window may treat a
+`recoverable: false` error as the end of the reply already and need not wait for the `done`. A steer that arrives
+after the last round starts a new turn with its own `turn_id` and its own `done` (section 10).
 
 **Model errors** (#280). When a provider turns a request down for a known reason, `error.message` (and a task's
 `error`, section 4) is one plain sentence that says what to do, e.g. `OpenRouter's free models have reached today's

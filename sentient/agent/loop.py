@@ -1491,7 +1491,11 @@ class Agent:
         leftover = release()
 
         try:  # the turn counts as busy until here, also when the caller stops reading at Done
-            if not (result.error and not result.text):
+            if result.error and not result.text:
+                # the reply failed before it said anything: nothing is saved, but every turn still ends with one
+                # done (docs/API.md section 1, #334), so the window and the messaging apps know it is over
+                yield Done(content="", error=result.error, **ev)
+            else:
                 memory_sources = await sources.resolve(self.store)
                 message_id = await self.store.add_message(
                     session_id, "assistant", result.text, thinking=result.thinking or None, memory_sources=memory_sources,
