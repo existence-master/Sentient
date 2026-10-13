@@ -302,6 +302,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **The approval card no longer calls an email "posting publicly":** a send like `send_email` is now named from
+  the tool's name and declared risk ("Sentient wants to send an email"), and the card's word guessing never reads
+  the arguments' content, so an email body mentioning "post", "publish" or "tweet" cannot be misread.
 - A long web or email result that Sentient saved to read later, and files you downloaded, are now marked as
   outside content when Sentient reads them back, so instructions hidden in them are treated as plain text.
 - Learning about you and skill reviews no longer skip a message or fact saved at the same moment as the last one
