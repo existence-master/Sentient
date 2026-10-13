@@ -6,6 +6,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Ask about selected text, in any app:** select text anywhere (an email, a web page, a document) and press
+  Ctrl+Alt+Shift+A (Command+Option+Shift+A on a Mac). A small window opens by your pointer and shows exactly what
+  Sentient copied, with Explain, Summarize, Translate and Reply, or ask your own question. The answer streams in, and
+  **Copy** or **Replace selection** puts it back where you were writing. Nothing is read until you press the
+  shortcut, your clipboard is put back right away, a password box is never copied, and nothing goes to Sentient
+  until you pick an action. The text counts as outside content, so Sentient never follows instructions in it and
+  asks before sending anything. Turn it off or change the shortcut in Settings > General.
 - **Approve from your phone, and choose how far a yes goes:** when a task needs your OK and you're away from the
   app, the request goes to your paired Telegram, Discord or WhatsApp chat with buttons (or reply with once, task,
   hour, always or no). Only the chat it was sent to can answer it, and a request that waits too long (4 hours by
