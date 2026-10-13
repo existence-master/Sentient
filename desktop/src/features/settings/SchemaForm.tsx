@@ -46,6 +46,10 @@ export const LABELS: Record<string, FieldLabel> = {
   'models.battery_idle_s': { label: 'On battery, upkeep waits after you chat', unit: 's' },
   'models.battery_upkeep_every_s': { label: 'On battery, upkeep runs at most every', unit: 's' },
   'models.battery_max_wait_s': { label: 'Upkeep never waits longer than', unit: 's' },
+  // models (#148)
+  'models.local_only': { label: 'Local only' },
+  'models.monthly_budget_usd': { label: 'Monthly budget', unit: 'USD' },
+  'models.budget_at_limit': { label: 'When the budget is used up', options: { ask: 'Ask', stop: 'Stop' } },
   // tasks
   'backups.schedule': { label: 'Back up automatically' },
   'backups.keep': { label: 'Automatic backups to keep' },

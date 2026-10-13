@@ -277,6 +277,25 @@ def is_screen_capture(name: str) -> bool:
     return str(name or "").replace("\\", "/").lstrip("/").startswith(f"{SCREEN_FOLDER}/")
 
 
+SELECTION_FOLDER = "selections"  # files/selections: text the user selected in another app (Ask about selected text)
+SELECTION_SOURCE = "another app"
+
+
+def is_selection(name: str) -> bool:
+    """True for a Files API name under ``selections/``: text the user selected in another app and asked about. Someone
+    else may have written it (an email, a web page), so it reaches the model marked and marks the chat (ADR 0018)."""
+    return str(name or "").replace("\\", "/").lstrip("/").startswith(f"{SELECTION_FOLDER}/")
+
+
+def attachment_source(name: str) -> str:
+    """The outside source an attachment brings in (``SCREEN_SOURCE``, ``SELECTION_SOURCE``), else ""."""
+    if is_screen_capture(name):
+        return SCREEN_SOURCE
+    if is_selection(name):
+        return SELECTION_SOURCE
+    return ""
+
+
 def untrusted_reason(source: str) -> str:
     """Why a chat asks (shown on the approval card)."""
     return f"Sentient read content from {source} in this chat, so it checks with you before sending anything."

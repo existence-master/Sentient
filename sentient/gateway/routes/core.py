@@ -23,8 +23,9 @@ from sentient.config.schema import SentientConfig
 from sentient.gateway.auth import require_token
 from sentient.gateway.deps import get_core
 from sentient.llm import availability
+from sentient.llm.spending import BudgetError
 from sentient.memory.personas import render_persona
-from sentient.tools.rules import SCREEN_FOLDER
+from sentient.tools.rules import SCREEN_FOLDER, SELECTION_FOLDER
 
 open_router = APIRouter(tags=["core"])
 router = APIRouter(tags=["core"])
@@ -449,10 +450,13 @@ def resolve_file(name: str) -> Path:
 
 @router.post("/api/files", dependencies=_auth)
 async def upload_file(
-    request: Request, file: UploadFile = File(...), source: Literal["upload", "screen"] = Form("upload")
+    request: Request,
+    file: UploadFile = File(...),
+    source: Literal["upload", "screen", "selection"] = Form("upload"),
 ):
-    # what the user shared from their screen goes to screens/ and marks the chat it is sent in (ADR 0018)
-    folder = uploads_dir(SCREEN_FOLDER if source == "screen" else "uploads")
+    # what the user shared from their screen (screens/) or selected in another app (selections/) marks the chat it is
+    # sent in (ADR 0018)
+    folder = uploads_dir({"screen": SCREEN_FOLDER, "selection": SELECTION_FOLDER}.get(source, "uploads"))
     name = _safe_name(file.filename or "upload")
     target = folder / name
     stem, suffix = target.stem, target.suffix
@@ -521,11 +525,12 @@ async def usage(request: Request, days: int = 30):
 
     async def grouped(col: str) -> list[dict[str, Any]]:
         rows = await s.store.fetchall(
-            f"SELECT {col} AS k, SUM(prompt_tokens) AS p, SUM(completion_tokens) AS c, COUNT(*) AS n"
-            f" FROM usage WHERE created_at >= ? GROUP BY {col} ORDER BY p + c DESC",
+            f"SELECT {col} AS k, SUM(prompt_tokens) AS p, SUM(completion_tokens) AS c, COUNT(*) AS n,"
+            f" SUM(cost_usd) AS usd FROM usage WHERE created_at >= ? GROUP BY {col} ORDER BY p + c DESC",
             (since,),
         )
-        return [{"key": r["k"], "prompt_tokens": r["p"] or 0, "completion_tokens": r["c"] or 0, "calls": r["n"]} for r in rows]
+        return [{"key": r["k"], "prompt_tokens": r["p"] or 0, "completion_tokens": r["c"] or 0, "calls": r["n"],
+                 "cost_usd": r["usd"]} for r in rows]
 
     by_model = [{"model": x.pop("key"), **x} for x in await grouped("model")]
     by_source = [{"source": x.pop("key"), **x} for x in await grouped("source")]
@@ -535,8 +540,24 @@ async def usage(request: Request, days: int = 30):
         "totals": {
             "prompt_tokens": sum(m["prompt_tokens"] for m in by_model),
             "completion_tokens": sum(m["completion_tokens"] for m in by_model),
+            "cost_usd": round(sum(m["cost_usd"] or 0.0 for m in by_model), 6),
         },
         "by_model": by_model,
         "by_source": by_source,
         "by_day": by_day,
     }
+
+
+@router.get("/api/usage/cost", dependencies=_auth)
+async def usage_cost(request: Request):
+    """The cost meter (#148): today, this week and this month per model and role, and the monthly budget."""
+    return await get_core(request).spending.report()
+
+
+@router.post("/api/usage/budget/keep-going", dependencies=_auth)
+async def budget_keep_going(request: Request):
+    """Allow paid cloud models again until the month ends, when the budget is set to ask."""
+    try:
+        return await get_core(request).spending.keep_going()
+    except BudgetError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc

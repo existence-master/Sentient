@@ -40,6 +40,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from sentient import paths
+from sentient.agent import findings
 from sentient.agent import grants as grant_rules
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import WAIT_S, pending_asks, standing_text
@@ -67,6 +68,7 @@ from sentient.llm.events import (
     tool_progress_event,
 )
 from sentient.llm.jobs import as_kind, detached
+from sentient.llm.locality import usage_source
 from sentient.llm.meter import measure
 from sentient.llm.provider import (
     LLMProvider,
@@ -96,15 +98,17 @@ from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import (
     PURCHASE_LABEL,
-    SCREEN_SOURCE,
+    SELECTION_SOURCE,
     address_carries_data,
     address_host,
     approval_hold_message,
     approval_question,
+    attachment_source,
     brings_untrusted,
     call_address,
     is_purchase,
     is_screen_capture,
+    is_selection,
     never_message,
     outside_source,
     rule_label,
@@ -133,6 +137,9 @@ EMPTY_ANSWER_NUDGE = (
     "You have not replied yet. If the request still needs a tool call, make it now; "
     "otherwise answer the user now, based on the tool results above."
 )
+# after tool results (#322): short and direct; still empty after it, the loop answers from the results (agent/findings.py)
+FINAL_ANSWER_NUDGE = "You have not replied yet. Give your final answer now, based on what you found."
+NUDGES = (EMPTY_ANSWER_NUDGE, FINAL_ANSWER_NUDGE)
 USER_MODEL_TIMEOUT_S = 2.0
 # longest a reply waits for the rule check of its message (chat_rules); a slower check finishes in the background,
 # and until it does the tools it is weighing ask first in that chat (one with Claude Code stops instead, ADR 0022)
@@ -324,6 +331,11 @@ class LoopResult:
     needs_ok: dict | None = None
     # the longest tool result the model read in this run (``Agent.tool_result_limit``); None before the loop starts
     tool_result_limit: int | None = None
+    # [(tool name, plain label, result)] of the calls that worked, for an answer built from them when the model
+    # gives none (#322); kept across ``run_loop`` calls that share this result
+    findings: list[tuple[str, str, Any]] = field(default_factory=list)
+    # True when ``text`` was built from ``findings`` because the model answered nothing (#322)
+    from_findings: bool = False
 
 
 def _hosts(raw: Any) -> set[str]:
@@ -659,6 +671,7 @@ class Agent:
         role's own model for the rest of the run, and a ``Notice`` says so once.
         """
         ev = ev or {}
+        result.from_findings = False
         unprompted = is_unprompted(getattr(ctx, "origin", None)) or is_unprompted(source)
         if unprompted and not is_unprompted(getattr(ctx, "origin", None)):
             ctx.origin = str(source).strip().lower()  # tools this run starts (a subagent) must see it as unprompted too
@@ -690,7 +703,8 @@ class Agent:
             think_acc = ""
             tool_calls: list[ToolCall] = []
             try:
-                async for chunk in self._model_stream(role, messages, tools, model, source == "chat" and not unprompted):
+                async for chunk in self._model_stream(role, messages, tools, model, source == "chat" and not unprompted,
+                                                      source):
                     if chunk.thinking:
                         think_acc += chunk.thinking
                         yield ThinkingDelta(text=chunk.thinking, **ev)
@@ -713,11 +727,13 @@ class Agent:
                             result.completion_tokens += chunk.usage.get("completion_tokens", 0)
                             if budget is not None:
                                 budget.add(chunk.model, chunk.usage, getattr(chunk, "cost", None))
-                            with contextlib.suppress(Exception):
-                                await self.store.record_usage(
-                                    chunk.model, chunk.usage.get("prompt_tokens", 0),
-                                    chunk.usage.get("completion_tokens", 0), role=role, source=source,
-                                )
+                            if not getattr(self.llm, "records_usage", False):  # the provider counts its own
+                                with contextlib.suppress(Exception):
+                                    await self.store.record_usage(
+                                        chunk.model, chunk.usage.get("prompt_tokens", 0),
+                                        chunk.usage.get("completion_tokens", 0), role=role, source=source,
+                                        cost_usd=getattr(chunk, "cost", None),
+                                    )
             except ProviderError as exc:
                 if tools and not tools_disabled and not text_acc and not think_acc and is_tool_format_error(exc):
                     # degrade instead of failing the whole turn: answer without tools
@@ -741,7 +757,7 @@ class Agent:
                     result.tool_result_limit = await self.tool_result_limit(role)
                     continue
                 result.error = str(exc)
-                yield Error(message=str(exc), recoverable=False, **ev)
+                yield Error(message=str(exc), recoverable=False, code=getattr(exc, "code", None), **ev)
                 return
             result.thinking += think_acc
 
@@ -762,10 +778,18 @@ class Agent:
                 if not text_acc.strip() and not empty_nudged and round_no < rounds:
                     # small local models sometimes end a round with only hidden thinking: ask once for a reply
                     empty_nudged = True
-                    messages.append({"role": "user", "content": EMPTY_ANSWER_NUDGE})
+                    nudge = FINAL_ANSWER_NUDGE if result.findings else EMPTY_ANSWER_NUDGE
+                    log.info("%s: the model gave an empty answer; asking once more", source)
+                    messages.append({"role": "user", "content": nudge})
                     continue
-                if empty_nudged and messages and messages[-1].get("content") == EMPTY_ANSWER_NUDGE:
+                if empty_nudged and messages and messages[-1].get("content") in NUDGES:
                     messages.pop()  # the nudge is scaffolding, not part of the conversation
+                if not text_acc.strip() and result.findings:
+                    # still nothing (real qwen3:8b after a memory look-up, #322): answer from what the tools returned
+                    text_acc = findings.summarize(result.findings)
+                    result.from_findings = True
+                    log.info("%s: the model gave no answer after its tool calls; answering from the results", source)
+                    yield TextDelta(text=text_acc, **ev)
                 result.text = text_acc
                 result.messages = messages
                 return
@@ -836,6 +860,9 @@ class Agent:
                 for p in group:
                     async for e in self._record(p, messages, persist, result, ev, ctx):
                         yield e
+                    res, is_error, _ms = p.outcome or (None, True, 0)
+                    if p.tool is not None and p.preset is None and not is_error and not _error_text(res):
+                        result.findings.append((p.tc.name, untrusted_source(p.tool, self.registry), res))
             ruled = next((p for p in plans if p.rule_stop), None)
             if ruled is not None:  # an "ask" rule and nobody to ask: end the run and say why
                 assert ruled.preset is not None
@@ -873,11 +900,12 @@ class Agent:
         result.messages = messages
 
     async def _model_stream(
-        self, role: str, messages: list[dict], tools: list[dict] | None, model: str | None, attended: bool
+        self, role: str, messages: list[dict], tools: list[dict] | None, model: str | None, attended: bool,
+        source: str = "chat",
     ) -> AsyncIterator[StreamChunk]:
         """``llm.stream``, marked as a reply someone is waiting for only in a chat: Claude Code answers nothing
-        else (ADR 0022)."""
-        with claude_code.attended(attended):
+        else (ADR 0022). Its usage is counted under ``source``."""
+        with claude_code.attended(attended), usage_source(source):
             async for chunk in self.llm.stream(role, messages, tools, model=model):
                 yield chunk
 
@@ -1227,6 +1255,11 @@ class Agent:
                 continue
             try:
                 body = await asyncio.to_thread(extract_text, p, MAX_ATTACHMENT_CHARS)
+                if is_selection(name):  # text the user selected in another app: someone else may have written it
+                    if self.config.chat.mark_outside_content:
+                        body = mark_outside(body, SELECTION_SOURCE)
+                    parts_text.append(f"\n--- Text the user selected in another app ---\n{body}\n--- end of selected text ---")
+                    continue
                 parts_text.append(f"\n--- Attached file: {name} ---\n{body}\n--- end of {name} ---")
             except Exception as exc:
                 parts_text.append(f"\n[Attachment {name} ({p.suffix}) could not be read: {exc}. It is saved as files/{name}.]")
@@ -1328,9 +1361,11 @@ class Agent:
             ctx.incognito = incognito
             # outside content read earlier in this chat still counts until a new chat starts (ADR 0018)
             ctx.untrusted = await self._chat_untrusted(session_id, session)
-            if not ctx.untrusted and any(is_screen_capture(a) for a in attachments):
-                # a shared window or region can show text someone else wrote: it marks the chat from the start
-                ctx.untrusted = SCREEN_SOURCE
+            brought = next((src for a in attachments if (src := attachment_source(a))), "")
+            if not ctx.untrusted and brought:
+                # a shared window or region, or text selected in another app, can hold text someone else wrote: it
+                # marks the chat from the start
+                ctx.untrusted = brought
                 await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (ctx.untrusted, session_id))
             marked = bool(ctx.untrusted)
             ctx.visited = _hosts((session or {}).get("visited_hosts"))

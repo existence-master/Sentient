@@ -359,7 +359,8 @@ def test_script_helpers_and_interval_schedule():
 # ---------------------------------------------------------------------------- retry
 async def test_retry_failed_run_continues_from_checkpoint(make_app):
     llm = FakeProvider(
-        replies=[[tool_call("file_write", name="part1.txt", content="one")], "", "", "Finished part1.txt."],  # empty twice: the loop nudges once
+        # empty twice after a call that found nothing: the loop nudges once, and with no results to list the run fails
+        replies=[[tool_call("file_read", name="part1.txt")], "", "", "part1.txt is not there yet."],
         json_replies=[dict(RESULT)],
     )
     app = await make_app(llm)
@@ -382,8 +383,8 @@ async def test_retry_failed_run_continues_from_checkpoint(make_app):
     assert task["status"] == "completed" and retry["status"] == "completed" and retry["retry_of"] == failed["run_id"]
     messages = stream_calls(llm)[-1]["messages"]
     assert messages[-1]["content"].startswith(RETRY_NOTE.split("{error}")[0])
-    assert any(m["role"] == "tool" and m.get("name") == "file_write" for m in messages)
-    assert len(stream_calls(llm)) == 4  # file_write was not repeated (write, empty, empty after nudge, retry)
+    assert any(m["role"] == "tool" and m.get("name") == "file_read" for m in messages)
+    assert len(stream_calls(llm)) == 4  # file_read was not repeated (read, empty, empty after nudge, retry)
     contents = [u["message"].get("content") for u in retry["progress_updates"]]
     assert "Retrying the failed run, continuing from where it stopped." in contents
 

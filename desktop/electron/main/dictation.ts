@@ -9,11 +9,12 @@
  * Esc to cancel), and sends the audio to the engine, where speech is recognized on this computer. The shell then
  * types the text with the clipboard and the paste keys, and puts the old clipboard back.
  */
-import { BrowserWindow, clipboard, ClipboardItem, globalShortcut, screen, shell, systemPreferences } from 'electron'
+import { BrowserWindow, clipboard, globalShortcut, screen, shell, systemPreferences } from 'electron'
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import type { DictationCommand, DictationEvent, DictationShellSettings, DictationStatus } from '../../src/types/bridge'
 import { CH } from './channels'
+import { restoreClipboard, saveClipboard } from './clipboard-keep'
 import {
   FIRST_REPEAT_MS,
   MAX_RECORDING_MS,
@@ -342,7 +343,7 @@ export class DictationController {
   // ---------------------------------------------------------------- typing into the focused app
   /** Type `text` where the cursor is: clipboard, paste keys, then the old clipboard back. Never into a password box. */
   private async insert(text: string): Promise<void> {
-    const saved = await this.saveClipboard()
+    const saved = await saveClipboard()
     try {
       await clipboard.writeText(text)
     } catch (err) {
@@ -359,11 +360,11 @@ export class DictationController {
       outcome = await this.pressPaste()
     }
     if (outcome === 'pasted') {
-      setTimeout(() => void this.restoreClipboard(saved, text), RESTORE_CLIPBOARD_MS)
+      setTimeout(() => void restoreClipboard(saved, text), RESTORE_CLIPBOARD_MS)
       return
     }
     if (outcome === 'password') {
-      await this.restoreClipboard(saved, text)
+      await restoreClipboard(saved, text)
       this.host.notify('Nothing was typed', 'A password box had focus, so Sentient left it alone.')
       return
     }
@@ -394,37 +395,5 @@ export class DictationController {
       })
     }
     return run(0)
-  }
-
-  /** Everything on the clipboard (every format of every item), or null when it can't be read. */
-  private async saveClipboard(): Promise<ClipboardItem[] | null> {
-    try {
-      const saved: ClipboardItem[] = []
-      for (const item of await clipboard.read()) {
-        const entries: Record<string, Blob | string | Electron.ClipboardBookmark> = {}
-        for (const type of item.types) {
-          try {
-            entries[type] = await item.getType(type)
-          } catch {
-            /* a format that can't be read back */
-          }
-        }
-        if (Object.keys(entries).length) saved.push(new ClipboardItem(entries))
-      }
-      return saved
-    } catch {
-      return null
-    }
-  }
-
-  /** Put back what was copied before, unless something new was copied meanwhile. */
-  private async restoreClipboard(saved: ClipboardItem[] | null, ours: string): Promise<void> {
-    try {
-      if (saved === null || (await clipboard.readText()) !== ours) return
-      if (saved.length) await clipboard.write(saved)
-      else clipboard.clear()
-    } catch (err) {
-      console.warn(`[shell] dictation: could not restore the clipboard: ${String(err)}`)
-    }
   }
 }

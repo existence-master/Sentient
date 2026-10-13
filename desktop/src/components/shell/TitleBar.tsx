@@ -1,9 +1,9 @@
-import { IconChevronDown, IconLayoutSidebar, IconSearch } from '@tabler/icons-react'
+import { IconChevronDown, IconLayoutSidebar, IconLock, IconSearch } from '@tabler/icons-react'
 import { useNavigate } from 'react-router'
 import { Logo } from '@/components/brand/Logo'
 import { IconButton, Kbd, StatusDot, Tooltip, type Tone } from '@/components/ui'
 import { ModelSwitcher } from '@/features/models/ModelSwitcher'
-import { useBootstrap } from '@/hooks/core'
+import { useBootstrap, useConfig } from '@/hooks/core'
 import { useModelPresets } from '@/hooks/models'
 import { getBridge } from '@/lib/bridge'
 import { modelShortName } from '@/lib/models'
@@ -31,10 +31,11 @@ export function StatusPill({ className }: { className?: string }) {
   const navigate = useNavigate()
   const primary = data?.models.primary
   const preset = presets.data?.modified ? null : presets.data?.active
+  const localOnly = !!useConfig().data?.models.local_only
 
   let tone: Tone = 'success'
   let label = modelShortName(primary) || 'Ready'
-  let tip = `Engine ready${preset ? ` · ${preset}` : ''} · chatting with ${primary ?? 'unknown'}. Click to switch models.`
+  let tip = `Engine ready${preset ? ` · ${preset}` : ''}${localOnly ? ' · Local only' : ''} · chatting with ${primary ?? 'unknown'}. Click to switch models.`
   const ready = backend.state === 'ready'
   if (!ready) {
     tone = backend.state === 'failed' ? 'danger' : 'warning'
@@ -56,6 +57,7 @@ export function StatusPill({ className }: { className?: string }) {
       )}
     >
       <StatusDot tone={tone} pulse={tone === 'warning'} />
+      {ready && localOnly && <IconLock size={12} aria-label="Local only" className="-mx-0.5 shrink-0 text-fg-subtle" />}
       {ready && preset && <span className="shrink-0 text-fg-subtle">{preset}</span>}
       <span className="truncate font-medium">{label}</span>
       {ready && <IconChevronDown size={12} className="-ml-0.5 shrink-0 text-fg-subtle" />}

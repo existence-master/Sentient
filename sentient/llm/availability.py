@@ -17,6 +17,7 @@ import httpx
 from sentient.config.schema import SentientConfig
 from sentient.llm import chatgpt, claude_code
 from sentient.llm.checkup import LABELS, LOCAL, OLLAMA
+from sentient.llm.locality import local_only_message, runs_here, short_name
 from sentient.llm.presets import _installed, _ollama_base, key_set
 from sentient.llm.provider import CLAUDE_CODE, provider_config
 
@@ -40,14 +41,7 @@ def model_id(value: str | None) -> str | None:
 
 def label(model: str | None) -> str:
     """A short name people recognise: ``qwen3:8b``, ``Claude Sonnet``, ``gpt-5-mini``."""
-    if not model:
-        return "the default model"
-    prefix, _, name = model.partition("/")
-    if not name:
-        return model
-    if prefix == CLAUDE_CODE and name in {"sonnet", "opus", "haiku", "fable"}:
-        return f"Claude {name.capitalize()}"
-    return name
+    return short_name(model) if model else "the default model"
 
 
 async def _installed_models(base: str) -> list[str] | None:
@@ -75,6 +69,8 @@ async def unavailable(config: SentientConfig, model: str) -> str | None:
     prefix, _, name = model.partition("/")
     if not name:
         return None
+    if config.models.local_only and not runs_here(config, model):  # #148: never sent, the provider refuses it too
+        return local_only_message(model)
     if prefix == CLAUDE_CODE:
         return claude_code.refusal(config, "primary")
     if prefix in OLLAMA:

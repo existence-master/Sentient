@@ -59,8 +59,14 @@ export default defineConfig({
       outDir: 'out/renderer',
       emptyOutDir: true,
       chunkSizeWarningLimit: 2000,
-      // pill.html: the small listening window for push to talk and dictation (#169)
-      rollupOptions: { input: { index: resolve(__dirname, 'index.html'), pill: resolve(__dirname, 'pill.html') } }
+      // pill.html: the small listening window for push to talk and dictation (#169); ask.html: the ask window (#173)
+      rollupOptions: {
+        input: {
+          index: resolve(__dirname, 'index.html'),
+          pill: resolve(__dirname, 'pill.html'),
+          ask: resolve(__dirname, 'ask.html')
+        }
+      }
     }
   }
 })
