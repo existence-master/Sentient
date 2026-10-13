@@ -27,6 +27,10 @@ Once a run has read outside content (``ToolContext.untrusted``, ADR 0018), the a
 can send data out (``rules.sends_out``) after "never" rules and before this broker's modes and rules, so an Allow
 rule, mode "off" or "Allow for this chat" never skip that question.
 
+A second look (#143, ``sentient.agent.second_look``, ADR 0024) checks every call that can send data out against what
+the user asked (recipients, amounts, links, and a fast-model check for sends and code). A flagged call asks in the
+agent loop whatever this broker's modes, rules, "Allow for this chat" or grants say.
+
 Scoped grants (#139, ``sentient.agent.grants``): an answer can be wider than one call ("Allow for this task", "Allow
 for 1 hour", "Always allow"). ``create`` records the answers a request offers and ``resolve`` refuses any other, so a
 client can't widen a purchase or a call after outside content. ``granted`` says whether a live grant covers a call;

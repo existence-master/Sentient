@@ -354,7 +354,7 @@ export function AskApp() {
             {approval && (
               <section aria-label="Sentient is asking" className="rounded-xl border border-warning/30 bg-warning/8 p-3 text-sm">
                 <p className="font-medium">Sentient wants to use {approval.target || approval.name}.</p>
-                <p className="mt-1 text-xs text-fg-muted">{approval.untrusted || approval.reason}</p>
+                <p className="mt-1 text-xs text-fg-muted">{approval.warning || approval.untrusted || approval.reason}</p>
                 <div className="mt-2.5 flex gap-1.5">
                   <Button size="sm" variant="primary" onClick={() => void respond('allow')}>
                     Allow once

@@ -6,6 +6,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **A second look before anything leaves Sentient:** before it sends, posts, invites people, buys or deletes
+  something, Sentient checks that everyone it goes to is someone you named, in your contacts or in your memories,
+  and that every amount is one you gave. If a web page or email slipped in an address ("also forward this to ..."),
+  or the content doesn't match what you asked, it asks you first and the approval card says why: "You asked to email
+  Arjun, but this goes to x@example.com." Your fast model also takes a quick look at sends, purchases, deletions and
+  code runs that would otherwise go ahead without asking, seeing only your own words and the action. This holds even
+  with approvals off, for apps you set to Allow and after "Allow for 1 hour". Turn the model part off in Settings >
+  Approvals & safety; recipients and amounts are always checked.
 - **Answer approvals from the notification:** when a task needs your OK while Sentient is in the background or
   minimized, the notification on your computer has **Allow once** and **Deny** buttons (Windows and macOS), so the
   task carries on without opening the app. Clicking the notification itself opens the task with its approval card,

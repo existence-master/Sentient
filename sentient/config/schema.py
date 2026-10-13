@@ -339,6 +339,12 @@ class ApprovalsConfig(BaseModel):
         description="A task waiting for your approval stops if nobody answers within this many minutes. "
         "A late answer can't approve it.",
     )
+    second_look_model: bool = Field(
+        True,
+        description="Before Sentient sends, posts, buys, deletes or runs code without asking you, or after it read an "
+        "email or web page, the fast model double-checks the action against what you asked. If it doesn't match, "
+        "Sentient asks you first and says why. Recipients and amounts are always checked, even with this off.",
+    )
     rules: dict[str, Literal["allow", "ask", "never"]] = Field(
         default_factory=dict,
         description="Lasting rules for apps and tools. The key is a tool name (gmail_send_email) or an app id "
