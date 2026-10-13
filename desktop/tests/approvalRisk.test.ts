@@ -111,6 +111,16 @@ test('a namespaced mailer draft tool is not misread as sending an email', () => 
   assert.equal(w.label, 'Changes things')
 })
 
+test('a reply-draft tool is not misread as sending an email', () => {
+  const w = approvalRisk({
+    risk: 'write',
+    name: 'mcp_mailer_create_reply_draft',
+    reason: 'Create a reply draft',
+    arguments: {}
+  })
+  assert.equal(w.label, 'Changes things')
+})
+
 test('a write-risk MCP mail delete reads as deletion', () => {
   const w = approvalRisk({
     risk: 'write',

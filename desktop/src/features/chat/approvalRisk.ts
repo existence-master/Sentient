@@ -94,10 +94,12 @@ export function approvalRisk(approval: {
 /**
  * An email tool whose name says it sends: send_email, gmail_send, mcp_mailer_send_email.
  * `mailer` stays an email-name cue via isEmailTool but is NOT a send verb — otherwise
- * mcp_mailer_create_draft would read as sending an email. Draft creators keep the
- * generic wording.
+ * mcp_mailer_create_draft would read as sending an email. Likewise a draft cue
+ * (mcp_mailer_create_reply_draft) vetoes the send reading: creating a draft is not
+ * sending. Draft creators keep the generic wording.
  */
 function isEmailSendingTool(name: string): boolean {
   const tokens = name.toLowerCase().split(/[^a-z0-9]+/)
+  if (tokens.some((t) => /^(draft|drafts)$/.test(t))) return false
   return isEmailTool(name) && tokens.some((t) => /^(send|sends|sending|sent|reply|forward)$/.test(t))
 }
