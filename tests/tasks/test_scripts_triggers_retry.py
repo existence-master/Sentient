@@ -295,6 +295,50 @@ async def test_planner_produces_script_job(make_app):
     assert "approval_needed" in _events(await app.notifications.list(), task["task_id"])
 
 
+PAGE_CODE = (
+    "from sentient_tools import tools, result\n"
+    "page = tools.web_fetch(url='https://example.org/events')\n"
+    "result(page.get('content', ''))\n"
+)
+
+
+PRICE_CODE = (
+    "from sentient_tools import tools, result\n"
+    "page = tools.web_fetch(url='https://example.org/item')\n"
+    "price = [line for line in page.get('content', '').splitlines() if 'Price:' in line]\n"
+    "result(price[0] if price else None)\n"
+)
+SEARCH_CODE = "from sentient_tools import tools, result\nresult(tools.internet_search(query='rust 2.0 release'))\n"
+
+
+@pytest.mark.parametrize(
+    ("request_text", "code", "condition"),
+    [
+        # the default for a page: only a change that matters is told
+        ("Watch this page and tell me about new events: https://example.org/events", PAGE_CODE, "noteworthy"),
+        # the user wants every change: the planner's "changed" is kept, even for a whole page
+        ("Tell me whenever anything at all on this page changes: https://example.org/events", PAGE_CODE, "changed"),
+        # one value extracted from the page
+        ("Tell me when the price changes on https://example.org/item", PRICE_CODE, "changed"),
+        # a search, not a page read
+        ("Tell me when search results for the Rust 2.0 release change", SEARCH_CODE, "changed"),
+    ],
+)
+async def test_planner_watch_keeps_the_condition_it_planned(make_app, request_text, code, condition):
+    watch = {**PLAN_SCRIPT, "name": "Watch", "description": request_text,
+             "script": {"code": code, "condition": condition, "then": "notify"}}
+    llm = FakeProvider(json_replies=[REFINE_ONCE, watch])
+    app = await make_app(llm)
+    task = await app.tasks.create_task(request_text)
+    await app.tasks.drain()
+    task = await app.tasks.get(task["task_id"])
+    assert task["status"] == "approval_pending" and task["task_type"] == "script"
+    assert task["script"]["condition"] == condition and task["script"]["code"] == code
+    prompt = json_calls(llm, "planner")[1]["messages"][0]["content"]
+    assert "This is the default for watching a page, a feed or the news" in prompt
+    assert 'If the user wants to hear about any change at all, use "changed".' in prompt
+
+
 async def test_planner_script_with_invalid_code_is_fixed_or_falls_back(make_app):
     bad = {**PLAN_SCRIPT, "script": {**PLAN_SCRIPT["script"], "code": "def broken(:\n"}}
     llm = FakeProvider(json_replies=[REFINE_ONCE, bad, PLAN_SCRIPT, REFINE_ONCE, bad, bad])
