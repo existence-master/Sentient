@@ -148,6 +148,7 @@ class EvolutionService(Service):
     async def start(self) -> None:
         app = self.app
         app.skills.store = app.store
+        await app.store.ensure_column("evolution_reviews", "activity_mark", "TEXT")  # #297
         if app.memory is not None:
             app.memory.bus = app.bus
         with contextlib.suppress(Exception):
@@ -244,19 +245,21 @@ class EvolutionService(Service):
         idle = cfg.review_idle_minutes if idle_minutes is None else idle_minutes
         cutoff = (now - timedelta(minutes=idle)).isoformat()
         lookback = (now - timedelta(days=REVIEW_LOOKBACK_DAYS)).isoformat()
+        # "<=": a message saved in the same clock tick as the last one reviewed still counts (#297, #236)
         rows = await self.app.store.fetchall(
-            "SELECT s.id, s.updated_at, r.activity_at FROM sessions s"
+            "SELECT s.id, s.updated_at, r.activity_at, r.activity_mark FROM sessions s"
             " LEFT JOIN evolution_reviews r ON r.target = 'session:' || s.id"
-            " WHERE s.updated_at <= ? AND s.updated_at >= ? AND (r.activity_at IS NULL OR r.activity_at < s.updated_at)"
+            " WHERE s.updated_at <= ? AND s.updated_at >= ? AND (r.activity_at IS NULL OR r.activity_at <= s.updated_at)"
             " AND s.incognito = 0"  # skills are never learned from an incognito chat (#154)
             " ORDER BY s.updated_at",
             (cutoff, lookback),
         )
         due = []
         for r in rows:
+            after, params = after_watermark(r["activity_mark"] or r["activity_at"] or "", "created_at", "id")
             n = await self.app.store.fetchone(
-                "SELECT COUNT(*) AS n FROM messages WHERE session_id = ? AND role = 'tool' AND created_at > ?",
-                (r["id"], r["activity_at"] or ""),
+                f"SELECT COUNT(*) AS n FROM messages WHERE session_id = ? AND role = 'tool' AND {after}",
+                (r["id"], *params),
             )
             if n and int(n["n"]) >= cfg.min_tool_calls_for_review:
                 due.append(r["id"])
@@ -328,12 +331,16 @@ class EvolutionService(Service):
             text = text[:half] + "\n[... middle of the transcript omitted ...]\n" + text[-half:]
         return text, tool_calls
 
-    async def _record_review(self, target: str, activity_at: str | None, tool_calls: int, decision: str, skill: str | None) -> None:
+    async def _record_review(
+        self, target: str, activity_at: str | None, tool_calls: int, decision: str, skill: str | None,
+        mark: str | None = None,
+    ) -> None:
         await self.app.store.execute(
-            "INSERT INTO evolution_reviews(target, reviewed_at, activity_at, tool_calls, decision, skill) VALUES(?,?,?,?,?,?)"
-            " ON CONFLICT(target) DO UPDATE SET reviewed_at = excluded.reviewed_at, activity_at = excluded.activity_at,"
+            "INSERT INTO evolution_reviews(target, reviewed_at, activity_at, activity_mark, tool_calls, decision, skill)"
+            " VALUES(?,?,?,?,?,?,?) ON CONFLICT(target) DO UPDATE SET reviewed_at = excluded.reviewed_at,"
+            " activity_at = excluded.activity_at, activity_mark = excluded.activity_mark,"
             " tool_calls = excluded.tool_calls, decision = excluded.decision, skill = COALESCE(excluded.skill, skill)",
-            (target, now_iso(), activity_at, tool_calls, decision, skill),
+            (target, now_iso(), activity_at, mark, tool_calls, decision, skill),
         )
 
     async def review_session(self, session_id: str, *, force: bool = False) -> dict:
@@ -341,21 +348,26 @@ class EvolutionService(Service):
         if await store.is_incognito(session_id):  # never learned from (#154)
             return {"reviewed": False, "decision": "skipped"}
         target = f"session:{session_id}"
-        prev = await store.fetchone("SELECT activity_at FROM evolution_reviews WHERE target = ?", (target,))
-        since = (prev["activity_at"] if prev else None) or ""
+        prev = await store.fetchone(
+            "SELECT activity_at, activity_mark FROM evolution_reviews WHERE target = ?", (target,)
+        )
+        # what the last review read: messages saved in the same clock tick as its last one are still new (#297)
+        since = (prev["activity_mark"] or prev["activity_at"] if prev else None) or ""
+        after, params = after_watermark(since, "created_at", "id")
         rows = [
             dict(r)
             for r in await store.fetchall(
-                "SELECT role, content, tool_calls, name, created_at FROM messages WHERE session_id = ? AND created_at > ?"
-                " ORDER BY created_at, rowid",
-                (session_id, since),
+                "SELECT id, role, content, tool_calls, name, created_at FROM messages"
+                f" WHERE session_id = ? AND {after} ORDER BY created_at, rowid",
+                (session_id, *params),
             )
         ]
         if force and not rows:
             rows = [
                 dict(r)
                 for r in await store.fetchall(
-                    "SELECT role, content, tool_calls, name, created_at FROM messages WHERE session_id = ? ORDER BY created_at, rowid",
+                    "SELECT id, role, content, tool_calls, name, created_at FROM messages WHERE session_id = ?"
+                    " ORDER BY created_at, rowid",
                     (session_id,),
                 )
             ]
@@ -363,12 +375,13 @@ class EvolutionService(Service):
             return {"reviewed": False, "decision": "skipped"}
         transcript, tool_calls = self._transcript_from_messages(rows)
         activity_at = rows[-1]["created_at"]
+        mark = next_watermark(since, rows, "created_at", "id")
         if tool_calls < self.app.config.evolution.min_tool_calls_for_review:
-            await self._record_review(target, activity_at, tool_calls, "skipped", None)
+            await self._record_review(target, activity_at, tool_calls, "skipped", None, mark)
             return {"reviewed": False, "decision": "skipped"}
         async with self._review_lock:
             decision, skill = await self._review(transcript, label="Conversation transcript", origin={"session_id": session_id})
-        await self._record_review(target, activity_at, tool_calls, decision, skill)
+        await self._record_review(target, activity_at, tool_calls, decision, skill, mark)
         return {"reviewed": True, "decision": decision, "skill": skill}
 
     async def _task_run_log(self, task_id: str, run_id: str | None) -> tuple[str, int, str | None, str | None]:

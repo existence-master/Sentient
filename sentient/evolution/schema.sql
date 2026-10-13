@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS evolution_reviews (
     target        TEXT PRIMARY KEY,   -- session:<id> | run:<task_id>:<run_id>
     reviewed_at   TEXT NOT NULL,
     activity_at   TEXT,               -- last message / run finish covered by the review
+    activity_mark TEXT,               -- sessions: watermark of the messages reviewed (store.db.next_watermark, #297)
     tool_calls    INTEGER NOT NULL DEFAULT 0,
     decision      TEXT,               -- none | create | patch | skipped
     skill         TEXT

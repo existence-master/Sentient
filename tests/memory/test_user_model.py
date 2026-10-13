@@ -256,6 +256,7 @@ async def test_turn_trigger_respects_count_and_daily_limit(app):
     for _ in range(3):
         assert await um.on_turn_completed({}, now=base + timedelta(hours=1)) is None
     assert len(app.fake.calls) == calls  # daily limit
+    await _say(app, "I batch my errands on Saturday mornings")  # new evidence: the first message was already read
     app.fake.json_replies.append(reply)
     assert await um.on_turn_completed({}, now=base + timedelta(hours=25)) is not None
     assert len(app.fake.calls) == calls + 1
