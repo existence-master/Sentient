@@ -345,7 +345,9 @@ accept or loosen a rule.
   reaches the model as `--- Text the user selected in another app ---`, its text wrapped as outside content from
   `"another app"` (`prompt.mark_outside`, ADR 0023; plain when `chat.mark_outside_content` is off), and marks the chat
   as having read outside content from `"another app"` (section 10, ADR 0018). Later turns see `(Attached earlier:
-  ...)`, so the ask window attaches it again with every message.
+  ...)`, so the ask window attaches it again with every message. Selection files are kept like any other upload
+  (listed by `GET /api/files`, removed with `DELETE /api/files/{name}`, included in full backups); deleting the chat does
+  not delete them.
 - `GET /api/files` → `[{name, size, mime, modified_at}]`
 - `GET /api/files/content/{name}` → the file bytes
 - `DELETE /api/files/{name}` → `{ok}`

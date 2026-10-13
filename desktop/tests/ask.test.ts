@@ -97,6 +97,8 @@ test('macOS and Linux commands, and pasting back only into a numeric target', ()
   assert.equal(pasteBackCommand('linux', '1234')?.args[1], 'xdotool windowactivate --sync 1234 key --clearmodifiers ctrl+v && echo pasted')
   assert.equal(pasteBackCommand('linux', '12; reboot'), null)
   assert.ok(pasteBackCommand('darwin', '4120')?.args.some((a) => a.includes('unix id is 4120')))
+  // macOS waits for the shortcut's modifier keys to be let go before pressing Command+C
+  assert.ok(captureCommand('darwin')?.args.some((a) => a.includes('modifierFlags')))
 })
 
 test('quick action prompts are short and plain', () => {

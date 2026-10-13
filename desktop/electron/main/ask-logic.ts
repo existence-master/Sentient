@@ -204,12 +204,13 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
       if ($parts.Length -gt 1) { $key = [int]$parts[1] }
       $own = 0
       if ($parts.Length -gt 2) { $own = [int]$parts[2] }
-      [void][SentientAsk]::KeysUp(1500, $key)
+      $up = [SentientAsk]::KeysUp(1500, $key)
       $hwnd = [SentientAsk]::Foreground()
       $procId = [SentientAsk]::Pid($hwnd)
       $process = ''; $description = ''
       try { $p = Get-Process -Id $procId; $process = $p.ProcessName; $description = $p.MainModule.FileVersionInfo.FileDescription } catch {}
-      if ($own -gt 0 -and $procId -eq $own) { $result = 'own' }
+      if (-not $up) { $result = 'failed' }
+      elseif ($own -gt 0 -and $procId -eq $own) { $result = 'own' }
       elseif (Test-Password) { $result = 'password' }
       elseif ([SentientAsk]::Copy(1000)) { $result = 'copied' }
       else { $result = 'nothing' }
@@ -236,7 +237,13 @@ export interface Command {
 }
 
 const MAC_CAPTURE = [
-  'delay 0.3',
+  'use framework "AppKit"',
+  'use scripting additions',
+  // wait (up to 1.5 s) until Shift, Control, Option and Command are let go, so the app sees Command+C only
+  'repeat 50 times',
+  "if ((current application's NSEvent's modifierFlags()) div 131072) mod 16 = 0 then exit repeat",
+  'delay 0.03',
+  'end repeat',
   'tell application "System Events"',
   'set p to first application process whose frontmost is true',
   'set n to name of p',
