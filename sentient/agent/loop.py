@@ -42,6 +42,7 @@ from pydantic import ValidationError
 from sentient import paths
 from sentient.agent import findings
 from sentient.agent import grants as grant_rules
+from sentient.agent import incognito as incognito_outputs
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import WAIT_S, pending_asks, standing_text
 from sentient.agent.prompt import build_system_prompt, mark_outside
@@ -1134,7 +1135,8 @@ class Agent:
             result.skills_viewed.append(tc.arguments["name"])
         # record the result before yielding so a checkpoint taken on this event is complete
         p.seen = _json_safe(res)
-        content = await self._tool_content(res, tc.id, tool=p.tool, limit=result.tool_result_limit)
+        folder = incognito_outputs.outputs_folder(ctx.session_id) if ctx.incognito and ctx.session_id else "outputs"
+        content = await self._tool_content(res, tc.id, tool=p.tool, limit=result.tool_result_limit, folder=folder)
         model_content = self.outside_content(content, p.tool, tc.arguments) if p.tool is not None else content
         messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": model_content})
         if persist:  # stored as it is; marked again when the transcript is read back (mark_outside_messages)
@@ -1200,17 +1202,19 @@ class Agent:
             keep += 1
         return res[:keep]
 
-    async def _tool_content(self, res: Any, call_id: str, *, tool: Tool | None = None, limit: int | None = None) -> str:
+    async def _tool_content(
+        self, res: Any, call_id: str, *, tool: Tool | None = None, limit: int | None = None, folder: str = "outputs"
+    ) -> str:
         """The tool message the model reads. A result longer than ``limit`` (default ``chat.tool_result_max_chars``)
         is shortened by the tool's ``shorten_fn`` when it has one, then cut from the end; the full text goes to
-        files/outputs/ and the model is told plainly."""
+        files/outputs/ (an incognito chat's own folder in it, ``folder``) and the model is told plainly."""
         content = _json_safe(res)
         limit = limit or self.config.chat.tool_result_max_chars
         if not limit or len(content) <= limit:
             return content
         short = _shorten(tool, res)
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", call_id or "")[:80] or new_id()
-        rel = f"outputs/tool-{safe}.txt"
+        rel = f"{folder}/tool-{safe}.txt"
         full = res if isinstance(res, str) else json.dumps(res, ensure_ascii=False, indent=2, default=str)
 
         def write() -> None:
@@ -1408,7 +1412,7 @@ class Agent:
                     partial = ""  # text before a tool call or a steer was already persisted
                     if isinstance(event, ToolResultEvent) and not event.is_error:
                         sources.add_tool_result(event.name, self.delivered_rows(event.result, result.tool_result_limit))
-                        self._add_answer_source(used, event.name, event.result)
+                        self.add_answer_source(used, event.name, event.result)
                     if ctx.untrusted and not marked:  # remember it for the rest of this chat, also after a restart
                         marked = True
                         await self.store.execute(
@@ -1541,8 +1545,9 @@ class Agent:
         )
         return {"message_id": message_id, "memory_sources": memory_sources, "sources": items}
 
-    def _add_answer_source(self, used: AnswerSources, name: str, res: Any) -> None:
-        """Record what a successful tool result brought into the reply (#174). Never breaks a turn."""
+    def add_answer_source(self, used: AnswerSources, name: str, res: Any) -> None:
+        """Record what a successful tool result brought into the reply (#174) or a task run (#291). Never breaks a
+        turn."""
         tool = self.registry.get(name)
         plugin = self.registry.plugin(tool.plugin) if tool is not None else None
         is_app = isinstance(plugin, IntegrationPlugin) or getattr(plugin, "auth", None) == "mcp"

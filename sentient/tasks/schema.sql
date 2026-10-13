@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     pending_question TEXT,                        -- JSON {question, options, tool_call_id, asked_at, limit?, stop_error?} while waiting_for_user
     limits        TEXT,                           -- JSON {base, max, used} of steps, seconds, tokens, cost_usd (tasks/limits.py)
     memory_sources TEXT,                          -- JSON list: memories the run had in mind (sentient/memory/sources.py)
+    sources       TEXT,                           -- JSON list: pages, emails, files and apps the run used (sentient/agent/sources.py)
     started_at    TEXT,
     finished_at   TEXT,
     created_at    TEXT NOT NULL
