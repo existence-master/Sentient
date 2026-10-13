@@ -203,7 +203,7 @@ async def test_reading_own_files_or_a_missing_download_keeps_the_chat_clean(conf
         s.registry.register(_sender(log))
         _write("notes.md", "my own notes")
         sid = await s.store.create_session(channel="cli")
-        assert await _turn(s, sid, "read my notes and send them") == []
+        assert await _turn(s, sid, "read my notes and send them to sam@example.com") == []  # names the recipient (#143)
         assert log == ["send:sam@example.com"] and (await s.store.get_session(sid))["untrusted"] == ""
     finally:
         await s.stop()
