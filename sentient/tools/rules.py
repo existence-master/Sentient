@@ -250,7 +250,10 @@ def saved_outside_source(name: str, arguments: Any) -> str:
     else "". Only those folders: the user's own files and Sentient's notes are not outside content."""
     if name != "file_read" or not isinstance(arguments, dict):
         return ""
-    path = posixpath.normpath(str(arguments.get("name") or "").replace("\\", "/")).lstrip("/")
+    raw = str(arguments.get("name") or "").replace("\\", "/")
+    path = posixpath.normpath(raw)
+    if raw.startswith("/") or ":" in path.split("/", 1)[0] or path.startswith(".."):
+        return ""  # outside the files folder: file_read refuses it, so nothing is read
     return SAVED_OUTSIDE_FOLDERS.get(path.split("/", 1)[0].lower(), "")
 
 

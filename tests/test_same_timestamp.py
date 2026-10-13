@@ -153,6 +153,27 @@ async def test_user_model_refresh_reads_rows_saved_in_the_same_tick(config, isol
         await s.stop()
 
 
+async def test_a_kind_with_nothing_read_yet_is_not_skipped_later(config, isolated_home, monkeypatch):
+    """The first refresh reads a message but no fact: a fact saved later in the same tick is still read."""
+    from sentient.memory import facts as facts_mod
+
+    freeze(monkeypatch, store_db, facts_mod)
+    llm = FakeProvider()
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "um-first.db", enable_background=False).start()
+    try:
+        assert s.memory is not None
+        sid = await s.store.create_session(channel="cli")
+        await s.store.add_message(sid, "user", "keep answers short please")
+        llm.json_replies.append({"operations": [], "summary": "Maya likes short answers."})
+        await s.user_model.refresh(now=datetime.fromisoformat(TICK))
+        assert await s.store.get_meta("user_model.facts_mark") == ""  # nothing read yet, saved as such
+        await s.memory.remember("Maya mentors two junior developers", use_llm=False)
+        llm.json_replies.append({"operations": [], "summary": "Maya likes short answers."})
+        await s.user_model.refresh(now=datetime.fromisoformat(TICK))
+        assert "mentors two junior" in llm.calls[-1]["messages"][1]["content"]
+    finally:
+        await s.stop()
+
 async def test_session_review_reads_messages_saved_in_the_same_tick(config, isolated_home, monkeypatch):
     """#297: the skill review of a chat starts after the messages it reviewed, not after their timestamp."""
     from tests.evolution.conftest import add_tool_chat

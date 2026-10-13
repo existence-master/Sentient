@@ -161,6 +161,8 @@ def test_only_saved_results_and_downloads_count():
     assert saved_outside_source("file_read", {"name": "./Downloads\\invoice.pdf"}) == "a downloaded file"
     assert saved_outside_source("file_read", {"name": "notes/../outputs/x.txt"}) == "a saved tool result"
     assert saved_outside_source("file_read", {"name": "notes/outputs.txt"}) == ""
+    for outside_files in ("/outputs/x.txt", "../outputs/x.txt", "C:/outputs/x.txt", "outputs/../../x.txt"):
+        assert saved_outside_source("file_read", {"name": outside_files}) == ""  # file_read refuses these
     assert saved_outside_source("file_read", {"name": "haiku.txt"}) == ""
     assert saved_outside_source("file_write", {"name": "outputs/x.txt"}) == ""  # only reading it back
     assert saved_outside_source("file_read", None) == ""

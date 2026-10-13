@@ -692,7 +692,10 @@ class UserModelService(Service):
         await ensure_memory_schema(store)
         # what the last refresh read, per kind; an older build saved only the refresh time ("newer than", #236)
         last = await store.get_meta("user_model.last_refresh_at") or ""
-        since = {kind: await store.get_meta(key) or last for kind, key in REFRESH_MARKS.items()}
+        since = {}
+        for kind, key in REFRESH_MARKS.items():
+            mark = await store.get_meta(key)
+            since[kind] = last if mark is None else mark  # "" (saved): nothing of this kind read yet
         await store.set_meta("user_model.turns_since_refresh", "0")
         evidence, sections, outside = await self._gather(since)
         if not evidence:
@@ -848,8 +851,7 @@ class UserModelService(Service):
             await store.set_meta("user_model.summary", new_summary)
         await store.set_meta("user_model.last_refresh_at", now.isoformat())
         for kind, key in REFRESH_MARKS.items():  # the next refresh starts after what this one read, not at its time
-            if self._read_marks.get(kind):
-                await store.set_meta(key, str(self._read_marks[kind]))
+            await store.set_meta(key, str(self._read_marks.get(kind) or ""))  # also "": a later fact is never skipped
         if summary_changed or changed_ids or counts["questions"]:
             await self._touch(summary_changed=summary_changed, changed=len(changed_ids))
         log.info("user model refresh (%s): %s", trigger, counts)
