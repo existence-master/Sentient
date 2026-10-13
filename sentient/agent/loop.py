@@ -97,15 +97,17 @@ from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import (
     PURCHASE_LABEL,
-    SCREEN_SOURCE,
+    SELECTION_SOURCE,
     address_carries_data,
     address_host,
     approval_hold_message,
     approval_question,
+    attachment_source,
     brings_untrusted,
     call_address,
     is_purchase,
     is_screen_capture,
+    is_selection,
     never_message,
     outside_source,
     rule_label,
@@ -1209,6 +1211,11 @@ class Agent:
                 continue
             try:
                 body = await asyncio.to_thread(extract_text, p, MAX_ATTACHMENT_CHARS)
+                if is_selection(name):  # text the user selected in another app: someone else may have written it
+                    if self.config.chat.mark_outside_content:
+                        body = mark_outside(body, SELECTION_SOURCE)
+                    parts_text.append(f"\n--- Text the user selected in another app ---\n{body}\n--- end of selected text ---")
+                    continue
                 parts_text.append(f"\n--- Attached file: {name} ---\n{body}\n--- end of {name} ---")
             except Exception as exc:
                 parts_text.append(f"\n[Attachment {name} ({p.suffix}) could not be read: {exc}. It is saved as files/{name}.]")
@@ -1310,9 +1317,11 @@ class Agent:
             ctx.incognito = incognito
             # outside content read earlier in this chat still counts until a new chat starts (ADR 0018)
             ctx.untrusted = await self._chat_untrusted(session_id, session)
-            if not ctx.untrusted and any(is_screen_capture(a) for a in attachments):
-                # a shared window or region can show text someone else wrote: it marks the chat from the start
-                ctx.untrusted = SCREEN_SOURCE
+            brought = next((src for a in attachments if (src := attachment_source(a))), "")
+            if not ctx.untrusted and brought:
+                # a shared window or region, or text selected in another app, can hold text someone else wrote: it
+                # marks the chat from the start
+                ctx.untrusted = brought
                 await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (ctx.untrusted, session_id))
             marked = bool(ctx.untrusted)
             ctx.visited = _hosts((session or {}).get("visited_hosts"))
