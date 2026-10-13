@@ -160,6 +160,24 @@ function createBrowserBridge(): SentientBridge {
       onCommand: () => () => undefined,
       report: () => undefined
     },
+    ask: {
+      state: async () => null,
+      onState: () => () => undefined,
+      copy: async (text) => {
+        try {
+          await navigator.clipboard.writeText(text)
+          return true
+        } catch {
+          return false
+        }
+      },
+      replace: async () => 'failed' as const,
+      close: async () => undefined,
+      openChat: async (sessionId) => {
+        window.location.hash = `/chat/${encodeURIComponent(sessionId)}`
+      },
+      resize: () => undefined
+    },
     getShortcuts: async () => [],
     setShortcut: async () => ({ ok: false, error: 'Available in the desktop app.', shortcuts: [] })
   }
