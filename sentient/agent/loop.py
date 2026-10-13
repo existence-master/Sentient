@@ -1553,10 +1553,21 @@ class Agent:
         if stored is not None:
             return str(stored)
         rows = await self.store.fetchall(
-            "SELECT role, name, content FROM messages WHERE session_id = ? AND role = 'tool' ORDER BY created_at, rowid",
+            "SELECT role, name, content, tool_calls, tool_call_id FROM messages WHERE session_id = ?"
+            " AND role IN ('tool', 'assistant') ORDER BY created_at, rowid",
             (session_id,),
         )
-        source = untrusted_in([dict(r) for r in rows], self.registry)
+        transcript = []
+        for r in rows:
+            row = dict(r)
+            if row["role"] == "assistant":  # its calls' arguments tell which file a file_read read (#336)
+                try:
+                    calls = json.loads(row.get("tool_calls") or "null")
+                except (TypeError, ValueError):
+                    calls = None
+                row["tool_calls"] = _normalize_tool_calls(calls)
+            transcript.append(row)
+        source = untrusted_in(transcript, self.registry)
         await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
         return source
 

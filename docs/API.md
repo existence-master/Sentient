@@ -1572,8 +1572,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   result as it is, any other result as compact JSON), and `K` is where the part it was shown ends, so reading on from
   `K` misses nothing (`0` after a `[Result shortened ...]`, which showed other text).
   `file_read(name, offset=0, limit=0)` (#336) returns one part: `{name, offset, content, total?, more, next_offset?}`
-  (`offset` and `limit` in characters; `limit: 0` means as much as fits; `total` is left out when a PDF or document
-  was only read as far as this part; past the end it returns `content: ""`, `more: false` and a `note`). The part is
+  (`offset` and `limit` in characters; `limit: 0` means as much as fits; `total` is left out when a PDF, a document or a
+  text file over 4 MB was only read as far as this part, so a part never reads a big file whole; past the end it returns `content: ""`, `more: false` and a `note`). The part is
   sized so the whole result fits the run's limit (`ToolContext.result_limit`, set by the loop to
   `LoopResult.tool_result_limit`; else `chat.tool_result_max_chars`), so a part is never cut and saved again. The limit (`await app.agent.tool_result_limit(role, model)`, kept on `LoopResult.tool_result_limit` and worked out again for a fallback model that answered) is
   `chat.tool_result_max_chars` (default 16000), and at most `chat.tool_result_context_share` (default 0.25) of the
@@ -1662,7 +1662,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   under `outputs/` (the rest of a long result) or `downloads/` (browser downloads) is marked the same way, from
   `"a saved tool result"` or `"a downloaded file"` (`rules.saved_outside_source`, #297); other files are not. A
   `file_read` there that read something also marks the chat or run as having read outside content (ADR 0018, #336),
-  with that source (`sessions.untrusted`, and `rules.untrusted_in` for a transcript read back), so a later call that
+  with that source (`sessions.untrusted`, and `rules.untrusted_in` for a transcript read back, also when an older
+  chat is classified for the first time), so a later call that
   can send data out asks first, just as after the web or email tool that brought the text in.
   `sentient.agent.prompt.mark_outside(content, source)` does the wrapping; `<code>` is
   `prompt.outside_code(body)` of the text between the markers, 8 hex characters from an HMAC with a secret made at

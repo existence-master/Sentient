@@ -223,3 +223,42 @@ def test_a_stored_transcript_with_a_download_read_counts_as_outside_content():
     failed = {**read, "content": '{"error": "not found"}'}
     assert untrusted_in([*calls, read], Registry()) == "a downloaded file"
     assert untrusted_in([*calls, failed], Registry()) == ""
+
+
+async def test_a_big_text_file_is_read_only_as_far_as_each_part_needs(isolated_home, monkeypatch):
+    from sentient.tools.builtin import files_tool
+
+    monkeypatch.setattr(files_tool, "_WHOLE_TEXT_BYTES", 1000)  # treat anything over 1000 bytes as big
+    text = "".join(f"row {i}\n" for i in range(2000))
+    _write("outputs/big.txt", text)
+    reads: list[int] = []
+    real = files_tool._read_upto
+    monkeypatch.setattr(files_tool, "_read_upto", lambda p, n: reads.append(n) or real(p, n))
+    ctx = _ctx(1500)
+    got, offset, offsets = "", 0, []
+    while True:
+        offsets.append(offset)
+        res = await _read(ctx, "outputs/big.txt", offset=offset)
+        assert "total" not in res or not res["more"]  # the total is only known once the end was reached
+        assert res["content"]  # every part moves on: a reader following next_offset always finishes
+        got += res["content"]
+        if not res["more"]:
+            break
+        offset = res["next_offset"]
+    assert got == text
+    assert reads == [o + 1501 for o in offsets]  # each part reads the file only up to its own end
+
+
+async def test_an_old_chat_is_classified_with_its_file_reads(config, isolated_home):
+    llm = FakeProvider(replies=[[tool_call("file_read", name="downloads/offer.txt")], "Read it."])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "old.db", enable_background=False).start()
+    try:
+        _write("downloads/offer.txt", "hello")
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, "read my download")
+        await s.store.execute("UPDATE sessions SET untrusted = NULL WHERE id = ?", (sid,))  # from before the mark
+        session = await s.store.get_session(sid)
+        assert await s.agent._chat_untrusted(sid, session) == "a downloaded file"
+        assert (await s.store.get_session(sid))["untrusted"] == "a downloaded file"
+    finally:
+        await s.stop()
