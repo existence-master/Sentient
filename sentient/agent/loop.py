@@ -68,6 +68,7 @@ from sentient.llm.events import (
     tool_progress_event,
 )
 from sentient.llm.jobs import as_kind, detached
+from sentient.llm.locality import usage_source
 from sentient.llm.meter import measure
 from sentient.llm.provider import (
     LLMProvider,
@@ -97,15 +98,17 @@ from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import (
     PURCHASE_LABEL,
-    SCREEN_SOURCE,
+    SELECTION_SOURCE,
     address_carries_data,
     address_host,
     approval_hold_message,
     approval_question,
+    attachment_source,
     brings_untrusted,
     call_address,
     is_purchase,
     is_screen_capture,
+    is_selection,
     never_message,
     outside_source,
     rule_label,
@@ -688,7 +691,8 @@ class Agent:
             think_acc = ""
             tool_calls: list[ToolCall] = []
             try:
-                async for chunk in self._model_stream(role, messages, tools, model, source == "chat" and not unprompted):
+                async for chunk in self._model_stream(role, messages, tools, model, source == "chat" and not unprompted,
+                                                      source):
                     if chunk.thinking:
                         think_acc += chunk.thinking
                         yield ThinkingDelta(text=chunk.thinking, **ev)
@@ -711,11 +715,13 @@ class Agent:
                             result.completion_tokens += chunk.usage.get("completion_tokens", 0)
                             if budget is not None:
                                 budget.add(chunk.model, chunk.usage, getattr(chunk, "cost", None))
-                            with contextlib.suppress(Exception):
-                                await self.store.record_usage(
-                                    chunk.model, chunk.usage.get("prompt_tokens", 0),
-                                    chunk.usage.get("completion_tokens", 0), role=role, source=source,
-                                )
+                            if not getattr(self.llm, "records_usage", False):  # the provider counts its own
+                                with contextlib.suppress(Exception):
+                                    await self.store.record_usage(
+                                        chunk.model, chunk.usage.get("prompt_tokens", 0),
+                                        chunk.usage.get("completion_tokens", 0), role=role, source=source,
+                                        cost_usd=getattr(chunk, "cost", None),
+                                    )
             except ProviderError as exc:
                 if tools and not tools_disabled and not text_acc and not think_acc and is_tool_format_error(exc):
                     # degrade instead of failing the whole turn: answer without tools
@@ -739,7 +745,7 @@ class Agent:
                     result.tool_result_limit = await self.tool_result_limit(role)
                     continue
                 result.error = str(exc)
-                yield Error(message=str(exc), recoverable=False, **ev)
+                yield Error(message=str(exc), recoverable=False, code=getattr(exc, "code", None), **ev)
                 return
             result.thinking += think_acc
 
@@ -882,11 +888,12 @@ class Agent:
         result.messages = messages
 
     async def _model_stream(
-        self, role: str, messages: list[dict], tools: list[dict] | None, model: str | None, attended: bool
+        self, role: str, messages: list[dict], tools: list[dict] | None, model: str | None, attended: bool,
+        source: str = "chat",
     ) -> AsyncIterator[StreamChunk]:
         """``llm.stream``, marked as a reply someone is waiting for only in a chat: Claude Code answers nothing
-        else (ADR 0022)."""
-        with claude_code.attended(attended):
+        else (ADR 0022). Its usage is counted under ``source``."""
+        with claude_code.attended(attended), usage_source(source):
             async for chunk in self.llm.stream(role, messages, tools, model=model):
                 yield chunk
 
@@ -1225,6 +1232,11 @@ class Agent:
                 continue
             try:
                 body = await asyncio.to_thread(extract_text, p, MAX_ATTACHMENT_CHARS)
+                if is_selection(name):  # text the user selected in another app: someone else may have written it
+                    if self.config.chat.mark_outside_content:
+                        body = mark_outside(body, SELECTION_SOURCE)
+                    parts_text.append(f"\n--- Text the user selected in another app ---\n{body}\n--- end of selected text ---")
+                    continue
                 parts_text.append(f"\n--- Attached file: {name} ---\n{body}\n--- end of {name} ---")
             except Exception as exc:
                 parts_text.append(f"\n[Attachment {name} ({p.suffix}) could not be read: {exc}. It is saved as files/{name}.]")
@@ -1326,9 +1338,11 @@ class Agent:
             ctx.incognito = incognito
             # outside content read earlier in this chat still counts until a new chat starts (ADR 0018)
             ctx.untrusted = await self._chat_untrusted(session_id, session)
-            if not ctx.untrusted and any(is_screen_capture(a) for a in attachments):
-                # a shared window or region can show text someone else wrote: it marks the chat from the start
-                ctx.untrusted = SCREEN_SOURCE
+            brought = next((src for a in attachments if (src := attachment_source(a))), "")
+            if not ctx.untrusted and brought:
+                # a shared window or region, or text selected in another app, can hold text someone else wrote: it
+                # marks the chat from the start
+                ctx.untrusted = brought
                 await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (ctx.untrusted, session_id))
             marked = bool(ctx.untrusted)
             ctx.visited = _hosts((session or {}).get("visited_hosts"))

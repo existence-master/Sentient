@@ -2,8 +2,9 @@ import { IconArrowBackUp, IconCheck, IconKey, IconSettings, IconStethoscope } fr
 import { useEffect, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
-import { Popover, PopoverContent, PopoverTrigger, Spinner, Tooltip } from '@/components/ui'
-import { useModelPresets, useSetRoles } from '@/hooks/models'
+import { Popover, PopoverContent, PopoverTrigger, SegmentedControl, Spinner, Tooltip } from '@/components/ui'
+import { useConfig } from '@/hooks/core'
+import { useModelPresets, useSetLocalOnly, useSetRoles } from '@/hooks/models'
 import { errorMessage } from '@/lib/api'
 import { modelShortName } from '@/lib/models'
 import { recentChatModels, rememberChatModel } from '@/lib/recentModels'
@@ -20,7 +21,7 @@ const PRESET_CLOUD = [
 ]
 
 /**
- * The title bar model menu: presets (a check on the active one), recent chat models, the model check-up and the
+ * The title bar model menu: Local only or May use cloud (#148), presets (a check on the active one), recent chat models, the model check-up and the
  * full Models settings. Missing pieces (a download, a key) are offered right in the menu.
  */
 export function ModelSwitcher({ primary, tip, children }: { primary: string | undefined; tip: string; children: ReactNode }) {
@@ -28,6 +29,9 @@ export function ModelSwitcher({ primary, tip, children }: { primary: string | un
   const navigate = useNavigate()
   const presets = useModelPresets()
   const setRoles = useSetRoles()
+  const config = useConfig()
+  const setLocalOnly = useSetLocalOnly()
+  const localOnly = !!config.data?.models.local_only
   const sw = usePresetSwitch()
   const [recent, setRecent] = useState<string[]>(() => recentChatModels())
 
@@ -52,6 +56,14 @@ export function ModelSwitcher({ primary, tip, children }: { primary: string | un
         onError: (e) => toast.error("Couldn't change the model", { description: errorMessage(e) })
       }
     )
+  const chooseWhere = (value: string) => {
+    const on = value === 'local'
+    if (on === localOnly) return
+    setLocalOnly.mutate(on, {
+      onSuccess: () => toast.success(on ? 'Local only: nothing goes to a cloud model' : 'Cloud models may be used again'),
+      onError: (e) => toast.error("Couldn't change where AI runs", { description: errorMessage(e) })
+    })
+  }
   const addKey = (id: string) => {
     setOpen(false)
     sw.addKey(id)
@@ -64,6 +76,26 @@ export function ModelSwitcher({ primary, tip, children }: { primary: string | un
           <PopoverTrigger asChild>{children}</PopoverTrigger>
         </Tooltip>
         <PopoverContent align="end" side="bottom" className="no-drag max-h-[min(640px,80vh)] w-84 overflow-y-auto p-1.5">
+          <Heading>Where AI runs</Heading>
+          <div className="px-1.5 pb-1">
+            <SegmentedControl
+              size="sm"
+              fullWidth
+              aria-label="Where AI runs"
+              value={localOnly ? 'local' : 'cloud'}
+              onChange={chooseWhere}
+              options={[
+                { value: 'local', label: 'Local only', disabled: !config.data || setLocalOnly.isPending },
+                { value: 'cloud', label: 'May use cloud', disabled: !config.data || setLocalOnly.isPending }
+              ]}
+            />
+          </div>
+          <p className="px-2.5 pb-1 text-2xs leading-relaxed text-fg-subtle">
+            {localOnly
+              ? 'Nothing is sent to a model outside this computer, not even a backup model or a chat with its own model.'
+              : 'Cloud models you set up may be used. Paid ones count toward your monthly budget.'}
+          </p>
+          <Divider />
           <Heading>Presets</Heading>
           {presets.isLoading && (
             <div className="flex items-center gap-2 px-2.5 py-2 text-xs text-fg-subtle">

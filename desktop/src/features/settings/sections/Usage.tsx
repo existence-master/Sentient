@@ -7,6 +7,7 @@ import { modelShortName } from '@/lib/models'
 import type { UsageReport } from '@/lib/types'
 import { formatNumber } from '@/lib/utils'
 import type { SectionProps } from '../SettingsPage'
+import { CostMeter } from './CostMeter'
 
 export function UsageSection(_props: SectionProps) {
   const [days, setDays] = useState('30')
@@ -17,7 +18,8 @@ export function UsageSection(_props: SectionProps) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <CostMeter />
+      <div className="flex items-center justify-between border-t border-border pt-6">
         <p className="text-sm text-fg-muted">Tokens processed by every model, including background work.</p>
         <SegmentedControl
           size="sm"

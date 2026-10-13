@@ -134,6 +134,8 @@ import type {
   TranscriptMessage,
   UploadedFile,
   UsageReport,
+  BudgetState,
+  CostReport,
   UserModel,
   UserModelRefreshResult,
   VoicePrepareProgress,
@@ -487,7 +489,9 @@ export const api = {
   },
 
   usage: {
-    get: (days = 30) => http.get<UsageReport>('/api/usage', { query: { days } })
+    get: (days = 30) => http.get<UsageReport>('/api/usage', { query: { days } }),
+    cost: () => http.get<CostReport>('/api/usage/cost'),
+    keepGoing: () => http.post<BudgetState>('/api/usage/budget/keep-going')
   },
 
   // §3 models & secrets ------------------------------------------------------

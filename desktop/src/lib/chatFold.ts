@@ -68,7 +68,7 @@ export interface AssistantTurnView {
   tools: Record<string, ToolCallView>
   approvals: ApprovalView[]
   status: TurnStatus
-  error?: { message: string; recoverable: boolean }
+  error?: { message: string; recoverable: boolean; code?: string | null }
   /** Plain notes about this reply that aren't errors (#312: the chat's model couldn't answer), live only. */
   notices?: string[]
   messageId?: string | null
@@ -324,7 +324,7 @@ export function applyAgentEvent(turn: AssistantTurnView, ev: AgentEvent): Assist
     case 'notice':
       return turn.notices?.includes(ev.message) ? turn : { ...turn, notices: [...(turn.notices ?? []), ev.message] }
     case 'error':
-      return { ...turn, error: { message: ev.message, recoverable: ev.recoverable ?? true }, status: turn.status === 'streaming' ? 'error' : turn.status }
+      return { ...turn, error: { message: ev.message, recoverable: ev.recoverable ?? true, code: ev.code ?? null }, status: turn.status === 'streaming' ? 'error' : turn.status }
     case 'done': {
       const memorySources = ev.memory_sources?.length ? ev.memory_sources : turn.memorySources
       const sources = ev.sources?.length ? ev.sources : turn.sources

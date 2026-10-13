@@ -27,8 +27,8 @@ _PKG_ROOT = Path(__file__).resolve().parents[1]
 # Feature packages own their tables. Each file must be idempotent. Order matters for foreign keys.
 # Bump when a change to a schema.sql or an ensure_column needs existing databases updated. Opening a database
 # with another version takes a snapshot first (issue #151); so does the first column added to an existing one.
-SCHEMA_VERSION = 6  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
-# 6: approval_grants (#139)
+SCHEMA_VERSION = 7  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
+# 6: approval_grants (#139); 7: usage.cost_usd (#148)
 PACKAGE_SCHEMAS = ["tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox"]
 
 
@@ -157,6 +157,7 @@ class Store:
         await self.ensure_column("facts", "status", "TEXT NOT NULL DEFAULT 'active'")
         await self.ensure_column("facts", "review", "TEXT")
         await self.ensure_column("summaries", "untrusted", "TEXT")
+        await self.ensure_column("usage", "cost_usd", "REAL")
         # summaries written before the mark existed take it from their chat (ADR 0021)
         await self.db.execute(
             "UPDATE summaries SET untrusted = (SELECT s.untrusted FROM sessions s WHERE s.id = summaries.session_id)"
@@ -343,10 +344,14 @@ class Store:
         )
         return nid
 
-    async def record_usage(self, model: str, prompt_tokens: int, completion_tokens: int, *, role: str | None = None, source: str = "chat") -> None:
+    async def record_usage(
+        self, model: str, prompt_tokens: int, completion_tokens: int, *, role: str | None = None, source: str = "chat",
+        cost_usd: float | None = None,
+    ) -> None:
         await self.execute(
-            "INSERT INTO usage(model, role, source, prompt_tokens, completion_tokens, created_at) VALUES(?,?,?,?,?,?)",
-            (model, role, source, prompt_tokens, completion_tokens, now_iso()),
+            "INSERT INTO usage(model, role, source, prompt_tokens, completion_tokens, cost_usd, created_at)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (model, role, source, prompt_tokens, completion_tokens, cost_usd, now_iso()),
         )
 
     async def delete_session(self, session_id: str) -> None:
