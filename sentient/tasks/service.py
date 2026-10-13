@@ -1466,7 +1466,7 @@ class TaskService(Service):
         if not isinstance(raw, dict) or raw.get("code") is None:
             return previous, data, None
         try:
-            return normalize_script(raw, previous, model_written=True), data, None
+            return self._default_condition(task, normalize_script(raw, previous, model_written=True)), data, None
         except ScriptInvalid as exc:
             log.info("planner script for task %s rejected, asking for a fix: %s", task["id"], exc)
             retry = [*parts, (
@@ -1485,7 +1485,7 @@ class TaskService(Service):
         raw = fixed.get("script")
         if isinstance(raw, dict) and raw.get("code") is not None:
             try:
-                return normalize_script(raw, previous, model_written=True), fixed, None
+                return self._default_condition(task, normalize_script(raw, previous, model_written=True)), fixed, None
             except ScriptInvalid as exc:
                 log.info("planner script for task %s rejected again, saving an AI-run task instead: %s", task["id"], exc)
             codes.append(str(raw.get("code")))
@@ -1499,6 +1499,12 @@ class TaskService(Service):
         if not fixed.get("schedule") and data.get("schedule"):
             fixed = {**fixed, "schedule": data["schedule"]}
         return None, fixed, tools_named("\n".join(codes))
+
+    @staticmethod
+    def _default_condition(task: dict, script: dict) -> dict:
+        """A page watch the planner left on plain ``changed`` becomes ``noteworthy`` (#298, ``scripts.planner_default``)."""
+        previous = task.get("script") if task.get("task_type") == "script" else None
+        return scripts.planner_default(script, str(task.get("original_prompt") or ""), previous)
 
     def _no_script_plan(self, task: dict, script_tools: list[str], planned: list[dict]) -> list[dict]:
         """The plan of an AI-run task that replaces a rejected check script (#310): the user's own request as the step,

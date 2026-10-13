@@ -312,31 +312,68 @@ SEARCH_CODE = "from sentient_tools import tools, result\nresult(tools.internet_s
 
 
 @pytest.mark.parametrize(
-    ("request_text", "code", "condition"),
+    ("request_text", "code", "proposed", "stored"),
     [
-        # the default for a page: only a change that matters is told
-        ("Watch this page and tell me about new events: https://example.org/events", PAGE_CODE, "noteworthy"),
-        # the user wants every change: the planner's "changed" is kept, even for a whole page
-        ("Tell me whenever anything at all on this page changes: https://example.org/events", PAGE_CODE, "changed"),
+        # a whole page on plain "changed": a view counter would notify, so it becomes an important-changes check
+        ("Every 10 minutes watch this page and tell me about new events: https://example.org/events", PAGE_CODE,
+         "changed", "noteworthy"),
+        ("Watch this page and tell me about new events: https://example.org/events", PAGE_CODE, "noteworthy",
+         "noteworthy"),
+        # the user wants every change: "changed" is kept, even for a whole page
+        ("Tell me whenever anything at all on this page changes: https://example.org/events", PAGE_CODE, "changed",
+         "changed"),
+        ("Tell me about any change on https://example.org/events", PAGE_CODE, "changed", "changed"),
         # one value extracted from the page
-        ("Tell me when the price changes on https://example.org/item", PRICE_CODE, "changed"),
+        ("Tell me when the price changes on https://example.org/item", PRICE_CODE, "changed", "changed"),
         # a search, not a page read
-        ("Tell me when search results for the Rust 2.0 release change", SEARCH_CODE, "changed"),
+        ("Tell me when search results for the Rust 2.0 release change", SEARCH_CODE, "changed", "changed"),
     ],
 )
-async def test_planner_watch_keeps_the_condition_it_planned(make_app, request_text, code, condition):
+async def test_planner_watch_defaults_whole_pages_to_important_changes(make_app, request_text, code, proposed, stored):
     watch = {**PLAN_SCRIPT, "name": "Watch", "description": request_text,
-             "script": {"code": code, "condition": condition, "then": "notify"}}
+             "script": {"code": code, "condition": proposed, "then": "notify"}}
     llm = FakeProvider(json_replies=[REFINE_ONCE, watch])
     app = await make_app(llm)
     task = await app.tasks.create_task(request_text)
     await app.tasks.drain()
     task = await app.tasks.get(task["task_id"])
     assert task["status"] == "approval_pending" and task["task_type"] == "script"
-    assert task["script"]["condition"] == condition and task["script"]["code"] == code
+    assert task["script"]["condition"] == stored and task["script"]["code"] == code
     prompt = json_calls(llm, "planner")[1]["messages"][0]["content"]
     assert "This is the default for watching a page, a feed or the news" in prompt
     assert 'If the user wants to hear about any change at all, use "changed".' in prompt
+
+
+FETCH = "from sentient_tools import tools, result\npage = tools.web_fetch(url='https://example.org')\n"
+
+
+@pytest.mark.parametrize(
+    ("code", "whole"),
+    [
+        (FETCH + "result(page)", True),
+        (FETCH + "result(page['content'])", True),
+        (FETCH + "text = page.get('content')\nprint(text)", True),
+        ("from sentient_tools import tools, result\nresult(tools.web_fetch(url='https://example.org'))", True),
+        # a value taken out of the page
+        (FETCH + "result(page['title'])", False),
+        (FETCH + "result(page['content'][:200])", False),
+        (FETCH + "result(len(page['content']))", False),
+        (PRICE_CODE, False),
+        (SEARCH_CODE, False),
+        ("def broken(:\n", False),
+    ],
+)
+def test_returns_whole_page(code, whole):
+    assert scripts.returns_whole_page(code) is whole
+
+
+def test_planner_default_keeps_a_task_already_on_changed_and_other_conditions():
+    changed = normalize_script({"code": PAGE_CODE, "condition": "changed"})
+    assert scripts.planner_default(changed, "watch this page")["condition"] == "noteworthy"
+    assert scripts.planner_default(changed, "watch this page", {"code": PAGE_CODE, "condition": "changed"}) == changed
+    for condition in ("alert", "every_run", "noteworthy"):
+        script = {**changed, "condition": condition}
+        assert scripts.planner_default(script, "watch this page") == script
 
 
 async def test_planner_script_with_invalid_code_is_fixed_or_falls_back(make_app):

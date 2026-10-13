@@ -144,6 +144,53 @@ def normalize_script(raw: Any, previous: dict | None = None, *, model_written: b
     return out
 
 
+_ANY_CHANGE = re.compile(r"\bany\s?thing\b|\bany\s+changes?\b", re.IGNORECASE)
+
+
+def _is_fetch(node: ast.AST, pages: set[str]) -> bool:
+    """``tools.web_fetch(...)``, a name holding it, or its ``content`` (``page["content"]``, ``page.get("content")``)."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "web_fetch":
+        return isinstance(node.func.value, ast.Name) and node.func.value.id == "tools"
+    if isinstance(node, ast.Name):
+        return node.id in pages
+    if isinstance(node, ast.Subscript):
+        key, base = node.slice, node.value
+    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" and node.args:
+        key, base = node.args[0], node.func.value
+    else:
+        return False
+    return isinstance(key, ast.Constant) and key.value == "content" and _is_fetch(base, pages)
+
+
+def returns_whole_page(code: str) -> bool:
+    """True when the script hands back the whole result of ``tools.web_fetch`` (the page or its content) rather than
+    a value taken out of it."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+    pages: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and _is_fetch(node.value, pages):
+            pages.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("result", "print")
+        and len(node.args) == 1 and _is_fetch(node.args[0], pages)
+        for node in ast.walk(tree)
+    )
+
+
+def planner_default(script: dict, request: str, previous: dict | None = None) -> dict:
+    """A ``changed`` check the planner proposes that returns a whole fetched page becomes ``noteworthy`` (#298): a
+    view counter or a timestamp there would notify on every check. One value taken out of the page, a search, a
+    request about any change ("anything", "any change") and a task already on ``changed`` keep ``changed``."""
+    if script.get("condition") != "changed" or (previous or {}).get("condition") == "changed":
+        return script
+    if _ANY_CHANGE.search(request or "") or not returns_whole_page(script.get("code") or ""):
+        return script
+    return {**script, "condition": "noteworthy"}
+
+
 def trigger_prelude(trigger_data: dict | None) -> str:
     """Lines prepended to the code of a triggered script so it can read the event as ``trigger_event``."""
     payload = json.dumps(trigger_data if isinstance(trigger_data, dict) else None, ensure_ascii=False, default=str)

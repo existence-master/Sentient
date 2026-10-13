@@ -2224,7 +2224,9 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   remember"). The same rules apply to script code changed by chat tools; code a person edits
   (`PATCH /api/tasks/{id}`) only has to compile. A script job the planner leaves on an immediate one-off schedule becomes `interval` 60.
   The planner is told to use `noteworthy` by default for a page, a feed or the news, and `changed` for one exact value
-  or when the user wants to hear about any change at all; its choice is stored as proposed (#298).
+  or when the user wants to hear about any change at all (#298). A `changed` script it proposes that returns the whole
+  result of `tools.web_fetch` (the page or its `content`) is stored as `noteworthy`, unless the request asks about any
+  change ("anything", "any change") or the task's script was already `changed`.
 - `POST /api/tasks/{id}/script/test` → SandboxResult (does not change `last_result`); see section 4.
 
 ### Wake word and talk mode (owner: voice)
