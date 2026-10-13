@@ -162,12 +162,12 @@ class Spending:
             if (int(mark) if mark.isdigit() else 0) >= level:
                 return
             await self.app.store.set_meta(NOTIFIED_META, f"{month}:{level}")
-        try:
-            await self.app.notify("budget", state["message"], title="Model budget",
-                                  payload={"percent": state["percent"], "state": state["state"]})
-        except Exception:
-            log.exception("could not send the budget notification")
-        self.app.bus.publish("budget.updated", state)
+            try:  # still under the lock, so the 80% notice is always out before the 100% one
+                await self.app.notify("budget", state["message"], title="Model budget",
+                                      payload={"percent": state["percent"], "state": state["state"]})
+            except Exception:
+                log.exception("could not send the budget notification")
+            self.app.bus.publish("budget.updated", state)
 
     # ------------------------------------------------------------------ the meter
     async def report(self) -> dict[str, Any]:
