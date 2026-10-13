@@ -24,7 +24,7 @@ from sentient.gateway.auth import require_token
 from sentient.gateway.deps import get_core
 from sentient.llm import availability
 from sentient.memory.personas import render_persona
-from sentient.tools.rules import SCREEN_FOLDER
+from sentient.tools.rules import SCREEN_FOLDER, SELECTION_FOLDER
 
 open_router = APIRouter(tags=["core"])
 router = APIRouter(tags=["core"])
@@ -449,10 +449,13 @@ def resolve_file(name: str) -> Path:
 
 @router.post("/api/files", dependencies=_auth)
 async def upload_file(
-    request: Request, file: UploadFile = File(...), source: Literal["upload", "screen"] = Form("upload")
+    request: Request,
+    file: UploadFile = File(...),
+    source: Literal["upload", "screen", "selection"] = Form("upload"),
 ):
-    # what the user shared from their screen goes to screens/ and marks the chat it is sent in (ADR 0018)
-    folder = uploads_dir(SCREEN_FOLDER if source == "screen" else "uploads")
+    # what the user shared from their screen (screens/) or selected in another app (selections/) marks the chat it is
+    # sent in (ADR 0018)
+    folder = uploads_dir({"screen": SCREEN_FOLDER, "selection": SELECTION_FOLDER}.get(source, "uploads"))
     name = _safe_name(file.filename or "upload")
     target = folder / name
     stem, suffix = target.stem, target.suffix
