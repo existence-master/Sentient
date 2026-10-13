@@ -598,7 +598,7 @@ async def test_another_setup_adding_the_same_server_keeps_the_sign_in(app, keych
 
 
 async def test_older_sign_in_without_an_address(app, keychain):
-    """Untagged legacy tokens are never migrated across server URLs (CWE-522), while client registration is kept."""
+    """Untagged legacy tokens and untagged client info are not migrated when ownership cannot be verified."""
     legacy_tokens = {"tokens": {"access_token": "old", "token_type": "bearer"}, "expires_at": None}
     legacy_client = {"client_id": "c-1", "redirect_uris": ["http://127.0.0.1:1/oauth/callback"]}
     mcp_auth.save_json("mcp:Notes:oauth", legacy_tokens)
@@ -609,11 +609,34 @@ async def test_older_sign_in_without_an_address(app, keychain):
     # Legacy token is NOT copied to the URL-scoped key
     assert mcp_auth.tokens_secret("Notes", URL) not in keychain
     assert mcp_auth.KeychainTokenStorage("Notes", url=URL).has_tokens() is False
-    # Legacy token is preserved in keychain for other setups
+    # Untagged client registration metadata is NOT copied when tokens are untagged
+    assert mcp_auth.client_secret("Notes", URL) not in keychain
+    # Legacy records are preserved in keychain for backward compatibility
     assert mcp_auth.load_json("mcp:Notes:oauth") == legacy_tokens
-    # Client registration metadata is copied
+    assert mcp_auth.load_json("mcp:Notes:client") == legacy_client
+
+
+async def test_untagged_client_migrates_when_legacy_token_is_tagged(app, keychain):
+    """Untagged client registration is copied when legacy tokens are tagged for the same server URL."""
+    legacy_tokens = {"tokens": {"access_token": "old", "token_type": "bearer"}, "server_url": URL}
+    legacy_client = {"client_id": "c-1", "redirect_uris": ["http://127.0.0.1:1/oauth/callback"]}
+    mcp_auth.save_json("mcp:Notes:oauth", legacy_tokens)
+    mcp_auth.save_json("mcp:Notes:client", legacy_client)
+
+    mcp_auth.migrate_server_credentials("Notes", URL)
+    # Both tokens and client registration are copied to URL-scoped keys
+    assert mcp_auth.tokens_secret("Notes", URL) in keychain
+    assert mcp_auth.client_secret("Notes", URL) in keychain
+    assert mcp_auth.load_json(mcp_auth.tokens_secret("Notes", URL))["tokens"]["access_token"] == "old"
     cli = mcp_auth.load_json(mcp_auth.client_secret("Notes", URL))
-    assert cli["client_id"] == legacy_client["client_id"]
+    assert cli["client_id"] == "c-1"
+    assert cli["server_url"] == URL
+    # Legacy keys are preserved for backward compatibility
+    assert mcp_auth.load_json("mcp:Notes:oauth") == legacy_tokens
+    assert mcp_auth.load_json("mcp:Notes:client") == legacy_client
+    # No migrated_to mechanism
+    assert "migrated_to" not in cli
+    assert "migrated_to" not in mcp_auth.load_json("mcp:Notes:client")
 
 
 async def test_tagged_client_record_still_loads():
@@ -666,7 +689,7 @@ def test_canonical_url_and_url_hash():
     assert mcp_auth.headers_secret("srv") == "mcp:srv:headers"
 
 
-def test_migration_legacy_credentials_verified_before_deletion(keychain):
+def test_migration_legacy_credentials_preserved_for_backward_compatibility(keychain):
     legacy_tok = {"tokens": {"access_token": "a1", "token_type": "Bearer"}, "expires_at": 100.0, "server_url": URL}
     legacy_cli = {"client_id": "c1", "redirect_uris": ["http://127.0.0.1:1/cb"], "server_url": URL}
     mcp_auth.save_json("mcp:Notes:oauth", legacy_tok)
@@ -680,9 +703,11 @@ def test_migration_legacy_credentials_verified_before_deletion(keychain):
     assert keychain.get(new_cli_key) is not None
     assert mcp_auth.load_json(new_tok_key) == legacy_tok
     assert mcp_auth.load_json(new_cli_key) == legacy_cli
-    # Legacy keys are deleted only after verified write
-    assert "mcp:Notes:oauth" not in keychain
-    assert "mcp:Notes:client" not in keychain
+    # Legacy keys are preserved for backward compatibility (#269)
+    assert "mcp:Notes:oauth" in keychain
+    assert "mcp:Notes:client" in keychain
+    assert mcp_auth.load_json("mcp:Notes:oauth") == legacy_tok
+    assert mcp_auth.load_json("mcp:Notes:client") == legacy_cli
 
 
 def test_migration_failure_safety_and_retry(keychain, monkeypatch):
@@ -711,10 +736,10 @@ def test_migration_failure_safety_and_retry(keychain, monkeypatch):
     mcp_auth.migrate_server_credentials("Notes", URL)
     assert "mcp:Notes:oauth" in keychain  # legacy key still preserved
 
-    # 3. Successful retry: writing and verification succeed
+    # 3. Successful retry: writing succeeds and destination is populated
     monkeypatch.setattr(secrets, "set_secret", real_set)
     mcp_auth.migrate_server_credentials("Notes", URL)
-    assert "mcp:Notes:oauth" not in keychain  # deleted only upon verified destination
+    assert "mcp:Notes:oauth" in keychain  # legacy key preserved for backward compatibility
     assert mcp_auth.load_json(new_tok_key) == legacy_tok
 
 
@@ -734,11 +759,11 @@ def test_migration_existing_destination_conflicts_and_malformed_records(keychain
     mcp_auth.migrate_server_credentials("Notes", URL)
     assert "mcp:Notes:oauth" in keychain
 
-    # 3. Destination matches legacy tokens: legacy entry is safely deleted
+    # 3. Destination matches legacy tokens: legacy entry is preserved for backward compatibility
     matching = {**legacy_tok}
     mcp_auth.save_json(mcp_auth.tokens_secret("Notes", URL), matching)
     mcp_auth.migrate_server_credentials("Notes", URL)
-    assert "mcp:Notes:oauth" not in keychain
+    assert "mcp:Notes:oauth" in keychain
 
     # 4. Client info: destination is malformed (no client_id)
     mcp_auth.save_json("mcp:Notes:client", legacy_cli)
@@ -751,10 +776,10 @@ def test_migration_existing_destination_conflicts_and_malformed_records(keychain
     mcp_auth.migrate_server_credentials("Notes", URL)
     assert "mcp:Notes:client" in keychain
 
-    # 6. Client info: destination matches
+    # 6. Client info: destination matches: legacy entry is preserved for backward compatibility
     mcp_auth.save_json(mcp_auth.client_secret("Notes", URL), legacy_cli)
     mcp_auth.migrate_server_credentials("Notes", URL)
-    assert "mcp:Notes:client" not in keychain
+    assert "mcp:Notes:client" in keychain
 
 
 def test_migration_untagged_legacy_ambiguity(keychain):
@@ -772,10 +797,8 @@ def test_migration_untagged_legacy_ambiguity(keychain):
     assert mcp_auth.load_json("mcp:Notes:client")["client_id"] == untagged_cli["client_id"]
     # Bearer tokens are NEVER copied to destination
     assert mcp_auth.tokens_secret("Notes", URL) not in keychain
-    # Client registration metadata is copied to destination
-    dest_cli = mcp_auth.load_json(mcp_auth.client_secret("Notes", URL))
-    assert dest_cli["client_id"] == untagged_cli["client_id"]
-    assert dest_cli["server_url"] == URL
+    # Untagged client registration metadata is NOT copied when tokens are untagged
+    assert mcp_auth.client_secret("Notes", URL) not in keychain
 
 
 async def test_sign_out_with_untagged_legacy_credentials_never_restores_token(app, keychain):
@@ -972,9 +995,9 @@ def test_untagged_token_not_copied_across_urls(keychain):
     assert mcp_auth.tokens_secret("Notes", url1) not in keychain
     assert mcp_auth.tokens_secret("Notes", url2) not in keychain
 
-    # Client registration is copied
-    assert mcp_auth.client_secret("Notes", url1) in keychain
-    assert mcp_auth.client_secret("Notes", url2) in keychain
+    # Neither URL receives untagged client registration since token ownership was not verified
+    assert mcp_auth.client_secret("Notes", url1) not in keychain
+    assert mcp_auth.client_secret("Notes", url2) not in keychain
 
     # Legacy records are preserved untouched
     assert mcp_auth.load_json("mcp:Notes:oauth") == untagged_tok
@@ -1052,8 +1075,10 @@ async def test_two_engines_separate_homes_untagged_legacy_credential_isolation(k
     await app2.start()
 
     try:
-        # Both engines add the server with separate URLs
+        # Both engines add the server with separate URLs in their respective homes
+        monkeypatch.setenv("SENTIENT_HOME", str(home1))
         add1 = await app1.integrations.mcp.add(server_name, {"transport": "http", "url": url1})
+        monkeypatch.setenv("SENTIENT_HOME", str(home2))
         add2 = await app2.integrations.mcp.add(server_name, {"transport": "http", "url": url2})
 
         tok1_key = mcp_auth.tokens_secret(server_name, url1)
@@ -1066,12 +1091,14 @@ async def test_two_engines_separate_homes_untagged_legacy_credential_isolation(k
         assert add2["signed_in"] is False and add2["status"] == "needs_sign_in"
 
         # Engine 1 signs in
+        monkeypatch.setenv("SENTIENT_HOME", str(home1))
         await _sign_in(app1, mock1, server_name)
         await _wait(app1, server_name, "connected")
         assert tok1_key in keychain
         assert tok2_key not in keychain
 
         # Engine 1 signs out
+        monkeypatch.setenv("SENTIENT_HOME", str(home1))
         out1 = await app1.integrations.mcp.sign_out(server_name)
         assert out1["signed_in"] is False and out1["status"] == "needs_sign_in"
         assert tok1_key not in keychain
@@ -1100,8 +1127,8 @@ async def test_sign_out_reports_deletion_failure(app, keychain, monkeypatch):
         await app.integrations.mcp.sign_out("Notes")
 
 
-def test_url_tagged_legacy_credentials_migrate_and_delete_legacy(keychain):
-    """When legacy credentials are explicitly tagged with matching server_url, they migrate safely."""
+def test_url_tagged_legacy_credentials_migrate_and_preserve_legacy(keychain):
+    """When legacy credentials are explicitly tagged with matching server_url, they migrate safely while preserving legacy keys."""
     tagged_tok = {"tokens": {"access_token": "owned_token"}, "server_url": URL}
     tagged_cli = {"client_id": "owned_client", "server_url": URL}
     mcp_auth.save_json("mcp:Notes:oauth", tagged_tok)
@@ -1115,9 +1142,72 @@ def test_url_tagged_legacy_credentials_migrate_and_delete_legacy(keychain):
     assert mcp_auth.load_json(tok_key)["tokens"]["access_token"] == "owned_token"
     assert mcp_auth.load_json(cli_key)["client_id"] == "owned_client"
 
-    # Legacy keys are safely deleted upon verification
-    assert "mcp:Notes:oauth" not in keychain
-    assert "mcp:Notes:client" not in keychain
+    # Legacy keys are preserved for backward compatibility (#269)
+    assert "mcp:Notes:oauth" in keychain
+    assert "mcp:Notes:client" in keychain
+    assert mcp_auth.load_json("mcp:Notes:oauth") == tagged_tok
+    assert mcp_auth.load_json("mcp:Notes:client") == tagged_cli
+
+
+async def test_url_change_deletes_previous_url_credentials(app, keychain):
+    """When a server URL changes, the previous URL's token and client entries are deleted (#269)."""
+    url1 = "http://srv1.test/mcp"
+    url2 = "http://srv2.test/mcp"
+
+    # Add server at URL1
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": url1, "enabled": False})
+
+    # Save tokens (e.g. refreshed) and client secret under URL1
+    tok1_key = mcp_auth.tokens_secret("Notes", url1)
+    cli1_key = mcp_auth.client_secret("Notes", url1)
+    mcp_auth.save_json(tok1_key, {"tokens": {"access_token": "refreshed_tok1"}, "server_url": url1})
+    mcp_auth.save_json(cli1_key, {"client_id": "cli1", "server_url": url1})
+
+    assert tok1_key in keychain
+    assert cli1_key in keychain
+
+    # Update server to URL2
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": url2, "enabled": False})
+
+    # URL1 credentials must be deleted from keychain
+    assert tok1_key not in keychain
+    assert cli1_key not in keychain
+
+    # URL2 has no credentials yet
+    tok2_key = mcp_auth.tokens_secret("Notes", url2)
+    cli2_key = mcp_auth.client_secret("Notes", url2)
+    assert tok2_key not in keychain
+    assert cli2_key not in keychain
+
+
+def test_stale_sign_in_with_previous_url(keychain):
+    """stale_sign_in clears previous URL's entries and previous-URL-tagged legacy entries when changed_here=True."""
+    url1 = "http://setup1.example.com/mcp"
+    url2 = "http://setup2.example.com/mcp"
+
+    tok1_key = mcp_auth.tokens_secret("Notes", url1)
+    cli1_key = mcp_auth.client_secret("Notes", url1)
+    mcp_auth.save_json(tok1_key, {"tokens": {"access_token": "t1"}})
+    mcp_auth.save_json(cli1_key, {"client_id": "c1"})
+
+    # When changed_here=False, previous_url entries are NOT considered stale
+    assert mcp_auth.stale_sign_in("Notes", url2, changed_here=False, previous_url=url1) == []
+
+    # When changed_here=True and previous_url=url1, URL-keyed credentials for url1 are marked stale
+    stale = mcp_auth.stale_sign_in("Notes", url2, changed_here=True, previous_url=url1)
+    assert tok1_key in stale
+    assert cli1_key in stale
+
+    # Tagged legacy entry matching previous_url is also marked stale
+    legacy_tok = {"tokens": {"access_token": "leg"}, "server_url": url1}
+    mcp_auth.save_json("mcp:Notes:oauth", legacy_tok)
+    stale_with_leg = mcp_auth.stale_sign_in("Notes", url2, changed_here=True, previous_url=url1)
+    assert "mcp:Notes:oauth" in stale_with_leg
+
+    # Tagged legacy entry belonging to another setup (url3) is NEVER marked stale
+    mcp_auth.save_json("mcp:Notes:oauth", {"tokens": {"access_token": "leg3"}, "server_url": "http://setup3.test"})
+    stale_other = mcp_auth.stale_sign_in("Notes", url2, changed_here=True, previous_url=url1)
+    assert "mcp:Notes:oauth" not in stale_other
 
 
 async def test_one_url_cannot_access_or_delete_another_url_credentials(app, keychain):
@@ -1165,3 +1255,75 @@ async def test_sign_out_cannot_resurrect_when_marker_persistence_fails(app, keyc
     mcp_auth.migrate_server_credentials("Notes", URL)
     assert url_tok_key not in keychain
     assert mcp_auth.KeychainTokenStorage("Notes", url=URL).has_tokens() is False
+
+
+async def test_transport_change_from_http_to_stdio_cleans_up_credentials(app, keychain):
+    """When a server transport changes from http to stdio, http URL credentials are deleted."""
+    url1 = "http://srv1.test/mcp"
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": url1, "enabled": False})
+
+    tok_key = mcp_auth.tokens_secret("Notes", url1)
+    cli_key = mcp_auth.client_secret("Notes", url1)
+    mcp_auth.save_json(tok_key, {"tokens": {"access_token": "http_tok"}, "server_url": url1})
+    mcp_auth.save_json(cli_key, {"client_id": "http_cli", "server_url": url1})
+    assert tok_key in keychain and cli_key in keychain
+
+    # Switch to stdio
+    await app.integrations.mcp.add("Notes", {"transport": "stdio", "command": "python", "args": ["-m", "mcp"], "enabled": False})
+    assert tok_key not in keychain
+    assert cli_key not in keychain
+
+
+async def test_url_normalization_change_does_not_delete_credentials(app, keychain):
+    """When a server address changes only by trailing slash or normalization, credentials are kept."""
+    url_slash = "http://srv1.test/mcp/"
+    url_clean = "http://srv1.test/mcp"
+
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": url_slash, "enabled": False})
+    tok_key = mcp_auth.tokens_secret("Notes", url_slash)
+    cli_key = mcp_auth.client_secret("Notes", url_slash)
+    mcp_auth.save_json(tok_key, {"tokens": {"access_token": "live_tok"}, "server_url": url_slash})
+    mcp_auth.save_json(cli_key, {"client_id": "live_cli", "server_url": url_slash})
+
+    # Update to identical canonical URL without trailing slash
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": url_clean, "enabled": False})
+    # Keys use canonical url_hash so tok_key is unchanged and remains in keychain
+    assert tok_key in keychain
+    assert cli_key in keychain
+    assert mcp_auth.load_json(tok_key)["tokens"]["access_token"] == "live_tok"
+
+
+async def test_sign_out_reports_legacy_deletion_failure(app, keychain, monkeypatch):
+    """When legacy credential deletion fails during sign-out, sign_out raises ValueError."""
+    tok_key = mcp_auth.tokens_secret("Notes", URL)
+    leg_key = mcp_auth.tokens_secret("Notes", None)
+
+    mcp_auth.save_json(tok_key, {"tokens": {"access_token": "url_tok"}, "server_url": URL})
+    mcp_auth.save_json(leg_key, {"tokens": {"access_token": "leg_tok"}, "server_url": URL})
+    await app.integrations.mcp.add("Notes", {"transport": "http", "url": URL, "enabled": False})
+
+    # Simulate failure specifically for legacy key deletion
+    orig_delete = keychain.pop
+
+    def fail_leg_delete(key: str) -> None:
+        if key == leg_key:
+            return  # leave in keychain
+        orig_delete(key, None)
+
+    monkeypatch.setattr(mcp_auth, "delete_json", fail_leg_delete)
+    import sentient.integrations.mcp as mcp_mod
+    monkeypatch.setattr(mcp_mod, "delete_json", fail_leg_delete)
+
+    with pytest.raises(ValueError, match="Could not remove legacy credentials for 'Notes'"):
+        await app.integrations.mcp.sign_out("Notes")
+
+
+async def test_record_and_get_client_info_do_not_call_migration(monkeypatch):
+    """KeychainTokenStorage.record() and get_client_info() must not repeatedly invoke migration (#269)."""
+    migrated = []
+    monkeypatch.setattr(mcp_auth, "migrate_server_credentials", lambda s, u: migrated.append((s, u)))
+
+    storage = mcp_auth.KeychainTokenStorage("Notes", url=URL)
+    storage.record()
+    await storage.get_client_info()
+    assert migrated == []

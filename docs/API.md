@@ -903,10 +903,15 @@ A run counts as missed when it is more than `max(300, 3 × tasks.tick_seconds)` 
 - `POST /api/integrations/mcp/{name}/sign-out` → server object; deletes the stored tokens (the client registration is kept)
   and cancels a pending sign-in. A server with `auth: "oauth"` then shows `needs_sign_in`.
 - Tokens are refreshed with the refresh token before they expire (60 s early) and once after a 401 before asking for a
-  new sign-in. Keychain entries: `mcp:<name>` (env), `mcp:<name>:headers`, `mcp:<name>:oauth` (tokens, their expiry
-  and the authorization server metadata with the server URL it belongs to, so a refresh after a restart uses the real
-  token endpoint; a record without the metadata looks it up once),
-  `mcp:<name>:client` (registration); values too long for one entry continue in `<entry>:1`, `<entry>:2`...
+  new sign-in. Keychain entries: `mcp:<name>` (env), `mcp:<name>:headers`, `mcp:<name>:<url_hash>:oauth` (tokens, their expiry
+  and the authorization server metadata with the server URL it belongs to, where `<url_hash>` is the first 12 characters of the
+  SHA-256 hash of the canonical server URL; a record without the metadata looks it up once),
+  `mcp:<name>:<url_hash>:client` (OAuth client registration); values too long for one entry continue in `<entry>:1`, `<entry>:2`...
+  Legacy un-hashed entries (`mcp:<name>:oauth`, `mcp:<name>:client`) are migrated at startup and when a server is added:
+  legacy records explicitly tagged with the matching canonical URL are copied to the URL-keyed entries while preserving the legacy records
+  for backward compatibility with older installations sharing the keychain. Untagged legacy tokens are never migrated automatically
+  to prevent cross-endpoint credential reuse, and untagged client registrations are only copied when legacy tokens are tagged for the
+  same server address. When a server's URL changes, credentials for the previous URL are deleted from the keychain.
 - `PUT /api/integrations/{id}/privacy-filters` → 400 when the integration has `privacy_filters.supported: false`
 
 **Read only connections (#141, ADR 0016 amendment).** `integrations.read_only` lists the app ids (`gmail`, `github`,

@@ -351,11 +351,17 @@ class MCPManager:
                 "enabled": bool(spec.get("enabled", True)),
             }
             previous = self.app.config.integrations.mcp_servers.get(name)
+            prev_url = previous.get("url") if isinstance(previous, dict) else None
             changed_here = previous is not None and (
                 previous.get("url") != stored["url"] or previous.get("transport", "stdio") != transport)
             # A sign-in belongs to one server address. The keychain is shared with other setups on this computer,
             # so only clear one saved for another address, never one another setup made for this same server.
-            for secret in stale_sign_in(name, stored["url"] if transport == "http" else None, changed_here=changed_here):
+            for secret in stale_sign_in(
+                name,
+                stored["url"] if transport == "http" else None,
+                changed_here=changed_here,
+                previous_url=prev_url if changed_here else None,
+            ):
                 delete_json(secret)
             if transport == "http" and stored.get("url"):
                 migrate_server_credentials(name, stored["url"])

@@ -158,9 +158,11 @@ def migrate_server_credentials(server: str, url: str | None) -> None:
     Compatibility rules (#269):
     - Never assume an untagged legacy credential (saved is None) belongs to this URL.
       Preserve untagged legacy entries so other setups sharing the keychain are not starved.
-    - Only delete the legacy entry if ownership is explicitly proven (canonical_url(saved) == canon)
-      and destination storage is verified.
-    - Never delete a legacy entry if the destination record is malformed, incomplete, or conflicts.
+    - Legacy entries are copied to URL-specific keys but preserved in place for backward
+      compatibility with older installations sharing the keychain.
+    - Untagged legacy client info is copied only when the legacy token record is tagged for
+      this same server URL.
+    - Never overwrite a destination record with conflicting or malformed data.
     """
     if not url:
         return
@@ -170,6 +172,7 @@ def migrate_server_credentials(server: str, url: str | None) -> None:
     # 1. Tokens
     legacy_tok = tokens_secret(server, None)
     new_tok = tokens_secret(server, url)
+    leg_data = None
     if legacy_tok != new_tok:
         dest_data = load_json(new_tok)
         leg_data = load_json(legacy_tok)
@@ -177,22 +180,15 @@ def migrate_server_credentials(server: str, url: str | None) -> None:
             saved = leg_data.get(SERVER_URL_KEY)
             if saved is not None and canonical_url(saved) == canon:
                 if dest_data is not None:
-                    if _has_valid_tokens(dest_data):
-                        if dest_data.get("tokens") == leg_data.get("tokens"):
-                            delete_json(legacy_tok)
-                        else:
-                            log.warning("Preserving legacy tokens for %s: destination key contains conflicting credentials", server)
-                    else:
-                        log.warning("Preserving legacy tokens for %s: destination record is incomplete or malformed", server)
+                    if not _has_valid_tokens(dest_data):
+                        new_rec = {**leg_data, SERVER_URL_KEY: url}
+                        save_json(new_tok, new_rec)
+                    elif dest_data.get("tokens") != leg_data.get("tokens"):
+                        log.warning("Preserving legacy tokens for %s: destination key contains conflicting credentials", server)
                 else:
                     new_rec = {**leg_data, SERVER_URL_KEY: url}
-                    if save_json(new_tok, new_rec):
-                        if load_json(new_tok) == new_rec:
-                            delete_json(legacy_tok)
-                        else:
-                            log.warning("Verification failed for migrated tokens for %s; preserving legacy entry", server)
-                    else:
-                        log.warning("Could not save migrated tokens for %s; preserving legacy entry", server)
+                    if not save_json(new_tok, new_rec):
+                        log.warning("Could not save migrated tokens for %s", server)
             # If saved is None: NEVER migrate untagged legacy bearer tokens across server URLs (CWE-522).
             # The untagged legacy record is preserved without modification so other setups are not starved.
             # Require explicit OAuth sign-in for each URL whose token ownership cannot be verified.
@@ -205,57 +201,73 @@ def migrate_server_credentials(server: str, url: str | None) -> None:
         leg_cli = load_json(legacy_cli)
         if isinstance(leg_cli, dict):
             saved = leg_cli.get(SERVER_URL_KEY)
+            should_copy = False
             if saved is not None and canonical_url(saved) == canon:
+                should_copy = True
+            elif saved is None and _has_valid_client_info(leg_cli) and isinstance(leg_data, dict):
+                # Copy untagged client info ONLY when legacy tokens are tagged for this same address
+                tok_saved = leg_data.get(SERVER_URL_KEY)
+                if tok_saved is not None and canonical_url(tok_saved) == canon:
+                    should_copy = True
+
+            if should_copy:
                 if dest_cli is not None:
-                    if _has_valid_client_info(dest_cli):
-                        if dest_cli.get("client_id") == leg_cli.get("client_id"):
-                            delete_json(legacy_cli)
-                        else:
-                            log.warning("Preserving legacy client info for %s: destination contains conflicting client info", server)
-                    else:
-                        log.warning("Preserving legacy client info for %s: destination client record is malformed", server)
+                    if not _has_valid_client_info(dest_cli):
+                        new_rec = {**leg_cli, SERVER_URL_KEY: url}
+                        save_json(new_cli, new_rec)
+                    elif dest_cli.get("client_id") != leg_cli.get("client_id"):
+                        log.warning("Preserving legacy client info for %s: destination contains conflicting client info", server)
                 else:
                     new_rec = {**leg_cli, SERVER_URL_KEY: url}
-                    if save_json(new_cli, new_rec):
-                        if load_json(new_cli) == new_rec:
-                            delete_json(legacy_cli)
-                        else:
-                            log.warning("Verification failed for migrated client info for %s; preserving legacy entry", server)
-                    else:
-                        log.warning("Could not save migrated client info for %s; preserving legacy entry", server)
-            elif saved is None and (dest_cli is None or not _has_valid_client_info(dest_cli)) and _has_valid_client_info(leg_cli):
-                migrated_raw = leg_cli.get("migrated_to")
-                migrated = set(migrated_raw) if isinstance(migrated_raw, (list, set, tuple)) else set()
-                if canon not in migrated:
-                    new_rec = {k: v for k, v in leg_cli.items() if k != "migrated_to"}
-                    new_rec[SERVER_URL_KEY] = url
-                    if save_json(new_cli, new_rec) and load_json(new_cli) == new_rec:
-                        fresh = load_json(legacy_cli)
-                        fresh_mig = set(fresh.get("migrated_to") or []) if isinstance(fresh, dict) and isinstance(fresh.get("migrated_to"), (list, set, tuple)) else set()
-                        leg_cli["migrated_to"] = sorted(migrated | fresh_mig | {canon})
-                        save_json(legacy_cli, leg_cli)
-                    else:
-                        log.warning("Could not copy ambiguous legacy client info for %s", server)
+                    if not save_json(new_cli, new_rec):
+                        log.warning("Could not save migrated client info for %s", server)
 
 
-def stale_sign_in(server: str, url: str | None, *, changed_here: bool) -> list[str]:
+def stale_sign_in(
+    server: str,
+    url: str | None,
+    *,
+    changed_here: bool,
+    previous_url: str | None = None,
+) -> list[str]:
     """The sign-in entries that belong to another address and can safely be cleared.
 
+    When a server's address changes on this setup (changed_here=True and previous_url is set),
+    the previous URL's URL-specific tokens and client info secrets are cleared so live tokens
+    are not left behind in the keychain.
     A legacy entry tagged with another server URL must NEVER be deleted, as another setup
     sharing the OS keychain may own it (#269).
     An untagged legacy entry is only considered stale if this setup previously moved the server
     elsewhere (changed_here=True)."""
     stale = []
+    canon = canonical_url(url) if url else None
+    prev_canon = canonical_url(previous_url) if previous_url else None
+
+    # URL-specific entries from previous_url when address changes to another address
+    if changed_here and prev_canon and prev_canon != canon:
+        for s in (tokens_secret(server, previous_url), client_secret(server, previous_url)):
+            if s not in stale:
+                stale.append(s)
+
     for name in (tokens_secret(server, None), client_secret(server, None)):
         rec = load_json(name)
         if not isinstance(rec, dict):
             continue
         saved = rec.get(SERVER_URL_KEY)
         if saved is not None:
-            # Explicitly tagged with another URL: belongs to that URL's setup, NEVER delete!
+            # If explicitly tagged with previous_url and changed here to another address,
+            # this setup owned it and moved away:
+            if (
+                changed_here
+                and prev_canon
+                and prev_canon != canon
+                and canonical_url(saved) == prev_canon
+                and name not in stale
+            ):
+                stale.append(name)
             continue
         # Untagged record: only clear if this setup previously configured this server elsewhere
-        if changed_here:
+        if changed_here and name not in stale:
             stale.append(name)
     return stale
 
@@ -307,7 +319,6 @@ class KeychainTokenStorage:
     def record(self) -> dict | None:
         url = self.effective_url
         if url:
-            migrate_server_credentials(self.server, url)
             rec = load_json(tokens_secret(self.server, url))
             if rec is not None:
                 return rec
@@ -376,7 +387,6 @@ class KeychainTokenStorage:
     async def get_client_info(self) -> OAuthClientInformationFull | None:
         url = self.effective_url
         if url:
-            migrate_server_credentials(self.server, url)
             data = load_json(client_secret(self.server, url))
             if data is None:
                 leg = load_json(client_secret(self.server, None))
@@ -389,7 +399,7 @@ class KeychainTokenStorage:
         if not data:
             return None
         try:
-            return OAuthClientInformationFull.model_validate({k: v for k, v in data.items() if k not in (SERVER_URL_KEY, "migrated_to")})
+            return OAuthClientInformationFull.model_validate({k: v for k, v in data.items() if k != SERVER_URL_KEY})
         except Exception:
             return None
 
