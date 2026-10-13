@@ -117,7 +117,7 @@ async def test_a_chat_without_outside_content_follows_the_normal_rules(config, i
     s = await _start(config, isolated_home, llm, "clean", log)
     try:
         sid = await s.store.create_session(channel="cli")
-        asked, _ = await _turn(s, sid, "note it and send it")
+        asked, _ = await _turn(s, sid, "note it and send it to sam@example.com")
         assert asked == [] and log == ["send:sam@example.com"]  # Sentient's own tools never taint
         assert (await s.store.get_session(sid))["untrusted"] == ""  # checked and clean
     finally:
@@ -137,10 +137,10 @@ async def test_the_chat_stays_marked_until_a_new_chat_starts(config, isolated_ho
         sid = await s.store.create_session(channel="cli")
         assert (await _turn(s, sid, "read it"))[0] == []
         # a later turn of the same chat, and a write marked as moving data out, still asks
-        asked, _ = await _turn(s, sid, "share the draft")
+        asked, _ = await _turn(s, sid, "share the draft with sam@example.com")
         assert [a.name for a in asked] == ["mail_share_draft"] and asked[0].untrusted == REASON
         other = await s.store.create_session(channel="cli")
-        assert (await _turn(s, other, "share the draft"))[0] == []  # a new chat starts clean
+        assert (await _turn(s, other, "share the draft with sam@example.com"))[0] == []  # a new chat starts clean
         assert log == ["read:1", "share:sam@example.com"]
     finally:
         await s.stop()
@@ -157,7 +157,7 @@ async def test_calls_chosen_in_the_same_round_as_the_read_are_not_affected(confi
     s = await _start(config, isolated_home, llm, "round", log)
     try:
         sid = await s.store.create_session(channel="cli")
-        assert (await _turn(s, sid, "read and send"))[0] == []
+        assert (await _turn(s, sid, "read it and send it to sam@example.com"))[0] == []
         assert log == ["read:1", "send:sam@example.com"]
     finally:
         await s.stop()
@@ -183,6 +183,8 @@ async def test_a_run_nobody_can_be_asked_in_holds_the_call(config, isolated_home
         assert result.needs_ok is not None
         assert result.needs_ok["tool"] == "mail_send" and result.needs_ok["call_id"] == "call_mail_send"
         assert result.needs_ok["question"].startswith("This task read content from Mail")
+        # a second look (#143) adds why this recipient looks off
+        assert result.needs_ok["question"].endswith("This goes to attacker@example.com, which isn't in what you asked, your contacts or your memories.")
     finally:
         await s.stop()
 

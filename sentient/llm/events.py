@@ -68,6 +68,8 @@ class ApprovalRequest(_Event):
     target: str | None = None      # short human label of what is acted on, e.g. "Place order"
     # why this asks although rules or modes would let it run: the chat read outside content (ADR 0018)
     untrusted: str | None = None
+    # what a second look found off about this call (#143): "You asked to email Arjun, but this goes to x@..."
+    warning: str | None = None
     # the answers offered, in button order (#139): allow, allow_session, allow_timed, allow_always, deny. Only
     # "allow" and "deny" for a purchase, a raised risk, running code or a call after outside content
     choices: list[str] | None = None
@@ -119,6 +121,9 @@ class Done(_Event):
     content: str = ""
     message_id: str | None = None
     cancelled: bool = False
+    # set when the turn ended in an error before any reply (the ``error`` event before it has the message to show);
+    # nothing was saved then and ``message_id`` is null
+    error: str | None = None
     # memories this reply had in mind (sentient.memory.sources): what was in its prompt or returned by memory tools
     memory_sources: list[dict[str, Any]] = Field(default_factory=list)
     # pages, emails, files and apps this reply used (sentient.agent.sources, #174)

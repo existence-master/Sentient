@@ -90,6 +90,7 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
             me = asyncio.current_task()
             turn = None
             stopped: dict = {}
+            ended = False  # the last event sent was a done
             try:
                 if previous is not None and not previous.done():
                     await asyncio.wait({previous})
@@ -113,6 +114,7 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                 async for event in turn:
                     # keep consuming even if the window went away so the turn is fully persisted
                     await send(event.model_dump())
+                    ended = event.type == "done"
             except asyncio.CancelledError:
                 if turn is not None:  # stopped between events: close it now so the kept reply is saved first
                     with contextlib.suppress(Exception):
@@ -126,7 +128,12 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                 raise
             except Exception as exc:
                 log.exception("chat turn failed")
+                if ended:  # it broke after its done: the turn already ended
+                    return
                 await send({"type": "error", "message": str(exc), "session_id": session_id, "recoverable": False})
+                # every turn ends with one done, also when it broke (docs/API.md section 1, #334)
+                await send({"type": "done", "content": "", "session_id": session_id, "message_id": None,
+                            "error": str(exc)})
             finally:
                 chain = turns.get(session_id) or []
                 if me in chain:

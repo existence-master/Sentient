@@ -28,6 +28,7 @@ proposing a change to one of them.
 | [0021](0021-hold-untrusted-memories-for-review.md) | Hold memories from untrusted sources for the user's review | Accepted | 2026-10-10 |
 | [0022](0022-claude-through-your-own-claude-code.md) | Let chats use Claude through the user's own Claude Code, off by default | Accepted | 2026-10-10 |
 | [0023](0023-mark-outside-content-in-prompts.md) | Mark outside content in prompts so the model reads it as data | Accepted | 2026-10-11 |
+| [0024](0024-second-look-at-outgoing-actions.md) | Take a second look at outgoing actions before they run | Accepted | 2026-10-13 |
 
 ## Adding a record
 

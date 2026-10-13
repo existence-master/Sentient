@@ -107,6 +107,7 @@ hand ("this time", "just this once", "for now", "in part A", "in step 2") is not
 
 "Off" now means no questions apart from this complete list: purchases, tools or apps set to Ask, sending after outside
 content was read ([ADR 0018](0018-untrusted-content-gates-sending.md)), and changes covered by an undecided proposal.
+Since 2026-10-13 also calls a second look flagged ([ADR 0024](0024-second-look-at-outgoing-actions.md)).
 Never rules and Read only connections refuse instead of asking.
 
 ## Amendment (2026-10-12): tasks ask, scoped answers and approvals outside the app (#139)

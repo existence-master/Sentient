@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from sentient import paths, secrets
+from sentient.activity import Timeline
 from sentient.agent import incognito as incognito_outputs
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import ChatRules
@@ -130,6 +131,7 @@ class SentientApp:
         self.backups = BackupService(self)
         self.memory_imports = MemoryImports(self)  # memory from ChatGPT, Claude and OpenClaw exports (#156)
         self.incognito = IncognitoSweeper(self)  # incognito chats are deleted when closed (#154)
+        self.timeline = Timeline(self)  # what Sentient did and will do, read from the other packages' tables (#147)
         self._started = False
         self.stop_state: dict[str, Any] = {"stopped": False, "stopped_at": None, "source": None}
         # bumped by every stop_all: work queued before it (e.g. a chat message waiting behind a reply) is dropped

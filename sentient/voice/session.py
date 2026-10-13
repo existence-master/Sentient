@@ -575,7 +575,8 @@ class VoiceSession:
                 elif etype == "approval_request":
                     enqueue(splitter.flush())
                     self._approvals[event.call_id] = event.approval_id
-                    why = f" {event.untrusted}" if getattr(event, "untrusted", None) else ""
+                    said = (getattr(event, "warning", None), getattr(event, "untrusted", None))  # #143, ADR 0018
+                    why = "".join(f" {text}" for text in said if text)
                     enqueue([f"I need your approval to use {event.name.replace('_', ' ')}.{why} Say yes or no."])
                 elif etype == "tool_result":
                     self._approvals.pop(event.call_id, None)

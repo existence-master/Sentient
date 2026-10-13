@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runs_task ON task_runs(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_runs_created ON task_runs(created_at);   -- the activity timeline (#147)
 
 CREATE TABLE IF NOT EXISTS run_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

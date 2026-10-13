@@ -744,7 +744,7 @@ class Channel:
                         replies.append(final)
                     if replies:
                         self.publish_message(chat_id, session_id, "out", "\n\n".join(replies))
-                    if voice_in and cfg.voice_replies and final:
+                    if voice_in and cfg.voice_replies and final and not event.error:
                         await self._voice_reply(chat_id, final)
         except asyncio.CancelledError:
             with contextlib.suppress(Exception):
@@ -789,9 +789,12 @@ class Channel:
             f"**Approval needed**\n{self.app.config.assistant.name} wants to use **{humanize_tool(event.name)}** "
             f"(risk: {event.risk}).\n```json\n{args}\n```"
         )
+        if event.warning:  # a second look found something off (#143): say it first
+            md += f"\n**Check this:** {event.warning}"
         if event.untrusted:  # it read outside content: say why; "for this chat" would not cover the next one anyway
             md += f"\n{event.untrusted}"
-        offered = event.choices or (["allow", "deny"] if event.untrusted else ["allow", "allow_session", "deny"])
+        once = event.untrusted or event.warning
+        offered = event.choices or (["allow", "deny"] if once else ["allow", "allow_session", "deny"])
         minutes = event.grant_minutes or self.app.config.tools.approvals.grant_minutes
         allow = [
             Button("Allow" if d == "allow" else decision_label(d, minutes), f"ap:{APPROVAL_CODES[d]}:{event.approval_id}",
