@@ -126,6 +126,9 @@ function SourceChip({ source: s }: { source: AnswerSource }) {
         </div>
         <div className="selectable break-words text-sm font-medium text-fg">{s.title}</div>
         {where && <div className="selectable truncate text-xs text-fg-subtle">{where}</div>}
+        {s.via === 'prompt' && (
+          <div className="text-xs text-fg-subtle">It matched your message, so Sentient read it before replying.</div>
+        )}
         {s.snippet && (
           <blockquote className="selectable max-h-40 overflow-y-auto border-l-2 border-border-strong pl-2.5 text-xs leading-relaxed text-fg-muted">
             {s.snippet}

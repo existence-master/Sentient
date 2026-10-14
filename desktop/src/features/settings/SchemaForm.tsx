@@ -41,6 +41,10 @@ export const LABELS: Record<string, FieldLabel> = {
   'memory.graph_link_similarity': { label: 'Graph link threshold', percent: true },
   'memory.summarize_after_minutes': { label: 'Summarize conversations after', unit: 'min' },
   'memory.summary_chunk_messages': { label: 'Messages per summary', unit: 'messages' },
+  // folders: matching pieces of notes that go along with each message (#354)
+  'folders.prompt_notes': { label: 'Note pieces with each message', unit: 'pieces' },
+  'folders.prompt_min_similarity': { label: 'How closely a note must match', percent: true },
+  'folders.prompt_note_chars': { label: 'Length of each note piece', unit: 'chars' },
   // models (#149)
   'models.local_queue': { label: 'One job at a time, your chats first' },
   'models.background_quiet_s': { label: 'Background work waits after you chat', unit: 's' },
