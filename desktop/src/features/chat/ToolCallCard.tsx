@@ -1,4 +1,4 @@
-import { IconCheck, IconChevronRight, IconClockHour4, IconShieldQuestion, IconX } from '@tabler/icons-react'
+import { IconCheck, IconChevronRight, IconClockHour4, IconHandFinger, IconShieldQuestion, IconX } from '@tabler/icons-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useState } from 'react'
 import { JsonView, Spinner } from '@/components/ui'
@@ -11,6 +11,7 @@ import { asRecord, DeclinedText, StatusGlyph } from './cards/bits'
 import { CodeRunCard } from './cards/CodeRunCard'
 import { isSubagentTool, SubagentCard } from './cards/SubagentCard'
 import { TerminalCard } from './cards/TerminalCard'
+import { asHandOff, HandOffCard } from './HandOffCard'
 import { UndoCard } from './UndoCard'
 import { IMAGE_FILE_RE, openOutputFile, outputPath } from './files'
 import { argsPreview, toolMeta } from './toolMeta'
@@ -31,6 +32,7 @@ function GenericToolCard({
   const denied = tool.status === 'denied'
   const preview = argsPreview(tool.arguments)
   const hasResult = tool.result !== undefined && tool.result !== null && tool.result !== ''
+  const handOff = asHandOff(tool.result)
 
   return (
     <div className="space-y-2">
@@ -54,7 +56,9 @@ function GenericToolCard({
             <DeclinedText tool={tool} approval={approval} className="min-w-0 flex-1 font-medium" />
           ) : (
             <>
-              <span className={cn('shrink-0 font-medium', running ? 'text-fg-muted' : 'text-fg')}>{running ? meta.running : meta.done}</span>
+              <span className={cn('shrink-0 font-medium', running ? 'text-fg-muted' : 'text-fg')}>
+                {running ? meta.running : handOff ? 'Prepared for you' : meta.done}
+              </span>
               {preview && <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-subtle">{preview}</span>}
               {!preview && <span className="flex-1" />}
             </>
@@ -73,6 +77,8 @@ function GenericToolCard({
               <IconX size={14} className="text-danger" />
             ) : denied ? (
               <StatusGlyph status="denied" />
+            ) : handOff ? (
+              <IconHandFinger size={14} className="text-accent" />
             ) : (
               <IconCheck size={14} className="text-success" />
             )}
@@ -124,6 +130,7 @@ function GenericToolCard({
       </div>
       {approval && <ApprovalCard approval={approval} onRespond={onApprove} />}
       {tool.undo && <UndoCard undo={tool.undo} />}
+      {handOff && <HandOffCard handOff={handOff} />}
     </div>
   )
 }
@@ -146,6 +153,7 @@ export function ToolCallCard({ tool, approval, onApprove }: { tool: ToolCallView
         {special}
         {approval && <ApprovalCard approval={approval} onRespond={onApprove} />}
         {tool.undo && <UndoCard undo={tool.undo} />}
+        {asHandOff(tool.result) && <HandOffCard handOff={asHandOff(tool.result)!} />}
       </div>
     )
   }

@@ -11,9 +11,16 @@ import { errorMessage } from '@/lib/api'
 import type { RuleProposal } from '@/lib/types'
 import { truncate } from '@/lib/utils'
 
+const LEVELS: Record<RuleProposal['rule'], string> = {
+  never: 'Never',
+  ask: 'Always ask',
+  if_asked: 'Only if I asked',
+  hand_off: 'Hand it to me'
+}
+
 export function RuleProposalCard({ proposal }: { proposal: RuleProposal }) {
   const decide = useDecideRuleProposal()
-  const level = proposal.rule === 'never' ? 'Never' : 'Always ask'
+  const level = LEVELS[proposal.rule] ?? 'Always ask'
   const what = proposal.targets.map((t) => t.label).join(', ')
 
   const answer = (decision: 'accept' | 'decline') =>

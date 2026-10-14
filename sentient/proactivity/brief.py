@@ -356,12 +356,13 @@ class DailyBrief:
         return agent.tool_context(None, "proactive", origin="proactive") if agent is not None else None
 
     async def read(self, name: str, arguments: dict) -> dict | None:
-        """Call one read-only tool. Anything that is not ``read``, or is behind an Ask or Never rule, is never called."""
+        """Call one read-only tool. Anything that is not ``read``, or is behind an Ask, Only if I asked or Never rule,
+        is never called."""
         t = self.app.registry.get(name)
         if t is None or t.risk != Risk.read:
             return None
         with contextlib.suppress(Exception):
-            if self.app.approvals.rule(t) in {"ask", "never"}:
+            if self.app.approvals.rule(t) in {"ask", "if_asked", "never"}:  # nobody asked for a brief (#140)
                 return None
         ctx = self._ctx()
         if ctx is None:
