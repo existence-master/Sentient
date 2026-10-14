@@ -316,7 +316,7 @@ class UserModelService(Service):
             vecs = await self.app.llm.embed([statement])
             if not vecs:
                 return
-            await self.vec.ensure(len(vecs[0]), self._reindex)
+            await self.vec.ensure(len(vecs[0]), self._reindex, self.app.llm.model_for("embedding"))
             await self.vec.upsert(rid, vecs[0])
         except Exception as exc:
             log.debug("insight embedding skipped: %s", exc)
@@ -888,10 +888,32 @@ class UserModelService(Service):
         if self._vectors is None:
             vectors: dict[int, list[float]] = {}
             if self.app.store.vec_available and (self.vec.ready or await self.vec.exists()):
+                stored = await self.app.store.get_meta(f"{VEC_TABLE}_model")
+                if stored and stored != self.app.llm.model_for("embedding"):
+                    # made by another embedding model, so they don't compare with today's query: re-embed them
+                    self._start(self._reembed())
+                    return {}
                 with contextlib.suppress(Exception):
                     vectors = await self.vec.all_vectors()
             self._vectors = vectors
         return self._vectors
+
+    def _start(self, coro) -> None:
+        if any(t.get_name() == "user_model:reembed" for t in self._background):
+            coro.close()
+            return
+        task = asyncio.create_task(coro, name="user_model:reembed")
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _reembed(self) -> None:
+        """Rebuild the insight index with the current embedding model (``VecTable.ensure`` sees the new model)."""
+        try:
+            [vec] = await self.app.llm.embed(["user model"])
+            await self.vec.ensure(len(vec), self._reindex, self.app.llm.model_for("embedding"))
+        except Exception as exc:
+            log.debug("re-embedding insights skipped: %s", exc)
+        self._vectors = None
 
     async def _ranked(self, text: str, limit: int = 100) -> tuple[list[dict], list[dict]]:
         """(confirmed insights, active insights ordered by relevance to ``text`` then confidence)."""

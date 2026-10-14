@@ -22,7 +22,7 @@ from typing import Any
 
 import httpx
 
-from sentient.config.schema import LOCAL_MODEL_TIERS, ModelRoles, ModelsConfig
+from sentient.config.schema import LOCAL_MODEL_TIERS, MULTILINGUAL_EMBEDDING, ModelRoles, ModelsConfig
 
 log = logging.getLogger(__name__)
 
@@ -259,6 +259,12 @@ NOTES = {
 }
 
 
+MULTILINGUAL_NOTE = (
+    "If you write to Sentient in Hindi or another language besides English, this memory search model keeps those "
+    "memories apart and finds them better. Switching re-reads every memory once."
+)
+
+
 def recommend(hw: dict[str, Any] | None) -> dict[str, Any]:
     """The local model and context length for this computer: the first ``LOCAL_MODEL_TIERS`` row it meets."""
     hw = hw or {}
@@ -289,6 +295,8 @@ def recommend(hw: dict[str, Any] | None) -> dict[str, Any]:
         "cloud_first": cloud_first,
         "summary": f"a cloud model ({summary} for chat only)" if cloud_first else summary,
         "note": NOTES[note_key],
+        # memory search in Hindi and other languages (#339); it fits wherever the local model does
+        "multilingual_embedding": None if cloud_first else {**MULTILINGUAL_EMBEDDING, "note": MULTILINGUAL_NOTE},
     }
 
 

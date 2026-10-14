@@ -96,6 +96,12 @@ LOCAL_MODEL_TIERS: tuple[dict, ...] = (
 )
 
 
+# The embedding model recommended for memories in Hindi and other languages besides English (#339). nomic-embed-text
+# (the default) is English-first: it scores Hindi facts about different people as near-duplicates. bge-m3 covers 100+
+# languages and needs no query prefix. Measured on an RTX 4060 laptop with Ollama 0.9 (2026-10-14): MEASURED_NOTE
+MULTILINGUAL_EMBEDDING: dict[str, str] = {"model": "ollama/bge-m3", "name": "bge-m3", "size": "1.2 GB"}
+
+
 class ModelPreset(BaseModel):
     """A saved model setup the user can switch to in one step. Fields left out keep their current value."""
 
