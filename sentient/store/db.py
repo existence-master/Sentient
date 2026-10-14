@@ -32,7 +32,7 @@ SCHEMA_VERSION = 10  # 2: sessions.incognito (#154); 3: messages.sources (#290);
 # 9: messages.approval and the activity timeline's indexes (#147); 10: try runs and file snapshots (#142)
 PACKAGE_SCHEMAS = [
     "tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox",
-    "folders", "snapshots",
+    "folders", "reminders", "snapshots",
 ]
 
 

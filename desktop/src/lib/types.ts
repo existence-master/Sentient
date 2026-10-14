@@ -164,6 +164,8 @@ export interface ChatConfig {
   compress_after_messages: number
   show_thinking: boolean
   auto_title: boolean
+  /** Timers and reminders done at once, without the model (#150). */
+  quick_commands?: boolean
   /** Incognito chats can use what Sentient already knows (#154). Nothing from them is remembered either way. */
   incognito_uses_memory?: boolean
   incognito_delete_after_minutes?: number
@@ -1077,6 +1079,8 @@ export interface DomainEventMap {
   'backup.updated': BackupUpdated
   // §22
   'folders.updated': FoldersUpdated
+  // §23
+  'reminder.updated': Reminder
   'import.updated': MemoryImportJob
 }
 
@@ -1793,7 +1797,7 @@ export interface McpTestResult {
 }
 
 // ============================================================================ §6 Notifications & proactivity
-export type NotificationKind = 'info' | 'task' | 'approval' | 'proactive' | 'skill' | 'error' | 'brief'
+export type NotificationKind = 'info' | 'task' | 'approval' | 'proactive' | 'skill' | 'error' | 'brief' | 'reminder'
 
 /** Daily Brief (docs/API.md section 6). */
 export type BriefKind = 'morning' | 'evening'
@@ -2667,6 +2671,7 @@ export interface BackupUpdated {
 export type TimelineKind =
   | 'chat'
   | 'tasks'
+  | 'reminders'
   | 'briefs'
   | 'monitors'
   | 'approvals'
@@ -2704,9 +2709,9 @@ export interface TimelineItem {
   app_label: string | null
   ref: TimelineRef | null
   upcoming: boolean
-  /** A way back the window can offer (#142): Restore for something moved to the trash, or for files code changed
-   * (Sentient kept copies first). */
-  undo?: { action: 'restore'; label: string } | null
+  /** A way back the window can offer: Restore for something moved to the trash (#142) or for files code changed
+   *  (Sentient kept copies first), Cancel for a timer or reminder that has not gone off yet (#150). */
+  undo?: { action: 'restore' | 'cancel'; label: string } | null
 }
 
 export interface TimelinePage {
@@ -2766,4 +2771,30 @@ export interface FoldersUpdated {
   id: string
   removed?: boolean
   progress?: { done: number; total: number }
+}
+
+// ---------------------------------------------------------------------------- §23 timers and reminders (#150)
+export type ReminderKind = 'timer' | 'reminder'
+export type ReminderStatus = 'scheduled' | 'fired' | 'cancelled'
+
+export interface Reminder {
+  id: string
+  kind: ReminderKind
+  /** What to remind about ("call Ravi"); '' for a timer. */
+  message: string
+  connector: '' | 'to' | 'about' | 'that'
+  /** A timer's name ("pasta"). */
+  label: string
+  /** A timer's length, or a reminder set "in 20 minutes". */
+  duration_s: number | null
+  fire_at: ISODate
+  status: ReminderStatus
+  session_id: string | null
+  channel: string | null
+  language: string
+  source: 'quick' | 'chat' | 'api'
+  created_at: ISODate
+  fired_at: ISODate | null
+  cancelled_at: ISODate | null
+  notification_id: string | null
 }

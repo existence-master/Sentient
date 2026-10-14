@@ -9,6 +9,7 @@
  */
 import {
   IconActivity,
+  IconAlarm,
   IconAlertTriangle,
   IconArrowBackUp,
   IconBell,
@@ -43,6 +44,7 @@ import { cn, formatTime, parseDate } from '@/lib/utils'
 const KINDS: Array<{ id: TimelineKind; label: string; icon: Icon }> = [
   { id: 'chat', label: 'Chats', icon: IconMessageCircle },
   { id: 'tasks', label: 'Tasks', icon: IconListCheck },
+  { id: 'reminders', label: 'Timers & reminders', icon: IconAlarm },
   { id: 'briefs', label: 'Briefs', icon: IconSun },
   { id: 'monitors', label: 'Watches', icon: IconRadar },
   { id: 'approvals', label: 'Approvals', icon: IconShieldCheck },
@@ -388,11 +390,50 @@ function Row({ item, compact }: { item: TimelineItem; compact?: boolean }) {
       </span>
     </button>
   )
+  if (item.undo?.action === 'cancel') {
+    return (
+      <div className="flex items-start">
+        <div className="min-w-0 flex-1">{row}</div>
+        <CancelButton item={item} compact={compact} />
+      </div>
+    )
+  }
   if (!item.undo || compact) return row
   return (
     <div className="flex items-start">
       <div className="min-w-0 flex-1">{row}</div>
       <RestoreButton item={item} />
+    </div>
+  )
+}
+
+/** Cancels a timer or reminder that has not gone off yet (#150). */
+function CancelButton({ item, compact }: { item: TimelineItem; compact?: boolean }) {
+  const qc = useQueryClient()
+  const [busy, setBusy] = useState(false)
+  return (
+    <div className={cn('shrink-0 pr-4', compact ? 'py-2' : 'py-3')}>
+      <Button
+        size="sm"
+        variant="ghost"
+        leftIcon={<IconX size={14} />}
+        loading={busy}
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true)
+          try {
+            await api.timeline.cancel(item.id)
+            toast.success('Cancelled', { description: item.title })
+            void qc.invalidateQueries({ queryKey: qk.timeline.all })
+          } catch (err) {
+            toast.error("Couldn't cancel it", { description: errorMessage(err) })
+          } finally {
+            setBusy(false)
+          }
+        }}
+      >
+        {item.undo?.label ?? 'Cancel'}
+      </Button>
     </div>
   )
 }

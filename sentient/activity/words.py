@@ -7,6 +7,7 @@ import re
 from datetime import tzinfo
 from typing import Any
 
+from sentient.agent.fastpath import en as english
 from sentient.tasks.schedule import DAY_NAMES, WINDOWS, interval_minutes, normalize_days, parse_iso
 
 # Apps that are not tool plugins: messaging channels and trigger sources.
@@ -25,11 +26,12 @@ DELIVERY_REASONS = {
     "chosen": "The task sends its updates there",
     "default": "That chat gets Sentient's notifications",
     "chat": "A helper you started in that chat finished",
+    "reminder": "You set it in that chat",
 }
 DELIVERY_WHAT = {
     "task": "A task update", "question": "A question from a task", "approval": "An approval request from a task",
     "plan": "A plan waiting for your OK", "brief": "Your brief", "suggestion": "A suggestion",
-    "subagent": "Background work that finished",
+    "subagent": "Background work that finished", "reminder": "A timer or reminder you set",
 }
 WINDOW_PHRASES = {"morning": "in the morning", "afternoon": "in the afternoon", "evening": "in the evening",
                   "night": "at night"}
@@ -131,6 +133,11 @@ def short(text: Any, limit: int = 160) -> str:
         return flat
     cut = flat.rfind(" ", 0, limit)
     return flat[: cut if cut > limit // 2 else limit].rstrip(" ,.;:") + "..."
+
+
+def reminder_name(reminder: dict) -> str:
+    """ "pasta timer", "10 minute timer", "reminder to call Ravi" (#150)."""
+    return english.name(reminder)
 
 
 def money(usd: float) -> str:

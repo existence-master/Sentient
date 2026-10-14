@@ -41,7 +41,7 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 # What the window filters by. Order is the order of the filter chips.
-KINDS = ("chat", "tasks", "briefs", "monitors", "approvals", "channels", "notifications", "memory", "skills",
+KINDS = ("chat", "tasks", "reminders", "briefs", "monitors", "approvals", "channels", "notifications", "memory", "skills",
          "backups", "cost")
 CHANNELS = ("telegram", "discord", "whatsapp")
 MAX_LIMIT = 200
@@ -217,7 +217,7 @@ class Timeline:
         cur = decode_cursor(before)
         sources: list[Source] = [
             self._chat_tools, self._channel_replies, self._channel_deliveries, self._task_runs, self._script_checks, self._notifications,
-            self._facts, self._dreams, self._skills, self._backups_past, self._always_allowed, self._cost,
+            self._reminders_past, self._facts, self._dreams, self._skills, self._backups_past, self._always_allowed, self._cost,
             self._file_snapshots,
         ]
         results = await asyncio.gather(*(src(cur, limit, query) for src in sources))
@@ -663,7 +663,8 @@ class Timeline:
         if not query.wants("notifications", "approvals", "tasks", "monitors", "memory", "backups", "cost"):
             return [], None
         where = [
-            "kind NOT IN ('brief', 'skill')",  # a brief is its run; a skill change is in the skills log
+            # a brief is its run; a skill change is in the skills log; a timer or reminder is its own row (#150)
+            "kind NOT IN ('brief', 'skill', 'reminder')",
             # a finished run or a check is shown from the run or the check itself
             f"COALESCE({_json('payload', '$.event')}, '') NOT IN ('run_completed', 'run_failed', 'script_alert',"
             " 'dry_run_finished')",
@@ -774,6 +775,75 @@ class Timeline:
         app_id, label = self._app(app)
         return Item(id=row["_key"], kind=item_kind, at=row["_at"], title=item_title, why=why, detail=detail,
                     status=state, app=app_id, app_label=label, ref=ref)
+
+    # -- timers and reminders that went off or were cancelled (#150)
+    def _reminder_where(self, row: Any) -> str:
+        channel = row["channel"]
+        if channel in CHANNELS:
+            return f"You set it on {words.app_label(channel)}"
+        if channel in {"voice", "glasses", "phone"}:
+            return "You set it by voice"
+        return "You set it in a chat" if row["session_id"] or row["source"] != "api" else "You set it"
+
+    def _reminder_ref(self, row: Any) -> dict | None:
+        if row["session_id"]:
+            return {"type": "chat", "id": row["session_id"]}
+        if row["notification_id"]:
+            return {"type": "notification", "id": row["notification_id"]}
+        return None
+
+    async def _reminders_past(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
+        if not query.wants("reminders"):
+            return [], None
+        where = ["status IN ('fired', 'cancelled')"]
+        params: list = []
+        if query.app:
+            where.append("channel = ?")
+            params.append(query.app)
+        if query.q:
+            where.append("(message LIKE ? ESCAPE '\\' OR label LIKE ? ESCAPE '\\' OR kind LIKE ? ESCAPE '\\')")
+            params += [query.like()] * 3
+
+        def build(row: Any) -> Item:
+            what = words.reminder_name(dict(row))
+            fired = row["status"] == "fired"
+            if row["kind"] == "timer":
+                title = f"Your {what} went off" if fired else f"Cancelled your {what}"
+            else:
+                message = words.short(row["message"], 80)
+                title = (f"Reminded you: {message}" if message else "Reminded you") if fired else \
+                    (f"Cancelled your reminder: {message}" if message else "Cancelled a reminder")
+            detail = None
+            due = parse_iso(row["fire_at"])
+            done = parse_iso(row["fired_at"])
+            if fired and due is not None and done is not None and (done - due).total_seconds() > 90:
+                detail = f"It was due at {words.when_text(row['fire_at'], self.tz())}, while Sentient wasn't running"
+            also = frozenset({row["channel"]}) if row["channel"] in CHANNELS else frozenset()
+            return Item(id=row["_key"], kind="reminders", at=row["_at"], title=title, why=self._reminder_where(row),
+                        detail=detail, status="done" if fired else "stopped", ref=self._reminder_ref(row), _apps=also)
+
+        try:
+            return await self._sql(
+                select="SELECT COALESCE(fired_at, cancelled_at) AS _at, ('reminder:' || id) AS _key, * FROM reminders",
+                where=where, params=params, ts="COALESCE(fired_at, cancelled_at)", key="('reminder:' || id)",
+                build=build, cur=cur, n=n, query=query, filtered=False,
+            )
+        except sqlite3.OperationalError:  # the reminders table isn't there yet
+            return [], None
+
+    async def cancel(self, item_id: str) -> dict:
+        """Cancel the timer or reminder of an upcoming item (its ``undo`` is ``{"action": "cancel"}``). Returns
+        ``{"ok": True, "reminder": ...}`` or ``{"ok": False, "error": "..."}`` in plain words."""
+        kind, _, reminder_id = str(item_id or "").partition(":")
+        svc = getattr(self.app, "reminders", None)
+        if kind != "reminder" or not reminder_id or svc is None:
+            return {"ok": False, "error": "That item can't be cancelled."}
+        item, changed = await svc.cancel(reminder_id)
+        if item is None:
+            return {"ok": False, "error": "That timer or reminder is gone."}
+        if not changed:
+            return {"ok": False, "error": "It already went off." if item["status"] == "fired" else "It was already cancelled."}
+        return {"ok": True, "reminder": item}
 
     # -- memories saved
     async def _facts(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
@@ -1026,6 +1096,7 @@ class Timeline:
         items += await self._next_backup(now, until)
         items += await self._next_dream(now, until, tz)
         items += await self._grants_ending(now, until)
+        items += await self._reminders_upcoming(until, tz)
         items = [i for i in items if query.matches(i)]
         paused = [i for i in paused if query.matches(i)]
         items.sort(key=lambda i: (0 if i.status == "waiting" else 1, i.at or "", i.id))
@@ -1145,6 +1216,26 @@ class Timeline:
         return [Item(id="next:dream", kind="memory", at=iso(at.astimezone(UTC)), title="Will tidy up your memories",
                      why=f"It runs each night around {words.clock(hour, minute)} while you're not chatting",
                      status="scheduled", ref={"type": "dream"}, upcoming=True)]
+
+    async def _reminders_upcoming(self, until: datetime, tz: tzinfo) -> list[Item]:
+        svc = getattr(self.app, "reminders", None)
+        if svc is None:
+            return []
+        out: list[Item] = []
+        for r in await svc.list("scheduled"):
+            at = parse_iso(r["fire_at"])
+            if at is None or at > until:
+                continue
+            if r["kind"] == "timer":
+                title = f"Your {words.reminder_name(r)} ends"
+            else:
+                message = words.short(r["message"], 80)
+                title = f"Will remind you: {message}" if message else "Will remind you"
+            also = frozenset({r["channel"]}) if r["channel"] in CHANNELS else frozenset()
+            out.append(Item(id=f"reminder:{r['id']}", kind="reminders", at=iso(at), title=title,
+                            why=self._reminder_where(r), status="scheduled", ref=self._reminder_ref(r), upcoming=True,
+                            undo={"action": "cancel", "label": "Cancel"}, _apps=also))
+        return out
 
     async def _grants_ending(self, now: datetime, until: datetime) -> list[Item]:
         grants = self.app.approvals.grants
