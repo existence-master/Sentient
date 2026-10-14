@@ -31,6 +31,7 @@ from sentient.activity import words
 from sentient.agent import grants as grant_rules
 from sentient.agent import reversible
 from sentient.llm.provider import ToolCall
+from sentient.snapshots import service as snapshot_notes
 from sentient.store.db import new_id
 from sentient.tasks.schedule import calculate_next_run, get_tz, iso, parse_iso, user_timezone_name
 from sentient.tools.rules import tool_title
@@ -407,7 +408,7 @@ class Timeline:
         try:
             return await self._sql(
                 select="SELECT created_at AS _at, ('snap:' || id) AS _key, id, source, what, session_id, task_id,"
-                       " run_id, files, created, notes, restored_at FROM file_snapshots",
+                       " run_id, files, created, notes, restored_at, restoring_at FROM file_snapshots",
                 where=where, params=params, ts="created_at", key="('snap:' || id)",
                 build=lambda row: self._snapshot_item(row, snaps), cur=cur, n=n, query=query, filtered=False,
             )
@@ -431,6 +432,8 @@ class Timeline:
             why = "You pressed Restore. Sentient kept copies of what it replaced, so you can undo it."
         elif kept:
             why = "Sentient kept copies first, so you can put them back."
+        elif any(f.get("note") == snapshot_notes.TOO_MANY for f in files):
+            why = f"{snapshot_notes.TOO_MANY[:-1]}, so this can't be put back."
         else:
             why = "Sentient couldn't keep copies: " + (str(files[0].get("note") or "") if files else "")
         names = [Path(str(f.get("path") or "")).name + (" (deleted)" if f.get("change") == "deleted" else "")
@@ -441,7 +444,7 @@ class Timeline:
             detail = f"{words.short(what, 80)}: {detail}"
         if notes:
             detail += f". {notes[0]}"
-        snap = {"id": row["id"], "files": files, "restored_at": row["restored_at"]}
+        snap = {"id": row["id"], "files": files, "restored_at": row["restored_at"], "restoring_at": row["restoring_at"]}
         undo = ({"action": "restore", "label": "Undo" if source == "restore" else "Restore"}
                 if snaps is not None and snaps.restorable(snap) else None)
         status = "restored" if row["restored_at"] else "done"

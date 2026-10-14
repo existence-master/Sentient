@@ -96,19 +96,68 @@ async def test_big_and_binary_files_get_a_plain_note_instead_of_a_copy(app, scra
     assert (await app.snapshots.restore(snap["id"]))["restored"] == 1
 
 
-async def test_skipped_folders_and_the_copy_limit(app, scratch, config):
+async def test_over_the_limits_nothing_is_copied_and_activity_says_so(app, scratch, config):
     config.tools.snapshots.max_files = 1
     (scratch / "node_modules").mkdir()
     (scratch / "node_modules" / "lib.js").write_text("x", encoding="utf-8")
     (scratch / "a.txt").write_text("a", encoding="utf-8")
     (scratch / "b.txt").write_text("b", encoding="utf-8")
-    async with app.snapshots.guard([scratch], None, source="code"):
-        for name in ("a.txt", "b.txt", "node_modules/lib.js"):
-            (scratch / name).write_text("changed", encoding="utf-8")
+    opened: list[str] = []
+    real_is_text = snap_mod._is_text
+    snap_mod._is_text = lambda p: opened.append(p) or real_is_text(p)
+    try:
+        async with app.snapshots.guard([scratch], None, source="code"):
+            for name in ("a.txt", "b.txt", "node_modules/lib.js"):
+                (scratch / name).write_text("changed", encoding="utf-8")
+    finally:
+        snap_mod._is_text = real_is_text
+    assert opened == []  # decided from stat alone: no file was opened, none copied
     [snap] = await _rows(app)
-    kept = sorted((f["path"].replace("\\", "/").rsplit("/", 1)[-1], bool(f["copy"])) for f in snap["files"])
-    assert kept == [("a.txt", True), ("b.txt", False)]  # node_modules is never looked at
-    assert snap["files"][1]["note"] == "No copy: the copy limit for one run was reached."
+    names = sorted(f["path"].replace("\\", "/").rsplit("/", 1)[-1] for f in snap["files"])
+    assert names == ["a.txt", "b.txt"]  # node_modules is never looked at
+    assert all(f["copy"] is None and f["note"] == "Too many files to keep a copy." for f in snap["files"])
+    assert snap["notes"][0].startswith("Too many files to keep a copy: the folders hold more than 1 text files")
+    assert not (snap_mod.store_dir() / snap["id"]).exists()
+    item = next(i for i in (await app.timeline.past())["items"] if i["id"] == f"snap:{snap['id']}")
+    assert item["why"] == "Too many files to keep a copy, so this can't be put back." and item["undo"] is None
+    assert (await app.snapshots.restore(snap["id"]))["ok"] is False
+
+
+async def test_the_defaults_are_small(config):
+    assert config.tools.snapshots.max_files == 500 and config.tools.snapshots.max_total_mb == 25
+
+
+async def test_a_restore_cut_short_by_a_crash_can_be_done_again(app, scratch, monkeypatch):
+    (scratch / "a.txt").write_text("first", encoding="utf-8")
+    async with app.snapshots.guard([scratch], None, source="code"):
+        (scratch / "a.txt").write_text("second", encoding="utf-8")
+    [snap] = await _rows(app)
+
+    # a write that fails half way: not marked as put back, and Restore is offered again
+    def broken(folder, files):
+        raise OSError("disk full")
+
+    real_put_back = snap_mod._put_back
+    monkeypatch.setattr(snap_mod, "_put_back", broken)
+    out = await app.snapshots.restore(snap["id"])
+    assert out["ok"] is False and "disk full" in out["error"]
+    again = await app.snapshots.get(snap["id"])
+    assert again["restored_at"] is None and again["restoring_at"] is None and app.snapshots.restorable(again)
+    monkeypatch.setattr(snap_mod, "_put_back", real_put_back)  # never undo(): it would drop the test's home too
+
+    # the engine stopped while writing: the row says restoring, Restore waits; at start it is repaired
+    await app.store.execute("UPDATE file_snapshots SET restoring_at = '2026-10-14T00:00:00+00:00' WHERE id = ?",
+                            (snap["id"],))
+    stuck = await app.snapshots.get(snap["id"])
+    assert stuck["restored_at"] is None and not app.snapshots.restorable(stuck)
+    assert (await app.snapshots.restore(snap["id"]))["ok"] is False
+    await app.snapshots.start()  # what a restart runs
+    fixed = await app.snapshots.get(snap["id"])
+    assert fixed["restoring_at"] is None and app.snapshots.restorable(fixed)
+    assert (await app.snapshots.restore(snap["id"]))["ok"] is True
+    assert (scratch / "a.txt").read_text(encoding="utf-8") == "first"
+    done = await app.snapshots.get(snap["id"])
+    assert done["restored_at"] and done["restoring_at"] is None
 
 
 async def test_turned_off_and_incognito_keep_nothing(app, scratch, config):

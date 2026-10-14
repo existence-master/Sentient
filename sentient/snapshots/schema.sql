@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS file_snapshots (
     created      TEXT,                         -- JSON list of paths it made (not put back)
     notes        TEXT,                         -- JSON list of plain sentences (files left out and why)
     bytes        INTEGER NOT NULL DEFAULT 0,   -- size of the copies kept
-    restored_at  TEXT,                         -- when Restore put the files back
+    restoring_at TEXT,                         -- set while Restore writes the files; cleared at start if it crashed
+    restored_at  TEXT,                         -- when Restore put the files back (set only once every file is written)
     restored_by  TEXT,                         -- the snapshot taken of the files Restore replaced (undo of a Restore)
     created_at   TEXT NOT NULL
 );

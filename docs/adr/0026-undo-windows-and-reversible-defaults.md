@@ -70,10 +70,14 @@ copies what it could change (the allowed folders and Sentient's files folder; th
 when it ends, keeps only the copies of files that changed, with a row the Activity timeline shows with **Restore**,
 the same button #352 added for the trash. Copying before is the only way to have the old content afterwards, since a
 script or command doesn't say which files it will touch. To keep that cheap and bounded: text files only, each under
-`tools.snapshots.max_file_mb`, at most `max_files` and `max_total_mb` per run, never `.git`, `node_modules` and the
-like, kept `keep_days` and at most `max_kept_mb` in all; anything left out is named with a plain reason. Commands on
-the never-ask list only read, and a Docker script can only touch its own folder, so neither is copied. Restore keeps
-copies of what it replaces first, so it can be undone too. Files the code made are listed but not removed: deleting
+`tools.snapshots.max_file_mb`, never `.git`, `node_modules` and the like, kept `keep_days` and at most `max_kept_mb`
+in all; anything left out is named with a plain reason. Whether to copy is decided from file sizes and names alone
+(`stat`, no file opened), so a big folder doesn't hold the command up. When the allowed folders hold more text than
+`max_files` (500) or `max_total_mb` (25), nothing is copied for that command at all and Activity says "Too many files
+to keep a copy": a partial set would look like a safety net and not be one. Commands on the never-ask list only
+read, and a Docker script can only touch its own folder, so neither is copied. Restore keeps copies of what it
+replaces first, so it can be undone too, and counts as done only once every file is written; one cut short by a
+crash is cleared at the next start and can be done again. Files the code made are listed but not removed: deleting
 is the one thing Restore should never do on its own.
 
 Not done: try runs of swarm and script tasks (a check script only looks things up already; a swarm's workers would

@@ -6,13 +6,14 @@ import {
   IconCheck,
   IconChevronRight,
   IconCircleCheckFilled,
+  IconFlask,
   IconInfoCircle,
   IconX
 } from '@tabler/icons-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Button, JsonView, Markdown, Spinner } from '@/components/ui'
-import { argsPreview, toolMeta } from '@/features/chat/toolMeta'
+import { argsPreview, toolMeta, wouldLabel } from '@/features/chat/toolMeta'
 import { useRunEvents } from '@/hooks/tasks'
 import type { ProgressUpdate, Run } from '@/lib/types'
 import { cn, parseDate } from '@/lib/utils'
@@ -163,6 +164,8 @@ function LogEntry({ entry, last, live, tz }: { entry: Entry; last: boolean; live
     const meta = toolMeta(entry.name)
     const running = !entry.hasResult && live
     const preview = argsPreview(entry.args)
+    // a try run (#142) only noted this call: say what it would do, never that it did it
+    const noted = !!entry.result && typeof entry.result === 'object' && (entry.result as { try_run?: unknown }).try_run === true
     return (
       <li className="relative flex gap-2.5 pb-3">
         {rail}
@@ -171,13 +174,15 @@ function LogEntry({ entry, last, live, tz }: { entry: Entry; last: boolean; live
         </Node>
         <div className="min-w-0 flex-1">
           <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex w-full min-w-0 items-center gap-2 text-left">
-            <span className={cn('shrink-0 text-sm font-medium', running ? 'text-fg-muted' : 'text-fg')}>{running ? meta.running : meta.done}</span>
+            <span className={cn('shrink-0 text-sm font-medium', running ? 'text-fg-muted' : 'text-fg')}>{running ? meta.running : noted ? wouldLabel(entry.name) : meta.done}</span>
             {preview && <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-subtle">{preview}</span>}
             {!preview && <span className="flex-1" />}
             {running ? (
               <Spinner size={12} className="text-info" />
             ) : entry.isError ? (
               <IconX size={13} className="text-danger" />
+            ) : noted ? (
+              <IconFlask size={13} className="text-accent-text" />
             ) : entry.hasResult ? (
               <IconCheck size={13} className="text-success" />
             ) : null}

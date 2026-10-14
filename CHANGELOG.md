@@ -13,7 +13,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   before a command in the terminal, a script or a file write changes files in your allowed folders or Sentient's own
   files, Sentient keeps a copy of them. If something changed, Activity lists it with **Restore**, which puts the files
   back (and can itself be undone). Big files, files that aren't text and folders like .git or node_modules are left
-  out, with a note saying so, and copies go after 7 days. Settings > Approvals & safety has the limits.
+  out, with a note saying so. When your folders hold more than 500 text files or 25 MB, nothing is copied for that
+  command and Activity says "Too many files to keep a copy". Copies go after 7 days. Settings > Approvals & safety has
+  the limits.
 - **Timers and reminders, instantly.** "Set a timer for 10 minutes", "remind me at 6 pm to call Ravi", "remind me in
   20 minutes", "what timers do I have" and "cancel the pasta timer" now happen at once, in the chat, by voice and
   in Telegram, Discord and WhatsApp, without waiting for the model, with a short confirmation. When a timer or

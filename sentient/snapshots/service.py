@@ -8,10 +8,17 @@ files that didn't change are dropped at once. If something changed, a row in ``f
 deleted, made) and the Activity timeline offers **Restore**, which puts the kept copies back (``restore``). Restore
 itself keeps copies of what it replaces first, so it can be undone the same way.
 
-**Bounded.** Files over ``tools.snapshots.max_file_mb``, files that aren't text, and files past ``max_files`` or
-``max_total_mb`` for one run get no copy, and the row says so in plain words. Folders such as ``.git`` and
-``node_modules`` are never copied, and at most ``WALK_LIMIT`` files are looked at. Copies older than ``keep_days`` go,
-and all of them together stay under ``max_kept_mb`` (oldest first). Nothing is copied for an incognito chat (#154),
+**Bounded, and cheap to decide.** First the folders are listed with ``stat`` alone (no file is opened): files over
+``tools.snapshots.max_file_mb`` and files whose name says they aren't text (``BINARY_SUFFIXES``) are left out with a
+note. If what is left is more than ``max_files`` files or ``max_total_mb``, or the folders hold more than
+``WALK_LIMIT`` files, nothing is copied for that run: copying part of a folder would look safe and isn't. If it
+then changes files, Activity still lists them, with "Too many files to keep a copy" and no Restore. Folders such as
+``.git`` and ``node_modules`` are never looked at. Copies older than ``keep_days`` go, and all of them together stay
+under ``max_kept_mb`` (oldest first).
+
+**Crash-safe restore.** Restore marks the snapshot ``restoring_at`` before it writes anything and ``restored_at`` only
+after every file is back. A restore cut short by a crash leaves ``restoring_at`` set; ``repair`` (at start) clears
+it, so the snapshot can be restored again. Nothing is copied for an incognito chat (#154),
 for a script in Docker (it can only touch its own folder) or for a command that never needs asking (it only reads).
 
 All file work runs in worker threads. Nothing here calls a model.
@@ -43,7 +50,7 @@ SKIP_DIRS = frozenset({
     ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache",
     ".ruff_cache", ".tox", ".next", ".cache",
 })
-WALK_LIMIT = 20_000  # files looked at for one run, across all its folders
+WALK_LIMIT = 10_000  # files listed for one run, across all its folders; more than this and nothing is copied
 SNIFF_BYTES = 8192  # a file with a zero byte in its start isn't text
 RECENT_S = 2.0  # a file changed this close to the copy is compared by content, not only by size and time
 MAX_CREATED = 50
@@ -51,13 +58,25 @@ ORPHAN_AGE_S = 3600
 PRUNE_EVERY_S = 6 * 3600
 SOURCES = ("terminal", "code", "file_write", "restore")
 
+# names that say a file isn't text: left out by name, so deciding what to copy never opens a file
+BINARY_SUFFIXES = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".tif", ".tiff", ".heic", ".psd", ".pdf", ".zip",
+    ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".tar", ".exe", ".dll", ".so", ".dylib", ".bin", ".o", ".a", ".lib",
+    ".class", ".jar", ".pyc", ".whl", ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".mp4", ".mov", ".avi", ".mkv",
+    ".webm", ".woff", ".woff2", ".ttf", ".otf", ".db", ".sqlite", ".sqlite3", ".docx", ".xlsx", ".pptx", ".iso",
+    ".dmg", ".msi",
+})
+TOO_MANY = "Too many files to keep a copy."
 NOTES = {
     "big": "Too big to keep a copy (over {mb} MB).",
     "binary": "Not a text file, so no copy was kept.",
-    "limit": "No copy: the copy limit for one run was reached.",
+    "too_many": TOO_MANY,
     "unreadable": "Couldn't be read, so no copy was kept.",
 }
-PARTIAL_NOTE = "There were too many files to look at them all, so some changes may not be listed."
+TOO_MANY_NOTE = (
+    "Too many files to keep a copy: the folders hold more than {files} text files or {mb} MB of text, so nothing "
+    "was copied. Raise the limits in Settings > Approvals & safety, or allow a smaller folder in Settings > Terminal."
+)
 
 
 def store_dir() -> Path:
@@ -151,25 +170,36 @@ class Capture:
     started: float = 0.0
     entries: dict[str, _Entry] = field(default_factory=dict)
     complete: bool = True
+    too_many: bool = False  # over the limits: nothing was copied (decided from stat alone)
     snapshot_id: str | None = None
 
 
 def _copy_all(cap: Capture, cfg: Any) -> None:
-    """Copy what the run could change into ``store_dir()/cap.id`` (worker thread)."""
+    """Copy what the run could change into ``store_dir()/cap.id`` (worker thread). Decided from ``stat`` alone first:
+    over the limits, nothing is copied (``cap.too_many``) and only the listing is kept, to see what changed."""
     folder = store_dir() / cap.id
     max_file = int(float(cfg.max_file_mb) * 1024 * 1024)
     max_total = int(cfg.max_total_mb) * 1024 * 1024
     found, cap.complete = _walk(cap.roots, WALK_LIMIT)
-    total = copies = 0
+    wanted: list[_Entry] = []
     for path, st in found:
         entry = _Entry(path=path, size=st.st_size, mtime_ns=st.st_mtime_ns)
         cap.entries[_key(path)] = entry
         if st.st_size > max_file:
             entry.note = "big"
-            continue
-        if copies >= int(cfg.max_files) or total + st.st_size > max_total:
-            entry.note = "limit"
-            continue
+        elif os.path.splitext(path)[1].lower() in BINARY_SUFFIXES:
+            entry.note = "binary"
+        else:
+            wanted.append(entry)
+    cap.too_many = (not cap.complete or len(wanted) > int(cfg.max_files)
+                    or sum(e.size for e in wanted) > max_total)
+    if cap.too_many:
+        for entry in wanted:
+            entry.note = "too_many"
+        return
+    copies = 0
+    for entry in wanted:
+        path = entry.path
         try:
             if not _is_text(path):
                 entry.note = "binary"
@@ -182,7 +212,6 @@ def _copy_all(cap: Capture, cfg: Any) -> None:
             continue
         entry.copy = name
         copies += 1
-        total += st.st_size
 
 
 def _settle(cap: Capture, cfg: Any) -> dict | None:
@@ -220,7 +249,7 @@ def _settle(cap: Capture, cfg: Any) -> dict | None:
         shutil.rmtree(folder, ignore_errors=True)
         return None
     changed.sort(key=lambda f: f["path"].lower())
-    notes = [] if cap.complete else [PARTIAL_NOTE]
+    notes = [TOO_MANY_NOTE.format(files=int(cfg.max_files), mb=int(cfg.max_total_mb))] if cap.too_many else []
     kept = sum(int(f["bytes"]) for f in changed if f["copy"])
     return {"files": changed, "created": created, "notes": notes, "bytes": kept}
 
@@ -255,6 +284,8 @@ class FileSnapshots(Service):
         return self.app.config.tools.snapshots
 
     async def start(self) -> None:
+        await self.app.store.ensure_column("file_snapshots", "restoring_at", "TEXT")
+        await self.repair()
         if self.app.enable_background:
             self.run_every(PRUNE_EVERY_S, self.prune, name="prune", initial_delay=60)
 
@@ -348,8 +379,9 @@ class FileSnapshots(Service):
         return out
 
     def restorable(self, snap: dict) -> bool:
-        """True while Restore can put files back: not done yet and the copies are still there."""
-        return (not snap.get("restored_at") and any(f.get("copy") for f in snap.get("files") or [])
+        """True while Restore can put files back: not done or going yet and the copies are still there."""
+        return (not snap.get("restored_at") and not snap.get("restoring_at")
+                and any(f.get("copy") for f in snap.get("files") or [])
                 and (store_dir() / str(snap["id"])).is_dir())
 
     async def restore(self, snapshot_id: str) -> dict:
@@ -360,18 +392,22 @@ class FileSnapshots(Service):
             return {"ok": False, "error": "There is nothing to put back for this item."}
         if snap.get("restored_at"):
             return {"ok": False, "error": "These files were already put back."}
+        if snap.get("restoring_at"):
+            return {"ok": False, "error": "These files are being put back right now."}
         files = [f for f in snap["files"] if f.get("copy")]
         if not files:
             return {"ok": False, "error": "No copies were kept for this, so it can't be put back."}
         folder = store_dir() / snapshot_id
         if not all((folder / f["copy"]).is_file() for f in files):
             return {"ok": False, "error": f"The copies are gone. They are kept for {self.config.keep_days} days."}
-        # claim it in one write first, so two presses at once can't both put files back
+        # claim it in one write first, so two presses at once can't both put files back; it counts as put back only
+        # once every file is written, and a crash in between is repaired at start (``repair``)
         claim = await self.app.store.execute(
-            "UPDATE file_snapshots SET restored_at = ? WHERE id = ? AND restored_at IS NULL", (now_iso(), snapshot_id),
+            "UPDATE file_snapshots SET restoring_at = ? WHERE id = ? AND restored_at IS NULL AND restoring_at IS NULL",
+            (now_iso(), snapshot_id),
         )
         if not (claim.rowcount or 0):
-            return {"ok": False, "error": "These files were already put back."}
+            return {"ok": False, "error": "These files are being put back already."}
         origin = {k: snap.get(k) for k in ("session_id", "task_id", "run_id")}
         count = len(files)
         what = f"{count} file{'s' if count != 1 else ''}"
@@ -379,16 +415,27 @@ class FileSnapshots(Service):
             async with self.guard([f["path"] for f in files], source="restore", what=what, origin=origin) as cap:
                 done = await asyncio.to_thread(_put_back, folder, files)
         except BaseException as exc:
-            await self.app.store.execute("UPDATE file_snapshots SET restored_at = NULL WHERE id = ?", (snapshot_id,))
+            await self.app.store.execute("UPDATE file_snapshots SET restoring_at = NULL WHERE id = ?", (snapshot_id,))
             if isinstance(exc, OSError):
                 return {"ok": False, "error": f"Some files couldn't be put back: {exc}"}
             raise
         await self.app.store.execute(
-            "UPDATE file_snapshots SET restored_by = ? WHERE id = ?",
-            (cap.snapshot_id if cap is not None else None, snapshot_id),
+            "UPDATE file_snapshots SET restored_at = ?, restored_by = ?, restoring_at = NULL WHERE id = ?",
+            (now_iso(), cap.snapshot_id if cap is not None else None, snapshot_id),
         )
         log.info("snapshots: put back %d file(s) from %s", done, snapshot_id)
         return {"ok": True, "restored": done, "message": f"Put back {done} file{'s' if done != 1 else ''}."}
+
+    async def repair(self) -> int:
+        """Restores cut short by a crash or a stop (``restoring_at`` set, ``restored_at`` not): they can be restored
+        again. Nothing is restoring when this runs (at start). Returns how many."""
+        cur = await self.app.store.execute(
+            "UPDATE file_snapshots SET restoring_at = NULL WHERE restoring_at IS NOT NULL AND restored_at IS NULL"
+        )
+        count = cur.rowcount or 0
+        if count:
+            log.warning("snapshots: %d restore(s) didn't finish; they can be restored again", count)
+        return count
 
     # ------------------------------------------------------------------ retention
     async def prune(self) -> int:

@@ -1814,20 +1814,26 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   "Restore"}` on its timeline item (section 21).
 - **Try runs** of tasks: section 4, "Try it first".
 - **File snapshots before code writes** (config `tools.snapshots`: `enabled` true, `max_file_mb` 5, `max_total_mb`
-  100, `max_files` 2000, `keep_days` 7, `max_kept_mb` 1000; code `sentient/snapshots/`). Before `terminal_run` runs a
+  25, `max_files` 500, `keep_days` 7, `max_kept_mb` 1000; code `sentient/snapshots/`). Before `terminal_run` runs a
   command that isn't on the never-ask list, before `execute_code` runs a script as a local process (`process` backend;
   Docker can only touch its own folder) and before `file_write` writes, Sentient copies the files they could change
   into `<home>/snapshots/<id>/`: for a command or a script, the allowed folders of section 18 (the command's own folder
   first) and the files folder; for `file_write`, its one file. `.git`, `node_modules`, `__pycache__`, `.venv` and
-  similar folders and Sentient's own working folders are never copied, and at most 20,000 files are looked at.
-  A file over `max_file_mb`, a file that isn't text (a zero byte in its first 8 KB), and files past `max_files` or
-  `max_total_mb` for one run get no copy and a plain `note`. When the call ends (also when it fails or is stopped) the
-  copies of unchanged files are dropped; if anything changed, a `file_snapshots` row lists
+  similar folders and Sentient's own working folders are never looked at.
+  What to copy is decided from `stat` alone, without opening a file: a file over `max_file_mb` or with a name that
+  says it isn't text (images, archives, media, office files, databases...) gets no copy and a plain `note`. If the rest
+  is more than `max_files` files or `max_total_mb`, or the folders hold more than 10,000 files, **nothing** is copied
+  for that call (never a partial set); its files are still listed, so if it changes any, the row and the Activity item
+  say "Too many files to keep a copy" and offer no Restore. Otherwise each file is copied (one whose first 8 KB has a
+  zero byte is not text after all and gets the note instead). When the call ends (also when it fails or is stopped)
+  the copies of unchanged files are dropped; if anything changed, a `file_snapshots` row lists
   `files: [{path, change: "changed"|"deleted", bytes, copy, note}]`, the files it made (`created`, not put back) and
   `notes`, and the Activity timeline shows it with Restore (section 21). Nothing is copied for incognito chats or with
   `enabled` off. Copies older than `keep_days` go, and all of them stay under `max_kept_mb` (oldest first; every 6
-  hours). Python API: `async with app.snapshots.guard(roots, ctx, source=..., what=...)`, `await
-  app.snapshots.restore(id)`, `await app.snapshots.prune()`.
+  hours). Restore is crash-safe: it sets `restoring_at` before writing and `restored_at` only once every file is
+  back; a restore cut short by a crash is cleared at start (`repair`) and can be done again. Python API:
+  `async with app.snapshots.guard(roots, ctx, source=..., what=...)`, `await app.snapshots.restore(id)`,
+  `await app.snapshots.repair()`, `await app.snapshots.prune()`.
 
 ### Subagents
 - Tools (plugin `subagents`):
@@ -2850,7 +2856,8 @@ What each source gives (past):
   connections still apply. For a `snap:<id>` item it puts the kept copies back where they were instead and returns
   `{ok: true, restored: n, message: "Put back 2 files."}`; what they replace is copied first, so the restore shows as
   its own item with **Undo**. Files the code made are left alone. 409 with a plain `detail` when the item has nothing
-  to restore, it was put back already, the copies are gone, or the restore failed.
+  to restore (no copies were kept: "Too many files to keep a copy"), it was put back already or is being put back,
+  the copies are gone, or the restore failed.
 - `POST /api/timeline/cancel` `{id}` → `{ok: true, reminder}`: cancel the timer or reminder of an upcoming item
   (`reminder:<id>`, section 23). 409 with a plain `detail` when it already went off or was cancelled.
 

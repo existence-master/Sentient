@@ -418,10 +418,15 @@ class SnapshotsConfig(BaseModel):
         5.0, ge=0.1, le=500, description="Files bigger than this aren't copied. Activity says when one was left out.",
     )
     max_total_mb: int = Field(
-        100, ge=1, le=10_000,
-        description="The most copied each time code runs. Past this, the rest of the files aren't copied.",
+        25, ge=1, le=10_000,
+        description="The most text copied each time code runs. When your allowed folders hold more, nothing is copied "
+        "for that run, and Activity says \"Too many files to keep a copy\" if it changed something.",
     )
-    max_files: int = Field(2000, ge=1, le=100_000, description="The most files copied each time code runs.")
+    max_files: int = Field(
+        500, ge=1, le=100_000,
+        description="The most files copied each time code runs. When your allowed folders hold more text files, "
+        "nothing is copied for that run, and Activity says so if it changed something.",
+    )
     keep_days: int = Field(7, ge=1, le=365, description="Copies older than this many days are removed.")
     max_kept_mb: int = Field(
         1000, ge=10, le=100_000, description="All kept copies together stay under this size; the oldest go first.",
