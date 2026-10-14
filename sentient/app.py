@@ -7,7 +7,7 @@ LLM provider and a temporary database.
 Start order (stop runs in reverse):
     store -> memory -> notifications -> integrations (registers plugins)
     -> builtin tools -> skills -> agent -> subagents -> sandbox -> terminal -> browser -> nodes
-    -> tasks -> proactivity -> evolution -> user_model -> dreaming -> voice -> channels -> backups
+    -> tasks -> reminders -> proactivity -> evolution -> user_model -> dreaming -> voice -> channels -> backups
 
 Stop everything (``stop_all`` / ``resume``, docs/API.md section 17) is deterministic: it never
 asks the model. It cancels running chat replies, task runs, helpers, scripts, commands and browser
@@ -56,6 +56,7 @@ from sentient.nodes import NodeService
 from sentient.notifications import NotificationService
 from sentient.presence import Presence
 from sentient.proactivity import ProactiveEngine
+from sentient.reminders import ReminderService
 from sentient.sandbox import SandboxService
 from sentient.services import Service
 from sentient.skills.loader import SkillLibrary
@@ -120,6 +121,7 @@ class SentientApp:
         self._hardware_warmup: asyncio.Task | None = None
         self.integrations.oauth_owners.append(self.connections)
         self.tasks = TaskService(self)
+        self.reminders = ReminderService(self)  # timers and one-off reminders (#150)
         self.proactivity = ProactiveEngine(self)
         self.evolution = EvolutionService(self)
         self.voice = VoiceService(self)
@@ -149,7 +151,7 @@ class SentientApp:
     def services(self) -> list[Service]:
         return [
             self.notifications, self.integrations, self.subagents, self.sandbox, self.terminal, self.browser, self.nodes,
-            self.tasks, self.proactivity, self.evolution, self.user_model, self.dreaming, self.voice, self.channels,
+            self.tasks, self.reminders, self.proactivity, self.evolution, self.user_model, self.dreaming, self.voice, self.channels,
             self.backups, self.folders,
             self.incognito,
         ]

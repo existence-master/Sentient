@@ -1,4 +1,5 @@
 import {
+  IconAlarm,
   IconAlertTriangle,
   IconArrowRight,
   IconBolt,
@@ -38,7 +39,8 @@ const KIND: Record<NotificationKind, { icon: Icon; tone: string }> = {
   proactive: { icon: IconBolt, tone: 'text-accent-text' },
   skill: { icon: IconSparkles, tone: 'text-accent-text' },
   error: { icon: IconAlertTriangle, tone: 'text-danger' },
-  brief: { icon: IconSunrise, tone: 'text-accent-text' }
+  brief: { icon: IconSunrise, tone: 'text-accent-text' },
+  reminder: { icon: IconAlarm, tone: 'text-accent-text' }
 }
 
 /** Ids already marked read by "mark read on view", shared by the panel and the page. */

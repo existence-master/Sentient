@@ -117,6 +117,8 @@ import type {
   ProgressUpdate,
   Provider,
   RoleName,
+  Reminder,
+  ReminderStatus,
   RuleProposal,
   SecretStatus,
   SentientConfig,
@@ -852,7 +854,15 @@ export const api = {
       http.get<TimelineUpcoming>('/api/timeline/upcoming', { query: { ...timelineQuery(filters), days } }),
     apps: () => http.get<{ apps: Array<{ id: string; label: string }> }>('/api/timeline/apps'),
     /** Bring back what a chat moved to the trash (#142); offered when an item has `undo`. */
-    restore: (id: string) => http.post<{ ok: boolean; result?: unknown }>('/api/timeline/restore', { id })
+    restore: (id: string) => http.post<{ ok: boolean; result?: unknown }>('/api/timeline/restore', { id }),
+    /** Cancel a timer or reminder that has not gone off yet (#150); offered when `undo.action` is 'cancel'. */
+    cancel: (id: string) => http.post<{ ok: boolean; reminder?: Reminder }>('/api/timeline/cancel', { id })
+  },
+
+  // §23 timers and reminders (#150) -------------------------------------------------------------
+  reminders: {
+    list: (status: ReminderStatus | 'all' = 'scheduled') => http.get<{ reminders: Reminder[] }>('/api/reminders', { query: { status } }),
+    cancel: (id: string) => http.post<Reminder>(`/api/reminders/${enc(id)}/cancel`)
   },
 
   // §16 webhooks --------------------------------------------------------------------------
