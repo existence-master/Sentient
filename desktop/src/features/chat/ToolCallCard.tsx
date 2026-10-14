@@ -1,4 +1,4 @@
-import { IconCheck, IconChevronRight, IconShieldQuestion, IconX } from '@tabler/icons-react'
+import { IconCheck, IconChevronRight, IconClockHour4, IconShieldQuestion, IconX } from '@tabler/icons-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useState } from 'react'
 import { JsonView, Spinner } from '@/components/ui'
@@ -11,6 +11,7 @@ import { asRecord, DeclinedText, StatusGlyph } from './cards/bits'
 import { CodeRunCard } from './cards/CodeRunCard'
 import { isSubagentTool, SubagentCard } from './cards/SubagentCard'
 import { TerminalCard } from './cards/TerminalCard'
+import { UndoCard } from './UndoCard'
 import { IMAGE_FILE_RE, openOutputFile, outputPath } from './files'
 import { argsPreview, toolMeta } from './toolMeta'
 
@@ -62,7 +63,9 @@ function GenericToolCard({
             <span className="shrink-0 text-2xs tabular-nums text-fg-faint">{formatDuration(tool.durationMs)}</span>
           )}
           <span className="flex size-4 shrink-0 items-center justify-center">
-            {running ? (
+            {running && tool.undo?.status === 'waiting' ? (
+              <IconClockHour4 size={14} className="text-accent" />
+            ) : running ? (
               <Spinner size={13} className="text-fg-subtle" />
             ) : tool.status === 'awaiting_approval' ? (
               <IconShieldQuestion size={14} className="text-warning" />
@@ -120,6 +123,7 @@ function GenericToolCard({
         </AnimatePresence>
       </div>
       {approval && <ApprovalCard approval={approval} onRespond={onApprove} />}
+      {tool.undo && <UndoCard undo={tool.undo} />}
     </div>
   )
 }
@@ -141,6 +145,7 @@ export function ToolCallCard({ tool, approval, onApprove }: { tool: ToolCallView
       <div className="space-y-2">
         {special}
         {approval && <ApprovalCard approval={approval} onRespond={onApprove} />}
+        {tool.undo && <UndoCard undo={tool.undo} />}
       </div>
     )
   }

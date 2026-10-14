@@ -6,6 +6,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Undo a send, see exactly what goes out, and the trash by default.** When Sentient sends an email, a message or a
+  post from a chat, it now waits 10 seconds first and shows what goes out, with **Undo** and **Send now**, in the chat
+  and as a toast (and as buttons in Telegram, Discord and WhatsApp). Undo and nothing is sent. Approval cards for
+  emails, messages, posts, deletions and purchases show who it goes to, the subject and the full text the way you'd
+  read them, with the raw details one click away; task approvals show the same. When an app can move something to
+  the trash, "delete it" now moves it there instead of deleting it for good, unless you say "permanently", and
+  Activity offers **Restore**. Purchases, code and tasks running on their own never wait. Change the wait (0 turns it
+  off) or the trash default in Settings > Approvals & safety.
 - **Activity: everything Sentient did, and what it will do next, in one place.** A new **Activity** screen in the
   sidebar lists, newest first, the apps Sentient used in your chats, task runs and briefs, each check of a watch,
   approvals and how you answered them, replies in Telegram, Discord and WhatsApp, suggestions and other notifications,

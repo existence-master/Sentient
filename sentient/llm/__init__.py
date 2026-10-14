@@ -9,6 +9,7 @@ from sentient.llm.events import (
     ToolCallEvent,
     ToolProgress,
     ToolResultEvent,
+    UndoWindow,
     Usage,
     UserInterjection,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "ToolCallEvent",
     "ToolProgress",
     "ToolResultEvent",
+    "UndoWindow",
     "Usage",
     "UserInterjection",
 ]

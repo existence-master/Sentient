@@ -324,6 +324,13 @@ async def gmail_trash(ctx: ToolContext, message_id: str) -> dict:
     return {"trashed": True, "id": res.get("id", message_id)}
 
 
+@itool(PID, "gmail_restore", risk=Risk.write)
+async def gmail_restore(ctx: ToolContext, message_id: str) -> dict:
+    """Put a message that was thrown away back where it was."""
+    res = await gapi(ctx, PID, "POST", f"{API}/messages/{message_id}/untrash")
+    return {"restored": True, "id": res.get("id", message_id)}
+
+
 # ---------------------------------------------------------------------------- change feed (users.history)
 HISTORY_PAGES = 10
 FEED_MAX_MESSAGES = 50
@@ -491,7 +498,7 @@ class GmailPlugin(GooglePlugin):
     triggers = [{"event": "new_email", "label": "New email"}]
     tools = [gmail_search, gmail_get_unread, gmail_get_latest, gmail_read_message, gmail_read_thread, gmail_send,
              gmail_reply, gmail_create_draft, gmail_list_labels, gmail_modify_labels, gmail_mark_read,
-             gmail_mark_unread, gmail_archive, gmail_trash]
+             gmail_mark_unread, gmail_archive, gmail_trash, gmail_restore]
 
     async def change_feed(self, mgr: IntegrationManager, cursor: str | None) -> FeedBatch:
         return await gmail_change_feed(mgr, cursor)

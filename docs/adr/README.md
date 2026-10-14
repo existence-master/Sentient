@@ -29,6 +29,7 @@ proposing a change to one of them.
 | [0022](0022-claude-through-your-own-claude-code.md) | Let chats use Claude through the user's own Claude Code, off by default | Accepted | 2026-10-10 |
 | [0023](0023-mark-outside-content-in-prompts.md) | Mark outside content in prompts so the model reads it as data | Accepted | 2026-10-11 |
 | [0024](0024-second-look-at-outgoing-actions.md) | Take a second look at outgoing actions before they run | Accepted | 2026-10-13 |
+| [0025](0025-undo-windows-and-reversible-defaults.md) | Hold sends in an undo window and prefer the trash | Accepted | 2026-10-14 |
 
 ## Adding a record
 

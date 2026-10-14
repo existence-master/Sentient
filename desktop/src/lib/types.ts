@@ -868,6 +868,35 @@ export interface ApprovalRequestEvent extends TurnScoped {
   choices?: ApprovalDecision[] | null
   /** How long `allow_timed` lasts, in minutes. */
   grant_minutes?: number | null
+  /** What will be sent or changed, the way a person reads it (#142). */
+  preview?: ActionPreview | null
+}
+/** §10 A human-readable preview of an outgoing action (#142): an email's recipients, subject and text. */
+export interface ActionPreview {
+  kind: 'email' | 'message' | 'post' | 'delete' | 'trash' | 'purchase' | 'action' | string
+  title: string
+  fields: Array<{ label: string; value: string }>
+  body?: string | null
+  app?: string | null
+}
+/** §10 An email, message or post waiting `seconds` before it goes, so it can still be undone (#142). */
+export interface UndoWindowEvent extends TurnScoped {
+  type: 'undo_window'
+  undo_id: string
+  call_id: string
+  name: string
+  seconds: number
+  /** ISO time the window ends. */
+  until: string
+  preview?: ActionPreview | null
+}
+export type UndoAction = 'undo' | 'send_now'
+/** Reply to `undo.respond`: `done` false means the window had already ended. */
+export interface UndoAckEvent {
+  type: 'undo.ack'
+  undo_id: string
+  action: UndoAction
+  done: boolean
 }
 export interface UsageEvent extends TurnScoped {
   type: 'usage'
@@ -964,11 +993,13 @@ export type ChatEvent =
   | ToolResultEvent
   | ToolProgressEvent
   | ApprovalRequestEvent
+  | UndoWindowEvent
   | UsageEvent
   | ErrorEvent
   | NoticeEvent
   | DoneEvent
   | ApprovalAckEvent
+  | UndoAckEvent
   | PongEvent
   | SteerAckEvent
   | UserInterjectionEvent
@@ -976,7 +1007,7 @@ export type ChatEvent =
 export type ChatEventType = ChatEvent['type']
 
 /** Turn-scoped events as produced by `POST /api/chat` and the voice socket. */
-export type AgentEvent = Exclude<ChatEvent, HelloEvent | ApprovalAckEvent | PongEvent | SteerAckEvent>
+export type AgentEvent = Exclude<ChatEvent, HelloEvent | ApprovalAckEvent | UndoAckEvent | PongEvent | SteerAckEvent>
 
 export interface MemoryUpdatedData {
   action: 'ADD' | 'UPDATE' | 'DELETE'
@@ -1064,6 +1095,8 @@ export type ClientMessage =
   | { type: 'chat.cancel'; session_id: string }
   | { type: 'chat.steer'; session_id: string; text: string }
   | { type: 'approval.respond'; approval_id: string; decision: ApprovalDecision }
+  /** §10 Undo, or send now, a send waiting in its undo window (#142). */
+  | { type: 'undo.respond'; undo_id: string; action: UndoAction }
   /** The window is focused and visible, or not (#139): approval requests go to a paired chat only while it isn't. */
   | { type: 'presence'; active: boolean }
   | { type: 'ping' }
@@ -1434,6 +1467,8 @@ export interface RunQuestion {
   reason?: string | null
   /** Approvals only: after this a late answer can't approve it. */
   expires_at?: ISODate | null
+  /** Approvals only (#142): what the held call would send, the way a person reads it. */
+  preview?: ActionPreview | null
 }
 
 export interface Run {
@@ -2628,6 +2663,8 @@ export interface TimelineItem {
   app_label: string | null
   ref: TimelineRef | null
   upcoming: boolean
+  /** A way back the window can offer (#142): Restore for something moved to the trash. */
+  undo?: { action: 'restore'; label: string } | null
 }
 
 export interface TimelinePage {

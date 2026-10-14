@@ -5,7 +5,7 @@
  *   assistant rows (with tool_calls) + their tool rows becomes ONE assistant turn.
  * - `applyAgentEvent` reduces live events into the same `AssistantTurnView`.
  */
-import type { AgentEvent, AnswerSource, ApprovalDecision, ContextMeter, MemorySource, Risk, TranscriptMessage, UsageEvent } from './types'
+import type { ActionPreview, AgentEvent, AnswerSource, ApprovalDecision, ContextMeter, MemorySource, Risk, TranscriptMessage, UsageEvent } from './types'
 import { safeJsonParse } from './utils'
 
 export type ToolStatus = 'running' | 'awaiting_approval' | 'done' | 'error' | 'denied'
@@ -19,6 +19,16 @@ export interface ToolProgressView {
   subagent?: { subagentId?: string; messages: string[] }
 }
 
+/** An email, message or post waiting in its undo window (#142), live only. */
+export interface UndoView {
+  undoId: string
+  seconds: number
+  /** ISO time the window ends. */
+  until: string
+  preview?: ActionPreview | null
+  status: 'waiting' | 'sent' | 'undone'
+}
+
 export interface ToolCallView {
   callId: string
   name: string
@@ -28,6 +38,7 @@ export interface ToolCallView {
   durationMs?: number | null
   status: ToolStatus
   progress?: ToolProgressView
+  undo?: UndoView
 }
 
 const MAX_STREAM_CHARS = 24_000
@@ -52,6 +63,8 @@ export interface ApprovalView {
   /** The answers offered (#139), live only. */
   choices?: ApprovalDecision[] | null
   grantMinutes?: number | null
+  /** What will be sent or changed, the way a person reads it (#142), live only. */
+  preview?: ActionPreview | null
 }
 
 export type TurnSegment =
@@ -127,6 +140,13 @@ function resultLooksLikeError(result: unknown): boolean {
 
 const DECLINED_RE = /user declined|declined this action|denied by (the )?user|user denied|not approved/i
 
+/** The user pressed Undo while a send waited in its window (#142), so nothing was sent. */
+export function wasUndone(result: unknown): boolean {
+  if (result && typeof result === 'object' && !Array.isArray(result)) return (result as { undone?: unknown }).undone === true
+  if (typeof result === 'string' && result.trim().startsWith('{')) return wasUndone(safeJsonParse<unknown>(result.trim(), null))
+  return false
+}
+
 /**
  * The user said no to an approval, so the call did not happen. The engine returns
  * `{error: "NOT DONE. The user declined...", declined: true}`; older transcripts only have the error text.
@@ -199,7 +219,7 @@ export function foldTranscript(rows: TranscriptMessage[]): TimelineItem[] {
       if (target) {
         target.result = result
         target.isError = resultLooksLikeError(result)
-        target.status = wasDenied(result) ? 'denied' : target.isError ? 'error' : 'done'
+        target.status = wasDenied(result) || wasUndone(result) ? 'denied' : target.isError ? 'error' : 'done'
       } else if (turn) {
         // orphan tool row: show it anyway
         turn.segments.push({ kind: 'tool', callId: callId || row.id })
@@ -287,15 +307,23 @@ export function applyAgentEvent(turn: AssistantTurnView, ev: AgentEvent): Assist
             warning: ev.warning ?? null,
             choices: ev.choices ?? null,
             grantMinutes: ev.grant_minutes ?? null,
+            preview: ev.preview ?? null,
             status: 'pending'
           }
         ]
       }
     }
+    case 'undo_window': {
+      const prev = turn.tools[ev.call_id] ?? { callId: ev.call_id, name: ev.name, arguments: {}, status: 'running' as const }
+      const segments = turn.tools[ev.call_id] ? turn.segments : [...turn.segments, { kind: 'tool' as const, callId: ev.call_id }]
+      const undo: UndoView = { undoId: ev.undo_id, seconds: ev.seconds, until: ev.until, preview: ev.preview ?? null, status: 'waiting' }
+      return { ...turn, segments, tools: { ...turn.tools, [ev.call_id]: { ...prev, status: 'running', undo } } }
+    }
     case 'tool_result': {
       const prev = turn.tools[ev.call_id] ?? { callId: ev.call_id, name: ev.name, arguments: {}, status: 'running' as const }
       const approval = turn.approvals.find((a) => a.callId === ev.call_id)
-      const denied = approval?.status === 'deny' || wasDenied(ev.result)
+      const undone = wasUndone(ev.result)
+      const denied = approval?.status === 'deny' || wasDenied(ev.result) || undone
       const segments = turn.tools[ev.call_id] ? turn.segments : [...turn.segments, { kind: 'tool' as const, callId: ev.call_id }]
       return {
         ...turn,
@@ -307,7 +335,8 @@ export function applyAgentEvent(turn: AssistantTurnView, ev: AgentEvent): Assist
             result: ev.result,
             isError: ev.is_error,
             durationMs: ev.duration_ms,
-            status: denied ? 'denied' : ev.is_error ? 'error' : 'done'
+            status: denied ? 'denied' : ev.is_error ? 'error' : 'done',
+            undo: prev.undo ? { ...prev.undo, status: undone ? 'undone' : 'sent' } : undefined
           }
         },
         approvals: turn.approvals.map((a) => (a.callId === ev.call_id && a.status === 'pending' ? { ...a, status: 'expired' } : a))

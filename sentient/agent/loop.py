@@ -40,9 +40,10 @@ from typing import Any
 from pydantic import ValidationError
 
 from sentient import paths
-from sentient.agent import findings, second_look
+from sentient.agent import findings, preview, reversible, second_look
 from sentient.agent import grants as grant_rules
 from sentient.agent import incognito as incognito_outputs
+from sentient.agent import undo as undo_rules
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import WAIT_S, pending_asks, standing_text
 from sentient.agent.prompt import build_system_prompt, mark_outside
@@ -64,6 +65,7 @@ from sentient.llm.events import (
     ToolCallEvent,
     ToolProgress,
     ToolResultEvent,
+    UndoWindow,
     Usage,
     UserInterjection,
     tool_progress_event,
@@ -461,6 +463,7 @@ class _CallPlan:
     host: str = ""  # the web host this call loads, if any; remembered as visited once it ran
     approval: dict | None = None  # how the user answered this call's approval request (the activity timeline, #147)
     warning: str = ""  # what a second look found off about this call (#143); it then asks, whatever else says
+    swapped_from: str = ""  # the delete-for-good tool the model called; its trash twin runs instead (#142)
 
 
 class Agent:
@@ -811,6 +814,11 @@ class Agent:
                 result.messages = messages
                 return
 
+            # a delete for good becomes its app's trash version unless the user asked for it to be permanent (#142);
+            # swapped before the call is saved, so the transcript, approvals and second look all see the trash call
+            swapped = self._prefer_trash(tool_calls, messages, ctx)
+            if swapped and tool_names is not None:
+                tool_names = [*tool_names, *(tc.name for tc in tool_calls if tc.id in swapped and tc.name not in tool_names)]
             assistant_msg = {
                 "role": "assistant",
                 "content": text_acc or "",
@@ -826,6 +834,8 @@ class Agent:
                                       attended=attended, model=model)
                 for tc in tool_calls
             ]
+            for p in plans:
+                p.swapped_from = swapped.get(p.tc.id, "")
             result.tool_calls += len(plans)
             result.held.extend({"tool": p.tc.name, "arguments": p.tc.arguments} for p in plans if p.held)
             waiting = next((p for p in plans if p.wants_ok), None)
@@ -840,6 +850,8 @@ class Agent:
                 result.needs_ok = {
                     "tool": waiting.tc.name, "arguments": waiting.tc.arguments, "call_id": waiting.tc.id,
                     "question": question,
+                    "preview": preview.build(waiting.tc.name, waiting.tc.arguments, purchase=await is_purchase(
+                        waiting.tool, waiting.tc.arguments, ctx, waiting.risk)),
                 }
                 if waiting.ask_rule:  # an "ask" rule in a task run: pause and ask, with how wide a yes may be (#139)
                     purchase = await is_purchase(waiting.tool, waiting.tc.arguments, ctx, waiting.risk)
@@ -868,12 +880,14 @@ class Agent:
                             remember_session=self.approvals.config.remember_session,
                         )
                         self.approvals.create(approval_id, offered)
+                        purchase = wording["risk_label"] == PURCHASE_LABEL and p.risk >= Risk.send
                         yield ApprovalRequest(
                             approval_id=approval_id, call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments,
                             risk=p.risk.name, reason=f"{p.tool.plugin}: {p.tool.description[:160]}",
                             risk_label=wording["risk_label"], target=wording["target"],
                             untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
-                            grant_minutes=self.approvals.config.grant_minutes, **ev,
+                            grant_minutes=self.approvals.config.grant_minutes,
+                            preview=preview.build(p.tc.name, p.tc.arguments, purchase=purchase), **ev,
                         )
                         asked_at = now_iso()
                         decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)
@@ -888,9 +902,22 @@ class Agent:
                             p.outcome = ({"error": DECLINED, "declined": True}, True, 0)
                     else:
                         runnable.append(p)
+                if runnable and undo_rules.attended(ctx.channel, source, unprompted):
+                    # an email, message or post waits in its undo window after every check said yes (#142)
+                    kept: list[_CallPlan] = []
+                    for p in runnable:
+                        async for e in self._undo_window(p, ctx, ev):
+                            yield e
+                        if p.outcome is None:
+                            kept.append(p)
+                    runnable = kept
                 if runnable:
                     async for progress in self._execute(runnable, ctx, ev):
                         yield progress
+                    for p in runnable:  # say so when a delete for good went to the trash instead
+                        res, is_error, ms = p.outcome or (None, True, 0)
+                        if p.swapped_from and not is_error and isinstance(res, dict) and not _error_text(res):
+                            p.outcome = ({**res, "note": reversible.TRASH_NOTE}, is_error, ms)
                 for p in group:
                     async for e in self._record(p, messages, persist, result, ev, ctx):
                         yield e
@@ -1067,6 +1094,53 @@ class Agent:
                 plan.preset = ({"error": second_look.hold_message(label, plan.warning)}, True, 0)
                 plan.wants_ok, plan.ask_rule = True, False
         return plan
+
+    def _prefer_trash(self, tool_calls: list[ToolCall], messages: list[dict], ctx: ToolContext) -> dict[str, str]:
+        """Swap each delete-for-good call for its app's trash version, in place (#142, ``sentient.agent.reversible``).
+        Returns ``{call id: the tool the model called}`` for the calls swapped. Skipped when ``prefer_trash`` is off,
+        when the user's own words ask for a permanent delete, or when the trash tool can't take the call."""
+        if not getattr(self.config.tools.approvals, "prefer_trash", True):
+            return {}
+        swapped: dict[str, str] = {}
+        request: str | None = None
+        for i, tc in enumerate(tool_calls):
+            tool = self.registry.get(tc.name)
+            twin = reversible.trash_twin(tool, self.registry) if tool is not None else None
+            if twin is None or self.approvals.is_hidden(twin) or self.registry.is_hidden(twin.plugin):
+                continue
+            args = reversible.fit_arguments(twin, tc.arguments)
+            if args is None:
+                continue
+            if request is None:
+                request = second_look.gather(messages, self.registry, task=bool(ctx.extra.get("task_id"))).request
+            if reversible.asks_for_good(request):
+                return swapped
+            log.info("moving to the trash with %s instead of %s", twin.name, tc.name)
+            tool_calls[i] = ToolCall(id=tc.id, name=twin.name, arguments=args)
+            swapped[tc.id] = tc.name
+        return swapped
+
+    async def _undo_window(self, p: _CallPlan, ctx: ToolContext, ev: dict) -> AsyncIterator[AgentEvent]:
+        """Hold an email, message or post for ``undo_seconds`` before it runs (#142). Sets ``p.outcome`` when the user
+        pressed Undo; leaves it unset when the call should run now."""
+        broker: undo_rules.UndoBroker | None = getattr(self.app, "undo", None) if self.app is not None else None
+        seconds = int(getattr(self.config.tools.approvals, "undo_seconds", 0) or 0)
+        if broker is None or seconds <= 0 or p.tool is None:
+            return
+        purchase = await is_purchase(p.tool, p.tc.arguments, ctx, p.risk)
+        if not undo_rules.delayable(p.tool, p.tc.name, p.tc.arguments, p.risk, purchase=purchase):
+            return
+        undo_id = new_id()
+        hold = broker.open(undo_id, call_id=p.tc.id, name=p.tc.name, session_id=ctx.session_id, channel=ctx.channel,
+                           seconds=seconds)
+        yield UndoWindow(undo_id=undo_id, call_id=p.tc.id, name=p.tc.name, seconds=seconds, until=hold.until,
+                         preview=preview.build(p.tc.name, p.tc.arguments), **ev)
+        outcome = await broker.wait(undo_id)
+        log.info("undo window for %s ended: %s", p.tc.name, outcome)
+        if p.approval is not None:
+            p.approval["undo"] = outcome
+        if outcome == undo_rules.UNDONE:
+            p.outcome = ({"error": undo_rules.UNDONE_MESSAGE, "undone": True}, True, 0)
 
     async def _chat_rule(self, tool: Tool, session_id: str | None) -> str | None:
         """"ask" while this chat has an undecided rule proposal for ``tool`` (``sentient.agent.chat_rules``)."""

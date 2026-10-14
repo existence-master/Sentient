@@ -2,6 +2,7 @@
 import { IconAlertTriangle, IconMessageQuestion, IconSend, IconShieldQuestion } from '@tabler/icons-react'
 import { useState } from 'react'
 import { Button, Textarea } from '@/components/ui'
+import { ActionPreview } from '@/features/chat/ActionPreview'
 import type { Run, Task } from '@/lib/types'
 import { cn, relativeTime } from '@/lib/utils'
 import { useTaskOps } from '../useTaskOps'
@@ -55,6 +56,7 @@ export function RunQuestion({ task, run, className }: { task: Task; run: Run; cl
       </div>
       <div className="space-y-3 px-4 py-4">
         <p className="whitespace-pre-wrap text-sm font-medium text-fg">{q.question}</p>
+        {approval && q.preview && <ActionPreview preview={q.preview} />}
         {q.options.length > 0 && (
           <div className="flex flex-wrap gap-2">
             {q.options.map((o) => (

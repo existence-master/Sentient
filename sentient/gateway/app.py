@@ -185,6 +185,10 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                 elif kind == "approval.respond":
                     ok = s.approvals.resolve(str(msg.get("approval_id")), str(msg.get("decision", "deny")))
                     await send({"type": "approval.ack", "approval_id": msg.get("approval_id"), "resolved": ok})
+                elif kind == "undo.respond":  # Undo or Send now on a waiting email, message or post (#142)
+                    ok = s.undo.respond(str(msg.get("undo_id")), str(msg.get("action", "undo")))
+                    await send({"type": "undo.ack", "undo_id": msg.get("undo_id"), "action": msg.get("action", "undo"),
+                                "done": ok})
                 elif kind == "presence":  # the window is focused and visible, or not (#139)
                     s.presence.set(presence_id, msg.get("active") is True)
                 else:

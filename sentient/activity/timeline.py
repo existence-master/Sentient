@@ -27,6 +27,9 @@ from typing import TYPE_CHECKING, Any
 
 from sentient.activity import words
 from sentient.agent import grants as grant_rules
+from sentient.agent import reversible
+from sentient.llm.provider import ToolCall
+from sentient.store.db import new_id
 from sentient.tasks.schedule import calculate_next_run, get_tz, iso, parse_iso, user_timezone_name
 from sentient.tools.rules import tool_title
 
@@ -60,6 +63,8 @@ class Item:
     app_label: str | None = None
     ref: dict | None = None
     upcoming: bool = False
+    # a way back the window can offer (#142): {"action": "restore", "label": "Restore"} for something moved to the trash
+    undo: dict | None = None
     _args: tuple | None = field(default=None, repr=False)  # (session_id, call id, before) for the arguments look-up
     _apps: frozenset[str] = field(default_factory=frozenset, repr=False)  # other apps it counts under in a filter
 
@@ -73,7 +78,7 @@ class Item:
     def as_dict(self) -> dict[str, Any]:
         return {"id": self.id, "kind": self.kind, "at": self.at, "title": self.title, "why": self.why,
                 "detail": self.detail, "status": self.status, "app": self.app, "app_label": self.app_label,
-                "ref": self.ref, "upcoming": self.upcoming}
+                "ref": self.ref, "upcoming": self.upcoming, "undo": self.undo}
 
 
 @dataclass
@@ -274,6 +279,10 @@ class Timeline:
         where = self._where_chat(row["channel"], row["title"])
         args = (row["session_id"], row["tool_call_id"], row["_at"])
         also = frozenset({row["channel"]}) if row["channel"] in CHANNELS else frozenset()
+        undone = isinstance(result, dict) and result.get("undone") is True  # Undo pressed in its window (#142)
+        # something moved to the trash can come back when its app has a way to restore it (#142)
+        back = reversible.restore_twin(tool, self.app.registry) if tool is not None and not error else None
+        undo = {"action": "restore", "label": "Restore"} if back is not None else None
         if isinstance(approval, dict):
             decision = str(approval.get("decision") or "")
             target = str(approval.get("target") or "").strip()
@@ -281,6 +290,8 @@ class Timeline:
             asked = f"Asked you before {what}" + (f" ({words.short(target, 60)})" if target else "")
             if decision == grant_rules.DENY:
                 said, status = "You said no, so it was not done.", "declined"
+            elif undone:
+                said, status = "You allowed it, then pressed Undo, so nothing was sent.", "stopped"
             else:
                 said, status = f"You chose {grant_rules.decision_label(decision)}.", "done"
                 if error:
@@ -294,36 +305,73 @@ class Timeline:
                 risk = str(approval.get("risk_label") or "It changes something")
                 why = f"{risk}, so Sentient asks first. {where}"
             return Item(id=row["_key"], kind="approvals", at=row["_at"], title=asked, why=why, detail=said,
-                        status=status, app=app, app_label=label, ref=ref, _args=args, _apps=also)
+                        status=status, app=app, app_label=label, ref=ref, undo=undo, _args=args, _apps=also)
         verb = f"Used {label}: {title}" if label else f"Used {title}"
+        if undone:
+            return Item(id=row["_key"], kind="chat", at=row["_at"], title=f"Held back: {title}" + (f" in {label}" if label else ""),
+                        why=where, detail="You pressed Undo, so nothing was sent.", status="stopped", app=app,
+                        app_label=label, ref=ref, _apps=also)
         if error:
             return Item(id=row["_key"], kind="chat", at=row["_at"],
                         title=f"Couldn't {title[:1].lower() + title[1:]}" + (f" in {label}" if label else ""),
                         why=where, detail=words.short(error, 160), status="failed", app=app, app_label=label,
                         ref=ref, _args=args, _apps=also)
         return Item(id=row["_key"], kind="chat", at=row["_at"], title=verb, why=where, status="done", app=app,
-                    app_label=label, ref=ref, _args=args, _apps=also)
+                    app_label=label, ref=ref, undo=undo, _args=args, _apps=also)
+
+    async def _call_arguments(self, session_id: str, call_id: str, at: str) -> dict | None:
+        """The arguments a chat tool call was given, read from the assistant message that made it."""
+        row = await self.store.fetchone(
+            "SELECT tool_calls FROM messages WHERE session_id = ? AND role = 'assistant' AND created_at <= ?"
+            " AND tool_calls IS NOT NULL ORDER BY created_at DESC LIMIT 1", (session_id, at),
+        )
+        calls = _loads(row["tool_calls"]) if row else None
+        for call in calls if isinstance(calls, list) else []:
+            if not isinstance(call, dict) or call.get("id") != call_id:
+                continue
+            fn = call.get("function") if isinstance(call.get("function"), dict) else call
+            args = fn.get("arguments")
+            args = _loads(args) if isinstance(args, str) else args
+            return args if isinstance(args, dict) else None
+        return None
 
     async def _fill_arguments(self, page: list[Item]) -> None:
         """A short line of what each chat tool call was given ("query: weather in Pune"), read only for the page."""
         for item in page:
-            if item._args is None:
+            if item._args is None or item.detail is not None:
                 continue
-            session_id, call_id, at = item._args
-            row = await self.store.fetchone(
-                "SELECT tool_calls FROM messages WHERE session_id = ? AND role = 'assistant' AND created_at <= ?"
-                " AND tool_calls IS NOT NULL ORDER BY created_at DESC LIMIT 1", (session_id, at),
-            )
-            calls = _loads(row["tool_calls"]) if row else None
-            for call in calls if isinstance(calls, list) else []:
-                if not isinstance(call, dict) or call.get("id") != call_id:
-                    continue
-                fn = call.get("function") if isinstance(call.get("function"), dict) else call
-                args = fn.get("arguments")
-                args = _loads(args) if isinstance(args, str) else args
-                if item.detail is None:
-                    item.detail = _brief(args) or None
-                break
+            args = await self._call_arguments(*item._args)
+            if args:
+                item.detail = _brief(args) or None
+
+    async def restore(self, item_id: str) -> dict:
+        """Bring back what a chat tool call moved to the trash, with its app's restore tool (#142). Returns
+        ``{"ok": True, "result": ...}`` or ``{"ok": False, "error": "..."}`` in plain words. Never rules and Read only
+        connections still apply (``Agent.run_tool``)."""
+        kind, _, message_id = str(item_id or "").partition(":")
+        if kind != "chat" or not message_id:
+            return {"ok": False, "error": "That item can't be undone."}
+        row = await self.store.fetchone(
+            "SELECT m.session_id, m.name, m.content, m.tool_call_id, m.created_at FROM messages m"
+            " JOIN sessions s ON s.id = m.session_id WHERE m.id = ? AND m.role = 'tool' AND s.incognito = 0",
+            (message_id,),
+        )
+        tool = self.app.registry.get(str(row["name"] or "")) if row else None
+        back = reversible.restore_twin(tool, self.app.registry) if tool is not None else None
+        result = _loads(row["content"]) if row else None
+        if row is None or tool is None or back is None or (isinstance(result, dict) and result.get("error")):
+            return {"ok": False, "error": "There is nothing to restore for this item."}
+        args = await self._call_arguments(row["session_id"], row["tool_call_id"], row["created_at"])
+        fitted = reversible.fit_arguments(back, args)
+        if fitted is None or self.app.agent is None:
+            return {"ok": False, "error": "Sentient can't tell what to restore for this item."}
+        ctx = self.app.agent.tool_context(row["session_id"], "desktop")
+        res, is_error, _ = await self.app.agent.run_tool(ToolCall(id=new_id(), name=back.name, arguments=fitted), ctx)
+        error = res.get("error") if isinstance(res, dict) else None
+        if is_error or error:
+            return {"ok": False, "error": str(error or res)[:300]}
+        log.info("activity: restored %s with %s", item_id, back.name)
+        return {"ok": True, "result": res}
 
     # -- messaging apps: Sentient's replies in Telegram, Discord and WhatsApp chats
     async def _channel_replies(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:

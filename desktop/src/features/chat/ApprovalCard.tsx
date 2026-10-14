@@ -21,6 +21,7 @@ import { Badge, Button, JsonView, Markdown, type Tone } from '@/components/ui'
 import type { ApprovalView } from '@/lib/chatFold'
 import type { ApprovalDecision } from '@/lib/types'
 import { cn, truncate } from '@/lib/utils'
+import { ActionPreview } from './ActionPreview'
 import { hostOf, refLabel } from './cards/bits'
 import { toolMeta } from './toolMeta'
 
@@ -52,8 +53,11 @@ interface EffectiveRisk {
  * The engine reports the effective risk (§10 `risk_fn`: a click on "Place order" becomes `send`).
  * `send` covers purchases, messages, posts and deletions, so read the reason to name it plainly.
  */
-export function effectiveRisk(approval: Pick<ApprovalView, 'risk' | 'reason' | 'name' | 'arguments'>): EffectiveRisk {
+export function effectiveRisk(approval: Pick<ApprovalView, 'risk' | 'reason' | 'name' | 'arguments'> & Pick<Partial<ApprovalView>, 'preview'>): EffectiveRisk {
   const text = `${approval.reason ?? ''} ${JSON.stringify(approval.arguments ?? {})}`.toLowerCase()
+  // a delete for good became its app's trash version (#142): it can come back, so it reads as a change, not a loss
+  if (approval.preview?.kind === 'trash' && approval.risk !== 'exec')
+    return { label: 'Moves to the trash', verb: 'move something to the trash', icon: IconTrash, tone: 'warning' }
   if (approval.name === 'terminal_run') return { label: 'Runs a command', verb: 'run a command on this computer', icon: IconTerminal2, tone: 'danger' }
   if (approval.risk === 'exec') return { label: 'Runs code', verb: 'run code on your computer', icon: IconTerminal2, tone: 'danger' }
   if (approval.risk === 'send') {
@@ -194,6 +198,17 @@ export function ApprovalCard({
       ) : code ? (
         <div className="mx-4 mt-3 max-h-56 overflow-auto [&_.md-code]:bg-surface">
           <Markdown>{'```python\n' + code.replace(/\s+$/, '') + '\n```'}</Markdown>
+        </div>
+      ) : approval.preview ? (
+        // what will be sent, the way a person reads it (#142); the raw details stay one click away
+        <div className="mx-4 mt-3 space-y-1.5">
+          <ActionPreview preview={approval.preview} />
+          <details className="group text-xs text-fg-subtle">
+            <summary className="cursor-pointer select-none hover:text-fg-muted">Details</summary>
+            <div className="mt-1.5 max-h-48 overflow-auto rounded-lg border border-border bg-surface px-3 py-2">
+              <JsonView value={args} collapsedDepth={2} />
+            </div>
+          </details>
         </div>
       ) : (
         !isBrowser &&
