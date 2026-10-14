@@ -154,6 +154,7 @@ function LocalBrain() {
               <ModelPicker embedding value={d.embedding} onChange={(embedding) => d.set({ embedding })} className="flex-1" />
               <ModelTest embedding model={d.embedding} className="shrink-0" />
             </div>
+            <MultilingualHint installed={embedModels.map((m) => m.name)} onShowDownloads={() => setShowPull(true)} />
           </Field>
         </div>
         {(showPull || !embedModels.length) && (
@@ -164,6 +165,27 @@ function LocalBrain() {
       </Card>
       <DraftCheckup />
     </div>
+  )
+}
+
+/** "Writing in Hindi?" (#339): the default memory search model is English-first, so point to a multilingual one. */
+function MultilingualHint({ installed, onShowDownloads }: { installed: string[]; onShowDownloads: () => void }) {
+  const d = useOnboardingDraft()
+  const hardware = useHardware()
+  const rec = hardware.data?.recommendation.multilingual_embedding
+  if (!rec || d.embedding === rec.model) return null
+  const have = isInstalled(rec.name, installed)
+  return (
+    <p className="mt-2 text-xs text-fg-subtle">
+      Writing in Hindi or another language besides English? {rec.name} ({rec.size}) keeps those memories apart and finds them better.{' '}
+      <button
+        type="button"
+        className="font-medium text-accent hover:underline"
+        onClick={() => (have ? d.set({ embedding: rec.model }) : onShowDownloads())}
+      >
+        {have ? `Use ${rec.name}` : `Download ${rec.name}`}
+      </button>
+    </p>
   )
 }
 

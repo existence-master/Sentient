@@ -37,6 +37,12 @@ from sentient.memory import prompts
 from sentient.memory import review as reviews
 from sentient.memory.episodic import EpisodicMemory
 from sentient.memory.schema import ensure_memory_schema
+from sentient.memory.scripts import (
+    devanagari_subjects,
+    leads_with_devanagari,
+    names_match,
+    script_words,
+)
 from sentient.memory.topics import DEFAULT_TOPIC, TOPICS, normalize_topics
 from sentient.memory.vectors import VecTable, cosine, pack
 from sentient.store.db import Store, now_iso
@@ -287,19 +293,28 @@ def fact_actions(text: str) -> set[str]:
     return out
 
 
+def subject_aliases(text: str, user_name: str = "") -> set[str]:
+    """:func:`fact_subjects`, or for a fact written in Devanagari (Hindi...) its subject from
+    :func:`scripts.devanagari_subjects`, which finds names without capital letters (#339)."""
+    if leads_with_devanagari(text):
+        return devanagari_subjects(text, user_name)
+    return fact_subjects(text, user_name)
+
+
 def _subject_keys(subjects: set[str], users: set[str]) -> set[tuple[str, str]]:
     """(owner, relation) per subject, with every name for the user as "user": "maya's sister" -> ("user", "sister")."""
     out = set()
     for s in subjects:
         owner, _, rel = s.partition("'s ")
-        out.add(("user" if owner in users else owner, rel))
+        out.add(("user" if any(names_match(owner, u) for u in users) else owner, rel))
     return out
 
 
 def same_subject(a: str, b: str, user_name: str = "") -> bool:
-    """False only when both facts clearly name different people or things ("Maya's sister" vs "Maya's brother").
-    Unclear subjects count as the same, and so does "the user" next to a name while the user's name isn't set."""
-    sa, sb = fact_subjects(a, user_name), fact_subjects(b, user_name)
+    """False only when both facts clearly name different people or things ("Maya's sister" vs "Maya's brother",
+    "प्रिया" vs "Riya"). Names match across scripts ("माया" is "Maya"). Unclear subjects count as the same, and so
+    does "the user" next to a name while the user's name isn't set."""
+    sa, sb = subject_aliases(a, user_name), subject_aliases(b, user_name)
     if not sa or not sb or sa & sb:
         return True
     users = {"user", "the user", (user_name or "").strip().lower()} - {""}
@@ -307,7 +322,7 @@ def same_subject(a: str, b: str, user_name: str = "") -> bool:
     ka, kb = _subject_keys(sa, users), _subject_keys(sb, users)
     for oa, ra in ka:
         for ob, rb in kb:
-            if ra == rb and (oa == ob or (unnamed and "user" in (oa, ob))):
+            if ra == rb and (names_match(oa, ob) or (unnamed and "user" in (oa, ob))):
                 return True
     return False
 
@@ -372,7 +387,8 @@ def covered_by(new_fact: str, existing: str, user_name: str = "") -> bool:
         return False
     if bool(PAST_RE.search(new_fact)) != bool(PAST_RE.search(existing)):
         return False
-    if new_details(new_fact, existing):
+    if new_details(new_fact, existing) or script_words(new_fact) - script_words(existing):
+        # a new name, place or number, or words in another script (Hindi) that the English word checks below miss
         return False
     if not same_subject(new_fact, existing, user_name):
         return _only_names_relation(new_fact, existing, user_name)
@@ -520,7 +536,7 @@ class FactMemory:
     async def _embed(self, texts: list[str]) -> list[list[float]]:
         vecs = await self.llm.embed(texts)
         if vecs:
-            await self.vec.ensure(len(vecs[0]), self.reindex)
+            await self.vec.ensure(len(vecs[0]), self.reindex, self.llm.model_for("embedding"))
         return vecs
 
     async def reindex(self) -> int:
@@ -762,6 +778,17 @@ class FactMemory:
         out.sort(key=lambda m: m["updated_at"] or "", reverse=True)
         return out[:3]
 
+    def _duplicate(self, fact: str, neighbour: dict) -> bool:
+        """A near-identical fact, skipped without asking the model: above ``duplicate_similarity``, about the same
+        person or thing, and with no word in Hindi (or another script without capitals) that the other lacks.
+        Embedding models score short texts in one script very close together (#339)."""
+        other = neighbour["content"]
+        return (
+            neighbour["similarity"] >= self.config.memory.duplicate_similarity
+            and same_subject(fact, other, self.config.assistant.user_name)
+            and not script_words(fact) - script_words(other)
+        )
+
     def _residence_peer(self, fact: str, candidates: list[dict]) -> dict | None:
         """The current residence fact a new residence fact replaces ("moved to X" vs "lives in Y"), if any.
         Past-tense facts ("lived in Nagpur as a child") are history and never replaced."""
@@ -812,7 +839,7 @@ class FactMemory:
         if exact:
             return {"action": "SKIP", "id": int(exact["id"]), "content": fact}
         neighbours = await self.recall(fact, top_k=1, min_similarity=0.0, track=False)
-        if neighbours and neighbours[0]["similarity"] >= self.config.memory.duplicate_similarity:
+        if neighbours and self._duplicate(fact, neighbours[0]):
             return {"action": "SKIP", "id": neighbours[0]["id"], "content": neighbours[0]["content"]}
         topics, memory_type, duration = await self.analyze(fact) if use_llm else ([DEFAULT_TOPIC], "long-term", None)
         fid = await self._insert(
@@ -831,25 +858,36 @@ class FactMemory:
             return {"action": "SKIP", "id": int(exact["id"]), "content": fact}
         [vec] = await self._embed([fact])
         neighbours = await self.recall(fact, top_k=5, min_similarity=0.0, track=False)
-        if neighbours and neighbours[0]["similarity"] >= self.config.memory.duplicate_similarity:
-            return {"action": "SKIP", "id": neighbours[0]["id"], "content": neighbours[0]["content"]}
+        dup = next((n for n in neighbours if self._duplicate(fact, n)), None)
+        if dup is not None:
+            return {"action": "SKIP", "id": dup["id"], "content": dup["content"]}
 
         action, fid, content = "ADD", None, fact
         topics: list[str] | None = None
         memory_type, duration = "long-term", None
+        user = self.config.assistant.user_name
         close = [n for n in neighbours if n["similarity"] >= 0.5]
         related: list[dict] = []
+        # The model may only update, skip or delete a fact about the same person or thing (#339): embedding models
+        # score "प्रिया पुणे में रहती है" close to "Riya lives in Pune", and a small model then calls it an update.
+        # Facts about someone else are left out of what it sees, and are still checked by ``covered_by`` below.
+        others = {n["id"] for n in close if not same_subject(fact, n["content"], user)}
         if use_llm:
-            user = self.config.assistant.user_name
             try:
                 related = await self._related_facts(fact, {n["id"] for n in close})
             except Exception as exc:
                 log.debug("related-fact lookup skipped: %s", exc)
+            others |= {r["id"] for r in related if not same_subject(fact, r["content"], user)}
+            if others:
+                log.info("CUD for %r: facts %s are about someone else, not offered", fact, sorted(others))
             similar = [
                 {"id": n["id"], "content": n["content"], "similarity": round(n["similarity"], 2)}
                 | ({"same_subject_attribute": True} if conflict_strength(fact, n["content"], user) == 2 else {})
-                for n in close
-            ] + [{"id": r["id"], "content": r["content"], "same_subject_attribute": True} for r in related]
+                for n in close if n["id"] not in others
+            ] + [
+                {"id": r["id"], "content": r["content"], "same_subject_attribute": True}
+                for r in related if r["id"] not in others
+            ]
             try:
                 raw = await self.llm.complete_json(
                     "fast",
@@ -875,18 +913,19 @@ class FactMemory:
                 log.warning("CUD decision failed, defaulting to ADD: %s", exc)
 
         candidates = [*close, *related]
-        valid_ids = {n["id"] for n in candidates}
+        valid_ids = {n["id"] for n in candidates} - others
         if action in {"UPDATE", "DELETE", "SKIP"} and fid not in valid_ids:
             action, content = "ADD", fact  # the model pointed at something we did not show it
         if action == "SKIP":
             matched = next((n["content"] for n in candidates if n["id"] == fid), "")
-            if new_details(fact, matched):
-                # the "duplicate" is missing a name, place or number the new fact carries: keep it
-                log.info("CUD SKIP overruled for %r (new details: %s)", fact, sorted(new_details(fact, matched)))
+            extra = new_details(fact, matched) | (script_words(fact) - script_words(matched))
+            if extra:
+                # the "duplicate" is missing a name, place or number the new fact carries (in Hindi and other
+                # scripts without capitals, any word of it): keep it
+                log.info("CUD SKIP overruled for %r (new details: %s)", fact, sorted(extra))
                 action, content, topics = "ADD", fact, None
             else:
                 return {"action": "SKIP", "id": fid, "content": content}
-        user = self.config.assistant.user_name
         if action == "UPDATE":
             matched = next((n["content"] for n in candidates if n["id"] == fid), "")
             dropped = new_details(matched, content or "") if matched else set()
@@ -895,9 +934,12 @@ class FactMemory:
                 # model's rewrite that would be stored: both facts hold
                 log.info("CUD UPDATE of %s kept as ADD for %r (about something else)", fid, fact)
                 action, content, topics = "ADD", fact, None
-            elif dropped and not new_details(fact, matched):
+            elif dropped and not (
+                new_details(fact, matched) or (script_words(fact) and new_details(content, matched))
+            ):
                 # the rewrite would lose a name, place or number that the new fact does not replace
-                # ("moving to Berlin" rewritten as "pursuing her masters"): keep both facts instead
+                # ("moving to Berlin" rewritten as "pursuing her masters"): keep both facts instead. A Hindi fact's
+                # places can't be read in Latin letters, so there the rewrite has to bring one in their place
                 log.info("CUD UPDATE of %s kept as ADD for %r (would drop %s)", fid, fact, sorted(dropped))
                 action, content, topics = "ADD", fact, None
         if action == "ADD":

@@ -96,6 +96,18 @@ LOCAL_MODEL_TIERS: tuple[dict, ...] = (
 )
 
 
+# The embedding model recommended for memories in Hindi and other languages besides English (#339). nomic-embed-text
+# (the default, 768 dimensions) is English-first: Hindi facts about different people score 0.71 to 0.85 against each
+# other, and a Hindi question ranks the wrong person first. bge-m3 (1024 dimensions, 100+ languages, no query prefix)
+# scores those pairs 0.35 to 0.56 and the same fact across Hindi and English 0.77 to 0.84. Measured on an RTX 4060
+# laptop with Ollama 0.9 (2026-10-14): 1.7 GB loaded on the graphics card (nomic-embed-text 0.85 GB), a memory search
+# in 0.6 to 0.7 s once loaded (nomic-embed-text 0.5 to 0.7 s), and switching re-embedded 7 memories in 8 s including
+# loading the model. Next to qwen3:8b at 8,192 tokens, Ollama swaps it in when needed: qwen3:8b stays at 7%/93%
+# processor/graphics and about 29 tokens/s, and an embedding right after a chat reply takes 5.4 s to load against
+# 2.3 s for nomic-embed-text. That cost is why it is offered, not the default.
+MULTILINGUAL_EMBEDDING: dict[str, str] = {"model": "ollama/bge-m3", "name": "bge-m3", "size": "1.2 GB"}
+
+
 class ModelPreset(BaseModel):
     """A saved model setup the user can switch to in one step. Fields left out keep their current value."""
 
