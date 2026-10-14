@@ -194,7 +194,6 @@ async def expire(app: Any, now: datetime | None = None) -> int:
     gone = 0
     if app.memory is not None:
         gone += await app.memory.expire_pending(cutoff)
-        await app.memory.expire_merged(cutoff)  # the review history keeps merges as long as held memories
     um = getattr(app, "user_model", None)
     if um is not None:
         gone += await um.expire_pending(cutoff)

@@ -165,3 +165,25 @@ def test_review_history_and_undo_routes(config, isolated_home, monkeypatch):
         assert c.post(f"/api/memories/review/merged/{m['id']}/undo").json()["ok"] is True
         assert c.get("/api/memories/review").json()["merged"] == []
         assert c.post(f"/api/memories/review/merged/{m['id']}/undo").status_code == 404
+
+
+async def test_long_term_wins_deleting_takes_the_copies_and_an_expired_one_cant_come_back(app):
+    mem, llm = app.memory, app.fake
+    app.config.user_model.enabled = False
+    # most memories are in English, but the Hindi one is long-term and the English one short-term: Hindi stays
+    hindi = await add_fact(mem, "माया शाकाहारी है")
+    english = await add_fact(mem, "Maya is vegetarian", memory_type="short-term")
+    await add_fact(mem, "Maya works at Lumen Labs")
+    judge(llm)
+    await app.dreaming.run()
+    assert (await mem.get_fact(english))["status"] == "merged"
+    assert (await mem.get_fact(hindi))["status"] == "active"
+
+    # a short-term copy that ran out while merged can't be brought back
+    await mem.store.execute("UPDATE facts SET expires_at = '2000-01-01T00:00:00+00:00' WHERE id = ?", (english,))
+    assert await mem.unmerge(english) is None
+
+    # deleting the kept memory deletes the copy merged into it too
+    await mem.store.execute("UPDATE facts SET expires_at = NULL WHERE id = ?", (english,))
+    assert await mem.forget(hindi)
+    assert await mem.get_fact(english) is None and await mem.merged_facts() == []

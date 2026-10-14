@@ -735,7 +735,10 @@ class FactMemory:
             return [DEFAULT_TOPIC], "long-term", None
 
     async def forget(self, fid: int, *, notify: bool = False) -> bool:
+        """Delete a fact, with the copies in other languages the tidy-up merged into it (#353)."""
+        await self.ensure_schema()
         row = await self.store.fetchone("SELECT content FROM facts WHERE id = ?", (fid,))
+        await self.store.execute("DELETE FROM facts WHERE merged_into = ? AND status = 'merged'", (fid,))
         cur = await self.store.execute("DELETE FROM facts WHERE id = ?", (fid,))
         await self.vec.delete(fid)
         deleted = cur.rowcount > 0
@@ -1401,6 +1404,12 @@ class FactMemory:
         )
         await self.vec.upsert(keep_id, vec)
         self.publish("UPDATE", keep_id, content)
+        if len(ids) > 1:  # copies in other languages merged into a folded fact now belong to the kept one (#353)
+            marks = ",".join("?" * (len(ids) - 1))
+            await self.store.execute(
+                f"UPDATE facts SET merged_into = ? WHERE status = 'merged' AND merged_into IN ({marks})",
+                (keep_id, *ids[1:]),
+            )
         for i in ids[1:]:
             if i in rows and await self.forget(i):
                 self.publish("DELETE", i, rows[i]["content"], reason="merged", merged_into=keep_id)
@@ -1448,7 +1457,9 @@ class FactMemory:
         """Undo :meth:`merge_translation`: the memory is active again, as it was. None when it isn't merged."""
         await self.ensure_schema()
         row = await self.store.fetchone(
-            "SELECT content, merged_into FROM facts WHERE id = ? AND status = 'merged'", (fid,)
+            "SELECT content, merged_into FROM facts WHERE id = ? AND status = 'merged'"
+            " AND (expires_at IS NULL OR expires_at > ?)",  # a short-term memory that ran out can't come back
+            (fid, now_iso()),
         )
         if row is None:
             return None
@@ -1488,15 +1499,6 @@ class FactMemory:
              "merged_into": {"id": int(r["merged_into"]), "text": r["kept"]} if r["kept"] is not None else None}
             for r in rows
         ]
-
-    async def expire_merged(self, cutoff: str) -> int:
-        """Forget merged memories older than ``cutoff`` for good (their undo window is over)."""
-        rows = await self.store.fetchall(
-            "SELECT id FROM facts WHERE status = 'merged' AND merged_at < ?", (cutoff,)
-        )
-        for r in rows:
-            await self.forget(int(r["id"]))
-        return len(rows)
 
     async def kept_apart(self) -> set[tuple[int, int]]:
         """Pairs of memories the user split again after a merge (:meth:`unmerge`), smaller id first."""

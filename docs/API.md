@@ -1415,11 +1415,12 @@ out of pending; no model output can:
   counted in `count`. A **MergedMemory** `{id, text, source, merged_at, by, merged_into: {id, text}|null}` is a memory the
   nightly tidy-up merged into another one because they said the same thing in two languages (section 15, Dreams). It
   stays in `facts` with `status: "merged"` and `merged_into`, out of every read, recall and the vector index, and keeps
-  its own `source`; `by` is "nightly tidying"; `merged_into` is `null` when that memory was deleted since. It is
-  forgotten for good after `memory.review_expire_days` (with the review expiry).
+  its own `source`, so both sources stay; `by` is "nightly tidying". It is kept as long as the memory it was merged
+  into: deleting that memory deletes it too, and a memory folded into another by the duplicate merge passes it on. A
+  short-term one still goes when it expires.
 - `POST /api/memories/review/merged/{id}/undo` → `{ok: true, memory: Memory}`: it is active again as it was (embedded
   again), `memory.updated` `{action: "ADD", reason: "unmerged"}`, and the tidy-up never merges that pair again
-  (meta `memory.kept_apart`). 404 when it is not merged.
+  (meta `memory.kept_apart`). 404 when it is not merged, or is short-term and ran out.
 
 Chats that read outside content reach no other chat in other ways either:
 - conversation summaries carry the chat's mark (`summaries.untrusted`, set from `sessions.untrusted` when written;
@@ -2221,7 +2222,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `dreaming.language_merge_similarity` (0.7), otherwise the similarity only orders them. The `fast`-role model (the
   dream's `role`) answers `{same, extra: "A"|"B"|"none", conflict}`; only `same: true`, `extra: "none"` and
   `conflict: false` merge (one that adds a detail or conflicts never does; conflicts are the contradiction step's).
-  The kept wording is the one in the language most active memories are in (the older one on a tie); the other moves to
+  A long-term memory is kept over a short-term one; otherwise the kept wording is the one in the language most active
+  memories are in (the older one on a tie); the other moves to
   the review history (section 7) with `merged_into`, and the kept one is not changed. A "not the same" answer is not
   asked again until either fact changes (meta `dreaming.language_pairs`); an unclear one is asked again next time. At
   most half of `dreaming.max_model_calls` go to this step. `stats.languages_merged` counts these merges (also in

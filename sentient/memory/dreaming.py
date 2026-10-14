@@ -532,8 +532,12 @@ class DreamingService(Service):
         return extra in {"none", "", "neither", "null"} and not conflict and languages.same_words(english, b)
 
     def _clearer(self, hindi: dict, other: dict, facts: list[dict]) -> tuple[dict, dict]:
-        """(kept, merged away): the wording in the language most of the user's active memories (``facts``, without
-        those merged away tonight) are in; on a tie the older one stays."""
+        """(kept, merged away): a long-term memory over a short-term one (so nothing is forgotten sooner), else the
+        wording in the language most of the user's active memories (``facts``, without those merged away tonight) are
+        in; on a tie the older one stays."""
+        long_h, long_o = hindi["memory_type"] == "long-term", other["memory_type"] == "long-term"
+        if long_h != long_o:
+            return (hindi, other) if long_h else (other, hindi)
         written = sum(1 for f in facts if scripts.leads_with_devanagari(f["content"]))
         if written * 2 > len(facts):
             return hindi, other
