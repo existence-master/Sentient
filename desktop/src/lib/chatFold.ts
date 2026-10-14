@@ -26,7 +26,7 @@ export interface UndoView {
   /** ISO time the window ends. */
   until: string
   preview?: ActionPreview | null
-  status: 'waiting' | 'sent' | 'undone'
+  status: 'waiting' | 'sent' | 'undone' | 'failed'
 }
 
 export interface ToolCallView {
@@ -336,7 +336,7 @@ export function applyAgentEvent(turn: AssistantTurnView, ev: AgentEvent): Assist
             isError: ev.is_error,
             durationMs: ev.duration_ms,
             status: denied ? 'denied' : ev.is_error ? 'error' : 'done',
-            undo: prev.undo ? { ...prev.undo, status: undone ? 'undone' : 'sent' } : undefined
+            undo: prev.undo ? { ...prev.undo, status: undone ? 'undone' : ev.is_error ? 'failed' : 'sent' } : undefined
           }
         },
         approvals: turn.approvals.map((a) => (a.callId === ev.call_id && a.status === 'pending' ? { ...a, status: 'expired' } : a))

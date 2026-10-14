@@ -2,7 +2,7 @@
  * An email, message or post waiting in its undo window (#142): what goes out, a countdown, Undo and Send now.
  * It only goes when the countdown ends; Undo means it never does.
  */
-import { IconArrowBackUp, IconCheck, IconClockHour4, IconSend } from '@tabler/icons-react'
+import { IconArrowBackUp, IconCheck, IconClockHour4, IconSend, IconX } from '@tabler/icons-react'
 import { motion } from 'motion/react'
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui'
@@ -32,6 +32,10 @@ export function UndoCard({ undo }: { undo: UndoView }) {
         {undo.status === 'undone' ? (
           <>
             <IconArrowBackUp size={13} className="text-warning" /> You pressed Undo, so nothing was sent.
+          </>
+        ) : undo.status === 'failed' ? (
+          <>
+            <IconX size={13} className="text-danger" /> It didn't go out: the app reported an error.
           </>
         ) : (
           <>

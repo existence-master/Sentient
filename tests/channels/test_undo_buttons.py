@@ -82,3 +82,27 @@ async def test_approval_message_shows_the_preview_not_raw_json(tg, llm):
     tg.ch.dispatch(callback(42, msg["_id"], deny))
     await tg.ch.wait_idle()
     assert SENT == []
+
+
+async def test_a_send_that_fails_after_the_window_is_not_called_sent(tg, llm):
+    SENT.clear()
+
+    @tool("mail_send_email", risk=Risk.send)
+    async def broken(ctx: ToolContext, to: str, subject: str = "", body: str = "") -> dict:
+        """Send an email."""
+        return {"error": "The mail server said no."}
+
+    class Broken(ToolPlugin):
+        id = "mail"
+        display_name = "Mail"
+        tools = [broken]
+
+    tg.app.registry.register(Broken(), replace=True)
+    tg.app.config.tools.approvals.undo_seconds = 1  # the window runs out on its own
+    await tg.pair(42)
+    llm.replies = [[SEND], "It failed."]
+    await tg.say(42, "email sam@example.com about lunch")
+    msg = tg.api.button_messages()[-1]
+    edits = [p for p in tg.api.sent("editMessageText") if p["message_id"] == msg["_id"]]
+    assert any("the app reported an error" in p["text"] for p in edits)
+    assert not any("<b>Sent</b>" in p["text"] for p in edits)

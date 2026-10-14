@@ -737,7 +737,10 @@ class Channel:
                         self._undo_chats.pop(undo_id, None)
                         if (str(chat_id), mid) in self._button_text:
                             undone = isinstance(event.result, dict) and event.result.get("undone")
-                            await self.settle_buttons(chat_id, mid, "Undone. Nothing was sent." if undone else "Sent")
+                            failed = event.is_error or (isinstance(event.result, dict) and event.result.get("error"))
+                            outcome = ("Undone. Nothing was sent." if undone
+                                       else "It didn't go out: the app reported an error." if failed else "Sent")
+                            await self.settle_buttons(chat_id, mid, outcome)
                     if event.call_id in approval_msgs:
                         _, mid = approval_msgs.pop(event.call_id)
                         if (str(chat_id), mid) in self._button_text:  # answered elsewhere (desktop)
