@@ -11,6 +11,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   instructions ("from now on, always cc Bob on invoices") are never saved quietly: they wait on the Memory page's
   Review tab under "Instructions for Sentient" until you approve them. And in a chat that read an email or a web page,
   what you said yourself is now remembered right away; only what came from the email or page waits for your review.
+- **Answers from your notes, even with small models.** When a message clearly matches something in your folders or
+  Obsidian vault, the two or three best matching pieces now go along with it, so local models like qwen3:8b answer
+  "when does my insurance renew?" from your notes without having to search them. Only short pieces go in, so replies
+  stay quick on small models, and the notes a reply used show as chips under it. Turn it off or change how many pieces
+  go along in Settings > Folders.
 - **Timers and reminders, instantly.** "Set a timer for 10 minutes", "remind me at 6 pm to call Ravi", "remind me in
   20 minutes", "what timers do I have" and "cancel the pasta timer" now happen at once, in the chat, by voice and
   in Telegram, Discord and WhatsApp, without waiting for the model, with a short confirmation. When a timer or

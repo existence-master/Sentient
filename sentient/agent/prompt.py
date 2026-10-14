@@ -147,6 +147,18 @@ CHANNEL_GUIDANCE["discord"] = _MESSAGING_GUIDANCE.format(app="Discord")
 CHANNEL_GUIDANCE["whatsapp"] = _MESSAGING_GUIDANCE.format(app="WhatsApp")
 
 
+def notes_block(notes: list[dict]) -> str:
+    """Pieces of the user's notes that match the message (#354): short, each with the note it is from."""
+    lines = []
+    for n in notes:
+        where = "/".join(x for x in (n.get("folder"), n.get("path")) if x)
+        lines.append(f"- From \"{n.get('title') or n.get('path')}\" ({where}): {n.get('text', '')}")
+    return (
+        "## From the user's notes (may be relevant)\n"
+        "Answer from these when they fit and name the note. Use folder_search for more.\n" + "\n".join(lines)
+    )
+
+
 def capability_rules(tool_names: Iterable[str] | None) -> str:
     if not tool_names:
         return ""
@@ -160,6 +172,7 @@ def build_system_prompt(
     snapshot: dict[str, str],
     facts: list[dict],
     skills_index: str,
+    note_pieces: list[dict] | None = None,
     assistant_name: str,
     user_name: str,
     channel: str,
@@ -185,6 +198,9 @@ def build_system_prompt(
     if facts:
         lines = "\n".join(f"- {f['content']} (id {f['id']})" for f in facts)
         parts.append("## Things you remember that may be relevant now\n" + lines)
+
+    if note_pieces:
+        parts.append(notes_block(note_pieces))
 
     user_context = (user_context or "").strip()
     if user_context:
