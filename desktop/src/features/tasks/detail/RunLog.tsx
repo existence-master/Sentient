@@ -247,7 +247,7 @@ function LogEntry({ entry, last, live, tz, tried = false }: { entry: Entry; last
         </Node>
         <div className="min-w-0 flex-1 rounded-xl border border-success/20 bg-success/6 px-3 py-2.5">
           <div className="mb-1 flex items-center gap-2 text-2xs font-semibold uppercase tracking-wide text-success">
-            {tried ? 'Final answer (a try run: nothing in it was really done)' : 'Final answer'} <span className="flex-1" />
+            {tried ? 'Final answer (a try run: nothing was sent, changed or run)' : 'Final answer'} <span className="flex-1" />
             {time}
           </div>
           <Markdown className="text-sm">{entry.content}</Markdown>
