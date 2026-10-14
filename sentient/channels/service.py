@@ -458,6 +458,60 @@ class ChannelService(Service):
                 sent += await self.deliver_notification(note)
         return sent
 
+    @staticmethod
+    def sent_title(md: str) -> str:
+        """The first line of a delivered message, without markdown, short: what the timeline calls it (#345)."""
+        first = next((line for line in md.splitlines() if line.strip()), "")
+        return summary_text(first.replace("**", "").replace("__", "").strip(), 120) or "A message"
+
+    @staticmethod
+    def _what(note: dict) -> str:
+        payload = note.get("payload") or {}
+        kind, event = note.get("kind"), payload.get("event")
+        if payload.get("subagent_id"):
+            return "subagent"
+        if kind == "brief":
+            return "brief"
+        if kind == "proactive":
+            return "suggestion"
+        if kind == "task":
+            if event == "question":
+                return "approval" if ChannelService.is_approval(note) else "question"
+            return "plan" if event == "approval_needed" else "task"
+        return "other"
+
+    @staticmethod
+    def _source_ref(note: dict) -> dict | None:
+        """Where the timeline opens a delivery: the task it came from, else the notification."""
+        payload = note.get("payload") or {}
+        task_id = payload.get("task_id") or note.get("task_id")
+        if task_id:
+            return {"type": "task", "id": str(task_id), "run_id": payload.get("run_id"), "notification_id": note.get("id")}
+        if payload.get("session_id"):
+            return {"type": "chat", "id": str(payload["session_id"])}
+        return {"type": "notification", "id": str(note["id"])} if note.get("id") else None
+
+    async def record_delivery(
+        self, ch: Channel, chat: dict, md: str, *, what: str, reason: str, ref: dict | None, error: str | None = None
+    ) -> None:
+        """Keep a line for the Activity timeline (#345) and tell the window. Never breaks a delivery."""
+        try:
+            row = await self.store.add_delivery(
+                ch.id, chat["chat_id"], chat_label=chat.get("label"), title=self.sent_title(md), what=what,
+                reason=reason, delivered=error is None, error=error, ref=ref,
+            )
+        except Exception:
+            log.exception("could not record a delivery")
+            return
+        self.app.bus.publish("channel.delivery", {k: row[k] for k in ("id", "channel", "chat_id", "title", "status", "ref")})
+
+    @staticmethod
+    def _delivery_error(ch: Channel, exc: Exception) -> str:
+        if isinstance(exc, ChannelError):
+            return exc.message[:200]
+        said = str(getattr(exc, "description", "") or exc)  # Telegram's own words, without the error code
+        return f"{ch.display_name} didn't take the message ({ch.redact(said)[:160] or type(exc).__name__})"
+
     async def deliver_notification(self, note: dict) -> int:
         if self.is_approval(note) and getattr(self.app, "presence", None) is not None and self.app.presence.in_app():
             if note.get("id") and not (note.get("payload") or {}).get("status"):
@@ -474,6 +528,7 @@ class ChannelService(Service):
         subagent_id = (note.get("payload") or {}).get("subagent_id")
         sent = 0
         targets = await self._chosen_targets(where) if isinstance(where, list) else await self._delivery_targets()
+        what, ref, reason = self._what(note), self._source_ref(note), "chosen" if chosen else "default"
         for ch, chat in targets:
             if subagent_id:
                 key = (str(subagent_id), ch.id, chat["chat_id"])
@@ -484,6 +539,8 @@ class ChannelService(Service):
                 ids = await ch.send_markdown(chat["chat_id"], md, buttons)
             except Exception as exc:
                 log.warning("delivering to %s failed: %s", ch.id, ch.redact(str(exc)))
+                await self.record_delivery(ch, chat, md, what=what, reason=reason, ref=ref,
+                                           error=self._delivery_error(ch, exc))
                 continue
             sent += 1
             ch.publish_message(chat["chat_id"], None, "out", md)
@@ -498,6 +555,7 @@ class ChannelService(Service):
                     log.exception("could not remember the delivered question")
             if buttons and ids and note.get("id"):
                 self._delivered.setdefault(str(note["id"]), []).append((ch.id, chat["chat_id"], ids[-1]))
+            await self.record_delivery(ch, chat, md, what=what, reason=reason, ref=ref)
         return sent
 
     async def update_delivered(self, note: dict) -> None:
@@ -541,11 +599,15 @@ class ChannelService(Service):
             md = f"**Background work finished**\n{goal}\n\n{summary_text(str(data.get('summary') or ''), 1500)}".strip()
         else:
             md = f"**Background work failed**\n{goal}\n\n{summary_text(str(data.get('error') or ''), 500)}".strip()
+        ref = {"type": "chat", "id": str(session_id)}
         try:
             await ch.send_markdown(chat["chat_id"], md)
         except Exception as exc:
             log.warning("subagent delivery failed: %s", ch.redact(str(exc)))
+            await self.record_delivery(ch, chat, md, what="subagent", reason="chat", ref=ref,
+                                       error=self._delivery_error(ch, exc))
             return False
+        await self.record_delivery(ch, chat, md, what="subagent", reason="chat", ref=ref)
         ch.publish_message(chat["chat_id"], session_id, "out", md)
         return True
 
