@@ -47,7 +47,8 @@ export function useMemoryReviewActions() {
       onSuccess: invalidate
     }),
     discard: useMutation({ mutationFn: ({ kind, id }: { kind: 'fact' | 'insight'; id: number | string }) => api.memories.review.discard(kind, id), onSuccess: invalidate }),
-    approveAll: useMutation({ mutationFn: (from: string) => api.memories.review.approveAll(from), onSuccess: invalidate })
+    approveAll: useMutation({ mutationFn: (from: string) => api.memories.review.approveAll(from), onSuccess: invalidate }),
+    undoMerge: useMutation({ mutationFn: (id: number) => api.memories.review.undoMerge(id), onSuccess: invalidate })
   }
 }
 

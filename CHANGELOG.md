@@ -6,6 +6,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **The same memory in two languages is kept once.** If Sentient remembered "माया शाकाहारी है" and "Maya is
+  vegetarian" separately, the nightly memory tidy-up now notices and keeps just one, in the language most of your
+  memories are in. It only does this when the model is sure they say exactly the same thing: never when one adds a
+  detail or they disagree. Each merge shows up in Memory > Review under "Tidied up overnight", with **Undo**, and a
+  pair you split again is never merged again. Turn it off in Settings > Knowing you.
 - **Answers from your notes, even with small models.** When a message clearly matches something in your folders or
   Obsidian vault, the two or three best matching pieces now go along with it, so local models like qwen3:8b answer
   "when does my insurance renew?" from your notes without having to search them. Only short pieces go in, so replies

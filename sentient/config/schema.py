@@ -1090,6 +1090,16 @@ class DreamingConfig(BaseModel):
         description="Facts about the same person that share only a broad attribute (routine, ownership, health) are "
         "checked for a contradiction above this embedding similarity. Same place, job, relationship or diet is always checked.",
     )
+    merge_languages: bool = Field(
+        True,
+        description="Merge the same memory saved in two languages, like Hindi and English, when the model is sure "
+        "they say exactly the same thing. You can undo each merge in Memory > Review.",
+    )
+    language_merge_similarity: float = Field(
+        0.7, ge=0.0, le=1.0,
+        description="With a multilingual embedding model (bge-m3), two memories in different languages are only "
+        "compared above this similarity. The same fact in Hindi and English scores about 0.77 to 0.84.",
+    )
     promote_min_recalls: int = Field(
         3, ge=1, le=1000, description="Short-term facts recalled at least this often become long-term."
     )
