@@ -308,6 +308,11 @@ PRICE_CODE = (
     "price = [line for line in page.get('content', '').splitlines() if 'Price:' in line]\n"
     "result(price[0] if price else None)\n"
 )
+WHOLE_PRICE_CODE = (
+    "from sentient_tools import tools, result\n"
+    "value = tools.web_fetch(url='https://example.org/item')\n"
+    "result(value['content'])\n"
+)
 SEARCH_CODE = "from sentient_tools import tools, result\nresult(tools.internet_search(query='rust 2.0 release'))\n"
 
 
@@ -323,6 +328,13 @@ SEARCH_CODE = "from sentient_tools import tools, result\nresult(tools.internet_s
         ("Tell me whenever anything at all on this page changes: https://example.org/events", PAGE_CODE, "changed",
          "changed"),
         ("Tell me about any change on https://example.org/events", PAGE_CODE, "changed", "changed"),
+        ("Tell me about every change to https://example.org/events", PAGE_CODE, "changed", "changed"),
+        ("Tell me when https://example.org/events changes", PAGE_CODE, "changed", "changed"),
+        ("Let me know if the page changes at all: https://example.org/events", PAGE_CODE, "changed", "changed"),
+        ("Tell me everything new on https://example.org/events", PAGE_CODE, "changed", "changed"),
+        # a price request whose script returns the whole page still asks about a change
+        ("Every 10 minutes check the price on https://example.org/item and tell me when the price changes",
+         WHOLE_PRICE_CODE, "changed", "changed"),
         # one value extracted from the page
         ("Tell me when the price changes on https://example.org/item", PRICE_CODE, "changed", "changed"),
         # a search, not a page read
@@ -353,6 +365,8 @@ FETCH = "from sentient_tools import tools, result\npage = tools.web_fetch(url='h
         (FETCH + "result(page)", True),
         (FETCH + "result(page['content'])", True),
         (FETCH + "text = page.get('content')\nprint(text)", True),
+        (FETCH + "result(page.get('content', '').strip())", True),
+        (FETCH + "text = page['content'].strip()\nresult(text)", True),
         ("from sentient_tools import tools, result\nresult(tools.web_fetch(url='https://example.org'))", True),
         # a value taken out of the page
         (FETCH + "result(page['title'])", False),

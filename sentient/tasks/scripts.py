@@ -144,7 +144,9 @@ def normalize_script(raw: Any, previous: dict | None = None, *, model_written: b
     return out
 
 
-_ANY_CHANGE = re.compile(r"\bany\s?thing\b|\bany\s+changes?\b", re.IGNORECASE)
+# the user asks to hear about a change itself ("when it changes", "anything", "everything"): no AI check decides that.
+# Not a bare "every": "every 10 minutes" is a schedule.
+_ANY_CHANGE = re.compile(r"\bchang(?:e|es|ed|ing)\b|\bany\s?thing\b|\bevery\s?thing\b", re.IGNORECASE)
 
 
 def _is_fetch(node: ast.AST, pages: set[str]) -> bool:
@@ -153,6 +155,9 @@ def _is_fetch(node: ast.AST, pages: set[str]) -> bool:
         return isinstance(node.func.value, ast.Name) and node.func.value.id == "tools"
     if isinstance(node, ast.Name):
         return node.id in pages
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("strip", "lstrip", "rstrip") and not node.args):
+        return _is_fetch(node.func.value, pages)  # page["content"].strip() is still the whole page
     if isinstance(node, ast.Subscript):
         key, base = node.slice, node.value
     elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" and node.args:
@@ -183,7 +188,8 @@ def returns_whole_page(code: str) -> bool:
 def planner_default(script: dict, request: str, previous: dict | None = None) -> dict:
     """A ``changed`` check the planner proposes that returns a whole fetched page becomes ``noteworthy`` (#298): a
     view counter or a timestamp there would notify on every check. One value taken out of the page, a search, a
-    request about any change ("anything", "any change") and a task already on ``changed`` keep ``changed``."""
+    request that talks about a change ("changes", "anything", "everything") and a task already on ``changed`` keep
+    ``changed``."""
     if script.get("condition") != "changed" or (previous or {}).get("condition") == "changed":
         return script
     if _ANY_CHANGE.search(request or "") or not returns_whole_page(script.get("code") or ""):
