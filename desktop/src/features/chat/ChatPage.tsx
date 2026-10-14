@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils'
 import { liveItems, useChat } from '@/stores/chat'
 import { AssistantTurn } from './AssistantTurn'
 import { Composer } from './Composer'
+import { useMemorySaveToasts } from './memoryToasts'
 import { RuleProposalCard } from './RuleProposalCard'
 import { takeScreenShare } from './screenShare'
 import { EmptyChat, type Suggestion } from './EmptyChat'
@@ -59,6 +60,8 @@ function ChatView({
   const liveKey = sessionId ?? pendingKey
   const liveSession = useChat((s) => (liveKey ? s.live[liveKey] : undefined))
   const resolvedId = useChat((s) => (pendingKey ? s.resolved[pendingKey.replace('pending:', '')] : undefined))
+  // "Remembered: ... Undo" for memories saved from this chat (#234), also during a new chat's first reply
+  useMemorySaveToasts(sessionId ?? resolvedId)
   const context = useChat((s) => (sessionId ? s.context[sessionId] : undefined))
   const send = useChat((s) => s.send)
   const cancel = useChat((s) => s.cancel)

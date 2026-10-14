@@ -17,6 +17,10 @@ from sentient.tools.rules import brings_untrusted
 INCOGNITO_REFUSAL = (
     "Not saved: this is an incognito chat, so nothing from it is remembered. Don't tell the user you will remember it."
 )
+INSTRUCTION_NOTE = (
+    "Saved for the user to review first, because it reads like an instruction for how Sentient should act. It is not "
+    "used until they approve it. Tell the user it is waiting in their memory review."
+)
 HELD_NOTE = (
     "Saved for the user to review first, because this run read outside content or nobody asked for it. "
     "It is not used until they approve it."
@@ -63,8 +67,36 @@ async def memory_remember(ctx: ToolContext, fact: str) -> dict:
     held = review.for_context(ctx)  # outside content or unprompted work: the user reviews it first (ADR 0021)
     if held is not None:
         held["snippet"] = review.note("", await _last_outside_result(ctx))["snippet"]
-    out = await ctx.memory.remember(fact, source="conversation", notify=True, review=held)
-    return {**out, "note": HELD_NOTE} if out.get("status") == "pending" else out
+    # in a chat, the user's own words this turn: a fact they back is kept even after outside content, and an
+    # instruction's review card shows what the user said (#234)
+    own = None if review.is_unprompted_note(held) else await _own_words(ctx)
+    out = await ctx.memory.remember(
+        fact, source="conversation", notify=True, review=held, own_words=own, session_id=ctx.session_id
+    )
+    if out.get("status") == "pending":
+        return {**out, "note": INSTRUCTION_NOTE if out.get("reason") == review.INSTRUCTION else HELD_NOTE}
+    return out
+
+
+OWN_WORDS_ROWS = 40  # recent rows read to find this turn's user messages
+
+
+async def _own_words(ctx: ToolContext) -> str | None:
+    """What the user typed or said in this chat turn: the user messages (and steer messages) since the last reply.
+    Read from the stored chat, never from the model, so nothing it read can pass for the user's words."""
+    if not ctx.session_id or getattr(ctx, "origin", "user") != "user":
+        return None
+    rows = await ctx.store.recent_messages(ctx.session_id, OWN_WORDS_ROWS)
+    words: list[str] = []
+    for row in reversed(rows):
+        if row.get("role") == "assistant" and not row.get("tool_calls"):
+            break  # the previous turn's reply
+        if row.get("role") == "user":
+            if str(row.get("content") or "").strip():
+                words.append(str(row["content"]))
+            if not row.get("interjection"):
+                break  # the message that started this turn: nothing before it is this turn's
+    return "\n".join(reversed(words)) or None
 
 
 async def _mark_if_outside(ctx: ToolContext, session_ids: list) -> None:

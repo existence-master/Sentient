@@ -1043,11 +1043,18 @@ export interface MemoryUpdatedData {
   id: number | null
   content?: string
   source?: string
-  /** `merged` | `contradicted` | `promoted` | `expired` | `approved` | `discarded` | `review_expired` */
+  /**
+   * `merged` | `contradicted` | `promoted` | `expired` | `approved` | `discarded` | `review_expired`, or
+   * `instruction` on a held memory that reads like an instruction for how Sentient should act (#234)
+   */
   reason?: string
   count?: number
   /** `pending`: the memory waits in the review inbox (ADR 0021). */
   status?: 'pending'
+  /** An UPDATE's words before it, so the save can be undone (#234). */
+  previous?: string
+  /** The chat it was learned in; that chat shows "Remembered: ... Undo" (#234). */
+  session_id?: string
 }
 
 export interface DomainEventMap {
@@ -2028,6 +2035,8 @@ export interface MemoryReviewItem {
   title?: string | null
   dated?: string | null
   export?: string | null
+  /** `instruction`: it reads like an instruction for how Sentient should act, so it waits even from a clean chat (#234). */
+  reason?: string | null
   created_at: ISODate
   /** When it is let go if nobody reviews it. */
   expires_at: ISODate | null

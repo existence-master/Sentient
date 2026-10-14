@@ -6,6 +6,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Memory you can see and undo.** Each time Sentient remembers something from a chat, a small "Remembered: ...
+  Undo" note appears in that chat; Undo forgets it, or puts back what an update changed. Things that read like
+  instructions ("from now on, always cc Bob on invoices") are never saved quietly: they wait on the Memory page's
+  Review tab under "Instructions for Sentient" until you approve them. And in a chat that read an email or a web page,
+  what you said yourself is now remembered right away; only what came from the email or page waits for your review.
 - **Two new rules: "Only if I asked" and "Hand it to me".** In Settings > Approvals & safety, each app or tool can
   now also be set to **Only if I asked**: Sentient goes ahead without asking only when your own message in a chat asks
   for it ("email Priya the notes"), and asks every other time, including in tasks and anything it does on its own.
