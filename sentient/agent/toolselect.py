@@ -259,7 +259,7 @@ class ToolSelector:
             return None
 
         visible_names = {t.name for t in visible}
-        chosen: list[str] = [n for n in (*ALWAYS_TOOLS, *ALWAYS_WHEN_AVAILABLE) if n in visible_names]
+        chosen: list[str] = [n for n in ALWAYS_TOOLS if n in visible_names]
         plugins = [p for p in registry.catalog() if p["tools"]]
         words = _words(text)
         triggers = triggered_prefixes(text) if text.strip() else set()
@@ -274,6 +274,8 @@ class ToolSelector:
         for name in named_tools(text, plugins) if text.strip() else []:
             if name not in chosen and len(chosen) < budget:
                 chosen.append(name)
+        # after the tools the user named, so those always fit first
+        chosen += [n for n in ALWAYS_WHEN_AVAILABLE if n in visible_names and n not in chosen and len(chosen) < budget]
         scores: dict[str, float] = {}
         triggered: set[str] = set()
         for p in plugins:

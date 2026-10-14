@@ -326,3 +326,45 @@ async def test_folder_search_is_offered_to_local_models_only_once_a_folder_is_ad
     await app.folders.add(str(vault))
     await app.folders.idle()
     assert "folder_search" in await sel.select("when does my insurance renew?", model="ollama_chat/qwen3:8b")
+
+
+async def test_reads_check_the_file_now_links_out_ignore_rules_and_clippings(app, vault, tmp_path):
+    folder = await app.folders.add(str(vault))
+    await app.folders.idle()
+    ctx = app.agent.tool_context(None, "desktop")
+    read = app.registry.get("folder_read")
+    ravi = str(vault / "People" / "Ravi Menon.md")
+    assert "bees" in (await read.call(ctx, {"path": ravi}))["content"]
+
+    # a note that turned into a clipping since the last scan is outside content now
+    (vault / "People" / "Ravi Menon.md").write_text("---\nsource: https://example.org/x\n---\n" + RAVI, encoding="utf-8")
+    assert next(iter(await read.call(ctx, {"path": ravi}))) == "outside_content"
+
+    # a file the user just left out can't be read, even before the rescan
+    await app.folders.update(folder["id"], ["People/"])
+    assert "error" in await read.call(ctx, {"path": ravi})
+    await app.folders.idle()
+
+    # a note replaced by a link that leads out of the folder is never read or indexed
+    secret = tmp_path / "secret.md"
+    secret.write_text("# Secret\n\nThe outside password is swordfish.", encoding="utf-8")
+    target = vault / "Projects" / "Orchard.md"
+    target.unlink()
+    try:
+        os.symlink(secret, target)
+    except OSError:
+        pytest.skip("this system can't make symbolic links")
+    await app.folders.rescan(folder["id"])
+    await app.folders.idle()
+    assert "error" in await read.call(ctx, {"path": str(target)})
+    assert not (await app.folders.search("swordfish password"))["results"]
+
+
+async def test_named_tools_come_before_folder_search_when_room_is_short(app, vault):
+    from sentient.agent.toolselect import ToolSelector
+
+    await app.folders.add(str(vault))
+    await app.folders.idle()
+    app.config.chat.max_tools_local = 6
+    names = await ToolSelector(app.agent).select("use file_list please", model="ollama_chat/qwen3:8b")
+    assert "file_list" in names and len(names) <= 6

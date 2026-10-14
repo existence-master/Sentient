@@ -32,6 +32,7 @@ class Listing:
     files: dict[str, tuple[int, int]] = field(default_factory=dict)
     skipped: int = 0  # supported files left out: too big, or over the cap
     capped: bool = False  # stopped at ``max_files``
+    partial: bool = False  # a folder or file could not be looked at, so files missing here may still exist
 
 
 def is_obsidian(root: Path) -> bool:
@@ -111,6 +112,7 @@ def walk(root: Path, ignore: Ignore, *, max_bytes: int, max_files: int) -> Listi
         try:
             entries = list(os.scandir(path))
         except OSError:
+            out.partial = True
             continue
         entries.sort(key=lambda e: e.name)
         for e in entries:
@@ -124,6 +126,7 @@ def walk(root: Path, ignore: Ignore, *, max_bytes: int, max_files: int) -> Listi
                     continue
                 st = e.stat(follow_symlinks=False)
             except OSError:
+                out.partial = True
                 continue
             if st.st_size > max_bytes or len(out.files) >= max_files:
                 out.skipped += 1

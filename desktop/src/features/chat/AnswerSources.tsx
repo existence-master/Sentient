@@ -92,7 +92,10 @@ function SourceChip({ source: s }: { source: AnswerSource }) {
   const obsidian = note && !!s.url?.startsWith('obsidian://')
   const meta = (note ? KIND.note : KIND[s.kind]) ?? KIND.app
   const Icon = meta.icon
-  const canOpen = (s.kind === 'web' || s.kind === 'email') ? !!s.url : s.kind === 'file' ? !!(s.path || s.file) : false
+  // a note opens through the desktop app only (the browser can't reach files on this computer)
+  const canOpen = note
+    ? getBridge().isDesktop
+    : (s.kind === 'web' || s.kind === 'email') ? !!s.url : s.kind === 'file' ? !!s.file : false
   const open = () => {
     if (note && s.path) {
       void getBridge()

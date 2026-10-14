@@ -312,9 +312,10 @@ accept or loosen a rule.
   - `file`: a file `file_read` opened (`file` is its name under the files folder, `title` its base name), or a note
     from a folder the user added (section 22): the first 3 notes of each `folder_search` and each `folder_read`,
     with `path` (its full path), `folder` (the folder's name) and, in an Obsidian vault, `url` (an `obsidian://open`
-    link). The window opens it with `openFolderFile`: in Obsidian when it is installed, else with the default app
+    link). The window opens it with `openFolderFile`: in Obsidian when it is installed (the main process builds the
+    link from the checked file), else with the default app
     (or shows it in its folder when no app opens that kind of file);
-    only files inside an added folder open;
+    only files really inside an added folder open (links are followed before the check);
   - `app`: a connected app or MCP server whose tools returned something else (`title` its name, `tools` every tool
     of it the reply used).
   `app` is the plugin id and `tool` the tool that found it; `snippet` is up to 280 characters of what the model read.
@@ -2756,7 +2757,9 @@ go first, #279). Scans run after a folder is added or its ignore patterns change
 scan; it runs again at the next check. A different embedding model makes every piece be embedded again. When
 embeddings fail, keyword search still works (`searching_by_meaning: false`, `embedding_error`) and the pieces are
 embedded at a later scan. A folder that can't be found keeps its index (`status: "missing"`), in case its drive is
-unplugged.
+unplugged. A scan that could not look at part of a folder (a subfolder it can't open, the file cap) forgets
+nothing. Every file is checked again right before it is read: a link, or anything that leads out of the folder, is
+never read (it counts as unreadable).
 
 **Search.** Keyword (bm25, title weighted) and meaning (cosine; only pieces within 0.15 of the best match) are merged
 by reciprocal rank, the keyword share scaled by how strong the match is, at most 2 pieces per file and
@@ -2776,7 +2779,8 @@ start with `outside_content: "a web page clipped into your notes"`, so the chat 
 - `folder_read(path, offset = 0, limit = 0)` (risk `read`) → `{outside_content?, title, folder, path, file, link?,
   clipped_from?, offset, content, total, more, next_offset?}`: a whole indexed file read now from disk, in parts like
   `file_read`. `path` is the full path, the path inside the folder, or `<folder name>/<path inside>` (`.md` may be
-  left off). Only files in the index can be read (never hidden or ignored ones).
+  left off). Only files in the index that the current ignore rules keep can be read (never hidden or ignored ones),
+  and whether it is a clipping is checked on the file as it is now.
 
 ### REST
 A **Folder** is `{id, path, name, kind: "folder"|"obsidian", ignore: string[], status: "waiting"|"scanning"|"ready"|

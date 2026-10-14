@@ -348,7 +348,9 @@ class FolderService(Service):
                 "SELECT id, rel, size, mtime_ns, digest FROM folder_files WHERE folder_id = ?", (fid,)
             )
         }
-        gone = [k["id"] for rel, k in known.items() if rel not in listing.files]
+        # a listing that missed part of the folder (a folder it couldn't open, the file cap) forgets nothing
+        complete = not listing.partial and not listing.capped
+        gone = [k["id"] for rel, k in known.items() if rel not in listing.files] if complete else []
         if gone:
             await self._forget_files(gone)
         todo = [
@@ -388,7 +390,7 @@ class FolderService(Service):
         markdown = Path(rel).suffix.lower() in MARKDOWN
 
         def read() -> tuple[notes_mod.Note, list[notes_mod.Piece]]:
-            note = notes_mod.read_note(path, rel)
+            note = notes_mod.read_note(real_file(root, rel), rel)  # checked again: it may have changed since the walk
             return note, notes_mod.pieces(note, markdown=markdown, size=cfg.chunk_chars)
 
         db = self.app.store.db
@@ -668,8 +670,8 @@ class FolderService(Service):
                 row = await self.app.store.fetchone(
                     "SELECT * FROM folder_files WHERE folder_id = ? AND rel = ? COLLATE NOCASE", (f["id"], name)
                 )
-                if row is not None:
-                    return f, dict(row)
+                if row is not None and not self._ignore(f, Path(f["path"])).skip_path(row["rel"]):
+                    return f, dict(row)  # a file the current rules leave out can't be read, even before a rescan
         return None
 
     async def read(self, path: str) -> tuple[dict, dict, str] | None:
@@ -678,11 +680,20 @@ class FolderService(Service):
         if found is None:
             return None
         folder, row = found
-        p = Path(folder["path"]) / row["rel"]
+        root, rel = Path(folder["path"]), row["rel"]
         from sentient.files.extract import extract_text
 
-        text = await asyncio.to_thread(extract_text, p, notes_mod.MAX_TEXT_CHARS)
-        return folder, row, text
+        def load() -> tuple[str, str]:
+            path = real_file(root, rel)  # never through a link that leads out of the folder
+            text = extract_text(path, notes_mod.MAX_TEXT_CHARS)
+            try:  # whether it is a clipped web page now, not at the last scan
+                clipped = notes_mod.read_note(path, rel).clipped
+            except (OSError, ValueError):
+                clipped = row.get("clipped") or ""
+            return text, clipped
+
+        text, clipped = await asyncio.to_thread(load)
+        return folder, {**row, "clipped": clipped or None}, text
 
     # ------------------------------------------------------------------ watching
     async def _watch_config(self) -> None:
@@ -750,6 +761,18 @@ class FolderService(Service):
                     return None
                 return row["id"]
         return None
+
+
+def real_file(root: Path, rel: str) -> Path:
+    """The file ``rel`` inside ``root``, checked now: a regular file that is not a link and really lies inside the
+    folder. Raises ``ValueError`` otherwise, so nothing outside the folder is ever read."""
+    path = root / rel
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("not a regular file in the folder")
+    real, base = os.path.realpath(path), os.path.realpath(root)
+    if not _inside(real, base) or _norm(real) == _norm(base):
+        raise ValueError("this file leads outside the folder")
+    return path
 
 
 def _clean_patterns(patterns: list[str] | None) -> list[str]:

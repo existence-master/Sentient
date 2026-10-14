@@ -201,7 +201,12 @@ function FolderCard({ folder: f }: { folder: WatchedFolder }) {
         description="Sentient forgets what it found there. The folder and your files stay exactly as they are."
         confirmLabel="Remove"
         onConfirm={async () => {
-          await remove.mutateAsync(f.id)
+          try {
+            await remove.mutateAsync(f.id)
+          } catch (err) {
+            toast.error(`${f.name} wasn't removed`, { description: errorMessage(err) })
+            throw err // keeps the dialog open to try again
+          }
           toast.success(`${f.name} removed`)
         }}
       />

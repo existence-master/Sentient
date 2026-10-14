@@ -22,7 +22,7 @@ async def folder_search(ctx: ToolContext, query: str, folder: str = "", limit: i
     Use it when the user asks about their notes, projects, people, plans or anything they may have written down.
     `query` is what to look for in plain words. `folder` limits it to one folder by name (empty = all).
     Each result has the note's `title`, `path`, `heading` and the matching `text`. Answer from them and name the
-    notes you used. To read a whole note, call folder_read with its `path`."""
+    notes you used. To read a whole note, call folder_read with its `file`."""
     svc = _service(ctx)
     if svc is None:
         return {"error": "Searching your folders isn't available right now."}
@@ -31,17 +31,18 @@ async def folder_search(ctx: ToolContext, query: str, folder: str = "", limit: i
 
 @tool("folder_read", risk=Risk.read, untrusted_output=False)
 async def folder_read(ctx: ToolContext, path: str, offset: int = 0, limit: int = 0) -> dict:
-    """Read a whole note or document from the user's folders, by the `path` a folder_search result gave.
+    """Read a whole note or document from the user's folders. Pass the `file` a folder_search result gave (its full
+    path), so the right folder is used.
     A long one comes in parts: when `more` is true, call again with offset = `next_offset`."""
     svc = _service(ctx)
     if svc is None:
         return {"error": "Reading your folders isn't available right now."}
     try:
         found = await svc.read(path)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError) as exc:  # also a file that became a link out of the folder
         return {"error": f"That file can't be read: {exc}"}
     if found is None:
-        return {"error": "That isn't a file in the user's folders. Use the path a folder_search result gave."}
+        return {"error": "That isn't a file in the user's folders. Use the `file` a folder_search result gave."}
     folder, row, text = found
     budget = max(1000, part_budget(ctx) - 600)  # room for the title, path and link around the part
     want = min(int(limit) if limit and int(limit) > 0 else budget, budget)
