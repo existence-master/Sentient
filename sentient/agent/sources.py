@@ -80,13 +80,14 @@ def _words(text: Any) -> set[str]:
 
 def note_used(note: dict, reply: str, question: str) -> bool:
     """Whether a reply drew on a piece of the user's notes it was given (#354), decided without asking the model:
-    it names the note, or repeats a number from it, or two longer words from it that the question did not have."""
+    it names the note (not just repeating the question), or repeats a number from it, or two longer words from it
+    that the question did not have."""
     said = str(reply or "").lower()
     if not said.strip():
         return False
     title = str(note.get("title") or "").strip().lower()
-    if len(title) >= 4 and title in said:
-        return True
+    if len(title) >= 4 and title in said and title not in str(question or "").lower():
+        return True  # it names the note (a name copied from the question doesn't count)
     in_reply, asked = _words(said), _words(question)
     shared = {
         w for w in _words(note.get("text")) - asked

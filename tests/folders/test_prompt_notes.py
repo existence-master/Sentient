@@ -70,6 +70,7 @@ def test_note_used_is_decided_from_the_reply():
     assert not note_used(note, "", "when does my insurance renew?")
     lease = {"title": "Lease", "file": "/d/lease.txt", "text": LEASE}
     assert note_used(lease, "Your lease runs out in May.", "q")  # it names the note
+    assert not note_used(lease, "I can't tell when your lease ends.", "when does my lease end?")  # only echoes it
 
 
 def test_the_prompt_block_is_short_and_names_each_note():

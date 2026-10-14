@@ -676,15 +676,16 @@ class FolderService(Service):
         if cfg.prompt_notes <= 0 or len(query) < 3 or not await self._rows():
             return []
         # every close piece with its similarity: a clipped page that matches best must not hide the user's own note
-        found, by_meaning = await self._search(query, limit=max(8, cfg.prompt_notes * 4), window=False)
+        # the most results a search gives, so clipped pages and pieces that don't qualify can't crowd out one that does
+        found, by_meaning = await self._search(query, limit=20, window=False)
         words = content_words(query)
         out: list[dict] = []
         files: set[str] = set()
         for r in found.get("results") or []:
             if r.get("clipped_from") or r["file"] in files:
                 continue
-            hay = " ".join((r.get("title") or "", r.get("heading") or "", r.get("text") or "")).lower()
-            hits = [w for w in words if w in hay]
+            hay = set(_WORDS.findall(" ".join((r.get("title") or "", r.get("heading") or "", r.get("text") or "")).lower()))
+            hits = [w for w in words if any(h.startswith(w) for h in hay)]  # "renew" in "renews", not "rent" in "current"
             most = bool(hits) and len(hits) * 2 >= len(words)  # at least half of the message's words
             sim = r.get("similarity")
             if by_meaning:
