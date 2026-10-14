@@ -1456,6 +1456,16 @@ out of pending; no model output can:
 - `DELETE /api/memories/review/{kind}/{id}` → `{ok: true}` (deleted; 404 when it is not waiting for review)
 - `POST /api/memories/review/approve-all` `{from}` → `{approved: n}` (every held memory with that `from`, also beyond
   the first page; 400 without it)
+- **Review history** (#353): `GET /api/memories/review` also returns `merged: [MergedMemory]`, newest first, not
+  counted in `count`. A **MergedMemory** `{id, text, source, merged_at, by, merged_into: {id, text}|null}` is a memory the
+  nightly tidy-up merged into another one because they said the same thing in two languages (section 15, Dreams). It
+  stays in `facts` with `status: "merged"` and `merged_into`, out of every read, recall and the vector index, and keeps
+  its own `source`, so both sources stay; `by` is "nightly tidying". It is kept as long as the memory it was merged
+  into: deleting that memory deletes it too, and a memory folded into another by the duplicate merge passes it on. A
+  short-term one still goes when it expires.
+- `POST /api/memories/review/merged/{id}/undo` → `{ok: true, memory: Memory}`: it is active again as it was (embedded
+  again), `memory.updated` `{action: "ADD", reason: "unmerged"}`, and the tidy-up never merges that pair again
+  (meta `memory.kept_apart`). 404 when it is not merged, or is short-term and ran out.
 
 Chats that read outside content reach no other chat in other ways either:
 - conversation summaries carry the chat's mark (`summaries.untrusted`, set from `sessions.untrusted` when written;
@@ -2236,7 +2246,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 - Domain event `user_model.updated` `{summary_changed: bool, insights: int (insights changed), questions: int (open questions now)}`.
 
 ### Dreams (nightly consolidation)
-- **Dream** `{id, started_at, finished_at, status: "running"|"completed"|"error", trigger: "schedule"|"manual", stats: {facts_reviewed, merged, contradictions_resolved, promoted, expired, insights_updated}, journal_md, error}`
+- **Dream** `{id, started_at, finished_at, status: "running"|"completed"|"error", trigger: "schedule"|"manual", stats: {facts_reviewed, merged, contradictions_resolved, promoted, expired, insights_updated, languages_merged}, journal_md, error}`
   (`merged` = facts folded into another; `error` lists steps that failed while the rest completed, else `null`;
   dreams still running when the backend restarts become `error`)
 - `GET /api/memories/dreams?limit=` → `[Dream]` newest first; `POST /api/memories/dreams/run` → `Dream` (status `running`;
@@ -2250,7 +2260,19 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   similarity ≥ `contradiction_similarity`; the model confirms and names the current fact (the newer one wins unless the
   model picks the older and only the older has explicit recent wording such as "now" or "this month"); the loser is
   deleted and its text kept as the winner's `previous_content`; pairs the model cleared are not asked again until either
-  fact changes; promote short-term
+  fact changes. Between the two (`dreaming.merge_languages`, default on, #353), the same memory saved in two languages
+  is kept once: a fact led by Devanagari is paired with up to 3 facts without Devanagari that are clearly about the same
+  person (both have a subject and the names match across scripts, #351), have the same numbers, and have no name or
+  place the Hindi one lacks; with a multilingual embedding model (bge-m3) also similarity ≥
+  `dreaming.language_merge_similarity` (0.7), otherwise the similarity only orders them. The `fast`-role model (the
+  dream's `role`) answers `{same, extra: "A"|"B"|"none", conflict}`; only `same: true`, `extra: "none"` and
+  `conflict: false` merge (one that adds a detail or conflicts never does; conflicts are the contradiction step's).
+  A long-term memory is kept over a short-term one; otherwise the kept wording is the one in the language most active
+  memories are in (the older one on a tie); the other moves to
+  the review history (section 7) with `merged_into`, and the kept one is not changed. A "not the same" answer is not
+  asked again until either fact changes (meta `dreaming.language_pairs`); an unclear one is asked again next time. At
+  most half of `dreaming.max_model_calls` go to this step. `stats.languages_merged` counts these merges (also in
+  `merged`), and the journal names each pair. Then promote short-term
   facts recalled ≥ `promote_min_recalls` times, purge expired, refresh the user model. Model calls for merging and
   contradictions are capped by `dreaming.max_model_calls`. `journal_md` is first person ("Tonight I merged 3 duplicate
   memories into 1 ..."). A notification (kind `info`, `payload.dream_id`) is sent only when something other than expiry changed.

@@ -1,11 +1,11 @@
-import { IconArrowUpRight, IconCheck, IconChecks, IconInbox, IconPencil, IconShieldCheck, IconX } from '@tabler/icons-react'
+import { IconArrowBackUp, IconArrowUpRight, IconCheck, IconChecks, IconInbox, IconLanguage, IconPencil, IconShieldCheck, IconX } from '@tabler/icons-react'
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, EmptyState, Skeleton, Textarea } from '@/components/ui'
 import { useMemoryReview, useMemoryReviewActions } from '@/hooks/memory'
 import { errorMessage } from '@/lib/api'
-import type { MemoryReviewItem } from '@/lib/types'
+import type { MemoryReviewItem, MergedMemory } from '@/lib/types'
 import { parseDate, relativeTime } from '@/lib/utils'
 
 /** Memories Sentient holds until the user approves them (ADR 0021): from emails, web pages, imports, unprompted work. */
@@ -35,13 +35,17 @@ export function ReviewTab() {
       </Alert>
     )
   }
+  const merged = review.data?.merged ?? []
   if (!review.data?.items.length) {
     return (
-      <EmptyState
-        icon={<IconInbox />}
-        title="Nothing to review"
-        description="When Sentient learns something from an email, a web page, an import or work it did on its own, it waits here for your OK before using it."
-      />
+      <div className="space-y-5">
+        <EmptyState
+          icon={<IconInbox />}
+          title="Nothing to review"
+          description="When Sentient learns something from an email, a web page, an import or work it did on its own, it waits here for your OK before using it."
+        />
+        {merged.length > 0 && <MergedHistory items={merged} />}
+      </div>
     )
   }
 
@@ -76,7 +80,55 @@ export function ReviewTab() {
           </ul>
         </section>
       ))}
+      {merged.length > 0 && <MergedHistory items={merged} />}
     </div>
+  )
+}
+
+/** Review history (#353): memories the nightly tidy-up kept just once because they said the same thing in two
+ * languages. Undo brings the merged one back, and the tidy-up never merges that pair again. */
+function MergedHistory({ items }: { items: MergedMemory[] }) {
+  const { undoMerge } = useMemoryReviewActions()
+  const undo = (id: number) =>
+    undoMerge.mutate(id, {
+      onSuccess: () => toast.success('Brought back as its own memory'),
+      onError: (e) => toast.error('Couldn’t undo it', { description: errorMessage(e) })
+    })
+  return (
+    <section className="space-y-2.5">
+      <div>
+        <h3 className="text-sm font-medium text-fg">Tidied up overnight</h3>
+        <p className="mt-0.5 text-xs text-fg-subtle">These said the same thing as another memory in a different language, so Sentient kept one of them.</p>
+      </div>
+      <ul className="space-y-2.5">
+        {items.map((m) => (
+          <li key={m.id} className="rounded-xl border border-border bg-surface p-4">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-fg-subtle">
+              <Badge size="xs" tone="neutral">
+                <IconLanguage size={12} /> Merged
+              </Badge>
+              <span>{relativeTime(m.merged_at)}</span>
+              <span className="text-fg-faint">· {m.by}</span>
+              <div className="flex-1" />
+              <Button size="xs" variant="ghost" leftIcon={<IconArrowBackUp size={13} />} loading={undoMerge.isPending && undoMerge.variables === m.id} onClick={() => undo(m.id)}>
+                Undo
+              </Button>
+            </div>
+            <p className="selectable mt-2.5 text-sm font-medium leading-relaxed text-fg">{m.text}</p>
+            <p className="selectable mt-1.5 text-xs leading-relaxed text-fg-muted">
+              {m.merged_into ? (
+                <>
+                  <span className="text-fg-subtle">Merged into: </span>
+                  {m.merged_into.text}
+                </>
+              ) : (
+                'The memory it was merged into has since been deleted.'
+              )}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
 

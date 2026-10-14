@@ -260,6 +260,14 @@ Pick B unless A's own wording says it is the more recent situation."""
 
 DREAM_CONTRADICTION_USER = 'A (saved {a_at}): "{a}"\nB (saved {b_at}): "{b}"'
 
+DREAM_LANGUAGE_SYSTEM = """Two memories about {name}, written in different languages. Do they say exactly the same thing?
+Reply with JSON only: {{"a_in_english": "<A translated to English, every word>", "same": true | false, "extra": "A" | "B" | "none", "conflict": true | false}}
+same: true only if they mean the same thing.
+extra: the one that says something the other does not (a time, place, name, number, reason or any other detail), else "none".
+conflict: true if both can't be true."""
+
+DREAM_LANGUAGE_USER = 'A: "{a}"\nB: "{b}"'
+
 
 def summarize_system(user_name: str) -> str:
     ref = user_name.strip() or "the user"
