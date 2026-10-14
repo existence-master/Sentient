@@ -46,7 +46,7 @@ log = logging.getLogger(__name__)
 _UNSET: Any = object()
 TASK_RESULT_EVENTS = {
     "run_completed", "run_failed", "planning_failed", "clarification_needed", "disabled",
-    "script_alert", "script_failed", "script_recovered",
+    "script_alert", "script_failed", "script_recovered", "handed_off",
 }
 STATUS_LABELS = {
     "approved": "Approved", "declined": "Declined", "dismissed": "Dismissed", "answered": "Answered", "cancelled": "Cancelled",

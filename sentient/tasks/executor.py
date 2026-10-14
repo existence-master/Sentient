@@ -292,9 +292,14 @@ async def _run_approved_call(
         return messages
     await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": call["name"], "parameters": call["arguments"]})
     res, is_error, content = await svc.app.agent.run_tool(ToolCall(**call), ctx, role="executor", model=model)
-    await svc.progress(
-        task_id, run_id, {"type": "tool_result", "tool_name": call["name"], "result": truncate(res), "is_error": is_error}
-    )
+    handed = rule_levels.is_handed_off(res)  # set to "Hand it to me" while the run waited (#140): handed over
+    await svc.progress(task_id, run_id, {
+        "type": "tool_result", "tool_name": call["name"], "result": res if handed else truncate(res), "is_error": is_error,
+    })
+    if handed:
+        task = await svc.repo.get_task(task_id)
+        if task is not None:
+            await notify_handed_off(svc, task, [res])
     messages = ask.fill_result(messages, call["id"], content)
     await svc.repo.update_run(run_id, {"messages": messages})
     return messages
@@ -585,7 +590,7 @@ def handed_off_text(items: list[dict]) -> str:
 async def notify_handed_off(svc: TaskService, task: dict, items: list[dict]) -> None:
     """One "Ready for you" notification per call a task handed to the user (#140), with what it prepared, so it can be
     finished from the notification even when the task's answer doesn't repeat it. Never raises."""
-    for item in items[:5]:
+    for item in items:
         shown = item.get("preview") if isinstance(item.get("preview"), dict) else None
         body = preview.as_text(shown) or "\n".join(
             f"{d.get('label')}: {d.get('value')}" for d in item.get("details") or [] if isinstance(d, dict)

@@ -380,6 +380,9 @@ class Timeline:
         error = res.get("error") if isinstance(res, dict) else None
         if is_error or error:
             return {"ok": False, "error": str(error or res)[:300]}
+        if isinstance(res, dict) and res.get("handed_off") is True:  # "Hand it to me" (#140): nothing was restored
+            return {"ok": False, "error": f"{res.get('label') or 'Restoring'} is set to Hand it to me, so Sentient "
+                    "didn't restore it. Restore it in the app itself.", "hand_off": res}
         log.info("activity: restored %s with %s", item_id, back.name)
         return {"ok": True, "result": res}
 

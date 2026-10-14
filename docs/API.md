@@ -192,7 +192,10 @@ applied in code before every call and take effect at once:
   approval still hands it over), and a delete for good it covers is never swapped for its trash version. The window
   shows a "Ready for you" card with **Copy** and, for an email, **Open in your email app** (`mailto:`). A task run
   hands it over the same way, and the user gets one notification per call, `kind: "task"`, title `"Ready for you:
-  <preview title>"`, `payload: {task_id, event: "handed_off", hand_off: HandOff}`; a task approved as one exact call
+  <preview title>"`, `payload: {task_id, event: "handed_off", hand_off: HandOff}` (also sent to paired messaging chats
+  with the other task results, `channels.deliver_task_results`); a call set to Hand it to me while a task waited for
+  its approval is handed over when the yes comes; Activity's Restore under a Hand it to me rule restores nothing and
+  says so (`{ok: false, error, hand_off}`); a task approved as one exact call
   (section 4) completes with `"Ready for you: ..."` instead of making the call. Scripts refuse such a call and
   subagents refuse it as needing the user's approval. `LoopResult.handed_off` lists a run's HandOffs.
 - Purchases ask in every approvals mode, `off` included (only `browser.confirm_purchases: false` turns that off),

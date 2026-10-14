@@ -11,6 +11,7 @@ from sentient.agent.loop import CAN_PAUSE_KEY, LoopResult
 from sentient.app import SentientApp
 from sentient.config.schema import SentientConfig
 from sentient.llm.events import ApprovalRequest, ToolResultEvent
+from sentient.llm.provider import ToolCall
 from sentient.sandbox.policy import BridgePolicy, Refused
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from tests.conftest import FakeProvider, tool_call
@@ -364,6 +365,8 @@ def test_chat_words_choose_the_level_in_code():
     assert level_for("never send my emails, I'll send them myself", "never") == "hand_off"
     assert level_for("don't post to Slack without asking me") == "ask"
     assert level_for("never delete my emails", "hand_off") == "never"  # the model can only pick Never or Ask
+    assert level_for("never delete photos of myself", "never") == "never"  # "myself" alone hands nothing over
+    assert level_for("I'll send them myself", "never") == "hand_off"
 
 
 @pytest.mark.parametrize(("said", "level"), [
@@ -394,5 +397,29 @@ async def test_a_stricter_rule_is_never_loosened_by_a_proposal(config, isolated_
         sid = await s.store.create_session(channel="desktop")
         await _turn(s, sid, "Don't send emails unless I ask you to.")
         assert await s.chat_rules.list(sid) == []  # Ask is stricter than Only if I asked
+    finally:
+        await s.stop()
+
+
+async def test_a_hand_off_at_run_time_is_counted_and_a_restore_handed_off_is_no_restore(config, isolated_home):
+    """A rule set to Hand it to me while a call waited still reaches the run's hand-offs (and its notification)."""
+    log: list[str] = []
+    llm = FakeProvider(replies=[[tool_call("mailer_send_email", **SEND)], "done"])
+    s = await _start(config, isolated_home, llm, "hand_off_late", _mailer(log))
+    try:
+        res, is_error, _ = await s.agent.run_tool(
+            ToolCall(id="c1", name="mailer_send_email", arguments=SEND), s.agent.tool_context(None, "task")
+        )
+        assert log == ["send:priya@example.com"] and not is_error  # no rule yet: it runs
+        s.approvals.config.rules = {"mailer_send_email": "hand_off"}
+        res, is_error, _ = await s.agent.run_tool(
+            ToolCall(id="c2", name="mailer_send_email", arguments=SEND), s.agent.tool_context(None, "task")
+        )
+        assert rule_levels.is_handed_off(res) and not is_error and log == ["send:priya@example.com"]
+        result = LoopResult()
+        async for _ in s.agent.run_loop([{"role": "user", "content": "go"}], s.agent.tool_context(None, "task"),
+                                        result=result, use_approvals=False, source="task"):
+            pass
+        assert len(result.handed_off) == 1 and log == ["send:priya@example.com"]
     finally:
         await s.stop()

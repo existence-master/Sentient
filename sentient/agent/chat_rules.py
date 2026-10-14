@@ -86,7 +86,8 @@ _IF_ASKED_HINT = re.compile(
 )
 # "I'll send it myself", "hand it to me", "let me press send": the rule is "Hand it to me" (#140)
 _HAND_OFF_HINT = re.compile(
-    r"\b(myself|hand (it|them|that|this|those|these) (over )?to me|give (it|them) to me|"
+    r"\b((i'll|i will|i'd rather|let me|i can|i want to) (\w+ ){1,3}(it |them |that |this )?myself|"
+    r"hand (it|them|that|this|those|these) (over )?to me|give (it|them) to me|"
     r"let me (send|post|press|click|hit|submit|do|finish|pay|buy|book|run|reply)|"
     r"leave (it|them|that|the \w+) (for|to) me|for me to (send|post|press|click|submit|do|finish|run))\b"
 )

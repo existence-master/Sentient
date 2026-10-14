@@ -851,7 +851,6 @@ class Agent:
                 p.swapped_from = swapped.get(p.tc.id, "")
             result.tool_calls += len(plans)
             result.held.extend({"tool": p.tc.name, "arguments": p.tc.arguments} for p in plans if p.held)
-            result.handed_off.extend(p.preset[0] for p in plans if p.handed_off and p.preset is not None)
             waiting = next((p for p in plans if p.wants_ok), None)
             if waiting is not None and waiting.tool is not None and result.needs_ok is None:
                 wording = await describe_call(waiting.tool, waiting.tc.arguments, ctx, waiting.risk)
@@ -1316,6 +1315,8 @@ class Agent:
                 ctx.untrusted = saved  # a saved result or a download read back counts like the tool that brought it (#336)
             elif not is_error and not err and (clipped := result_outside_source(res)):
                 ctx.untrusted = clipped  # a web page clipped into the user's notes (ADR 0025)
+        if p.tool is not None and rule_levels.is_handed_off(res):
+            result.handed_off.append(res)  # handed to the user, at planning or right before it ran (#140)
         if (is_error or err) and err != DECLINED:
             result.tool_errors.append({"name": tc.name, "error": err or str(res)[:500]})
         elif (
