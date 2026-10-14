@@ -286,6 +286,9 @@ export interface SentientBridge {
   /** Show a folder in the file manager, or a file selected in its folder (a backup). Never opens or runs a file.
    *  False when the path isn't there. */
   showInFolder(path: string): Promise<boolean>
+  /** Open a note from a folder the user added (#176): in Obsidian when `url` is an obsidian:// link and Obsidian is
+   *  installed, else with the default app. Only files inside an added folder open. False when it can't. */
+  openFolderFile(target: { path: string; url?: string }): Promise<boolean>
   getDevicePrivacy(): Promise<DevicePrivacy>
   setDevicePrivacy(patch: Partial<DevicePrivacy>): Promise<DevicePrivacy>
   onCaptureNotice(cb: (notice: CaptureNotice) => void): () => void

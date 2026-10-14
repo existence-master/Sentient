@@ -6,6 +6,15 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Your notes and Obsidian vaults, searchable.** In Settings > Folders, add a folder of notes or documents, or an
+  Obsidian vault, and Sentient searches it when you ask about something you wrote down: "what did I note about the
+  orchard budget?". Markdown, text, PDF and Word files are read; hidden folders like .obsidian, .git and .trash are
+  left out, along with the vault's own excluded files and any patterns you add. Answers show the notes they used as
+  chips, and a note from a vault opens in Obsidian. Sentient only reads these folders and never changes anything in
+  them. It notices changes as you write, reads only what changed, and does the work in the background with your
+  chats going first, so a big vault never slows a reply. Settings shows each folder's files, searchable pieces and
+  when it was last checked, with Check again and Remove. Web pages clipped into a vault count as written by someone
+  else: after reading one, Sentient asks before sending anything.
 - **Activity: everything Sentient did, and what it will do next, in one place.** A new **Activity** screen in the
   sidebar lists, newest first, the apps Sentient used in your chats, task runs and briefs, each check of a watch,
   approvals and how you answered them, replies in Telegram, Discord and WhatsApp, suggestions and other notifications,

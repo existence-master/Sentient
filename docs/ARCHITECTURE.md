@@ -99,6 +99,7 @@ never shown to the user.
 | `sentient/evolution`, `sentient/skills` | skill reviewer, curator, profile upkeep, SKILL.md library | new (Hermes Agent) |
 | `sentient/voice` | STT/TTS providers, VAD, wake word and talk mode, device audio (pcm16), `/ws/voice` loop | `main/voice` (FastRTC) |
 | `sentient/sandbox` | `execute_code`: Python scripts calling tools over a one-time loopback bridge; process or Docker backend | new (Hermes programmatic tool calling) |
+| `sentient/folders` | folders and Obsidian vaults as notes: read-only scans in threads, chunks, FTS5 + sqlite-vec index, watcher, `folder_search`/`folder_read` (ADR 0025) | new (Smart Connections, Khoj) |
 | `sentient/terminal` | `terminal_run`: approved commands on the host in allowed folders, built-in blocklist, secrets kept out, off by default (ADR 0019) | new (Hermes local terminal) |
 | `sentient/browser` | Playwright on the installed Edge/Chrome, snapshot refs, risk heuristics, headed sign-in, live frames | new (OpenClaw, Hermes) |
 | `sentient/nodes` | device pairing, invoke/result protocol, LAN TLS listener, mDNS, device tools, web device app, reference node | new (OpenClaw nodes) |

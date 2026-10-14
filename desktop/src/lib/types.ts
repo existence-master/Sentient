@@ -454,6 +454,10 @@ export interface AnswerSource {
   url?: string
   /** File name under the files folder (`kind: 'file'`). */
   file?: string
+  /** Full path of a note from a folder the user added (`kind: 'file'`, #176); `url` is then an obsidian:// link. */
+  path?: string
+  /** Name of that folder. */
+  folder?: string
   /** Sender (`kind: 'email'`). */
   from?: string
   id?: string
@@ -1039,6 +1043,8 @@ export interface DomainEventMap {
   'model.busy': ModelBusy
   // §20
   'backup.updated': BackupUpdated
+  // §22
+  'folders.updated': FoldersUpdated
   'import.updated': MemoryImportJob
 }
 
@@ -2647,4 +2653,46 @@ export interface TimelineFilters {
   kinds?: TimelineKind[]
   app?: string
   q?: string
+}
+
+// §22 folders and Obsidian vaults as searchable notes (#176) ------------------------------------------------------
+export type FolderStatus = 'waiting' | 'scanning' | 'ready' | 'missing'
+
+export interface WatchedFolder {
+  id: string
+  path: string
+  name: string
+  /** `obsidian` when the folder is an Obsidian vault (it has a .obsidian folder). */
+  kind: 'folder' | 'obsidian'
+  /** This folder's own ignore patterns (Settings > Folders adds them to `folders.ignore`). */
+  ignore: string[]
+  status: FolderStatus
+  /** While a look through it runs: new or changed files read so far. */
+  progress: { done: number; total: number } | null
+  added_at: ISODate
+  last_scan_at: ISODate | null
+  last_scan_ms: number | null
+  files: number
+  /** Files that could not be read. */
+  unreadable: number
+  /** Searchable pieces, and how many of them can be searched by meaning. */
+  chunks: number
+  embedded: number
+  /** Files left out at the last look: too big, or over the limit. */
+  skipped: number
+  /** Notes that are clipped web pages (treated as written by someone else). */
+  clippings: number
+  error: string | null
+}
+
+export interface FoldersOverview {
+  folders: WatchedFolder[]
+  searching_by_meaning: boolean
+  embedding_error: string | null
+}
+
+export interface FoldersUpdated {
+  id: string
+  removed?: boolean
+  progress?: { done: number; total: number }
 }

@@ -1103,6 +1103,43 @@ class BackupsConfig(BaseModel):
     )
 
 
+class FoldersConfig(BaseModel):
+    """Folders and Obsidian vaults the user added as searchable notes (owner: folders, #176). The folders themselves
+    are kept in the database (``GET /api/folders``), since each has its own index and status."""
+
+    watch: bool = Field(
+        True, description="Notice changes to your folders as they happen. Off, Sentient only looks again every few "
+        "minutes (below) and when you press Check again.",
+    )
+    rescan_minutes: int = Field(
+        30, ge=1, le=1440,
+        description="How often Sentient looks through your folders again for added, changed or removed files.",
+    )
+    ignore: list[str] = Field(
+        default_factory=lambda: ["node_modules/", "__pycache__/", "*.excalidraw.md", "*.canvas"],
+        description="Files and folders to leave out of every folder, like node_modules/ or *.tmp. A name ending in / "
+        "is a folder. Hidden folders such as .obsidian, .git and .trash are always left out.",
+    )
+    max_file_mb: float = Field(
+        20.0, ge=0.1, le=500.0, description="Files bigger than this are left out (in megabytes).",
+    )
+    max_files: int = Field(
+        20000, ge=100, le=200000,
+        description="Most files read from one folder. A bigger folder is searched only in part.",
+    )
+    chunk_chars: int = Field(
+        1200, ge=300, le=6000, description="About how many characters one searchable piece of a note holds.",
+    )
+    results: int = Field(
+        6, ge=1, le=20, description="How many pieces of your notes one search gives the assistant.",
+    )
+    clippings_are_outside: bool = Field(
+        True,
+        description="Treat web pages clipped into your notes (Obsidian Web Clipper, a source link at the top, a "
+        "Clippings folder) as written by someone else: after reading one, Sentient asks before sending anything.",
+    )
+
+
 class SentientConfig(BaseModel):
     """Root configuration, persisted at ``~/.sentient/config.yaml``."""
 
@@ -1127,4 +1164,5 @@ class SentientConfig(BaseModel):
     user_model: UserModelConfig = Field(default_factory=UserModelConfig)
     dreaming: DreamingConfig = Field(default_factory=DreamingConfig)
     backups: BackupsConfig = Field(default_factory=BackupsConfig)
+    folders: FoldersConfig = Field(default_factory=FoldersConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
