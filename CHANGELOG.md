@@ -6,6 +6,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Try a task first, and put back files that code changed.** A task waiting for your OK (or any task, from its menu)
+  now has **Try it first**: Sentient runs it once for real but only notes everything that would send, post, buy,
+  delete, change or run something, and shows you exactly what a real run would do, with the full email or message for
+  each. Look-ups still run, so it works on your real data, and the task's schedule and status stay as they are. And
+  before a command in the terminal, a script or a file write changes files in your allowed folders or Sentient's own
+  files, Sentient keeps a copy of them. If something changed, Activity lists it with **Restore**, which puts the files
+  back (and can itself be undone). Big files, files that aren't text and folders like .git or node_modules are left
+  out, with a note saying so, and copies go after 7 days. Settings > Approvals & safety has the limits.
 - **Undo a send, see exactly what goes out, and the trash by default.** When Sentient sends an email, a message or a
   post from a chat, it now waits 10 seconds first and shows what goes out, with **Undo** and **Send now**, in the chat
   and as a toast (and as buttons in Telegram, Discord and WhatsApp). Undo and nothing is sent. Approval cards for

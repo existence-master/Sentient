@@ -6,6 +6,7 @@ legacy file_management MCP, minus textract/OCR which will return as an optional 
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 
@@ -120,8 +121,12 @@ def _fit_part(name: str, text: str, offset: int, want: int, budget: int, total: 
 async def file_write(ctx: ToolContext, name: str, content: str) -> dict:
     """Write a text file into the files folder. Tell the user the name so they can open it."""
     p = _safe(name)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
+    # a file written over keeps a copy, so it can be put back from Activity (#142)
+    snaps = getattr((getattr(ctx, "extra", None) or {}).get("app"), "snapshots", None)
+    keep = snaps.guard([p], ctx, source="file_write", what=name) if snaps is not None else contextlib.nullcontext()
+    async with keep:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
     return {"saved": name, "path": str(p), "bytes": len(content.encode("utf-8"))}
 
 

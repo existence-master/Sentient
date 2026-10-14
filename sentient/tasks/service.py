@@ -19,6 +19,10 @@ Status flow (single tasks)::
     decline -> declined, archive -> archived
 
 Swarm tasks skip approval (v2): planning -> processing -> completed | completed_with_errors | error.
+
+A try run ("Try it first", ``dry_run``, #142) is a run that only notes what it would send, change or run
+(``sentient/agent/dry_run.py``). It never changes the task's status, schedule or last result, so a plan can be tried
+before it is approved.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sentient.agent import dry_run
 from sentient.agent import grants as grant_rules
 from sentient.llm.jobs import detached
 from sentient.llm.provider import PlainProviderError, ProviderError
@@ -741,11 +746,33 @@ class TaskService(Service):
         if not task.get("plan"):
             raise TaskConflict("Task has no plan to run.")
         if kind not in {"recurring", "triggered"}:
-            if await self.repo.waiting_runs(task_id):
+            if await self.repo.waiting_runs(task_id, real=True):
                 raise TaskConflict(WAITING_CONFLICT)
-            if await self.repo.processing_runs(task_id):
+            if await self.repo.processing_runs(task_id, real=True):
                 raise TaskConflict("This task is already running.")
         await self._start_run(task, next_execution_at=_KEEP if kind == "recurring" else None)
+        return await self.get_and_publish(task_id)
+
+    async def dry_run(self, task_id: str) -> dict:
+        """Try it first (#142): start a run that only notes what it would send, post, buy, delete, change or run.
+        Look-ups run for real. The task's status, schedule and last result stay as they are, so a plan waiting for
+        approval can be tried before it is approved."""
+        task = await self._require(task_id)
+        if task["status"] in {"planning", "clarification_pending"}:
+            raise TaskConflict("This task is still being planned.")
+        if self._unplanned_import(task):
+            raise TaskConflict("Resume this task first, so Sentient can plan it.")
+        if task.get("task_type") == "swarm":
+            raise TaskConflict("A try run isn't available for swarm tasks.")
+        if task.get("task_type") == "script":
+            raise TaskConflict("A check script only looks things up. Use Test the check to try it.")
+        if not task.get("plan") and executor.fixed_call_of(task) is None:
+            raise TaskConflict("Task has no plan to try.")
+        busy = [*await self.repo.processing_runs(task_id), *await self.repo.waiting_runs(task_id)]
+        if any(r.get("dry_run") for r in busy):
+            raise TaskConflict("A try run of this task is already going.")
+        run_id = await self.repo.insert_run(task_id, now=self.now_iso(), plan=task.get("plan") or [], dry_run=True)
+        self._dispatch(task_id, run_id)
         return await self.get_and_publish(task_id)
 
     async def chat(self, task_id: str, message: str) -> dict:
@@ -832,14 +859,16 @@ class TaskService(Service):
         if task["status"] in {"planning", "clarification_pending"}:
             raise TaskConflict("This task is still being planned.")
         kind = (task.get("schedule") or {}).get("type")
-        if kind not in {"recurring", "triggered"}:
-            if await self.repo.waiting_runs(task_id):
+        trying = bool(run.get("dry_run"))  # a try run is retried as a try run (#142)
+        if kind not in {"recurring", "triggered"} and not trying:
+            if await self.repo.waiting_runs(task_id, real=True):
                 raise TaskConflict(WAITING_CONFLICT)
-            if await self.repo.processing_runs(task_id):
+            if await self.repo.processing_runs(task_id, real=True):
                 raise TaskConflict("This task is already running.")
         now = self.now_iso()
         new_run_id = await self.repo.insert_run(
-            task_id, now=now, plan=run.get("plan") or task.get("plan") or [], trigger_data=run.get("trigger_data")
+            task_id, now=now, plan=run.get("plan") or task.get("plan") or [], trigger_data=run.get("trigger_data"),
+            dry_run=trying,
         )
         checkpoint = run.get("messages") if isinstance(run.get("messages"), list) else []
         fields: dict[str, Any] = {"retry_of": run_id}
@@ -848,8 +877,11 @@ class TaskService(Service):
             fields["messages"] = [*checkpoint, {"role": "user", "content": RETRY_NOTE.format(error=problem)}]
             fields["memory_sources"] = run.get("memory_sources")  # the transcript it continues had these in mind
             fields["sources"] = run.get("sources")  # and had read these
+            if trying:
+                fields["would_do"] = run.get("would_do")  # and had noted these
         await self.repo.update_run(new_run_id, fields)
-        await self._set(task_id, {"status": "processing", "last_execution_at": now, "error": None})
+        if not trying:
+            await self._set(task_id, {"status": "processing", "last_execution_at": now, "error": None})
         self._dispatch(task_id, new_run_id, resume=bool(checkpoint))
         return await self.get_and_publish(task_id)
 
@@ -908,10 +940,15 @@ class TaskService(Service):
         if granted is not None:  # a losing answer (desktop and phone at once) never leaves a grant or rule behind
             await self._grant(task_id, *granted, via)
         await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
-        await self._set(task_id, {"status": "processing", "error": None})
+        await self._running_again(task_id, run)
         await self._resolve_question_notifications(run_id, "answered", answer=text)
         self._dispatch(task_id, run_id, resume=True, answered=True)
         return await self.get_and_publish(task_id)
+
+    async def _running_again(self, task_id: str, run: dict) -> None:
+        """The task shows as running again once a waiting run carries on, unless it is a try run (#142)."""
+        if not run.get("dry_run"):
+            await self._set(task_id, {"status": "processing", "error": None})
 
     async def _grant(self, task_id: str, approval: dict, decision: str, via: str) -> None:
         """Save how wide the user's yes was (#139): this task, a while, or an Allow rule. "Allow once" saves nothing.
@@ -954,7 +991,7 @@ class TaskService(Service):
         if not await self.repo.resume_run(run_id, run.get("messages") or [], limits=state):
             raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
         await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
-        await self._set(task_id, {"status": "processing", "error": None})
+        await self._running_again(task_id, run)
         await self._resolve_question_notifications(run_id, "answered", answer=text)
         self._dispatch(task_id, run_id, resume=True, answered=True)
         return await self.get_and_publish(task_id)
@@ -978,7 +1015,7 @@ class TaskService(Service):
         if not await self.repo.resume_run(run_id, messages):
             raise TaskConflict("This run is not waiting for an answer.")  # answered or cancelled meanwhile
         await self.progress(task_id, run_id, {"type": "info", "content": f"You answered: {text}"})
-        await self._set(task_id, {"status": "processing", "error": None})
+        await self._running_again(task_id, run)
         await self._resolve_question_notifications(run_id, "answered", answer=text)
         self._dispatch(task_id, run_id, resume=True, answered=True)
         return await self.get_and_publish(task_id)
@@ -1238,7 +1275,7 @@ class TaskService(Service):
             resumes = int(run.get("resume_count") or 0)
             if cfg.resume_interrupted_runs and task.get("task_type") != "swarm" and resumes < MAX_RESUMES:
                 await self.repo.update_run(run["id"], {"resume_count": resumes + 1})
-                if task["status"] != "processing":
+                if task["status"] != "processing" and not run.get("dry_run"):  # a try run leaves the task as it is
                     await self._set(task["id"], {"status": "processing"})
                 self._dispatch(task["id"], run["id"], resume=True)
                 report["resumed"].append(run["id"])
@@ -1257,7 +1294,7 @@ class TaskService(Service):
         # tasks left 'processing' with no live run: claimed right before a crash (no run row), or
         # stopped after the run finished but before the task was settled
         for task in await self.repo.list_tasks("status = 'processing'"):
-            if self._job_running("script", task["id"]) or await self.repo.processing_runs(task["id"]):
+            if self._job_running("script", task["id"]) or await self.repo.processing_runs(task["id"], real=True):
                 continue
             last = await self.repo.latest_run(task["id"])
             if last is not None and last["status"] in {"completed", "completed_with_errors", "error", "cancelled"}:
@@ -1634,6 +1671,8 @@ class TaskService(Service):
             )
         if answered:
             opening = "Got your answer. Carrying on with the task."
+        elif run.get("dry_run") and not resume:
+            opening = dry_run.OPENING
         await self.progress(task_id, run_id, {"type": "info", "content": opening})
         await self.publish(task_id)
         status, error = "completed", None
@@ -1672,6 +1711,10 @@ class TaskService(Service):
         task = await self.repo.get_task(task_id)
         if task is None:
             return
+        run = await self.repo.get_run(run_id) or {}
+        if run.get("dry_run"):
+            await self._finish_try_run(task, run, status, error)
+            return
         is_swarm = task.get("task_type") == "swarm"
         if error:
             await self.progress(task_id, run_id, {"type": "error", "content": error})
@@ -1708,6 +1751,34 @@ class TaskService(Service):
                 task, f"Task '{name}' has finished with status: error.{detail}", "Task failed", "run_failed",
                 {"run_id": run_id},
             )
+
+    async def _finish_try_run(self, task: dict, run: dict, status: str, error: str | None) -> None:
+        """A try run ended (#142): its report is written in code from what it noted, never by a model, and the task
+        itself stays as it was. Not passed to the self-improvement reviewer: nothing in it really happened."""
+        task_id, run_id = task["id"], run["id"]
+        if error:
+            await self.progress(task_id, run_id, {"type": "error", "content": error})
+        await self._after_run(task_id, status, error)  # only settles a task some real run left busy
+        actions = [a for a in run.get("would_do") or [] if isinstance(a, dict)]
+        name = task.get("name") or "Untitled task"
+        if status in {"completed", "completed_with_errors"}:
+            apps = list(dict.fromkeys(str(a.get("plugin") or a.get("tool")) for a in actions))
+            await self.repo.update_run(run_id, {"result": {
+                "summary": dry_run.report(actions), "links_created": [], "links_found": [], "files_created": [],
+                "tools_used": apps,
+            }})
+            await self.publish(task_id)
+            count = len(actions)
+            done = (f"A real run would do {count} thing{'s' if count != 1 else ''}. Nothing was sent, changed or run."
+                    if count else "A real run would only look things up.")
+            await self._notify(task, f"The try run of '{name}' is done. {done}", "Try run finished", "dry_run_finished",
+                               {"run_id": run_id})
+            return
+        await self.publish(task_id)
+        if status == "error":
+            detail = f"\n\n{error}" if error else ""
+            await self._notify(task, f"The try run of '{name}' didn't finish.{detail}", "Try run failed", "run_failed",
+                               {"run_id": run_id})
 
     async def _pause_run(self, task_id: str, run_id: str, question: dict) -> None:
         """Park a run that called ``ask_user``: store the question, flag the task, tell the user."""
@@ -1759,8 +1830,11 @@ class TaskService(Service):
             log.exception("could not resolve question notifications for run %s", run_id)
 
     async def _publish_run_finished(self, task_id: str, run_id: str, status: str) -> None:
-        """``task.run_finished`` for the self-improvement reviewer (docs/API.md section 10)."""
+        """``task.run_finished`` for the self-improvement reviewer (docs/API.md section 10). Never for a try run (#142):
+        nothing in it really happened."""
         try:
+            if (await self.repo.get_run(run_id) or {}).get("dry_run"):
+                return
             tool_errors = 0
             skills_viewed: list[str] = []
             for update in await self.repo.events(run_id):
@@ -1985,9 +2059,9 @@ class TaskService(Service):
         task = await self.repo.get_task(task_id)
         if task is None or task["status"] not in BUSY:
             return
-        if await self.repo.processing_runs(task_id):
+        if await self.repo.processing_runs(task_id, real=True):  # a try run never holds the task busy (#142)
             return
-        if await self.repo.waiting_runs(task_id):  # a run still waits for the user's answer
+        if await self.repo.waiting_runs(task_id, real=True):  # a run still waits for the user's answer
             if task["status"] != "waiting_for_user":
                 await self._set(task_id, {"status": "waiting_for_user"})
             return

@@ -576,6 +576,8 @@ export const api = {
     decline: (id: string) => http.post<Task>(`/api/tasks/${enc(id)}/decline`),
     rerun: (id: string) => http.post<Task>(`/api/tasks/${enc(id)}/rerun`),
     runNow: (id: string) => http.post<Task>(`/api/tasks/${enc(id)}/run-now`),
+    /** Try it first (#142): a run that only notes what it would send, change or run. */
+    dryRun: (id: string) => http.post<Task>(`/api/tasks/${enc(id)}/dry-run`),
     archive: (id: string) => http.post<Task>(`/api/tasks/${enc(id)}/archive`),
     chat: (id: string, message: string) => http.post<Task>(`/api/tasks/${enc(id)}/chat`, { message }),
     answerClarifications: (id: string, answers: ClarificationAnswer[]) =>
@@ -852,7 +854,7 @@ export const api = {
       http.get<TimelineUpcoming>('/api/timeline/upcoming', { query: { ...timelineQuery(filters), days } }),
     apps: () => http.get<{ apps: Array<{ id: string; label: string }> }>('/api/timeline/apps'),
     /** Bring back what a chat moved to the trash (#142); offered when an item has `undo`. */
-    restore: (id: string) => http.post<{ ok: boolean; result?: unknown }>('/api/timeline/restore', { id })
+    restore: (id: string) => http.post<{ ok: boolean; result?: unknown; message?: string }>('/api/timeline/restore', { id })
   },
 
   // §16 webhooks --------------------------------------------------------------------------

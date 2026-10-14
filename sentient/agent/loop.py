@@ -40,7 +40,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from sentient import paths
-from sentient.agent import findings, preview, reversible, second_look
+from sentient.agent import dry_run, findings, preview, reversible, second_look
 from sentient.agent import grants as grant_rules
 from sentient.agent import incognito as incognito_outputs
 from sentient.agent import undo as undo_rules
@@ -1037,6 +1037,18 @@ class Agent:
                 plan.preset = ({"error": str(refusal)}, True, 0)
                 return plan
         outgoing = sends_out(tool, plan.risk, tc.arguments, ctx)
+        tried = ctx.extra.get(dry_run.KEY) if ctx.extra else None
+        if isinstance(tried, dry_run.DryRun) and dry_run.simulates(tool, plan.risk):
+            # a try run (#142): anything above a look-up is noted instead of done, decided here in code; the note
+            # says whether a real run would stop and ask first
+            purchase = await is_purchase(tool, tc.arguments, ctx, plan.risk)
+            plugin = self.registry.plugin(tool.plugin)
+            plan.preset = (await tried.record(
+                tool, tc.name, tc.arguments, plan.risk, purchase=purchase,
+                asks=rule == "ask" or purchase or bool(ctx.untrusted and outgoing),
+                app=getattr(plugin, "display_name", None) or tool.plugin, at=now_iso(),
+            ), False, 0)
+            return plan
         look = second_look.Look(self, tool, tc, ctx, plan, messages, attended=attended, model=model) if outgoing else None
         if look is not None:
             plan.warning = await look.deterministic()  # who it goes to, amounts, links: always, no model

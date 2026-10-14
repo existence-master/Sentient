@@ -24,6 +24,7 @@ import sqlite3
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, tzinfo
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sentient.activity import words
@@ -49,6 +50,8 @@ UPCOMING_DAYS = 7
 MAX_PER_TASK = 7             # occurrences of one recurring task listed in the upcoming week
 
 Cursor = tuple[str, str]
+# the app a file snapshot counts under (#142): what ran the code that changed the files
+SNAPSHOT_APPS = {"terminal": "terminal", "code": "code", "file_write": "files", "restore": "files"}
 
 
 @dataclass
@@ -215,6 +218,7 @@ class Timeline:
         sources: list[Source] = [
             self._chat_tools, self._channel_replies, self._channel_deliveries, self._task_runs, self._script_checks, self._notifications,
             self._facts, self._dreams, self._skills, self._backups_past, self._always_allowed, self._cost,
+            self._file_snapshots,
         ]
         results = await asyncio.gather(*(src(cur, limit, query) for src in sources))
         candidates = [i for items, _ in results for i in items if cur is None or i.key < cur]
@@ -346,10 +350,16 @@ class Timeline:
                 item.detail = _brief(args) or None
 
     async def restore(self, item_id: str) -> dict:
-        """Bring back what a chat tool call moved to the trash, with its app's restore tool (#142). Returns
-        ``{"ok": True, "result": ...}`` or ``{"ok": False, "error": "..."}`` in plain words. Never rules and Read only
-        connections still apply (``Agent.run_tool``)."""
+        """Bring back what a chat tool call moved to the trash, with its app's restore tool (#142), or put back the
+        files code changed (``snap:<id>``, ``sentient.snapshots``). Returns ``{"ok": True, "result": ...}`` or
+        ``{"ok": False, "error": "..."}`` in plain words. Never rules and Read only connections still apply
+        (``Agent.run_tool``)."""
         kind, _, message_id = str(item_id or "").partition(":")
+        if kind == "snap" and message_id:
+            snaps = getattr(self.app, "snapshots", None)
+            if snaps is None:
+                return {"ok": False, "error": "Putting files back isn't available right now."}
+            return await snaps.restore(message_id)
         if kind != "chat" or not message_id:
             return {"ok": False, "error": "That item can't be undone."}
         row = await self.store.fetchone(
@@ -373,6 +383,78 @@ class Timeline:
             return {"ok": False, "error": str(error or res)[:300]}
         log.info("activity: restored %s with %s", item_id, back.name)
         return {"ok": True, "result": res}
+
+    # -- files code changed, with the copies kept first (#142)
+    async def _file_snapshots(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
+        if not query.wants("chat", "tasks"):
+            return [], None
+        where = ["(session_id IS NULL OR session_id NOT IN (SELECT id FROM sessions WHERE incognito = 1))"]
+        params: list = []
+        if not query.wants("chat"):
+            where.append("task_id IS NOT NULL")
+        elif not query.wants("tasks"):
+            where.append("task_id IS NULL")
+        if query.app:
+            sources = [s for s, app in SNAPSHOT_APPS.items() if app == query.app]
+            if not sources:
+                return [], None
+            where.append(f"source IN ({','.join('?' * len(sources))})")
+            params += sources
+        if query.q:
+            where.append("(what LIKE ? ESCAPE '\\' OR files LIKE ? ESCAPE '\\')")
+            params += [query.like()] * 2
+        snaps = getattr(self.app, "snapshots", None)
+        try:
+            return await self._sql(
+                select="SELECT created_at AS _at, ('snap:' || id) AS _key, id, source, what, session_id, task_id,"
+                       " run_id, files, created, notes, restored_at FROM file_snapshots",
+                where=where, params=params, ts="created_at", key="('snap:' || id)",
+                build=lambda row: self._snapshot_item(row, snaps), cur=cur, n=n, query=query, filtered=False,
+            )
+        except sqlite3.OperationalError:  # an older database without the table yet
+            return [], None
+
+    def _snapshot_item(self, row: Any, snaps: Any) -> Item:
+        files = [f for f in (_loads(row["files"]) or []) if isinstance(f, dict)]
+        notes = [str(x) for x in (_loads(row["notes"]) or []) if x]
+        source = str(row["source"] or "")
+        count = len(files)
+        plural = f"{count} file{'s' if count != 1 else ''}"
+        name = Path(str(files[0].get("path") or "")).name if files else ""
+        title = {
+            "terminal": f"A command changed {plural}", "code": f"Code changed {plural}",
+            "file_write": f"Wrote over {name}" if count == 1 else f"Wrote over {plural}",
+            "restore": f"Put back {plural}",
+        }.get(source, f"Changed {plural}")
+        kept = [f for f in files if f.get("copy")]
+        if source == "restore":
+            why = "You pressed Restore. Sentient kept copies of what it replaced, so you can undo it."
+        elif kept:
+            why = "Sentient kept copies first, so you can put them back."
+        else:
+            why = "Sentient couldn't keep copies: " + (str(files[0].get("note") or "") if files else "")
+        names = [Path(str(f.get("path") or "")).name + (" (deleted)" if f.get("change") == "deleted" else "")
+                 for f in files[:5]]
+        detail = ", ".join(names) + (f" and {count - 5} more" if count > 5 else "")
+        what = str(row["what"] or "").strip()
+        if what and source in {"terminal", "code"}:
+            detail = f"{words.short(what, 80)}: {detail}"
+        if notes:
+            detail += f". {notes[0]}"
+        snap = {"id": row["id"], "files": files, "restored_at": row["restored_at"]}
+        undo = ({"action": "restore", "label": "Undo" if source == "restore" else "Restore"}
+                if snaps is not None and snaps.restorable(snap) else None)
+        status = "restored" if row["restored_at"] else "done"
+        if row["task_id"]:
+            ref = {"type": "task", "id": row["task_id"], "run_id": row["run_id"]}
+        elif row["session_id"]:
+            ref = {"type": "chat", "id": row["session_id"]}
+        else:
+            ref = None
+        app, label = self._app(SNAPSHOT_APPS.get(source))
+        return Item(id=row["_key"], kind="tasks" if row["task_id"] else "chat", at=row["_at"], title=title, why=why,
+                    detail=words.short(detail, 240) or None, status=status, app=app, app_label=label, ref=ref,
+                    undo=undo)
 
     # -- messaging apps: Sentient's replies in Telegram, Discord and WhatsApp chats
     async def _channel_replies(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
@@ -466,6 +548,7 @@ class Timeline:
         return await self._sql(
             select="SELECT r.created_at AS _at, ('run:' || r.id) AS _key, r.id, r.task_id, r.status, r.trigger_data,"
                    " r.result, r.error, r.retry_of, r.pending_question, r.started_at, r.finished_at, t.name,"
+                   " COALESCE(r.dry_run, 0) AS dry_run,"
                    " t.task_type, t.schedule, t.original_context, t.source AS task_source"
                    " FROM task_runs r JOIN tasks t ON t.id = r.task_id",
             where=where, params=params, ts="r.created_at", key="('run:' || r.id)",
@@ -485,7 +568,11 @@ class Timeline:
         trigger = schedule.get("source") if isinstance(schedule, dict) and schedule.get("type") == "triggered" else None
         app = trigger or next((a for a in apps if a not in {"memory", "files", "tasks", "time", "skills"}), None)
         app, label = self._app(app)
-        if is_brief:
+        tried = bool(row["dry_run"])  # a try run (#142): nothing in it was sent, changed or run
+        if tried:
+            done, fail, wait, run = (f"Tried {name}", f"The try run of {name} didn't finish",
+                                     f"The try run of {name} is waiting for you", f"Trying {name}")
+        elif is_brief:
             done, fail, wait, run = (f"Made your {name}", f"Couldn't make your {name}", f"Your {name} is waiting for you",
                                      f"Making your {name}")
         else:
@@ -498,7 +585,9 @@ class Timeline:
         }.get(status, (f"{name}: {status.replace('_', ' ')}", None))
         # why it ran
         trigger_data = _loads(row["trigger_data"])
-        if row["retry_of"]:
+        if tried:
+            why = "You chose Try it first, so it only noted what it would send, change or run"
+        elif row["retry_of"]:
             why = "You chose Retry"
         elif isinstance(trigger_data, dict) and "script_result" in trigger_data:
             why = "Its check found something: " + words.short(trigger_data.get("message") or "a change", 100)

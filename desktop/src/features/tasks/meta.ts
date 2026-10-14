@@ -169,8 +169,9 @@ export const BOARD_COLUMNS: Array<{ id: string; label: string; statuses: TaskSta
 ]
 
 // ---------------------------------------------------------------------------- misc helpers
+/** The newest real run; a try run (#142) is never the task's last result. */
 export function latestRun(task: Pick<Task, 'runs'>) {
-  const runs = task.runs ?? []
+  const runs = (task.runs ?? []).filter((r) => !r.dry_run)
   return runs.length ? runs[runs.length - 1] : undefined
 }
 

@@ -129,6 +129,12 @@ async def run_task_now(request: Request, task_id: str):
     return await _guard(_tasks(request).run_now(task_id))
 
 
+@router.post("/{task_id}/dry-run")
+async def try_task(request: Request, task_id: str):
+    """Try it first (#142): a run that only notes what it would send, change or run."""
+    return await _guard(_tasks(request).dry_run(task_id))
+
+
 @router.post("/{task_id}/archive")
 async def archive_task(request: Request, task_id: str):
     return await _guard(_tasks(request).archive(task_id))

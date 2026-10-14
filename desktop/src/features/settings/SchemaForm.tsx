@@ -101,6 +101,13 @@ export const LABELS: Record<string, FieldLabel> = {
     description: "If nobody answers a task's request in time, the task stops without doing that step. A late answer can't approve it."
   },
   'tools.repeated_call_limit': { label: 'Stop when the same step repeats', unit: 'times' },
+  'tools.snapshots': { label: 'Copies before code changes files' },
+  'tools.snapshots.enabled': { label: 'Keep copies of files before code changes them' },
+  'tools.snapshots.max_file_mb': { label: 'Skip files bigger than', unit: 'MB' },
+  'tools.snapshots.max_total_mb': { label: 'Most copied each time', unit: 'MB' },
+  'tools.snapshots.max_files': { label: 'Most files copied each time', unit: 'files' },
+  'tools.snapshots.keep_days': { label: 'Keep copies for', unit: 'days' },
+  'tools.snapshots.max_kept_mb': { label: 'All copies together stay under', unit: 'MB' },
   'tools.disabled': { label: 'Disabled tools', hidden: true },
   'tools.approvals.rules': { label: 'Rules for apps and tools', hidden: true },
   'tools.approvals.rule_origins': { label: 'Where rules came from', hidden: true },

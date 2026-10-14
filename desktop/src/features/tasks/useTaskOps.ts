@@ -31,6 +31,7 @@ export type TaskOp =
   | 'approve'
   | 'decline'
   | 'runNow'
+  | 'dryRun'
   | 'rerun'
   | 'archive'
   | 'remove'
@@ -141,6 +142,12 @@ export function useTaskOps() {
         }),
 
       runNow: (id: string) => perform('runNow', id, () => api.tasks.runNow(id), { success: 'Run started', error: "Couldn't start a run" }),
+
+      dryRun: (id: string) =>
+        perform('dryRun', id, () => api.tasks.dryRun(id), {
+          success: 'Try run started. Nothing will be sent, changed or run.',
+          error: "Couldn't start a try run"
+        }),
 
       rerun: (id: string) => perform('rerun', id, () => api.tasks.rerun(id), { error: "Couldn't re-run the task" }),
 
