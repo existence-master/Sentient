@@ -22,7 +22,12 @@ from typing import Any
 
 import httpx
 
-from sentient.config.schema import LOCAL_MODEL_TIERS, MULTILINGUAL_EMBEDDING, ModelRoles, ModelsConfig
+from sentient.config.schema import (
+    LOCAL_MODEL_TIERS,
+    MULTILINGUAL_EMBEDDING,
+    ModelRoles,
+    ModelsConfig,
+)
 
 log = logging.getLogger(__name__)
 

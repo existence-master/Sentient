@@ -97,8 +97,11 @@ LOCAL_MODEL_TIERS: tuple[dict, ...] = (
 
 
 # The embedding model recommended for memories in Hindi and other languages besides English (#339). nomic-embed-text
-# (the default) is English-first: it scores Hindi facts about different people as near-duplicates. bge-m3 covers 100+
-# languages and needs no query prefix. Measured on an RTX 4060 laptop with Ollama 0.9 (2026-10-14): MEASURED_NOTE
+# (the default, 768 dimensions) is English-first: Hindi facts about different people score 0.71 to 0.85 against each
+# other, and a Hindi question ranks the wrong person first. bge-m3 (1024 dimensions, 100+ languages, no query prefix)
+# scores those pairs 0.35 to 0.56 and the same fact across Hindi and English 0.77 to 0.84. Measured on an RTX 4060
+# laptop with Ollama 0.9 (2026-10-14): 1.7 GB loaded on the graphics card (nomic-embed-text 0.85 GB), a memory search
+# in 0.6 to 0.7 s (nomic-embed-text 0.5 s), and switching re-embedded 7 memories in 8 s including loading the model.
 MULTILINGUAL_EMBEDDING: dict[str, str] = {"model": "ollama/bge-m3", "name": "bge-m3", "size": "1.2 GB"}
 
 
