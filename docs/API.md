@@ -307,7 +307,8 @@ accept or loosen a rule.
   (section 4, Run `memory_sources`).
 - **Answer sources** (#174). The final assistant message of a chat turn (also a stopped one) carries `sources`, also
   sent on its `done` event; every other row has `[]`. An **AnswerSource** is
-  `{kind: "web"|"email"|"file"|"app", title, url?, file?, path?, folder?, from?, id?, snippet?, app, tool, tools?}`:
+  `{kind: "web"|"email"|"file"|"app", title, url?, file?, path?, folder?, from?, id?, snippet?, app, tool, tools?,
+  via?}`:
   - `web`: a page `web_fetch` or the browser opened (`url`, page `title`), or one of the first 3 results of each
     `web_search`;
   - `email`: an email a connected mail app returned (`title` is its subject, `from`, `id`, `url` when the app has a
@@ -315,7 +316,9 @@ accept or loosen a rule.
   - `file`: a file `file_read` opened (`file` is its name under the files folder, `title` its base name), or a note
     from a folder the user added (section 22): the first 3 notes of each `folder_search` and each `folder_read`,
     with `path` (its full path), `folder` (the folder's name) and, in an Obsidian vault, `url` (an `obsidian://open`
-    link). The window opens it with `openFolderFile`: in Obsidian when it is installed (the main process builds the
+    link). A note whose piece went into the prompt with the message (section 22, "Note pieces in the prompt") counts
+    with `via: "prompt"` when the reply drew on it: it names the note, repeats a number from the piece, or repeats two
+    words of four or more letters from it that the message did not have. The window opens it with `openFolderFile`: in Obsidian when it is installed (the main process builds the
     link from the checked file), else with the default app
     (or shows it in its folder when no app opens that kind of file);
     only files really inside an added folder open (links are followed before the check);
@@ -2850,6 +2853,18 @@ never read (it counts as unreadable).
 **Search.** Keyword (bm25, title weighted) and meaning (cosine; only pieces within 0.15 of the best match) are merged
 by reciprocal rank, the keyword share scaled by how strong the match is, at most 2 pieces per file and
 `folders.results` pieces (1 to 20).
+
+**Note pieces in the prompt (#354).** Small models rarely call `folder_search` on their own, so each chat message
+(also voice and messaging apps) brings up to `folders.prompt_notes` (default 3, 0 turns it off) pieces that clearly
+match it, one per note, into the system prompt under "From the user's notes", each with its note's title and
+`<folder>/<path>` and cut to `folders.prompt_note_chars` (default 320) around the words that matched: about 300
+tokens at most. A piece counts when its similarity (search by meaning, without the 0.15 window) is at least
+`folders.prompt_min_similarity` (default 0.55) and it holds at least half of the message's words (stop words left
+out), or when it is 0.15 above that; without search by meaning, when it holds at least half of the message's words and
+two of them when the message has two. With nomic-embed-text and bge-m3 on a 48-piece vault, questions the notes
+answer scored 0.58 to 0.74 and unrelated ones at most 0.65. Clipped web pages never go in. Only while
+`folder_search` is offered (a folder is added); an incognito chat without memory gets none. The look-up gives up after
+4 s. The notes the reply drew on show as sources with `via: "prompt"` (section 2, "Answer sources").
 
 **Clipped web pages (ADR 0025).** A note with a web address under `source`, `url`, `clipped_from`, `source_url`,
 `original_url` or `link` in its front matter, a `clippings`-style tag, or in a `Clippings` folder is a clipping. With
