@@ -316,3 +316,13 @@ async def test_the_watcher_notices_a_changed_note(app, vault):
                                   {os.path.normcase(str(vault)): ({"id": folder["id"]}, Ignore([]))}) is None
     finally:
         watcher.cancel()
+
+
+async def test_folder_search_is_offered_to_local_models_only_once_a_folder_is_added(app, vault):
+    from sentient.agent.toolselect import ToolSelector
+
+    sel = ToolSelector(app.agent)
+    assert "folder_search" not in await sel.select("when does my insurance renew?", model="ollama_chat/qwen3:8b")
+    await app.folders.add(str(vault))
+    await app.folders.idle()
+    assert "folder_search" in await sel.select("when does my insurance renew?", model="ollama_chat/qwen3:8b")

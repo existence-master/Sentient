@@ -2768,7 +2768,7 @@ by reciprocal rank, the keyword share scaled by how strong the match is, at most
 start with `outside_content: "a web page clipped into your notes"`, so the chat counts as having read outside content
 (section 10). The user's own notes are not outside content.
 
-### Tools (plugin `folders`, "Your folders"; hidden while no folder is added)
+### Tools (plugin `folders`, "Your folders"; hidden while no folder is added, and `folder_search` is offered on every chat turn while one is, also to local models)
 - `folder_search(query, folder = "", limit = 0)` (risk `read`) → `{outside_content?, results: [{title, folder, path,
   heading?, text, tags?, file, link?, clipped_from?, similarity?}]}` or `{results: [], note}`. `path` is inside the
   folder, `file` the full path, `link` an `obsidian://open?vault=&file=` link in a vault. `folder` is a folder's name

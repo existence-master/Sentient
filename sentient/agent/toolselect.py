@@ -39,8 +39,10 @@ ALWAYS_TOOLS = (
     "memory_remember",
     "skill_view",
     "create_task_from_prompt",
-    "folder_search",  # only while the user has added folders (#176): their notes may answer anything
 )
+# Offered on every turn too, but only while their app is visible: folder_search exists once the user added folders
+# (#176), and their notes may answer anything.
+ALWAYS_WHEN_AVAILABLE = ("folder_search",)
 LOCAL_PREFIXES = ("ollama", "ollama_chat", "lm_studio", "llamafile", "vllm", "hosted_vllm")
 _WORD = re.compile(r"[a-z0-9]+")
 _STOP = {
@@ -257,7 +259,7 @@ class ToolSelector:
             return None
 
         visible_names = {t.name for t in visible}
-        chosen: list[str] = [n for n in ALWAYS_TOOLS if n in visible_names]
+        chosen: list[str] = [n for n in (*ALWAYS_TOOLS, *ALWAYS_WHEN_AVAILABLE) if n in visible_names]
         plugins = [p for p in registry.catalog() if p["tools"]]
         words = _words(text)
         triggers = triggered_prefixes(text) if text.strip() else set()
