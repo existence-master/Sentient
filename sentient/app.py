@@ -39,6 +39,7 @@ from sentient.channels import ChannelService
 from sentient.config import SentientConfig, load_config, save_config
 from sentient.events import EventBus
 from sentient.evolution import EvolutionService
+from sentient.folders import FolderService
 from sentient.integrations import IntegrationManager
 from sentient.llm import claude_code
 from sentient.llm.connect import ProviderConnections
@@ -131,6 +132,7 @@ class SentientApp:
         self.user_model = UserModelService(self)
         self.dreaming = DreamingService(self)
         self.backups = BackupService(self)
+        self.folders = FolderService(self)  # folders and Obsidian vaults as searchable notes (#176)
         self.memory_imports = MemoryImports(self)  # memory from ChatGPT, Claude and OpenClaw exports (#156)
         self.incognito = IncognitoSweeper(self)  # incognito chats are deleted when closed (#154)
         self.timeline = Timeline(self)  # what Sentient did and will do, read from the other packages' tables (#147)
@@ -148,7 +150,7 @@ class SentientApp:
         return [
             self.notifications, self.integrations, self.subagents, self.sandbox, self.terminal, self.browser, self.nodes,
             self.tasks, self.proactivity, self.evolution, self.user_model, self.dreaming, self.voice, self.channels,
-            self.backups,
+            self.backups, self.folders,
             self.incognito,
         ]
 

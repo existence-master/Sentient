@@ -1,4 +1,4 @@
-"""Undo window for emails, messages and posts (#142, ADR 0025).
+"""Undo window for emails, messages and posts (#142, ADR 0026).
 
 A preview catches mistakes before a send; an undo window catches the ones a preview missed. In a chat someone is
 watching, a call that sends an email, a message or a post waits ``tools.approvals.undo_seconds`` after every other

@@ -1,4 +1,4 @@
-# 0025. Hold sends in an undo window and prefer the trash
+# 0026. Hold sends in an undo window and prefer the trash
 
 - **Status:** Accepted
 - **Date:** 2026-10-14

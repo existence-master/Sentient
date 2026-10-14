@@ -1,4 +1,4 @@
-"""Reversible defaults: trash instead of delete (#142, ADR 0025).
+"""Reversible defaults: trash instead of delete (#142, ADR 0026).
 
 Many apps offer both a delete that is final and one that moves the item to a trash or archive it can come back from
 ("delete_note" and "trash_note"). A model asked to "delete the note" picks the first one. With

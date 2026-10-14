@@ -23,6 +23,7 @@ export const CH = {
   isFocused: 'sentient:is-focused',
   openFile: 'sentient:open-file',
   showInFolder: 'sentient:show-in-folder',
+  openFolderFile: 'sentient:open-folder-file',
   getDevicePrivacy: 'sentient:get-device-privacy',
   setDevicePrivacy: 'sentient:set-device-privacy',
   captureNotice: 'sentient:capture-notice',

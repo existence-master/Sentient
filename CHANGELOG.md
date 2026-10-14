@@ -14,6 +14,15 @@ and versions follow [Semantic Versioning](https://semver.org/).
   the trash, "delete it" now moves it there instead of deleting it for good, unless you say "permanently", and
   Activity offers **Restore**. Purchases, code and tasks running on their own never wait. Change the wait (0 turns it
   off) or the trash default in Settings > Approvals & safety.
+- **Your notes and Obsidian vaults, searchable.** In Settings > Folders, add a folder of notes or documents, or an
+  Obsidian vault, and Sentient searches it when you ask about something you wrote down: "what did I note about the
+  orchard budget?". Markdown, text, PDF and Word files are read; hidden folders like .obsidian, .git and .trash are
+  left out, along with the vault's own excluded files and any patterns you add. Answers show the notes they used as
+  chips, and a note from a vault opens in Obsidian. Sentient only reads these folders and never changes anything in
+  them. It notices changes as you write, reads only what changed, and does the work in the background with your
+  chats going first, so a big vault never slows a reply. Settings shows each folder's files, searchable pieces and
+  when it was last checked, with Check again and Remove. Web pages clipped into a vault count as written by someone
+  else: after reading one, Sentient asks before sending anything.
 - **Activity: everything Sentient did, and what it will do next, in one place.** A new **Activity** screen in the
   sidebar lists, newest first, the apps Sentient used in your chats, task runs and briefs, each check of a watch,
   approvals and how you answered them, replies in Telegram, Discord and WhatsApp, suggestions and other notifications,
@@ -318,6 +327,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Memories in Hindi stay with the right person:** a Hindi memory is no longer merged into, or skipped as a copy
+  of, a memory about someone else ("प्रिया पुणे में रहती है" next to "Riya lives in Pune", a Karan memory next to a
+  Kabir one). Names written in Devanagari are recognized and matched across scripts, so "माया" is still you when
+  your name is Maya. For people who write in Hindi or another language besides English, setup now suggests the
+  bge-m3 memory search model (1.2 GB), which finds those memories much better. Changing the memory search model
+  re-reads every memory once, also between two models of the same size.
 - **Sentient can now read a long result to its end:** when a web page or another result is too long to read at
   once, Sentient reads the rest of the saved copy part by part instead of seeing only its start again. Reading a
   file you downloaded, or that saved copy, now also counts as reading outside content, so Sentient asks before

@@ -101,6 +101,13 @@ CAPABILITY_RULES: tuple[tuple[str, str], ...] = (
         "it cannot see this chat. Use background=true for long work the user should not wait for. Do small things yourself.",
     ),
     (
+        "folder_search",
+        "- folder_search searches the notes and documents in folders the user added (such as an Obsidian vault). When "
+        "a question is about their own life or things they may keep there (people, projects, plans, meetings, trips, "
+        "documents like a lease or insurance) and memory doesn't answer it, search there, answer from what it finds "
+        "and name the notes. Use folder_read for a whole note.",
+    ),
+    (
         "device_",
         "- The device_* tools reach the user's phone, glasses and other devices: take a photo or capture the screen when "
         "they ask about what they are looking at, get their location, or show, notify or speak something there.",

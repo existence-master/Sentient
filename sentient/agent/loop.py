@@ -114,6 +114,7 @@ from sentient.tools.rules import (
     is_selection,
     never_message,
     outside_source,
+    result_outside_source,
     rule_label,
     saved_outside_source,
     sends_out,
@@ -1262,6 +1263,8 @@ class Agent:
                 ctx.untrusted = untrusted_source(p.tool, self.registry)
             elif not is_error and not err and (saved := saved_outside_source(tc.name, tc.arguments)):
                 ctx.untrusted = saved  # a saved result or a download read back counts like the tool that brought it (#336)
+            elif not is_error and not err and (clipped := result_outside_source(res)):
+                ctx.untrusted = clipped  # a web page clipped into the user's notes (ADR 0025)
         if (is_error or err) and err != DECLINED:
             result.tool_errors.append({"name": tc.name, "error": err or str(res)[:500]})
         elif (
@@ -1289,7 +1292,7 @@ class Agent:
             return content
         if brings_untrusted(tool):
             return mark_outside(content, untrusted_source(tool, self.registry))
-        source = saved_outside_source(tool.name, arguments)
+        source = saved_outside_source(tool.name, arguments) or result_outside_source(content)
         return mark_outside(content, source) if source else content
 
     def mark_outside_messages(self, messages: list[dict]) -> list[dict]:
