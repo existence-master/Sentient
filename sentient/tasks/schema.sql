@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS task_runs (
     limits        TEXT,                           -- JSON {base, max, used} of steps, seconds, tokens, cost_usd (tasks/limits.py)
     memory_sources TEXT,                          -- JSON list: memories the run had in mind (sentient/memory/sources.py)
     sources       TEXT,                           -- JSON list: pages, emails, files and apps the run used (sentient/agent/sources.py)
+    dry_run       INTEGER NOT NULL DEFAULT 0,     -- 1: a try run (#142), which only notes what it would send, change or run
+    would_do      TEXT,                           -- JSON list (try runs): what a real run would do (sentient/agent/dry_run.py)
     started_at    TEXT,
     finished_at   TEXT,
     created_at    TEXT NOT NULL

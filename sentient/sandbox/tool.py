@@ -35,7 +35,8 @@ async def execute_code(ctx: ToolContext, code: str, purpose: str) -> dict:
             if inspect.isawaitable(maybe):
                 await maybe
 
-    return await sandbox.run(code, session_id=ctx.session_id, channel=ctx.channel, on_output=on_output)
+    return await sandbox.run(code, session_id=ctx.session_id, channel=ctx.channel, on_output=on_output, ctx=ctx,
+                             purpose=purpose)
 
 
 class CodePlugin(ToolPlugin):

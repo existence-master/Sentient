@@ -9,6 +9,8 @@ A run that read outside content (a tool result, or the event that started it) an
 to send something pauses the same way and asks first (ADR 0018). So does a run that reaches a tool set to Ask
 (#139), unless the user already allowed that tool for this task or for a while (``sentient.agent.grants``).
 A run that gets stuck (``tasks/stuck.py``) pauses the same way with a plain reason.
+A try run (``run.dry_run``, #142) notes every call that would send, post, buy, delete, change or run something instead
+of making it (``sentient/agent/dry_run.py``); its look-ups run for real, and what it noted is kept on the run.
 The memories a run had in mind (facts in its prompt, facts memory tools returned that the model read) are kept on
 the run as ``memory_sources``, merged across pauses, resumes and restarts (``sentient/memory/sources.py``). The pages,
 emails, files and apps it used are kept the same way as ``sources`` (``sentient/agent/sources.py``, #291).
@@ -23,7 +25,7 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
-from sentient.agent import preview, rule_levels
+from sentient.agent import dry_run, preview, rule_levels
 from sentient.agent.loop import CAN_PAUSE_KEY, Budget, LoopResult, history_to_openai
 from sentient.agent.sources import AnswerSources
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
@@ -41,7 +43,7 @@ from sentient.tasks.prompts import (
 )
 from sentient.tasks.schedule import get_tz
 from sentient.tools.base import Risk, effective_risk
-from sentient.tools.rules import hands_off, never_message, untrusted_in
+from sentient.tools.rules import hands_off, is_purchase, never_message, sends_out, untrusted_in
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.tasks.service import TaskService
@@ -378,6 +380,8 @@ async def execute_single(
                 ctx.extra["browser_profile"] = task["browser_profile"]
             if continuity.applies(task):
                 ctx.extra[continuity.PLUGIN_ID] = True
+            if run.get("dry_run"):  # a try run: calls that change something are noted, saved on the run as they come
+                ctx.extra[dry_run.KEY] = trying(svc, run)
             checkpoint = run.get("messages") if resume else None
             if isinstance(checkpoint, list) and checkpoint:
                 checkpoint = await _run_approved_call(
@@ -427,7 +431,9 @@ async def execute_single(
                 ):
                     await alive(event)
                     await mapper.handle(event, messages)
-                    if isinstance(event, ToolResultEvent) and not event.is_error:
+                    noted = isinstance(event, ToolResultEvent) and isinstance(event.result, dict) and bool(
+                        event.result.get("try_run"))  # a try run's noted call used nothing (#142)
+                    if isinstance(event, ToolResultEvent) and not event.is_error and not noted:
                         seen, read_before = len(sources), read.items()
                         sources.add_tool_result(
                             event.name, app.agent.delivered_rows(event.result, result.tool_result_limit)
@@ -525,6 +531,16 @@ async def execute_single(
     return result
 
 
+def trying(svc: TaskService, run: dict) -> dry_run.DryRun:
+    """The try-run notes of ``run``, carried on from what it noted before a pause or restart and saved as they grow."""
+    run_id = run["id"]
+
+    async def save(actions: list[dict]) -> None:
+        await svc.repo.update_run(run_id, {"would_do": actions})
+
+    return dry_run.DryRun(run.get("would_do"), on_change=save)
+
+
 def fixed_call_of(task: dict) -> dict | None:
     """``original_context.fixed_call`` of a task the user approved as one exact tool call, else None."""
     call = (task.get("original_context") or {}).get("fixed_call")
@@ -557,7 +573,21 @@ async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume:
         if refusal:
             raise RunFailed(refusal)
     await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": name, "parameters": arguments})
-    risk = await effective_risk(tool, arguments, ctx)
+    risk = await effective_risk(tool, arguments, ctx) if run.get("dry_run") else None
+    if risk is not None and dry_run.simulates(tool, risk, outgoing=sends_out(tool, risk, arguments, ctx)):
+        # a try run (#142): note the call instead of making it, unless it would fail on its arguments anyway
+        if (bad := dry_run.invalid(tool, name, arguments)) is not None:
+            raise RunFailed(str(bad["error"]))
+        plugin = app.registry.plugin(tool.plugin)
+        result = await trying(svc, run).record(
+            tool, name, arguments, risk, purchase=await is_purchase(tool, arguments, ctx, risk),
+            asks=app.approvals.rule(tool) in {"ask", "if_asked"} and not await app.approvals.granted(tool, risk, arguments, ctx),
+            app=getattr(plugin, "display_name", None) or tool.plugin,
+            at=svc.now_iso(),
+        )
+        await svc.progress(task_id, run_id, {"type": "tool_result", "tool_name": name, "result": result, "is_error": False})
+        return LoopResult(text=dry_run.NOTED, tool_calls=1, tools_used=[tool.plugin])
+    risk = risk if risk is not None else await effective_risk(tool, arguments, ctx)
     if hands_off(app.approvals.rule(tool), risk) and app.agent is not None and ctx is not None:
         # "Hand it to me" (#140): the approved call is prepared for the user, never run
         handed = await app.agent.hand_off(tool, arguments, ctx, risk)

@@ -9,6 +9,7 @@ import {
   IconCopy,
   IconDots,
   IconFileDescription,
+  IconFlask,
   IconHelpCircle,
   IconPencil,
   IconPlayerPause,
@@ -284,8 +285,11 @@ function ActionBar({ task, ops, missing, layout, onClose, onShowRuns }: { task: 
   const id = task.task_id
   const kind = taskKind(task)
   const run = processingRun(task)
-  const waiting = waitingRun(task)
+  const waiting = (task.runs ?? []).find((r) => r.status === 'waiting_for_user' && !r.dry_run) // the run the task waits on
   const schedulable = kind === 'recurring' || kind === 'triggered' || kind === 'script' || task.status === 'pending'
+  // Try it first (#142): one run that only notes what it would send, change or run
+  const canTry = !['planning', 'clarification_pending'].includes(task.status) && task.task_type === 'single' && task.plan.length > 0 && !task.runs.some((r) => r.dry_run && (r.status === 'processing' || r.status === 'waiting_for_user'))
+  const tryIt = () => void ops.dryRun(id).then((t) => t && onShowRuns())
   const canRunNow = !['planning', 'clarification_pending', 'archived', 'declined'].includes(task.status) && (task.plan.length > 0 || task.task_type === 'swarm' || isScriptJob(task)) && !(task.task_type === 'swarm' && task.status === 'processing') && !((task.status === 'processing' || task.status === 'waiting_for_user') && !schedulable)
 
   const rerun = async () => {
@@ -303,6 +307,13 @@ function ActionBar({ task, ops, missing, layout, onClose, onShowRuns }: { task: 
         <Button key="decline" size="sm" variant="ghost" leftIcon={<IconX size={15} />} loading={ops.isBusy('decline', id)} onClick={() => void ops.decline(id)}>
           Decline
         </Button>,
+        <Tooltip key="try" content={missing.length ? `Connect ${missing.map((m) => m.label).join(', ')} first` : 'Run it once without sending, changing or running anything, and see what it would do'}>
+          <span>
+            <Button size="sm" variant="secondary" leftIcon={<IconFlask size={15} />} disabled={missing.length > 0 || !canTry} loading={ops.isBusy('dryRun', id)} onClick={tryIt}>
+              Try it first
+            </Button>
+          </span>
+        </Tooltip>,
         <Tooltip key="approve" content={missing.length ? `Connect ${missing.map((m) => m.label).join(', ')} first` : ''}>
           <span>
             <Button size="sm" variant="primary" leftIcon={<IconCheck size={15} />} disabled={missing.length > 0 || !task.plan.length} loading={ops.isBusy('approve', id)} onClick={() => void ops.approve(id)}>
@@ -396,6 +407,11 @@ function ActionBar({ task, ops, missing, layout, onClose, onShowRuns }: { task: 
           {canRunNow && task.status !== 'active' && task.status !== 'pending' && !['completed', 'completed_with_errors', 'cancelled', 'error'].includes(task.status) && (
             <DropdownMenuItem icon={<IconPlayerPlay />} onSelect={() => void ops.runNow(id)}>
               Run now
+            </DropdownMenuItem>
+          )}
+          {canTry && task.status !== 'approval_pending' && (
+            <DropdownMenuItem icon={<IconFlask />} onSelect={tryIt}>
+              Try it first
             </DropdownMenuItem>
           )}
           <DropdownMenuItem icon={<IconRepeat />} onSelect={() => void rerun()}>

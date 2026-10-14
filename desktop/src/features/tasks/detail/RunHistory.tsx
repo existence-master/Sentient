@@ -7,6 +7,7 @@ import {
   IconClock,
   IconExternalLink,
   IconFile,
+  IconFlask,
   IconHandFinger,
   IconHistory,
   IconLink,
@@ -21,6 +22,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, EmptyState, JsonView, Markdown, Tooltip } from '@/components/ui'
+import { ActionPreview } from '@/features/chat/ActionPreview'
 import { AnswerSources } from '@/features/chat/AnswerSources'
 import { ContextGauge } from '@/features/chat/ContextMeter'
 import { MemorySources } from '@/features/chat/MemorySources'
@@ -28,7 +30,7 @@ import { useBootstrap } from '@/hooks/core'
 import { api, errorMessage } from '@/lib/api'
 import { useRetryRun } from '@/hooks/tasks'
 import { getBridge } from '@/lib/bridge'
-import type { AnswerSource, MemorySource, Run, Task, TaskRunResult } from '@/lib/types'
+import type { AnswerSource, MemorySource, Run, Task, TaskRunResult, TryRunAction } from '@/lib/types'
 import { cn, formatDuration, parseDate, relativeTime, truncate } from '@/lib/utils'
 import { useNow } from '../hooks'
 import { retryOf, runDurationMs, scriptOf } from '../meta'
@@ -91,6 +93,7 @@ export function RunHistory({
 }
 
 function triggerSummary(task: Task, run: Run): { icon: typeof IconBolt; text: string } {
+  if (run.dry_run) return { icon: IconFlask, text: 'You chose Try it first' }
   const data = run.trigger_event_data
   if (data && Object.keys(data).length) {
     const subject = typeof data.subject === 'string' ? data.subject : typeof data.summary === 'string' ? data.summary : null
@@ -151,6 +154,15 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold text-fg">Run #{number}</span>
+            {run.dry_run && (
+              <Tooltip content="Nothing was sent, changed or run. It only noted what a real run would do.">
+                <span>
+                  <Badge size="xs" tone="accent" icon={<IconFlask />}>
+                    Try run
+                  </Badge>
+                </span>
+              </Tooltip>
+            )}
             {retriedFrom && (
               <Tooltip content="Continued from a run that didn’t finish, without repeating the steps that worked">
                 <span>
@@ -223,7 +235,10 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
                   {retryButton}
                 </div>
               )}
-              {run.result ? (
+              {run.dry_run && (run.result || (run.would_do?.length ?? 0) > 0) && <TryRunReport actions={run.would_do ?? []} live={live} />}
+              {run.result && run.dry_run ? (
+                !!run.sources?.length && <RunSources sources={run.sources} />
+              ) : run.result ? (
                 <RunResult result={run.result} memorySources={run.memory_sources} sources={run.sources} />
               ) : (
                 !!run.sources?.length && <RunSources sources={run.sources} /> // read so far, or before it failed
@@ -236,6 +251,56 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------- try run
+/** What a real run would do, as a try run noted it (#142): each call with its preview. */
+function TryRunReport({ actions, live }: { actions: TryRunAction[]; live: boolean }) {
+  return (
+    <div className="rounded-xl border border-accent/25 bg-accent/5">
+      <div className="flex items-center gap-2 border-b border-accent/20 px-4 py-2">
+        <IconFlask size={14} className="shrink-0 text-accent-text" />
+        <span className="text-2xs font-semibold uppercase tracking-wider text-fg-subtle">What a real run would do</span>
+      </div>
+      <div className="space-y-3 px-4 py-3">
+        <p className="text-sm text-fg-muted">
+          {actions.length
+            ? `Nothing was sent, changed or run. A real run would do ${actions.length} thing${actions.length === 1 ? '' : 's'}${live ? ' so far' : ''}:`
+            : live
+              ? 'Nothing noted yet. Look-ups run for real; anything else is only noted.'
+              : "A real run would only look things up. It wouldn't send, change, buy, delete or run anything."}
+        </p>
+        {actions.length > 0 && (
+          <ol className="space-y-2.5">
+            {actions.map((a, i) => (
+              <li key={`${a.tool}-${i}`} className="space-y-1.5">
+                <div className="flex items-baseline gap-1.5 text-sm">
+                  <span className="shrink-0 tabular-nums text-fg-subtle">{i + 1}.</span>
+                  <span className="min-w-0 flex-1 break-words font-medium text-fg">
+                    {a.summary}
+                    {a.asks && (
+                      <Badge size="xs" tone="warning" className="ml-1.5 align-middle">
+                        Would ask you first
+                      </Badge>
+                    )}
+                  </span>
+                </div>
+                {a.preview && (a.preview.fields.length > 0 || a.preview.body) ? (
+                  <ActionPreview preview={a.preview} bodyLines={6} />
+                ) : (
+                  Object.keys(a.arguments ?? {}).length > 0 && (
+                    <div className="max-h-40 overflow-auto rounded-lg border border-border bg-surface px-3 py-2">
+                      <JsonView value={a.arguments} collapsedDepth={1} maxStringLength={300} />
+                    </div>
+                  )
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
     </div>
   )
 }

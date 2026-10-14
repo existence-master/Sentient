@@ -10,6 +10,7 @@ runner.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -231,28 +232,34 @@ class TerminalService(Service):
         provider_keys = [p.api_key_env for p in self.app.config.models.providers.values() if p.api_key_env]
         run_id = new_id()
         env = guard.command_env(provider_keys, run_id=run_id, listed=chk.allow_listed)
-        task = asyncio.create_task(
-            backends.run_command(
-                guard.shell_argv(shell, chk.command), cwd=chk.folder, env=env,
-                timeout_s=float(cfg.timeout_s), max_chars=FULL_OUTPUT_CHARS, on_chunk=on_chunk,
-                # also processes that left the command's process group (setsid) on POSIX
-                extra_kill=lambda: guard.kill_marked(run_id),
-            ),
-            name=f"terminal:{run_id}",
-        )
-        self._running[run_id] = _Running(run_id, ctx.call_id, chk.command, str(chk.folder), now_iso(), task)
         outcome: backends.Outcome | None = None
-        try:
-            outcome = await task
-        except asyncio.CancelledError:
-            me = asyncio.current_task()
-            if me is not None and me.cancelling():
-                raise  # the reply or run this belongs to was stopped: the process tree is already gone
-            result["stopped"] = True  # the command's own Stop button
-        finally:
-            self._running.pop(run_id, None)
-            # nothing the command started outlives it, even outside its process group
-            await asyncio.shield(asyncio.to_thread(guard.kill_marked, run_id))
+        # copies of the files it could change, so they can be put back from Activity (#142); a command that never
+        # needs asking only reads, so it gets none
+        snaps = getattr(self.app, "snapshots", None)
+        keep = (snaps.guard(snaps.code_roots(chk.folder), ctx, source="terminal", what=chk.command)
+                if snaps is not None and not chk.allow_listed else contextlib.nullcontext())
+        async with keep:
+            task = asyncio.create_task(
+                backends.run_command(
+                    guard.shell_argv(shell, chk.command), cwd=chk.folder, env=env,
+                    timeout_s=float(cfg.timeout_s), max_chars=FULL_OUTPUT_CHARS, on_chunk=on_chunk,
+                    # also processes that left the command's process group (setsid) on POSIX
+                    extra_kill=lambda: guard.kill_marked(run_id),
+                ),
+                name=f"terminal:{run_id}",
+            )
+            self._running[run_id] = _Running(run_id, ctx.call_id, chk.command, str(chk.folder), now_iso(), task)
+            try:
+                outcome = await task
+            except asyncio.CancelledError:
+                me = asyncio.current_task()
+                if me is not None and me.cancelling():
+                    raise  # the reply or run this belongs to was stopped: the process tree is already gone
+                result["stopped"] = True  # the command's own Stop button
+            finally:
+                self._running.pop(run_id, None)
+                # nothing the command started outlives it, even outside its process group
+                await asyncio.shield(asyncio.to_thread(guard.kill_marked, run_id))
 
         stdout, stderr = streams["stdout"].text(), streams["stderr"].text()
         result["stdout"], cut_out = _trim(stdout, cfg.max_output_chars)
