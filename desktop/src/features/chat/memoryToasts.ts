@@ -13,8 +13,15 @@ import type { MemoryUpdatedData } from '@/lib/types'
 import { truncate } from '@/lib/utils'
 import { live } from '@/lib/ws'
 
+// the latest words seen for each memory id ('' once deleted): Undo only acts on the version its toast showed
+const latest = new Map<number, string>()
+
 async function undo(d: MemoryUpdatedData): Promise<void> {
   if (d.id === null) return
+  if (latest.get(d.id) !== d.content) {
+    toast("Nothing was undone", { description: 'That memory changed after this was saved. Edit it on the Memory page.' })
+    return
+  }
   try {
     if (d.action === 'UPDATE' && typeof d.previous === 'string') {
       await api.memories.update(d.id, d.previous)
@@ -35,6 +42,7 @@ export function useMemorySaveToasts(sessionId: string | undefined) {
     if (!sessionId) return
     return live.onDomain('memory.updated', (e) => {
       const d = e.data as MemoryUpdatedData
+      if (d.id !== null) latest.set(d.id, d.action === 'DELETE' ? '' : (d.content ?? ''))
       if (d.session_id !== sessionId || d.id === null || !d.content || d.action === 'DELETE') return
       const text = truncate(d.content, 140)
       if (d.status === 'pending') {

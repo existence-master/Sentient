@@ -92,6 +92,7 @@ def test_grounded_in_the_users_own_words():
     assert not review.grounded("Maya's flight leaves on Friday at 6am", "what does my latest email say?", "Maya")
     assert not review.grounded("Maya's bank account number is 99887766", "my bank account changed", "Maya")
     assert not review.grounded("Maya likes tea", "", "Maya")
+    assert not review.grounded("Maya is Sentient's assistant", "check my email", "Maya")  # nothing of the user's
     # most of it has to be the user's: "what Priya asked me for" doesn't back what Priya's email asked
     assert not review.grounded("Priya asked Maya to send the orchard notes", "remember what Priya asked me for", "Maya")
 

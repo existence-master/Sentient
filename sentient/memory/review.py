@@ -140,7 +140,7 @@ def grounded(fact: str, own_words: str, user_name: str = "") -> bool:
     said = set(keyword_tokens(words, None))
     meaningful = [w for w in keyword_tokens(fact, None) if w not in names]
     if not meaningful:
-        return True
+        return False  # nothing of the user's backs it ("Maya is Sentient's assistant")
     hits = sum(1 for w in meaningful if any(_same_word(w, s) for s in said))
     return hits >= GROUNDED_SHARE * len(meaningful) - 1e-9
 

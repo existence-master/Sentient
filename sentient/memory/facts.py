@@ -1084,7 +1084,9 @@ class FactMemory:
         text = "\n".join(t for _, t in kept)
         return text[-max_chars:] if len(text) > max_chars else text
 
-    async def flush_conversation(self, transcript: str, user_name: str, *, review: dict | None = None) -> list[dict]:
+    async def flush_conversation(
+        self, transcript: str, user_name: str, *, review: dict | None = None, session_id: str | None = None
+    ) -> list[dict]:
         """Save lasting facts from chat turns that are about to be compressed (docs/API.md section 10).
 
         One extraction call over the bounded transcript, then the normal CUD path per fact
@@ -1113,7 +1115,8 @@ class FactMemory:
         for fact in self._facts_from(raw, user_name)[: cfg.flush_max_facts]:
             try:
                 results.append(await self.remember(
-                    fact, source="conversation", notify=True, review=reviews.with_snippet(review, text, fact)
+                    fact, source="conversation", notify=True, review=reviews.with_snippet(review, text, fact),
+                    session_id=session_id,
                 ))
             except Exception as exc:
                 log.warning("memory flush could not store %r: %s", fact, exc)

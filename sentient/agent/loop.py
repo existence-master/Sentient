@@ -1911,8 +1911,8 @@ class Agent:
         if not callable(flush):
             return
         held = {"review": memory_review.note(untrusted, session_id=session_id)} if untrusted else {}
-        try:
-            await flush(transcript, self.config.assistant.user_name, **held)  # publishes its own memory.updated
+        try:  # publishes its own memory.updated, with the chat so it can offer Undo (#234)
+            await flush(transcript, self.config.assistant.user_name, session_id=session_id, **held)
         except Exception as exc:
             log.warning("memory flush before compression failed: %s", exc)
 

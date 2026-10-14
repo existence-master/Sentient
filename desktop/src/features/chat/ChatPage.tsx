@@ -60,6 +60,8 @@ function ChatView({
   const liveKey = sessionId ?? pendingKey
   const liveSession = useChat((s) => (liveKey ? s.live[liveKey] : undefined))
   const resolvedId = useChat((s) => (pendingKey ? s.resolved[pendingKey.replace('pending:', '')] : undefined))
+  // "Remembered: ... Undo" for memories saved from this chat (#234), also during a new chat's first reply
+  useMemorySaveToasts(sessionId ?? resolvedId)
   const context = useChat((s) => (sessionId ? s.context[sessionId] : undefined))
   const send = useChat((s) => s.send)
   const cancel = useChat((s) => s.cancel)
@@ -73,7 +75,6 @@ function ChatView({
   const sessions = useSessions()
   const messages = useMessages(sessionId)
   const proposals = useRuleProposals(sessionId)
-  useMemorySaveToasts(sessionId) // "Remembered: ... Undo" for memories saved from this chat (#234)
   const attachments = useAttachments()
   const [inject, setInject] = useState<{ text: string; nonce: number } | null>(null)
   const [dragging, setDragging] = useState(false)
