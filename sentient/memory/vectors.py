@@ -2,8 +2,11 @@
 
 vec0 tables default to L2 distance. Every table here is created with
 ``distance_metric=cosine`` so ``similarity = 1 - distance``. Tables created by
-older builds (L2, no metric recorded in ``meta``) or with a different embedding
-dimension are dropped and rebuilt by re-embedding the source rows.
+older builds (L2, no metric recorded in ``meta``), with a different embedding
+dimension or by another embedding model are dropped and rebuilt by re-embedding
+the source rows. Two models can share a dimension (nomic-embed-text and
+paraphrase-multilingual are both 768, mxbai-embed-large and bge-m3 both 1024),
+and their vectors don't compare, so the model is recorded too (#339).
 """
 
 from __future__ import annotations
@@ -47,6 +50,7 @@ class VecTable:
         self.store = store
         self.name = name
         self.dim: int | None = None
+        self.model: str | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -57,37 +61,56 @@ class VecTable:
         row = await self.store.fetchone("SELECT name FROM sqlite_master WHERE name = ?", (self.name,))
         return row is not None
 
-    async def ensure(self, dim: int, rebuild: Callable[[], Awaitable[None]] | None = None) -> bool:
-        """Create the table for ``dim``. Returns True when an existing index was rebuilt."""
-        if self.dim == dim:
+    async def ensure(
+        self, dim: int, rebuild: Callable[[], Awaitable[None]] | None = None, model: str | None = None
+    ) -> bool:
+        """Create the table for ``dim`` vectors from embedding ``model``. Returns True when an existing index was
+        rebuilt: another dimension or metric, or another model when both the stored and the new model are known."""
+        if self.dim == dim and (model is None or self.model == model):
             return False
         async with self._lock:
-            if self.dim == dim:
+            if self.dim == dim and (model is None or self.model == model):
                 return False
             if not self.store.vec_available:
                 raise RuntimeError("sqlite-vec extension is not available")
             stored_dim = await self.store.get_meta(f"{self.name}_dim")
             stored_metric = await self.store.get_meta(f"{self.name}_metric")
+            stored_model = await self.store.get_meta(f"{self.name}_model")
             had_table = await self.exists()
-            stale = had_table and (stored_metric != METRIC or (stored_dim is not None and int(stored_dim) != dim))
+            other_model = bool(model and stored_model and stored_model != model)
+            stale = had_table and (
+                stored_metric != METRIC or (stored_dim is not None and int(stored_dim) != dim) or other_model
+            )
             if stale:
                 log.warning(
-                    "rebuilding vector index %s (dim %s->%s, metric %s->%s)",
-                    self.name, stored_dim, dim, stored_metric, METRIC,
+                    "rebuilding vector index %s (dim %s->%s, metric %s->%s, model %s->%s)",
+                    self.name, stored_dim, dim, stored_metric, METRIC, stored_model, model,
                 )
                 await self.store.execute(f"DROP TABLE IF EXISTS {self.name}")
             await self.store.execute(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS {self.name} USING vec0(embedding float[{dim}] distance_metric={METRIC})"
             )
-            await self.store.set_meta(f"{self.name}_dim", str(dim))
-            await self.store.set_meta(f"{self.name}_metric", METRIC)
+            if not stale:
+                await self._record(dim, model)
             self.dim = dim
-        if stale and rebuild is not None:
+            self.model = model or self.model
+        if stale:
             try:
-                await rebuild()
-            except Exception as exc:  # keep working with a partial index
+                if rebuild is not None:
+                    await rebuild()
+            except Exception as exc:
+                # keep working with a partial index; the old dimension and model stay recorded, so the next start
+                # rebuilds it again instead of trusting it
                 log.warning("re-embedding for %s failed: %s", self.name, exc)
+            else:
+                await self._record(dim, model)
         return stale
+
+    async def _record(self, dim: int, model: str | None) -> None:
+        await self.store.set_meta(f"{self.name}_dim", str(dim))
+        await self.store.set_meta(f"{self.name}_metric", METRIC)
+        if model:
+            await self.store.set_meta(f"{self.name}_model", model)
 
     async def upsert(self, rowid: int, vec: list[float]) -> None:
         await self.store.execute(f"DELETE FROM {self.name} WHERE rowid = ?", (rowid,))

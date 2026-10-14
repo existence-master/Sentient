@@ -30,7 +30,10 @@ _PKG_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_VERSION = 9  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
 # 6: approval_grants (#139); 7: usage.cost_usd (#148); 8: evolution_reviews.activity_mark (#297)
 # 9: messages.approval and the activity timeline's indexes (#147)
-PACKAGE_SCHEMAS = ["tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox"]
+PACKAGE_SCHEMAS = [
+    "tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox",
+    "folders",
+]
 
 
 # SQL condition: the chat ``col`` names is not incognito (#154). Learning, summaries and history search use it so an

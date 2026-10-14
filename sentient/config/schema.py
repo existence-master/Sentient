@@ -96,6 +96,18 @@ LOCAL_MODEL_TIERS: tuple[dict, ...] = (
 )
 
 
+# The embedding model recommended for memories in Hindi and other languages besides English (#339). nomic-embed-text
+# (the default, 768 dimensions) is English-first: Hindi facts about different people score 0.71 to 0.85 against each
+# other, and a Hindi question ranks the wrong person first. bge-m3 (1024 dimensions, 100+ languages, no query prefix)
+# scores those pairs 0.35 to 0.56 and the same fact across Hindi and English 0.77 to 0.84. Measured on an RTX 4060
+# laptop with Ollama 0.9 (2026-10-14): 1.7 GB loaded on the graphics card (nomic-embed-text 0.85 GB), a memory search
+# in 0.6 to 0.7 s once loaded (nomic-embed-text 0.5 to 0.7 s), and switching re-embedded 7 memories in 8 s including
+# loading the model. Next to qwen3:8b at 8,192 tokens, Ollama swaps it in when needed: qwen3:8b stays at 7%/93%
+# processor/graphics and about 29 tokens/s, and an embedding right after a chat reply takes 5.4 s to load against
+# 2.3 s for nomic-embed-text. That cost is why it is offered, not the default.
+MULTILINGUAL_EMBEDDING: dict[str, str] = {"model": "ollama/bge-m3", "name": "bge-m3", "size": "1.2 GB"}
+
+
 class ModelPreset(BaseModel):
     """A saved model setup the user can switch to in one step. Fields left out keep their current value."""
 
@@ -1091,6 +1103,43 @@ class BackupsConfig(BaseModel):
     )
 
 
+class FoldersConfig(BaseModel):
+    """Folders and Obsidian vaults the user added as searchable notes (owner: folders, #176). The folders themselves
+    are kept in the database (``GET /api/folders``), since each has its own index and status."""
+
+    watch: bool = Field(
+        True, description="Notice changes to your folders as they happen. Off, Sentient only looks again every few "
+        "minutes (below) and when you press Check again.",
+    )
+    rescan_minutes: int = Field(
+        30, ge=1, le=1440,
+        description="How often Sentient looks through your folders again for added, changed or removed files.",
+    )
+    ignore: list[str] = Field(
+        default_factory=lambda: ["node_modules/", "__pycache__/", "*.excalidraw.md", "*.canvas"],
+        description="Files and folders to leave out of every folder, like node_modules/ or *.tmp. A name ending in / "
+        "is a folder. Hidden folders such as .obsidian, .git and .trash are always left out.",
+    )
+    max_file_mb: float = Field(
+        20.0, ge=0.1, le=500.0, description="Files bigger than this are left out (in megabytes).",
+    )
+    max_files: int = Field(
+        20000, ge=100, le=200000,
+        description="Most files read from one folder. A bigger folder is searched only in part.",
+    )
+    chunk_chars: int = Field(
+        1200, ge=300, le=6000, description="About how many characters one searchable piece of a note holds.",
+    )
+    results: int = Field(
+        6, ge=1, le=20, description="How many pieces of your notes one search gives the assistant.",
+    )
+    clippings_are_outside: bool = Field(
+        True,
+        description="Treat web pages clipped into your notes (Obsidian Web Clipper, a source link at the top, a "
+        "Clippings folder) as written by someone else: after reading one, Sentient asks before sending anything.",
+    )
+
+
 class SentientConfig(BaseModel):
     """Root configuration, persisted at ``~/.sentient/config.yaml``."""
 
@@ -1115,4 +1164,5 @@ class SentientConfig(BaseModel):
     user_model: UserModelConfig = Field(default_factory=UserModelConfig)
     dreaming: DreamingConfig = Field(default_factory=DreamingConfig)
     backups: BackupsConfig = Field(default_factory=BackupsConfig)
+    folders: FoldersConfig = Field(default_factory=FoldersConfig)
     ui: UIConfig = Field(default_factory=UIConfig)

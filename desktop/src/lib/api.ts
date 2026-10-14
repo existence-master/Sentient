@@ -16,6 +16,8 @@ import type {
   BackupEntry,
   BackupInspect,
   BackupOverview,
+  FoldersOverview,
+  WatchedFolder,
   TimelineFilters,
   TimelinePage,
   TimelineUpcoming,
@@ -825,6 +827,15 @@ export const api = {
     restore: (path: string) => http.post<RestoreStaged>('/api/backups/restore', { path }),
     cancelRestore: () => http.delete<{ cancelled: boolean }>('/api/backups/restore'),
     dismissLastRestore: () => http.delete<{ ok: boolean }>('/api/backups/last-restore')
+  },
+
+  // §22 folders and Obsidian vaults as searchable notes (#176) -------------------------------------------------
+  folders: {
+    list: () => http.get<FoldersOverview>('/api/folders'),
+    add: (path: string, ignore?: string[]) => http.post<WatchedFolder>('/api/folders', { path, ignore }),
+    update: (id: string, ignore: string[]) => http.patch<WatchedFolder>(`/api/folders/${id}`, { ignore }),
+    remove: (id: string) => http.delete<{ removed: boolean }>(`/api/folders/${id}`),
+    rescan: (id: string) => http.post<{ queued: boolean }>(`/api/folders/${id}/rescan`, {})
   },
 
   // §21 activity timeline ---------------------------------------------------------------------

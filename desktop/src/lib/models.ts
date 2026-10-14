@@ -48,7 +48,8 @@ export const ROLE_META: Record<RoleName, RoleMeta> = {
   embedding: {
     role: 'embedding',
     label: 'Embedding',
-    description: 'Turns memories into vectors so Sentient can find relevant ones. Changing it re-indexes memory.',
+    description:
+      'Turns memories into vectors so Sentient can find relevant ones. Changing it re-reads every memory once. For memories in Hindi or other languages, bge-m3 works better.',
     required: true,
     embedding: true
   },
@@ -220,5 +221,6 @@ export function recommendFastLocal(local: LocalModels | undefined): string | nul
 export const SUGGESTED_PULLS = [
   { name: 'qwen3:8b', size: '5.2 GB', note: 'Best all-rounder with tool use' },
   { name: 'qwen3:4b', size: '2.5 GB', note: 'Lighter, good for the fast role' },
-  { name: 'nomic-embed-text', size: '274 MB', note: 'Embeddings for memory' }
+  { name: 'nomic-embed-text', size: '274 MB', note: 'Embeddings for memory' },
+  { name: 'bge-m3', size: '1.2 GB', note: 'Memory search in Hindi and other languages' }
 ]

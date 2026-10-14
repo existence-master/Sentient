@@ -153,6 +153,14 @@ async def test_chat_only_fallback_never_reaches_presets_or_check_up_fixes(config
     assert tools["action"] == {"kind": "pull_model", "name": "qwen3:8b", "label": "Download qwen3:8b"}
 
 
+def test_multilingual_memory_search_is_suggested_where_a_local_model_fits():
+    # nomic-embed-text stays the default; bge-m3 is offered for Hindi and other languages (#339)
+    for vram, ram in ((8.0, 16.0), (None, 7.8), (24.0, 64.0), (None, None)):
+        multi = hardware.recommend(fake_hw(vram, ram))["multilingual_embedding"]
+        assert multi["model"] == "ollama/bge-m3" and multi["size"] == "1.2 GB" and "Hindi" in multi["note"]
+    assert hardware.recommend(fake_hw(None, 3.8))["multilingual_embedding"] is None  # a cloud model comes first
+
+
 def test_eight_gb_card_keeps_qwen3_8b_at_8192():
     rec = hardware.recommend(fake_hw(8.0, 16.0))
     assert (rec["name"], rec["context_length"]) == ("qwen3:8b", 8192)

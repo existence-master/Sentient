@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS channel_questions (
     task_id    TEXT NOT NULL,
     run_id     TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    request    TEXT,                          -- which request of the run (#337): its expires_at, else request_id
     PRIMARY KEY (channel, chat_id, message_id)
 );
 

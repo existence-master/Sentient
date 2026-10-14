@@ -5,6 +5,7 @@ import {
   IconChartBar,
   IconCode,
   IconCpu,
+  IconFolders,
   IconListCheck,
   IconMicrophone,
   IconMoodSmile,
@@ -59,6 +60,14 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     icon: IconBrain,
     keywords: ['facts', 'recall', 'similarity', 'summaries', 'workspace', 'review'],
     schemaSections: ['memory']
+  },
+  {
+    id: 'folders',
+    label: 'Folders',
+    description: 'Folders of notes and Obsidian vaults Sentient searches when you ask about your notes.',
+    icon: IconFolders,
+    keywords: ['obsidian', 'vault', 'notes', 'documents', 'markdown', 'pdf', 'word', 'search', 'knowledge', 'index', 'ignore', 'files'],
+    schemaSections: ['folders']
   },
   {
     id: 'knowing',
