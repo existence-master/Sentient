@@ -35,7 +35,8 @@ async def test_cud_add_update_delete_skip(app):
          "analysis": {"topics": ["Personal Identity"], "memory_type": "long-term", "duration": None}}
     )
     upd = await mem.remember("Maya drinks black coffee with oat milk now")
-    assert upd == {"action": "UPDATE", "id": added["id"], "content": "Maya drinks black coffee with oat milk"}
+    assert upd == {"action": "UPDATE", "id": added["id"], "content": "Maya drinks black coffee with oat milk",
+                   "previous": "Maya drinks black coffee"}
 
     llm.json_replies.append({"action": "SKIP", "fact_id": added["id"], "content": None, "analysis": None})
     assert (await mem.remember("Maya drinks black coffee with oat milk daily"))["action"] == "SKIP"

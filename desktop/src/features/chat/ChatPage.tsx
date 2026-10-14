@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils'
 import { liveItems, useChat } from '@/stores/chat'
 import { AssistantTurn } from './AssistantTurn'
 import { Composer } from './Composer'
+import { useMemorySaveToasts } from './memoryToasts'
 import { RuleProposalCard } from './RuleProposalCard'
 import { takeScreenShare } from './screenShare'
 import { EmptyChat, type Suggestion } from './EmptyChat'
@@ -72,6 +73,7 @@ function ChatView({
   const sessions = useSessions()
   const messages = useMessages(sessionId)
   const proposals = useRuleProposals(sessionId)
+  useMemorySaveToasts(sessionId) // "Remembered: ... Undo" for memories saved from this chat (#234)
   const attachments = useAttachments()
   const [inject, setInject] = useState<{ text: string; nonce: number } | null>(null)
   const [dragging, setDragging] = useState(false)

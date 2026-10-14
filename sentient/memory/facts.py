@@ -815,19 +815,47 @@ class FactMemory:
         use_llm: bool = True,
         notify: bool = False,
         review: dict | None = None,
+        own_words: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
-        """Store one fact with dedup / CUD logic. Returns {action, id, content}.
+        """Store one fact with dedup / CUD logic. Returns {action, id, content} (an UPDATE adds ``previous``, the
+        words it replaced, so the save can be undone).
 
         With ``review`` (``memory.review.note``) the fact is held for the user's review instead: it is only ever
-        added (never updates or deletes another fact), and the result carries ``status: "pending"``."""
+        added (never updates or deletes another fact), and the result carries ``status: "pending"``. ``own_words`` is
+        what the user typed or said in the chat it came from: a fact those words fully back is saved even in a chat
+        that read outside content (#234, ``review.grounded``). A fact from a chat that reads like an instruction for
+        how Sentient should act is always held (``review.instruction_shaped``). ``session_id`` goes on the
+        ``memory.updated`` event, so that chat can show "Remembered: ... Undo"."""
+        user = self.config.assistant.user_name
+        if review is not None and own_words and reviews.grounded(fact, own_words, user):
+            log.info("kept from the user's own words although the chat read outside content: %r", fact)
+            review = None
+        if review is None and source == "conversation" and reviews.instruction_shaped(fact):
+            log.info("held for review as an instruction: %r", fact)
+            review = reviews.instruction_note(reviews.best_snippet(own_words or "", fact) or fact, session_id)
         if review is not None:
             result = await self._hold(fact, source=source, use_llm=use_llm, review=review)
         else:
             result = await self._remember(fact, source=source, use_llm=use_llm)
         if notify and result["action"] in {"ADD", "UPDATE", "DELETE"}:
-            extra = {"status": "pending"} if result.get("status") == "pending" else {}
-            self.publish(result["action"], result["id"], result["content"], **extra)
+            self.publish(result["action"], result["id"], result["content"], **self.event_extra(result, session_id))
         return result
+
+    @staticmethod
+    def event_extra(result: dict, session_id: str | None = None) -> dict[str, Any]:
+        """The extra ``memory.updated`` fields for one save: ``status`` and ``reason`` when held, ``previous`` for an
+        update, and the chat it came from (#234)."""
+        extra: dict[str, Any] = {}
+        if result.get("status") == "pending":
+            extra["status"] = "pending"
+            if result.get("reason"):
+                extra["reason"] = result["reason"]
+        if result.get("previous") is not None:
+            extra["previous"] = result["previous"]
+        if session_id:
+            extra["session_id"] = session_id
+        return extra
 
     async def _hold(self, fact: str, *, source: str, use_llm: bool, review: dict) -> dict[str, Any]:
         """Save ``fact`` as pending. Duplicates of any fact (held or not) are skipped; nothing else changes."""
@@ -845,7 +873,8 @@ class FactMemory:
         fid = await self._insert(
             fact, [], source=source, topics=topics, memory_type=memory_type, duration=duration, review=review
         )
-        return {"action": "ADD", "id": fid, "content": fact, "status": "pending"}
+        held = {"action": "ADD", "id": fid, "content": fact, "status": "pending"}
+        return {**held, "reason": review["reason"]} if review.get("reason") else held
 
     async def _remember(self, fact: str, *, source: str, use_llm: bool) -> dict[str, Any]:
         fact = fact.strip()
@@ -960,8 +989,10 @@ class FactMemory:
         if content != fact:
             [vec] = await self._embed([content])
         if action == "UPDATE":
+            before = await self.store.fetchone("SELECT content FROM facts WHERE id = ?", (int(fid),))  # type: ignore[arg-type]
             await self._update(int(fid), content, vec, topics, memory_type, duration)  # type: ignore[arg-type]
-            return {"action": "UPDATE", "id": int(fid), "content": content}  # type: ignore[arg-type]
+            previous = str(before["content"]) if before is not None else None
+            return {"action": "UPDATE", "id": int(fid), "content": content, "previous": previous}  # type: ignore[arg-type]
         new_id = await self._insert(
             content, vec, source=source, topics=topics, memory_type=memory_type, duration=duration
         )
@@ -1089,10 +1120,12 @@ class FactMemory:
         return results
 
     async def extract_and_store(
-        self, text: str, username: str, source: str = "conversation", *, notify: bool = False, review: dict | None = None
+        self, text: str, username: str, source: str = "conversation", *, notify: bool = False,
+        review: dict | None = None, own: bool = False, session_id: str | None = None,
     ) -> list[dict]:
         """Pull atomic facts out of text and remember each (v2 cud_memory). With ``review`` they are held for review,
-        each with the sentence of ``text`` it most likely came from."""
+        each with the sentence of ``text`` it most likely came from. ``own``: ``text`` is the user's own words (a chat
+        turn), so a fact they fully back is saved even with ``review`` (#234, ``review.grounded``)."""
         try:
             facts = await self.extract_facts(text, username)
         except Exception as exc:
@@ -1102,7 +1135,8 @@ class FactMemory:
         for f in facts[:20]:
             try:
                 results.append(await self.remember(
-                    f, source=source, notify=notify, review=reviews.with_snippet(review, text, f)
+                    f, source=source, notify=notify, review=reviews.with_snippet(review, text, f),
+                    own_words=text if own else None, session_id=session_id,
                 ))
             except Exception as exc:
                 log.warning("failed to store fact %r: %s", f, exc)

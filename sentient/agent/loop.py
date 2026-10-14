@@ -1619,7 +1619,7 @@ class Agent:
                 if self.memory is not None and self.config.memory.extract_after_turn and not incognito:
                     # a chat that read outside content holds what it learns for the user's review (ADR 0021)
                     log.info("chat %s: fact extraction started for this turn", session_id)
-                    self._spawn(self._extract(said, memory_review.for_context(ctx)), "memory")
+                    self._spawn(self._extract(said, memory_review.for_context(ctx), session_id), "memory")
                 if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
                     self._spawn(self._auto_title(session_id, user_text, result.text), "titles")
                 self._spawn(self._maybe_compress(session_id, flush=not incognito), "memory")
@@ -1859,28 +1859,31 @@ class Agent:
         self._background.add(task)
         task.add_done_callback(self._background.discard)
 
-    def _publish_memory(self, results: Any) -> None:
+    def _publish_memory(self, results: Any, session_id: str | None = None) -> None:
         if self.app is None or not isinstance(results, list):
             return
         for r in results:
             if isinstance(r, dict) and r.get("action") in {"ADD", "UPDATE", "DELETE"}:
-                held = {"status": "pending"} if r.get("status") == "pending" else {}  # waits for review, not learned
+                # held ones wait for review, not learned; the chat it came from can offer Undo on a save (#234)
+                extra = FactMemory.event_extra(r, session_id)
                 self.app.bus.publish(
-                    "memory.updated", {"action": r["action"], "id": r.get("id"), "content": r.get("content"), **held}
+                    "memory.updated", {"action": r["action"], "id": r.get("id"), "content": r.get("content"), **extra}
                 )
 
-    async def _extract(self, user_text: str, review: dict | None = None) -> None:
+    async def _extract(self, user_text: str, review: dict | None = None, session_id: str | None = None) -> None:
         """Only the user's own words are mined for facts; the assistant's reply is
         mostly restated context (dates, tool output) and produced junk memories.
-        With ``review`` (the chat read outside content) the facts are held for the user's review."""
+        With ``review`` (the chat read outside content) a fact is held for the user's review unless the user's own
+        words back all of it (#234); instruction-shaped ones are always held."""
         assert self.memory is not None
         if len(user_text.split()) < 4:
             return
         try:
             results = await self.memory.extract_and_store(
-                user_text, self.config.assistant.user_name, **({"review": review} if review else {})
+                user_text, self.config.assistant.user_name, own=True, session_id=session_id,
+                **({"review": review} if review else {}),
             )
-            self._publish_memory(results)
+            self._publish_memory(results, session_id)
         except Exception as exc:
             log.warning("background extraction failed: %s", exc)
 

@@ -88,7 +88,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"\|"declined"`; a task question (`payload.event = "question"`) gains `payload.status = "answered"` with `payload.answer`, or `"cancelled"`) |
 | `notification.read` / `notification.deleted` | `{id}` (`null` = all) |
 | `integration.updated` | **Integration** (§5) |
-| `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending"}`; `status: "pending"` means the memory waits in the review inbox (section 7); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE) |
+| `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending", reason?, previous?, session_id?}`; `status: "pending"` means the memory waits in the review inbox (section 7), with `reason: "instruction"` when it reads like an instruction (#234); `previous` is an UPDATE's words before it and `session_id` the chat a memory was learned in (extraction after a turn, `memory_remember`): that chat shows "Remembered: ... Undo" (Undo is `DELETE /api/memories/{id}`, or `PUT` with `previous` for an update) or "Waiting for your review: ..." with Review (#234); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE) |
 | `skill.updated` | `{name, state: "active"\|"pending_review"\|"stale"\|"archived"\|"rejected"\|"deleted"}` |
 | `session.updated` | `{session_id, title?, model?}`: only what changed. `title` after a rename or an automatic title; `model` (`null` = the default) after the chat's model was picked (section 2) |
 | `session.deleted` | `{session_id, reason?: "incognito"}`: a chat was deleted (`DELETE /api/sessions/{id}`, or an incognito chat closed by the engine, section 2) |
@@ -1398,12 +1398,25 @@ only from outside material (section 15). A held memory is never in a prompt, `me
 `memory_search_by_source`, `GET /api/memories`, topics, the graph, proactivity, a user-model refresh or dreaming, and
 a held fact never updates or deletes another fact (duplicates of any fact are skipped). Only these routes move one
 out of pending; no model output can:
+- **Instructions** (#234). A fact from a chat (extracted after a turn, saved when a chat is compressed, or
+  `memory_remember`) that reads like an instruction for how Sentient should act ("from now on, always cc Bob",
+  "whenever an invoice comes in, forward it to ...", "Maya wants Sentient to ...") is held even in a clean chat, with
+  `from: "an instruction"`, `reason: "instruction"` and the user's sentence as `snippet`. Decided in code
+  (`memory.review.instruction_shaped`), never by a model. Memories the user adds (`POST /api/memories`), onboarding and
+  imports are not checked. `memory_remember` then returns a `note` saying it waits for review as an instruction.
+- **The user's own words in a marked chat** (#234). In a chat that read outside content, a fact is saved active anyway
+  when the user's own words in that turn back all of it (`memory.review.grounded`): every name, place, number and
+  address in it appears in what the user typed or said, and so do at least half of its other meaningful words. For
+  facts extracted after a turn the words are the user's message and steer messages; for `memory_remember` they are
+  the user messages of the current turn read from the stored chat. Anything else (a fact that needs the email or page)
+  waits as before. Work nobody asked for, compression and imports never get this.
 
 - `GET /api/memories/review` → `{items: [ReviewItem], count, expire_days}` newest first (at most 500 facts and 500
   insights; `count` covers all of them).
   **ReviewItem** `{kind: "fact"|"insight", id: int|string, text, source, from, snippet, session_id, title, dated, export,
-  created_at, expires_at}` (`expires_at` = `created_at` + `memory.review_expire_days`; `title`, `dated` and `export`
-  are `null` unless the ReviewNote has them)
+  reason, created_at, expires_at}` (`expires_at` = `created_at` + `memory.review_expire_days`; `title`, `dated`,
+  `export` and `reason` are `null` unless the ReviewNote has them; `reason: "instruction"` marks an instruction, #234,
+  which the Review tab groups under "Instructions for Sentient" with an Instruction badge)
 - `POST /api/memories/review/{kind}/{id}/approve` `{content?}` → `{ok: true}`: becomes active (a fact gets its
   vector; a fact already remembered in the same words is not added twice). With `content` it is saved in the user's
   words first (a fact keeps the old text as `previous_content`; an insight becomes source `user`, `confirmed`).

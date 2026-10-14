@@ -54,13 +54,13 @@ export function ReviewTab() {
   return (
     <div className="space-y-5">
       <Alert tone="info" icon={<IconShieldCheck />} title="Sentient wants to remember these">
-        They came from an email, a web page, an import or work Sentient did on its own, so it waits for your OK before using them. Anything you
-        don’t review is let go after {review.data.expire_days} days.
+        They came from an email, a web page, an import or work Sentient did on its own, or they tell Sentient how to act, so it waits for your
+        OK before using them. Anything you don’t review is let go after {review.data.expire_days} days.
       </Alert>
       {groups.map(([from, items]) => (
         <section key={from} className="space-y-2.5">
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-medium text-fg">From {from}</h3>
+            <h3 className="text-sm font-medium text-fg">{items[0]?.reason === 'instruction' ? 'Instructions for Sentient' : `From ${from}`}</h3>
             <span className="rounded-full bg-active px-1.5 text-2xs tabular-nums text-fg-muted">{items.length}</span>
             <div className="flex-1" />
             {items.length > 1 && (
@@ -123,6 +123,11 @@ function ReviewCard({ item }: { item: MemoryReviewItem }) {
         <Badge size="xs" tone="neutral">
           {item.kind === 'fact' ? 'Memory' : 'About you'}
         </Badge>
+        {item.reason === 'instruction' && (
+          <Badge size="xs" tone="accent">
+            Instruction
+          </Badge>
+        )}
         <span>{relativeTime(item.created_at)}</span>
         {daysLeft !== null && (
           <span className="text-fg-faint">· {daysLeft > 1 ? `let go in ${daysLeft} days` : 'let go soon'} if not reviewed</span>
@@ -153,7 +158,7 @@ function ReviewCard({ item }: { item: MemoryReviewItem }) {
 
       {item.snippet && (
         <p className="selectable mt-2.5 border-l-2 border-border-strong pl-3 text-xs leading-relaxed text-fg-muted">
-          <span className="text-fg-subtle">It came from: </span>
+          <span className="text-fg-subtle">{item.reason === 'instruction' ? 'You said: ' : 'It came from: '}</span>
           {item.snippet}
         </p>
       )}

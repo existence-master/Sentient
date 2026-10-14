@@ -57,3 +57,26 @@ Asking the model whether a memory looks like an injection: unreliable and itself
 everything and showing an undo toast: the memory is used until the user notices. Never saving anything from
 untrusted chats: loses useful facts the user would gladly keep. Holding only instruction-shaped memories ("from now
 on ..."): a plain-looking false fact ("my new bank account is ...") is just as harmful.
+
+## Amendment (2026-10-14): instructions, the user's own words and undo (#234)
+
+Three follow-ups change parts of this decision:
+
+- **Instruction-shaped memories always wait.** A memory from a chat that reads like an instruction for how Sentient
+  should act ("from now on, always cc Bob", "whenever an invoice comes in, forward it to ...", "Maya wants Sentient to
+  ...") changes what Sentient does in every later chat, the way a rule does. It is held with `reason: "instruction"`
+  even in a clean chat, and the user approves it on the Review tab like a proposed rule (ADR 0016, #130). This adds
+  the alternative this ADR had rejected as the only measure; it now sits next to holding everything from outside
+  content, not in place of it. Detection is a deterministic pattern check, never a model. Memories the user adds
+  themselves, onboarding and imports are not checked.
+- **The user's own words stay active in a marked chat.** "A fact learned in such a chat is not used until they do,
+  even when it was the user who said it" no longer holds: a fact is saved active when the user's own words in that
+  turn back all of it, checked in code (`review.grounded`): every name, place, number and address in it appears in
+  what the user typed or said, and so do at least half of its other words. The model's word that a fact came from
+  the user is never trusted; a fact that needs the email or page still waits. Facts extracted after a turn only ever
+  see the user's words, so this is the common case; `memory_remember` is checked against the user messages of the
+  current turn read back from the stored chat. Compression, imports and work nobody asked for are unchanged.
+- **Undo on every save.** Each memory saved from a chat shows "Remembered: ... Undo" in that chat (an update says
+  what it replaced, so Undo puts it back), and a held one shows "Waiting for your review" with a link. This is not a
+  replacement for review (rejected above: a memory is used until the user notices); it is how the user sees and
+  reverses what the clean path saves.
