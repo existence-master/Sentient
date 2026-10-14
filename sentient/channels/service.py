@@ -689,7 +689,7 @@ class ChannelService(Service):
         answer = str(options[int(index)])
         try:  # ``expect``: if a newer request took its place meanwhile, the engine refuses instead of answering it
             await self.app.tasks.answer_question(
-                found["task_id"], run_id, answer, via=ch.id, expect=found.get("expires_at") or None
+                found["task_id"], run_id, answer, via=ch.id, expect=stamp or None
             )
         except Exception as exc:
             text = str(exc) or "That didn't work."
@@ -732,7 +732,7 @@ class ChannelService(Service):
                 text = options[int(choice) - 1]  # "2" picks the second option (ASCII digits only)
             try:
                 await self.app.tasks.answer_question(
-                    waiting["task_id"], waiting["run_id"], text, via=ch.id, expect=waiting.get("expires_at") or None
+                    waiting["task_id"], waiting["run_id"], text, via=ch.id, expect=request_stamp(waiting) or None
                 )
                 reply = f"Thanks! I passed your answer to '{summary_text(waiting['task_name'], 80)}'. It's carrying on now."
             except Exception as exc:

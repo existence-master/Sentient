@@ -860,8 +860,9 @@ class TaskService(Service):
         A held call (an "ask" rule, #139, or outside content, ADR 0018) is an approval request: past its
         ``expires_at`` the run stops and the answer is refused; an approval answer that isn't one of the offered
         choices raises ``ValueError`` and the run keeps waiting. ``via`` says where it was answered (a grant's note).
-        ``expect`` is the ``expires_at`` of the request the answer was given to (a desktop notification, #323): when
-        the run now waits on another request, the answer is refused instead of applied to it."""
+        ``expect`` names the request the answer was given to: its ``expires_at`` (a desktop notification, #323), or
+        for a plain question its ``asked_at`` (paired chats, #337). When the run now waits on another request, the
+        answer is refused instead of applied to it."""
         text = str(answer or "").strip()[: ask.MAX_ANSWER_CHARS]
         if not text:
             raise ValueError("An answer is required.")
@@ -872,7 +873,7 @@ class TaskService(Service):
         if run["status"] != "waiting_for_user":
             raise TaskConflict("This run is not waiting for an answer.")
         pending = run.get("pending_question") or {}
-        if expect is not None and pending.get("expires_at") != expect:
+        if expect is not None and (pending.get("expires_at") or pending.get("asked_at")) != expect:
             raise TaskConflict(STALE_ANSWER)
         if pending.get("limit") in limits.KINDS:
             return await self._answer_limit(task_id, run, pending, text)

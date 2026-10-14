@@ -2014,7 +2014,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   request, a button or reply from an older message of that run is refused ("This message is for an earlier request,
   so it can't answer the one waiting now. Use the newest message." / "That message was for an earlier request, so I
   didn't pass this on. Reply to the newest message to answer the one waiting now.") and the newer request keeps
-  waiting (#337). The answer is passed on with `expect` = its `expires_at`, as the desktop notification does.
+  waiting (#337). The answer is passed on naming the same request (its `expires_at`, or `asked_at` for a plain question), so the
+  engine also refuses it if the run moved on in the meantime, as with the desktop notification.
   It is sent only while no window reports `presence: true` (section 1); one raised while the window is in front is held
   and sent when `presence.changed` says the person left, if it is still waiting. A button only answers from the message
   that delivered it to that chat (`channel_questions`); `tq:` buttons never answer an approval. A reply with a word or
