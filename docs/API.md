@@ -103,6 +103,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `import.updated` | **MemoryImportJob** (section 19): an import from ChatGPT, Claude or OpenClaw started, read a batch or finished |
 | `backup.updated` | `{what: "backup"\|"snapshot"\|"restore_staged"\|"restore_cancelled"\|"restore_dismissed", name?, source?}` (section 20): refetch `GET /api/backups` |
 | `folders.updated` | `{id, removed?: true, progress?: {done, total}}` (section 22): a folder was added, removed or queued, or a look through it started, moved on (at most once a second) or ended; refetch `GET /api/folders` |
+| `reminder.updated` | **Reminder** (section 23): a timer or reminder was set, cancelled or went off |
 
 ---
 
@@ -1191,7 +1192,7 @@ run the same masking again before their prompts. The original stays in the user'
 
 ## 6. Notifications & proactivity
 
-**Notification** `{id, kind: "info|task|approval|proactive|skill|error|brief", title, message (markdown), payload: {}, task_id, read, created_at}`
+**Notification** `{id, kind: "info|task|approval|proactive|skill|error|brief|reminder", title, message (markdown), payload: {}, task_id, read, created_at}`
 
 Proactive suggestion payload:
 ```json
@@ -2767,15 +2768,17 @@ here calls a model or changes anything.
  "ref": {"type": "chat|task|memory|dream|skill|about|backups|usage|approvals|notification", "id": "...",
          "run_id": "...", "message_id": "...", "notification_id": "...", "review": true},
  "upcoming": false,
- "undo": {"action": "restore", "label": "Restore"} | null}
+ "undo": {"action": "restore|cancel", "label": "Restore|Cancel"} | null}
 ```
 `undo` (#142) is set on a chat call that moved something to the trash when its app can bring it back; the window
-shows a **Restore** button that calls `POST /api/timeline/restore`. A send the user undid in its undo window is a
+shows a **Restore** button that calls `POST /api/timeline/restore`. On an upcoming timer or reminder (#150) it is
+`{"action": "cancel", "label": "Cancel"}`: the window shows **Cancel**, which calls `POST /api/timeline/cancel`. A send the user undid in its undo window is a
 `stopped` item, "You pressed Undo, so nothing was sent."
 `title` says what happened and `why` says why, in plain words. `ref` is where the item came from (the window opens
 that chat, task, memory, dream, skill or Settings section). `at` is UTC; `null` only for a paused routine.
 `kind` (also the filter values, in this order): `chat` (tools a chat used), `tasks` (task runs, questions, plans,
-routines paused while away, catch-up), `briefs` (Daily and Evening Brief runs), `monitors` (each check of a script job
+routines paused while away, catch-up), `reminders` (timers and one-off reminders that went off or were cancelled,
+and the ones coming up, section 23), `briefs` (Daily and Evening Brief runs), `monitors` (each check of a script job
 and the runs it started), `approvals` (approval requests in chats and tasks with the answer, plans waiting for an OK,
 **Always allow** answers, timed OKs ending), `channels` (Sentient's replies in Telegram, Discord and WhatsApp chats,
 and the notifications sent to them),
@@ -2793,6 +2796,7 @@ What each source gives (past):
 | `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked |
 | `tasks.script.checks` | "Checked X: nothing new (3 checks)", "X changed. You were told" |
 | `notifications` | questions and approvals from tasks (with the answer), plans waiting, suggestions, routines paused, backup and budget notices. Not shown again: `run_completed`, `run_failed` and `script_alert` (the run or check is shown), `brief` (the run), `skill` (the skills log) and dream notices (the dream) |
+| `reminders` (section 23) | "Your 10 minute timer went off", "Reminded you: call Ravi", "Cancelled your pasta timer" (`status: "stopped"`); `why` where it was set ("You set it by voice", "You set it on Telegram"); a reminder that went off late says when it was due. The `reminder` notification is not listed again |
 | `facts` | "Remembered something about you" (or "Saved a memory for your review"), `why` from its source |
 | `dreams`, `evolution_log` | memory tidy-ups; skill changes; profile updates |
 | backup folders | backups and snapshots (`kind` manual, scheduled, snapshot) |
@@ -2808,7 +2812,8 @@ What each source gives (past):
 - `GET /api/timeline/upcoming?days=7&kinds=&app=&q=` → `{items: [TimelineItem], paused: [TimelineItem]}`. `items`:
   first what is waiting for the user now (task questions and approvals, plans waiting for an OK; `status: "waiting"`),
   then, soonest first, every enabled task with a next run within `days` (1 to 31; recurring ones up to 7 times,
-  interval ones once), the next scheduled backup, the next nightly dream and timed approvals that end. `paused`:
+  interval ones once), the next scheduled backup, the next nightly dream, timed approvals that end and timers and
+  reminders not gone off yet ("Your 10 minute timer ends", "Will remind you: call Ravi", with `undo` Cancel). `paused`:
   routines (recurring and triggered tasks) that are turned off, `why` "Paused while you were away" (section 4,
   "Routines pause") or "You paused it".
 - `GET /api/timeline/apps` → `{apps: [{id, label}]}`: apps to filter by (tools used in chats in the last 90 days,
@@ -2816,6 +2821,8 @@ What each source gives (past):
 - `POST /api/timeline/restore` `{id}` → `{ok: true, result}`: run the app's restore tool for an item with `undo`
   (#142), with the arguments the trash call was given. It goes through `Agent.run_tool`, so Never rules and Read only
   connections still apply. 409 with a plain `detail` when the item has nothing to restore or the restore failed.
+- `POST /api/timeline/cancel` `{id}` → `{ok: true, reminder}`: cancel the timer or reminder of an upcoming item
+  (`reminder:<id>`, section 23). 409 with a plain `detail` when it already went off or was cancelled.
 
 **Paging.** Every past item has the key `(at, id)`. A page asks each source for its newest items before the cursor and
 merges them, so rows saved in the same moment are never skipped or shown twice. A source that drops rows in code (an
@@ -2901,3 +2908,59 @@ searched). `progress` counts the new or changed files of the running scan.
 
 Settings > Folders lists them with their status and counts, adds one with the folder picker, removes one (with a
 confirmation), checks again, edits the folder's ignore patterns and shows the `folders` config section.
+
+## 23. Timers, reminders and quick commands (owner: reminders and core, #150)
+
+**Quick commands.** Before a chat turn calls the model, `Agent.run_turn` asks `sentient.agent.fastpath.plan`. When the
+message is *only* a plain timer or reminder command, it is done at once with no model call, on every surface (the
+window, voice and devices, Telegram, Discord and WhatsApp): the turn makes the same tool calls the model would
+(`tool_call` and `tool_result` events, kept in the chat like any other), says a short confirmation (`text_delta`, then
+`done`), and the engine logs `quick command: <action> (<language>) done in N ms with no model call`. Anything else,
+or anything that could mean two things, goes to the model unchanged. What it understands (English; one module per
+language under `sentient/agent/fastpath/`, tried for `assistant.language` and then English):
+
+| Command | Examples | Goes to the model instead |
+|---|---|---|
+| timer | "set a timer for 10 minutes", "start a 10 minute timer", "set a pasta timer for 8 minutes", "timer for 90 seconds", "set a timer for half an hour" | no length ("set a timer"), over 24 hours, anything more in the message |
+| reminder | "remind me at 6 pm to call Ravi", "remind me to call Ravi at 6 pm", "remind me in 20 minutes", "remind me tomorrow at 9 am to pay rent", "remind me tonight at 8 to call mom", "remind me at 18:00 to leave" | a clock time without AM or PM ("at 6"), a repeating wish ("every day"), a day name, "today" at a time that has passed, a time missing ("tonight") |
+| list | "what timers do I have", "how much time is left", "what are my reminders" | |
+| cancel | "cancel the timer", "stop the pasta timer", "cancel the 10 minute timer", "cancel my reminder to stretch", "cancel all timers" | two or more match and "all" was not said; nothing matches the words given; a plural without "all" |
+
+"Hey Sentient", "please", "can you" and the assistant's own name around a command are fine. A quick command never
+sends, buys or deletes anything ("delete the timer" goes to the model). It runs only when its tool would run without
+asking: with approvals mode `always`, or an "Ask" or "Never" rule on the tool or on `reminders`, the model answers as
+usual. Not used for a message with attachments. Turned off with `chat.quick_commands`. No smart-home commands yet:
+Sentient has no lights or Home Assistant integration.
+
+**Timers and reminders** (`sentient/reminders/`, table `reminders`). **Reminder**
+`{id, kind: "timer"|"reminder", message, connector: ""|"to"|"about"|"that", label, duration_s, fire_at, status:
+"scheduled"|"fired"|"cancelled", session_id, channel, language, source: "quick"|"chat"|"api", created_at, fired_at,
+cancelled_at, notification_id}`. `fire_at` is UTC; a clock time is read in the user's timezone
+(`assistant.timezone`). `duration_s` is a timer's length or a reminder's "in 20 minutes". `session_id` is the chat it
+was set in (null in an incognito chat). A timer runs 1 second to 24 hours; a reminder can be up to a year ahead.
+
+When one comes due, the engine sends a `reminder` notification (`notification.new`): title "Timer done" (message "Your
+10 minute timer is done.") or "Reminder" (message: what to remind about), payload `{event: "timer"|"reminder",
+reminder_id, fire_at, late, channel, session_id?}`. One that came due while Sentient was not running goes off when it
+starts, and says when it was due (`late: true`). A reminder set in a Telegram, Discord or WhatsApp chat is also sent
+to that chat (the delivery is listed on the Activity timeline as "A timer or reminder you set"); one set anywhere
+else stays on the desktop. Firing never asks the model and Stop everything does not hold it back. Fired and cancelled
+ones are forgotten after 30 days.
+
+### Tools (plugin `reminders`, "Timers & reminders", all `internal`)
+- `set_timer(minutes = 0, seconds = 0, hours = 0, label = "")` (risk `write`) → `{status, reminder}`.
+- `set_reminder(message = "", at = "", in_minutes = 0, connector = "to")` (risk `write`) → `{status, reminder}`.
+  `at` is a local "YYYY-MM-DD HH:MM" (or ISO with an offset). Repeating reminders are tasks
+  (`create_task_from_prompt`).
+- `list_reminders(kind = "any")` (risk `read`) → `{status, reminders}`, soonest first.
+- `cancel_reminder(reminder_id)` (risk `write`) → `{status, reminder}`.
+
+Each `reminder` in a result also has `fire_at_local` and `seconds_left`.
+
+### REST
+- `GET /api/reminders?status=scheduled|fired|cancelled|all&limit=100` → `{reminders: [Reminder]}`; scheduled soonest
+  first, others newest first.
+- `POST /api/reminders` `{kind: "timer"|"reminder", minutes?, at?, message?, label?}` → Reminder (`source: "api"`).
+  400 with a plain `detail` when it can't be set.
+- `POST /api/reminders/{id}/cancel` → Reminder. 404 when unknown, 409 when it already went off or was cancelled.
+- Event `reminder.updated` (section 1). The Activity timeline (section 21) lists them under `reminders`.
