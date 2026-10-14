@@ -1721,7 +1721,10 @@ class TaskService(Service):
             return
         name = task.get("name") or "Untitled task"
         short = name[:60] + ("..." if len(name) > 60 else "")
-        extra: dict[str, Any] = {"run_id": run_id, "question": text, "options": list(question.get("options") or [])}
+        extra: dict[str, Any] = {
+            "run_id": run_id, "question": text, "options": list(question.get("options") or []),
+            "asked_at": asked["asked_at"],  # names this request of the run, for answers from paired chats (#337)
+        }
         if question.get("approval") or question.get("untrusted_call"):  # an approval request (#139, ADR 0018)
             extra.update(
                 approval=question.get("approval") or {"choices": ["allow", "deny"], "untrusted": True},

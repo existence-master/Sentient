@@ -310,6 +310,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Approvals from Telegram, Discord and WhatsApp answer only the request they were sent for.** When a task asks
+  about one step and then another, a button or reply from the earlier message can no longer answer the newer request:
+  the chat says the message is for an earlier request, and the newer one keeps waiting for its own answer.
 - **Sentient can now read a long result to its end:** when a web page or another result is too long to read at
   once, Sentient reads the rest of the saved copy part by part instead of seeing only its start again. Reading a
   file you downloaded, or that saved copy, now also counts as reading outside content, so Sentient asks before
