@@ -45,3 +45,12 @@ async def restore(request: Request, body: RestoreBody):
     if not out.get("ok"):
         raise HTTPException(409, out.get("error") or "That can't be restored.")
     return out
+
+
+@router.post("/cancel")
+async def cancel(request: Request, body: RestoreBody):
+    """Cancel the timer or reminder of an upcoming item (#150): offered when its ``undo`` is ``{"action": "cancel"}``."""
+    out = await get_core(request).timeline.cancel(body.id)
+    if not out.get("ok"):
+        raise HTTPException(409, out.get("error") or "That can't be cancelled.")
+    return out

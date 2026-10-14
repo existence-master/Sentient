@@ -40,7 +40,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from sentient import paths
-from sentient.agent import findings, preview, reversible, second_look
+from sentient.agent import fastpath, findings, preview, reversible, second_look
 from sentient.agent import grants as grant_rules
 from sentient.agent import incognito as incognito_outputs
 from sentient.agent import undo as undo_rules
@@ -1434,6 +1434,11 @@ class Agent:
     ) -> AsyncIterator[AgentEvent]:
         """One chat turn. ``on_stopped`` is called with ``{message_id, memory_sources}`` of the reply kept when the
         turn is stopped, so the caller can send them with its own ``done`` event."""
+        quick = await self._quick_plan(session_id, user_text, attachments or [])
+        if quick is not None:  # a plain timer or reminder command: done now, without the model (#150)
+            async for event in self._quick_turn(session_id, user_text, quick, channel=channel):
+                yield event
+            return
         turn_id = new_id()
         ev = {"session_id": session_id, "turn_id": turn_id}
         attachments = attachments or []
@@ -1640,6 +1645,70 @@ class Agent:
             # steer messages that arrived after the final round start a new turn
             async for event in self.run_turn(session_id, "\n\n".join(leftover), channel=channel, model=model):
                 yield event
+
+    # ------------------------------------------------------------------ quick commands (#150)
+    async def _quick_plan(self, session_id: str, user_text: str, attachments: list[str]) -> fastpath.QuickPlan | None:
+        """The plan for a plain timer or reminder command, or None to let the model answer: anything else, a message
+        with attachments, or a command whose tool would ask first or is set to Never (the model then shows the usual
+        approval card or refusal)."""
+        if attachments or self.app is None:
+            return None
+        try:
+            plan = await fastpath.plan(self.app, user_text)
+        except Exception:  # a quick command never breaks a turn: the model answers instead
+            log.exception("quick command check failed")
+            return None
+        if plan is None:
+            return None
+        for call in plan.calls:
+            tool = self.registry.get(call.name)
+            if tool is None or self.approvals.is_never(tool) or self.approvals.needs_approval(tool, session_id, tool.risk):
+                return None
+        return plan
+
+    async def _quick_turn(
+        self, session_id: str, user_text: str, plan: fastpath.QuickPlan, *, channel: str
+    ) -> AsyncIterator[AgentEvent]:
+        """Run a quick command like a chat turn the model answered: the same messages, tool calls and events, so the
+        chat, voice, messaging apps and the Activity timeline show it as usual. No model is called."""
+        started = time.perf_counter()
+        ev = {"session_id": session_id, "turn_id": new_id()}
+        self._busy[session_id] = self._busy.get(session_id, 0) + 1
+        if (current := asyncio.current_task()) is not None:
+            self._session_tasks.setdefault(session_id, set()).add(current)
+        try:
+            await self.store.add_message(session_id, "user", user_text)
+            if self.app is not None and hasattr(self.app, "user_seen"):
+                await self.app.user_seen(channel)
+            await self.store.touch_session(session_id, title=user_text[:60])
+            session = await self.store.get_session(session_id)
+            ctx = self.tool_context(session_id, channel)
+            ctx.incognito = bool((session or {}).get("incognito"))
+            ctx.extra = {**ctx.extra, "quick": True, "quick_language": plan.language.code}
+            outcomes: list[tuple[Any, bool]] = []
+            if plan.calls:
+                await self.store.add_message(session_id, "assistant", None, tool_calls=[c.to_openai() for c in plan.calls])
+            for call in plan.calls:
+                yield ToolCallEvent(call_id=call.id, name=call.name, arguments=call.arguments, **ev)
+                res, is_error, ms = await self._run_tool(call, ctx)
+                content = await self._tool_content(res, call.id, tool=self.registry.get(call.name))
+                await self.store.add_message(session_id, "tool", content, tool_call_id=call.id, name=call.name)
+                outcomes.append((res, is_error))
+                yield ToolResultEvent(call_id=call.id, name=call.name, result=res, is_error=is_error, duration_ms=ms, **ev)
+            reply = plan.answer(outcomes)
+            yield TextDelta(text=reply, **ev)
+            message_id = await self.store.add_message(session_id, "assistant", reply)
+            log.info(
+                "quick command: %s (%s) done in %d ms with no model call", plan.command.action, plan.language.code,
+                int((time.perf_counter() - started) * 1000),
+            )
+            yield Done(content=reply, message_id=message_id, **ev)
+        except Exception as exc:  # every turn still ends with an error and one done (docs/API.md section 1, #334)
+            log.exception("quick command %s failed", plan.command.action)
+            yield Error(message=plan.language.failed(""), recoverable=False, **ev)
+            yield Done(content="", error=str(exc)[:300] or type(exc).__name__, **ev)
+        finally:
+            self._turn_done(session_id)
 
     # ------------------------------------------------------------------ the chat's own model (#312)
     async def chat_model(self, session: dict | None, role: str = "primary") -> tuple[str | None, str | None]:
