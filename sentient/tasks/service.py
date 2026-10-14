@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -861,7 +862,7 @@ class TaskService(Service):
         ``expires_at`` the run stops and the answer is refused; an approval answer that isn't one of the offered
         choices raises ``ValueError`` and the run keeps waiting. ``via`` says where it was answered (a grant's note).
         ``expect`` names the request the answer was given to: its ``expires_at`` (a desktop notification, #323), or
-        for a plain question its ``asked_at`` (paired chats, #337). When the run now waits on another request, the
+        for a plain question its ``request_id`` (paired chats, #337; ``asked_at`` for one asked before that). When the run now waits on another request, the
         answer is refused instead of applied to it."""
         text = str(answer or "").strip()[: ask.MAX_ANSWER_CHARS]
         if not text:
@@ -873,7 +874,7 @@ class TaskService(Service):
         if run["status"] != "waiting_for_user":
             raise TaskConflict("This run is not waiting for an answer.")
         pending = run.get("pending_question") or {}
-        if expect is not None and (pending.get("expires_at") or pending.get("asked_at")) != expect:
+        if expect is not None and (pending.get("expires_at") or pending.get("request_id") or pending.get("asked_at")) != expect:
             raise TaskConflict(STALE_ANSWER)
         if pending.get("limit") in limits.KINDS:
             return await self._answer_limit(task_id, run, pending, text)
@@ -1002,6 +1003,7 @@ class TaskService(Service):
                 # an approval request (#139, ADR 0018) answers only through its own buttons or words
                 "kind": "approval" if question.get("approval") or question.get("untrusted_call") else "question",
                 "expires_at": question.get("expires_at"),
+                "request_id": question.get("request_id"),
             })
         return out
 
@@ -1709,7 +1711,8 @@ class TaskService(Service):
 
     async def _pause_run(self, task_id: str, run_id: str, question: dict) -> None:
         """Park a run that called ``ask_user``: store the question, flag the task, tell the user."""
-        asked = {**question, "asked_at": self.now_iso()}
+        # ``request_id`` names this one request of the run (#337): answers from paired chats say which they answer
+        asked = {**question, "asked_at": self.now_iso(), "request_id": uuid.uuid4().hex}
         if not await self.repo.pause_run(run_id, asked):
             return  # cancelled while the last round was running
         text = str(question.get("question") or "")
@@ -1724,7 +1727,7 @@ class TaskService(Service):
         short = name[:60] + ("..." if len(name) > 60 else "")
         extra: dict[str, Any] = {
             "run_id": run_id, "question": text, "options": list(question.get("options") or []),
-            "asked_at": asked["asked_at"],  # names this request of the run, for answers from paired chats (#337)
+            "request_id": asked["request_id"],  # names this request of the run, for answers from paired chats (#337)
         }
         if question.get("approval") or question.get("untrusted_call"):  # an approval request (#139, ADR 0018)
             extra.update(

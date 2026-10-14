@@ -89,9 +89,10 @@ def install_log_redaction() -> None:
 
 
 def request_stamp(item: dict) -> str:
-    """What names one request of a run (#337): an approval's ``expires_at``, else the question's ``asked_at``. A
-    notification payload, a ``waiting_questions`` entry and a run's ``pending_question`` all carry them."""
-    return str(item.get("expires_at") or item.get("asked_at") or "")
+    """What names one request of a run (#337): an approval's ``expires_at``, else the question's ``request_id`` (else
+    ``asked_at``, for one asked before request ids). A notification payload, a ``waiting_questions`` entry and a run's
+    ``pending_question`` all carry them."""
+    return str(item.get("expires_at") or item.get("request_id") or item.get("asked_at") or "")
 
 
 def request_tag(stamp: str) -> str:

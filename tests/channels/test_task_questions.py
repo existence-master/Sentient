@@ -52,8 +52,8 @@ async def test_question_arrives_with_buttons_and_a_tap_answers_it(tg, llm):
     rows = msg["reply_markup"]["inline_keyboard"]
     buttons = [b for row in rows for b in row]
     assert [b["text"] for b in buttons] == FLIGHTS
-    asked_at = (await tg.app.tasks.repo.get_run(run_id))["pending_question"]["asked_at"]
-    assert buttons[1]["callback_data"] == f"tq:1:{run_id}:{request_tag(asked_at)}"
+    request_id = (await tg.app.tasks.repo.get_run(run_id))["pending_question"]["request_id"]
+    assert buttons[1]["callback_data"] == f"tq:1:{run_id}:{request_tag(request_id)}"
 
     tg.ch.dispatch(callback(42, msg["_id"], buttons[1]["callback_data"]))
     await tg.ch.wait_idle()
@@ -114,8 +114,8 @@ async def test_reply_to_the_question_answers_it(tg, llm):
     assert msg["text"].endswith("<i>Tap an option, or reply to this message with your answer.</i>")
     # remembered in SQLite, so a reply still matches after a restart
     sent = await tg.app.channels.store.question_for("telegram", "42", str(msg["_id"]))
-    asked_at = (await tg.app.tasks.repo.get_run(run_id))["pending_question"]["asked_at"]
-    assert sent == {"task_id": task_id, "run_id": run_id, "request": asked_at}
+    request_id = (await tg.app.tasks.repo.get_run(run_id))["pending_question"]["request_id"]
+    assert sent == {"task_id": task_id, "run_id": run_id, "request": request_id}
     calls = len(llm.calls)
 
     await tg.say(42, "The early one please", **_reply(msg))
