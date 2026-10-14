@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, tzinfo
@@ -212,7 +213,7 @@ class Timeline:
         limit = max(1, min(int(limit or 50), MAX_LIMIT))
         cur = decode_cursor(before)
         sources: list[Source] = [
-            self._chat_tools, self._channel_replies, self._task_runs, self._script_checks, self._notifications,
+            self._chat_tools, self._channel_replies, self._channel_deliveries, self._task_runs, self._script_checks, self._notifications,
             self._facts, self._dreams, self._skills, self._backups_past, self._always_allowed, self._cost,
         ]
         results = await asyncio.gather(*(src(cur, limit, query) for src in sources))
@@ -402,6 +403,45 @@ class Timeline:
             where=where, params=params, ts="m.created_at", key="('reply:' || m.id)", build=build,
             cur=cur, n=n, query=query, filtered=False,
         )
+
+    # -- messaging apps: notifications sent out to paired chats (#345)
+    async def _channel_deliveries(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
+        if not query.wants("channels") or (query.app and query.app not in CHANNELS):
+            return [], None
+        where: list[str] = []
+        params: list = []
+        if query.app:
+            where.append("channel = ?")
+            params.append(query.app)
+        if query.q:
+            where.append("(title LIKE ? ESCAPE '\\' OR chat_label LIKE ? ESCAPE '\\' OR error LIKE ? ESCAPE '\\'"
+                         " OR channel LIKE ? ESCAPE '\\')")  # "telegram" finds "Sent to Telegram: ..."
+            params += [query.like()] * 4
+
+        def build(row: Any) -> Item:
+            app, label = self._app(row["channel"])
+            title = words.short(row["title"], 100)
+            chat = words.short((row["chat_label"] or "").strip(), 60)
+            to = f'To your chat "{chat}"' if chat else "To your paired chat"
+            why = f"{to}. {words.DELIVERY_REASONS.get(row['reason'], words.DELIVERY_REASONS['default'])}"
+            ref = _loads(row["ref"])
+            ref = ref if isinstance(ref, dict) and ref.get("type") else None
+            if row["status"] == "failed":
+                return Item(id=row["_key"], kind="channels", at=row["_at"], title=f"Couldn't send to {label}: {title}",
+                            why=why, detail=words.short(row["error"] or "", 200) or None, status="failed", app=app,
+                            app_label=label, ref=ref)
+            return Item(id=row["_key"], kind="channels", at=row["_at"], title=f"Sent to {label}: {title}", why=why,
+                        detail=words.DELIVERY_WHAT.get(row["what"]), status="done", app=app, app_label=label, ref=ref)
+
+        try:
+            return await self._sql(
+                select="SELECT created_at AS _at, ('sent:' || id) AS _key, channel, chat_label, title, what, reason,"
+                       " status, error, ref FROM channel_deliveries",
+                where=where or ["1"], params=params, ts="created_at", key="('sent:' || id)", build=build,
+                cur=cur, n=n, query=query, filtered=False,
+            )
+        except sqlite3.OperationalError:  # the channels package hasn't made its tables yet
+            return [], None
 
     # -- task runs (tasks, briefs, and monitors that start a run)
     async def _task_runs(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
@@ -1054,6 +1094,11 @@ class Timeline:
                 found.add(plugin)
         rows = await self.store.fetchall("SELECT DISTINCT channel FROM sessions WHERE incognito = 0")
         found |= {r["channel"] for r in rows if r["channel"] in CHANNELS}
+        try:
+            rows = await self.store.fetchall("SELECT DISTINCT channel FROM channel_deliveries")
+            found |= {r["channel"] for r in rows if r["channel"] in CHANNELS}
+        except sqlite3.OperationalError:
+            pass
         rows = await self.store.fetchall(
             f"SELECT DISTINCT {_json('schedule', '$.source')} AS source FROM tasks"
             f" WHERE {_json('schedule', '$.type')} = 'triggered'"

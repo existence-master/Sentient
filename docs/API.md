@@ -2145,6 +2145,12 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 - Domain events `channel.updated` → `Channel` (connect, disconnect, status changes, pairing, deliver changes);
   `channel.message` `{channel, chat_id, session_id, direction: "in"|"out", text}`: `in` is the user's text (the transcript
   for voice notes); `out` is the final reply text, or a delivered notification with `session_id: null`.
+  `channel.delivery` `{id, channel, chat_id, title, status: "delivered"|"failed", ref}`: a notification (or a background
+  helper's summary) was sent to a paired chat, or sending it failed (#345). Each is kept in `channel_deliveries` (`id,
+  channel, chat_id, chat_label, title` (the message's first line), `what` (`task|question|approval|plan|brief|suggestion|
+  subagent|other`), `reason` (`chosen`: the task picked the chat; `default`: the chat's delivery is on; `chat`: a helper
+  started in that chat), `status`, `error` (a plain sentence, no token), `ref` (JSON: the task, chat or notification it
+  came from), `created_at`; kept 365 days) for the Activity timeline (section 21).
 
 ## 15. Knowing the user (owner: memory)
 
@@ -2348,7 +2354,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 | `subagent.updated` | Subagent |
 | `browser.updated`, `browser.frame` | browser status, frame |
 | `node.updated`, `node.deleted`, `node.event` | see section 13 |
-| `channel.updated`, `channel.message` | see section 14 |
+| `channel.updated`, `channel.message`, `channel.delivery` | see section 14 |
 | `user_model.updated` | see section 15 |
 | `dream.updated` | Dream |
 | `source.items` | see section 16 |
@@ -2751,7 +2757,8 @@ that chat, task, memory, dream, skill or Settings section). `at` is UTC; `null` 
 `kind` (also the filter values, in this order): `chat` (tools a chat used), `tasks` (task runs, questions, plans,
 routines paused while away, catch-up), `briefs` (Daily and Evening Brief runs), `monitors` (each check of a script job
 and the runs it started), `approvals` (approval requests in chats and tasks with the answer, plans waiting for an OK,
-**Always allow** answers, timed OKs ending), `channels` (Sentient's replies in Telegram, Discord and WhatsApp chats),
+**Always allow** answers, timed OKs ending), `channels` (Sentient's replies in Telegram, Discord and WhatsApp chats,
+and the notifications sent to them),
 `notifications` (suggestions and other notifications), `memory` (memories saved, nightly dreams, profile updates),
 `skills` (skills learned, drafted, improved, archived), `backups` (backups and safety snapshots), `cost` (one line per
 day with paid cloud model spending, and budget notices).
@@ -2762,6 +2769,7 @@ What each source gives (past):
 |---|---|
 | `messages` (role `tool`, not incognito) | "Used Gmail: Search" + the call's first arguments; an answered approval is an `approvals` item ("Asked you before "Send" in Gmail (to Arjun)", detail "You chose Allow once." or "You said no, so it was not done.") |
 | `messages` (assistant replies in channel chats) | "Replied to you on Telegram" |
+| `channel_deliveries` (section 14) | "Sent to Telegram: Your Daily Brief" or "Couldn't send to Telegram: ..." (`status: "failed"`, `detail` says why); `why` names the chat and why it went there ("To your chat "Maya Rao". The task sends its updates there"); `ref` opens the task, chat or notification it came from |
 | `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked |
 | `tasks.script.checks` | "Checked X: nothing new (3 checks)", "X changed. You were told" |
 | `notifications` | questions and approvals from tasks (with the answer), plans waiting, suggestions, routines paused, backup and budget notices. Not shown again: `run_completed`, `run_failed` and `script_alert` (the run or check is shown), `brief` (the run), `skill` (the skills log) and dream notices (the dream) |
@@ -2784,7 +2792,7 @@ What each source gives (past):
   routines (recurring and triggered tasks) that are turned off, `why` "Paused while you were away" (section 4,
   "Routines pause") or "You paused it".
 - `GET /api/timeline/apps` → `{apps: [{id, label}]}`: apps to filter by (tools used in chats in the last 90 days,
-  messaging apps with chats, task triggers).
+  messaging apps with chats or deliveries, task triggers).
 - `POST /api/timeline/restore` `{id}` → `{ok: true, result}`: run the app's restore tool for an item with `undo`
   (#142), with the arguments the trash call was given. It goes through `Agent.run_tool`, so Never rules and Read only
   connections still apply. 409 with a plain `detail` when the item has nothing to restore or the restore failed.
@@ -2797,6 +2805,7 @@ far it read. Indexes: `idx_messages_tool_time` (`messages(created_at) WHERE role
 
 The window refetches the timeline a moment after the events that change it (`task.*`, `notification.*`,
 `memory.updated`, `skill.updated`, `dream.updated`, `backup.updated`, `approval_grants.updated`, `channel.message`,
+`channel.delivery`,
 `budget.updated`, and a finished chat reply).
 
 ## 22. Folders and Obsidian vaults as notes (owner: folders, #176)

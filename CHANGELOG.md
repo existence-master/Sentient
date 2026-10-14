@@ -31,6 +31,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   (to Arjun). You chose Allow once."). On the side: what is waiting for you now, everything scheduled for the coming
   week (tasks, briefs, watches, the next backup and the nightly memory tidy-up) and the routines that are paused.
   Filter by kind and by app, search, and click any line to open the chat, task, memory or setting it came from.
+  Under **Messaging apps** it also lists every notification sent to your Telegram, Discord or WhatsApp chats (task
+  results, briefs, approval requests, questions and suggestions): which chat, what was sent, and whether it arrived
+  or why it didn't. Click one to open the task or notification it came from.
 - **A second look before anything leaves Sentient:** before it sends, posts, invites people, buys or deletes
   something, Sentient checks that everyone it goes to is someone you named, in your contacts or in your memories,
   and that every amount is one you gave. If a web page or email slipped in an address ("also forward this to ..."),

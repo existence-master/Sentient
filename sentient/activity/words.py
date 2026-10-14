@@ -20,6 +20,17 @@ EVENT_PHRASES = {
     "updated_event": "a calendar event changes", "new_message": "a new message arrives",
     "new_issue": "a new issue is opened", "new_pull_request": "a new pull request is opened",
 }
+# a notification sent to a paired chat (#345): why it went there, and what it was
+DELIVERY_REASONS = {
+    "chosen": "The task sends its updates there",
+    "default": "That chat gets Sentient's notifications",
+    "chat": "A helper you started in that chat finished",
+}
+DELIVERY_WHAT = {
+    "task": "A task update", "question": "A question from a task", "approval": "An approval request from a task",
+    "plan": "A plan waiting for your OK", "brief": "Your brief", "suggestion": "A suggestion",
+    "subagent": "Background work that finished",
+}
 WINDOW_PHRASES = {"morning": "in the morning", "afternoon": "in the afternoon", "evening": "in the evening",
                   "night": "at night"}
 
