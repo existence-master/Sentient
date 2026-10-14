@@ -384,5 +384,6 @@ const TIMELINE_EVENTS = new Set<string>([
   'approval_grants.updated',
   'channel.message',
   'channel.delivery',
-  'budget.updated'
+  'budget.updated',
+  'reminder.updated'
 ])
