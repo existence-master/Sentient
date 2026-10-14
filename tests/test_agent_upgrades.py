@@ -506,9 +506,10 @@ async def test_memory_flush_runs_before_compression(config, isolated_home):
         assert s.memory is not None
         flushed: list[tuple[str, str]] = []
 
-        async def flush_conversation(transcript: str, user_name: str) -> list[dict]:
+        async def flush_conversation(transcript: str, user_name: str, session_id: str | None = None) -> list[dict]:
             order.append("flush")
             flushed.append((transcript, user_name))
+            assert session_id == sid  # its saves name the chat, so it can offer Undo (#234)
             return [{"action": "ADD", "id": 1, "content": "Maya likes tea"}]
 
         s.memory.flush_conversation = flush_conversation
@@ -524,7 +525,7 @@ async def test_memory_flush_runs_before_compression(config, isolated_home):
         assert not any(e["type"] == "memory.updated" for e in published)
         assert (await s.store.get_session(sid))["context_summary"] == "Running summary."
 
-        async def broken(transcript, user_name):
+        async def broken(transcript, user_name, session_id=None):
             raise RuntimeError("memory offline")
 
         s.memory.flush_conversation = broken
