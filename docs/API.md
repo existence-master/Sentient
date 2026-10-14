@@ -100,6 +100,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `model.busy` | **ModelBusy** (section 3, `GET /api/models/busy`): what the local model is doing changed (#149). Quick changes are published once (after 0.2 s), and only when something other than `since` changed |
 | `import.updated` | **MemoryImportJob** (section 19): an import from ChatGPT, Claude or OpenClaw started, read a batch or finished |
 | `backup.updated` | `{what: "backup"\|"snapshot"\|"restore_staged"\|"restore_cancelled"\|"restore_dismissed", name?, source?}` (section 20): refetch `GET /api/backups` |
+| `folders.updated` | `{id, removed?: true, progress?: {done, total}}` (section 22): a folder was added, removed or queued, or a look through it started, moved on (at most once a second) or ended; refetch `GET /api/folders` |
 
 ---
 
@@ -303,12 +304,17 @@ accept or loosen a rule.
   (section 4, Run `memory_sources`).
 - **Answer sources** (#174). The final assistant message of a chat turn (also a stopped one) carries `sources`, also
   sent on its `done` event; every other row has `[]`. An **AnswerSource** is
-  `{kind: "web"|"email"|"file"|"app", title, url?, file?, from?, id?, snippet?, app, tool, tools?}`:
+  `{kind: "web"|"email"|"file"|"app", title, url?, file?, path?, folder?, from?, id?, snippet?, app, tool, tools?}`:
   - `web`: a page `web_fetch` or the browser opened (`url`, page `title`), or one of the first 3 results of each
     `web_search`;
   - `email`: an email a connected mail app returned (`title` is its subject, `from`, `id`, `url` when the app has a
     link, e.g. Gmail);
-  - `file`: a file `file_read` opened (`file` is its name under the files folder, `title` its base name);
+  - `file`: a file `file_read` opened (`file` is its name under the files folder, `title` its base name), or a note
+    from a folder the user added (section 22): the first 3 notes of each `folder_search` and each `folder_read`,
+    with `path` (its full path), `folder` (the folder's name) and, in an Obsidian vault, `url` (an `obsidian://open`
+    link). The window opens it with `openFolderFile`: in Obsidian when it is installed, else with the default app
+    (or shows it in its folder when no app opens that kind of file);
+    only files inside an added folder open;
   - `app`: a connected app or MCP server whose tools returned something else (`title` its name, `tools` every tool
     of it the reply used).
   `app` is the plugin id and `tool` the tool that found it; `snippet` is up to 280 characters of what the model read.
@@ -1686,6 +1692,10 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   Stored `messages` rows keep the unmarked result; `app.agent.mark_outside_messages(messages)` marks a transcript
   read back from storage (chat history, task checkpoints; a `file_read` is matched to its call's arguments) and
   `app.agent.outside_content(content, tool, arguments)` one tool message. `run_tool` returns the marked content. The user's own messages are never marked.
+- A result that says so itself (ADR 0025): a tool result whose **first key** is `outside_content` (a string naming
+  where it came from) counts as outside content even when its tool does not: it marks the run, is wrapped for the
+  model and counts in `rules.untrusted_in` (`rules.result_outside_source(result_or_stored_text)`). It only adds a
+  mark. `folder_search` and `folder_read` use it for web pages clipped into the user's notes (section 22).
 
 ### Second look at outgoing actions (#143, ADR 0024)
 - Before any call where `rules.sends_out` is true runs (after `never` rules, Read only connections, the
@@ -2717,3 +2727,74 @@ far it read. Indexes: `idx_messages_tool_time` (`messages(created_at) WHERE role
 The window refetches the timeline a moment after the events that change it (`task.*`, `notification.*`,
 `memory.updated`, `skill.updated`, `dream.updated`, `backup.updated`, `approval_grants.updated`, `channel.message`,
 `budget.updated`, and a finished chat reply).
+
+## 22. Folders and Obsidian vaults as notes (owner: folders, #176)
+
+The user adds folders of notes or documents, or Obsidian vaults, and Sentient searches them when a question could be
+answered by something they wrote down. **Read only, always**: nothing writes to, moves or deletes anything in these
+folders; removing a folder only forgets Sentient's index of it.
+
+**What is read.** `.md`, `.markdown`, `.txt`, `.text`, `.pdf` (text, `pypdf`) and `.docx` (`python-docx`), at most
+`folders.max_file_mb` each and `folders.max_files` per folder. Left out: hidden files and folders (any name starting
+with `.`, so `.obsidian`, `.git`, `.trash`), symbolic links, `folders.ignore` (every folder) and the folder's own
+`ignore` patterns, and an Obsidian vault's own "Excluded files" (`userIgnoreFilters` in `.obsidian/app.json`, plain
+paths only). Patterns: `name/` is a folder anywhere, `a/b/` that folder, anything else a case-insensitive glob on the
+file name or the whole path (`*.tmp`, `Templates/*`). A folder with a `.obsidian` folder is a vault (`kind: "obsidian"`).
+
+**The index** lives in Sentient's database: `folders`, `folder_files` (path inside the folder, size, change time, a
+hash of the text, title, tags, `clipped`), `folder_chunks` (pieces of about `folders.chunk_chars`, markdown split at
+headings, each with its heading path), `folder_fts` (FTS5 over title, aliases and tags, the heading, and the text)
+and `folder_vec` (sqlite-vec, cosine, the pieces' embeddings from the `embedding` role). Front matter gives `tags`,
+`aliases` and `title`; `#tags` in the text count too; `[[Note|label]]` links read as their label.
+
+**Keeping it up to date.** One worker looks through one folder at a time (a *scan*): it lists the files with size and
+change time in a thread, forgets files that are gone, reads only new or changed files, keeps the pieces of files whose
+text did not change, and embeds new pieces in batches of 32 through the local model queue as background work (chats
+go first, #279). Scans run after a folder is added or its ignore patterns change, when a file in it changes
+(`folders.watch`, with `watchfiles`; Obsidian's own files under `.obsidian` are ignored), every
+`folders.rescan_minutes`, once after start, and on `POST /api/folders/{id}/rescan`. Stop everything cancels a running
+scan; it runs again at the next check. A different embedding model makes every piece be embedded again. When
+embeddings fail, keyword search still works (`searching_by_meaning: false`, `embedding_error`) and the pieces are
+embedded at a later scan. A folder that can't be found keeps its index (`status: "missing"`), in case its drive is
+unplugged.
+
+**Search.** Keyword (bm25, title weighted) and meaning (cosine; only pieces within 0.15 of the best match) are merged
+by reciprocal rank, the keyword share scaled by how strong the match is, at most 2 pieces per file and
+`folders.results` pieces (1 to 20).
+
+**Clipped web pages (ADR 0025).** A note with a web address under `source`, `url`, `clipped_from`, `source_url`,
+`original_url` or `link` in its front matter, a `clippings`-style tag, or in a `Clippings` folder is a clipping. With
+`folders.clippings_are_outside` (default on) a `folder_search` result that includes one, and a `folder_read` of one,
+start with `outside_content: "a web page clipped into your notes"`, so the chat counts as having read outside content
+(section 10). The user's own notes are not outside content.
+
+### Tools (plugin `folders`, "Your folders"; hidden while no folder is added)
+- `folder_search(query, folder = "", limit = 0)` (risk `read`) → `{outside_content?, results: [{title, folder, path,
+  heading?, text, tags?, file, link?, clipped_from?, similarity?}]}` or `{results: [], note}`. `path` is inside the
+  folder, `file` the full path, `link` an `obsidian://open?vault=&file=` link in a vault. `folder` is a folder's name
+  or id.
+- `folder_read(path, offset = 0, limit = 0)` (risk `read`) → `{outside_content?, title, folder, path, file, link?,
+  clipped_from?, offset, content, total, more, next_offset?}`: a whole indexed file read now from disk, in parts like
+  `file_read`. `path` is the full path, the path inside the folder, or `<folder name>/<path inside>` (`.md` may be
+  left off). Only files in the index can be read (never hidden or ignored ones).
+
+### REST
+A **Folder** is `{id, path, name, kind: "folder"|"obsidian", ignore: string[], status: "waiting"|"scanning"|"ready"|
+"missing", progress: {done, total}|null, added_at, last_scan_at, last_scan_ms, files, unreadable, chunks, embedded,
+skipped, clippings, error}`: `files` read, `unreadable` that could not be read, `chunks` searchable pieces and
+`embedded` how many of them are searchable by meaning, `skipped` left out at the last scan (too big, over
+`max_files`), `clippings` clipped web pages, `error` a plain sentence (the folder can't be found, only part of it is
+searched). `progress` counts the new or changed files of the running scan.
+
+- `GET /api/folders` → `{folders: [Folder], searching_by_meaning, embedding_error}`
+- `POST /api/folders` `{path, ignore?}` → Folder, and a scan starts. 400 with a plain `detail` when the path is not a
+  full path to an existing folder, is a whole drive or the home folder, holds or is inside Sentient's data folder, is
+  already added, or is inside or holds an added folder.
+- `PATCH /api/folders/{id}` `{ignore}` → Folder, and it is scanned again. 404 when unknown.
+- `DELETE /api/folders/{id}` → `{removed: true}`: forgets the folder and its whole index. 404 when unknown.
+- `POST /api/folders/{id}/rescan` → 202 `{queued: true}`. 404 when unknown.
+- `POST /api/folders/search` `{query, folder?, limit?}` → what `folder_search` returns.
+- Event `folders.updated` (section 1).
+
+Settings > Folders lists them with their status and counts, adds one with the folder picker, removes one (with a
+confirmation), checks again, edits the folder's ignore patterns and shows the `folders` config section.

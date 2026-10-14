@@ -39,6 +39,7 @@ ALWAYS_TOOLS = (
     "memory_remember",
     "skill_view",
     "create_task_from_prompt",
+    "folder_search",  # only while the user has added folders (#176): their notes may answer anything
 )
 LOCAL_PREFIXES = ("ollama", "ollama_chat", "lm_studio", "llamafile", "vllm", "hosted_vllm")
 _WORD = re.compile(r"[a-z0-9]+")
@@ -74,6 +75,10 @@ TOOL_TRIGGERS: dict[str, tuple[str, ...]] = {
         "url", "http", "https", "www", "link", "web page", "webpage", "article", "blog post", "this page",
     ),
     "channel_": ("telegram", "discord", "whatsapp", "message me", "text me"),
+    "folder_": (
+        "note", "notes", "my notes", "obsidian", "vault", "journal", "diary", "wrote down", "written down", "jotted",
+        "documents", "my docs", "my files", "my folder", "meeting notes", "according to my",
+    ),
     "terminal_": (
         "terminal", "command", "commands", "command line", "shell", "powershell", "bash", "git", "npm", "pip",
         "compile", "run the tests", "my repo", "repository",

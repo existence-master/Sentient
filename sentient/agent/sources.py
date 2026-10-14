@@ -7,7 +7,9 @@ Collected deterministically from the tool results the model read during the turn
 - ``web``: a page web_fetch or the browser opened (``url``, the page ``title``), or one of the first results of a
   web search;
 - ``email``: an email a mail tool returned (``title`` is its subject, ``from``, ``url`` when the mail app has a link);
-- ``file``: a file file_read opened (``file`` is its name under the files folder);
+- ``file``: a file file_read opened (``file`` is its name under the files folder), or a note from a folder the user
+  added (#176): ``path`` is its full path, ``folder`` the folder's name, ``url`` an ``obsidian://`` link for a note in
+  an Obsidian vault;
 - ``app``: a connected app whose tools ran and returned something else (a calendar, a task list...), ``title`` its
   name and ``snippet`` what was done.
 
@@ -27,6 +29,8 @@ SEARCH_RESULTS_PER_CALL = 3
 WEB_PLUGINS = frozenset({"web", "browser"})
 SEARCH_PLUGINS = frozenset({"internet_search"})
 FILE_TOOLS = frozenset({"file_read"})
+FOLDER_TOOLS = frozenset({"folder_search", "folder_read"})
+FOLDER_RESULTS_PER_CALL = 3
 
 
 _MARKER = re.compile(r"^\s*(?:#{1,6}|[-*+>]|\d+[.)])\s+")
@@ -35,7 +39,7 @@ _MARKER = re.compile(r"^\s*(?:#{1,6}|[-*+>]|\d+[.)])\s+")
 def _snip(text: Any) -> str:
     """A short excerpt on one line, without markdown heading and list markers (web_fetch returns markdown)."""
     lines = (_MARKER.sub("", line) for line in str(text or "").splitlines())
-    s = " ".join(" ".join(lines).split())
+    s = " ".join(" ".join(lines).replace("**", "").split())
     return s if len(s) <= SNIPPET_CHARS else s[: SNIPPET_CHARS - 1].rstrip() + "…"
 
 
@@ -80,7 +84,7 @@ class AnswerSources:
         if kind == "email":
             return kind, f"{s.get('app')}:{s.get('id') or s.get('url') or s.get('title')}"
         if kind == "file":
-            return kind, str(s.get("file"))
+            return kind, str(s.get("path") or s.get("file"))
         return kind, str(s.get("app"))
 
     def _add(self, item: dict, key: tuple[str, str]) -> dict | None:
@@ -112,6 +116,21 @@ class AnswerSources:
                     title = str(r.get("title") or "").strip() or urlparse(url).netloc
                     self._add({"kind": "web", "title": title, "url": url, "snippet": _snip(r.get("snippet")),
                                "app": plugin, "tool": name}, ("web", url))
+            return
+        if name in FOLDER_TOOLS and isinstance(result, dict):
+            found = result.get("results") if name == "folder_search" else [result]
+            files: set[str] = set()  # the first notes of a search (a note can come with two pieces)
+            for r in found if isinstance(found, list) else []:
+                path = r.get("file") if isinstance(r, dict) else None
+                if not isinstance(path, str) or not path or (path not in files and len(files) >= FOLDER_RESULTS_PER_CALL):
+                    continue
+                files.add(path)
+                link = r.get("link")
+                self._add({
+                    "kind": "file", "title": str(r.get("title") or r.get("path") or path), "path": path,
+                    "folder": r.get("folder"), "url": link if isinstance(link, str) and link.startswith("obsidian://")
+                    else None, "snippet": _snip(r.get("text") or r.get("content")), "app": plugin, "tool": name,
+                }, ("file", path))
             return
         if name in FILE_TOOLS and isinstance(result, dict) and result.get("name"):
             self._add({"kind": "file", "title": str(result["name"]).rsplit("/", 1)[-1], "file": str(result["name"]),

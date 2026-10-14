@@ -9,6 +9,7 @@ export const qk = {
   stop: ['stop'] as const,
   config: ['config'] as const,
   backups: ['backups'] as const,
+  folders: ['folders'] as const,
   configSchema: ['config-schema'] as const,
   approvalGrants: ['approval-grants'] as const,
 

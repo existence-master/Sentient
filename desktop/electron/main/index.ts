@@ -15,7 +15,7 @@ import {
 } from 'electron'
 import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join, resolve, sep } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type {
   AppCommand,
   CaptureNotice,
@@ -500,6 +500,32 @@ function registerIpc(): void {
     const target = resolve(base, name)
     if (!target.startsWith(base + sep) || !existsSync(target)) return false
     return (await shell.openPath(target)) === ''
+  })
+  ipcMain.handle(CH.openFolderFile, async (_e, target: { path?: unknown; url?: unknown }) => {
+    // a note from a folder the user added (#176): only files inside one of those folders, only note and document
+    // types, so a reply can never make the window open or run anything else
+    const path = typeof target?.path === 'string' ? target.path : ''
+    if (!path) return false
+    let roots: string[] = []
+    try {
+      roots = (await api<{ folders: Array<{ path: string }> }>('/api/folders')).folders.map((f) => resolve(f.path))
+    } catch {
+      return false
+    }
+    const file = resolve(path)
+    const inside = roots.some((root) => {
+      const rel = relative(root, file)
+      return !!rel && !rel.startsWith('..') && !isAbsolute(rel)
+    })
+    if (!inside || !/\.(md|markdown|txt|text|pdf|docx)$/i.test(file) || !existsSync(file)) return false
+    const url = typeof target?.url === 'string' ? target.url : ''
+    if (url.startsWith('obsidian://open?') && app.getApplicationNameForProtocol('obsidian://')) {
+      await shell.openExternal(url)
+      return true
+    }
+    if ((await shell.openPath(file)) === '') return true
+    shell.showItemInFolder(file) // no app opens this kind of file here: show it in its folder instead
+    return true
   })
   ipcMain.handle(CH.getDevicePrivacy, () => devicePrivacy())
   ipcMain.handle(CH.setDevicePrivacy, (_e, patch: Partial<DevicePrivacy>) => {
