@@ -19,6 +19,7 @@ which calls can send data out, and the plain wording for the questions that foll
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Collection, Mapping
 from pathlib import PurePath
 from typing import Any
@@ -259,7 +260,31 @@ def outside_source(message: Any, registry: Any) -> str:
         if name and not str(message.get("content") or "").startswith('{"error": "unknown tool '):
             return UNAVAILABLE_SOURCE
         return ""
-    return untrusted_source(t, registry) if brings_untrusted(t) else ""
+    if brings_untrusted(t):
+        return untrusted_source(t, registry)
+    return result_outside_source(message.get("content"))
+
+
+# A result of one of Sentient's own tools that says it holds text someone else wrote (ADR 0025): a web page clipped
+# into the user's notes. The key comes first in the result, so a cut result keeps it.
+OUTSIDE_KEY = "outside_content"
+_OUTSIDE_PREFIX = re.compile(r'^\{\s*"outside_content"\s*:\s*"((?:[^"\\]|\\.){1,200})"')
+
+
+def result_outside_source(result: Any) -> str:
+    """Where a result's outside content came from when the result says so itself (``{"outside_content": source,
+    ...}``, as a dict or the stored JSON text), else "". It only ever adds a mark, never removes one."""
+    if isinstance(result, dict):
+        value = result.get(OUTSIDE_KEY)
+        return str(value)[:200] if isinstance(value, str) and value.strip() else ""
+    if isinstance(result, str):
+        m = _OUTSIDE_PREFIX.match(result)
+        if m:
+            try:
+                return str(json.loads(f'"{m.group(1)}"'))
+            except ValueError:
+                return "outside content"
+    return ""
 
 
 # Folders under files/ that hold text someone else wrote (#297): the rest of a long tool result (agent/loop.py

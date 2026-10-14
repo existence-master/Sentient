@@ -56,7 +56,7 @@ class EpisodicMemory:
     async def _embed(self, texts: list[str]) -> list[list[float]]:
         vecs = await self.llm.embed(texts)
         if vecs:
-            await self.vec.ensure(len(vecs[0]), self.reindex)
+            await self.vec.ensure(len(vecs[0]), self.reindex, self.llm.model_for("embedding"))
         return vecs
 
     async def reindex(self) -> int:
