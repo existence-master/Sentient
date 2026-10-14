@@ -468,6 +468,8 @@ export interface AnswerSource {
   tool: string
   /** Every tool of that app the reply used (`kind: 'app'`). */
   tools?: string[]
+  /** `prompt`: a piece of this note matched the message and went along with it (#354); absent: a tool read it. */
+  via?: 'prompt'
 }
 
 export interface MessageSearchHit {

@@ -6,6 +6,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Answers from your notes, even with small models.** When a message clearly matches something in your folders or
+  Obsidian vault, the two or three best matching pieces now go along with it, so local models like qwen3:8b answer
+  "when does my insurance renew?" from your notes without having to search them. Only short pieces go in, so replies
+  stay quick on small models, and the notes a reply used show as chips under it. Turn it off or change how many pieces
+  go along in Settings > Folders.
 - **Undo a send, see exactly what goes out, and the trash by default.** When Sentient sends an email, a message or a
   post from a chat, it now waits 10 seconds first and shows what goes out, with **Undo** and **Send now**, in the chat
   and as a toast (and as buttons in Telegram, Discord and WhatsApp). Undo and nothing is sent. Approval cards for

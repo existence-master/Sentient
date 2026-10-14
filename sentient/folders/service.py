@@ -62,6 +62,32 @@ _STOP = frozenset({
 })
 
 
+STRONG_MARGIN = 0.15  # a piece this much above folders.prompt_min_similarity goes in without sharing the words
+
+
+def content_words(text: str) -> list[str]:
+    """The words of ``text`` that say something (no stop words, no single letters), lower case, at most 16."""
+    return list(dict.fromkeys(w for w in _WORDS.findall(str(text or "").lower()) if w not in _STOP and len(w) > 1))[:16]
+
+
+def excerpt(text: str, words: list[str], chars: int) -> str:
+    """``text`` on one line, cut to about ``chars`` characters around the first of ``words`` it holds."""
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= chars:
+        return flat
+    low = flat.lower()
+    at = min((i for w in words if (i := low.find(w)) >= 0), default=0)
+    start = max(0, at - chars // 3)
+    if start:  # begin at a word
+        space = flat.find(" ", start)
+        start = space + 1 if 0 <= space < at else start
+    end = start + chars
+    if end < len(flat):
+        space = flat.rfind(" ", start, end)
+        end = space if space > start + chars // 2 else end
+    return ("…" if start else "") + flat[start:end].strip() + ("…" if end < len(flat) else "")
+
+
 class FolderError(Exception):
     """A plain sentence for the user (a folder that can't be added)."""
 
@@ -552,6 +578,13 @@ class FolderService(Service):
     # ------------------------------------------------------------------ search
     async def search(self, query: str, *, limit: int | None = None, folder: str = "") -> dict:
         """The pieces of the user's notes that best match ``query``, best first, at most ``PER_FILE`` per file."""
+        return (await self._search(query, limit=limit, folder=folder))[0]
+
+    async def _search(
+        self, query: str, *, limit: int | None = None, folder: str = "", window: bool = True
+    ) -> tuple[dict, bool]:
+        """``(search result, whether search by meaning ran)``. Without ``window`` every piece close enough in meaning
+        counts, not only those near the best one, and carries its similarity."""
         query = str(query or "").strip()
         limit = max(1, min(int(limit or self.app.config.folders.results), 20))
         rows = await self._rows()
@@ -559,9 +592,9 @@ class FolderService(Service):
             want = folder.strip().lower()
             rows = [r for r in rows if r["id"] == folder or r["name"].lower() == want] or rows
         if not rows:
-            return {"results": [], "note": "No folders are added yet. The user can add them in Settings > Folders."}
+            return {"results": [], "note": "No folders are added yet. The user can add them in Settings > Folders."}, False
         if not query:
-            return {"error": "Say what to look for."}
+            return {"error": "Say what to look for."}, False
         allowed = {r["id"]: r for r in rows}
         scores: dict[int, float] = {}
         similarity: dict[int, float] = {}
@@ -583,6 +616,7 @@ class FolderService(Service):
                 strength = min(1.0, max(0.0, float(r[1]) / best)) if best < 0 else 1.0
                 scores[int(r[0])] = scores.get(int(r[0]), 0.0) + (0.5 + 0.5 * strength) / (RRF_K + rank)
                 keyword_rank.setdefault(int(r[0]), rank)
+        by_meaning = False
         if await self._vec_ready():
             try:
                 qv = (await self.app.llm.embed([query]))[0]
@@ -592,13 +626,14 @@ class FolderService(Service):
             except Exception as exc:
                 log.info("search by meaning failed, using words only: %s", exc)
                 hits = []
+            by_meaning = bool(hits)
             # only pieces close to the best match: the rest is noise (and could bring a clipped page in for nothing)
-            floor = max(MIN_SIMILARITY, (hits[0][1] if hits else 0.0) - SIMILARITY_WINDOW)
+            floor = max(MIN_SIMILARITY, (hits[0][1] if hits else 0.0) - (SIMILARITY_WINDOW if window else 1.0))
             for rank, (cid, sim) in enumerate(h for h in hits if h[1] >= floor):
                 scores[cid] = scores.get(cid, 0.0) + 1.0 / (RRF_K + rank)
                 similarity[cid] = sim
         if not scores:
-            return {"results": [], "note": "Nothing in the user's folders matches that."}
+            return {"results": [], "note": "Nothing in the user's folders matches that."}, by_meaning
         # best fused score first; on a tie the better keyword match wins (names and exact words are precise)
         ranked = sorted(scores, key=lambda c: (-round(scores[c], 9), keyword_rank.get(c, CANDIDATES)))
         marks = ",".join("?" * len(ranked))
@@ -626,7 +661,47 @@ class FolderService(Service):
         if clipped and self.app.config.folders.clippings_are_outside:
             result["outside_content"] = CLIPPED_SOURCE  # first, so it survives a cut (ADR 0025)
         result["results"] = out
-        return result
+        return result, by_meaning
+
+    async def prompt_pieces(self, query: str) -> list[dict]:
+        """Up to ``folders.prompt_notes`` short pieces of the user's notes that clearly match ``query``, one per note,
+        best first, to go with a chat message (#354): small models rarely search notes on their own. A piece counts
+        when it is close in meaning (``folders.prompt_min_similarity``) and holds at least half of the message's
+        words, or is very close in meaning (``STRONG_MARGIN`` more); without search by meaning, when it holds most of
+        the message's words. Clipped web pages never go in (they are outside content, ADR 0025: ``folder_search``
+        still finds them). Each is ``{title, folder, path, file, link?, heading?, text}`` with ``text`` cut to
+        ``folders.prompt_note_chars`` around the words that matched."""
+        cfg = self.app.config.folders
+        query = str(query or "").strip()
+        if cfg.prompt_notes <= 0 or len(query) < 3 or not await self._rows():
+            return []
+        # every close piece with its similarity: a clipped page that matches best must not hide the user's own note
+        found, by_meaning = await self._search(query, limit=max(8, cfg.prompt_notes * 4), window=False)
+        words = content_words(query)
+        out: list[dict] = []
+        files: set[str] = set()
+        for r in found.get("results") or []:
+            if r.get("clipped_from") or r["file"] in files:
+                continue
+            hay = " ".join((r.get("title") or "", r.get("heading") or "", r.get("text") or "")).lower()
+            hits = [w for w in words if w in hay]
+            most = bool(hits) and len(hits) * 2 >= len(words)  # at least half of the message's words
+            sim = r.get("similarity")
+            if by_meaning:
+                ok = sim is not None and (
+                    (sim >= cfg.prompt_min_similarity and most) or sim >= cfg.prompt_min_similarity + STRONG_MARGIN
+                )
+            else:  # words only: most of the message's words, and at least two of them when it has two
+                ok = most and len(hits) >= min(2, len(words))
+            if not ok:
+                continue
+            files.add(r["file"])
+            piece = {k: r[k] for k in ("title", "folder", "path", "file", "link", "heading") if r.get(k)}
+            piece["text"] = excerpt(r.get("text") or "", hits, cfg.prompt_note_chars)
+            out.append(piece)
+            if len(out) >= cfg.prompt_notes:
+                break
+        return out
 
     def _result(self, folder: dict, c: dict, sim: float | None) -> dict:
         abs_path = str(Path(folder["path"]) / c["rel"])

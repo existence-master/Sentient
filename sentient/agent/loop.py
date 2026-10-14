@@ -145,6 +145,7 @@ EMPTY_ANSWER_NUDGE = (
 FINAL_ANSWER_NUDGE = "You have not replied yet. Give your final answer now, based on what you found."
 NUDGES = (EMPTY_ANSWER_NUDGE, FINAL_ANSWER_NUDGE)
 USER_MODEL_TIMEOUT_S = 2.0
+NOTES_TIMEOUT_S = 4.0  # looking up matching pieces of the user's notes for the prompt (#354)
 # longest a reply waits for the rule check of its message (chat_rules); a slower check finishes in the background,
 # and until it does the tools it is weighing ask first in that chat (one with Claude Code stops instead, ADR 0022)
 RULE_CHECK_WAIT_S = WAIT_S
@@ -587,22 +588,41 @@ class Agent:
             log.warning("recall failed: %s", exc)
             return []
 
+    async def _prompt_notes(self, user_text: str) -> list[dict]:
+        """Short pieces of the user's notes that clearly match the message (#354), while a folder is added and
+        folder_search is offered. Never slows a turn down much or breaks it."""
+        folders = getattr(self.app, "folders", None) if self.app is not None else None
+        if folders is None or self.config.folders.prompt_notes <= 0 or not user_text.strip():
+            return []
+        if not any(t.name == "folder_search" for t in self.registry.tools()):
+            return []
+        try:
+            pieces = await asyncio.wait_for(folders.prompt_pieces(user_text), timeout=NOTES_TIMEOUT_S)
+            log.info("note pieces in the prompt: %s", ", ".join(str(p.get("path")) for p in pieces) or "none matched")
+            return pieces
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # includes the timeout
+            log.debug("note pieces skipped: %s", exc)
+            return []
+
     async def system_prompt(self, user_text: str, channel: str, session: dict | None = None) -> str:
         return (await self._system_prompt_with_sources(user_text, channel, session))[0]
 
     async def _system_prompt_with_sources(
         self, user_text: str, channel: str, session: dict | None = None
-    ) -> tuple[str, MemorySources]:
-        """The system prompt and the memories put into it (recalled facts, user-model insights). An incognito chat
-        (#154) reads memory only while ``chat.incognito_uses_memory`` is on, and is told nothing will be kept."""
+    ) -> tuple[str, MemorySources, list[dict]]:
+        """The system prompt, the memories put into it (recalled facts, user-model insights) and the pieces of the
+        user's notes put into it (#354). An incognito chat (#154) reads memory and notes only while
+        ``chat.incognito_uses_memory`` is on, and is told nothing will be kept."""
         incognito = bool((session or {}).get("incognito"))
         reads_memory = not incognito or self.config.chat.incognito_uses_memory
         if reads_memory:
-            facts, (user_context, insights) = await asyncio.gather(
-                self._recall(user_text), self._user_model_context(user_text)
+            facts, (user_context, insights), notes = await asyncio.gather(
+                self._recall(user_text), self._user_model_context(user_text), self._prompt_notes(user_text)
             )
         else:
-            facts, user_context, insights = [], "", []
+            facts, user_context, insights, notes = [], "", [], []
         sources = MemorySources()
         sources.add_facts(facts)
         sources.add_insights(insights)
@@ -612,6 +632,7 @@ class Agent:
         prompt = build_system_prompt(
             snapshot=snapshot,
             facts=facts,
+            note_pieces=notes,
             skills_index=self.skills.prompt_index(),
             assistant_name=self.config.assistant.name,
             user_name=self.config.assistant.user_name if reads_memory else "",
@@ -626,7 +647,7 @@ class Agent:
             prompt += "\n\n## Earlier in this conversation\n" + session["context_summary"]
         if incognito:
             prompt += "\n\n" + (INCOGNITO_NOTE if reads_memory else INCOGNITO_NO_MEMORY_NOTE)
-        return prompt, sources
+        return prompt, sources, notes
 
     def _incognito_tools(self, tool_names: list[str] | None) -> list[str]:
         """``tool_names`` (None: every offered tool) without the tools an incognito chat must not use (#154)."""
@@ -1469,6 +1490,7 @@ class Agent:
         partial = ""
         sources = MemorySources()  # what this reply had in mind (shown under it, never asked of the model)
         used = AnswerSources()  # pages, emails, files and apps it used (#174)
+        notes: list[dict] = []  # pieces of the user's notes put into the prompt (#354)
         try:
             user_message_id = await self.store.add_message(session_id, "user", user_text, attachments=attachments)
             if self.app is not None and hasattr(self.app, "user_seen"):
@@ -1478,7 +1500,7 @@ class Agent:
 
             session = await self.store.get_session(session_id)
             incognito = bool((session or {}).get("incognito"))
-            system, sources = await self._system_prompt_with_sources(user_text, channel, session)
+            system, sources, notes = await self._system_prompt_with_sources(user_text, channel, session)
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
             convo = self.mark_outside_messages(history_to_openai(history))
 
@@ -1579,6 +1601,7 @@ class Agent:
             release()
             # the user pressed Stop (or the window went away): keep what was shown
             with contextlib.suppress(Exception):
+                used.add_prompt_notes(notes, partial, user_text)
                 save = asyncio.ensure_future(self._persist_stopped(session_id, partial, sources, used))
                 while not save.done():  # a second Stop while saving must not lose what the caller sends on
                     with contextlib.suppress(asyncio.CancelledError):
@@ -1600,6 +1623,7 @@ class Agent:
                 yield Done(content="", error=result.error, **ev)
             else:
                 memory_sources = await sources.resolve(self.store)
+                used.add_prompt_notes(notes, result.text, user_text)  # the notes the reply drew on (#354)
                 message_id = await self.store.add_message(
                     session_id, "assistant", result.text, thinking=result.thinking or None, memory_sources=memory_sources,
                     sources=used.items(),
