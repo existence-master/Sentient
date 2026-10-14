@@ -319,6 +319,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Approvals from Telegram, Discord and WhatsApp answer only the request they were sent for.** When a task asks
+  about one step and then another, a button or reply from the earlier message can no longer answer the newer request:
+  the chat says the message is for an earlier request, and the newer one keeps waiting for its own answer.
 - **Memories in Hindi stay with the right person:** a Hindi memory is no longer merged into, or skipped as a copy
   of, a memory about someone else ("प्रिया पुणे में रहती है" next to "Riya lives in Pune", a Karan memory next to a
   Kabir one). Names written in Devanagari are recognized and matched across scripts, so "माया" is still you when

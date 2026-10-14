@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from sentient.channels.service import OLDER_REQUEST, OLDER_REQUEST_REPLY, request_tag
+from sentient.tasks import ask
 from tests.channels.conftest import callback, until, update
 from tests.conftest import FakeProvider, tool_call
 
@@ -49,7 +51,9 @@ async def test_task_approval_reaches_the_phone_and_allow_for_this_task_carries_o
     assert "reply to this message with once, task, hour, always or no" in msg["text"]
     buttons = [b for row in msg["reply_markup"]["inline_keyboard"] for b in row]
     assert [b["text"] for b in buttons] == OPTIONS
-    assert buttons[1]["callback_data"] == f"ta:1:{run_id}"
+    pending = (await tg.app.tasks.repo.get_run(run_id))["pending_question"]
+    assert buttons[1]["callback_data"] == f"ta:1:{run_id}:{request_tag(pending['expires_at'])}"
+    assert all(len(b["callback_data"].encode()) <= 64 for b in buttons)  # Telegram's limit
 
     tg.ch.dispatch(callback(42, msg["_id"], buttons[1]["callback_data"]))
     await tg.ch.wait_idle()
@@ -130,16 +134,17 @@ async def test_answered_in_the_app_before_leaving_is_never_sent(tg):
     assert _approval_messages(tg, 42) == []
 
 
-async def test_an_expired_request_cant_be_approved_from_the_phone(tg, isolated_home):
+async def test_an_expired_request_cant_be_approved_from_the_phone(tg, isolated_home, monkeypatch):
     await tg.pair(42)
-    task_id, run_id = await _waiting_task(tg.app)
+    task_id, _ = await _waiting_task(tg.app)
     await until(lambda: bool(_approval_messages(tg, 42)))
     msg = _approval_messages(tg, 42)[-1]
-    run = await tg.app.tasks.repo.get_run(run_id)
-    past = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
-    await tg.app.tasks.repo.update_run(run_id, {"pending_question": {**run["pending_question"], "expires_at": past}})
+    later = datetime.now(UTC) + timedelta(days=1)  # the request's time has passed
+    real_expired = ask.expired
+    monkeypatch.setattr(ask, "expired", lambda pending, now=None: real_expired(pending, now or later))
 
-    tg.ch.dispatch(callback(42, msg["_id"], f"ta:0:{run_id}"))
+    allow = msg["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+    tg.ch.dispatch(callback(42, msg["_id"], allow))
     await tg.ch.wait_idle()
     assert "expired" in tg.api.sent("answerCallbackQuery")[-1]["text"]
     run = (await tg.app.tasks.get(task_id))["runs"][-1]
@@ -169,3 +174,69 @@ async def test_chat_approval_answers_only_from_its_chat_and_can_be_timed(tg, llm
     assert tg.api.sent("answerCallbackQuery")[-1]["text"] == "Allowed for a while"
     [grant] = await tg.app.approvals.grants.list()
     assert (grant["tool"], grant["scope"], grant["via"]) == ("current_datetime", "timed", "telegram")
+
+
+SECOND_WRITE = [{**WRITE_B[0], "id": "call_write_b"}]  # its own call id, as a real model gives
+
+
+async def _second_request(tg, task_id: str, run_id: str, first: dict) -> dict:
+    """Answer the first request with its own button ("Allow once") and wait for the run's second one."""
+    tg.ch.dispatch(callback(42, first["_id"], first["reply_markup"]["inline_keyboard"][0][0]["callback_data"]))
+    await tg.ch.wait_idle()
+    assert tg.api.sent("answerCallbackQuery")[-1]["text"] == "Answered: Allow once"
+    await tg.app.tasks.drain()
+    await until(lambda: len(_approval_messages(tg, 42)) == 2)
+    second = _approval_messages(tg, 42)[-1]
+    assert (await tg.app.tasks.get(task_id))["status"] == "waiting_for_user"
+    assert (await tg.app.tasks.repo.get_run(run_id))["pending_question"]["approval"]["tool"] == "file_write"
+    return second
+
+
+async def test_an_older_button_of_the_same_run_cant_answer_a_newer_request(tg, llm, isolated_home):
+    """#337: the first request's button, pressed again once the run asks about its second write, is refused."""
+    llm.replies[1] = SECOND_WRITE
+    await tg.pair(42)
+    task_id, run_id = await _waiting_task(tg.app)
+    await until(lambda: bool(_approval_messages(tg, 42)))
+    first = _approval_messages(tg, 42)[-1]
+    second = await _second_request(tg, task_id, run_id, first)
+    old, new = (m["reply_markup"]["inline_keyboard"][0][0]["callback_data"] for m in (first, second))
+    assert old != new and old.rsplit(":", 1)[0] == new.rsplit(":", 1)[0]  # same run, another request
+
+    tg.ch.dispatch(callback(42, first["_id"], old))
+    await tg.ch.wait_idle()
+    assert tg.api.sent("answerCallbackQuery")[-1]["text"] == OLDER_REQUEST
+    await tg.app.tasks.drain()
+    assert (await tg.app.tasks.get(task_id))["status"] == "waiting_for_user"
+    assert not (isolated_home / "files" / "b.txt").exists()
+    # a button from before #337 (no request tag) is matched by the message it came on
+    tg.ch.dispatch(callback(42, first["_id"], old.rsplit(":", 1)[0]))
+    await tg.ch.wait_idle()
+    assert tg.api.sent("answerCallbackQuery")[-1]["text"] == OLDER_REQUEST
+    assert (await tg.app.tasks.get(task_id))["status"] == "waiting_for_user"
+
+    tg.ch.dispatch(callback(42, second["_id"], new))
+    await tg.ch.wait_idle()
+    await tg.app.tasks.drain()
+    assert tg.api.sent("answerCallbackQuery")[-1]["text"] == "Answered: Allow once"
+    assert (await tg.app.tasks.get(task_id))["status"] == "completed"
+    assert (isolated_home / "files" / "b.txt").exists()
+
+
+async def test_a_reply_to_an_older_request_of_the_same_run_is_refused(tg, llm, isolated_home):
+    llm.replies[1] = SECOND_WRITE
+    await tg.pair(42)
+    task_id, run_id = await _waiting_task(tg.app)
+    await until(lambda: bool(_approval_messages(tg, 42)))
+    first = _approval_messages(tg, 42)[-1]
+    second = await _second_request(tg, task_id, run_id, first)
+
+    await tg.say(42, "once", reply_to_message={"message_id": first["_id"]})
+    await tg.app.tasks.drain()
+    assert OLDER_REQUEST_REPLY in tg.api.screen()[-1]
+    assert (await tg.app.tasks.get(task_id))["status"] == "waiting_for_user"
+    assert not (isolated_home / "files" / "b.txt").exists()
+
+    await tg.say(42, "once", reply_to_message={"message_id": second["_id"]})
+    await tg.app.tasks.drain()
+    assert (await tg.app.tasks.get(task_id))["status"] == "completed"
