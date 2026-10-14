@@ -599,7 +599,7 @@ class FolderService(Service):
         scores: dict[int, float] = {}
         similarity: dict[int, float] = {}
         keyword_rank: dict[int, int] = {}
-        words = [w for w in _WORDS.findall(query.lower()) if w not in _STOP and len(w) > 1][:16]
+        words = content_words(query)  # the same words prompt_pieces checks, each once
         if words:
             match = " OR ".join('"' + w.replace('"', "") + '"' for w in words)
             try:
