@@ -161,6 +161,9 @@ export const useChat = create<ChatState>((set, get) => ({
             get().handleEvent({ ...ev, session_id: ev.session_id ?? get().live[currentKey]?.sessionId ?? undefined } as ChatEvent)
           }
         }
+        // §1: every turn ends with done; settle the reply anyway if the stream closed without one (#334)
+        const left = get().live[currentKey]
+        if (left?.streaming && left.sessionId) get().handleEvent({ type: 'done', content: '', message_id: null, session_id: left.sessionId })
       } catch (err) {
         if ((err as Error)?.name === 'AbortError') {
           get().handleEvent({ type: 'done', content: '', message_id: null, cancelled: true, session_id: get().live[currentKey]?.sessionId })
@@ -318,12 +321,14 @@ export const useChat = create<ChatState>((set, get) => ({
         }
         // "A reply is already in progress." arrives without a turn: settle the optimistic entry.
         const orphanError = ev.type === 'error' && !ev.turn_id && !state.live[key].turn.segments.length
+        // §1: a non-recoverable error ends the reply even if its done never arrives (#334)
+        const fatal = ev.type === 'error' && ev.recoverable === false
         // A stopped reply drops what was queued behind it (steers, §17 dropped turns): show them as not sent.
         const stopped = ev.type === 'done' && ev.cancelled
         set(patchLive(state, key, (l) => ({
           ...l,
           turn: orphanError ? { ...next, status: 'error' } : next,
-          streaming: finished || orphanError ? false : l.streaming,
+          streaming: finished || orphanError || fatal ? false : l.streaming,
           user: { ...l.user, pending: false },
           steers: stopped ? [] : l.steers,
           unsent: stopped ? [...(l.unsent ?? []), ...l.steers] : l.unsent

@@ -125,7 +125,8 @@ async def test_a_raw_failure_is_not_shown_and_an_explicit_pick_never_falls_back(
         assert notices[0].message.endswith("It didn't answer.") and "secret" not in notices[0].message
         other = await s.store.create_session(channel="desktop")
         events = await turn(s, other, model=PICKED)  # picked for this one message: strict, as before
-        assert not any(isinstance(e, Notice) for e in events) and events[-1].type == "error"
+        assert not any(isinstance(e, Notice) for e in events)
+        assert [e.type for e in events[-2:]] == ["error", "done"] and events[-1].error  # the turn still ends (#334)
     finally:
         await s.stop()
 

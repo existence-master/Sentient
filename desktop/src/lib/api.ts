@@ -16,6 +16,9 @@ import type {
   BackupEntry,
   BackupInspect,
   BackupOverview,
+  TimelineFilters,
+  TimelinePage,
+  TimelineUpcoming,
   RestoreStaged,
   BrowserProfileCreate,
   BrowserProfilePatch,
@@ -284,6 +287,10 @@ export async function request<T>(method: string, path: string, opts?: RequestOpt
   const type = res.headers.get('content-type') ?? ''
   if (type.includes('application/json')) return (await res.json()) as T
   return (await res.text()) as unknown as T
+}
+
+function timelineQuery(f: TimelineFilters): Record<string, string | undefined> {
+  return { kinds: f.kinds?.length ? f.kinds.join(',') : undefined, app: f.app || undefined, q: f.q?.trim() || undefined }
 }
 
 export const http = {
@@ -818,6 +825,15 @@ export const api = {
     restore: (path: string) => http.post<RestoreStaged>('/api/backups/restore', { path }),
     cancelRestore: () => http.delete<{ cancelled: boolean }>('/api/backups/restore'),
     dismissLastRestore: () => http.delete<{ ok: boolean }>('/api/backups/last-restore')
+  },
+
+  // §21 activity timeline ---------------------------------------------------------------------
+  timeline: {
+    past: (filters: TimelineFilters = {}, before?: string | null, limit = 50) =>
+      http.get<TimelinePage>('/api/timeline', { query: { ...timelineQuery(filters), before: before ?? undefined, limit } }),
+    upcoming: (filters: TimelineFilters = {}, days = 7) =>
+      http.get<TimelineUpcoming>('/api/timeline/upcoming', { query: { ...timelineQuery(filters), days } }),
+    apps: () => http.get<{ apps: Array<{ id: string; label: string }> }>('/api/timeline/apps')
   },
 
   // §16 webhooks --------------------------------------------------------------------------

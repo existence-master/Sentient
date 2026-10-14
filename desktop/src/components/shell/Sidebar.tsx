@@ -1,4 +1,5 @@
 import {
+  IconActivity,
   IconBell,
   IconBrain,
   IconDevices,
@@ -54,6 +55,7 @@ import { useUI } from '@/stores/ui'
 const NAV: Array<{ to: string; label: string; icon: Icon; match: string }> = [
   { to: '/chat', label: 'Chat', icon: IconMessageCircle, match: '/chat' },
   { to: '/tasks', label: 'Tasks', icon: IconListCheck, match: '/tasks' },
+  { to: '/activity', label: 'Activity', icon: IconActivity, match: '/activity' },
   { to: '/memory', label: 'Memory', icon: IconBrain, match: '/memory' },
   { to: '/integrations', label: 'Integrations', icon: IconPlugConnected, match: '/integrations' },
   { to: '/devices', label: 'Devices', icon: IconDevices, match: '/devices' },

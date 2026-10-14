@@ -914,6 +914,8 @@ export interface DoneEvent extends TurnScoped {
   content: string
   message_id: string | null
   cancelled?: boolean
+  /** §1: the turn ended in an error before any reply (the `error` event before it has the message). Nothing was saved. */
+  error?: string | null
   memory_sources?: MemorySource[]
   sources?: AnswerSource[]
   /** §17: a queued message dropped by Stop everything (its text; never sent). Comes with the `client_id` it was sent with. */
@@ -2583,4 +2585,64 @@ export interface BackupUpdated {
   what: 'backup' | 'snapshot' | 'restore_staged' | 'restore_cancelled' | 'restore_dismissed'
   name?: string
   source?: string
+}
+
+// ---------------------------------------------------------------------------- §21 activity timeline (#147)
+export type TimelineKind =
+  | 'chat'
+  | 'tasks'
+  | 'briefs'
+  | 'monitors'
+  | 'approvals'
+  | 'channels'
+  | 'notifications'
+  | 'memory'
+  | 'skills'
+  | 'backups'
+  | 'cost'
+
+export type TimelineStatus = 'done' | 'failed' | 'waiting' | 'declined' | 'running' | 'stopped' | 'scheduled' | 'paused'
+
+/** Where an item came from, for the click-through (the window maps it to a screen). */
+export interface TimelineRef {
+  type: 'chat' | 'task' | 'memory' | 'dream' | 'skill' | 'about' | 'backups' | 'usage' | 'approvals' | 'notification'
+  id?: string
+  run_id?: string | null
+  message_id?: string
+  notification_id?: string
+  review?: boolean
+}
+
+export interface TimelineItem {
+  id: string
+  kind: TimelineKind
+  /** null only for paused routines (they have no time). */
+  at: ISODate | null
+  /** What happened, in plain words: "Ran your Daily Brief". */
+  title: string
+  /** Why: "It runs every weekday at 7:30 AM". */
+  why: string | null
+  detail: string | null
+  status: TimelineStatus | null
+  app: string | null
+  app_label: string | null
+  ref: TimelineRef | null
+  upcoming: boolean
+}
+
+export interface TimelinePage {
+  items: TimelineItem[]
+  /** Cursor for the next (older) page; null at the end. */
+  next: string | null
+}
+
+export interface TimelineUpcoming {
+  items: TimelineItem[]
+  paused: TimelineItem[]
+}
+
+export interface TimelineFilters {
+  kinds?: TimelineKind[]
+  app?: string
+  q?: string
 }

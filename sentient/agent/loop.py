@@ -84,7 +84,7 @@ from sentient.memory.sources import MemorySources
 from sentient.memory.workspace import Workspace
 from sentient.services import cancel_tasks
 from sentient.skills.loader import SkillLibrary
-from sentient.store.db import Store, after_watermark, new_id, next_watermark
+from sentient.store.db import Store, after_watermark, new_id, next_watermark, now_iso
 from sentient.tools.base import (
     UNPROMPTED_ORIGINS,
     Risk,
@@ -274,6 +274,19 @@ def _json_safe(value: Any) -> str:
         return json.dumps(str(value))
 
 
+def _shown_text(text: str, limit: int) -> int:
+    """How many characters of ``text`` the first ``limit`` characters of its JSON form show in full (a line break or
+    a quote takes two there), so reading the saved text on from that offset misses nothing."""
+    lo, hi = 0, min(len(text), limit)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(json.dumps(text[:mid], ensure_ascii=False)) - 1 <= limit:  # without the closing quote
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
 def _shorten(tool: Tool | None, res: Any) -> str | None:
     """The tool's own shorter version of a long result (``Tool.shorten_fn``), as text; None without one."""
     fn = getattr(tool, "shorten_fn", None)
@@ -446,6 +459,7 @@ class _CallPlan:
     wants_ok: bool = False  # held for the user's OK in a run nobody can be asked in (ADR 0018)
     ask_rule: bool = False  # held by an "ask" rule in a task run that pauses and asks (#139)
     host: str = ""  # the web host this call loads, if any; remembered as visited once it ran
+    approval: dict | None = None  # how the user answered this call's approval request (the activity timeline, #147)
     warning: str = ""  # what a second look found off about this call (#143); it then asks, whatever else says
 
 
@@ -762,6 +776,7 @@ class Agent:
                 yield Error(message=str(exc), recoverable=False, code=getattr(exc, "code", None), **ev)
                 return
             result.thinking += think_acc
+            ctx.result_limit = result.tool_result_limit  # a tool returning a part sizes it to fit (#336)
 
             if not tool_calls:
                 pending = steer.take() if steer is not None else []
@@ -860,7 +875,13 @@ class Agent:
                             untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
                             grant_minutes=self.approvals.config.grant_minutes, **ev,
                         )
+                        asked_at = now_iso()
                         decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)
+                        p.approval = {
+                            "decision": decision, "asked_at": asked_at, "answered_at": now_iso(),
+                            "target": wording["target"], "risk_label": wording["risk_label"],
+                            "untrusted": p.untrusted or None, "rule": self.approvals.rule(p.tool),
+                        }
                         if decision in grant_rules.ALLOWING:
                             runnable.append(p)
                         else:
@@ -1161,9 +1182,12 @@ class Agent:
         ran = p.tool is not None and p.preset is None and not declined
         if ran and p.host:
             ctx.visited.add(p.host)
-        if ran and p.tool is not None and not ctx.untrusted and brings_untrusted(p.tool):
-            ctx.untrusted = untrusted_source(p.tool, self.registry)
         err = _error_text(res)
+        if ran and p.tool is not None and not ctx.untrusted:
+            if brings_untrusted(p.tool):
+                ctx.untrusted = untrusted_source(p.tool, self.registry)
+            elif not is_error and not err and (saved := saved_outside_source(tc.name, tc.arguments)):
+                ctx.untrusted = saved  # a saved result or a download read back counts like the tool that brought it (#336)
         if (is_error or err) and err != DECLINED:
             result.tool_errors.append({"name": tc.name, "error": err or str(res)[:500]})
         elif (
@@ -1179,7 +1203,8 @@ class Agent:
         model_content = self.outside_content(content, p.tool, tc.arguments) if p.tool is not None else content
         messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": model_content})
         if persist:  # stored as it is; marked again when the transcript is read back (mark_outside_messages)
-            await persist("tool", content, tool_call_id=tc.id, name=tc.name)
+            extra = {"approval": p.approval} if p.approval else {}
+            await persist("tool", content, tool_call_id=tc.id, name=tc.name, **extra)
         yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
 
     def outside_content(self, content: str, tool: Tool, arguments: dict | None = None) -> str:
@@ -1254,7 +1279,8 @@ class Agent:
         short = _shorten(tool, res)
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", call_id or "")[:80] or new_id()
         rel = f"{folder}/tool-{safe}.txt"
-        full = res if isinstance(res, str) else json.dumps(res, ensure_ascii=False, indent=2, default=str)
+        # the saved text is what the model reads (a text result as it is), so a part read back carries on exactly
+        full = res if isinstance(res, str) else content
 
         def write() -> None:
             path = paths.files_dir() / rel
@@ -1263,15 +1289,23 @@ class Agent:
 
         try:
             await asyncio.to_thread(write)
-            saved = f' The full result is saved as files/{rel}; read it with file_read(name="{rel}") if you need the rest.'
+            saved = True
         except OSError as exc:
             log.warning("could not save long tool result: %s", exc)
-            saved = ""
+            saved = False
+
+        def note(start: int) -> str:
+            if not saved:
+                return ""
+            return (f' The full result is saved as files/{rel} ({len(full)} characters). Read on with '
+                    f'file_read(name="{rel}", offset={start}); each part gives the next_offset to continue from.')
+
         if short is not None and len(short) < len(content):
             if len(short) <= limit:
-                return short + f"\n\n[Result shortened from {len(content)} characters to its main parts.{saved}]"
-            content = short
-        return content[:limit] + f"\n\n[Result cut: this is only the first {limit} of {len(content)} characters.{saved}]"
+                return short + f"\n\n[Result shortened from {len(content)} characters to its main parts.{note(0)}]"
+            return short[:limit] + f"\n\n[Result cut: this is only the first {limit} of {len(short)} characters.{note(0)}]"
+        start = _shown_text(res, limit) if isinstance(res, str) else limit
+        return content[:limit] + f"\n\n[Result cut: this is only the first {limit} of {len(content)} characters.{note(start)}]"
 
     # ------------------------------------------------------------------ chat turn
     async def _user_content(self, text: str, attachments: list[str]) -> str | list[dict]:
@@ -1483,7 +1517,11 @@ class Agent:
         leftover = release()
 
         try:  # the turn counts as busy until here, also when the caller stops reading at Done
-            if not (result.error and not result.text):
+            if result.error and not result.text:
+                # the reply failed before it said anything: nothing is saved, but every turn still ends with one
+                # done (docs/API.md section 1, #334), so the window and the messaging apps know it is over
+                yield Done(content="", error=result.error, **ev)
+            else:
                 memory_sources = await sources.resolve(self.store)
                 message_id = await self.store.add_message(
                     session_id, "assistant", result.text, thinking=result.thinking or None, memory_sources=memory_sources,
@@ -1566,10 +1604,21 @@ class Agent:
         if stored is not None:
             return str(stored)
         rows = await self.store.fetchall(
-            "SELECT role, name, content FROM messages WHERE session_id = ? AND role = 'tool' ORDER BY created_at, rowid",
+            "SELECT role, name, content, tool_calls, tool_call_id FROM messages WHERE session_id = ?"
+            " AND role IN ('tool', 'assistant') ORDER BY created_at, rowid",
             (session_id,),
         )
-        source = untrusted_in([dict(r) for r in rows], self.registry)
+        transcript = []
+        for r in rows:
+            row = dict(r)
+            if row["role"] == "assistant":  # its calls' arguments tell which file a file_read read (#336)
+                try:
+                    calls = json.loads(row.get("tool_calls") or "null")
+                except (TypeError, ValueError):
+                    calls = None
+                row["tool_calls"] = _normalize_tool_calls(calls)
+            transcript.append(row)
+        source = untrusted_in(transcript, self.registry)
         await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
         return source
 
@@ -1650,8 +1699,9 @@ class Agent:
     ) -> tuple[Any, bool, str]:
         """Run one call the user approved outside the loop (a task's held call, ADR 0018); lasting rules still apply.
         Returns ``(result, is_error, content)``, where ``content`` is the tool message the model in ``role`` reads."""
-        res, is_error, _ = await self._run_tool(call, ctx)
         limit = await self.tool_result_limit(role, model)
+        ctx.result_limit = limit
+        res, is_error, _ = await self._run_tool(call, ctx)
         tool = self.registry.get(call.name)
         content = await self._tool_content(res, call.id, tool=tool, limit=limit)
         return res, is_error, self.outside_content(content, tool, call.arguments) if tool is not None else content

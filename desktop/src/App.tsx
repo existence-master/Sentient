@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { HashRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { toast, Toaster } from 'sonner'
 import { AppShell } from '@/components/shell/AppShell'
+import { ActivityPage } from '@/features/activity/ActivityPage'
 import { EngineError, Splash } from '@/components/shell/EngineScreens'
 import { TooltipProvider } from '@/components/ui'
 import { ChannelsPage } from '@/features/channels/ChannelsPage'
@@ -68,6 +69,7 @@ export function App() {
                     <Route path="/chat/:sessionId" element={<ChatPage />} />
                     <Route path="/tasks" element={<TasksPage />} />
                     <Route path="/tasks/:taskId" element={<TasksPage />} />
+                    <Route path="/activity" element={<ActivityPage />} />
                     <Route path="/memory" element={<MemoryPage />} />
                     <Route path="/integrations" element={<IntegrationsPage />} />
                     <Route path="/skills" element={<SkillsPage />} />

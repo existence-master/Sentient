@@ -121,6 +121,34 @@ test('a reply-draft tool is not misread as sending an email', () => {
   assert.equal(w.label, 'Changes things')
 })
 
+test('a Composio multi-execute delete names the slug action, not the wrapper', () => {
+  const w = approvalRisk({
+    risk: 'send',
+    name: 'COMPOSIO_MULTI_EXECUTE_TOOL',
+    reason: 'Run tools',
+    arguments: { tools: [{ tool_slug: 'GMAIL_DELETE_MESSAGE', arguments: { id: 'abc123' } }] }
+  })
+  assert.equal(w.label, 'Deletes')
+})
+
+test('a Composio multi-execute email whose body says "post" still reads as sending an email', () => {
+  const w = approvalRisk({
+    risk: 'send',
+    name: 'COMPOSIO_MULTI_EXECUTE_TOOL',
+    reason: 'Run tools',
+    arguments: {
+      tools: [
+        {
+          tool_slug: 'GMAIL_SEND_EMAIL',
+          arguments: { to: 'arjun@example.com', body: 'please post this on the blog and tweet it' }
+        }
+      ]
+    }
+  })
+  assert.equal(w.label, 'Sends an email')
+  assert.equal(w.verb, 'send an email')
+})
+
 test('a write-risk MCP mail delete reads as deletion', () => {
   const w = approvalRisk({
     risk: 'write',

@@ -7,6 +7,7 @@ approvals, files, tools catalog, usage.
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import re
 from datetime import UTC, datetime, timedelta
@@ -23,6 +24,7 @@ from sentient.config.schema import SentientConfig
 from sentient.gateway.auth import require_token
 from sentient.gateway.deps import get_core
 from sentient.llm import availability
+from sentient.llm.events import Done, Error
 from sentient.llm.spending import BudgetError
 from sentient.memory.personas import render_persona
 from sentient.tools.rules import SCREEN_FOLDER, SELECTION_FOLDER
@@ -30,6 +32,7 @@ from sentient.tools.rules import SCREEN_FOLDER, SELECTION_FOLDER
 open_router = APIRouter(tags=["core"])
 router = APIRouter(tags=["core"])
 _auth = [Depends(require_token)]
+log = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
@@ -386,12 +389,22 @@ async def chat(request: Request, body: ChatBody):
                         out.append(json.dumps(e, default=str) + "\n")
                 return out
 
-            async for event in s.agent.run_turn(
-                session_id, body.text, channel=body.channel, attachments=body.attachments, model=body.model
-            ):
-                for line in proposals():
-                    yield line
-                yield event.model_dump_json() + "\n"
+            ended = False  # the last line sent was a done
+            try:
+                async for event in s.agent.run_turn(
+                    session_id, body.text, channel=body.channel, attachments=body.attachments, model=body.model
+                ):
+                    for line in proposals():
+                        yield line
+                    yield event.model_dump_json() + "\n"
+                    ended = isinstance(event, Done)
+            except Exception as exc:
+                log.exception("chat turn failed")
+                if not ended:  # a turn that broke still ends with error, then done (docs/API.md section 1, #334)
+                    for line in proposals():  # rule cards made before it broke still come first
+                        yield line
+                    yield Error(message=str(exc), recoverable=False, session_id=session_id).model_dump_json() + "\n"
+                    yield Done(content="", error=str(exc), session_id=session_id).model_dump_json() + "\n"
             for line in proposals():
                 yield line
 

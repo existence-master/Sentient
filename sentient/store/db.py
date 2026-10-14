@@ -27,8 +27,9 @@ _PKG_ROOT = Path(__file__).resolve().parents[1]
 # Feature packages own their tables. Each file must be idempotent. Order matters for foreign keys.
 # Bump when a change to a schema.sql or an ensure_column needs existing databases updated. Opening a database
 # with another version takes a snapshot first (issue #151); so does the first column added to an existing one.
-SCHEMA_VERSION = 8  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
+SCHEMA_VERSION = 9  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
 # 6: approval_grants (#139); 7: usage.cost_usd (#148); 8: evolution_reviews.activity_mark (#297)
+# 9: messages.approval and the activity timeline's indexes (#147)
 PACKAGE_SCHEMAS = ["tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox"]
 
 
@@ -154,10 +155,13 @@ class Store:
         await self.ensure_column("messages", "interjection", "INTEGER NOT NULL DEFAULT 0")
         await self.ensure_column("messages", "memory_sources", "TEXT")
         await self.ensure_column("messages", "sources", "TEXT")
+        await self.ensure_column("messages", "approval", "TEXT")
         await self.ensure_column("facts", "status", "TEXT NOT NULL DEFAULT 'active'")
         await self.ensure_column("facts", "review", "TEXT")
         await self.ensure_column("summaries", "untrusted", "TEXT")
         await self.ensure_column("usage", "cost_usd", "REAL")
+        # the activity timeline's spending lines (#147); after ensure_column: older databases get cost_usd above
+        await self.db.execute("CREATE INDEX IF NOT EXISTS idx_usage_paid ON usage(created_at) WHERE cost_usd > 0")
         # summaries written before the mark existed take it from their chat (ADR 0021)
         await self.db.execute(
             "UPDATE summaries SET untrusted = (SELECT s.untrusted FROM sessions s WHERE s.id = summaries.session_id)"
@@ -276,11 +280,12 @@ class Store:
         interjection: bool = False,
         memory_sources: list[dict] | None = None,
         sources: list[dict] | None = None,
+        approval: dict | None = None,
     ) -> str:
         mid = new_id()
         await self.execute(
             "INSERT INTO messages(id, session_id, role, content, tool_calls, tool_call_id, name, thinking, attachments,"
-            " interjection, memory_sources, sources, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " interjection, memory_sources, sources, approval, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 mid,
                 session_id,
@@ -294,6 +299,7 @@ class Store:
                 int(bool(interjection)),
                 json.dumps(memory_sources, ensure_ascii=False) if memory_sources else None,
                 json.dumps(sources, ensure_ascii=False) if sources else None,
+                json.dumps(approval, ensure_ascii=False) if approval else None,
                 now_iso(),
             ),
         )
@@ -313,6 +319,7 @@ class Store:
             d["interjection"] = bool(d.get("interjection"))
             d["memory_sources"] = json.loads(d["memory_sources"]) if d.get("memory_sources") else []
             d["sources"] = json.loads(d["sources"]) if d.get("sources") else []
+            d["approval"] = json.loads(d["approval"]) if d.get("approval") else None
             out.append(d)
         return out
 

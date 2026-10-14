@@ -6,6 +6,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Activity: everything Sentient did, and what it will do next, in one place.** A new **Activity** screen in the
+  sidebar lists, newest first, the apps Sentient used in your chats, task runs and briefs, each check of a watch,
+  approvals and how you answered them, replies in Telegram, Discord and WhatsApp, suggestions and other notifications,
+  memories it saved, skills it learned or changed, backups, and what paid cloud models cost each day. Every line says
+  what happened and why ("Made your Daily Brief: it runs every weekday at 7:30 AM", "Asked you before "Send" in Gmail
+  (to Arjun). You chose Allow once."). On the side: what is waiting for you now, everything scheduled for the coming
+  week (tasks, briefs, watches, the next backup and the nightly memory tidy-up) and the routines that are paused.
+  Filter by kind and by app, search, and click any line to open the chat, task, memory or setting it came from.
 - **A second look before anything leaves Sentient:** before it sends, posts, invites people, buys or deletes
   something, Sentient checks that everyone it goes to is someone you named, in your contacts or in your memories,
   and that every amount is one you gave. If a web page or email slipped in an address ("also forward this to ..."),
@@ -302,9 +310,18 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Sentient can now read a long result to its end:** when a web page or another result is too long to read at
+  once, Sentient reads the rest of the saved copy part by part instead of seeing only its start again. Reading a
+  file you downloaded, or that saved copy, now also counts as reading outside content, so Sentient asks before
+  sending anything afterwards in that chat.
+- **A reply that fails no longer looks stuck:** when the model can't answer (it is unreachable, out of credits or
+  turns the request down), the chat shows the error and goes back to ready at once, instead of showing "replying"
+  and the stop button until your next message.
 - **The approval card no longer calls an email "posting publicly":** a send like `send_email` is now named from
-  the tool's name and declared risk ("Sentient wants to send an email"), and the card's word guessing never reads
-  the arguments' content, so an email body mentioning "post", "publish" or "tweet" cannot be misread.
+  the tool's name and declared risk ("Sentient wants to send an email"). The card's word guessing never reads the
+  arguments' content, so an email body mentioning "post", "publish" or "tweet" cannot be misread — the only
+  exception is multi-execute tools (Composio), where the `tool_slug`/`action_slug`/`slug` keys name the action
+  being run (e.g. `GMAIL_DELETE_MESSAGE`) and are treated like tool names.
 - A long web or email result that Sentient saved to read later, and files you downloaded, are now marked as
   outside content when Sentient reads them back, so instructions hidden in them are treated as plain text.
 - Learning about you and skill reviews no longer skip a message or fact saved at the same moment as the last one

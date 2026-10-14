@@ -116,6 +116,9 @@ class ToolContext:
     # True in an incognito chat (#154): tools that would keep something from it refuse. Tools also check the chat
     # itself (``store.is_incognito``), so work it starts (a subagent) is covered too.
     incognito: bool = False
+    # the longest tool result the model of this run reads (characters), set by the agent loop; 0 when unknown. A tool
+    # that returns a part of something long (file_read) sizes the part to fit, so it is never cut again (#336).
+    result_limit: int = 0
 
     async def is_incognito(self) -> bool:
         """True when this run belongs to an incognito chat (#154)."""

@@ -9,6 +9,12 @@
  * and only ever looks at the tool name and the reason (the tool's description, e.g.
  * "mcp_mailer: Send an email to one address"): never at the arguments' content, so an
  * email body mentioning "post", "publish" or "tweet" cannot read as posting publicly.
+ *
+ * One deliberate exception: multi-execute tools (Composio's COMPOSIO_MULTI_EXECUTE_TOOL)
+ * carry the real action in slug keys (`tool_slug`, `action_slug`, `slug` — the same
+ * SLUG_KEYS as sentient/integrations/mcp.py). Slugs name the action, not the user's
+ * content, so they are treated like tool names: only those keys are read, never the
+ * arguments around them.
  */
 
 export type RiskLabel =
@@ -45,23 +51,55 @@ function isEmailTool(name: string): boolean {
   return !tokens.some((t) => /^(delete|deletes|remove|trash|list|search|read|get|fetch)/.test(t))
 }
 
+/** Slug keys that name the action a multi-execute tool runs — mirrors SLUG_KEYS in sentient/integrations/mcp.py. */
+const SLUG_KEYS = new Set(['tool_slug', 'action_slug', 'slug'])
+
+/**
+ * Collect the action slugs from a tool's arguments (mirrors _slugs_in in
+ * sentient/integrations/mcp.py). Only the slug keys are read: their values name
+ * the action (e.g. GMAIL_DELETE_MESSAGE), never the user's content.
+ */
+function actionSlugs(args: Record<string, unknown> | undefined): string[] {
+  const slugs: string[] = []
+  const visit = (v: unknown): void => {
+    if (Array.isArray(v)) {
+      v.forEach(visit)
+      return
+    }
+    if (v && typeof v === 'object') {
+      for (const [k, val] of Object.entries(v)) {
+        if (SLUG_KEYS.has(k) && typeof val === 'string') slugs.push(val)
+        else visit(val)
+      }
+    }
+  }
+  visit(args)
+  return slugs
+}
+
 export function approvalRisk(approval: {
   risk: 'read' | 'write' | 'send' | 'exec'
   reason?: string | null
   name: string
-  /** Accepted but never read: the arguments' content is the user's data, not what the tool does. */
+  /**
+   * Mostly unread: only the slug keys (tool_slug/action_slug/slug) are collected —
+   * they name the action, not the user's content. Everything else is the user's
+   * data and never steers the wording.
+   */
   arguments?: Record<string, unknown>
 }): RiskWording {
+  // A multi-execute tool's real action lives in its slugs; treat them like tool names.
+  const name = [approval.name, ...actionSlugs(approval.arguments)].join(' ')
   if (approval.name === 'terminal_run')
     return { label: 'Runs a command', verb: 'run a command on this computer', tone: 'danger' }
   if (approval.risk === 'exec') return { label: 'Runs code', verb: 'run code on your computer', tone: 'danger' }
   if (approval.risk === 'send') {
-    if (isEmailTool(approval.name))
+    if (isEmailTool(name))
       return { label: 'Sends an email', verb: 'send an email', tone: 'danger' }
     // Last resort: guess from the tool name and the reason (the tool's description).
     // The arguments are deliberately not read: their content is the user's data,
     // not what the tool does.
-    const text = `${approval.name} ${approval.reason ?? ''}`.toLowerCase()
+    const text = `${name} ${approval.reason ?? ''}`.toLowerCase()
     if (/(\bpurchase\b|\bbuy\b|\border\b|\bcheckout\b|\bpay\b|\bpayment\b|\bcard\b|\bsubscribe\b|\bbook(ing)? and pay\b)/.test(text))
       return { label: 'Purchase', verb: 'make a purchase', tone: 'danger' }
     if (/(delete|remove|erase|unsubscribe|cancel (my|the|this) )/.test(text))
@@ -81,9 +119,9 @@ export function approvalRisk(approval: {
     // send-like email tool (mcp_mailer_send_email) or a mail delete (mcp_gmail_gmail_delete)
     // can arrive here. Name them from the tool name first; drafts and other write-only
     // mail tools keep the generic wording.
-    if (isEmailSendingTool(approval.name))
+    if (isEmailSendingTool(name))
       return { label: 'Sends an email', verb: 'send an email', tone: 'danger' }
-    const text = `${approval.name} ${approval.reason ?? ''}`.toLowerCase()
+    const text = `${name} ${approval.reason ?? ''}`.toLowerCase()
     if (/(delete|remove|erase|unsubscribe|cancel (my|the|this) )/.test(text))
       return { label: 'Deletes', verb: 'delete something', tone: 'danger' }
     return { label: 'Changes things', verb: 'make a change', tone: 'warning' }

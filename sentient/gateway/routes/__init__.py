@@ -13,6 +13,7 @@ user_model                  : memory package (user model and dreams)
 hooks                       : integrations package (inbound webhooks)
 migrate                     : core (importing from Hermes)
 backups                     : core (backup, restore and snapshots)
+timeline                    : core (the activity timeline)
 """
 
 from sentient.gateway.routes import (
@@ -33,6 +34,7 @@ from sentient.gateway.routes import (
     subagents,
     tasks,
     terminal,
+    timeline,
     user_model,
     voice,
 )
@@ -57,4 +59,5 @@ ROUTERS = [
     hooks.router,
     migrate.router,
     backups.router,
+    timeline.router,
 ]
