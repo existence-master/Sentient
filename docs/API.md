@@ -2819,7 +2819,7 @@ What each source gives (past):
 | `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked. A try run (#142): "Tried X", `why` "You chose Try it first, ..." |
 | `file_snapshots` (#142) | "A command changed 2 files", "Code changed 1 file", "Wrote over notes.txt", "Put back 2 files"; `kind` `tasks` when a task run did it, else `chat`; `app` `terminal`, `code` or `files`; `detail` the command or script and the file names; `undo` Restore while the copies are kept and not put back yet; `status: "restored"` after |
 | `tasks.script.checks` | "Checked X: nothing new (3 checks)", "X changed. You were told" |
-| `notifications` | questions and approvals from tasks (with the answer), plans waiting, suggestions, routines paused, backup and budget notices. Not shown again: `run_completed`, `run_failed` and `script_alert` (the run or check is shown), `brief` (the run), `skill` (the skills log) and dream notices (the dream) |
+| `notifications` | questions and approvals from tasks (with the answer), plans waiting, suggestions, routines paused, backup and budget notices. Not shown again: `run_completed`, `run_failed`, `dry_run_finished` and `script_alert` (the run or check is shown), `brief` (the run), `skill` (the skills log) and dream notices (the dream) |
 | `facts` | "Remembered something about you" (or "Saved a memory for your review"), `why` from its source |
 | `dreams`, `evolution_log` | memory tidy-ups; skill changes; profile updates |
 | backup folders | backups and snapshots (`kind` manual, scheduled, snapshot) |

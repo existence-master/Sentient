@@ -426,7 +426,9 @@ async def execute_single(
                 ):
                     await alive(event)
                     await mapper.handle(event, messages)
-                    if isinstance(event, ToolResultEvent) and not event.is_error:
+                    noted = isinstance(event, ToolResultEvent) and isinstance(event.result, dict) and bool(
+                        event.result.get("try_run"))  # a try run's noted call used nothing (#142)
+                    if isinstance(event, ToolResultEvent) and not event.is_error and not noted:
                         seen, read_before = len(sources), read.items()
                         sources.add_tool_result(
                             event.name, app.agent.delivered_rows(event.result, result.tool_result_limit)

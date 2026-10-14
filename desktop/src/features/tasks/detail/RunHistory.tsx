@@ -276,14 +276,16 @@ function TryRunReport({ actions, live }: { actions: TryRunAction[]; live: boolea
           <ol className="space-y-2.5">
             {actions.map((a, i) => (
               <li key={`${a.tool}-${i}`} className="space-y-1.5">
-                <div className="flex flex-wrap items-center gap-1.5 text-sm">
-                  <span className="tabular-nums text-fg-subtle">{i + 1}.</span>
-                  <span className="font-medium text-fg">{a.summary}</span>
-                  {a.asks && (
-                    <Badge size="xs" tone="warning">
-                      Would ask you first
-                    </Badge>
-                  )}
+                <div className="flex items-baseline gap-1.5 text-sm">
+                  <span className="shrink-0 tabular-nums text-fg-subtle">{i + 1}.</span>
+                  <span className="min-w-0 flex-1 break-words font-medium text-fg">
+                    {a.summary}
+                    {a.asks && (
+                      <Badge size="xs" tone="warning" className="ml-1.5 align-middle">
+                        Would ask you first
+                      </Badge>
+                    )}
+                  </span>
                 </div>
                 {a.preview && (a.preview.fields.length > 0 || a.preview.body) && <ActionPreview preview={a.preview} bodyLines={6} />}
               </li>

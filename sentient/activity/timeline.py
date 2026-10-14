@@ -436,7 +436,7 @@ class Timeline:
         names = [Path(str(f.get("path") or "")).name + (" (deleted)" if f.get("change") == "deleted" else "")
                  for f in files[:5]]
         detail = ", ".join(names) + (f" and {count - 5} more" if count > 5 else "")
-        what = str(row["what"] or "").strip()
+        what = str(row["what"] or "").strip().rstrip(".:; ")
         if what and source in {"terminal", "code"}:
             detail = f"{words.short(what, 80)}: {detail}"
         if notes:
@@ -665,7 +665,8 @@ class Timeline:
         where = [
             "kind NOT IN ('brief', 'skill')",  # a brief is its run; a skill change is in the skills log
             # a finished run or a check is shown from the run or the check itself
-            f"COALESCE({_json('payload', '$.event')}, '') NOT IN ('run_completed', 'run_failed', 'script_alert')",
+            f"COALESCE({_json('payload', '$.event')}, '') NOT IN ('run_completed', 'run_failed', 'script_alert',"
+            " 'dry_run_finished')",
             f"{_json('payload', '$.dream_id')} IS NULL",  # the dream itself
         ]
         params: list = []

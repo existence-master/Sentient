@@ -56,12 +56,20 @@ def _kind(name: str, arguments: dict, risk: Risk, purchase: bool) -> str:
     return "run" if Risk(risk) >= Risk.exec else "change"
 
 
+_NAME_KEYS = ("name", "filename", "path", "file", "command", "title", "purpose", "query")
+
+
 def _first_text(arguments: dict) -> str:
-    """The first short text argument ("notes.txt", "git status"), for a call whose preview says nothing."""
-    for value in arguments.values():
-        if isinstance(value, str) and value.strip() and len(value) <= 120 and "\n" not in value:
-            return value.strip()
-    return ""
+    """A short text argument ("notes.txt", "git status") for a call whose preview names nothing: a name, path or
+    command first, else the first short one."""
+    def short(value: Any) -> str:
+        ok = isinstance(value, str) and value.strip() and len(value) <= 120 and "\n" not in value
+        return value.strip() if ok else ""
+
+    for key in _NAME_KEYS:
+        if text := short(arguments.get(key)):
+            return text
+    return next((text for value in arguments.values() if (text := short(value))), "")
 
 
 def summary_line(entry: dict) -> str:
@@ -72,7 +80,7 @@ def summary_line(entry: dict) -> str:
     head = _VERBS.get(kind, title)
     if kind == "run" and title:
         head = title
-    head += f" in {app}" if app else ""
+    head += f" in {app}" if app and app.lower() not in head.lower() else ""
     prev = entry.get("preview") if isinstance(entry.get("preview"), dict) else {}
     fields = [f"{f.get('label')} {f.get('value')}" for f in prev.get("fields") or [] if f.get("value")]
     detail = ", ".join(fields) or _first_text(entry.get("arguments") or {})
