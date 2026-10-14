@@ -80,7 +80,6 @@ export function effectiveRisk(
   const wording = approvalRisk(approval)
   return { ...wording, icon: RISK_ICONS[wording.label] }
 }
-}
 
 /** One plain line saying what exactly will happen, e.g. `Click "Place order" on amazon.in`. */
 function actionLine(approval: ApprovalView): string | null {

@@ -356,7 +356,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
   and the stop button until your next message.
 - **The approval card no longer calls an email "posting publicly":** a send like `send_email` is now named from
   the tool's name and declared risk ("Sentient wants to send an email"). The card's word guessing never reads the
-  arguments' content, so an email body mentioning "post", "publish" or "tweet" cannot be misread — the only
+  arguments' content, so an email body mentioning "post", "publish" or "tweet" cannot be misread: the only
   exception is multi-execute tools (Composio), where the `tool_slug`/`action_slug`/`slug` keys name the action
   being run (e.g. `GMAIL_DELETE_MESSAGE`) and are treated like tool names.
 - A long web or email result that Sentient saved to read later, and files you downloaded, are now marked as
