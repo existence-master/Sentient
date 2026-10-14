@@ -909,6 +909,7 @@ class Agent:
                             "decision": decision, "asked_at": asked_at, "answered_at": now_iso(),
                             "target": wording["target"], "risk_label": wording["risk_label"],
                             "untrusted": p.untrusted or None, "rule": self.approvals.rule(p.tool),
+                            "warning": p.warning or None,
                         }
                         if decision in grant_rules.ALLOWING:
                             runnable.append(p)

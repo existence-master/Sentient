@@ -300,6 +300,8 @@ class Timeline:
                                    f"{words.short(error, 120)}", "failed"
             if approval.get("untrusted"):  # the loop's own sentence: "Sentient read content from Gmail in this chat..."
                 why = str(approval["untrusted"]).rstrip(". ")
+            elif approval.get("warning"):  # a second look found something off (#143): that, not the rule, asked
+                why = f"{str(approval['warning']).rstrip('. ')}. {where}"
             elif approval.get("rule") == "ask":
                 why = f"You set it to ask first. {where}"
             elif approval.get("rule") == "if_asked":  # "Only if I asked" and these words didn't ask for it (#140)

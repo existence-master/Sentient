@@ -330,7 +330,9 @@ accept or loosen a rule.
   The UI folds each `assistant` message with `tool_calls` plus its following `tool` messages into one assistant turn.
   `approval` (tool messages, #147) is how the user answered that call's approval request, `null` when it did not ask:
   `{decision: "allow"|"allow_session"|"allow_timed"|"allow_always"|"deny", asked_at, answered_at, target, risk_label,
-  untrusted, rule}` (a request nobody answered in time is `deny`). The activity timeline (section 21) reads it.
+  untrusted, rule, warning}` (a request nobody answered in time is `deny`; `rule` is the lasting rule then, e.g.
+  `"if_asked"`; `warning` is what a second look found off, #143, else `null`). The activity timeline (section 21)
+  reads it and says why it asked: outside content, else the second look's warning, else the rule.
 - **Memory sources.** The final assistant message of a chat turn (also a stopped one) carries `memory_sources`, the
   memories that reply had in mind, also sent on its `done` event. Every other row has `[]`. A **MemorySource** is
   `{kind: "fact"|"insight", id, text, source, via: "prompt"|"tool"}`: `id` is the Memory id (int, section 7) or the
