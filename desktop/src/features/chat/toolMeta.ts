@@ -41,15 +41,17 @@ interface ToolMeta {
   running: string
   done: string
   icon: Icon
+  /** What a try run (#142) says for a call it only noted: "Would write file". */
+  would?: string
 }
 
 const KNOWN: Record<string, ToolMeta> = {
   memory_recall: { running: 'Searching memory', done: 'Searched memory', icon: IconBrain },
   memory_search: { running: 'Searching memory', done: 'Searched memory', icon: IconBrain },
-  memory_save: { running: 'Saving to memory', done: 'Saved to memory', icon: IconBrain },
-  memory_remember: { running: 'Saving to memory', done: 'Saved to memory', icon: IconBrain },
-  memory_add: { running: 'Saving to memory', done: 'Saved to memory', icon: IconBrain },
-  memory_forget: { running: 'Forgetting', done: 'Forgot', icon: IconBrain },
+  memory_save: { running: 'Saving to memory', done: 'Saved to memory', icon: IconBrain, would: 'Would save to memory' },
+  memory_remember: { running: 'Saving to memory', done: 'Saved to memory', icon: IconBrain, would: 'Would save to memory' },
+  memory_add: { running: 'Saving to memory', done: 'Saved to memory', icon: IconBrain, would: 'Would save to memory' },
+  memory_forget: { running: 'Forgetting', done: 'Forgot', icon: IconBrain, would: 'Would forget' },
   memory_search_history: { running: 'Searching past chats', done: 'Searched past chats', icon: IconHistory },
   memory_search_by_source: { running: 'Searching memory', done: 'Searched memory', icon: IconBrain },
   history_semantic_search: { running: 'Searching past chats', done: 'Searched past chats', icon: IconHistory },
@@ -57,26 +59,26 @@ const KNOWN: Record<string, ToolMeta> = {
   current_datetime: { running: 'Checking the date and time', done: 'Checked the date and time', icon: IconClock },
   file_list: { running: 'Listing files', done: 'Listed files', icon: IconFolder },
   file_read: { running: 'Reading file', done: 'Read file', icon: IconFile },
-  file_write: { running: 'Writing file', done: 'Wrote file', icon: IconFilePencil },
+  file_write: { running: 'Writing file', done: 'Wrote file', icon: IconFilePencil, would: 'Would write file' },
   folder_search: { running: 'Searching your notes', done: 'Searched your notes', icon: IconNotebook },
   folder_read: { running: 'Reading a note', done: 'Read a note', icon: IconNotebook },
   time_now: { running: 'Checking the time', done: 'Checked the time', icon: IconClock },
   current_time: { running: 'Checking the time', done: 'Checked the time', icon: IconClock },
   skill_view: { running: 'Opening skill', done: 'Opened skill', icon: IconSparkles },
-  skill_save: { running: 'Saving a skill', done: 'Saved a skill', icon: IconSparkles },
+  skill_save: { running: 'Saving a skill', done: 'Saved a skill', icon: IconSparkles, would: 'Would save a skill' },
   skill_list: { running: 'Listing skills', done: 'Listed skills', icon: IconSparkles },
   web_search: { running: 'Searching the web', done: 'Searched the web', icon: IconWorld },
   // §10-13 code, helpers, browser and devices
-  execute_code: { running: 'Running code', done: 'Ran code', icon: IconTerminal2 },
-  terminal_run: { running: 'Running a command', done: 'Ran a command', icon: IconTerminal2 },
-  delegate_task: { running: 'Asking a helper', done: 'Asked a helper', icon: IconUserBolt },
-  delegate_tasks: { running: 'Asking helpers', done: 'Asked helpers', icon: IconUsersGroup },
+  execute_code: { running: 'Running code', done: 'Ran code', icon: IconTerminal2, would: 'Would run code' },
+  terminal_run: { running: 'Running a command', done: 'Ran a command', icon: IconTerminal2, would: 'Would run a command' },
+  delegate_task: { running: 'Asking a helper', done: 'Asked a helper', icon: IconUserBolt, would: 'Would ask a helper' },
+  delegate_tasks: { running: 'Asking helpers', done: 'Asked helpers', icon: IconUsersGroup, would: 'Would ask helpers' },
   browser_open: { running: 'Opening a page', done: 'Opened a page', icon: IconWorldWww },
   browser_snapshot: { running: 'Reading the page', done: 'Read the page', icon: IconListDetails },
-  browser_click: { running: 'Clicking', done: 'Clicked', icon: IconPointer },
-  browser_type: { running: 'Typing', done: 'Typed', icon: IconKeyboard },
-  browser_select: { running: 'Choosing an option', done: 'Chose an option', icon: IconListDetails },
-  browser_press: { running: 'Pressing a key', done: 'Pressed a key', icon: IconKeyboard },
+  browser_click: { running: 'Clicking', done: 'Clicked', icon: IconPointer, would: 'Would click' },
+  browser_type: { running: 'Typing', done: 'Typed', icon: IconKeyboard, would: 'Would type' },
+  browser_select: { running: 'Choosing an option', done: 'Chose an option', icon: IconListDetails, would: 'Would choose an option' },
+  browser_press: { running: 'Pressing a key', done: 'Pressed a key', icon: IconKeyboard, would: 'Would press a key' },
   browser_scroll: { running: 'Scrolling', done: 'Scrolled', icon: IconArrowsVertical },
   browser_back: { running: 'Going back', done: 'Went back', icon: IconArrowBackUp },
   browser_tabs: { running: 'Checking tabs', done: 'Checked tabs', icon: IconAppWindow },
@@ -123,6 +125,13 @@ const APP_PREFIX: Record<string, string> = {
   notion: 'Notion',
   slack: 'Slack',
   trello: 'Trello'
+}
+
+/** The step label for a call a try run only noted (#142): "Would write file", "Would use Gmail: send email". */
+export function wouldLabel(name: string): string {
+  const meta = toolMeta(name)
+  if (meta.would) return meta.would
+  return `Would use ${meta.done}`
 }
 
 export function toolMeta(name: string): ToolMeta {

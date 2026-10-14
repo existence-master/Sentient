@@ -9,6 +9,7 @@ and returns a **SandboxResult**.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import shutil
@@ -155,12 +156,15 @@ class SandboxService(Service):
         allowed_tools: Iterable[str] | None = None,
         on_output: OnOutput | None = None,
         read_only: bool = False,
+        ctx: ToolContext | None = None,
+        purpose: str = "",
     ) -> dict:
         """Run ``code`` and return a SandboxResult (docs/API.md section 11).
 
         ``allowed_tools``: tool names or plugin ids the script may call (None: every tool the policy
         allows). ``on_output(kind, text)`` receives stdout/stderr chunks as they arrive (sync or
-        async). ``read_only`` limits tool calls to effective risk ``read``.
+        async). ``read_only`` limits tool calls to effective risk ``read``. ``ctx`` and ``purpose``: the tool call
+        that runs it and what it is for, so the file copies kept before a local run say where it ran (#142).
         """
         cfg = self.app.config.sandbox
         started = time.perf_counter()
@@ -194,7 +198,8 @@ class SandboxService(Service):
         async with self._semaphore():
             res = await self._run_in_folder(
                 code, backend=backend, timeout=timeout, session_id=session_id, channel=channel,
-                allowed_tools=allowed_tools, on_output=on_output, read_only=read_only,
+                allowed_tools=allowed_tools, on_output=on_output, read_only=read_only, call_ctx=ctx,
+                purpose=purpose,
             )
         res["duration_ms"] = int((time.perf_counter() - started) * 1000)
         return res
@@ -210,6 +215,8 @@ class SandboxService(Service):
         allowed_tools: Iterable[str] | None,
         on_output: OnOutput | None,
         read_only: bool,
+        call_ctx: ToolContext | None = None,
+        purpose: str = "",
     ) -> dict:
         cfg = self.app.config.sandbox
         run_id = new_id()
@@ -255,10 +262,17 @@ class SandboxService(Service):
                     on_chunk=on_output, extra_kill=lambda: backends.docker_kill(name),
                 )
             else:
-                outcome = await backends.run_command(
-                    backends.python_argv(run_dir), cwd=run_dir, env=backends.scrubbed_env(run_dir),
-                    timeout_s=timeout, max_chars=cfg.max_output_chars, on_chunk=on_output,
-                )
+                # a local process can change files anywhere: keep copies of the allowed folders and Sentient's
+                # files first, so they can be put back from Activity (#142). Docker can only touch its own folder.
+                snaps = getattr(self.app, "snapshots", None)
+                keep = (snaps.guard(snaps.code_roots(), call_ctx or ctx, source="code",
+                                    what=str(purpose or "").strip() or _first_line(code))
+                        if snaps is not None else contextlib.nullcontext())
+                async with keep:
+                    outcome = await backends.run_command(
+                        backends.python_argv(run_dir), cwd=run_dir, env=backends.scrubbed_env(run_dir),
+                        timeout_s=timeout, max_chars=cfg.max_output_chars, on_chunk=on_output,
+                    )
             res["tool_calls"] = bridge.tool_calls
             await bridge.stop()
 
@@ -344,6 +358,15 @@ class SandboxService(Service):
             except OSError as exc:
                 log.warning("sandbox: could not copy %s: %s", rel, exc)
         return created
+
+
+def _first_line(code: str) -> str:
+    """A short label for a script without a purpose: its first line that isn't empty, an import or a comment."""
+    for line in (code or "").splitlines():
+        text = line.strip()
+        if text and not text.startswith(("#", "import ", "from ")):
+            return text[:120]
+    return "a script"
 
 
 def _read_json(path: Path) -> Any:

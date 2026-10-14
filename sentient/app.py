@@ -60,6 +60,7 @@ from sentient.reminders import ReminderService
 from sentient.sandbox import SandboxService
 from sentient.services import Service
 from sentient.skills.loader import SkillLibrary
+from sentient.snapshots import FileSnapshots
 from sentient.store.db import Store, now_iso
 from sentient.tasks import TaskService
 from sentient.terminal import TerminalService
@@ -126,6 +127,7 @@ class SentientApp:
         self.evolution = EvolutionService(self)
         self.voice = VoiceService(self)
         self.subagents = SubagentManager(self)
+        self.snapshots = FileSnapshots(self)  # copies of files kept before code changes them (#142)
         self.sandbox = SandboxService(self)
         self.terminal = TerminalService(self)
         self.browser = BrowserService(self)
@@ -150,7 +152,7 @@ class SentientApp:
     @property
     def services(self) -> list[Service]:
         return [
-            self.notifications, self.integrations, self.subagents, self.sandbox, self.terminal, self.browser, self.nodes,
+            self.notifications, self.integrations, self.snapshots, self.subagents, self.sandbox, self.terminal, self.browser, self.nodes,
             self.tasks, self.reminders, self.proactivity, self.evolution, self.user_model, self.dreaming, self.voice, self.channels,
             self.backups, self.folders,
             self.incognito,

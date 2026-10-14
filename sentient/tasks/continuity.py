@@ -53,7 +53,8 @@ def clean_notepad(text: Any) -> str | None:
 
 async def earlier_runs(repo: Any, task_id: str, current_run_id: str, tz: tzinfo) -> list[dict]:
     """``[{when, note}]`` for the last finished runs before ``current_run_id``, oldest first."""
-    runs = [r for r in await repo.runs_for(task_id) if r["id"] != current_run_id and r["status"] in FINISHED]
+    runs = [r for r in await repo.runs_for(task_id)
+            if r["id"] != current_run_id and r["status"] in FINISHED and not r.get("dry_run")]  # never a try run (#142)
     out: list[dict] = []
     for run in runs[-EARLIER_RUNS:]:
         note = ""

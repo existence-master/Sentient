@@ -64,7 +64,8 @@ const STATUS: Partial<Record<TimelineStatus, { label: string; tone: Tone }>> = {
   declined: { label: 'You said no', tone: 'neutral' },
   running: { label: 'Running', tone: 'info' },
   stopped: { label: 'Stopped', tone: 'neutral' },
-  paused: { label: 'Paused', tone: 'neutral' }
+  paused: { label: 'Paused', tone: 'neutral' },
+  restored: { label: 'Put back', tone: 'neutral' }
 }
 
 const ALL_APPS = '__all'
@@ -437,7 +438,7 @@ function CancelButton({ item, compact }: { item: TimelineItem; compact?: boolean
   )
 }
 
-/** Brings back what a chat moved to the trash, with the app's own restore (#142). */
+/** Brings back what a chat moved to the trash, with the app's own restore, or puts back files code changed (#142). */
 function RestoreButton({ item }: { item: TimelineItem }) {
   const qc = useQueryClient()
   const [state, setState] = useState<'idle' | 'busy' | 'done'>('idle')
@@ -452,9 +453,9 @@ function RestoreButton({ item }: { item: TimelineItem }) {
         onClick={async () => {
           setState('busy')
           try {
-            await api.timeline.restore(item.id)
+            const out = await api.timeline.restore(item.id)
             setState('done')
-            toast.success('Restored', { description: 'It is back out of the trash.' })
+            toast.success('Restored', { description: out.message || 'It is back out of the trash.' })
             void qc.invalidateQueries({ queryKey: qk.timeline.all })
           } catch (err) {
             setState('idle')

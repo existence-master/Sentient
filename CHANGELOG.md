@@ -6,6 +6,16 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Try a task first, and put back files that code changed.** A task waiting for your OK (or any task, from its menu)
+  now has **Try it first**: Sentient runs it once for real but only notes everything that would send, post, buy,
+  delete, change or run something, and shows you exactly what a real run would do, with the full email or message for
+  each. Look-ups still run, so it works on your real data, and the task's schedule and status stay as they are. And
+  before a command in the terminal, a script or a file write changes files in your allowed folders or Sentient's own
+  files, Sentient keeps a copy of them. If something changed, Activity lists it with **Restore**, which puts the files
+  back (and can itself be undone). Big files, files that aren't text and folders like .git or node_modules are left
+  out, with a note saying so. When your folders hold more than 500 text files or 25 MB, nothing is copied for that
+  command and Activity says "Too many files to keep a copy". Copies go after 7 days. Settings > Approvals & safety has
+  the limits.
 - **The same memory in two languages is kept once.** If Sentient remembered "माया शाकाहारी है" and "Maya is
   vegetarian" separately, the nightly memory tidy-up now notices and keeps just one, in the language most of your
   memories are in. It only does this when the model is sure they say exactly the same thing: never when one adds a

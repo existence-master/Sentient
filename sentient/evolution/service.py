@@ -193,7 +193,8 @@ class EvolutionService(Service):
             self._task_runs.setdefault((data["task_id"], data.get("run_id")), datetime.now(UTC))
         elif kind == "task.updated" and data.get("status") in DONE_STATUSES and data.get("task_id"):
             runs = data.get("runs") or []
-            run_id = next((r.get("run_id") for r in reversed(runs) if r.get("status") in DONE_STATUSES | {"completed"}), None)
+            run_id = next((r.get("run_id") for r in reversed(runs)
+                           if r.get("status") in DONE_STATUSES | {"completed"} and not r.get("dry_run")), None)
             self._task_runs.setdefault((data["task_id"], run_id), datetime.now(UTC))
 
     async def _tick(self) -> None:
