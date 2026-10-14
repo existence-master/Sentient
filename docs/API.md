@@ -175,8 +175,8 @@ applied in code before every call and take effect at once:
   (`sentient.agent.rule_levels.asked_for`), never by a model: a call that changes, sends, deletes or runs something
   counts as asked for when one clause names its action with a verb ("send", "email Priya", "delete", "post") and
   either names what it acts on (a word of the tool's name other than the verb, or its app; an email address counts as
-  naming an email) or names no other connected app and no email address ("yes, send it" after Sentient showed the
-  draft); a look-up when a clause names what it reads or its app. A word that can be a noun only counts as a verb where
+  naming an email) or is a bare "yes, send it" with no email address; a look-up when a clause names what it reads or
+  its app. A clause that names another connected app never counts ("email Priya the Slack thread" asks). A word that can be a noun only counts as a verb where
   a verb goes ("summarize my Slack messages" asks for no message to be sent), and clauses that start with a negation
   ("don't send it") or an ask-first ("ask me before you send it") ask for nothing. Purchases still ask, and so does
   everything on the list below. The `approval` saved on the tool message has `rule: "if_asked"`.

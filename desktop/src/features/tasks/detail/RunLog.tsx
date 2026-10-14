@@ -6,6 +6,7 @@ import {
   IconCheck,
   IconChevronRight,
   IconCircleCheckFilled,
+  IconHandFinger,
   IconInfoCircle,
   IconX
 } from '@tabler/icons-react'
@@ -182,6 +183,8 @@ function LogEntry({ entry, last, live, tz }: { entry: Entry; last: boolean; live
               <Spinner size={12} className="text-info" />
             ) : entry.isError ? (
               <IconX size={13} className="text-danger" />
+            ) : handOff ? (
+              <IconHandFinger size={13} className="text-accent" />
             ) : entry.hasResult ? (
               <IconCheck size={13} className="text-success" />
             ) : null}

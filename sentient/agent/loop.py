@@ -1181,7 +1181,9 @@ class Agent:
         Slack" must not count as asking for an email (#140)."""
         out: list[str] = []
         for p in self.registry.plugins():
-            if p.id != tool.plugin and (getattr(p, "auth", "none") != "none" or p.id.startswith("mcp_")):
+            if p.id == tool.plugin or self.registry.is_hidden(p.id):  # an app that isn't connected isn't offered
+                continue
+            if getattr(p, "auth", "none") != "none" or p.id.startswith("mcp_"):
                 out += [p.id, str(getattr(p, "display_name", "") or "")]
         return out
 

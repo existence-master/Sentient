@@ -147,8 +147,8 @@ it, then let me press the button". Two more levels now sit next to them, applied
   a chat turn has them: tasks pause and ask (a task's brief or an approved plan is not the user asking just now),
   swarm workers stop, and subagents, scripts, briefs and proactive look-ups treat it as Ask. A model never decides
   whether the words asked: `rule_levels.asked_for` matches, per clause, a verb for the action and a word for what it
-  acts on or its app (a bare "yes, send it" counts while the clause names no other connected app and no email address
-  for a tool that isn't email), skips clauses that say not to do it or to ask first, and counts a look-up as asked for
+  acts on or its app (a bare "yes, send it" counts unless it points at an email address for a tool that isn't email),
+  never counts a clause that names another connected app, skips clauses that say not to do it or to ask first, and counts a look-up as asked for
   when the clause names what it reads. A missed match costs one question; a wrong one would be an action nobody asked for, so
   the matching stays narrow. Like Allow it never reaches purchases, and everything on the list of what still asks with
   approvals off (outside content, a second look, an undecided proposal) still asks.

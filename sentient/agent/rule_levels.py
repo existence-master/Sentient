@@ -8,8 +8,8 @@ like an Ask rule. ``asked_for`` decides in code, never by a model, from the word
 - A call that changes, sends, deletes or runs something counts as asked for when one clause of the user's words names
   its action with a verb ("send", "email Priya", "delete", "post"), and either names what it acts on (a word of the
   tool's name other than the verb, or its app: "send Priya an email" for ``gmail_send_email``; an email address counts
-  as naming an email) or names no other connected app ("yes, send it" after Sentient showed the draft; but "send it on
-  Slack" never asks for an email). A word that can be a noun only counts as a verb where a verb goes: "summarize my
+  as naming an email) or is a bare "yes, send it" after Sentient showed the draft. A clause that names another
+  connected app never counts ("send it on Slack", "email Priya the Slack thread": those ask). A word that can be a noun only counts as a verb where a verb goes: "summarize my
   Slack messages" asks for no message to be sent.
 - A look-up counts as asked for when a clause names what it reads or its app ("what's in my inbox?").
 - Clauses that start with a negation ("don't send it") or an ask-first ("ask me before you send it") never ask for
@@ -202,6 +202,9 @@ def asked_for(
         address = bool(_EMAIL_ADDRESS.search(clause))
         if address:
             terms |= {"email", "mail"}
+        said = {_stem(w) for w in _WORD.findall(clause) if len(w) >= 3}  # the words themselves, not their synonyms
+        if any(_match(t, o) for t in said for o in elsewhere):
+            continue  # the clause names another connected app ("email Priya the Slack thread"): ask
         named = any(_match(t, o) for t in terms for o in objects)
         if look_up:
             if named:
@@ -209,10 +212,7 @@ def asked_for(
             continue
         if not any(_match(a, v) for a in requested_verbs(clause) for v in verbs):
             continue
-        if named:
-            return True
-        # a bare "send it": the action is named, and nothing in the clause points at another app or an email address
-        if not address and not any(_match(t, o) for t in terms for o in elsewhere):
+        if named or not address:  # a bare "send it" counts, but not one that points at an email address
             return True
     return False
 

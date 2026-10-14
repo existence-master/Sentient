@@ -105,6 +105,7 @@ def test_words_that_ask_for_sending_an_email(words):
     "Don't send the email yet",
     "Ask me before you send the email",
     "Send the notes to Priya on Slack",  # another app
+    "Email Priya the Slack thread",  # names the email, but also another app: it asks
     "Delete the spam emails",  # another action of the same app
     "",
 ])
