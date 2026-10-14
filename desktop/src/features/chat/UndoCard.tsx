@@ -35,7 +35,7 @@ export function UndoCard({ undo }: { undo: UndoView }) {
           </>
         ) : undo.status === 'failed' ? (
           <>
-            <IconX size={13} className="text-danger" /> It didn't go out: the app reported an error.
+            <IconX size={13} className="text-danger" /> The app reported an error. Check whether it went out before trying again.
           </>
         ) : (
           <>
@@ -74,7 +74,7 @@ export function UndoCard({ undo }: { undo: UndoView }) {
           disabled={!!pressed}
           onClick={() => {
             setPressed('undo')
-            void respond(undo.undoId, 'undo')
+            void respond(undo.undoId, 'undo').then((ok) => ok || setPressed(null))
           }}
         >
           Undo
@@ -87,7 +87,7 @@ export function UndoCard({ undo }: { undo: UndoView }) {
           disabled={!!pressed}
           onClick={() => {
             setPressed('send_now')
-            void respond(undo.undoId, 'send_now')
+            void respond(undo.undoId, 'send_now').then((ok) => ok || setPressed(null))
           }}
         >
           Send now

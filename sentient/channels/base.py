@@ -739,7 +739,7 @@ class Channel:
                             undone = isinstance(event.result, dict) and event.result.get("undone")
                             failed = event.is_error or (isinstance(event.result, dict) and event.result.get("error"))
                             outcome = ("Undone. Nothing was sent." if undone
-                                       else "It didn't go out: the app reported an error." if failed else "Sent")
+                                       else "The app reported an error. Check whether it went out before trying again." if failed else "Sent")
                             await self.settle_buttons(chat_id, mid, outcome)
                     if event.call_id in approval_msgs:
                         _, mid = approval_msgs.pop(event.call_id)

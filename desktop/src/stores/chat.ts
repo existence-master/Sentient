@@ -58,7 +58,8 @@ interface ChatState {
   retry: (sessionId: string) => Promise<void>
   respondApproval: (sessionId: string, approvalId: string, decision: ApprovalDecision) => Promise<void>
   /** Undo, or send now, an email, message or post waiting in its undo window (#142). */
-  respondUndo: (undoId: string, action: UndoAction) => Promise<void>
+  /** False when the answer couldn't be sent, so the buttons can be pressed again. */
+  respondUndo: (undoId: string, action: UndoAction) => Promise<boolean>
   handleEvent: (ev: ChatEvent) => void
   dropLive: (key: string) => void
   /** Close an incognito chat: stop its reply and delete it (#154). */
@@ -211,13 +212,15 @@ export const useChat = create<ChatState>((set, get) => ({
 
   respondUndo: async (undoId, action) => {
     toast.dismiss(`undo-${undoId}`)
-    if (live.send({ type: 'undo.respond', undo_id: undoId, action })) return
+    if (live.send({ type: 'undo.respond', undo_id: undoId, action })) return true
     try {
       await api.undo.respond(undoId, action)
+      return true
     } catch (err) {
       toast.error(action === 'undo' ? "Couldn't undo it" : "Couldn't send it now", {
         description: isApiError(err) && err.status === 404 ? 'It already went out.' : errorMessage(err)
       })
+      return false
     }
   },
 

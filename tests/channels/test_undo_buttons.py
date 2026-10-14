@@ -104,5 +104,5 @@ async def test_a_send_that_fails_after_the_window_is_not_called_sent(tg, llm):
     await tg.say(42, "email sam@example.com about lunch")
     msg = tg.api.button_messages()[-1]
     edits = [p for p in tg.api.sent("editMessageText") if p["message_id"] == msg["_id"]]
-    assert any("the app reported an error" in p["text"] for p in edits)
+    assert any("reported an error" in p["text"] for p in edits)
     assert not any("<b>Sent</b>" in p["text"] for p in edits)
