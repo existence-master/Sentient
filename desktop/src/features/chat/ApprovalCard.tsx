@@ -2,27 +2,21 @@ import {
   IconAlertTriangle,
   IconCheck,
   IconClockX,
-  IconCreditCard,
-  IconEdit,
-  IconEye,
   IconFolder,
   IconMailOpened,
-  IconSend,
   IconShieldCheck,
   IconShieldQuestion,
-  IconTerminal2,
-  IconTrash,
   IconWorldWww,
-  IconX,
-  type Icon
+  IconX
 } from '@tabler/icons-react'
 import { motion } from 'motion/react'
-import { Badge, Button, JsonView, Markdown, type Tone } from '@/components/ui'
+import { Badge, Button, JsonView, Markdown } from '@/components/ui'
 import type { ApprovalView } from '@/lib/chatFold'
 import type { ApprovalDecision } from '@/lib/types'
 import { cn, truncate } from '@/lib/utils'
 import { ActionPreview } from './ActionPreview'
 import { hostOf, refLabel } from './cards/bits'
+import { effectiveRisk } from './approvalRisk'
 import { toolMeta } from './toolMeta'
 
 const STATUS_TEXT: Partial<Record<ApprovalView['status'], string>> = {
@@ -39,38 +33,6 @@ export function duration(minutes?: number | null): string {
   const m = Math.max(1, Math.round(minutes ?? 60))
   if (m % 60 === 0) return `${m / 60} hour${m === 60 ? '' : 's'}`
   return `${m} minute${m === 1 ? '' : 's'}`
-}
-
-interface EffectiveRisk {
-  label: string
-  /** "Sentient wants to ..." */
-  verb: string
-  icon: Icon
-  tone: Tone
-}
-
-/**
- * The engine reports the effective risk (§10 `risk_fn`: a click on "Place order" becomes `send`).
- * `send` covers purchases, messages, posts and deletions, so read the reason to name it plainly.
- */
-export function effectiveRisk(approval: Pick<ApprovalView, 'risk' | 'reason' | 'name' | 'arguments'> & Pick<Partial<ApprovalView>, 'preview'>): EffectiveRisk {
-  const text = `${approval.reason ?? ''} ${JSON.stringify(approval.arguments ?? {})}`.toLowerCase()
-  // a delete for good became its app's trash version (#142): it can come back, so it reads as a change, not a loss
-  if (approval.preview?.kind === 'trash' && approval.risk !== 'exec')
-    return { label: 'Moves to the trash', verb: 'move something to the trash', icon: IconTrash, tone: 'warning' }
-  if (approval.name === 'terminal_run') return { label: 'Runs a command', verb: 'run a command on this computer', icon: IconTerminal2, tone: 'danger' }
-  if (approval.risk === 'exec') return { label: 'Runs code', verb: 'run code on your computer', icon: IconTerminal2, tone: 'danger' }
-  if (approval.risk === 'send') {
-    if (/(purchase|buy|order|checkout|pay\b|payment|card|subscribe|book(ing)? and pay)/.test(text))
-      return { label: 'Purchase', verb: 'make a purchase', icon: IconCreditCard, tone: 'danger' }
-    if (/(delete|remove|erase|unsubscribe|cancel (my|the|this) )/.test(text))
-      return { label: 'Deletes', verb: 'delete something', icon: IconTrash, tone: 'danger' }
-    if (/(post|publish|tweet|comment|review)/.test(text)) return { label: 'Posts publicly', verb: 'post something publicly', icon: IconSend, tone: 'danger' }
-    if (/(submit|confirm|form)/.test(text)) return { label: 'Submits', verb: 'submit something for you', icon: IconSend, tone: 'danger' }
-    return { label: 'Sends', verb: 'send something on your behalf', icon: IconSend, tone: 'danger' }
-  }
-  if (approval.risk === 'write') return { label: 'Changes things', verb: 'make a change', icon: IconEdit, tone: 'warning' }
-  return { label: 'Reads', verb: 'look something up', icon: IconEye, tone: 'neutral' }
 }
 
 /** One plain line saying what exactly will happen, e.g. `Click "Place order" on amazon.in`. */

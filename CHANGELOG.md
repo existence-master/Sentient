@@ -338,6 +338,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Approval cards name the action the engine actually sees.** A browser click that asks first now shows the
+  engine's own label for it ("Purchase" for "Place order", "Clicks" for an ordinary button) instead of guessing
+  from the tool's description, which called every send-risk click a purchase because the description mentions
+  "buy, pay".
 - **Approvals from Telegram, Discord and WhatsApp answer only the request they were sent for.** When a task asks
   about one step and then another, a button or reply from the earlier message can no longer answer the newer request:
   the chat says the message is for an earlier request, and the newer one keeps waiting for its own answer.
