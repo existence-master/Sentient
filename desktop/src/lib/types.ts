@@ -765,6 +765,8 @@ export interface HardwareRecommendation {
   /** "qwen3:8b, reading 8,192 tokens at a time" */
   summary: string
   note: string
+  /** Memory search model for Hindi and other languages besides English (#339); null when a cloud model comes first. */
+  multilingual_embedding?: { model: string; name: string; size: string; note: string } | null
 }
 
 export interface Hardware {

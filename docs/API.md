@@ -431,7 +431,9 @@ accept or loosen a rule.
    "recommendation": {"tier": "gpu_8", "model": "ollama_chat/qwen3:8b", "name": "qwen3:8b", "context_length": 8192,
                       "runs_on": "graphics|processor|unknown", "cloud_first": false,
                       "summary": "qwen3:8b, reading 8,192 tokens at a time",
-                      "note": "Fits on the graphics card, so replies stay quick."}}
+                      "note": "Fits on the graphics card, so replies stay quick.",
+                      "multilingual_embedding": {"model": "ollama/bge-m3", "name": "bge-m3", "size": "1.2 GB",
+                                                 "note": "If you write to Sentient in Hindi or another language..."}}}
   ```
   Memory comes from the operating system (psutil when installed, otherwise Windows, macOS or Linux APIs). NVIDIA cards
   from `nvidia-smi --query-gpu=name,memory.total`, other cards from the Windows registry or `/sys/class/drm` (AMD on
@@ -443,7 +445,11 @@ accept or loosen a rule.
   that `cloud_first: true`: a cloud model is the recommendation and `model` is qwen3:4b only as a labelled chat-only
   fallback, never picked for the user, never used by "Local only" or the check-up's fixes); `tier: "unknown"` with today's defaults
   when nothing could be read. Onboarding shows it as "Recommended for this computer" and saves its context length with a
-  local brain; the "Local only" preset and the check-up use it too.
+  local brain; the "Local only" preset and the check-up use it too. `multilingual_embedding` (#339) is the memory search
+  model for people who write in Hindi or another language besides English (`MULTILINGUAL_EMBEDDING` in
+  `config/schema.py`; null when `cloud_first`): onboarding offers it under "Memory search". Switching the `embedding`
+  role re-embeds memory on its next use, also between two models with the same vector size (the model is recorded with
+  each vector index).
 - `GET /api/models/local` → `{ollama: {reachable, models: [{name, size, family, parameter_size, is_embedding, capabilities: string[]}]}, lm_studio: {reachable, models: [...]}}` (`capabilities` from Ollama, e.g. completion/tools/thinking/vision/embedding — a hint; `POST /api/models/test` is the authoritative tool-support check)
 - `POST /api/models/test` `{model, role?}` → `{ok, latency_ms, reply?, error?, supports_tools?}`
 - `POST /api/models/test-embedding` `{model}` → `{ok, dim?, error?}`
@@ -1350,7 +1356,9 @@ Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
 - `GET /api/memories?topic=&q=&source=&limit=&offset=` → `[Memory]` newest first, expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
 - `GET /api/memories/topics` → `[{name, description, count}]`
 - `GET /api/memories/graph` → `{nodes: [{id, label, title, content, topics, memory_type, source, created_at}], links: [{source, target, value}]}` (`label` = content truncated to 25 chars, `title` = full content, as in v2; a link means cosine similarity ≥ `memory.graph_link_similarity`, `value` is that similarity)
-- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. An UPDATE only replaces a fact about the same person and the same action on the same thing ("doesn't want files written" or "doesn't want emails deleted" never replaces "doesn't want files deleted"; it is added instead), and a new fact that an existing one already says in full, with no new name, place or number ("sister lives in a city" next to "sister Meera lives in Lisbon"), returns `SKIP` with that fact)
+- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. Facts that name someone else are never offered to the model, so it can't update, skip or delete them, and the
+near-duplicate shortcut needs the same person too; names in Devanagari (Hindi) count, and match across scripts
+("माया" is "Maya", "प्रिया" is not "Riya") (#339). An UPDATE only replaces a fact about the same person and the same action on the same thing ("doesn't want files written" or "doesn't want emails deleted" never replaces "doesn't want files deleted"; it is added instead), and a new fact that an existing one already says in full, with no new name, place or number ("sister lives in a city" next to "sister Meera lives in Lisbon"), returns `SKIP` with that fact)
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)
 - `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
 - `DELETE /api/memories/source/{source}` → `{deleted: n}`
