@@ -324,6 +324,9 @@ SEARCH_CODE = "from sentient_tools import tools, result\nresult(tools.internet_s
          "changed", "noteworthy"),
         ("Watch this page and tell me about new events: https://example.org/events", PAGE_CODE, "noteworthy",
          "noteworthy"),
+        # "important changes" asks for the AI check, not for every change
+        *[(f"Tell me about {q} changes on https://example.org/events", PAGE_CODE, "changed", "noteworthy")
+          for q in ("important", "big", "major", "significant", "meaningful")],
         # the user wants every change: "changed" is kept, even for a whole page
         ("Tell me whenever anything at all on this page changes: https://example.org/events", PAGE_CODE, "changed",
          "changed"),

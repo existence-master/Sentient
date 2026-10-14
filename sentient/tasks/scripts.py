@@ -145,8 +145,15 @@ def normalize_script(raw: Any, previous: dict | None = None, *, model_written: b
 
 
 # the user asks to hear about a change itself ("when it changes", "anything", "everything"): no AI check decides that.
-# Not a bare "every": "every 10 minutes" is a schedule.
-_ANY_CHANGE = re.compile(r"\bchang(?:e|es|ed|ing)\b|\bany\s?thing\b|\bevery\s?thing\b", re.IGNORECASE)
+# Not a bare "every": "every 10 minutes" is a schedule. "important changes" (group 1) asks for the AI check.
+_ANY_CHANGE = re.compile(
+    r"\b(?:(important|big|major|significant|meaningful)\s+)?chang(?:e|es|ed|ing)\b|\bany\s?thing\b|\bevery\s?thing\b",
+    re.IGNORECASE,
+)
+
+
+def _asks_for_any_change(request: str) -> bool:
+    return any(not m.group(1) for m in _ANY_CHANGE.finditer(request or ""))
 
 
 def _is_fetch(node: ast.AST, pages: set[str]) -> bool:
@@ -188,11 +195,11 @@ def returns_whole_page(code: str) -> bool:
 def planner_default(script: dict, request: str, previous: dict | None = None) -> dict:
     """A ``changed`` check the planner proposes that returns a whole fetched page becomes ``noteworthy`` (#298): a
     view counter or a timestamp there would notify on every check. One value taken out of the page, a search, a
-    request that talks about a change ("changes", "anything", "everything") and a task already on ``changed`` keep
-    ``changed``."""
+    request that talks about a change ("changes", "anything", "everything", but not "important changes") and a task
+    already on ``changed`` keep ``changed``."""
     if script.get("condition") != "changed" or (previous or {}).get("condition") == "changed":
         return script
-    if _ANY_CHANGE.search(request or "") or not returns_whole_page(script.get("code") or ""):
+    if _asks_for_any_change(request) or not returns_whole_page(script.get("code") or ""):
         return script
     return {**script, "condition": "noteworthy"}
 
@@ -280,7 +287,13 @@ def describe_for_approval(script: dict) -> str:
 
 # ---------------------------------------------------------------------------- noteworthy: the judge
 def _lines(value: Any) -> list[str]:
-    text = value if isinstance(value, str) else json.dumps(value, indent=1, sort_keys=True, ensure_ascii=False, default=str)
+    """One line per line of text, also inside dicts and lists, so a page held in a dict (a whole ``web_fetch``
+    result) diffs line by line and the judge sees only what changed (#298)."""
+    if isinstance(value, dict):
+        return [f"{k}: {line}" for k in sorted(value, key=str) for line in _lines(value[k])]
+    if isinstance(value, list):
+        return [line for item in value for line in _lines(item)]
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
     return [line.rstrip() for line in text.splitlines() if line.strip()]
 
 

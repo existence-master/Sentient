@@ -2193,7 +2193,9 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `trigger_event_data` is `{script_result, message, trigger_event?}`.
 - `noteworthy` ("Tell me when something important changes", #157): compared like `changed` with no model, so an
   unchanged result makes no model call and sends nothing. When the result differs, the `fast` role judges a line diff
-  (only the changed lines, `- removed` / `+ added`, at most 3000 characters, plus the task's name and description) and
+  (only the changed lines, `- removed` / `+ added`, at most 3000 characters, plus the task's name and description;
+  text inside a dict or list is split into lines too, as `key: line`, so a whole `web_fetch` result shows only the
+  lines that changed) and
   answers `{"noteworthy": bool, "change": "one sentence"}`. `true`: the job acts once, and the `script_alert` message
   (or the run's `trigger_event_data.message`) is the `change` sentence. `false`: nothing is sent. Either way the new
   result becomes the baseline. A judge that gives no usable answer counts as `true` with the usual change message.
@@ -2226,7 +2228,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   The planner is told to use `noteworthy` by default for a page, a feed or the news, and `changed` for one exact value
   or when the user wants to hear about any change at all (#298). A `changed` script it proposes that returns the whole
   result of `tools.web_fetch` (the page or its `content`) is stored as `noteworthy`, unless the request talks about a
-  change (change, changes, changed, changing, "anything", "everything") or the task's script was already `changed`.
+  change (change, changes, changed, changing, "anything", "everything"; not when important, big, major, significant
+  or meaningful comes right before it) or the task's script was already `changed`.
 - `POST /api/tasks/{id}/script/test` → SandboxResult (does not change `last_result`); see section 4.
 
 ### Wake word and talk mode (owner: voice)
