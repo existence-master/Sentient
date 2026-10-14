@@ -26,6 +26,7 @@
  *   browser.updated       -> ['browser', 'status'] (+ refetch ['browser', 'profiles']); browser.frame -> useBrowserView (live view)
  *   node.updated/deleted  -> ['nodes']; node.event battery -> node battery
  *   channel.updated       -> ['channels']; channel.message -> refresh sessions (+ that transcript)
+ *   channel.delivery      -> (a notification sent to a paired chat, or that failed; only the Activity screen)
  *   user_model.updated    -> refetch ['user-model']
  *   dream.updated         -> upsert into ['memories', 'dreams'] (and refetch the user model when one completes)
  *   source.items          -> webhook calls refresh ['hooks'] (last called / call count)
@@ -382,5 +383,6 @@ const TIMELINE_EVENTS = new Set<string>([
   'backup.updated',
   'approval_grants.updated',
   'channel.message',
+  'channel.delivery',
   'budget.updated'
 ])

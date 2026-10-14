@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import secrets as _pysecrets
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sentient.store.db import Store, now_iso
+from sentient.store.db import Store, new_id, now_iso
+
+DELIVERY_DAYS = 365  # deliveries older than this are dropped
 
 SCHEMA = Path(__file__).with_name("schema.sql")
 
@@ -33,6 +36,7 @@ class ChannelStore:
         await self.store.db.executescript(SCHEMA.read_text(encoding="utf-8"))
         await self.store.ensure_column("channel_questions", "request", "TEXT")  # #337
         await self.store.db.commit()
+        await self.prune_deliveries()  # on every start too, so old rows go even when nothing is sent any more
 
     # ------------------------------------------------------------------ state
     async def state(self, channel: str) -> dict[str, Any]:
@@ -132,6 +136,30 @@ class ChannelStore:
             (channel, str(chat_id), str(message_id)),
         )
         return {"task_id": row["task_id"], "run_id": row["run_id"], "request": row["request"]} if row else None
+
+    # ------------------------------------------------------------------ deliveries (#345)
+    async def add_delivery(
+        self, channel: str, chat_id: str, *, chat_label: str | None, title: str, what: str, reason: str, delivered: bool,
+        error: str | None = None, ref: dict | None = None,
+    ) -> dict:
+        """Remember a notification sent (or not) to a paired chat, for the Activity timeline."""
+        row = {
+            "id": new_id(), "channel": channel, "chat_id": str(chat_id), "chat_label": chat_label, "title": title,
+            "what": what, "reason": reason, "status": "delivered" if delivered else "failed", "error": error,
+            "ref": ref, "created_at": now_iso(),
+        }
+        await self.store.execute(
+            "INSERT INTO channel_deliveries(id, channel, chat_id, chat_label, title, what, reason, status, error, ref,"
+            " created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (row["id"], channel, row["chat_id"], chat_label, title, what, reason, row["status"], error,
+             json.dumps(ref) if ref else None, row["created_at"]),
+        )
+        await self.prune_deliveries()
+        return row
+
+    async def prune_deliveries(self) -> None:
+        cutoff = (datetime.now(UTC) - timedelta(days=DELIVERY_DAYS)).isoformat()
+        await self.store.execute("DELETE FROM channel_deliveries WHERE created_at < ?", (cutoff,))
 
     # ------------------------------------------------------------------ refusals
     async def refuse_once(self, channel: str, chat_id: str) -> bool:

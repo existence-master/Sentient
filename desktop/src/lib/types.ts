@@ -1033,6 +1033,7 @@ export interface DomainEventMap {
   'node.event': { node_id: string; event: string; data: Record<string, unknown> }
   'channel.updated': Channel
   'channel.message': ChannelMessage
+  'channel.delivery': ChannelDelivery
   // §15-16
   'user_model.updated': UserModelUpdatedData
   'dream.updated': Dream
@@ -1321,6 +1322,16 @@ export interface ChannelMessage {
   session_id: string
   direction: 'in' | 'out'
   text: string
+}
+
+/** A notification sent to a paired chat (or that couldn't be), as the Activity screen lists it. */
+export interface ChannelDelivery {
+  id: string
+  channel: string
+  chat_id: string
+  title: string
+  status: 'delivered' | 'failed'
+  ref: TimelineRef | null
 }
 
 // ============================================================================ §4 Tasks
