@@ -1428,11 +1428,19 @@ class FactMemory:
         keep = await self.store.fetchone(f"SELECT id FROM facts WHERE id = ? AND {ACTIVE}", (keep_id,))
         if drop is None or keep is None or keep_id == drop_id:
             return False
-        await self.store.execute(
-            "UPDATE facts SET status = 'merged', merged_into = ?, merged_at = ?, merged_by = ? WHERE id = ?",
-            (keep_id, now_iso(), by, drop_id),
-        )
-        await self.vec.delete(drop_id)
+        indexed = self.vec.ready or await self.vec.exists()
+        db = self.store.db
+        try:  # the row and its vector change together (one commit)
+            await db.execute(
+                "UPDATE facts SET status = 'merged', merged_into = ?, merged_at = ?, merged_by = ? WHERE id = ?",
+                (keep_id, now_iso(), by, drop_id),
+            )
+            if indexed:
+                await db.execute(f"DELETE FROM {self.vec.name} WHERE rowid = ?", (drop_id,))
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
         self.publish("DELETE", drop_id, drop["content"], reason="merged", merged_into=keep_id)
         return True
 
@@ -1444,13 +1452,20 @@ class FactMemory:
         )
         if row is None:
             return None
-        [vec] = await self._embed([row["content"]])
-        await self.store.execute(
-            "UPDATE facts SET status = 'active', merged_into = NULL, merged_at = NULL, merged_by = NULL,"
-            " embedding_model = ? WHERE id = ?",
-            (self.llm.model_for("embedding"), fid),
-        )
-        await self.vec.upsert(fid, vec)
+        [vec] = await self._embed([row["content"]])  # also makes sure the vector table exists
+        db = self.store.db
+        try:  # the row and its vector change together (one commit)
+            await db.execute(
+                "UPDATE facts SET status = 'active', merged_into = NULL, merged_at = NULL, merged_by = NULL,"
+                " embedding_model = ? WHERE id = ?",
+                (self.llm.model_for("embedding"), fid),
+            )
+            await db.execute(f"DELETE FROM {self.vec.name} WHERE rowid = ?", (fid,))
+            await db.execute(f"INSERT INTO {self.vec.name}(rowid, embedding) VALUES(?, ?)", (fid, pack(vec)))
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
         if row["merged_into"] is not None:  # the user said these two differ: never merge them again
             apart = await self.kept_apart()
             apart.add(tuple(sorted((fid, int(row["merged_into"])))))

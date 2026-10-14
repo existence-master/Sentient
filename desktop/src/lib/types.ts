@@ -2371,6 +2371,8 @@ export interface DreamStats {
   promoted: number
   expired: number
   insights_updated: number
+  /** Memories kept once because they were saved in two languages (#353); also counted in `merged`. */
+  languages_merged?: number
 }
 
 export interface Dream {

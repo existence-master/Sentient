@@ -491,7 +491,7 @@ class DreamingService(Service):
                 checked.add(key)
                 checked_list.append(key)
                 continue
-            keep, drop = self._clearer(hindi, other, facts)
+            keep, drop = self._clearer(hindi, other, [f for f in facts if f["id"] not in gone])
             if await mem.merge_translation(keep["id"], drop["id"]):
                 gone.add(drop["id"])
                 stats["merged"] += 1
@@ -532,8 +532,8 @@ class DreamingService(Service):
         return extra in {"none", "", "neither", "null"} and not conflict and languages.same_words(english, b)
 
     def _clearer(self, hindi: dict, other: dict, facts: list[dict]) -> tuple[dict, dict]:
-        """(kept, merged away): the wording in the language most of the user's memories are in; on a tie the
-        older one stays."""
+        """(kept, merged away): the wording in the language most of the user's active memories (``facts``, without
+        those merged away tonight) are in; on a tie the older one stays."""
         written = sum(1 for f in facts if scripts.leads_with_devanagari(f["content"]))
         if written * 2 > len(facts):
             return hindi, other
