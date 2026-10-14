@@ -873,11 +873,12 @@ far with `task_notepad`. The first run is told it is the first. When there is an
   to at most 6 short, distinct choices. One question per round (a second call in the same round gets an error) and at
   most 5 per run.
 - The loop stops after that round without another model call. The run's transcript and
-  `{question, options, tool_call_id, asked_at}` are stored on the run in SQLite and the run becomes `waiting_for_user`.
+  `{question, options, tool_call_id, asked_at, request_id}` are stored on the run in SQLite and the run becomes `waiting_for_user`.
   The task becomes `waiting_for_user` too, unless another run of it is still `processing` (it switches once that run
   ends). The progress log gets `Waiting for your answer: ...`; `task.updated` carries the run's `pending_question`.
 - A notification is created: `kind: "task"`, title `"<task name> needs your answer"`, `message` = the question,
-  `payload: {task_id, event: "question", run_id, question, options}`.
+  `payload: {task_id, event: "question", run_id, question, options, request_id}` (`request_id`, a new hex id per
+  question, names this request of the run for answers from paired chats; `waiting_questions` carries it too).
 - Answering (`POST .../answer`, a button, or a reply to the question message in a paired chat) puts the answer in place of the `ask_user` tool
   result, logs `You answered: ...`, sets the notification's `payload.status = "answered"` (and marks it read), moves run and
   task back to `processing` and continues the run without the restart note.
@@ -2071,7 +2072,15 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   request wasn't sent to this chat, so it can't be answered here."
 - **Approvals of waiting tasks outside the app (#139)**: a task question that is an approval request (`payload.approval`,
   section 4) is sent as "**Approval needed: <task> needs your OK**" with one button per option, callback
-  `ta:<option index>:<run_id>`, and "Tap a button, or reply to this message with once, task, hour, always or no."
+  `ta:<option index>:<run_id>:<request tag>`, and "Tap a button, or reply to this message with once, task, hour,
+  always or no." The request tag (8 hex characters of the SHA-1 of the request's `expires_at`, or of `request_id` for a
+  plain question; button data stays within Telegram's 64 bytes) names the request the message was sent for, and
+  `channel_questions.request` keeps the same `expires_at`/`request_id` for replies. Once a run moves on to a newer
+  request, a button or reply from an older message of that run is refused ("This message is for an earlier request,
+  so it can't answer the one waiting now. Use the newest message." / "That message was for an earlier request, so I
+  didn't pass this on. Reply to the newest message to answer the one waiting now.") and the newer request keeps
+  waiting (#337). The answer is passed on naming the same request (its `expires_at`, or `request_id` for a plain question), so the
+  engine also refuses it if the run moved on in the meantime, as with the desktop notification.
   It is sent only while no window reports `presence: true` (section 1); one raised while the window is in front is held
   and sent when `presence.changed` says the person left, if it is still waiting. A button only answers from the message
   that delivered it to that chat (`channel_questions`); `tq:` buttons never answer an approval. A reply with a word or
@@ -2081,7 +2090,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   the desktop or send them only to chosen chats instead, section 4 "Where results go"): task results and failures
   (`payload.event` in `run_completed`, `run_failed`, `planning_failed`, `clarification_needed`, `disabled`,
   `script_alert`, `script_failed`, `script_recovered`; a completed run adds its result summary), questions from running tasks (`payload.event = "question"`, with `channels.deliver_task_results`; each
-  option is a quick-reply button, callback `tq:<option index>:<run_id>`, that answers through
+  option is a quick-reply button, callback `tq:<option index>:<run_id>:<request tag>`, that answers through
   `app.tasks.answer_question`), plans awaiting approval (**Approve plan** / **Decline** → `app.tasks.approve/decline`), pending proactive
   suggestions (**Approve** / **Dismiss** → same as `POST /api/proactivity/suggestions/{id}`), and notifications with
   `payload.subagent_id`. Text is a short, link-free summary. Buttons are replaced by the outcome when pressed, or when

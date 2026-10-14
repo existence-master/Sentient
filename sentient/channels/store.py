@@ -31,6 +31,7 @@ class ChannelStore:
 
     async def migrate(self) -> None:
         await self.store.db.executescript(SCHEMA.read_text(encoding="utf-8"))
+        await self.store.ensure_column("channel_questions", "request", "TEXT")  # #337
         await self.store.db.commit()
 
     # ------------------------------------------------------------------ state
@@ -109,14 +110,17 @@ class ChannelStore:
         return (row["channel"], self._chat(row)) if row else None
 
     # ------------------------------------------------------------------ task questions
-    async def add_question(self, channel: str, chat_id: str, message_ids: list[str], *, task_id: str, run_id: str) -> None:
-        """Remember the messages that delivered a task's question, so a reply to one of them answers it."""
+    async def add_question(
+        self, channel: str, chat_id: str, message_ids: list[str], *, task_id: str, run_id: str, request: str | None = None
+    ) -> None:
+        """Remember the messages that delivered a task's question, so a reply to one of them answers it. ``request``
+        names which of the run's requests it was (#337), so a reply to an older one never answers a newer one."""
         now = now_iso()
         for mid in message_ids:
             await self.store.execute(
-                "INSERT OR REPLACE INTO channel_questions(channel, chat_id, message_id, task_id, run_id, created_at)"
-                " VALUES(?,?,?,?,?,?)",
-                (channel, str(chat_id), str(mid), task_id, run_id, now),
+                "INSERT OR REPLACE INTO channel_questions(channel, chat_id, message_id, task_id, run_id, created_at, request)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (channel, str(chat_id), str(mid), task_id, run_id, now, request or None),
             )
         # bounded: questions older than 90 days are no longer worth matching
         cutoff = (datetime.now(UTC) - timedelta(days=90)).isoformat()
@@ -124,10 +128,10 @@ class ChannelStore:
 
     async def question_for(self, channel: str, chat_id: str, message_id: str) -> dict | None:
         row = await self.store.fetchone(
-            "SELECT task_id, run_id FROM channel_questions WHERE channel = ? AND chat_id = ? AND message_id = ?",
+            "SELECT task_id, run_id, request FROM channel_questions WHERE channel = ? AND chat_id = ? AND message_id = ?",
             (channel, str(chat_id), str(message_id)),
         )
-        return {"task_id": row["task_id"], "run_id": row["run_id"]} if row else None
+        return {"task_id": row["task_id"], "run_id": row["run_id"], "request": row["request"]} if row else None
 
     # ------------------------------------------------------------------ refusals
     async def refuse_once(self, channel: str, chat_id: str) -> bool:
