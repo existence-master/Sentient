@@ -12,6 +12,7 @@ import {
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Button, JsonView, Markdown, Spinner } from '@/components/ui'
+import { asHandOff, HandOffCard } from '@/features/chat/HandOffCard'
 import { argsPreview, toolMeta } from '@/features/chat/toolMeta'
 import { useRunEvents } from '@/hooks/tasks'
 import type { ProgressUpdate, Run } from '@/lib/types'
@@ -163,6 +164,7 @@ function LogEntry({ entry, last, live, tz }: { entry: Entry; last: boolean; live
     const meta = toolMeta(entry.name)
     const running = !entry.hasResult && live
     const preview = argsPreview(entry.args)
+    const handOff = entry.hasResult ? asHandOff(entry.result) : null
     return (
       <li className="relative flex gap-2.5 pb-3">
         {rail}
@@ -171,7 +173,9 @@ function LogEntry({ entry, last, live, tz }: { entry: Entry; last: boolean; live
         </Node>
         <div className="min-w-0 flex-1">
           <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex w-full min-w-0 items-center gap-2 text-left">
-            <span className={cn('shrink-0 text-sm font-medium', running ? 'text-fg-muted' : 'text-fg')}>{running ? meta.running : meta.done}</span>
+            <span className={cn('shrink-0 text-sm font-medium', running ? 'text-fg-muted' : 'text-fg')}>
+              {running ? meta.running : handOff ? 'Prepared for you' : meta.done}
+            </span>
             {preview && <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-subtle">{preview}</span>}
             {!preview && <span className="flex-1" />}
             {running ? (
@@ -211,6 +215,11 @@ function LogEntry({ entry, last, live, tz }: { entry: Entry; last: boolean; live
               </motion.div>
             )}
           </AnimatePresence>
+          {handOff && (
+            <div className="mt-2">
+              <HandOffCard handOff={handOff} />
+            </div>
+          )}
         </div>
       </li>
     )

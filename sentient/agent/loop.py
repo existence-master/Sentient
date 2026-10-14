@@ -40,7 +40,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from sentient import paths
-from sentient.agent import findings, preview, reversible, second_look
+from sentient.agent import findings, preview, reversible, rule_levels, second_look
 from sentient.agent import grants as grant_rules
 from sentient.agent import incognito as incognito_outputs
 from sentient.agent import undo as undo_rules
@@ -100,15 +100,19 @@ from sentient.tools.base import (
 from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import (
+    HAND_OFF,
+    IF_ASKED,
     PURCHASE_LABEL,
     SELECTION_SOURCE,
     address_carries_data,
     address_host,
+    applied_rule,
     approval_hold_message,
     approval_question,
     attachment_source,
     brings_untrusted,
     call_address,
+    hands_off,
     is_purchase,
     is_screen_capture,
     is_selection,
@@ -353,6 +357,8 @@ class LoopResult:
     findings: list[tuple[str, str, Any]] = field(default_factory=list)
     # True when ``text`` was built from ``findings`` because the model answered nothing (#322)
     from_findings: bool = False
+    # calls a "Hand it to me" rule handed to the user instead of running (#140): their results, with a preview
+    handed_off: list[dict] = field(default_factory=list)
 
 
 def _hosts(raw: Any) -> set[str]:
@@ -465,6 +471,8 @@ class _CallPlan:
     approval: dict | None = None  # how the user answered this call's approval request (the activity timeline, #147)
     warning: str = ""  # what a second look found off about this call (#143); it then asks, whatever else says
     swapped_from: str = ""  # the delete-for-good tool the model called; its trash twin runs instead (#142)
+    level: str | None = None  # the lasting rule the call was planned under ("if_asked" before it is applied)
+    handed_off: bool = False  # a "Hand it to me" rule: prepared for the user, never run (#140)
 
 
 class Agent:
@@ -719,6 +727,8 @@ class Agent:
                 for text in steer.take():
                     async for e in self._interject(text, messages, persist, result, ev):
                         yield e
+                    if source == "chat" and not unprompted:
+                        ctx.user_words.append(text)  # the user's own words count for "Only if I asked" (#140)
             text_acc = ""
             think_acc = ""
             tool_calls: list[ToolCall] = []
@@ -793,6 +803,8 @@ class Agent:
                     for text in pending:
                         async for e in self._interject(text, messages, persist, result, ev):
                             yield e
+                        if source == "chat" and not unprompted:
+                            ctx.user_words.append(text)
                     continue
                 if pending and steer is not None:
                     steer.restore(pending)  # no rounds left: the caller starts a new turn with them
@@ -839,6 +851,7 @@ class Agent:
                 p.swapped_from = swapped.get(p.tc.id, "")
             result.tool_calls += len(plans)
             result.held.extend({"tool": p.tc.name, "arguments": p.tc.arguments} for p in plans if p.held)
+            result.handed_off.extend(p.preset[0] for p in plans if p.handed_off and p.preset is not None)
             waiting = next((p for p in plans if p.wants_ok), None)
             if waiting is not None and waiting.tool is not None and result.needs_ok is None:
                 wording = await describe_call(waiting.tool, waiting.tc.arguments, ctx, waiting.risk)
@@ -860,7 +873,7 @@ class Agent:
                     result.needs_ok.update(
                         approval=True, risk=waiting.risk.name, label=label,
                         choices=grant_rules.choices(waiting.tool, waiting.risk, purchase=purchase, task=True),
-                        question=approval_question(label, waiting.tc.arguments, wording["target"]),
+                        question=approval_question(label, waiting.tc.arguments, wording["target"], waiting.level),
                     )
             for group in self._groups(plans):
                 for p in group:
@@ -1012,11 +1025,17 @@ class Agent:
                 return _CallPlan(tc=tc, tool=None, preset=({"error": refusal}, True, 0))
         if tool is None or not (tool_names is None or tc.name in tool_names):
             return _CallPlan(tc=tc, tool=None, preset=({"error": f"unknown tool {tc.name}"}, True, 0))
-        plan = _CallPlan(tc=tc, tool=tool, risk=tool.risk)
+        plan = _CallPlan(tc=tc, tool=tool, risk=tool.risk, level=rule)
         if "_raw" in tc.arguments and len(tc.arguments) == 1:
             plan.preset = self._raw_arguments_error(tool, tc)
             return plan
         plan.risk = risk if risk is not None else await effective_risk(tool, tc.arguments, ctx)
+        # "Only if I asked" (#140): Allow when the user's own words in this chat turn ask for this action, else Ask.
+        # Only a chat turn has the user's words; tasks, subagents and work nobody asked for always ask.
+        asked = rule == IF_ASKED and attended and rule_levels.asked_for(
+            tool, ctx.user_words, self._app_name(tool), plan.risk, self._other_apps(tool)
+        )
+        rule = applied_rule(rule, asked=asked, risk=plan.risk)
         if chat_rule == "ask" and pending_asks(self.approvals.config.mode, plan.risk):
             # ask first while the user hasn't answered the proposal, whatever else says yes; with approvals off
             # only for calls that change something, so look-ups never wait on a guess from the chat (#306)
@@ -1036,6 +1055,12 @@ class Agent:
             if refusal:
                 plan.preset = ({"error": str(refusal)}, True, 0)
                 return plan
+        if hands_off(plan.level, plan.risk):
+            # "Hand it to me" (#140): prepared and shown to the user, never run, whatever else would let it run.
+            # Nothing leaves Sentient, so it comes before the outside-content check and the second look.
+            plan.preset = (await self.hand_off(tool, tc.arguments, ctx, plan.risk), False, 0)
+            plan.handed_off = True
+            return plan
         outgoing = sends_out(tool, plan.risk, tc.arguments, ctx)
         look = second_look.Look(self, tool, tc, ctx, plan, messages, attended=attended, model=model) if outgoing else None
         if look is not None:
@@ -1062,7 +1087,7 @@ class Agent:
             return plan
         if use_approvals:
             plan.needs_approval = rule == "ask" or await self.approvals.decide(
-                tool, ctx.session_id, plan.risk, tc.arguments, ctx
+                tool, ctx.session_id, plan.risk, tc.arguments, ctx, asked=asked
             )
             # a yes the user already gave for this task or for a while (#139); an undecided chat proposal still asks
             if plan.needs_approval and chat_rule != "ask" and await self.approvals.granted(
@@ -1071,13 +1096,14 @@ class Agent:
                 plan.needs_approval = False
         elif rule == "ask":
             label = self.approvals.label(tool, self.registry)
+            said = plan.level if chat_rule != "ask" else "ask"  # how the hold explains itself: the rule that asks
             if await self.approvals.granted(tool, plan.risk, tc.arguments, ctx):
                 pass  # the user allowed it for this task or for a while (#139)
             elif ctx.extra.get(CAN_PAUSE_KEY):  # a task run: hold the call, pause and ask (#139)
-                plan.preset = ({"error": approval_hold_message(label)}, True, 0)
+                plan.preset = ({"error": approval_hold_message(label, said)}, True, 0)
                 plan.wants_ok = plan.ask_rule = True
             else:  # subagents, swarm workers and other unattended loops cannot stop to ask: the run stops here
-                plan.preset = ({"error": unattended_ask_message(label)}, True, 0)
+                plan.preset = ({"error": unattended_ask_message(label, said)}, True, 0)
                 plan.rule_stop = True
         unasked = not plan.needs_approval if use_approvals else plan.preset is None
         if look is not None and not plan.warning and unasked:
@@ -1106,6 +1132,8 @@ class Agent:
         request: str | None = None
         for i, tc in enumerate(tool_calls):
             tool = self.registry.get(tc.name)
+            if tool is not None and self.approvals.rule(tool) == HAND_OFF:
+                continue  # handed to the user as the model asked for it, never swapped for something that runs (#140)
             twin = reversible.trash_twin(tool, self.registry) if tool is not None else None
             if twin is None or self.approvals.is_hidden(twin) or self.registry.is_hidden(twin.plugin):
                 continue
@@ -1142,6 +1170,26 @@ class Agent:
             p.approval["undo"] = outcome
         if outcome == undo_rules.UNDONE:
             p.outcome = ({"error": undo_rules.UNDONE_MESSAGE, "undone": True}, True, 0)
+
+    def _app_name(self, tool: Tool) -> str:
+        plugin = self.registry.plugin(tool.plugin)
+        return str(getattr(plugin, "display_name", "") or "")
+
+    def _other_apps(self, tool: Tool) -> list[str]:
+        """Ids and names of the connected apps other than ``tool``'s (integrations and MCP servers): "send it on
+        Slack" must not count as asking for an email (#140)."""
+        out: list[str] = []
+        for p in self.registry.plugins():
+            if p.id != tool.plugin and (getattr(p, "auth", "none") != "none" or p.id.startswith("mcp_")):
+                out += [p.id, str(getattr(p, "display_name", "") or "")]
+        return out
+
+    async def hand_off(self, tool: Tool, arguments: dict, ctx: ToolContext, risk: Risk) -> dict:
+        """The result of a call a "Hand it to me" rule hands to the user instead of running (#140)."""
+        purchase = await is_purchase(tool, arguments, ctx, risk)
+        label = self.approvals.label(tool, self.registry)
+        log.info("handed %s to the user instead of running it", tool.name)
+        return rule_levels.hand_off_result(tool, arguments, label, app_name=self._app_name(tool), purchase=purchase)
 
     async def _chat_rule(self, tool: Tool, session_id: str | None) -> str | None:
         """"ask" while this chat has an undecided rule proposal for ``tool`` (``sentient.agent.chat_rules``)."""
@@ -1513,6 +1561,7 @@ class Agent:
             messages: list[dict] = [{"role": "system", "content": system}, *convo]
             ctx = self.tool_context(session_id, channel)
             ctx.incognito = incognito
+            ctx.user_words = [user_text]  # what the user typed or said, never attachments (#140)
             # outside content read earlier in this chat still counts until a new chat starts (ADR 0018)
             ctx.untrusted = await self._chat_untrusted(session_id, session)
             brought = next((src for a in attachments if (src := attachment_source(a))), "")
@@ -1745,6 +1794,10 @@ class Agent:
             return {"error": f"unknown tool {tc.name}"}, True, 0
         if self.approvals.is_never(tool):  # a "never" rule set while this call waited for approval still wins
             return {"error": never_message(self.approvals.label(tool, self.registry))}, True, 0
+        if self.approvals.rule(tool) == HAND_OFF:  # so does "Hand it to me" (#140): handed over, never run
+            risk = await effective_risk(tool, tc.arguments, ctx)
+            if hands_off(HAND_OFF, risk):
+                return await self.hand_off(tool, tc.arguments, ctx, risk), False, 0
         if tool.plugin in self.approvals.read_only():  # so does a switch to Read only (#141)
             refusal = self.approvals.read_only_refusal(tool, await effective_risk(tool, tc.arguments, ctx), self.registry)
             if refusal:

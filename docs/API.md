@@ -36,7 +36,7 @@ All carry `session_id` and `turn_id`.
 | `text_delta` | `text` |
 | `tool_call` | `call_id`, `name`, `arguments` |
 | `tool_progress` | `call_id`, `name`, `kind: stdout\|stderr\|status\|frame\|subagent`, `text?`, `image?`, `data?` (section 10) |
-| `tool_result` | `call_id`, `name`, `result`, `is_error`, `duration_ms` (a call the user declined has `result: {error, declined: true}`) |
+| `tool_result` | `call_id`, `name`, `result`, `is_error`, `duration_ms` (a call the user declined has `result: {error, declined: true}`; a call a "Hand it to me" rule handed to the user has `result: HandOff`, section 2, #140) |
 | `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10), `warning?` (what a second look found off, section 10, #143), `choices?: string[]` (the answers offered, in order, section 2 "Scoped answers"), `grant_minutes?` (how long `allow_timed` lasts), `preview?: ActionPreview` (what will be sent or changed, the way a person reads it, section 10, #142) |
 | `undo_window` | `undo_id`, `call_id`, `name`, `seconds`, `until` (ISO time it ends), `preview?: ActionPreview`: an email, message or post waits `seconds` before it runs, so it can still be undone (section 10, #142). Its `tool_result` follows when the window ends; after Undo that result is `{error, undone: true}` and nothing was sent |
 | `user_interjection` | `text` (a steer message the model just received, section 10) |
@@ -145,7 +145,7 @@ Saves config, writes USER.md, seeds memory facts (source `onboarding`) in the ba
 - Validation failures on PUT/PATCH return 422 with `detail: [{loc: string[], msg, type}]`.
 
 ### Lasting approval rules (`tools.approvals.rules`, ADR 0016)
-`{"<key>": "allow" | "ask" | "never"}`, default `{}`. A key is a tool name (`gmail_send_email`, `execute_code`,
+`{"<key>": "allow" | "if_asked" | "ask" | "hand_off" | "never"}`, default `{}`. A key is a tool name (`gmail_send_email`, `execute_code`,
 `mcp_<server>_<tool>`) or a plugin id from `GET /api/tools` (`gmail`, `slack`, `mcp_<server>`) meaning every tool of
 that plugin; a tool's own rule beats its plugin's rule. Keys are trimmed and values lower-cased on save; anything else
 is a 422. Remove a rule with `PATCH /api/config {"tools": {"approvals": {"rules": {"<key>": null}}}}`. Rules are
@@ -165,18 +165,51 @@ applied in code before every call and take effect at once:
   approval wording `risk_label` is "Purchase", such as a browser click on "Place order"), which asks every time.
   "Allow for this chat" never covers a purchase. `allow` does not widen what scripts may call
   (section 11): they still only read.
+- `if_asked` ("Only if I asked", #140): like `allow` for a call the user's own words in this chat turn asked for, like
+  `ask` everywhere else. The words are the chat message and any steer messages, as typed or spoken (never the
+  assistant's text, an attachment, a tool result or outside content), and only a chat turn has them (desktop, voice,
+  paired messaging chats): tasks pause and ask with `"This task wants to use <name> (...). You've set it to go ahead
+  only when you ask for it in a chat. OK to go ahead?"`, swarm workers stop with `"<name> is set to "Only if I asked",
+  which only the user's own chat message can ask for, and this work can't stop to ask. ..."`, and subagents, scripts,
+  briefs and proactive look-ups treat it as `ask`. Whether the words asked is decided in code
+  (`sentient.agent.rule_levels.asked_for`), never by a model: a call that changes, sends, deletes or runs something
+  counts as asked for when one clause names its action with a verb ("send", "email Priya", "delete", "post") and
+  either names what it acts on (a word of the tool's name other than the verb, or its app; an email address counts as
+  naming an email) or names no other connected app and no email address ("yes, send it" after Sentient showed the
+  draft); a look-up when a clause names what it reads or its app. A word that can be a noun only counts as a verb where
+  a verb goes ("summarize my Slack messages" asks for no message to be sent), and clauses that start with a negation
+  ("don't send it") or an ask-first ("ask me before you send it") ask for nothing. Purchases still ask, and so does
+  everything on the list below. The `approval` saved on the tool message has `rule: "if_asked"`.
+- `hand_off` ("Hand it to me", #140): a call whose effective risk is above `read` never runs, on any surface and
+  whatever the mode, other rules, "Allow for this chat" or grants say; look-ups run as usual. Sentient prepares it
+  and the user takes the last step. Its `tool_result` (`is_error: false`) is a **HandOff**:
+  `{handed_off: true, message, label, title, preview: ActionPreview | null, details?: [{label, value}]}`, where
+  `message` is what the model reads (`'NOT DONE by Sentient: <name> is set to "Hand it to me", so Sentient did not do
+  it. What you prepared is shown to the user in Sentient, with a copy button, for them to finish themselves. ...'`), `preview` is built in code from the call's arguments (section 10) and `details` lists the call's plain
+  arguments when there is no preview (a command, a click). It comes before the outside-content check and the second
+  look (nothing leaves Sentient), is checked again right before a tool runs (a rule set while a call waited for
+  approval still hands it over), and a delete for good it covers is never swapped for its trash version. The window
+  shows a "Ready for you" card with **Copy** and, for an email, **Open in your email app** (`mailto:`). A task run
+  hands it over the same way, and the user gets one notification per call, `kind: "task"`, title `"Ready for you:
+  <preview title>"`, `payload: {task_id, event: "handed_off", hand_off: HandOff}`; a task approved as one exact call
+  (section 4) completes with `"Ready for you: ..."` instead of making the call. Scripts refuse such a call and
+  subagents refuse it as needing the user's approval. `LoopResult.handed_off` lists a run's HandOffs.
 - Purchases ask in every approvals mode, `off` included (only `browser.confirm_purchases: false` turns that off),
   and scripts refuse them in every mode. Rules are read again right before a tool runs and on every script tool call,
   so a rule changed while a call waits for approval, or while a script runs, applies to it.
 - **What still asks with approvals mode `off`** (the complete list; everything else runs without a question, look-ups
-  included, #306): a purchase (above); a tool or app with an `ask` rule; in a chat that read outside content, a call
+  included, #306): a purchase (above); a tool or app with an `ask` rule, or an `if_asked` rule the user's words did
+  not ask for; in a chat that read outside content, a call
   that can send data out or a data-carrying address to a new site (section 10, ADR 0018); a call that changes, sends,
   deletes or runs something while an undecided rule proposal from that chat covers it (below); a call a second look
   flagged (section 10, "Second look", #143, ADR 0024). `never` rules and Read only connections (section 5) refuse
-  instead of asking.
+  instead of asking, and `hand_off` rules hand the call to the user.
 Engine helpers: `app.approvals.rule(tool)`, `app.approvals.is_never(tool)`, `app.approvals.is_hidden(tool)` (never
 rules plus Read only connections, section 5), `app.approvals.read_only_refusal(tool, risk, registry)`,
-`await app.approvals.decide(tool, session_id, risk, arguments, ctx) -> bool`, pure helpers in `sentient.tools.rules`.
+`await app.approvals.decide(tool, session_id, risk, arguments, ctx, asked=False) -> bool` (`asked`: the user's words
+in this chat turn asked for the call, for `if_asked`), pure helpers in `sentient.tools.rules`
+(`applied_rule(rule, asked=, risk=)`, `hands_off(rule, risk)`), and `sentient.agent.rule_levels` (`asked_for`,
+`hand_off_result`).
 
 ### Scoped answers to approval requests (#139, ADR 0016)
 An answer can be wider than one call. `decision` values (`sentient.agent.grants`):
@@ -217,9 +250,13 @@ accept or loosen a rule.
   model refuses the job (Claude Code only answers chats, ADR 0022), the chat's own model or else the primary model
   answers it, as part of the reply (#311). Claude Code answers it only within the reply's 20 s wait; a slower Claude
   Code check is stopped and makes no card. Keys must be
-  tool names or app ids among those candidates (checked in code). Words that name a condition ("without asking me",
-  "always ask") make the rule `ask`. Keys an equal or stricter rule already covers (also a pending proposal in the
-  same chat) are dropped. A whole app is proposed only when the words name no specific action ("never use Slack",
+  tool names or app ids among those candidates (checked in code). The level is decided in code from the words
+  (`chat_rules.level_for`, #140), the model only picking between `never` and `ask`: "I'll send them myself", "hand it
+  to me", "let me press send", "just draft it" make it `hand_off`; "unless I ask", "only when I tell you to" make it
+  `if_asked`; words that name a condition ("without asking me", "always ask") make it `ask`. The pre-filter also
+  passes sentences with those `hand_off` and `if_asked` words. Strictness, loosest first: `allow`, no rule, `if_asked`,
+  `ask`, `hand_off`, `never`. Keys an equal or stricter rule already covers (also a pending proposal in the
+  same chat) are dropped, so a proposal never loosens a rule. A whole app is proposed only when the words name no specific action ("never use Slack",
   "don't touch my Notion"); when they name one (delete, send, post, pay, share, trash, archive...), an app key is
   replaced in code by that app's tools whose names match the action, or dropped when none do ("never delete my emails"
   -> Gmail > Trash, never all of Gmail). Each app is judged by the instruction that mentions it ("never delete my
@@ -234,7 +271,7 @@ accept or loosen a rule.
   mode `off` it asks only before calls whose effective risk is above `read` (changing, sending, deleting or running
   something): look-ups run without a question, and subagents of that chat run them too (#306). The same holds for the tools a still-running check is weighing.
   It is saved with the chat, so it survives a restart and summarizing, and only ever adds a question.
-- **RuleProposal**: `{id, session_id, message_id, said, rule: "never"|"ask", keys: string[], targets: [{key, app,
+- **RuleProposal**: `{id, session_id, message_id, said, rule: "never"|"ask"|"if_asked"|"hand_off", keys: string[], targets: [{key, app,
   tool, label}], status: "pending"|"accepted"|"declined", created_at, decided_at}`. `said` is the user's matching
   words (at most 300 characters); `label` is `"Gmail > Trash"` for a tool or `"Gmail"` for a whole app; `message_id`
   is the user message (or steer message) it came from.
@@ -249,7 +286,7 @@ accept or loosen a rule.
   rule** / **Not now** (callback `rp:a:<id>` / `rp:d:<id>`; WhatsApp: reply to the message with 1 or 2). Answering
   there is the same decision as `POST /api/rule-proposals/{id}`; an answer from anywhere replaces the buttons with the
   outcome.
-- `tools.approvals.rule_origins`: `{"<key>": {rule: "allow"|"never"|"ask", said, at, session_id, source: "chat"|"approval",
+- `tools.approvals.rule_origins`: `{"<key>": {rule: "allow"|"if_asked"|"ask"|"hand_off"|"never", said, at, session_id, source: "chat"|"approval",
   via}}`, default `{}`. Settings shows "From your message on <date>" (`source: "approval"`, an "Always allow" answer:
   "From your answer on <date>"). An entry is dropped when its rule is changed or removed.
 
@@ -1278,7 +1315,7 @@ run's result summary is the done text, "Your Daily Brief is ready."). A brief mi
 runs once if it is less than `tasks.catch_up_window_hours` late and still the same day, otherwise it is skipped quietly
 (section 4, "Missed runs").
 
-Each run reads, using only `read` tools and never one behind an Ask or Never rule (`tools.approvals.rules`). Morning
+Each run reads, using only `read` tools and never one behind an Ask, Only if I asked or Never rule (`tools.approvals.rules`). Morning
 sections:
 - `calendar`: today's events from `gcal_list_events` that are not over yet (`HH:MM Title (place)`), when Google Calendar is connected.
 - `email`: pending proactive suggestions from `gmail`/`email_imap` (follow-ups included), then unread important Gmail from

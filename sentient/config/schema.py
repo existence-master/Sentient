@@ -318,11 +318,15 @@ class ChatConfig(BaseModel):
     )
 
 
+# a lasting rule's level (ADR 0016, #140); the order is loosest to strictest
+RuleLevel = Literal["allow", "if_asked", "ask", "hand_off", "never"]
+
+
 class RuleOrigin(BaseModel):
     """Where a lasting rule came from when the user made it from a chat message (#130) or an answer to an approval
     request (#139)."""
 
-    rule: Literal["allow", "ask", "never"] = Field(description="The rule the user accepted.")
+    rule: RuleLevel = Field(description="The rule the user accepted.")
     said: str = Field("", description="The user's own words, shortened.")
     at: str = Field("", description="When the user accepted it (ISO time).")
     session_id: str | None = Field(None, description="The chat it was said in.")
@@ -335,7 +339,8 @@ class RuleOrigin(BaseModel):
 class ApprovalsConfig(BaseModel):
     mode: Literal["off", "ask", "always"] = Field(
         "ask",
-        description="off: don't ask, except before a purchase, for apps and tools set to Ask, before sending anything "
+        description="off: don't ask, except before a purchase, for apps and tools set to Ask (or to Only if I asked, "
+        "when you didn't ask for it), before sending anything "
         "once a chat has read an email or web page, and before a change you just told it never to make until you "
         "answer that suggestion. ask: confirm actions that change things outside Sentient, send, delete or run code "
         "(its own memory, files and task list never interrupt). always: confirm every tool call.",
@@ -368,11 +373,14 @@ class ApprovalsConfig(BaseModel):
         description="When an app can move something to the trash, Sentient does that instead of deleting it for good, "
         "unless you ask for it to be deleted permanently.",
     )
-    rules: dict[str, Literal["allow", "ask", "never"]] = Field(
+    rules: dict[str, RuleLevel] = Field(
         default_factory=dict,
         description="Lasting rules for apps and tools. The key is a tool name (gmail_send_email) or an app id "
         "(gmail, meaning all of its tools); a tool's own rule beats its app's rule. allow: go ahead without asking "
-        "(purchases still ask). ask: always ask first, whatever the setting above says. never: Sentient can't use it.",
+        "(purchases still ask). if_asked: go ahead without asking only when your own message in a chat asks for it; "
+        "ask everywhere else, tasks included. ask: always ask first, whatever the setting above says. hand_off: "
+        "Sentient prepares it (a draft, a filled form) and hands it to you to do yourself; it never does it. "
+        "never: Sentient can't use it.",
     )
     rule_origins: dict[str, RuleOrigin] = Field(
         default_factory=dict,

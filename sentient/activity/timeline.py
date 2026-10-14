@@ -302,12 +302,19 @@ class Timeline:
                 why = str(approval["untrusted"]).rstrip(". ")
             elif approval.get("rule") == "ask":
                 why = f"You set it to ask first. {where}"
+            elif approval.get("rule") == "if_asked":  # "Only if I asked" and these words didn't ask for it (#140)
+                why = f"You set it to go ahead only when you ask for it. {where}"
             else:
                 risk = str(approval.get("risk_label") or "It changes something")
                 why = f"{risk}, so Sentient asks first. {where}"
             return Item(id=row["_key"], kind="approvals", at=row["_at"], title=asked, why=why, detail=said,
                         status=status, app=app, app_label=label, ref=ref, undo=undo, _args=args, _apps=also)
         verb = f"Used {label}: {title}" if label else f"Used {title}"
+        if isinstance(result, dict) and result.get("handed_off") is True:  # "Hand it to me" (#140): never ran
+            return Item(id=row["_key"], kind="chat", at=row["_at"],
+                        title=f"Handed to you: {title}" + (f" in {label}" if label else ""), why=where,
+                        detail="You set it to Hand it to me, so Sentient prepared it and left the last step to you.",
+                        status="stopped", app=app, app_label=label, ref=ref, _apps=also)
         if undone:
             return Item(id=row["_key"], kind="chat", at=row["_at"], title=f"Held back: {title}" + (f" in {label}" if label else ""),
                         why=where, detail="You pressed Undo, so nothing was sent.", status="stopped", app=app,

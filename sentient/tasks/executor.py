@@ -23,6 +23,7 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
+from sentient.agent import preview, rule_levels
 from sentient.agent.loop import CAN_PAUSE_KEY, Budget, LoopResult, history_to_openai
 from sentient.agent.sources import AnswerSources
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
@@ -40,7 +41,7 @@ from sentient.tasks.prompts import (
 )
 from sentient.tasks.schedule import get_tz
 from sentient.tools.base import Risk, effective_risk
-from sentient.tools.rules import never_message, untrusted_in
+from sentient.tools.rules import hands_off, never_message, untrusted_in
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.tasks.service import TaskService
@@ -188,9 +189,9 @@ class ProgressMapper:
                 await self._emit({"type": "thought", "content": narration})
             await self._emit({"type": "tool_call", "tool_name": event.name, "parameters": event.arguments})
         elif isinstance(event, ToolResultEvent):
-            await self._emit(
-                {"type": "tool_result", "tool_name": event.name, "result": truncate(event.result), "is_error": event.is_error}
-            )
+            # a call handed to the user (#140) keeps its whole preview: the run log shows it to finish from
+            shown = event.result if rule_levels.is_handed_off(event.result) else truncate(event.result)
+            await self._emit({"type": "tool_result", "tool_name": event.name, "result": shown, "is_error": event.is_error})
             # run_loop appends the tool message right after yielding this event; include it now
             tool_msg = {
                 "role": "tool",
@@ -478,6 +479,9 @@ async def execute_single(
     _spent(state, budget, started)
     await svc.repo.update_run(run_id, {"limits": state, **({"messages": messages} if messages else {})})
 
+    if result.handed_off:  # "Hand it to me" (#140): what the run prepared reaches the user even if it stops later
+        await notify_handed_off(svc, task, result.handed_off)
+        result.handed_off = []  # a run that pauses and resumes shares this result: notify each one once
     if result.stopped_by_rule:  # an "ask" rule stopped a run that can't pause; say which and how to change it
         raise RunFailed(result.stopped_by_rule)
     # the loop breaker: the same call kept getting the same result. A repeated error is stuck; anything else fails.
@@ -548,6 +552,15 @@ async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume:
         if refusal:
             raise RunFailed(refusal)
     await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": name, "parameters": arguments})
+    risk = await effective_risk(tool, arguments, ctx)
+    if hands_off(app.approvals.rule(tool), risk) and app.agent is not None and ctx is not None:
+        # "Hand it to me" (#140): the approved call is prepared for the user, never run
+        handed = await app.agent.hand_off(tool, arguments, ctx, risk)
+        await svc.progress(task_id, run_id, {"type": "tool_result", "tool_name": name, "result": handed, "is_error": False})
+        final = handed_off_text([handed])
+        await svc.progress(task_id, run_id, {"type": "final_answer", "content": final})
+        await notify_handed_off(svc, task, [handed])
+        return LoopResult(text=final, tool_calls=1, tools_used=[tool.plugin], handed_off=[handed])
     try:
         result = await tool.call(ctx, arguments)
     except Exception as exc:
@@ -561,6 +574,27 @@ async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume:
     final = str(call.get("done_text") or "Done.")
     await svc.progress(task_id, run_id, {"type": "final_answer", "content": final})
     return LoopResult(text=final, tool_calls=1, tools_used=[tool.plugin])
+
+
+def handed_off_text(items: list[dict]) -> str:
+    """A run's answer when its only action was handed to the user (#140)."""
+    names = ", ".join(str(i.get("label") or i.get("title") or "it") for i in items)
+    return f"Ready for you: you set {names} to Hand it to me, so Sentient prepared it and didn't do it itself."
+
+
+async def notify_handed_off(svc: TaskService, task: dict, items: list[dict]) -> None:
+    """One "Ready for you" notification per call a task handed to the user (#140), with what it prepared, so it can be
+    finished from the notification even when the task's answer doesn't repeat it. Never raises."""
+    for item in items[:5]:
+        shown = item.get("preview") if isinstance(item.get("preview"), dict) else None
+        body = preview.as_text(shown) or "\n".join(
+            f"{d.get('label')}: {d.get('value')}" for d in item.get("details") or [] if isinstance(d, dict)
+        )
+        what = (shown or {}).get("title") or item.get("title") or "an action"
+        message = (f"{task.get('name') or 'A task'} prepared this for you to finish yourself, because "
+                   f"{item.get('label') or 'it'} is set to Hand it to me.")
+        await svc._notify(task, f"{message}\n\n{body}".strip(), f"Ready for you: {what}", "handed_off",
+                          {"hand_off": item})
 
 
 # ---------------------------------------------------------------------------- results

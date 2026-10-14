@@ -135,3 +135,41 @@ only wanted to be asked about, and every approval was a one-call yes or "for thi
 The alternative of time-limited "Allow for this chat" only would have kept tasks unable to ask. Letting grants cover
 purchases or code would make a phone tap a standing permission for spending or running code, which ADR 0008 and ADR
 0019 rule out.
+
+## Amendment (2026-10-14): "Only if I asked" and "Hand it to me" (#140)
+
+Allow, Ask and Never left out two common wishes: "go ahead without asking, but only when I asked for it", and "prepare
+it, then let me press the button". Two more levels now sit next to them, applied in code like the others:
+
+- **Only if I asked** (`if_asked`): Allow for a call the user's own words in this chat turn asked for, Ask everywhere
+  else. The words are the chat message and its steer messages as typed or spoken, never the assistant's text, an
+  attachment, a tool result or outside content, so nothing a model reads or writes can make a call "asked for". Only
+  a chat turn has them: tasks pause and ask (a task's brief or an approved plan is not the user asking just now),
+  swarm workers stop, and subagents, scripts, briefs and proactive look-ups treat it as Ask. A model never decides
+  whether the words asked: `rule_levels.asked_for` matches, per clause, a verb for the action and a word for what it
+  acts on or its app (a bare "yes, send it" counts while the clause names no other connected app and no email address
+  for a tool that isn't email), skips clauses that say not to do it or to ask first, and counts a look-up as asked for
+  when the clause names what it reads. A missed match costs one question; a wrong one would be an action nobody asked for, so
+  the matching stays narrow. Like Allow it never reaches purchases, and everything on the list of what still asks with
+  approvals off (outside content, a second look, an undecided proposal) still asks.
+- **Hand it to me** (`hand_off`): a call that would change, send, delete or run something never runs, whatever the
+  mode, other rules, "Allow for this chat" or grants say; look-ups run. Its result tells the model it was not done and
+  carries a preview built in code from the call's arguments ([ADR 0026](0026-undo-windows-and-reversible-defaults.md)),
+  which the window shows with Copy and, for an email, Open in your email app. It is checked before the outside-content
+  check and the second look (nothing leaves Sentient), and again right before a tool runs, and a delete for good it
+  covers is never swapped for the trash version. Task runs hand calls over the same way and notify "Ready for you";
+  scripts refuse such calls, since they can't hand anything over.
+
+Rules from chat (#130) can now propose these levels, which revisits "loosening stays a choice made in Settings" for
+one case. The level is chosen in code from the words, never by the model ("I'll send them myself", "just draft it"
+give Hand it to me; "unless I ask", "only when I tell you to" give Only if I asked). A proposal is still only made
+where it tightens, with strictness Allow, no rule, Only if I asked, Ask, Hand it to me, Never: Only if I asked is
+proposed over no rule or an Allow, never over Ask, because "don't send emails unless I ask" is a restriction the
+user states, and it still only becomes a rule when the user clicks "Make it a rule". Only if I asked can mean fewer
+questions than no rule in a chat whose words ask for the action; that is exactly what the user's words and click
+asked for, and it asks more than no rule in tasks.
+
+Alternatives considered: asking the fast model whether the message asked for the action (it would let a model loosen
+a rule, and outside content in the conversation could steer it); treating every action word in the message as asking
+for every tool that uses it (summarizing "my Slack messages" would then post to Slack); and making Hand it to me a
+variant of Never that still lists the tool (the model then can't prepare anything, which is the point).

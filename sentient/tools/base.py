@@ -119,6 +119,10 @@ class ToolContext:
     # the longest tool result the model of this run reads (characters), set by the agent loop; 0 when unknown. A tool
     # that returns a part of something long (file_read) sizes the part to fit, so it is never cut again (#336).
     result_limit: int = 0
+    # the user's own words in this chat turn: the message and any steer messages, as typed or spoken, without
+    # attachments. Set in code by the chat turn only (empty for tasks, subagents and other work); an "Only if I asked"
+    # rule (#140) runs a tool without asking only when these words ask for it.
+    user_words: list[str] = field(default_factory=list)
 
     async def is_incognito(self) -> bool:
         """True when this run belongs to an incognito chat (#154)."""

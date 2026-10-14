@@ -6,6 +6,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Two new rules: "Only if I asked" and "Hand it to me".** In Settings > Approvals & safety, each app or tool can
+  now also be set to **Only if I asked**: Sentient goes ahead without asking only when your own message in a chat asks
+  for it ("email Priya the notes"), and asks every other time, including in tasks and anything it does on its own.
+  Or set it to **Hand it to me**: Sentient prepares it, like a draft email or a filled form, shows it to you with
+  **Copy** and **Open in your email app**, and never does it itself. Tasks do the same and send you a "Ready for you"
+  notification. Saying "don't send emails unless I ask" or "just draft them, I'll send them myself" in a chat
+  suggests the matching rule.
 - **Undo a send, see exactly what goes out, and the trash by default.** When Sentient sends an email, a message or a
   post from a chat, it now waits 10 seconds first and shows what goes out, with **Undo** and **Send now**, in the chat
   and as a toast (and as buttons in Telegram, Discord and WhatsApp). Undo and nothing is sent. Approval cards for

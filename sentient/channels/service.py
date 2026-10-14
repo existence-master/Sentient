@@ -39,6 +39,7 @@ from sentient.channels.whatsapp import WhatsAppChannel
 from sentient.proactivity.brief import DailyBrief
 from sentient.services import Service
 from sentient.tasks.delivery import WHATSAPP_SELF
+from sentient.tools.rules import RULE_TITLES
 
 log = logging.getLogger(__name__)
 
@@ -658,7 +659,7 @@ class ChannelService(Service):
         ch = self.channels.get(channel_id)
         if ch is None or not await self.is_connected(channel_id):
             return False
-        level = "Never" if proposal.get("rule") == "never" else "Always ask"
+        level = RULE_TITLES.get(str(proposal.get("rule")), "Always ask")
         what = ", ".join(str(t.get("label") or t.get("key")) for t in proposal.get("targets") or [])
         said = summary_text(str(proposal.get("said") or ""), 200)
         md = (
