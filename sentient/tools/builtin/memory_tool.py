@@ -91,8 +91,11 @@ async def _own_words(ctx: ToolContext) -> str | None:
     for row in reversed(rows):
         if row.get("role") == "assistant" and not row.get("tool_calls"):
             break  # the previous turn's reply
-        if row.get("role") == "user" and str(row.get("content") or "").strip():
-            words.append(str(row["content"]))
+        if row.get("role") == "user":
+            if str(row.get("content") or "").strip():
+                words.append(str(row["content"]))
+            if not row.get("interjection"):
+                break  # the message that started this turn: nothing before it is this turn's
     return "\n".join(reversed(words)) or None
 
 

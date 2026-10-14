@@ -1403,12 +1403,14 @@ out of pending; no model output can:
   "whenever an invoice comes in, forward it to ...", "Maya wants Sentient to ...") is held even in a clean chat, with
   `from: "an instruction"`, `reason: "instruction"` and the user's sentence as `snippet`. Decided in code
   (`memory.review.instruction_shaped`), never by a model. Memories the user adds (`POST /api/memories`), onboarding and
-  imports are not checked. `memory_remember` then returns a `note` saying it waits for review as an instruction.
+  imports are not checked. One already held for outside content keeps that `from` and gets `reason: "instruction"`
+  too; the Review tab puts every instruction in its own group. `memory_remember` then returns a `note` saying it
+  waits for review as an instruction.
 - **The user's own words in a marked chat** (#234). In a chat that read outside content, a fact is saved active anyway
   when the user's own words in that turn back all of it (`memory.review.grounded`): every name, place, number and
   address in it appears in what the user typed or said, and so do at least two thirds of its other meaningful words. For
   facts extracted after a turn the words are the user's message and steer messages; for `memory_remember` they are
-  the user messages of the current turn read from the stored chat. Anything else (a fact that needs the email or page)
+  the current turn's message and its steer messages read from the stored chat (never an earlier turn's). Anything else (a fact that needs the email or page)
   waits as before. Work nobody asked for, compression and imports never get this.
 
 - `GET /api/memories/review` → `{items: [ReviewItem], count, expire_days}` newest first (at most 500 facts and 500

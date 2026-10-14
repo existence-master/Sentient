@@ -15,7 +15,11 @@ export function ReviewTab() {
 
   const groups = useMemo(() => {
     const by = new Map<string, MemoryReviewItem[]>()
-    for (const item of review.data?.items ?? []) by.set(item.from, [...(by.get(item.from) ?? []), item])
+    // instructions get their own group, whatever they came from (#234)
+    for (const item of review.data?.items ?? []) {
+      const key = item.reason === 'instruction' ? '#instructions' : item.from
+      by.set(key, [...(by.get(key) ?? []), item])
+    }
     return [...by.entries()]
   }, [review.data])
 
@@ -63,7 +67,7 @@ export function ReviewTab() {
             <h3 className="text-sm font-medium text-fg">{items[0]?.reason === 'instruction' ? 'Instructions for Sentient' : `From ${from}`}</h3>
             <span className="rounded-full bg-active px-1.5 text-2xs tabular-nums text-fg-muted">{items.length}</span>
             <div className="flex-1" />
-            {items.length > 1 && (
+            {items.length > 1 && from !== '#instructions' && (
               <Button size="sm" variant="ghost" leftIcon={<IconChecks size={14} />} loading={actions.approveAll.isPending && actions.approveAll.variables === from} onClick={() => approveAll(from)}>
                 Approve all from {from}
               </Button>

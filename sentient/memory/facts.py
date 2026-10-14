@@ -831,9 +831,12 @@ class FactMemory:
         if review is not None and own_words and reviews.grounded(fact, own_words, user):
             log.info("kept from the user's own words although the chat read outside content: %r", fact)
             review = None
-        if review is None and source == "conversation" and reviews.instruction_shaped(fact):
+        if source == "conversation" and reviews.instruction_shaped(fact):
             log.info("held for review as an instruction: %r", fact)
-            review = reviews.instruction_note(reviews.best_snippet(own_words or "", fact) or fact, session_id)
+            if review is None:
+                review = reviews.instruction_note(reviews.best_snippet(own_words or "", fact) or fact, session_id)
+            else:  # held for outside content already: it keeps that source, and says it is an instruction too
+                review = {**review, "reason": reviews.INSTRUCTION}
         if review is not None:
             result = await self._hold(fact, source=source, use_llm=use_llm, review=review)
         else:
