@@ -1157,6 +1157,21 @@ class FoldersConfig(BaseModel):
     results: int = Field(
         6, ge=1, le=20, description="How many pieces of your notes one search gives the assistant.",
     )
+    prompt_notes: int = Field(
+        3, ge=0, le=5,
+        description="How many short pieces of your notes that clearly match a message go along with it, so even small "
+        "models answer from your notes without searching them. 0 turns this off; the assistant can still search them.",
+    )
+    prompt_min_similarity: float = Field(
+        0.55, ge=0.0, le=1.0,
+        description="How closely a piece of your notes must match a message to go along with it. Higher sends fewer, "
+        "surer pieces.",
+    )
+    prompt_note_chars: int = Field(
+        320, ge=100, le=1200,
+        description="Most characters of each piece of your notes that goes along with a message. Keep it small for "
+        "models with short memory.",
+    )
     clippings_are_outside: bool = Field(
         True,
         description="Treat web pages clipped into your notes (Obsidian Web Clipper, a source link at the top, a "

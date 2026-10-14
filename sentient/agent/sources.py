@@ -66,6 +66,36 @@ def _emails(value: Any, depth: int = 0) -> list[dict]:
     return []
 
 
+_WORD = re.compile(r"[\w']+", re.U)
+_COMMON = frozenset({
+    "that", "this", "with", "from", "have", "your", "what", "when", "where", "which", "about", "there", "their", "they",
+    "will", "would", "could", "should", "been", "were", "into", "than", "then", "them", "also", "just", "only", "some",
+    "note", "notes", "says", "said", "according", "here", "more", "does", "like",
+})
+
+
+def _words(text: Any) -> set[str]:
+    return {w.strip("'") for w in _WORD.findall(str(text or "").lower())}
+
+
+def note_used(note: dict, reply: str, question: str) -> bool:
+    """Whether a reply drew on a piece of the user's notes it was given (#354), decided without asking the model:
+    it names the note (not just repeating the question), or repeats a number from it, or two longer words from it
+    that the question did not have."""
+    said = str(reply or "").lower()
+    if not said.strip():
+        return False
+    title = str(note.get("title") or "").strip().lower()
+    if len(title) >= 4 and title in said and title not in str(question or "").lower():
+        return True  # it names the note (a name copied from the question doesn't count)
+    in_reply, asked = _words(said), _words(question)
+    shared = {
+        w for w in _words(note.get("text")) - asked
+        if w in in_reply and w not in _COMMON and (len(w) > 3 or (len(w) > 1 and any(c.isdigit() for c in w)))
+    }
+    return len(shared) >= 2 or any(any(c.isdigit() for c in w) for w in shared)
+
+
 class AnswerSources:
     """Collects one reply's sources, in order. ``stored`` is a list saved earlier, merged in first."""
 
@@ -151,6 +181,24 @@ class AnswerSources:
                                   "tools": []}, ("app", plugin))
                 if item is not None and name not in item.setdefault("tools", []):
                     item["tools"].append(name)
+
+    def add_prompt_notes(self, notes: list[dict], reply: str, question: str) -> None:
+        """Pieces of the user's notes that went into the prompt (#354), each kept as a ``file`` source with
+        ``via: "prompt"`` only when the reply drew on it (:func:`note_used`). Never breaks a turn."""
+        for n in notes or []:
+            try:
+                path = n.get("file") if isinstance(n, dict) else None
+                if not isinstance(path, str) or not path or not note_used(n, reply, question):
+                    continue
+                link = n.get("link")
+                self._add({
+                    "kind": "file", "title": str(n.get("title") or n.get("path") or path), "path": path,
+                    "folder": n.get("folder"), "url": link if isinstance(link, str) and link.startswith("obsidian://")
+                    else None, "snippet": _snip(n.get("text")), "app": "folders", "tool": "folder_search",
+                    "via": "prompt",
+                }, ("file", path))
+            except Exception:  # a source is a nicety
+                continue
 
     def items(self) -> list[dict]:
         return [dict(s) for s in self._items]
