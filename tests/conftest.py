@@ -104,6 +104,8 @@ def config():
     cfg.tools.approvals.mode = "off"
     # the second look's model check (#143) is a model call: tests that cover it turn it on and script the answer
     cfg.tools.approvals.second_look_model = False
+    # the undo window (#142) holds a desktop chat's sends for seconds: tests that cover it turn it on
+    cfg.tools.approvals.undo_seconds = 0
     cfg.memory.extract_after_turn = False
     cfg.chat.auto_title = False
     return cfg

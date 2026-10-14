@@ -7,7 +7,7 @@ LLM provider and a temporary database.
 Start order (stop runs in reverse):
     store -> memory -> notifications -> integrations (registers plugins)
     -> builtin tools -> skills -> agent -> subagents -> sandbox -> terminal -> browser -> nodes
-    -> tasks -> proactivity -> evolution -> user_model -> dreaming -> voice -> channels -> backups
+    -> tasks -> reminders -> proactivity -> evolution -> user_model -> dreaming -> voice -> channels -> backups
 
 Stop everything (``stop_all`` / ``resume``, docs/API.md section 17) is deterministic: it never
 asks the model. It cancels running chat replies, task runs, helpers, scripts, commands and browser
@@ -32,12 +32,14 @@ from sentient.agent.grants import GrantStore
 from sentient.agent.incognito import IncognitoSweeper
 from sentient.agent.loop import Agent
 from sentient.agent.subagents import SubagentManager
+from sentient.agent.undo import UndoBroker
 from sentient.backup import BackupService
 from sentient.browser import BrowserService
 from sentient.channels import ChannelService
 from sentient.config import SentientConfig, load_config, save_config
 from sentient.events import EventBus
 from sentient.evolution import EvolutionService
+from sentient.folders import FolderService
 from sentient.integrations import IntegrationManager
 from sentient.llm import claude_code
 from sentient.llm.connect import ProviderConnections
@@ -54,6 +56,7 @@ from sentient.nodes import NodeService
 from sentient.notifications import NotificationService
 from sentient.presence import Presence
 from sentient.proactivity import ProactiveEngine
+from sentient.reminders import ReminderService
 from sentient.sandbox import SandboxService
 from sentient.services import Service
 from sentient.skills.loader import SkillLibrary
@@ -105,6 +108,7 @@ class SentientApp:
         self.chat_rules = ChatRules(self)  # "never delete my emails" in chat -> a proposed rule (#130)
         # how wide a yes to an approval request is: this task, a while, or an Allow rule (#139)
         self.approvals.grants = GrantStore(self)
+        self.undo = UndoBroker()  # emails, messages and posts waiting in their undo window (#142)
         self.presence = Presence(self.bus)  # is the person looking at the window? (#139)
         self.memory: FactMemory | None = None
         self.agent: Agent | None = None
@@ -117,6 +121,7 @@ class SentientApp:
         self._hardware_warmup: asyncio.Task | None = None
         self.integrations.oauth_owners.append(self.connections)
         self.tasks = TaskService(self)
+        self.reminders = ReminderService(self)  # timers and one-off reminders (#150)
         self.proactivity = ProactiveEngine(self)
         self.evolution = EvolutionService(self)
         self.voice = VoiceService(self)
@@ -129,6 +134,7 @@ class SentientApp:
         self.user_model = UserModelService(self)
         self.dreaming = DreamingService(self)
         self.backups = BackupService(self)
+        self.folders = FolderService(self)  # folders and Obsidian vaults as searchable notes (#176)
         self.memory_imports = MemoryImports(self)  # memory from ChatGPT, Claude and OpenClaw exports (#156)
         self.incognito = IncognitoSweeper(self)  # incognito chats are deleted when closed (#154)
         self.timeline = Timeline(self)  # what Sentient did and will do, read from the other packages' tables (#147)
@@ -145,8 +151,8 @@ class SentientApp:
     def services(self) -> list[Service]:
         return [
             self.notifications, self.integrations, self.subagents, self.sandbox, self.terminal, self.browser, self.nodes,
-            self.tasks, self.proactivity, self.evolution, self.user_model, self.dreaming, self.voice, self.channels,
-            self.backups,
+            self.tasks, self.reminders, self.proactivity, self.evolution, self.user_model, self.dreaming, self.voice, self.channels,
+            self.backups, self.folders,
             self.incognito,
         ]
 

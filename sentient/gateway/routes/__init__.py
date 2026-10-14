@@ -14,6 +14,8 @@ hooks                       : integrations package (inbound webhooks)
 migrate                     : core (importing from Hermes)
 backups                     : core (backup, restore and snapshots)
 timeline                    : core (the activity timeline)
+folders                     : folders package (folders and Obsidian vaults as notes)
+reminders                   : reminders package (timers and one-off reminders)
 """
 
 from sentient.gateway.routes import (
@@ -21,6 +23,7 @@ from sentient.gateway.routes import (
     browser,
     channels,
     core,
+    folders,
     hooks,
     integrations,
     memory,
@@ -29,6 +32,7 @@ from sentient.gateway.routes import (
     nodes,
     notifications,
     proactivity,
+    reminders,
     sandbox,
     skills,
     subagents,
@@ -60,4 +64,6 @@ ROUTERS = [
     migrate.router,
     backups.router,
     timeline.router,
+    folders.router,
+    reminders.router,
 ]

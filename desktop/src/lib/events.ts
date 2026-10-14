@@ -26,12 +26,14 @@
  *   browser.updated       -> ['browser', 'status'] (+ refetch ['browser', 'profiles']); browser.frame -> useBrowserView (live view)
  *   node.updated/deleted  -> ['nodes']; node.event battery -> node battery
  *   channel.updated       -> ['channels']; channel.message -> refresh sessions (+ that transcript)
+ *   channel.delivery      -> (a notification sent to a paired chat, or that failed; only the Activity screen)
  *   user_model.updated    -> refetch ['user-model']
  *   dream.updated         -> upsert into ['memories', 'dreams'] (and refetch the user model when one completes)
  *   source.items          -> webhook calls refresh ['hooks'] (last called / call count)
  *   stop.updated          -> ['stop'] (Stop everything banner and title bar button; cancels dictation)
  *   model.busy            -> ['models', 'busy'] (the title bar's "model busy" indicator)
  *   backup.updated        -> refetch ['backups'] (Settings > Backups)
+ *   folders.updated       -> refetch ['folders'] (Settings > Folders: progress of a look through a folder)
  *   import.updated        -> ['import', 'memory', 'job'] (an import from ChatGPT, Claude or OpenClaw; + memory review when it ends)
  *   (most of the above, and a finished chat reply, also refetch ['timeline'] once things settle: the Activity screen)
  */
@@ -324,6 +326,7 @@ export function installDomainEvents(qc: QueryClient): () => void {
   // #149 one local model job at a time
   offs.push(live.onDomain('model.busy', (e) => qc.setQueryData(qk.modelBusy, e.data)))
   offs.push(live.onDomain('backup.updated', () => void qc.invalidateQueries({ queryKey: qk.backups })))
+  offs.push(live.onDomain('folders.updated', () => void qc.invalidateQueries({ queryKey: qk.folders })))
   offs.push(
     live.onDomain('import.updated', (e) => {
       qc.setQueryData(qk.memoryImportJob, e.data)
@@ -339,7 +342,7 @@ export function installDomainEvents(qc: QueryClient): () => void {
   offs.push(
     live.onState((s) => {
       if (s === 'open' && prev === 'reconnecting') {
-        for (const key of [qk.sessions, qk.notifications, qk.tasks.all, qk.integrations.all, qk.bootstrap, qk.stop, qk.modelBusy, deviceKeys.all, channelKeys.all, browserKeys.status, browserKeys.profiles]) {
+        for (const key of [qk.sessions, qk.notifications, qk.tasks.all, qk.integrations.all, qk.bootstrap, qk.stop, qk.modelBusy, qk.folders, deviceKeys.all, channelKeys.all, browserKeys.status, browserKeys.profiles]) {
           void qc.invalidateQueries({ queryKey: key })
         }
       }
@@ -380,5 +383,7 @@ const TIMELINE_EVENTS = new Set<string>([
   'backup.updated',
   'approval_grants.updated',
   'channel.message',
-  'budget.updated'
+  'channel.delivery',
+  'budget.updated',
+  'reminder.updated'
 ])

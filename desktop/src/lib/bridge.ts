@@ -142,6 +142,7 @@ function createBrowserBridge(): SentientBridge {
     isFocused: async () => document.hasFocus(),
     openFile: async () => false,
     showInFolder: async () => false,
+    openFolderFile: async () => false,
     getDevicePrivacy: async () => ({ screen: null, camera: null }),
     setDevicePrivacy: async (patch) => ({ screen: null, camera: null, ...patch }),
     onCaptureNotice: () => () => undefined,

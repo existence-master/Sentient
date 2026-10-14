@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sentient import paths
+from sentient.agent import preview as previews
+from sentient.agent import undo as undo_rules
 from sentient.agent.grants import decision_label
 from sentient.channels.store import PairingResult
 from sentient.llm import availability
@@ -36,6 +38,7 @@ from sentient.llm.events import (
     TextDelta,
     ToolCallEvent,
     ToolResultEvent,
+    UndoWindow,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -79,6 +82,9 @@ DECISION_LABEL = {
     "allow_always": "Always allowed", "deny": "Denied",
 }
 NOT_SENT_HERE = "This request wasn't sent to this chat, so it can't be answered here."
+# button codes for an email, message or post waiting in its undo window (#142)
+UNDO_ACTIONS = {"u": undo_rules.UNDO, "n": undo_rules.SEND_NOW}
+UNDO_OUTCOME = {undo_rules.UNDO: "Undone. Nothing was sent.", undo_rules.SEND_NOW: "Sending now"}
 _COMMAND_RE = re.compile(r"^/([A-Za-z_]+)(?:@\w+)?(?:\s+(.*))?$", re.S)
 
 
@@ -271,6 +277,7 @@ class Channel:
         self._button_text: dict[tuple[str, str], str] = {}
         # approval id -> the chat its request was sent to; only that chat may answer it (#139)
         self._approval_chats: dict[str, str] = {}
+        self._undo_chats: dict[str, str] = {}  # undo id -> the chat its Undo button was sent to (#142)
         self.qr: str | None = None  # a code to scan while linking (WhatsApp), else None
 
     # ------------------------------------------------------------------ config
@@ -699,6 +706,7 @@ class Channel:
         status = StatusLine(self, chat_id)
         stream = ReplyStream(self, chat_id, streaming=cfg.stream_edits, interval=cfg.edit_interval_s)
         approval_msgs: dict[str, tuple[str, str]] = {}  # call_id -> (approval_id, message_id)
+        undo_msgs: dict[str, tuple[str, str]] = {}  # call_id -> (undo_id, message_id) of a waiting send (#142)
         replies: list[str] = []
         agen = self.app.agent.run_turn(session_id, text, channel=self.id, attachments=attachments)
         try:
@@ -718,7 +726,21 @@ class Channel:
                     mid = await self.send_approval(chat_id, event)
                     if mid:
                         approval_msgs[event.call_id] = (event.approval_id, mid)
+                elif isinstance(event, UndoWindow):
+                    await status.clear()
+                    mid = await self.send_undo(chat_id, event)
+                    if mid:
+                        undo_msgs[event.call_id] = (event.undo_id, mid)
                 elif isinstance(event, ToolResultEvent):
+                    if event.call_id in undo_msgs:
+                        undo_id, mid = undo_msgs.pop(event.call_id)
+                        self._undo_chats.pop(undo_id, None)
+                        if (str(chat_id), mid) in self._button_text:
+                            undone = isinstance(event.result, dict) and event.result.get("undone")
+                            failed = event.is_error or (isinstance(event.result, dict) and event.result.get("error"))
+                            outcome = ("Undone. Nothing was sent." if undone
+                                       else "The app reported an error. Check whether it went out before trying again." if failed else "Sent")
+                            await self.settle_buttons(chat_id, mid, outcome)
                     if event.call_id in approval_msgs:
                         _, mid = approval_msgs.pop(event.call_id)
                         if (str(chat_id), mid) in self._button_text:  # answered elsewhere (desktop)
@@ -762,6 +784,10 @@ class Channel:
             for _, mid in approval_msgs.values():
                 if (str(chat_id), mid) in self._button_text:
                     await self.settle_buttons(chat_id, mid, "No longer needed")
+            for undo_id, mid in undo_msgs.values():  # the reply stopped while a send waited: it never went
+                self._undo_chats.pop(undo_id, None)
+                if (str(chat_id), mid) in self._button_text:
+                    await self.settle_buttons(chat_id, mid, "Stopped. Nothing was sent.")
 
     async def _typing_loop(self, chat_id: str) -> None:
         with contextlib.suppress(asyncio.CancelledError):
@@ -781,13 +807,36 @@ class Channel:
         except Exception as exc:
             log.info("%s: voice reply skipped: %s", self.id, exc)
 
+    async def send_undo(self, chat_id: str, event: UndoWindow) -> str | None:
+        """"Sending in 10 s" with what goes out, and Undo / Send now buttons (#142)."""
+        what = (event.preview or {}).get("title") or humanize_tool(event.name)
+        md = f"**{what}: sending in {event.seconds} s**"
+        if text := previews.as_text(event.preview):
+            md += f"\n```\n{text}\n```"
+        buttons = [[Button("Undo", f"ud:u:{event.undo_id}", "danger"), Button("Send now", f"ud:n:{event.undo_id}")]]
+        try:
+            ids = await self.send_markdown(chat_id, md, buttons)
+            if ids:
+                waiting = set(self.app.undo.pending_ids())  # forget windows that already ended
+                self._undo_chats = {k: v for k, v in self._undo_chats.items() if k in waiting}
+                self._undo_chats[event.undo_id] = str(chat_id)
+            return ids[-1] if ids else None
+        except Exception as exc:
+            log.warning("%s: undo message failed: %s", self.id, self.redact(str(exc)))
+            return None
+
     async def send_approval(self, chat_id: str, event: ApprovalRequest) -> str | None:
-        args = json.dumps(event.arguments, ensure_ascii=False, indent=1, default=str)
-        if len(args) > 700:
-            args = args[:700] + "\n…"
+        shown = previews.as_text(event.preview)
+        if shown:  # what will be sent, the way a person reads it (#142)
+            what = f"\n```\n{shown[:1500]}\n```"
+        else:
+            args = json.dumps(event.arguments, ensure_ascii=False, indent=1, default=str)
+            if len(args) > 700:
+                args = args[:700] + "\n…"
+            what = f"\n```json\n{args}\n```"
         md = (
             f"**Approval needed**\n{self.app.config.assistant.name} wants to use **{humanize_tool(event.name)}** "
-            f"(risk: {event.risk}).\n```json\n{args}\n```"
+            f"(risk: {event.risk}).{what}"
         )
         if event.warning:  # a second look found something off (#143): say it first
             md += f"\n**Check this:** {event.warning}"
@@ -849,6 +898,21 @@ class Channel:
             self._approval_chats.pop(ref, None)
             await self.settle_buttons(chat_id, message_id, DECISION_LABEL[decision])
             return DECISION_LABEL[decision]
+        if kind == "ud":  # Undo or Send now on a waiting send (#142)
+            action = UNDO_ACTIONS.get(code)
+            if action is None:
+                return "Unknown button."
+            if ref not in self.app.undo.pending_ids() or not self._undo_chats.get(ref):
+                self._undo_chats.pop(ref, None)
+                await self.settle_buttons(chat_id, message_id, "No longer waiting")
+                return "This is no longer waiting."
+            if self._undo_chats.get(ref) != chat_id:  # only the chat it was sent to can undo it
+                return NOT_SENT_HERE
+            if not self.app.undo.respond(ref, action):
+                return "This is no longer waiting."
+            self._undo_chats.pop(ref, None)
+            await self.settle_buttons(chat_id, message_id, UNDO_OUTCOME[action])
+            return UNDO_OUTCOME[action]
         if kind == "ta":  # a task's approval request (#139)
             return await self.service.act_on_question(self, chat_id, message_id, ref, code, approval=True)
         if kind == "tp":

@@ -9,10 +9,13 @@
  */
 import {
   IconActivity,
+  IconAlarm,
   IconAlertTriangle,
+  IconArrowBackUp,
   IconBell,
   IconBrain,
   IconCalendarEvent,
+  IconCheck,
   IconCoin,
   IconDatabase,
   IconListCheck,
@@ -27,17 +30,21 @@ import {
   IconX,
   type Icon
 } from '@tabler/icons-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
+import { toast } from 'sonner'
 import { Badge, Button, EmptyState, Input, PageHeader, Select, Skeleton, type Tone } from '@/components/ui'
+import { qk } from '@/hooks/queryKeys'
 import { useTimeline, useTimelineApps, useUpcoming } from '@/hooks/timeline'
-import { errorMessage } from '@/lib/api'
+import { api, errorMessage } from '@/lib/api'
 import type { TimelineFilters, TimelineItem, TimelineKind, TimelineRef, TimelineStatus } from '@/lib/types'
 import { cn, formatTime, parseDate } from '@/lib/utils'
 
 const KINDS: Array<{ id: TimelineKind; label: string; icon: Icon }> = [
   { id: 'chat', label: 'Chats', icon: IconMessageCircle },
   { id: 'tasks', label: 'Tasks', icon: IconListCheck },
+  { id: 'reminders', label: 'Timers & reminders', icon: IconAlarm },
   { id: 'briefs', label: 'Briefs', icon: IconSun },
   { id: 'monitors', label: 'Watches', icon: IconRadar },
   { id: 'approvals', label: 'Approvals', icon: IconShieldCheck },
@@ -351,7 +358,7 @@ function Row({ item, compact }: { item: TimelineItem; compact?: boolean }) {
   const KindIcon = item.status === 'paused' ? IconPlayerPause : item.upcoming && item.status === 'scheduled' ? IconCalendarEvent : KIND_ICON[item.kind] ?? IconActivity
   const status = item.status ? STATUS[item.status] : undefined
   const tone = item.status === 'failed' ? 'text-danger bg-danger/10' : item.status === 'waiting' ? 'text-warning bg-warning/10' : 'text-fg-muted bg-active'
-  return (
+  const row = (
     <button
       type="button"
       disabled={!to}
@@ -381,6 +388,83 @@ function Row({ item, compact }: { item: TimelineItem; compact?: boolean }) {
         )}
       </span>
     </button>
+  )
+  if (item.undo?.action === 'cancel') {
+    return (
+      <div className="flex items-start">
+        <div className="min-w-0 flex-1">{row}</div>
+        <CancelButton item={item} compact={compact} />
+      </div>
+    )
+  }
+  if (!item.undo || compact) return row
+  return (
+    <div className="flex items-start">
+      <div className="min-w-0 flex-1">{row}</div>
+      <RestoreButton item={item} />
+    </div>
+  )
+}
+
+/** Cancels a timer or reminder that has not gone off yet (#150). */
+function CancelButton({ item, compact }: { item: TimelineItem; compact?: boolean }) {
+  const qc = useQueryClient()
+  const [busy, setBusy] = useState(false)
+  return (
+    <div className={cn('shrink-0 pr-4', compact ? 'py-2' : 'py-3')}>
+      <Button
+        size="sm"
+        variant="ghost"
+        leftIcon={<IconX size={14} />}
+        loading={busy}
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true)
+          try {
+            await api.timeline.cancel(item.id)
+            toast.success('Cancelled', { description: item.title })
+            void qc.invalidateQueries({ queryKey: qk.timeline.all })
+          } catch (err) {
+            toast.error("Couldn't cancel it", { description: errorMessage(err) })
+          } finally {
+            setBusy(false)
+          }
+        }}
+      >
+        {item.undo?.label ?? 'Cancel'}
+      </Button>
+    </div>
+  )
+}
+
+/** Brings back what a chat moved to the trash, with the app's own restore (#142). */
+function RestoreButton({ item }: { item: TimelineItem }) {
+  const qc = useQueryClient()
+  const [state, setState] = useState<'idle' | 'busy' | 'done'>('idle')
+  return (
+    <div className="shrink-0 py-3 pr-4">
+      <Button
+        size="sm"
+        variant="secondary"
+        leftIcon={state === 'done' ? <IconCheck size={14} /> : <IconArrowBackUp size={14} />}
+        loading={state === 'busy'}
+        disabled={state !== 'idle'}
+        onClick={async () => {
+          setState('busy')
+          try {
+            await api.timeline.restore(item.id)
+            setState('done')
+            toast.success('Restored', { description: 'It is back out of the trash.' })
+            void qc.invalidateQueries({ queryKey: qk.timeline.all })
+          } catch (err) {
+            setState('idle')
+            toast.error("Couldn't restore it", { description: errorMessage(err) })
+          }
+        }}
+      >
+        {state === 'done' ? 'Restored' : (item.undo?.label ?? 'Restore')}
+      </Button>
+    </div>
   )
 }
 

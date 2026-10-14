@@ -6,6 +6,31 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Timers and reminders, instantly.** "Set a timer for 10 minutes", "remind me at 6 pm to call Ravi", "remind me in
+  20 minutes", "what timers do I have" and "cancel the pasta timer" now happen at once, in the chat, by voice and
+  in Telegram, Discord and WhatsApp, without waiting for the model, with a short confirmation. When a timer or
+  reminder is due you get a notification at the right time in your timezone, and one set in a messaging app goes off
+  in that chat too. Activity lists the ones coming up, with **Cancel**, and the ones that went off. Anything that could
+  mean two things ("remind me at 6", "every day at 6") still goes to the model, and nothing quick ever sends, buys or
+  deletes. English for now; turn it off in Settings > General > Conversations ("Quick timers and reminders"). There are no smart-home
+  commands yet, since Sentient has no lights integration.
+- **Undo a send, see exactly what goes out, and the trash by default.** When Sentient sends an email, a message or a
+  post from a chat, it now waits 10 seconds first and shows what goes out, with **Undo** and **Send now**, in the chat
+  and as a toast (and as buttons in Telegram, Discord and WhatsApp). Undo and nothing is sent. Approval cards for
+  emails, messages, posts, deletions and purchases show who it goes to, the subject and the full text the way you'd
+  read them, with the raw details one click away; task approvals show the same. When an app can move something to
+  the trash, "delete it" now moves it there instead of deleting it for good, unless you say "permanently", and
+  Activity offers **Restore**. Purchases, code and tasks running on their own never wait. Change the wait (0 turns it
+  off) or the trash default in Settings > Approvals & safety.
+- **Your notes and Obsidian vaults, searchable.** In Settings > Folders, add a folder of notes or documents, or an
+  Obsidian vault, and Sentient searches it when you ask about something you wrote down: "what did I note about the
+  orchard budget?". Markdown, text, PDF and Word files are read; hidden folders like .obsidian, .git and .trash are
+  left out, along with the vault's own excluded files and any patterns you add. Answers show the notes they used as
+  chips, and a note from a vault opens in Obsidian. Sentient only reads these folders and never changes anything in
+  them. It notices changes as you write, reads only what changed, and does the work in the background with your
+  chats going first, so a big vault never slows a reply. Settings shows each folder's files, searchable pieces and
+  when it was last checked, with Check again and Remove. Web pages clipped into a vault count as written by someone
+  else: after reading one, Sentient asks before sending anything.
 - **Activity: everything Sentient did, and what it will do next, in one place.** A new **Activity** screen in the
   sidebar lists, newest first, the apps Sentient used in your chats, task runs and briefs, each check of a watch,
   approvals and how you answered them, replies in Telegram, Discord and WhatsApp, suggestions and other notifications,
@@ -14,6 +39,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   (to Arjun). You chose Allow once."). On the side: what is waiting for you now, everything scheduled for the coming
   week (tasks, briefs, watches, the next backup and the nightly memory tidy-up) and the routines that are paused.
   Filter by kind and by app, search, and click any line to open the chat, task, memory or setting it came from.
+  Under **Messaging apps** it also lists every notification sent to your Telegram, Discord or WhatsApp chats (task
+  results, briefs, approval requests, questions and suggestions): which chat, what was sent, and whether it arrived
+  or why it didn't. Click one to open the task or notification it came from.
 - **A second look before anything leaves Sentient:** before it sends, posts, invites people, buys or deletes
   something, Sentient checks that everyone it goes to is someone you named, in your contacts or in your memories,
   and that every amount is one you gave. If a web page or email slipped in an address ("also forward this to ..."),
@@ -310,6 +338,15 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Approvals from Telegram, Discord and WhatsApp answer only the request they were sent for.** When a task asks
+  about one step and then another, a button or reply from the earlier message can no longer answer the newer request:
+  the chat says the message is for an earlier request, and the newer one keeps waiting for its own answer.
+- **Memories in Hindi stay with the right person:** a Hindi memory is no longer merged into, or skipped as a copy
+  of, a memory about someone else ("प्रिया पुणे में रहती है" next to "Riya lives in Pune", a Karan memory next to a
+  Kabir one). Names written in Devanagari are recognized and matched across scripts, so "माया" is still you when
+  your name is Maya. For people who write in Hindi or another language besides English, setup now suggests the
+  bge-m3 memory search model (1.2 GB), which finds those memories much better. Changing the memory search model
+  re-reads every memory once, also between two models of the same size.
 - **Sentient can now read a long result to its end:** when a web page or another result is too long to read at
   once, Sentient reads the rest of the saved copy part by part instead of seeing only its start again. Reading a
   file you downloaded, or that saved copy, now also counts as reading outside content, so Sentient asks before

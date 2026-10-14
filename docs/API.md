@@ -21,6 +21,7 @@ If you need to change a shape, change this file in the same edit.
 | `chat.steer` | `session_id`, `text`, `client_id?` | add to the reply in progress (section 10); without a running reply same as `chat.send` |
 | `chat.cancel` | `session_id` | stop the reply in progress |
 | `approval.respond` | `approval_id`, `decision: "allow"\|"allow_session"\|"allow_timed"\|"allow_always"\|"deny"` (one of the request's `choices`, section 2 "Scoped answers") | answer an approval request |
+| `undo.respond` | `undo_id`, `action: "undo"\|"send_now"` | Undo (it never goes) or send now an email, message or post waiting in its undo window (section 10, #142). Answered with `undo.ack` `{undo_id, action, done}`; `done: false` when the window had already ended |
 | `presence` | `active: bool` | the window is focused and visible (`true`) or not (#139). Sent on connect and on every focus, blur and visibility change. Approval requests of waiting tasks go to paired chats only while no window says `true` (section 14) |
 | `ping` | | keepalive |
 
@@ -36,7 +37,8 @@ All carry `session_id` and `turn_id`.
 | `tool_call` | `call_id`, `name`, `arguments` |
 | `tool_progress` | `call_id`, `name`, `kind: stdout\|stderr\|status\|frame\|subagent`, `text?`, `image?`, `data?` (section 10) |
 | `tool_result` | `call_id`, `name`, `result`, `is_error`, `duration_ms` (a call the user declined has `result: {error, declined: true}`) |
-| `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10), `warning?` (what a second look found off, section 10, #143), `choices?: string[]` (the answers offered, in order, section 2 "Scoped answers"), `grant_minutes?` (how long `allow_timed` lasts) |
+| `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10), `warning?` (what a second look found off, section 10, #143), `choices?: string[]` (the answers offered, in order, section 2 "Scoped answers"), `grant_minutes?` (how long `allow_timed` lasts), `preview?: ActionPreview` (what will be sent or changed, the way a person reads it, section 10, #142) |
+| `undo_window` | `undo_id`, `call_id`, `name`, `seconds`, `until` (ISO time it ends), `preview?: ActionPreview`: an email, message or post waits `seconds` before it runs, so it can still be undone (section 10, #142). Its `tool_result` follows when the window ends; after Undo that result is `{error, undone: true}` and nothing was sent |
 | `user_interjection` | `text` (a steer message the model just received, section 10) |
 | `steer_ack` | `session_id`, `queued`, `client_id` (echo; no `turn_id`) |
 | `usage` | `model`, `prompt_tokens`, `completion_tokens`, `context_used`, `context_length`, `context_percent`, `context_warning` (context meter, below) |
@@ -100,6 +102,8 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `model.busy` | **ModelBusy** (section 3, `GET /api/models/busy`): what the local model is doing changed (#149). Quick changes are published once (after 0.2 s), and only when something other than `since` changed |
 | `import.updated` | **MemoryImportJob** (section 19): an import from ChatGPT, Claude or OpenClaw started, read a batch or finished |
 | `backup.updated` | `{what: "backup"\|"snapshot"\|"restore_staged"\|"restore_cancelled"\|"restore_dismissed", name?, source?}` (section 20): refetch `GET /api/backups` |
+| `folders.updated` | `{id, removed?: true, progress?: {done, total}}` (section 22): a folder was added, removed or queued, or a look through it started, moved on (at most once a second) or ended; refetch `GET /api/folders` |
+| `reminder.updated` | **Reminder** (section 23): a timer or reminder was set, cancelled or went off |
 
 ---
 
@@ -303,12 +307,18 @@ accept or loosen a rule.
   (section 4, Run `memory_sources`).
 - **Answer sources** (#174). The final assistant message of a chat turn (also a stopped one) carries `sources`, also
   sent on its `done` event; every other row has `[]`. An **AnswerSource** is
-  `{kind: "web"|"email"|"file"|"app", title, url?, file?, from?, id?, snippet?, app, tool, tools?}`:
+  `{kind: "web"|"email"|"file"|"app", title, url?, file?, path?, folder?, from?, id?, snippet?, app, tool, tools?}`:
   - `web`: a page `web_fetch` or the browser opened (`url`, page `title`), or one of the first 3 results of each
     `web_search`;
   - `email`: an email a connected mail app returned (`title` is its subject, `from`, `id`, `url` when the app has a
     link, e.g. Gmail);
-  - `file`: a file `file_read` opened (`file` is its name under the files folder, `title` its base name);
+  - `file`: a file `file_read` opened (`file` is its name under the files folder, `title` its base name), or a note
+    from a folder the user added (section 22): the first 3 notes of each `folder_search` and each `folder_read`,
+    with `path` (its full path), `folder` (the folder's name) and, in an Obsidian vault, `url` (an `obsidian://open`
+    link). The window opens it with `openFolderFile`: in Obsidian when it is installed (the main process builds the
+    link from the checked file), else with the default app
+    (or shows it in its folder when no app opens that kind of file);
+    only files really inside an added folder open (links are followed before the check);
   - `app`: a connected app or MCP server whose tools returned something else (`title` its name, `tools` every tool
     of it the reply used).
   `app` is the plugin id and `tool` the tool that found it; `snippet` is up to 280 characters of what the model read.
@@ -341,6 +351,8 @@ accept or loosen a rule.
 - `POST /api/approvals` `{approval_id, decision}` → `{resolved}`; a yes wider than the request offers counts as
   `allow` (section 2, "Scoped answers"); 404 when nothing is waiting or the decision is unknown. `GET /api/approvals/grants`, `DELETE
   /api/approvals/grants/{id}`: section 2.
+- `POST /api/undo` `{undo_id, action: "undo"|"send_now"}` → `{done: true, action}`: the REST form of `undo.respond`
+  (section 10, "Previews, undo windows and the trash"); 404 when nothing is waiting with that id.
 
 ### Files (attachments + assistant outputs)
 - `POST /api/files` multipart `file`, optional form field `source: "upload"|"screen"|"selection"` (default `upload`) →
@@ -424,7 +436,9 @@ accept or loosen a rule.
    "recommendation": {"tier": "gpu_8", "model": "ollama_chat/qwen3:8b", "name": "qwen3:8b", "context_length": 8192,
                       "runs_on": "graphics|processor|unknown", "cloud_first": false,
                       "summary": "qwen3:8b, reading 8,192 tokens at a time",
-                      "note": "Fits on the graphics card, so replies stay quick."}}
+                      "note": "Fits on the graphics card, so replies stay quick.",
+                      "multilingual_embedding": {"model": "ollama/bge-m3", "name": "bge-m3", "size": "1.2 GB",
+                                                 "note": "If you write to Sentient in Hindi or another language..."}}}
   ```
   Memory comes from the operating system (psutil when installed, otherwise Windows, macOS or Linux APIs). NVIDIA cards
   from `nvidia-smi --query-gpu=name,memory.total`, other cards from the Windows registry or `/sys/class/drm` (AMD on
@@ -436,7 +450,11 @@ accept or loosen a rule.
   that `cloud_first: true`: a cloud model is the recommendation and `model` is qwen3:4b only as a labelled chat-only
   fallback, never picked for the user, never used by "Local only" or the check-up's fixes); `tier: "unknown"` with today's defaults
   when nothing could be read. Onboarding shows it as "Recommended for this computer" and saves its context length with a
-  local brain; the "Local only" preset and the check-up use it too.
+  local brain; the "Local only" preset and the check-up use it too. `multilingual_embedding` (#339) is the memory search
+  model for people who write in Hindi or another language besides English (`MULTILINGUAL_EMBEDDING` in
+  `config/schema.py`; null when `cloud_first`): onboarding offers it under "Memory search". Switching the `embedding`
+  role re-embeds memory on its next use, also between two models with the same vector size (the model is recorded with
+  each vector index).
 - `GET /api/models/local` → `{ollama: {reachable, models: [{name, size, family, parameter_size, is_embedding, capabilities: string[]}]}, lm_studio: {reachable, models: [...]}}` (`capabilities` from Ollama, e.g. completion/tools/thinking/vision/embedding — a hint; `POST /api/models/test` is the authoritative tool-support check)
 - `POST /api/models/test` `{model, role?}` → `{ok, latency_ms, reply?, error?, supports_tools?}`
 - `POST /api/models/test-embedding` `{model}` → `{ok, dim?, error?}`
@@ -724,7 +742,9 @@ task-creation prompt sets it for requests like "every morning"; a window the req
  "sources": [AnswerSource]}
 ```
 `pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question", "Limits on a run"
-and "Stuck runs" below). `kind` says why it waits; `reason` is set for `stuck` only. `last_activity_at` is when the run
+and "Stuck runs" below). `kind` says why it waits; `reason` is set for `stuck` only. An `approval` question also has
+`expires_at` and `preview` (what the held call would send, an `ActionPreview`, section 10, #142; `null` when there is
+nothing to preview). `last_activity_at` is when the run
 last showed any sign of work (a progress update, or streamed model output; falls back to `execution_start_time`).
 `memory_sources` (section 2, "Memory sources") are the memories the run had in mind: facts recalled into its executor
 prompt (`via: "prompt"`) and facts `memory_recall` / `memory_search_by_source` returned that the model read
@@ -854,11 +874,12 @@ far with `task_notepad`. The first run is told it is the first. When there is an
   to at most 6 short, distinct choices. One question per round (a second call in the same round gets an error) and at
   most 5 per run.
 - The loop stops after that round without another model call. The run's transcript and
-  `{question, options, tool_call_id, asked_at}` are stored on the run in SQLite and the run becomes `waiting_for_user`.
+  `{question, options, tool_call_id, asked_at, request_id}` are stored on the run in SQLite and the run becomes `waiting_for_user`.
   The task becomes `waiting_for_user` too, unless another run of it is still `processing` (it switches once that run
   ends). The progress log gets `Waiting for your answer: ...`; `task.updated` carries the run's `pending_question`.
 - A notification is created: `kind: "task"`, title `"<task name> needs your answer"`, `message` = the question,
-  `payload: {task_id, event: "question", run_id, question, options}`.
+  `payload: {task_id, event: "question", run_id, question, options, request_id}` (`request_id`, a new hex id per
+  question, names this request of the run for answers from paired chats; `waiting_questions` carries it too).
 - Answering (`POST .../answer`, a button, or a reply to the question message in a paired chat) puts the answer in place of the `ask_user` tool
   result, logs `You answered: ...`, sets the notification's `payload.status = "answered"` (and marks it read), moves run and
   task back to `processing` and continues the run without the restart note.
@@ -1171,7 +1192,7 @@ run the same masking again before their prompts. The original stays in the user'
 
 ## 6. Notifications & proactivity
 
-**Notification** `{id, kind: "info|task|approval|proactive|skill|error|brief", title, message (markdown), payload: {}, task_id, read, created_at}`
+**Notification** `{id, kind: "info|task|approval|proactive|skill|error|brief|reminder", title, message (markdown), payload: {}, task_id, read, created_at}`
 
 Proactive suggestion payload:
 ```json
@@ -1343,7 +1364,9 @@ Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
 - `GET /api/memories?topic=&q=&source=&limit=&offset=` → `[Memory]` newest first, expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
 - `GET /api/memories/topics` → `[{name, description, count}]`
 - `GET /api/memories/graph` → `{nodes: [{id, label, title, content, topics, memory_type, source, created_at}], links: [{source, target, value}]}` (`label` = content truncated to 25 chars, `title` = full content, as in v2; a link means cosine similarity ≥ `memory.graph_link_similarity`, `value` is that similarity)
-- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. An UPDATE only replaces a fact about the same person and the same action on the same thing ("doesn't want files written" or "doesn't want emails deleted" never replaces "doesn't want files deleted"; it is added instead), and a new fact that an existing one already says in full, with no new name, place or number ("sister lives in a city" next to "sister Meera lives in Lisbon"), returns `SKIP` with that fact)
+- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. Facts that name someone else are never offered to the model, so it can't update, skip or delete them, and the
+near-duplicate shortcut needs the same person too; names in Devanagari (Hindi) count, and match across scripts
+("माया" is "Maya", "प्रिया" is not "Riya") (#339). An UPDATE only replaces a fact about the same person and the same action on the same thing ("doesn't want files written" or "doesn't want emails deleted" never replaces "doesn't want files deleted"; it is added instead), and a new fact that an existing one already says in full, with no new name, place or number ("sister lives in a city" next to "sister Meera lives in Lisbon"), returns `SKIP` with that fact)
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)
 - `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
 - `DELETE /api/memories/source/{source}` → `{deleted: n}`
@@ -1686,6 +1709,10 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   Stored `messages` rows keep the unmarked result; `app.agent.mark_outside_messages(messages)` marks a transcript
   read back from storage (chat history, task checkpoints; a `file_read` is matched to its call's arguments) and
   `app.agent.outside_content(content, tool, arguments)` one tool message. `run_tool` returns the marked content. The user's own messages are never marked.
+- A result that says so itself (ADR 0025): a tool result whose **first key** is `outside_content` (a string naming
+  where it came from) counts as outside content even when its tool does not: it marks the run, is wrapped for the
+  model and counts in `rules.untrusted_in` (`rules.result_outside_source(result_or_stored_text)`). It only adds a
+  mark. `folder_search` and `folder_read` use it for web pages clipped into the user's notes (section 22).
 
 ### Second look at outgoing actions (#143, ADR 0024)
 - Before any call where `rules.sends_out` is true runs (after `never` rules, Read only connections, the
@@ -1718,6 +1745,46 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   swarm workers get `{error: "Not done: a second look found a problem, so <tool> needs the user's OK first. ..."}`.
   Messaging-app approval messages add `**Check this:** <warning>`, and voice reads it out. A second look only ever
   adds a question; nothing it finds lowers a risk or skips another check.
+
+### Previews, undo windows and the trash (#142, ADR 0026)
+- **Preview.** `approval_request.preview`, `undo_window.preview` and a task's approval question
+  (`pending_question.preview`, section 4) carry an `ActionPreview`, built in code from the call's tool name and
+  arguments (`sentient.agent.preview`), never by a model:
+  ```json
+  {"kind": "email|message|post|delete|trash|purchase|action", "title": "Email",
+   "fields": [{"label": "To", "value": "sam@example.com"}, {"label": "Subject", "value": "Lunch"}],
+   "body": "Friday at 1?"}
+  ```
+  Labels: `To`, `Cc`, `Bcc`, `Where` (a channel, chat, thread, repo...), `Subject` (`Title` for a post), `Files`,
+  `Amount`, `Item` (what a delete acts on). `body` is the message text (up to 4000 characters). A tool that runs
+  other tools by slug (Composio's multi-execute) is previewed by the first call it runs. `null` for a call with
+  nothing a person would read (a plain look-up). Messaging apps show the preview as plain lines instead of the raw
+  arguments.
+- **Undo window** (`tools.approvals.undo_seconds`, default 10, 0 to 60; 0 turns it off). After every other check said
+  a call may run (Never rules, Read only, approvals and their answers, grants, the second look), an email, message or
+  post (`preview.action_kind`: a send verb in the tool name, such as `send`, `reply`, `forward`, `post`, `publish`,
+  `comment`; risk `write` or `send`, not `internal`) waits in a chat someone can press Undo in: `channel` `desktop` or
+  a messaging app (`telegram`, `discord`, `whatsapp`). The loop sends `undo_window` and runs the call only when the
+  window ends. `undo.respond`/`POST /api/undo` with `undo` means it never runs: its `tool_result` is
+  `{"error": "NOT SENT. The user pressed Undo ...", "undone": true}`, which the model reads. `send_now` ends the
+  window early. Stopping the reply (`chat.cancel`, Stop everything) during the window means it is not sent.
+  Purchases and running code never wait (a purchase's yes is deliberate and holding code back does not help), nor do
+  calls in runs nobody is watching: task runs, briefs, script jobs, subagents and other unprompted work. A task's
+  approval in the window is the user's look at the exact call; the Activity timeline then lists what it did.
+  Messaging apps get a message "**Email: sending in 10 s**" with the preview and **Undo** / **Send now** buttons,
+  answered only from the chat it was sent to; it is settled with "Sent" or "Undone. Nothing was sent.".
+- **Trash instead of delete** (`tools.approvals.prefer_trash`, default on). When the model calls a delete-for-good
+  tool (`delete`, `remove`, `erase`, `destroy`, `purge` in its name) and the same app has a trash version for the same
+  thing (`trash`, `recycle` or `soft_delete` with the same object words: `delete_note` and `trash_note`) that takes the
+  call's arguments, `run_loop` swaps the call for the trash version before it is saved or checked, so the
+  `tool_call`, `approval_request` and transcript show the trash call, and the result gets
+  `note: "Moved to the trash instead of deleting it for good, so it can be restored."`. The swap is skipped when the
+  user's own words in this run ask for a permanent delete ("permanently", "for good", "forever", "hard delete",
+  "skip the trash"...), when the trash version is hidden by a rule, or when it lacks a required argument. Gmail's
+  built-in tools only ever trash (`gmail_trash`), and `gmail_restore` brings an email back.
+- **Restore from Activity.** A chat call that moved something to the trash, whose app has a way back (`restore`,
+  `untrash`, `recover`, `undelete`, `unarchive` with the same object words), has `undo: {action: "restore", label:
+  "Restore"}` on its timeline item (section 21).
 
 ### Subagents
 - Tools (plugin `subagents`):
@@ -2006,7 +2073,15 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   request wasn't sent to this chat, so it can't be answered here."
 - **Approvals of waiting tasks outside the app (#139)**: a task question that is an approval request (`payload.approval`,
   section 4) is sent as "**Approval needed: <task> needs your OK**" with one button per option, callback
-  `ta:<option index>:<run_id>`, and "Tap a button, or reply to this message with once, task, hour, always or no."
+  `ta:<option index>:<run_id>:<request tag>`, and "Tap a button, or reply to this message with once, task, hour,
+  always or no." The request tag (8 hex characters of the SHA-1 of the request's `expires_at`, or of `request_id` for a
+  plain question; button data stays within Telegram's 64 bytes) names the request the message was sent for, and
+  `channel_questions.request` keeps the same `expires_at`/`request_id` for replies. Once a run moves on to a newer
+  request, a button or reply from an older message of that run is refused ("This message is for an earlier request,
+  so it can't answer the one waiting now. Use the newest message." / "That message was for an earlier request, so I
+  didn't pass this on. Reply to the newest message to answer the one waiting now.") and the newer request keeps
+  waiting (#337). The answer is passed on naming the same request (its `expires_at`, or `request_id` for a plain question), so the
+  engine also refuses it if the run moved on in the meantime, as with the desktop notification.
   It is sent only while no window reports `presence: true` (section 1); one raised while the window is in front is held
   and sent when `presence.changed` says the person left, if it is still waiting. A button only answers from the message
   that delivered it to that chat (`channel_questions`); `tq:` buttons never answer an approval. A reply with a word or
@@ -2016,7 +2091,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   the desktop or send them only to chosen chats instead, section 4 "Where results go"): task results and failures
   (`payload.event` in `run_completed`, `run_failed`, `planning_failed`, `clarification_needed`, `disabled`,
   `script_alert`, `script_failed`, `script_recovered`; a completed run adds its result summary), questions from running tasks (`payload.event = "question"`, with `channels.deliver_task_results`; each
-  option is a quick-reply button, callback `tq:<option index>:<run_id>`, that answers through
+  option is a quick-reply button, callback `tq:<option index>:<run_id>:<request tag>`, that answers through
   `app.tasks.answer_question`), plans awaiting approval (**Approve plan** / **Decline** → `app.tasks.approve/decline`), pending proactive
   suggestions (**Approve** / **Dismiss** → same as `POST /api/proactivity/suggestions/{id}`), and notifications with
   `payload.subagent_id`. Text is a short, link-free summary. Buttons are replaced by the outcome when pressed, or when
@@ -2071,6 +2146,12 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 - Domain events `channel.updated` → `Channel` (connect, disconnect, status changes, pairing, deliver changes);
   `channel.message` `{channel, chat_id, session_id, direction: "in"|"out", text}`: `in` is the user's text (the transcript
   for voice notes); `out` is the final reply text, or a delivered notification with `session_id: null`.
+  `channel.delivery` `{id, channel, chat_id, title, status: "delivered"|"failed", ref}`: a notification (or a background
+  helper's summary) was sent to a paired chat, or sending it failed (#345). Each is kept in `channel_deliveries` (`id,
+  channel, chat_id, chat_label, title` (the message's first line), `what` (`task|question|approval|plan|brief|suggestion|
+  subagent|other`), `reason` (`chosen`: the task picked the chat; `default`: the chat's delivery is on; `chat`: a helper
+  started in that chat), `status`, `error` (a plain sentence, no token), `ref` (JSON: the task, chat or notification it
+  came from), `created_at`; kept 365 days) for the Activity timeline (section 21).
 
 ## 15. Knowing the user (owner: memory)
 
@@ -2274,7 +2355,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 | `subagent.updated` | Subagent |
 | `browser.updated`, `browser.frame` | browser status, frame |
 | `node.updated`, `node.deleted`, `node.event` | see section 13 |
-| `channel.updated`, `channel.message` | see section 14 |
+| `channel.updated`, `channel.message`, `channel.delivery` | see section 14 |
 | `user_model.updated` | see section 15 |
 | `dream.updated` | Dream |
 | `source.items` | see section 16 |
@@ -2666,14 +2747,21 @@ here calls a model or changes anything.
  "app": "gmail|null", "app_label": "Gmail|null",
  "ref": {"type": "chat|task|memory|dream|skill|about|backups|usage|approvals|notification", "id": "...",
          "run_id": "...", "message_id": "...", "notification_id": "...", "review": true},
- "upcoming": false}
+ "upcoming": false,
+ "undo": {"action": "restore|cancel", "label": "Restore|Cancel"} | null}
 ```
+`undo` (#142) is set on a chat call that moved something to the trash when its app can bring it back; the window
+shows a **Restore** button that calls `POST /api/timeline/restore`. On an upcoming timer or reminder (#150) it is
+`{"action": "cancel", "label": "Cancel"}`: the window shows **Cancel**, which calls `POST /api/timeline/cancel`. A send the user undid in its undo window is a
+`stopped` item, "You pressed Undo, so nothing was sent."
 `title` says what happened and `why` says why, in plain words. `ref` is where the item came from (the window opens
 that chat, task, memory, dream, skill or Settings section). `at` is UTC; `null` only for a paused routine.
 `kind` (also the filter values, in this order): `chat` (tools a chat used), `tasks` (task runs, questions, plans,
-routines paused while away, catch-up), `briefs` (Daily and Evening Brief runs), `monitors` (each check of a script job
+routines paused while away, catch-up), `reminders` (timers and one-off reminders that went off or were cancelled,
+and the ones coming up, section 23), `briefs` (Daily and Evening Brief runs), `monitors` (each check of a script job
 and the runs it started), `approvals` (approval requests in chats and tasks with the answer, plans waiting for an OK,
-**Always allow** answers, timed OKs ending), `channels` (Sentient's replies in Telegram, Discord and WhatsApp chats),
+**Always allow** answers, timed OKs ending), `channels` (Sentient's replies in Telegram, Discord and WhatsApp chats,
+and the notifications sent to them),
 `notifications` (suggestions and other notifications), `memory` (memories saved, nightly dreams, profile updates),
 `skills` (skills learned, drafted, improved, archived), `backups` (backups and safety snapshots), `cost` (one line per
 day with paid cloud model spending, and budget notices).
@@ -2684,9 +2772,11 @@ What each source gives (past):
 |---|---|
 | `messages` (role `tool`, not incognito) | "Used Gmail: Search" + the call's first arguments; an answered approval is an `approvals` item ("Asked you before "Send" in Gmail (to Arjun)", detail "You chose Allow once." or "You said no, so it was not done.") |
 | `messages` (assistant replies in channel chats) | "Replied to you on Telegram" |
+| `channel_deliveries` (section 14) | "Sent to Telegram: Your Daily Brief" or "Couldn't send to Telegram: ..." (`status: "failed"`, `detail` says why); `why` names the chat and why it went there ("To your chat "Maya Rao". The task sends its updates there"); `ref` opens the task, chat or notification it came from |
 | `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked |
 | `tasks.script.checks` | "Checked X: nothing new (3 checks)", "X changed. You were told" |
 | `notifications` | questions and approvals from tasks (with the answer), plans waiting, suggestions, routines paused, backup and budget notices. Not shown again: `run_completed`, `run_failed` and `script_alert` (the run or check is shown), `brief` (the run), `skill` (the skills log) and dream notices (the dream) |
+| `reminders` (section 23) | "Your 10 minute timer went off", "Reminded you: call Ravi", "Cancelled your pasta timer" (`status: "stopped"`); `why` where it was set ("You set it by voice", "You set it on Telegram"); a reminder that went off late says when it was due. The `reminder` notification is not listed again |
 | `facts` | "Remembered something about you" (or "Saved a memory for your review"), `why` from its source |
 | `dreams`, `evolution_log` | memory tidy-ups; skill changes; profile updates |
 | backup folders | backups and snapshots (`kind` manual, scheduled, snapshot) |
@@ -2702,11 +2792,17 @@ What each source gives (past):
 - `GET /api/timeline/upcoming?days=7&kinds=&app=&q=` → `{items: [TimelineItem], paused: [TimelineItem]}`. `items`:
   first what is waiting for the user now (task questions and approvals, plans waiting for an OK; `status: "waiting"`),
   then, soonest first, every enabled task with a next run within `days` (1 to 31; recurring ones up to 7 times,
-  interval ones once), the next scheduled backup, the next nightly dream and timed approvals that end. `paused`:
+  interval ones once), the next scheduled backup, the next nightly dream, timed approvals that end and timers and
+  reminders not gone off yet ("Your 10 minute timer ends", "Will remind you: call Ravi", with `undo` Cancel). `paused`:
   routines (recurring and triggered tasks) that are turned off, `why` "Paused while you were away" (section 4,
   "Routines pause") or "You paused it".
 - `GET /api/timeline/apps` → `{apps: [{id, label}]}`: apps to filter by (tools used in chats in the last 90 days,
-  messaging apps with chats, task triggers).
+  messaging apps with chats or deliveries, task triggers).
+- `POST /api/timeline/restore` `{id}` → `{ok: true, result}`: run the app's restore tool for an item with `undo`
+  (#142), with the arguments the trash call was given. It goes through `Agent.run_tool`, so Never rules and Read only
+  connections still apply. 409 with a plain `detail` when the item has nothing to restore or the restore failed.
+- `POST /api/timeline/cancel` `{id}` → `{ok: true, reminder}`: cancel the timer or reminder of an upcoming item
+  (`reminder:<id>`, section 23). 409 with a plain `detail` when it already went off or was cancelled.
 
 **Paging.** Every past item has the key `(at, id)`. A page asks each source for its newest items before the cursor and
 merges them, so rows saved in the same moment are never skipped or shown twice. A source that drops rows in code (an
@@ -2716,4 +2812,135 @@ far it read. Indexes: `idx_messages_tool_time` (`messages(created_at) WHERE role
 
 The window refetches the timeline a moment after the events that change it (`task.*`, `notification.*`,
 `memory.updated`, `skill.updated`, `dream.updated`, `backup.updated`, `approval_grants.updated`, `channel.message`,
+`channel.delivery`,
 `budget.updated`, and a finished chat reply).
+
+## 22. Folders and Obsidian vaults as notes (owner: folders, #176)
+
+The user adds folders of notes or documents, or Obsidian vaults, and Sentient searches them when a question could be
+answered by something they wrote down. **Read only, always**: nothing writes to, moves or deletes anything in these
+folders; removing a folder only forgets Sentient's index of it.
+
+**What is read.** `.md`, `.markdown`, `.txt`, `.text`, `.pdf` (text, `pypdf`) and `.docx` (`python-docx`), at most
+`folders.max_file_mb` each and `folders.max_files` per folder. Left out: hidden files and folders (any name starting
+with `.`, so `.obsidian`, `.git`, `.trash`), symbolic links, `folders.ignore` (every folder) and the folder's own
+`ignore` patterns, and an Obsidian vault's own "Excluded files" (`userIgnoreFilters` in `.obsidian/app.json`, plain
+paths only). Patterns: `name/` is a folder anywhere, `a/b/` that folder, anything else a case-insensitive glob on the
+file name or the whole path (`*.tmp`, `Templates/*`). A folder with a `.obsidian` folder is a vault (`kind: "obsidian"`).
+
+**The index** lives in Sentient's database: `folders`, `folder_files` (path inside the folder, size, change time, a
+hash of the text, title, tags, `clipped`), `folder_chunks` (pieces of about `folders.chunk_chars`, markdown split at
+headings, each with its heading path), `folder_fts` (FTS5 over title, aliases and tags, the heading, and the text)
+and `folder_vec` (sqlite-vec, cosine, the pieces' embeddings from the `embedding` role). Front matter gives `tags`,
+`aliases` and `title`; `#tags` in the text count too; `[[Note|label]]` links read as their label.
+
+**Keeping it up to date.** One worker looks through one folder at a time (a *scan*): it lists the files with size and
+change time in a thread, forgets files that are gone, reads only new or changed files, keeps the pieces of files whose
+text did not change, and embeds new pieces in batches of 32 through the local model queue as background work (chats
+go first, #279). Scans run after a folder is added or its ignore patterns change, when a file in it changes
+(`folders.watch`, with `watchfiles`; Obsidian's own files under `.obsidian` are ignored), every
+`folders.rescan_minutes`, once after start, and on `POST /api/folders/{id}/rescan`. Stop everything cancels a running
+scan; it runs again at the next check. A different embedding model makes every piece be embedded again. When
+embeddings fail, keyword search still works (`searching_by_meaning: false`, `embedding_error`) and the pieces are
+embedded at a later scan. A folder that can't be found keeps its index (`status: "missing"`), in case its drive is
+unplugged. A scan that could not look at part of a folder (a subfolder it can't open, the file cap) forgets
+nothing. Every file is checked again right before it is read: a link, or anything that leads out of the folder, is
+never read (it counts as unreadable).
+
+**Search.** Keyword (bm25, title weighted) and meaning (cosine; only pieces within 0.15 of the best match) are merged
+by reciprocal rank, the keyword share scaled by how strong the match is, at most 2 pieces per file and
+`folders.results` pieces (1 to 20).
+
+**Clipped web pages (ADR 0025).** A note with a web address under `source`, `url`, `clipped_from`, `source_url`,
+`original_url` or `link` in its front matter, a `clippings`-style tag, or in a `Clippings` folder is a clipping. With
+`folders.clippings_are_outside` (default on) a `folder_search` result that includes one, and a `folder_read` of one,
+start with `outside_content: "a web page clipped into your notes"`, so the chat counts as having read outside content
+(section 10). The user's own notes are not outside content.
+
+### Tools (plugin `folders`, "Your folders"; hidden while no folder is added, and `folder_search` is offered on every chat turn while one is, also to local models)
+- `folder_search(query, folder = "", limit = 0)` (risk `read`) → `{outside_content?, results: [{title, folder, path,
+  heading?, text, tags?, file, link?, clipped_from?, similarity?}]}` or `{results: [], note}`. `path` is inside the
+  folder, `file` the full path, `link` an `obsidian://open?vault=&file=` link in a vault. `folder` is a folder's name
+  or id.
+- `folder_read(path, offset = 0, limit = 0)` (risk `read`) → `{outside_content?, title, folder, path, file, link?,
+  clipped_from?, offset, content, total, more, next_offset?}`: a whole indexed file read now from disk, in parts like
+  `file_read`. `path` is the full path, the path inside the folder, or `<folder name>/<path inside>` (`.md` may be
+  left off). Only files in the index that the current ignore rules keep can be read (never hidden or ignored ones),
+  and whether it is a clipping is checked on the file as it is now.
+
+### REST
+A **Folder** is `{id, path, name, kind: "folder"|"obsidian", ignore: string[], status: "waiting"|"scanning"|"ready"|
+"missing", progress: {done, total}|null, added_at, last_scan_at, last_scan_ms, files, unreadable, chunks, embedded,
+skipped, clippings, error}`: `files` read, `unreadable` that could not be read, `chunks` searchable pieces and
+`embedded` how many of them are searchable by meaning, `skipped` left out at the last scan (too big, over
+`max_files`), `clippings` clipped web pages, `error` a plain sentence (the folder can't be found, only part of it is
+searched). `progress` counts the new or changed files of the running scan.
+
+- `GET /api/folders` → `{folders: [Folder], searching_by_meaning, embedding_error}`
+- `POST /api/folders` `{path, ignore?}` → Folder, and a scan starts. 400 with a plain `detail` when the path is not a
+  full path to an existing folder, is a whole drive or the home folder, holds or is inside Sentient's data folder, is
+  already added, or is inside or holds an added folder.
+- `PATCH /api/folders/{id}` `{ignore}` → Folder, and it is scanned again. 404 when unknown.
+- `DELETE /api/folders/{id}` → `{removed: true}`: forgets the folder and its whole index. 404 when unknown.
+- `POST /api/folders/{id}/rescan` → 202 `{queued: true}`. 404 when unknown.
+- `POST /api/folders/search` `{query, folder?, limit?}` → what `folder_search` returns.
+- Event `folders.updated` (section 1).
+
+Settings > Folders lists them with their status and counts, adds one with the folder picker, removes one (with a
+confirmation), checks again, edits the folder's ignore patterns and shows the `folders` config section.
+
+## 23. Timers, reminders and quick commands (owner: reminders and core, #150)
+
+**Quick commands.** Before a chat turn calls the model, `Agent.run_turn` asks `sentient.agent.fastpath.plan`. When the
+message is *only* a plain timer or reminder command, it is done at once with no model call, on every surface (the
+window, voice and devices, Telegram, Discord and WhatsApp): the turn makes the same tool calls the model would
+(`tool_call` and `tool_result` events, kept in the chat like any other), says a short confirmation (`text_delta`, then
+`done`), and the engine logs `quick command: <action> (<language>) done in N ms with no model call`. Anything else,
+or anything that could mean two things, goes to the model unchanged. What it understands (English; one module per
+language under `sentient/agent/fastpath/`, tried for `assistant.language` and then English):
+
+| Command | Examples | Goes to the model instead |
+|---|---|---|
+| timer | "set a timer for 10 minutes", "start a 10 minute timer", "set a pasta timer for 8 minutes", "timer for 90 seconds", "set a timer for half an hour" | no length ("set a timer"), over 24 hours, anything more in the message |
+| reminder | "remind me at 6 pm to call Ravi", "remind me to call Ravi at 6 pm", "remind me in 20 minutes", "remind me tomorrow at 9 am to pay rent", "remind me tonight at 8 to call mom", "remind me at 18:00 to leave" | a clock time without AM or PM ("at 6"), a repeating wish ("every day"), a day name, "today" at a time that has passed, a time missing ("tonight") |
+| list | "what timers do I have", "how much time is left", "what are my reminders" | |
+| cancel | "cancel the timer", "stop the pasta timer", "cancel the 10 minute timer", "cancel my reminder to stretch", "cancel all timers" | two or more match and "all" was not said; nothing matches the words given; a plural without "all" |
+
+"Hey Sentient", "please", "can you" and the assistant's own name around a command are fine. A quick command never
+sends, buys or deletes anything ("delete the timer" goes to the model). It runs only when its tool would run without
+asking: with approvals mode `always`, or an "Ask" or "Never" rule on the tool or on `reminders`, the model answers as
+usual. Not used for a message with attachments. Turned off with `chat.quick_commands`. No smart-home commands yet:
+Sentient has no lights or Home Assistant integration.
+
+**Timers and reminders** (`sentient/reminders/`, table `reminders`). **Reminder**
+`{id, kind: "timer"|"reminder", message, connector: ""|"to"|"about"|"that", label, duration_s, fire_at, status:
+"scheduled"|"fired"|"cancelled", session_id, channel, language, source: "quick"|"chat"|"api", created_at, fired_at,
+cancelled_at, notification_id}`. `fire_at` is UTC; a clock time is read in the user's timezone
+(`assistant.timezone`). `duration_s` is a timer's length or a reminder's "in 20 minutes". `session_id` is the chat it
+was set in (null in an incognito chat). A timer runs 1 second to 24 hours; a reminder can be up to a year ahead.
+
+When one comes due, the engine sends a `reminder` notification (`notification.new`): title "Timer done" (message "Your
+10 minute timer is done.") or "Reminder" (message: what to remind about), payload `{event: "timer"|"reminder",
+reminder_id, fire_at, late, channel, session_id?}`. One that came due while Sentient was not running goes off when it
+starts, and says when it was due (`late: true`). A reminder set in a Telegram, Discord or WhatsApp chat is also sent
+to that chat (the delivery is listed on the Activity timeline as "A timer or reminder you set"); one set anywhere
+else stays on the desktop. Firing never asks the model and Stop everything does not hold it back. Fired and cancelled
+ones are forgotten after 30 days.
+
+### Tools (plugin `reminders`, "Timers & reminders", all `internal`)
+- `set_timer(minutes = 0, seconds = 0, hours = 0, label = "")` (risk `write`) → `{status, reminder}`.
+- `set_reminder(message = "", at = "", in_minutes = 0, connector = "to")` (risk `write`) → `{status, reminder}`.
+  `at` is a local "YYYY-MM-DD HH:MM" (or ISO with an offset). Repeating reminders are tasks
+  (`create_task_from_prompt`).
+- `list_reminders(kind = "any")` (risk `read`) → `{status, reminders}`, soonest first.
+- `cancel_reminder(reminder_id)` (risk `write`) → `{status, reminder}`.
+
+Each `reminder` in a result also has `fire_at_local` and `seconds_left`.
+
+### REST
+- `GET /api/reminders?status=scheduled|fired|cancelled|all&limit=100` → `{reminders: [Reminder]}`; scheduled soonest
+  first, others newest first.
+- `POST /api/reminders` `{kind: "timer"|"reminder", minutes?, at?, message?, label?}` → Reminder (`source: "api"`).
+  400 with a plain `detail` when it can't be set.
+- `POST /api/reminders/{id}/cancel` → Reminder. 404 when unknown, 409 when it already went off or was cancelled.
+- Event `reminder.updated` (section 1). The Activity timeline (section 21) lists them under `reminders`.

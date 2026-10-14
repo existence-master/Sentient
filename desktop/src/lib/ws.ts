@@ -26,7 +26,7 @@ const STALE_MS = 70_000
 const MAX_BACKOFF_MS = 15_000
 
 export function isDomainEvent(msg: { type: string }): msg is DomainEvent {
-  return msg.type.includes('.') && msg.type !== 'approval.ack'
+  return msg.type.includes('.') && msg.type !== 'approval.ack' && msg.type !== 'undo.ack'
 }
 
 export class LiveSocket {

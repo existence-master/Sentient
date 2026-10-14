@@ -37,8 +37,26 @@ CREATE TABLE IF NOT EXISTS channel_questions (
     task_id    TEXT NOT NULL,
     run_id     TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    request    TEXT,                          -- which request of the run (#337): its expires_at, else request_id
     PRIMARY KEY (channel, chat_id, message_id)
 );
+
+-- Notifications sent out to paired chats (#345): what went where, and whether it arrived. The Activity timeline
+-- shows them under "Messaging apps". ``ref`` is JSON naming the source item (a task, a chat or a notification).
+CREATE TABLE IF NOT EXISTS channel_deliveries (
+    id         TEXT PRIMARY KEY,
+    channel    TEXT NOT NULL,
+    chat_id    TEXT NOT NULL,
+    chat_label TEXT,
+    title      TEXT NOT NULL,                 -- the message's first line, short
+    what       TEXT NOT NULL,                 -- task | question | approval | plan | brief | suggestion | subagent | other
+    reason     TEXT NOT NULL,                 -- chosen (the task picked this chat) | default (the chat's delivery is on) | chat
+    status     TEXT NOT NULL,                 -- delivered | failed
+    error      TEXT,
+    ref        TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_channel_deliveries_created ON channel_deliveries(created_at);
 
 CREATE TABLE IF NOT EXISTS channel_refusals (
     channel    TEXT NOT NULL,

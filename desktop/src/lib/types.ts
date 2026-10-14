@@ -164,6 +164,8 @@ export interface ChatConfig {
   compress_after_messages: number
   show_thinking: boolean
   auto_title: boolean
+  /** Timers and reminders done at once, without the model (#150). */
+  quick_commands?: boolean
   /** Incognito chats can use what Sentient already knows (#154). Nothing from them is remembered either way. */
   incognito_uses_memory?: boolean
   incognito_delete_after_minutes?: number
@@ -454,6 +456,10 @@ export interface AnswerSource {
   url?: string
   /** File name under the files folder (`kind: 'file'`). */
   file?: string
+  /** Full path of a note from a folder the user added (`kind: 'file'`, #176); `url` is then an obsidian:// link. */
+  path?: string
+  /** Name of that folder. */
+  folder?: string
   /** Sender (`kind: 'email'`). */
   from?: string
   id?: string
@@ -761,6 +767,8 @@ export interface HardwareRecommendation {
   /** "qwen3:8b, reading 8,192 tokens at a time" */
   summary: string
   note: string
+  /** Memory search model for Hindi and other languages besides English (#339); null when a cloud model comes first. */
+  multilingual_embedding?: { model: string; name: string; size: string; note: string } | null
 }
 
 export interface Hardware {
@@ -868,6 +876,35 @@ export interface ApprovalRequestEvent extends TurnScoped {
   choices?: ApprovalDecision[] | null
   /** How long `allow_timed` lasts, in minutes. */
   grant_minutes?: number | null
+  /** What will be sent or changed, the way a person reads it (#142). */
+  preview?: ActionPreview | null
+}
+/** §10 A human-readable preview of an outgoing action (#142): an email's recipients, subject and text. */
+export interface ActionPreview {
+  kind: 'email' | 'message' | 'post' | 'delete' | 'trash' | 'purchase' | 'action' | string
+  title: string
+  fields: Array<{ label: string; value: string }>
+  body?: string | null
+  app?: string | null
+}
+/** §10 An email, message or post waiting `seconds` before it goes, so it can still be undone (#142). */
+export interface UndoWindowEvent extends TurnScoped {
+  type: 'undo_window'
+  undo_id: string
+  call_id: string
+  name: string
+  seconds: number
+  /** ISO time the window ends. */
+  until: string
+  preview?: ActionPreview | null
+}
+export type UndoAction = 'undo' | 'send_now'
+/** Reply to `undo.respond`: `done` false means the window had already ended. */
+export interface UndoAckEvent {
+  type: 'undo.ack'
+  undo_id: string
+  action: UndoAction
+  done: boolean
 }
 export interface UsageEvent extends TurnScoped {
   type: 'usage'
@@ -964,11 +1001,13 @@ export type ChatEvent =
   | ToolResultEvent
   | ToolProgressEvent
   | ApprovalRequestEvent
+  | UndoWindowEvent
   | UsageEvent
   | ErrorEvent
   | NoticeEvent
   | DoneEvent
   | ApprovalAckEvent
+  | UndoAckEvent
   | PongEvent
   | SteerAckEvent
   | UserInterjectionEvent
@@ -976,7 +1015,7 @@ export type ChatEvent =
 export type ChatEventType = ChatEvent['type']
 
 /** Turn-scoped events as produced by `POST /api/chat` and the voice socket. */
-export type AgentEvent = Exclude<ChatEvent, HelloEvent | ApprovalAckEvent | PongEvent | SteerAckEvent>
+export type AgentEvent = Exclude<ChatEvent, HelloEvent | ApprovalAckEvent | UndoAckEvent | PongEvent | SteerAckEvent>
 
 export interface MemoryUpdatedData {
   action: 'ADD' | 'UPDATE' | 'DELETE'
@@ -1027,6 +1066,7 @@ export interface DomainEventMap {
   'node.event': { node_id: string; event: string; data: Record<string, unknown> }
   'channel.updated': Channel
   'channel.message': ChannelMessage
+  'channel.delivery': ChannelDelivery
   // §15-16
   'user_model.updated': UserModelUpdatedData
   'dream.updated': Dream
@@ -1037,6 +1077,10 @@ export interface DomainEventMap {
   'model.busy': ModelBusy
   // §20
   'backup.updated': BackupUpdated
+  // §22
+  'folders.updated': FoldersUpdated
+  // §23
+  'reminder.updated': Reminder
   'import.updated': MemoryImportJob
 }
 
@@ -1064,6 +1108,8 @@ export type ClientMessage =
   | { type: 'chat.cancel'; session_id: string }
   | { type: 'chat.steer'; session_id: string; text: string }
   | { type: 'approval.respond'; approval_id: string; decision: ApprovalDecision }
+  /** §10 Undo, or send now, a send waiting in its undo window (#142). */
+  | { type: 'undo.respond'; undo_id: string; action: UndoAction }
   /** The window is focused and visible, or not (#139): approval requests go to a paired chat only while it isn't. */
   | { type: 'presence'; active: boolean }
   | { type: 'ping' }
@@ -1315,6 +1361,16 @@ export interface ChannelMessage {
   text: string
 }
 
+/** A notification sent to a paired chat (or that couldn't be), as the Activity screen lists it. */
+export interface ChannelDelivery {
+  id: string
+  channel: string
+  chat_id: string
+  title: string
+  status: 'delivered' | 'failed'
+  ref: TimelineRef | null
+}
+
 // ============================================================================ §4 Tasks
 export type TaskStatus =
   | 'planning'
@@ -1434,6 +1490,8 @@ export interface RunQuestion {
   reason?: string | null
   /** Approvals only: after this a late answer can't approve it. */
   expires_at?: ISODate | null
+  /** Approvals only (#142): what the held call would send, the way a person reads it. */
+  preview?: ActionPreview | null
 }
 
 export interface Run {
@@ -1717,7 +1775,7 @@ export interface McpTestResult {
 }
 
 // ============================================================================ §6 Notifications & proactivity
-export type NotificationKind = 'info' | 'task' | 'approval' | 'proactive' | 'skill' | 'error' | 'brief'
+export type NotificationKind = 'info' | 'task' | 'approval' | 'proactive' | 'skill' | 'error' | 'brief' | 'reminder'
 
 /** Daily Brief (docs/API.md section 6). */
 export type BriefKind = 'morning' | 'evening'
@@ -2591,6 +2649,7 @@ export interface BackupUpdated {
 export type TimelineKind =
   | 'chat'
   | 'tasks'
+  | 'reminders'
   | 'briefs'
   | 'monitors'
   | 'approvals'
@@ -2628,6 +2687,9 @@ export interface TimelineItem {
   app_label: string | null
   ref: TimelineRef | null
   upcoming: boolean
+  /** A way back the window can offer: Restore for something moved to the trash (#142), Cancel for a timer or
+   *  reminder that has not gone off yet (#150). */
+  undo?: { action: 'restore' | 'cancel'; label: string } | null
 }
 
 export interface TimelinePage {
@@ -2645,4 +2707,72 @@ export interface TimelineFilters {
   kinds?: TimelineKind[]
   app?: string
   q?: string
+}
+
+// §22 folders and Obsidian vaults as searchable notes (#176) ------------------------------------------------------
+export type FolderStatus = 'waiting' | 'scanning' | 'ready' | 'missing'
+
+export interface WatchedFolder {
+  id: string
+  path: string
+  name: string
+  /** `obsidian` when the folder is an Obsidian vault (it has a .obsidian folder). */
+  kind: 'folder' | 'obsidian'
+  /** This folder's own ignore patterns (Settings > Folders adds them to `folders.ignore`). */
+  ignore: string[]
+  status: FolderStatus
+  /** While a look through it runs: new or changed files read so far. */
+  progress: { done: number; total: number } | null
+  added_at: ISODate
+  last_scan_at: ISODate | null
+  last_scan_ms: number | null
+  files: number
+  /** Files that could not be read. */
+  unreadable: number
+  /** Searchable pieces, and how many of them can be searched by meaning. */
+  chunks: number
+  embedded: number
+  /** Files left out at the last look: too big, or over the limit. */
+  skipped: number
+  /** Notes that are clipped web pages (treated as written by someone else). */
+  clippings: number
+  error: string | null
+}
+
+export interface FoldersOverview {
+  folders: WatchedFolder[]
+  searching_by_meaning: boolean
+  embedding_error: string | null
+}
+
+export interface FoldersUpdated {
+  id: string
+  removed?: boolean
+  progress?: { done: number; total: number }
+}
+
+// ---------------------------------------------------------------------------- §23 timers and reminders (#150)
+export type ReminderKind = 'timer' | 'reminder'
+export type ReminderStatus = 'scheduled' | 'fired' | 'cancelled'
+
+export interface Reminder {
+  id: string
+  kind: ReminderKind
+  /** What to remind about ("call Ravi"); '' for a timer. */
+  message: string
+  connector: '' | 'to' | 'about' | 'that'
+  /** A timer's name ("pasta"). */
+  label: string
+  /** A timer's length, or a reminder set "in 20 minutes". */
+  duration_s: number | null
+  fire_at: ISODate
+  status: ReminderStatus
+  session_id: string | null
+  channel: string | null
+  language: string
+  source: 'quick' | 'chat' | 'api'
+  created_at: ISODate
+  fired_at: ISODate | null
+  cancelled_at: ISODate | null
+  notification_id: string | null
 }

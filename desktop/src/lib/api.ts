@@ -16,6 +16,8 @@ import type {
   BackupEntry,
   BackupInspect,
   BackupOverview,
+  FoldersOverview,
+  WatchedFolder,
   TimelineFilters,
   TimelinePage,
   TimelineUpcoming,
@@ -115,6 +117,8 @@ import type {
   ProgressUpdate,
   Provider,
   RoleName,
+  Reminder,
+  ReminderStatus,
   RuleProposal,
   SecretStatus,
   SentientConfig,
@@ -135,6 +139,7 @@ import type {
   ToolPlugin,
   TranscribeResult,
   TranscriptMessage,
+  UndoAction,
   UploadedFile,
   UsageReport,
   BudgetState,
@@ -482,6 +487,11 @@ export const api = {
     revokeGrant: (id: string) => http.delete<OkResponse>(`/api/approvals/grants/${enc(id)}`)
   },
 
+  /** §10 Undo, or send now, an email, message or post waiting in its undo window (#142). */
+  undo: {
+    respond: (undo_id: string, action: UndoAction) => http.post<{ done: boolean; action: UndoAction }>('/api/undo', { undo_id, action })
+  },
+
   files: {
     upload: (file: File | Blob, filename: string, opts?: UploadOptions) =>
       upload<UploadedFile>('/api/files', file, filename, opts),
@@ -827,13 +837,32 @@ export const api = {
     dismissLastRestore: () => http.delete<{ ok: boolean }>('/api/backups/last-restore')
   },
 
+  // §22 folders and Obsidian vaults as searchable notes (#176) -------------------------------------------------
+  folders: {
+    list: () => http.get<FoldersOverview>('/api/folders'),
+    add: (path: string, ignore?: string[]) => http.post<WatchedFolder>('/api/folders', { path, ignore }),
+    update: (id: string, ignore: string[]) => http.patch<WatchedFolder>(`/api/folders/${id}`, { ignore }),
+    remove: (id: string) => http.delete<{ removed: boolean }>(`/api/folders/${id}`),
+    rescan: (id: string) => http.post<{ queued: boolean }>(`/api/folders/${id}/rescan`, {})
+  },
+
   // §21 activity timeline ---------------------------------------------------------------------
   timeline: {
     past: (filters: TimelineFilters = {}, before?: string | null, limit = 50) =>
       http.get<TimelinePage>('/api/timeline', { query: { ...timelineQuery(filters), before: before ?? undefined, limit } }),
     upcoming: (filters: TimelineFilters = {}, days = 7) =>
       http.get<TimelineUpcoming>('/api/timeline/upcoming', { query: { ...timelineQuery(filters), days } }),
-    apps: () => http.get<{ apps: Array<{ id: string; label: string }> }>('/api/timeline/apps')
+    apps: () => http.get<{ apps: Array<{ id: string; label: string }> }>('/api/timeline/apps'),
+    /** Bring back what a chat moved to the trash (#142); offered when an item has `undo`. */
+    restore: (id: string) => http.post<{ ok: boolean; result?: unknown }>('/api/timeline/restore', { id }),
+    /** Cancel a timer or reminder that has not gone off yet (#150); offered when `undo.action` is 'cancel'. */
+    cancel: (id: string) => http.post<{ ok: boolean; reminder?: Reminder }>('/api/timeline/cancel', { id })
+  },
+
+  // §23 timers and reminders (#150) -------------------------------------------------------------
+  reminders: {
+    list: (status: ReminderStatus | 'all' = 'scheduled') => http.get<{ reminders: Reminder[] }>('/api/reminders', { query: { status } }),
+    cancel: (id: string) => http.post<Reminder>(`/api/reminders/${enc(id)}/cancel`)
   },
 
   // §16 webhooks --------------------------------------------------------------------------

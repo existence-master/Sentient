@@ -6,6 +6,7 @@ import {
   IconEdit,
   IconEye,
   IconFolder,
+  IconMail,
   IconMailOpened,
   IconSend,
   IconShieldCheck,
@@ -21,8 +22,10 @@ import { Badge, Button, JsonView, Markdown, type Tone } from '@/components/ui'
 import type { ApprovalView } from '@/lib/chatFold'
 import type { ApprovalDecision } from '@/lib/types'
 import { cn, truncate } from '@/lib/utils'
+import { ActionPreview } from './ActionPreview'
 import { hostOf, refLabel } from './cards/bits'
 import { toolMeta } from './toolMeta'
+import { approvalRisk, type RiskLabel } from './approvalRisk'
 
 const STATUS_TEXT: Partial<Record<ApprovalView['status'], string>> = {
   allow: 'You allowed this once',
@@ -48,25 +51,35 @@ interface EffectiveRisk {
   tone: Tone
 }
 
+const RISK_ICONS: Record<RiskLabel, Icon> = {
+  'Runs a command': IconTerminal2,
+  'Runs code': IconTerminal2,
+  Purchase: IconCreditCard,
+  Deletes: IconTrash,
+  'Posts publicly': IconSend,
+  Submits: IconSend,
+  'Sends an email': IconMail,
+  Sends: IconSend,
+  'Changes things': IconEdit,
+  Reads: IconEye
+}
+
 /**
  * The engine reports the effective risk (§10 `risk_fn`: a click on "Place order" becomes `send`).
- * `send` covers purchases, messages, posts and deletions, so read the reason to name it plainly.
+ * The wording comes from {@link approvalRisk}: the tool's name and declared risk first, word
+ * guessing only as a last resort, and never from the arguments' content — except the slug
+ * keys of multi-execute tools, which name the action (#344). A trash-kind preview (#142)
+ * reads as a move to the trash, not a loss, and is checked first.
  */
-export function effectiveRisk(approval: Pick<ApprovalView, 'risk' | 'reason' | 'name' | 'arguments'>): EffectiveRisk {
-  const text = `${approval.reason ?? ''} ${JSON.stringify(approval.arguments ?? {})}`.toLowerCase()
-  if (approval.name === 'terminal_run') return { label: 'Runs a command', verb: 'run a command on this computer', icon: IconTerminal2, tone: 'danger' }
-  if (approval.risk === 'exec') return { label: 'Runs code', verb: 'run code on your computer', icon: IconTerminal2, tone: 'danger' }
-  if (approval.risk === 'send') {
-    if (/(purchase|buy|order|checkout|pay\b|payment|card|subscribe|book(ing)? and pay)/.test(text))
-      return { label: 'Purchase', verb: 'make a purchase', icon: IconCreditCard, tone: 'danger' }
-    if (/(delete|remove|erase|unsubscribe|cancel (my|the|this) )/.test(text))
-      return { label: 'Deletes', verb: 'delete something', icon: IconTrash, tone: 'danger' }
-    if (/(post|publish|tweet|comment|review)/.test(text)) return { label: 'Posts publicly', verb: 'post something publicly', icon: IconSend, tone: 'danger' }
-    if (/(submit|confirm|form)/.test(text)) return { label: 'Submits', verb: 'submit something for you', icon: IconSend, tone: 'danger' }
-    return { label: 'Sends', verb: 'send something on your behalf', icon: IconSend, tone: 'danger' }
-  }
-  if (approval.risk === 'write') return { label: 'Changes things', verb: 'make a change', icon: IconEdit, tone: 'warning' }
-  return { label: 'Reads', verb: 'look something up', icon: IconEye, tone: 'neutral' }
+export function effectiveRisk(
+  approval: Pick<ApprovalView, 'risk' | 'reason' | 'name' | 'arguments'> & Pick<Partial<ApprovalView>, 'preview'>
+): EffectiveRisk {
+  // a delete for good became its app's trash version (#142): it can come back, so it reads as a change, not a loss
+  if (approval.preview?.kind === 'trash' && approval.risk !== 'exec')
+    return { label: 'Moves to the trash', verb: 'move something to the trash', icon: IconTrash, tone: 'warning' }
+  const wording = approvalRisk(approval)
+  return { ...wording, icon: RISK_ICONS[wording.label] }
+}
 }
 
 /** One plain line saying what exactly will happen, e.g. `Click "Place order" on amazon.in`. */
@@ -194,6 +207,17 @@ export function ApprovalCard({
       ) : code ? (
         <div className="mx-4 mt-3 max-h-56 overflow-auto [&_.md-code]:bg-surface">
           <Markdown>{'```python\n' + code.replace(/\s+$/, '') + '\n```'}</Markdown>
+        </div>
+      ) : approval.preview ? (
+        // what will be sent, the way a person reads it (#142); the raw details stay one click away
+        <div className="mx-4 mt-3 space-y-1.5">
+          <ActionPreview preview={approval.preview} />
+          <details className="group text-xs text-fg-subtle">
+            <summary className="cursor-pointer select-none hover:text-fg-muted">Details</summary>
+            <div className="mt-1.5 max-h-48 overflow-auto rounded-lg border border-border bg-surface px-3 py-2">
+              <JsonView value={args} collapsedDepth={2} />
+            </div>
+          </details>
         </div>
       ) : (
         !isBrowser &&

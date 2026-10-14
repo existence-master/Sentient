@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, tzinfo
@@ -27,6 +28,9 @@ from typing import TYPE_CHECKING, Any
 
 from sentient.activity import words
 from sentient.agent import grants as grant_rules
+from sentient.agent import reversible
+from sentient.llm.provider import ToolCall
+from sentient.store.db import new_id
 from sentient.tasks.schedule import calculate_next_run, get_tz, iso, parse_iso, user_timezone_name
 from sentient.tools.rules import tool_title
 
@@ -36,7 +40,7 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 # What the window filters by. Order is the order of the filter chips.
-KINDS = ("chat", "tasks", "briefs", "monitors", "approvals", "channels", "notifications", "memory", "skills",
+KINDS = ("chat", "tasks", "reminders", "briefs", "monitors", "approvals", "channels", "notifications", "memory", "skills",
          "backups", "cost")
 CHANNELS = ("telegram", "discord", "whatsapp")
 MAX_LIMIT = 200
@@ -60,6 +64,8 @@ class Item:
     app_label: str | None = None
     ref: dict | None = None
     upcoming: bool = False
+    # a way back the window can offer (#142): {"action": "restore", "label": "Restore"} for something moved to the trash
+    undo: dict | None = None
     _args: tuple | None = field(default=None, repr=False)  # (session_id, call id, before) for the arguments look-up
     _apps: frozenset[str] = field(default_factory=frozenset, repr=False)  # other apps it counts under in a filter
 
@@ -73,7 +79,7 @@ class Item:
     def as_dict(self) -> dict[str, Any]:
         return {"id": self.id, "kind": self.kind, "at": self.at, "title": self.title, "why": self.why,
                 "detail": self.detail, "status": self.status, "app": self.app, "app_label": self.app_label,
-                "ref": self.ref, "upcoming": self.upcoming}
+                "ref": self.ref, "upcoming": self.upcoming, "undo": self.undo}
 
 
 @dataclass
@@ -207,8 +213,8 @@ class Timeline:
         limit = max(1, min(int(limit or 50), MAX_LIMIT))
         cur = decode_cursor(before)
         sources: list[Source] = [
-            self._chat_tools, self._channel_replies, self._task_runs, self._script_checks, self._notifications,
-            self._facts, self._dreams, self._skills, self._backups_past, self._always_allowed, self._cost,
+            self._chat_tools, self._channel_replies, self._channel_deliveries, self._task_runs, self._script_checks, self._notifications,
+            self._reminders_past, self._facts, self._dreams, self._skills, self._backups_past, self._always_allowed, self._cost,
         ]
         results = await asyncio.gather(*(src(cur, limit, query) for src in sources))
         candidates = [i for items, _ in results for i in items if cur is None or i.key < cur]
@@ -274,6 +280,10 @@ class Timeline:
         where = self._where_chat(row["channel"], row["title"])
         args = (row["session_id"], row["tool_call_id"], row["_at"])
         also = frozenset({row["channel"]}) if row["channel"] in CHANNELS else frozenset()
+        undone = isinstance(result, dict) and result.get("undone") is True  # Undo pressed in its window (#142)
+        # something moved to the trash can come back when its app has a way to restore it (#142)
+        back = reversible.restore_twin(tool, self.app.registry) if tool is not None and not error else None
+        undo = {"action": "restore", "label": "Restore"} if back is not None else None
         if isinstance(approval, dict):
             decision = str(approval.get("decision") or "")
             target = str(approval.get("target") or "").strip()
@@ -281,6 +291,8 @@ class Timeline:
             asked = f"Asked you before {what}" + (f" ({words.short(target, 60)})" if target else "")
             if decision == grant_rules.DENY:
                 said, status = "You said no, so it was not done.", "declined"
+            elif undone:
+                said, status = "You allowed it, then pressed Undo, so nothing was sent.", "stopped"
             else:
                 said, status = f"You chose {grant_rules.decision_label(decision)}.", "done"
                 if error:
@@ -294,36 +306,73 @@ class Timeline:
                 risk = str(approval.get("risk_label") or "It changes something")
                 why = f"{risk}, so Sentient asks first. {where}"
             return Item(id=row["_key"], kind="approvals", at=row["_at"], title=asked, why=why, detail=said,
-                        status=status, app=app, app_label=label, ref=ref, _args=args, _apps=also)
+                        status=status, app=app, app_label=label, ref=ref, undo=undo, _args=args, _apps=also)
         verb = f"Used {label}: {title}" if label else f"Used {title}"
+        if undone:
+            return Item(id=row["_key"], kind="chat", at=row["_at"], title=f"Held back: {title}" + (f" in {label}" if label else ""),
+                        why=where, detail="You pressed Undo, so nothing was sent.", status="stopped", app=app,
+                        app_label=label, ref=ref, _apps=also)
         if error:
             return Item(id=row["_key"], kind="chat", at=row["_at"],
                         title=f"Couldn't {title[:1].lower() + title[1:]}" + (f" in {label}" if label else ""),
                         why=where, detail=words.short(error, 160), status="failed", app=app, app_label=label,
                         ref=ref, _args=args, _apps=also)
         return Item(id=row["_key"], kind="chat", at=row["_at"], title=verb, why=where, status="done", app=app,
-                    app_label=label, ref=ref, _args=args, _apps=also)
+                    app_label=label, ref=ref, undo=undo, _args=args, _apps=also)
+
+    async def _call_arguments(self, session_id: str, call_id: str, at: str) -> dict | None:
+        """The arguments a chat tool call was given, read from the assistant message that made it."""
+        row = await self.store.fetchone(
+            "SELECT tool_calls FROM messages WHERE session_id = ? AND role = 'assistant' AND created_at <= ?"
+            " AND tool_calls IS NOT NULL ORDER BY created_at DESC LIMIT 1", (session_id, at),
+        )
+        calls = _loads(row["tool_calls"]) if row else None
+        for call in calls if isinstance(calls, list) else []:
+            if not isinstance(call, dict) or call.get("id") != call_id:
+                continue
+            fn = call.get("function") if isinstance(call.get("function"), dict) else call
+            args = fn.get("arguments")
+            args = _loads(args) if isinstance(args, str) else args
+            return args if isinstance(args, dict) else None
+        return None
 
     async def _fill_arguments(self, page: list[Item]) -> None:
         """A short line of what each chat tool call was given ("query: weather in Pune"), read only for the page."""
         for item in page:
-            if item._args is None:
+            if item._args is None or item.detail is not None:
                 continue
-            session_id, call_id, at = item._args
-            row = await self.store.fetchone(
-                "SELECT tool_calls FROM messages WHERE session_id = ? AND role = 'assistant' AND created_at <= ?"
-                " AND tool_calls IS NOT NULL ORDER BY created_at DESC LIMIT 1", (session_id, at),
-            )
-            calls = _loads(row["tool_calls"]) if row else None
-            for call in calls if isinstance(calls, list) else []:
-                if not isinstance(call, dict) or call.get("id") != call_id:
-                    continue
-                fn = call.get("function") if isinstance(call.get("function"), dict) else call
-                args = fn.get("arguments")
-                args = _loads(args) if isinstance(args, str) else args
-                if item.detail is None:
-                    item.detail = _brief(args) or None
-                break
+            args = await self._call_arguments(*item._args)
+            if args:
+                item.detail = _brief(args) or None
+
+    async def restore(self, item_id: str) -> dict:
+        """Bring back what a chat tool call moved to the trash, with its app's restore tool (#142). Returns
+        ``{"ok": True, "result": ...}`` or ``{"ok": False, "error": "..."}`` in plain words. Never rules and Read only
+        connections still apply (``Agent.run_tool``)."""
+        kind, _, message_id = str(item_id or "").partition(":")
+        if kind != "chat" or not message_id:
+            return {"ok": False, "error": "That item can't be undone."}
+        row = await self.store.fetchone(
+            "SELECT m.session_id, m.name, m.content, m.tool_call_id, m.created_at FROM messages m"
+            " JOIN sessions s ON s.id = m.session_id WHERE m.id = ? AND m.role = 'tool' AND s.incognito = 0",
+            (message_id,),
+        )
+        tool = self.app.registry.get(str(row["name"] or "")) if row else None
+        back = reversible.restore_twin(tool, self.app.registry) if tool is not None else None
+        result = _loads(row["content"]) if row else None
+        if row is None or tool is None or back is None or (isinstance(result, dict) and result.get("error")):
+            return {"ok": False, "error": "There is nothing to restore for this item."}
+        args = await self._call_arguments(row["session_id"], row["tool_call_id"], row["created_at"])
+        fitted = reversible.fit_arguments(back, args)
+        if fitted is None or self.app.agent is None:
+            return {"ok": False, "error": "Sentient can't tell what to restore for this item."}
+        ctx = self.app.agent.tool_context(row["session_id"], "desktop")
+        res, is_error, _ = await self.app.agent.run_tool(ToolCall(id=new_id(), name=back.name, arguments=fitted), ctx)
+        error = res.get("error") if isinstance(res, dict) else None
+        if is_error or error:
+            return {"ok": False, "error": str(error or res)[:300]}
+        log.info("activity: restored %s with %s", item_id, back.name)
+        return {"ok": True, "result": res}
 
     # -- messaging apps: Sentient's replies in Telegram, Discord and WhatsApp chats
     async def _channel_replies(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
@@ -354,6 +403,45 @@ class Timeline:
             where=where, params=params, ts="m.created_at", key="('reply:' || m.id)", build=build,
             cur=cur, n=n, query=query, filtered=False,
         )
+
+    # -- messaging apps: notifications sent out to paired chats (#345)
+    async def _channel_deliveries(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
+        if not query.wants("channels") or (query.app and query.app not in CHANNELS):
+            return [], None
+        where: list[str] = []
+        params: list = []
+        if query.app:
+            where.append("channel = ?")
+            params.append(query.app)
+        if query.q:
+            where.append("(title LIKE ? ESCAPE '\\' OR chat_label LIKE ? ESCAPE '\\' OR error LIKE ? ESCAPE '\\'"
+                         " OR channel LIKE ? ESCAPE '\\')")  # "telegram" finds "Sent to Telegram: ..."
+            params += [query.like()] * 4
+
+        def build(row: Any) -> Item:
+            app, label = self._app(row["channel"])
+            title = words.short(row["title"], 100)
+            chat = words.short((row["chat_label"] or "").strip(), 60)
+            to = f'To your chat "{chat}"' if chat else "To your paired chat"
+            why = f"{to}. {words.DELIVERY_REASONS.get(row['reason'], words.DELIVERY_REASONS['default'])}"
+            ref = _loads(row["ref"])
+            ref = ref if isinstance(ref, dict) and ref.get("type") else None
+            if row["status"] == "failed":
+                return Item(id=row["_key"], kind="channels", at=row["_at"], title=f"Couldn't send to {label}: {title}",
+                            why=why, detail=words.short(row["error"] or "", 200) or None, status="failed", app=app,
+                            app_label=label, ref=ref)
+            return Item(id=row["_key"], kind="channels", at=row["_at"], title=f"Sent to {label}: {title}", why=why,
+                        detail=words.DELIVERY_WHAT.get(row["what"]), status="done", app=app, app_label=label, ref=ref)
+
+        try:
+            return await self._sql(
+                select="SELECT created_at AS _at, ('sent:' || id) AS _key, channel, chat_label, title, what, reason,"
+                       " status, error, ref FROM channel_deliveries",
+                where=where or ["1"], params=params, ts="created_at", key="('sent:' || id)", build=build,
+                cur=cur, n=n, query=query, filtered=False,
+            )
+        except sqlite3.OperationalError:  # the channels package hasn't made its tables yet
+            return [], None
 
     # -- task runs (tasks, briefs, and monitors that start a run)
     async def _task_runs(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
@@ -486,7 +574,8 @@ class Timeline:
         if not query.wants("notifications", "approvals", "tasks", "monitors", "memory", "backups", "cost"):
             return [], None
         where = [
-            "kind NOT IN ('brief', 'skill')",  # a brief is its run; a skill change is in the skills log
+            # a brief is its run; a skill change is in the skills log; a timer or reminder is its own row (#150)
+            "kind NOT IN ('brief', 'skill', 'reminder')",
             # a finished run or a check is shown from the run or the check itself
             f"COALESCE({_json('payload', '$.event')}, '') NOT IN ('run_completed', 'run_failed', 'script_alert')",
             f"{_json('payload', '$.dream_id')} IS NULL",  # the dream itself
@@ -596,6 +685,75 @@ class Timeline:
         app_id, label = self._app(app)
         return Item(id=row["_key"], kind=item_kind, at=row["_at"], title=item_title, why=why, detail=detail,
                     status=state, app=app_id, app_label=label, ref=ref)
+
+    # -- timers and reminders that went off or were cancelled (#150)
+    def _reminder_where(self, row: Any) -> str:
+        channel = row["channel"]
+        if channel in CHANNELS:
+            return f"You set it on {words.app_label(channel)}"
+        if channel in {"voice", "glasses", "phone"}:
+            return "You set it by voice"
+        return "You set it in a chat" if row["session_id"] or row["source"] != "api" else "You set it"
+
+    def _reminder_ref(self, row: Any) -> dict | None:
+        if row["session_id"]:
+            return {"type": "chat", "id": row["session_id"]}
+        if row["notification_id"]:
+            return {"type": "notification", "id": row["notification_id"]}
+        return None
+
+    async def _reminders_past(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
+        if not query.wants("reminders"):
+            return [], None
+        where = ["status IN ('fired', 'cancelled')"]
+        params: list = []
+        if query.app:
+            where.append("channel = ?")
+            params.append(query.app)
+        if query.q:
+            where.append("(message LIKE ? ESCAPE '\\' OR label LIKE ? ESCAPE '\\' OR kind LIKE ? ESCAPE '\\')")
+            params += [query.like()] * 3
+
+        def build(row: Any) -> Item:
+            what = words.reminder_name(dict(row))
+            fired = row["status"] == "fired"
+            if row["kind"] == "timer":
+                title = f"Your {what} went off" if fired else f"Cancelled your {what}"
+            else:
+                message = words.short(row["message"], 80)
+                title = (f"Reminded you: {message}" if message else "Reminded you") if fired else \
+                    (f"Cancelled your reminder: {message}" if message else "Cancelled a reminder")
+            detail = None
+            due = parse_iso(row["fire_at"])
+            done = parse_iso(row["fired_at"])
+            if fired and due is not None and done is not None and (done - due).total_seconds() > 90:
+                detail = f"It was due at {words.when_text(row['fire_at'], self.tz())}, while Sentient wasn't running"
+            also = frozenset({row["channel"]}) if row["channel"] in CHANNELS else frozenset()
+            return Item(id=row["_key"], kind="reminders", at=row["_at"], title=title, why=self._reminder_where(row),
+                        detail=detail, status="done" if fired else "stopped", ref=self._reminder_ref(row), _apps=also)
+
+        try:
+            return await self._sql(
+                select="SELECT COALESCE(fired_at, cancelled_at) AS _at, ('reminder:' || id) AS _key, * FROM reminders",
+                where=where, params=params, ts="COALESCE(fired_at, cancelled_at)", key="('reminder:' || id)",
+                build=build, cur=cur, n=n, query=query, filtered=False,
+            )
+        except sqlite3.OperationalError:  # the reminders table isn't there yet
+            return [], None
+
+    async def cancel(self, item_id: str) -> dict:
+        """Cancel the timer or reminder of an upcoming item (its ``undo`` is ``{"action": "cancel"}``). Returns
+        ``{"ok": True, "reminder": ...}`` or ``{"ok": False, "error": "..."}`` in plain words."""
+        kind, _, reminder_id = str(item_id or "").partition(":")
+        svc = getattr(self.app, "reminders", None)
+        if kind != "reminder" or not reminder_id or svc is None:
+            return {"ok": False, "error": "That item can't be cancelled."}
+        item, changed = await svc.cancel(reminder_id)
+        if item is None:
+            return {"ok": False, "error": "That timer or reminder is gone."}
+        if not changed:
+            return {"ok": False, "error": "It already went off." if item["status"] == "fired" else "It was already cancelled."}
+        return {"ok": True, "reminder": item}
 
     # -- memories saved
     async def _facts(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
@@ -848,6 +1006,7 @@ class Timeline:
         items += await self._next_backup(now, until)
         items += await self._next_dream(now, until, tz)
         items += await self._grants_ending(now, until)
+        items += await self._reminders_upcoming(until, tz)
         items = [i for i in items if query.matches(i)]
         paused = [i for i in paused if query.matches(i)]
         items.sort(key=lambda i: (0 if i.status == "waiting" else 1, i.at or "", i.id))
@@ -968,6 +1127,26 @@ class Timeline:
                      why=f"It runs each night around {words.clock(hour, minute)} while you're not chatting",
                      status="scheduled", ref={"type": "dream"}, upcoming=True)]
 
+    async def _reminders_upcoming(self, until: datetime, tz: tzinfo) -> list[Item]:
+        svc = getattr(self.app, "reminders", None)
+        if svc is None:
+            return []
+        out: list[Item] = []
+        for r in await svc.list("scheduled"):
+            at = parse_iso(r["fire_at"])
+            if at is None or at > until:
+                continue
+            if r["kind"] == "timer":
+                title = f"Your {words.reminder_name(r)} ends"
+            else:
+                message = words.short(r["message"], 80)
+                title = f"Will remind you: {message}" if message else "Will remind you"
+            also = frozenset({r["channel"]}) if r["channel"] in CHANNELS else frozenset()
+            out.append(Item(id=f"reminder:{r['id']}", kind="reminders", at=iso(at), title=title,
+                            why=self._reminder_where(r), status="scheduled", ref=self._reminder_ref(r), upcoming=True,
+                            undo={"action": "cancel", "label": "Cancel"}, _apps=also))
+        return out
+
     async def _grants_ending(self, now: datetime, until: datetime) -> list[Item]:
         grants = self.app.approvals.grants
         if grants is None:
@@ -1006,6 +1185,11 @@ class Timeline:
                 found.add(plugin)
         rows = await self.store.fetchall("SELECT DISTINCT channel FROM sessions WHERE incognito = 0")
         found |= {r["channel"] for r in rows if r["channel"] in CHANNELS}
+        try:
+            rows = await self.store.fetchall("SELECT DISTINCT channel FROM channel_deliveries")
+            found |= {r["channel"] for r in rows if r["channel"] in CHANNELS}
+        except sqlite3.OperationalError:
+            pass
         rows = await self.store.fetchall(
             f"SELECT DISTINCT {_json('schedule', '$.source')} AS source FROM tasks"
             f" WHERE {_json('schedule', '$.type')} = 'triggered'"

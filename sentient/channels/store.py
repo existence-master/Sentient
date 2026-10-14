@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import secrets as _pysecrets
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sentient.store.db import Store, now_iso
+from sentient.store.db import Store, new_id, now_iso
+
+DELIVERY_DAYS = 365  # deliveries older than this are dropped
 
 SCHEMA = Path(__file__).with_name("schema.sql")
 
@@ -31,7 +34,9 @@ class ChannelStore:
 
     async def migrate(self) -> None:
         await self.store.db.executescript(SCHEMA.read_text(encoding="utf-8"))
+        await self.store.ensure_column("channel_questions", "request", "TEXT")  # #337
         await self.store.db.commit()
+        await self.prune_deliveries()  # on every start too, so old rows go even when nothing is sent any more
 
     # ------------------------------------------------------------------ state
     async def state(self, channel: str) -> dict[str, Any]:
@@ -109,14 +114,17 @@ class ChannelStore:
         return (row["channel"], self._chat(row)) if row else None
 
     # ------------------------------------------------------------------ task questions
-    async def add_question(self, channel: str, chat_id: str, message_ids: list[str], *, task_id: str, run_id: str) -> None:
-        """Remember the messages that delivered a task's question, so a reply to one of them answers it."""
+    async def add_question(
+        self, channel: str, chat_id: str, message_ids: list[str], *, task_id: str, run_id: str, request: str | None = None
+    ) -> None:
+        """Remember the messages that delivered a task's question, so a reply to one of them answers it. ``request``
+        names which of the run's requests it was (#337), so a reply to an older one never answers a newer one."""
         now = now_iso()
         for mid in message_ids:
             await self.store.execute(
-                "INSERT OR REPLACE INTO channel_questions(channel, chat_id, message_id, task_id, run_id, created_at)"
-                " VALUES(?,?,?,?,?,?)",
-                (channel, str(chat_id), str(mid), task_id, run_id, now),
+                "INSERT OR REPLACE INTO channel_questions(channel, chat_id, message_id, task_id, run_id, created_at, request)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (channel, str(chat_id), str(mid), task_id, run_id, now, request or None),
             )
         # bounded: questions older than 90 days are no longer worth matching
         cutoff = (datetime.now(UTC) - timedelta(days=90)).isoformat()
@@ -124,10 +132,34 @@ class ChannelStore:
 
     async def question_for(self, channel: str, chat_id: str, message_id: str) -> dict | None:
         row = await self.store.fetchone(
-            "SELECT task_id, run_id FROM channel_questions WHERE channel = ? AND chat_id = ? AND message_id = ?",
+            "SELECT task_id, run_id, request FROM channel_questions WHERE channel = ? AND chat_id = ? AND message_id = ?",
             (channel, str(chat_id), str(message_id)),
         )
-        return {"task_id": row["task_id"], "run_id": row["run_id"]} if row else None
+        return {"task_id": row["task_id"], "run_id": row["run_id"], "request": row["request"]} if row else None
+
+    # ------------------------------------------------------------------ deliveries (#345)
+    async def add_delivery(
+        self, channel: str, chat_id: str, *, chat_label: str | None, title: str, what: str, reason: str, delivered: bool,
+        error: str | None = None, ref: dict | None = None,
+    ) -> dict:
+        """Remember a notification sent (or not) to a paired chat, for the Activity timeline."""
+        row = {
+            "id": new_id(), "channel": channel, "chat_id": str(chat_id), "chat_label": chat_label, "title": title,
+            "what": what, "reason": reason, "status": "delivered" if delivered else "failed", "error": error,
+            "ref": ref, "created_at": now_iso(),
+        }
+        await self.store.execute(
+            "INSERT INTO channel_deliveries(id, channel, chat_id, chat_label, title, what, reason, status, error, ref,"
+            " created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (row["id"], channel, row["chat_id"], chat_label, title, what, reason, row["status"], error,
+             json.dumps(ref) if ref else None, row["created_at"]),
+        )
+        await self.prune_deliveries()
+        return row
+
+    async def prune_deliveries(self) -> None:
+        cutoff = (datetime.now(UTC) - timedelta(days=DELIVERY_DAYS)).isoformat()
+        await self.store.execute("DELETE FROM channel_deliveries WHERE created_at < ?", (cutoff,))
 
     # ------------------------------------------------------------------ refusals
     async def refuse_once(self, channel: str, chat_id: str) -> bool:
