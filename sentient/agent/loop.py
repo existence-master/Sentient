@@ -1047,9 +1047,10 @@ class Agent:
                 return plan
             purchase = await is_purchase(tool, tc.arguments, ctx, plan.risk)
             plugin = self.registry.plugin(tool.plugin)
+            asked = rule == "ask" and not await self.approvals.granted(tool, plan.risk, tc.arguments, ctx)
             plan.preset = (await tried.record(
                 tool, tc.name, tc.arguments, plan.risk, purchase=purchase,
-                asks=rule == "ask" or purchase or bool(ctx.untrusted and outgoing),
+                asks=asked or purchase or bool(ctx.untrusted and outgoing),
                 app=getattr(plugin, "display_name", None) or tool.plugin, at=now_iso(),
             ), False, 0)
             return plan

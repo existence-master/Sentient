@@ -197,3 +197,16 @@ async def test_old_copies_are_pruned(app, scratch):
     await app.store.execute("UPDATE file_snapshots SET created_at = '2000-01-01T00:00:00+00:00'")
     assert await app.snapshots.prune() == 1
     assert await _rows(app) == [] and not (snap_mod.store_dir() / snap["id"]).exists()
+
+
+async def test_two_restores_at_once_put_the_files_back_once(app, scratch):
+    import asyncio
+
+    (scratch / "a.txt").write_text("first", encoding="utf-8")
+    async with app.snapshots.guard([scratch], None, source="code"):
+        (scratch / "a.txt").write_text("second", encoding="utf-8")
+    [snap] = await _rows(app)
+    outs = await asyncio.gather(app.snapshots.restore(snap["id"]), app.snapshots.restore(snap["id"]))
+    assert sorted(o["ok"] for o in outs) == [False, True]
+    assert (scratch / "a.txt").read_text(encoding="utf-8") == "first"
+    assert [r["source"] for r in await _rows(app)] == ["code", "restore"]  # one undo snapshot, not two

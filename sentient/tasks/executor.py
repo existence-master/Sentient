@@ -573,7 +573,8 @@ async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume:
         plugin = app.registry.plugin(tool.plugin)
         result = await trying(svc, run).record(
             tool, name, arguments, risk, purchase=await is_purchase(tool, arguments, ctx, risk),
-            asks=app.approvals.rule(tool) == "ask", app=getattr(plugin, "display_name", None) or tool.plugin,
+            asks=app.approvals.rule(tool) == "ask" and not await app.approvals.granted(tool, risk, arguments, ctx),
+            app=getattr(plugin, "display_name", None) or tool.plugin,
             at=svc.now_iso(),
         )
         await svc.progress(task_id, run_id, {"type": "tool_result", "tool_name": name, "result": result, "is_error": False})

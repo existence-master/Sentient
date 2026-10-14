@@ -366,17 +366,26 @@ class FileSnapshots(Service):
         folder = store_dir() / snapshot_id
         if not all((folder / f["copy"]).is_file() for f in files):
             return {"ok": False, "error": f"The copies are gone. They are kept for {self.config.keep_days} days."}
+        # claim it in one write first, so two presses at once can't both put files back
+        claim = await self.app.store.execute(
+            "UPDATE file_snapshots SET restored_at = ? WHERE id = ? AND restored_at IS NULL", (now_iso(), snapshot_id),
+        )
+        if not (claim.rowcount or 0):
+            return {"ok": False, "error": "These files were already put back."}
         origin = {k: snap.get(k) for k in ("session_id", "task_id", "run_id")}
         count = len(files)
         what = f"{count} file{'s' if count != 1 else ''}"
         try:
             async with self.guard([f["path"] for f in files], source="restore", what=what, origin=origin) as cap:
                 done = await asyncio.to_thread(_put_back, folder, files)
-        except OSError as exc:
-            return {"ok": False, "error": f"Some files couldn't be put back: {exc}"}
+        except BaseException as exc:
+            await self.app.store.execute("UPDATE file_snapshots SET restored_at = NULL WHERE id = ?", (snapshot_id,))
+            if isinstance(exc, OSError):
+                return {"ok": False, "error": f"Some files couldn't be put back: {exc}"}
+            raise
         await self.app.store.execute(
-            "UPDATE file_snapshots SET restored_at = ?, restored_by = ? WHERE id = ?",
-            (now_iso(), cap.snapshot_id if cap is not None else None, snapshot_id),
+            "UPDATE file_snapshots SET restored_by = ? WHERE id = ?",
+            (cap.snapshot_id if cap is not None else None, snapshot_id),
         )
         log.info("snapshots: put back %d file(s) from %s", done, snapshot_id)
         return {"ok": True, "restored": done, "message": f"Put back {done} file{'s' if done != 1 else ''}."}
