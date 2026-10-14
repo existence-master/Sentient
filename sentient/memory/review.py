@@ -138,13 +138,25 @@ async def _items(app: Any, limit: int) -> list[dict]:
 
 
 async def inbox(app: Any, limit: int = INBOX_LIMIT) -> dict:
-    """``{items, count, expire_days}``: pending facts and insights, newest first (at most ``limit`` of each);
-    ``count`` is all of them."""
+    """``{items, count, expire_days, merged}``: pending facts and insights, newest first (at most ``limit`` of each);
+    ``count`` is all of them. ``merged`` is the review history: memories the nightly tidy-up merged into another one
+    (#353), newest first, each of which the user can undo. They are not counted."""
     count = await app.memory.pending_count() if app.memory is not None else 0
     um = getattr(app, "user_model", None)
     if um is not None:
         count += await um.pending_count()
-    return {"items": await _items(app, limit), "count": count, "expire_days": app.config.memory.review_expire_days}
+    merged = await app.memory.merged_facts(limit) if app.memory is not None else []
+    return {
+        "items": await _items(app, limit), "count": count, "expire_days": app.config.memory.review_expire_days,
+        "merged": merged,
+    }
+
+
+async def undo_merge(app: Any, item_id: str) -> dict | None:
+    """Bring back a memory the tidy-up merged into another one. None when it isn't merged."""
+    if app.memory is None:
+        return None
+    return await app.memory.unmerge(_fact_id(item_id))
 
 
 async def approve(app: Any, kind: str, item_id: str, content: str | None = None) -> bool:

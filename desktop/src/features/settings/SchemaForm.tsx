@@ -198,6 +198,8 @@ export const LABELS: Record<string, FieldLabel> = {
   'dreaming.role': { hidden: true },
   'dreaming.max_facts': { hidden: true },
   'dreaming.merge_similarity': { hidden: true },
+  'dreaming.merge_languages': { label: 'Keep a memory saved in two languages just once', description: 'Only when the model is sure they say exactly the same thing. Undo any merge in Memory > Review.' },
+  'dreaming.language_merge_similarity': { hidden: true },
   'dreaming.merge_min_overlap': { hidden: true },
   'dreaming.contradiction_similarity': { hidden: true },
   // code execution
