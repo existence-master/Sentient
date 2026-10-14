@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 from sentient.gateway.deps import AUTH, get_core
 
@@ -31,3 +32,16 @@ async def upcoming(
 @router.get("/apps")
 async def apps(request: Request):
     return {"apps": await get_core(request).timeline.apps()}
+
+
+class RestoreBody(BaseModel):
+    id: str
+
+
+@router.post("/restore")
+async def restore(request: Request, body: RestoreBody):
+    """Bring back what a chat tool call moved to the trash (#142): the item's ``undo`` says when this is offered."""
+    out = await get_core(request).timeline.restore(body.id)
+    if not out.get("ok"):
+        raise HTTPException(409, out.get("error") or "That can't be restored.")
+    return out

@@ -21,6 +21,7 @@ If you need to change a shape, change this file in the same edit.
 | `chat.steer` | `session_id`, `text`, `client_id?` | add to the reply in progress (section 10); without a running reply same as `chat.send` |
 | `chat.cancel` | `session_id` | stop the reply in progress |
 | `approval.respond` | `approval_id`, `decision: "allow"\|"allow_session"\|"allow_timed"\|"allow_always"\|"deny"` (one of the request's `choices`, section 2 "Scoped answers") | answer an approval request |
+| `undo.respond` | `undo_id`, `action: "undo"\|"send_now"` | Undo (it never goes) or send now an email, message or post waiting in its undo window (section 10, #142). Answered with `undo.ack` `{undo_id, action, done}`; `done: false` when the window had already ended |
 | `presence` | `active: bool` | the window is focused and visible (`true`) or not (#139). Sent on connect and on every focus, blur and visibility change. Approval requests of waiting tasks go to paired chats only while no window says `true` (section 14) |
 | `ping` | | keepalive |
 
@@ -36,7 +37,8 @@ All carry `session_id` and `turn_id`.
 | `tool_call` | `call_id`, `name`, `arguments` |
 | `tool_progress` | `call_id`, `name`, `kind: stdout\|stderr\|status\|frame\|subagent`, `text?`, `image?`, `data?` (section 10) |
 | `tool_result` | `call_id`, `name`, `result`, `is_error`, `duration_ms` (a call the user declined has `result: {error, declined: true}`) |
-| `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10), `warning?` (what a second look found off, section 10, #143), `choices?: string[]` (the answers offered, in order, section 2 "Scoped answers"), `grant_minutes?` (how long `allow_timed` lasts) |
+| `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10), `warning?` (what a second look found off, section 10, #143), `choices?: string[]` (the answers offered, in order, section 2 "Scoped answers"), `grant_minutes?` (how long `allow_timed` lasts), `preview?: ActionPreview` (what will be sent or changed, the way a person reads it, section 10, #142) |
+| `undo_window` | `undo_id`, `call_id`, `name`, `seconds`, `until` (ISO time it ends), `preview?: ActionPreview`: an email, message or post waits `seconds` before it runs, so it can still be undone (section 10, #142). Its `tool_result` follows when the window ends; after Undo that result is `{error, undone: true}` and nothing was sent |
 | `user_interjection` | `text` (a steer message the model just received, section 10) |
 | `steer_ack` | `session_id`, `queued`, `client_id` (echo; no `turn_id`) |
 | `usage` | `model`, `prompt_tokens`, `completion_tokens`, `context_used`, `context_length`, `context_percent`, `context_warning` (context meter, below) |
@@ -348,6 +350,8 @@ accept or loosen a rule.
 - `POST /api/approvals` `{approval_id, decision}` → `{resolved}`; a yes wider than the request offers counts as
   `allow` (section 2, "Scoped answers"); 404 when nothing is waiting or the decision is unknown. `GET /api/approvals/grants`, `DELETE
   /api/approvals/grants/{id}`: section 2.
+- `POST /api/undo` `{undo_id, action: "undo"|"send_now"}` → `{done: true, action}`: the REST form of `undo.respond`
+  (section 10, "Previews, undo windows and the trash"); 404 when nothing is waiting with that id.
 
 ### Files (attachments + assistant outputs)
 - `POST /api/files` multipart `file`, optional form field `source: "upload"|"screen"|"selection"` (default `upload`) →
@@ -737,7 +741,9 @@ task-creation prompt sets it for requests like "every morning"; a window the req
  "sources": [AnswerSource]}
 ```
 `pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question", "Limits on a run"
-and "Stuck runs" below). `kind` says why it waits; `reason` is set for `stuck` only. `last_activity_at` is when the run
+and "Stuck runs" below). `kind` says why it waits; `reason` is set for `stuck` only. An `approval` question also has
+`expires_at` and `preview` (what the held call would send, an `ActionPreview`, section 10, #142; `null` when there is
+nothing to preview). `last_activity_at` is when the run
 last showed any sign of work (a progress update, or streamed model output; falls back to `execution_start_time`).
 `memory_sources` (section 2, "Memory sources") are the memories the run had in mind: facts recalled into its executor
 prompt (`via: "prompt"`) and facts `memory_recall` / `memory_search_by_source` returned that the model read
@@ -1739,6 +1745,46 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   Messaging-app approval messages add `**Check this:** <warning>`, and voice reads it out. A second look only ever
   adds a question; nothing it finds lowers a risk or skips another check.
 
+### Previews, undo windows and the trash (#142, ADR 0026)
+- **Preview.** `approval_request.preview`, `undo_window.preview` and a task's approval question
+  (`pending_question.preview`, section 4) carry an `ActionPreview`, built in code from the call's tool name and
+  arguments (`sentient.agent.preview`), never by a model:
+  ```json
+  {"kind": "email|message|post|delete|trash|purchase|action", "title": "Email",
+   "fields": [{"label": "To", "value": "sam@example.com"}, {"label": "Subject", "value": "Lunch"}],
+   "body": "Friday at 1?"}
+  ```
+  Labels: `To`, `Cc`, `Bcc`, `Where` (a channel, chat, thread, repo...), `Subject` (`Title` for a post), `Files`,
+  `Amount`, `Item` (what a delete acts on). `body` is the message text (up to 4000 characters). A tool that runs
+  other tools by slug (Composio's multi-execute) is previewed by the first call it runs. `null` for a call with
+  nothing a person would read (a plain look-up). Messaging apps show the preview as plain lines instead of the raw
+  arguments.
+- **Undo window** (`tools.approvals.undo_seconds`, default 10, 0 to 60; 0 turns it off). After every other check said
+  a call may run (Never rules, Read only, approvals and their answers, grants, the second look), an email, message or
+  post (`preview.action_kind`: a send verb in the tool name, such as `send`, `reply`, `forward`, `post`, `publish`,
+  `comment`; risk `write` or `send`, not `internal`) waits in a chat someone can press Undo in: `channel` `desktop` or
+  a messaging app (`telegram`, `discord`, `whatsapp`). The loop sends `undo_window` and runs the call only when the
+  window ends. `undo.respond`/`POST /api/undo` with `undo` means it never runs: its `tool_result` is
+  `{"error": "NOT SENT. The user pressed Undo ...", "undone": true}`, which the model reads. `send_now` ends the
+  window early. Stopping the reply (`chat.cancel`, Stop everything) during the window means it is not sent.
+  Purchases and running code never wait (a purchase's yes is deliberate and holding code back does not help), nor do
+  calls in runs nobody is watching: task runs, briefs, script jobs, subagents and other unprompted work. A task's
+  approval in the window is the user's look at the exact call; the Activity timeline then lists what it did.
+  Messaging apps get a message "**Email: sending in 10 s**" with the preview and **Undo** / **Send now** buttons,
+  answered only from the chat it was sent to; it is settled with "Sent" or "Undone. Nothing was sent.".
+- **Trash instead of delete** (`tools.approvals.prefer_trash`, default on). When the model calls a delete-for-good
+  tool (`delete`, `remove`, `erase`, `destroy`, `purge` in its name) and the same app has a trash version for the same
+  thing (`trash`, `recycle` or `soft_delete` with the same object words: `delete_note` and `trash_note`) that takes the
+  call's arguments, `run_loop` swaps the call for the trash version before it is saved or checked, so the
+  `tool_call`, `approval_request` and transcript show the trash call, and the result gets
+  `note: "Moved to the trash instead of deleting it for good, so it can be restored."`. The swap is skipped when the
+  user's own words in this run ask for a permanent delete ("permanently", "for good", "forever", "hard delete",
+  "skip the trash"...), when the trash version is hidden by a rule, or when it lacks a required argument. Gmail's
+  built-in tools only ever trash (`gmail_trash`), and `gmail_restore` brings an email back.
+- **Restore from Activity.** A chat call that moved something to the trash, whose app has a way back (`restore`,
+  `untrash`, `recover`, `undelete`, `unarchive` with the same object words), has `undo: {action: "restore", label:
+  "Restore"}` on its timeline item (section 21).
+
 ### Subagents
 - Tools (plugin `subagents`):
   - `delegate_task(goal, context="", tools: list[str] | None = None, background: bool = False)` (risk `write`, internal).
@@ -2700,8 +2746,12 @@ here calls a model or changes anything.
  "app": "gmail|null", "app_label": "Gmail|null",
  "ref": {"type": "chat|task|memory|dream|skill|about|backups|usage|approvals|notification", "id": "...",
          "run_id": "...", "message_id": "...", "notification_id": "...", "review": true},
- "upcoming": false}
+ "upcoming": false,
+ "undo": {"action": "restore", "label": "Restore"} | null}
 ```
+`undo` (#142) is set on a chat call that moved something to the trash when its app can bring it back; the window
+shows a **Restore** button that calls `POST /api/timeline/restore`. A send the user undid in its undo window is a
+`stopped` item, "You pressed Undo, so nothing was sent."
 `title` says what happened and `why` says why, in plain words. `ref` is where the item came from (the window opens
 that chat, task, memory, dream, skill or Settings section). `at` is UTC; `null` only for a paused routine.
 `kind` (also the filter values, in this order): `chat` (tools a chat used), `tasks` (task runs, questions, plans,
@@ -2743,6 +2793,9 @@ What each source gives (past):
   "Routines pause") or "You paused it".
 - `GET /api/timeline/apps` → `{apps: [{id, label}]}`: apps to filter by (tools used in chats in the last 90 days,
   messaging apps with chats or deliveries, task triggers).
+- `POST /api/timeline/restore` `{id}` → `{ok: true, result}`: run the app's restore tool for an item with `undo`
+  (#142), with the arguments the trash call was given. It goes through `Agent.run_tool`, so Never rules and Read only
+  connections still apply. 409 with a plain `detail` when the item has nothing to restore or the restore failed.
 
 **Paging.** Every past item has the key `(at, id)`. A page asks each source for its newest items before the cursor and
 merges them, so rows saved in the same moment are never skipped or shown twice. A source that drops rows in code (an

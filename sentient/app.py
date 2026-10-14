@@ -32,6 +32,7 @@ from sentient.agent.grants import GrantStore
 from sentient.agent.incognito import IncognitoSweeper
 from sentient.agent.loop import Agent
 from sentient.agent.subagents import SubagentManager
+from sentient.agent.undo import UndoBroker
 from sentient.backup import BackupService
 from sentient.browser import BrowserService
 from sentient.channels import ChannelService
@@ -106,6 +107,7 @@ class SentientApp:
         self.chat_rules = ChatRules(self)  # "never delete my emails" in chat -> a proposed rule (#130)
         # how wide a yes to an approval request is: this task, a while, or an Allow rule (#139)
         self.approvals.grants = GrantStore(self)
+        self.undo = UndoBroker()  # emails, messages and posts waiting in their undo window (#142)
         self.presence = Presence(self.bus)  # is the person looking at the window? (#139)
         self.memory: FactMemory | None = None
         self.agent: Agent | None = None

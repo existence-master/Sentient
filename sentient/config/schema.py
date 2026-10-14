@@ -357,6 +357,17 @@ class ApprovalsConfig(BaseModel):
         "email or web page, the fast model double-checks the action against what you asked. If it doesn't match, "
         "Sentient asks you first and says why. Recipients and amounts are always checked, even with this off.",
     )
+    undo_seconds: int = Field(
+        10, ge=0, le=60,
+        description="Emails, messages and posts Sentient sends from a chat wait this many seconds, with an Undo button, "
+        "before they go. 0 sends them at once. Purchases and running code never wait, and neither do tasks running "
+        "on their own.",
+    )
+    prefer_trash: bool = Field(
+        True,
+        description="When an app can move something to the trash, Sentient does that instead of deleting it for good, "
+        "unless you ask for it to be deleted permanently.",
+    )
     rules: dict[str, Literal["allow", "ask", "never"]] = Field(
         default_factory=dict,
         description="Lasting rules for apps and tools. The key is a tool name (gmail_send_email) or an app id "

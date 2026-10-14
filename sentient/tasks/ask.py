@@ -170,11 +170,16 @@ def approval_pending(needs_ok: dict, minutes: int = 240, grant_minutes: int = 60
 
 
 def held_pending(needs_ok: dict, approvals_config: Any) -> dict:
-    """``approval_pending`` or ``untrusted_pending`` for the call a run held (``LoopResult.needs_ok``)."""
+    """``approval_pending`` or ``untrusted_pending`` for the call a run held (``LoopResult.needs_ok``), with a
+    preview of what it would send when there is one (#142)."""
     minutes = int(getattr(approvals_config, "task_request_minutes", 240))
     if needs_ok.get("approval"):
-        return approval_pending(needs_ok, minutes, int(getattr(approvals_config, "grant_minutes", 60)))
-    return untrusted_pending(needs_ok, minutes)
+        pending = approval_pending(needs_ok, minutes, int(getattr(approvals_config, "grant_minutes", 60)))
+    else:
+        pending = untrusted_pending(needs_ok, minutes)
+    if isinstance(needs_ok.get("preview"), dict):
+        pending["preview"] = needs_ok["preview"]
+    return pending
 
 
 def approves(answer: str) -> bool:

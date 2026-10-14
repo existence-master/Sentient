@@ -1,7 +1,7 @@
 import { IconCheck, IconHandStop, IconShieldQuestion, IconX } from '@tabler/icons-react'
 import type { ReactNode } from 'react'
 import { Spinner } from '@/components/ui'
-import type { ToolCallView, ToolStatus } from '@/lib/chatFold'
+import { wasUndone, type ToolCallView, type ToolStatus } from '@/lib/chatFold'
 import { cn, humanize, safeJsonParse, truncate } from '@/lib/utils'
 import { toolMeta } from '../toolMeta'
 
@@ -60,7 +60,8 @@ export function DeclinedText({ tool, approval, className }: { tool: ToolCallView
   const target = actionTarget(tool, approval) ?? toolMeta(tool.name).running
   return (
     <span className={cn('truncate', className)}>
-      <span className="text-warning">You declined:</span> <span className="text-fg-muted">{target}</span>
+      <span className="text-warning">{wasUndone(tool.result) ? 'You pressed Undo:' : 'You declined:'}</span>{' '}
+      <span className="text-fg-muted">{target}</span>
     </span>
   )
 }

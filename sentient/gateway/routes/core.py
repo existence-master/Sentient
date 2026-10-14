@@ -424,6 +424,19 @@ async def approve(request: Request, body: ApprovalBody):
     return {"resolved": True}
 
 
+class UndoBody(BaseModel):
+    undo_id: str
+    action: str = "undo"  # "undo" | "send_now"
+
+
+@router.post("/api/undo", dependencies=_auth)
+async def undo_send(request: Request, body: UndoBody):
+    """Undo (or send now) an email, message or post waiting in its undo window (#142)."""
+    if not get_core(request).undo.respond(body.undo_id, body.action):
+        raise HTTPException(404, "nothing is waiting with that id")
+    return {"done": True, "action": body.action}
+
+
 @router.get("/api/approvals/grants", dependencies=_auth)
 async def list_grants(request: Request):
     """Live "Allow for this task" and "Allow for a while" answers (#139)."""

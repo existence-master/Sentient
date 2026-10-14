@@ -74,6 +74,21 @@ class ApprovalRequest(_Event):
     # "allow" and "deny" for a purchase, a raised risk, running code or a call after outside content
     choices: list[str] | None = None
     grant_minutes: int | None = None  # how long allow_timed lasts ("Allow for 1 hour")
+    # what will be sent or changed, the way a person reads it (#142): {kind, title, fields: [{label, value}], body}
+    preview: dict[str, Any] | None = None
+
+
+class UndoWindow(_Event):
+    """An email, message or post waiting ``seconds`` before it goes, so the user can still undo it (#142). It runs
+    only when the window ends; its ``tool_result`` follows then (``{"undone": true}`` when the user pressed Undo)."""
+
+    type: Literal["undo_window"] = "undo_window"
+    undo_id: str
+    call_id: str
+    name: str
+    seconds: int
+    until: str  # ISO time the window ends
+    preview: dict[str, Any] | None = None
 
 
 class UserInterjection(_Event):
@@ -137,6 +152,7 @@ AgentEvent = (
     | ToolProgress
     | ToolResultEvent
     | ApprovalRequest
+    | UndoWindow
     | UserInterjection
     | Usage
     | Error

@@ -83,6 +83,8 @@ def _question_to_api(question: Any) -> dict | None:
         "kind": kind,
         "reason": (str(question.get("reason") or "") or None) if kind == "stuck" else None,
         "expires_at": question.get("expires_at"),  # approvals only (#139): a late answer can't approve
+        # approvals only (#142): what the held call would send, the way a person reads it
+        "preview": question.get("preview") if kind == "approval" and isinstance(question.get("preview"), dict) else None,
     }
 
 

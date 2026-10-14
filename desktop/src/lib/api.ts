@@ -137,6 +137,7 @@ import type {
   ToolPlugin,
   TranscribeResult,
   TranscriptMessage,
+  UndoAction,
   UploadedFile,
   UsageReport,
   BudgetState,
@@ -482,6 +483,11 @@ export const api = {
     /** Live "Allow for this task" and "Allow for 1 hour" answers (#139). */
     grants: () => http.get<{ grants: ApprovalGrant[] }>('/api/approvals/grants'),
     revokeGrant: (id: string) => http.delete<OkResponse>(`/api/approvals/grants/${enc(id)}`)
+  },
+
+  /** §10 Undo, or send now, an email, message or post waiting in its undo window (#142). */
+  undo: {
+    respond: (undo_id: string, action: UndoAction) => http.post<{ done: boolean; action: UndoAction }>('/api/undo', { undo_id, action })
   },
 
   files: {
@@ -844,7 +850,9 @@ export const api = {
       http.get<TimelinePage>('/api/timeline', { query: { ...timelineQuery(filters), before: before ?? undefined, limit } }),
     upcoming: (filters: TimelineFilters = {}, days = 7) =>
       http.get<TimelineUpcoming>('/api/timeline/upcoming', { query: { ...timelineQuery(filters), days } }),
-    apps: () => http.get<{ apps: Array<{ id: string; label: string }> }>('/api/timeline/apps')
+    apps: () => http.get<{ apps: Array<{ id: string; label: string }> }>('/api/timeline/apps'),
+    /** Bring back what a chat moved to the trash (#142); offered when an item has `undo`. */
+    restore: (id: string) => http.post<{ ok: boolean; result?: unknown }>('/api/timeline/restore', { id })
   },
 
   // §16 webhooks --------------------------------------------------------------------------
