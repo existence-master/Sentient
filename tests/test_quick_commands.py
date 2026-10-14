@@ -372,3 +372,45 @@ async def test_done_is_the_last_event_and_carries_the_message(config, isolated_h
         assert events[-1].content == "You don't have any timers running."
     finally:
         await s.stop()
+
+
+async def test_a_failed_quick_turn_still_ends_with_error_and_done(config, isolated_home, monkeypatch):
+    s = await _app(config, isolated_home)
+    try:
+        sid = await s.store.create_session(channel="desktop")
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(s.agent, "_tool_content", broken)
+        events = await _turn(s, sid, "set a timer for 1 minute")
+        assert [type(e).__name__ for e in events[-2:]] == ["Error", "Done"]
+        assert events[-1].error == "disk full" and events[-2].recoverable is False
+    finally:
+        await s.stop()
+
+
+async def test_a_reminder_whose_notification_failed_is_tried_again(config, isolated_home, monkeypatch):
+    s = await _app(config, isolated_home)
+    try:
+        first = await s.reminders.add("reminder", datetime.now(UTC) + timedelta(seconds=30), message="stretch")
+        second = await s.reminders.add("timer", datetime.now(UTC) + timedelta(seconds=30), duration_s=30)
+        real = s.notify
+        calls = {"n": 0}
+
+        async def flaky(kind, message, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("database is locked")
+            return await real(kind, message, **kwargs)
+
+        monkeypatch.setattr(s, "notify", flaky)
+        later = datetime.now(UTC) + timedelta(minutes=1)
+        assert await s.reminders.fire_due(later) == 1  # the other one still went off
+        statuses = {r["id"]: r["status"] for r in await s.reminders.list(None)}
+        assert sorted(statuses.values()) == ["fired", "scheduled"]
+        assert await s.reminders.fire_due(later) == 1  # and the failed one on the next try
+        assert {(await s.reminders.get(i))["status"] for i in (first["id"], second["id"])} == {"fired"}
+        assert len(await s.notifications.list()) == 2
+    finally:
+        await s.stop()

@@ -1703,6 +1703,10 @@ class Agent:
                 int((time.perf_counter() - started) * 1000),
             )
             yield Done(content=reply, message_id=message_id, **ev)
+        except Exception as exc:  # every turn still ends with an error and one done (docs/API.md section 1, #334)
+            log.exception("quick command %s failed", plan.command.action)
+            yield Error(message=plan.language.failed(""), recoverable=False, **ev)
+            yield Done(content="", error=str(exc)[:300] or type(exc).__name__, **ev)
         finally:
             self._turn_done(session_id)
 

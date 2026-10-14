@@ -31,6 +31,7 @@ MAX_TIMER_S = 24 * 3600
 MAX_AHEAD = timedelta(days=366)
 KEEP_DAYS = 30           # fired and cancelled ones are forgotten after this long
 LIST_LIMIT = 100
+RETRY_S = 10.0          # a notification that could not be made is tried again after this long
 
 
 class ReminderError(ValueError):
@@ -151,16 +152,20 @@ class ReminderService(Service):
         await self._forget_old()
         while True:
             self._wake.clear()
+            failed = False
             try:
-                await self.fire_due()
+                failed = (await self._fire_all())[1] > 0
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("firing reminders failed")
+                failed = True
             nxt = await self._next_due()
             delay = MAX_SLEEP_S
             if nxt is not None:
                 delay = min(MAX_SLEEP_S, max(0.0, (nxt - datetime.now(UTC)).total_seconds()))
+            if failed:  # never a busy loop on a notification that can't be made
+                delay = max(delay, RETRY_S)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), timeout=delay)
 
@@ -172,16 +177,26 @@ class ReminderService(Service):
 
     async def fire_due(self, now: datetime | None = None) -> int:
         """Fire every scheduled one that is due. Returns how many fired."""
+        return (await self._fire_all(now))[0]
+
+    async def _fire_all(self, now: datetime | None = None) -> tuple[int, int]:
+        """``(fired, failed)``. One that fails stays scheduled and is tried again; the others still fire."""
         now = now or datetime.now(UTC)
-        fired = 0
+        fired = failed = 0
         async with self._fire_lock:
             for item in await self.list("scheduled", limit=500):
                 due = _parse(item["fire_at"])
                 if due is None or due > now:
                     continue
-                if await self._fire(item, due, now):
-                    fired += 1
-        return fired
+                try:
+                    if await self._fire(item, due, now):
+                        fired += 1
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("could not fire %s %s; trying again soon", item["kind"], item["id"][:8])
+                    failed += 1
+        return fired, failed
 
     async def _fire(self, item: dict, due: datetime, now: datetime) -> bool:
         cur = await self.app.store.execute(
@@ -204,7 +219,20 @@ class ReminderService(Service):
                    "channel": item.get("channel")}
         if item.get("session_id"):
             payload["session_id"] = item["session_id"]
-        note = await self.app.notify("reminder", body, title=title, payload=payload)
+        try:
+            note = await self.app.notify("reminder", body, title=title, payload=payload)
+        except Exception:
+            made = await self.app.store.fetchone(
+                "SELECT id FROM notifications WHERE json_valid(payload) AND json_extract(payload, '$.reminder_id') = ?",
+                (item["id"],),
+            )
+            if made is None:  # nothing reached the user: it goes back to waiting and is tried again
+                await self.app.store.execute(
+                    "UPDATE reminders SET status = 'scheduled', fired_at = NULL WHERE id = ? AND status = 'fired'"
+                    " AND notification_id IS NULL", (item["id"],),
+                )
+                raise
+            note = {"id": made["id"]}  # it was made; only telling the window failed
         await self.app.store.execute(
             "UPDATE reminders SET notification_id = ? WHERE id = ?", (note.get("id"), item["id"])
         )
