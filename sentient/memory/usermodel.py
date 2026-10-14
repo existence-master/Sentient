@@ -207,6 +207,7 @@ class UserModelService(Service):
         self.clock = lambda: datetime.now(UTC)
         self._lock = asyncio.Lock()
         self._vectors: dict[int, list[float]] | None = None
+        self._vectors_model: str | None = None  # the embedding model ``_vectors`` were read for
         self._background: set[asyncio.Task] = set()
 
     @property
@@ -885,18 +886,21 @@ class UserModelService(Service):
             return None
 
     async def _insight_vectors(self) -> dict[int, list[float]]:
-        if self._vectors is None:
-            vectors: dict[int, list[float]] = {}
-            if self.app.store.vec_available and (self.vec.ready or await self.vec.exists()):
-                stored = await self.app.store.get_meta(f"{VEC_TABLE}_model")
-                if stored and stored != self.app.llm.model_for("embedding"):
-                    # made by another embedding model, so they don't compare with today's query: re-embed them
-                    self._start(self._reembed())
-                    return {}
-                with contextlib.suppress(Exception):
-                    vectors = await self.vec.all_vectors()
-            self._vectors = vectors
-        return self._vectors
+        current = self.app.llm.model_for("embedding")
+        if self._vectors is not None and self._vectors_model == current:
+            return self._vectors
+        vectors: dict[int, list[float]] = {}
+        if self.app.store.vec_available and (self.vec.ready or await self.vec.exists()):
+            stored = await self.app.store.get_meta(f"{VEC_TABLE}_model")
+            if stored and stored != current:
+                # made by another embedding model, so they don't compare with today's query: re-embed them
+                self._vectors = None
+                self._start(self._reembed())
+                return {}
+            with contextlib.suppress(Exception):
+                vectors = await self.vec.all_vectors()
+        self._vectors, self._vectors_model = vectors, current
+        return vectors
 
     def _start(self, coro) -> None:
         if any(t.get_name() == "user_model:reembed" for t in self._background):

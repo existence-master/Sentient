@@ -90,18 +90,27 @@ class VecTable:
             await self.store.execute(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS {self.name} USING vec0(embedding float[{dim}] distance_metric={METRIC})"
             )
-            await self.store.set_meta(f"{self.name}_dim", str(dim))
-            await self.store.set_meta(f"{self.name}_metric", METRIC)
-            if model:
-                await self.store.set_meta(f"{self.name}_model", model)
+            if not stale:
+                await self._record(dim, model)
             self.dim = dim
             self.model = model or self.model
-        if stale and rebuild is not None:
+        if stale:
             try:
-                await rebuild()
-            except Exception as exc:  # keep working with a partial index
+                if rebuild is not None:
+                    await rebuild()
+            except Exception as exc:
+                # keep working with a partial index; the old dimension and model stay recorded, so the next start
+                # rebuilds it again instead of trusting it
                 log.warning("re-embedding for %s failed: %s", self.name, exc)
+            else:
+                await self._record(dim, model)
         return stale
+
+    async def _record(self, dim: int, model: str | None) -> None:
+        await self.store.set_meta(f"{self.name}_dim", str(dim))
+        await self.store.set_meta(f"{self.name}_metric", METRIC)
+        if model:
+            await self.store.set_meta(f"{self.name}_model", model)
 
     async def upsert(self, rowid: int, vec: list[float]) -> None:
         await self.store.execute(f"DELETE FROM {self.name} WHERE rowid = ?", (rowid,))

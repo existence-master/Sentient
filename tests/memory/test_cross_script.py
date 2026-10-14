@@ -175,3 +175,40 @@ async def test_vec_table_keeps_an_index_when_the_model_was_never_recorded(isolat
         assert await other.ensure(4, rebuild, "ollama/nomic-embed-text") is True and rebuilt
     finally:
         await store.close()
+
+
+async def test_a_failed_re_embed_is_tried_again_after_a_restart(isolated_home):
+    store = await Store(isolated_home / "retry.db").open()
+    try:
+        first = VecTable(store, "r_vec")
+        await first.ensure(4, None, "ollama/nomic-embed-text")
+
+        async def broken():
+            raise RuntimeError("Ollama went away")
+
+        switched = VecTable(store, "r_vec")
+        assert await switched.ensure(4, broken, "ollama/bge-m3") is True
+        # the old model stays recorded, so the index isn't trusted on the next start
+        assert await store.get_meta("r_vec_model") == "ollama/nomic-embed-text"
+        rebuilt: list[bool] = []
+
+        async def works():
+            rebuilt.append(True)
+
+        again = VecTable(store, "r_vec")
+        assert await again.ensure(4, works, "ollama/bge-m3") is True and rebuilt
+        assert await store.get_meta("r_vec_model") == "ollama/bge-m3"
+    finally:
+        await store.close()
+
+
+async def test_user_model_ignores_insight_vectors_from_another_embedding_model(app, monkeypatch):
+    um = app.user_model
+    await um.add_insight("Maya is vegetarian", "preferences")
+    assert await um._insight_vectors()  # read once and cached for this model
+    monkeypatch.setattr(app.fake, "model_for", lambda role: "ollama/bge-m3" if role == "embedding" else "fake/x")
+    assert await um._insight_vectors() == {}  # never compared with a query from the new model
+    for task in list(um._background):
+        await task
+    assert await app.store.get_meta("user_insights_vec_model") == "ollama/bge-m3"
+    assert await um._insight_vectors()  # re-embedded with the new model
