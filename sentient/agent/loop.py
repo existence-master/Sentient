@@ -1038,9 +1038,13 @@ class Agent:
                 return plan
         outgoing = sends_out(tool, plan.risk, tc.arguments, ctx)
         tried = ctx.extra.get(dry_run.KEY) if ctx.extra else None
-        if isinstance(tried, dry_run.DryRun) and dry_run.simulates(tool, plan.risk):
-            # a try run (#142): anything above a look-up is noted instead of done, decided here in code; the note
-            # says whether a real run would stop and ask first
+        if isinstance(tried, dry_run.DryRun) and dry_run.simulates(tool, plan.risk, outgoing=outgoing):
+            # a try run (#142): anything above a look-up, or that can send data out, is noted instead of done, decided
+            # here in code; the note says whether a real run would stop and ask first. A call a real run would refuse
+            # for its arguments gets that error instead, so the report never lists something that wouldn't happen.
+            if (bad := dry_run.invalid(tool, tc.name, tc.arguments)) is not None:
+                plan.preset = (bad, True, 0)
+                return plan
             purchase = await is_purchase(tool, tc.arguments, ctx, plan.risk)
             plugin = self.registry.plugin(tool.plugin)
             plan.preset = (await tried.record(

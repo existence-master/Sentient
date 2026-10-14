@@ -18,6 +18,8 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from pydantic import ValidationError
+
 from sentient.agent import preview
 from sentient.tools.base import Risk, Tool
 from sentient.tools.rules import tool_title
@@ -42,9 +44,23 @@ _VERBS = {
 }
 
 
-def simulates(tool: Tool, risk: Risk) -> bool:
-    """True when a try run notes this call instead of making it: anything above a look-up, except ``ask_user``."""
-    return Risk(risk) > Risk.read and tool.name not in REAL_TOOLS
+def simulates(tool: Tool, risk: Risk, *, outgoing: bool = False) -> bool:
+    """True when a try run notes this call instead of making it: anything above a look-up, or anything that can send
+    data out (``outgoing``, ``rules.sends_out``) even at risk ``read``, except ``ask_user``."""
+    return (Risk(risk) > Risk.read or outgoing) and tool.name not in REAL_TOOLS
+
+
+def invalid(tool: Tool, name: str, arguments: dict | None) -> dict | None:
+    """The error a real call would get for arguments its tool can't take, or None. A try run never notes a call that
+    would fail before it ran."""
+    try:
+        tool.params_model.model_validate(arguments or {})
+    except ValidationError as exc:
+        problems = "; ".join(
+            f"{'.'.join(str(x) for x in e.get('loc', ())) or 'arguments'}: {e.get('msg')}" for e in exc.errors()[:5]
+        )
+        return {"error": f"Invalid arguments for {name}: {problems}. Call it again with arguments matching the schema."}
+    return None
 
 
 def _kind(name: str, arguments: dict, risk: Risk, purchase: bool) -> str:

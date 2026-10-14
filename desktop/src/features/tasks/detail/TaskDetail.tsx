@@ -285,7 +285,7 @@ function ActionBar({ task, ops, missing, layout, onClose, onShowRuns }: { task: 
   const id = task.task_id
   const kind = taskKind(task)
   const run = processingRun(task)
-  const waiting = waitingRun(task)
+  const waiting = (task.runs ?? []).find((r) => r.status === 'waiting_for_user' && !r.dry_run) // the run the task waits on
   const schedulable = kind === 'recurring' || kind === 'triggered' || kind === 'script' || task.status === 'pending'
   // Try it first (#142): one run that only notes what it would send, change or run
   const canTry = !['planning', 'clarification_pending'].includes(task.status) && task.task_type === 'single' && task.plan.length > 0 && !task.runs.some((r) => r.dry_run && (r.status === 'processing' || r.status === 'waiting_for_user'))

@@ -90,6 +90,7 @@ STOPPED_NOTE = "Run stopped by Stop everything."
 # on a task whose check script was rejected twice (#310): the AI does the job at each run instead
 NO_SCRIPT_NOTE = "I couldn't write a working check script for this, so the AI will do it at each run instead."
 WAITING_CONFLICT = "This task is waiting for your answer. Answer the question or cancel the run first."
+TRYING_CONFLICT = "A try run of this task is already going."
 _KEEP: Any = object()
 
 
@@ -768,9 +769,8 @@ class TaskService(Service):
             raise TaskConflict("A check script only looks things up. Use Test the check to try it.")
         if not task.get("plan") and executor.fixed_call_of(task) is None:
             raise TaskConflict("Task has no plan to try.")
-        busy = [*await self.repo.processing_runs(task_id), *await self.repo.waiting_runs(task_id)]
-        if any(r.get("dry_run") for r in busy):
-            raise TaskConflict("A try run of this task is already going.")
+        if await self._trying(task_id):
+            raise TaskConflict(TRYING_CONFLICT)
         run_id = await self.repo.insert_run(task_id, now=self.now_iso(), plan=task.get("plan") or [], dry_run=True)
         self._dispatch(task_id, run_id)
         return await self.get_and_publish(task_id)
@@ -838,7 +838,8 @@ class TaskService(Service):
                 await self.repo.update_run(run_id, {"messages": messages})
                 await self._resolve_question_notifications(run_id, "cancelled")
             await self.progress(task_id, run_id, {"type": "info", "content": note})
-            await self._after_run(task_id, "cancelled", None)
+            if not run.get("dry_run"):  # a try run never settles the task (#142)
+                await self._after_run(task_id, "cancelled", None)
             await self._publish_run_finished(task_id, run_id, "cancelled")
         return await self.get_and_publish(task_id)
 
@@ -860,6 +861,8 @@ class TaskService(Service):
             raise TaskConflict("This task is still being planned.")
         kind = (task.get("schedule") or {}).get("type")
         trying = bool(run.get("dry_run"))  # a try run is retried as a try run (#142)
+        if trying and await self._trying(task_id):
+            raise TaskConflict(TRYING_CONFLICT)
         if kind not in {"recurring", "triggered"} and not trying:
             if await self.repo.waiting_runs(task_id, real=True):
                 raise TaskConflict(WAITING_CONFLICT)
@@ -944,6 +947,11 @@ class TaskService(Service):
         await self._resolve_question_notifications(run_id, "answered", answer=text)
         self._dispatch(task_id, run_id, resume=True, answered=True)
         return await self.get_and_publish(task_id)
+
+    async def _trying(self, task_id: str) -> bool:
+        """True while a try run of the task is in progress or waiting for an answer (#142)."""
+        busy = [*await self.repo.processing_runs(task_id), *await self.repo.waiting_runs(task_id)]
+        return any(r.get("dry_run") for r in busy)
 
     async def _running_again(self, task_id: str, run: dict) -> None:
         """The task shows as running again once a waiting run carries on, unless it is a try run (#142)."""
@@ -1283,7 +1291,8 @@ class TaskService(Service):
             error = "Interrupted by restart"
             if await self.repo.finish_run(run["id"], "error", error=error, now=self.now_iso()):
                 await self.progress(task["id"], run["id"], {"type": "error", "content": error})
-                await self._after_run(task["id"], "error", error)
+                if not run.get("dry_run"):  # a try run never settles the task (#142)
+                    await self._after_run(task["id"], "error", error)
                 await self.publish(task["id"])
                 await self._publish_run_finished(task["id"], run["id"], "error")
                 await self._notify(
@@ -1646,7 +1655,8 @@ class TaskService(Service):
                 current.uncancel()
             run = await self.repo.get_run(run_id)
             if run is not None and run["status"] != "processing":
-                await self._after_run(task_id, run["status"], run.get("error"))
+                if not run.get("dry_run"):  # a try run never settles the task (#142)
+                    await self._after_run(task_id, run["status"], run.get("error"))
                 await self.publish(task_id)
         except Exception:
             log.exception("task run %s crashed", run_id)
@@ -1758,7 +1768,7 @@ class TaskService(Service):
         task_id, run_id = task["id"], run["id"]
         if error:
             await self.progress(task_id, run_id, {"type": "error", "content": error})
-        await self._after_run(task_id, status, error)  # only settles a task some real run left busy
+        # never _after_run: a try run doesn't settle the task, even one a real run just left busy (it settles itself)
         actions = [a for a in run.get("would_do") or [] if isinstance(a, dict)]
         name = task.get("name") or "Untitled task"
         if status in {"completed", "completed_with_errors"}:
@@ -1789,7 +1799,9 @@ class TaskService(Service):
         text = str(question.get("question") or "")
         reason = str(question.get("reason") or "") if question.get("stuck") else ""
         await self.progress(task_id, run_id, {"type": "info", "content": f"Waiting for your answer: {text}"})
-        await self._after_run(task_id, "waiting_for_user", None)
+        run = await self.repo.get_run(run_id) or {}
+        if not run.get("dry_run"):  # a try run never settles the task (#142)
+            await self._after_run(task_id, "waiting_for_user", None)
         task = await self.repo.get_task(task_id)
         await self.publish(task_id)
         if task is None:

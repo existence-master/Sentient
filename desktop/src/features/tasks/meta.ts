@@ -175,8 +175,9 @@ export function latestRun(task: Pick<Task, 'runs'>) {
   return runs.length ? runs[runs.length - 1] : undefined
 }
 
+/** The newest real run in progress (a try run, #142, is cancelled from its own card). */
 export function processingRun(task: Pick<Task, 'runs'>) {
-  return [...(task.runs ?? [])].reverse().find((r) => r.status === 'processing')
+  return [...(task.runs ?? [])].reverse().find((r) => r.status === 'processing' && !r.dry_run)
 }
 
 /** The oldest run waiting for the user's answer (`ask_user`), with its question. */

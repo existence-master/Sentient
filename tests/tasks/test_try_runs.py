@@ -166,3 +166,53 @@ def test_report_and_summary_lines():
     assert dry_run.summary_line(entry) == "Run in Terminal: git push"
     text = dry_run.report([{**entry, "summary": dry_run.summary_line(entry)}])
     assert text.endswith("A real run would do 1 thing:\n- Run in Terminal: git push")
+
+
+async def test_bad_arguments_and_outgoing_look_ups(make_app):
+    log: list[str] = []
+
+    @tool("web_form_fill", risk=Risk.read, exfiltrates=True)
+    async def web_form_fill(ctx: ToolContext, text: str) -> dict:
+        """Type into a web page (reads, but sends what it types)."""
+        log.append(f"type:{text}")
+        return {"ok": True}
+
+    class Web(ToolPlugin):
+        id = "web_form"
+        display_name = "Web form"
+        tools = [web_form_fill]
+
+    bad = [tool_call("mailer_send_email", subject="no recipient")]
+    typed = [tool_call("web_form_fill", text="hello")]
+    llm = FakeProvider(replies=[bad, typed, "Done."])
+    app = await make_app(llm)
+    app.registry.register(_mail(log))
+    app.registry.register(Web())
+    task_id = await _task(app)
+    await app.tasks.repo.update_task(task_id, {"plan": [{"tool": "mailer", "description": "x"},
+                                                        {"tool": "web_form", "description": "y"}]})
+    await app.tasks.dry_run(task_id)
+    await app.tasks.drain()
+    run = (await app.tasks.get(task_id))["runs"][-1]
+    assert [a["tool"] for a in run["would_do"]] == ["web_form_fill"]  # a call missing `to` would fail: not listed
+    assert log == []  # a look-up that sends data out is noted too
+
+
+async def test_retrying_a_try_run_while_another_is_going_is_refused(make_app):
+    app = await make_app(FakeProvider())
+    task_id = await _task(app)
+    now = app.tasks.now_iso()
+    old = await app.tasks.repo.insert_run(task_id, now=now, dry_run=True)
+    await app.tasks.repo.finish_run(old, "error", error="x", now=now)
+    await app.tasks.repo.insert_run(task_id, now=now, dry_run=True)  # another one is going
+    with pytest.raises(TaskConflict, match="already going"):
+        await app.tasks.retry_run(task_id, old)
+
+
+async def test_a_try_run_never_settles_the_task(make_app):
+    app = await make_app(FakeProvider(replies=["Nothing to do."]))
+    task_id = await _task(app, status="processing")  # a real run just finished but hasn't settled the task yet
+    await app.tasks.dry_run(task_id)
+    await app.tasks.drain()
+    task = await app.tasks.get(task_id)
+    assert task["runs"][-1]["status"] == "completed" and task["status"] == "processing"

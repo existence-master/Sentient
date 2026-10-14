@@ -287,7 +287,15 @@ function TryRunReport({ actions, live }: { actions: TryRunAction[]; live: boolea
                     )}
                   </span>
                 </div>
-                {a.preview && (a.preview.fields.length > 0 || a.preview.body) && <ActionPreview preview={a.preview} bodyLines={6} />}
+                {a.preview && (a.preview.fields.length > 0 || a.preview.body) ? (
+                  <ActionPreview preview={a.preview} bodyLines={6} />
+                ) : (
+                  Object.keys(a.arguments ?? {}).length > 0 && (
+                    <div className="max-h-40 overflow-auto rounded-lg border border-border bg-surface px-3 py-2">
+                      <JsonView value={a.arguments} collapsedDepth={1} maxStringLength={300} />
+                    </div>
+                  )
+                )}
               </li>
             ))}
           </ol>

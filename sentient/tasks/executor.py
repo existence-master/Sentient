@@ -43,7 +43,7 @@ from sentient.tasks.prompts import (
 )
 from sentient.tasks.schedule import get_tz
 from sentient.tools.base import Risk, effective_risk
-from sentient.tools.rules import is_purchase, never_message, untrusted_in
+from sentient.tools.rules import is_purchase, never_message, sends_out, untrusted_in
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.tasks.service import TaskService
@@ -566,7 +566,10 @@ async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume:
             raise RunFailed(refusal)
     await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": name, "parameters": arguments})
     risk = await effective_risk(tool, arguments, ctx) if run.get("dry_run") else None
-    if risk is not None and dry_run.simulates(tool, risk):  # a try run (#142): note the call instead of making it
+    if risk is not None and dry_run.simulates(tool, risk, outgoing=sends_out(tool, risk, arguments, ctx)):
+        # a try run (#142): note the call instead of making it, unless it would fail on its arguments anyway
+        if (bad := dry_run.invalid(tool, name, arguments)) is not None:
+            raise RunFailed(str(bad["error"]))
         plugin = app.registry.plugin(tool.plugin)
         result = await trying(svc, run).record(
             tool, name, arguments, risk, purchase=await is_purchase(tool, arguments, ctx, risk),
