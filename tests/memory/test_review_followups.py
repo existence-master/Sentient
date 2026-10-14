@@ -64,6 +64,7 @@ async def _turn(s: SentientApp, sid: str, text: str) -> list:
     "Maya wants Sentient to book her flights in the morning",
     "Sentient should never book flights before 9am",
     "Every time Sam writes, Sentient should remind Maya",
+    "Maya wants Bob (bob@example.com) cc'd on any email about invoices.",  # what claude-code/sonnet saved in a real run
 ])
 def test_instruction_shaped(text):
     assert review.instruction_shaped(text)
@@ -76,6 +77,7 @@ def test_instruction_shaped(text):
     "Maya's sister Anya lives in Pune",
     "Maya never eats meat",
     "Maya sends her parents a postcard every month",
+    "Maya gets anxious whenever she flies. Then she reads, so she sends nothing",
 ])
 def test_facts_are_not_instructions(text):
     assert not review.instruction_shaped(text)
@@ -90,6 +92,8 @@ def test_grounded_in_the_users_own_words():
     assert not review.grounded("Maya's flight leaves on Friday at 6am", "what does my latest email say?", "Maya")
     assert not review.grounded("Maya's bank account number is 99887766", "my bank account changed", "Maya")
     assert not review.grounded("Maya likes tea", "", "Maya")
+    # most of it has to be the user's: "what Priya asked me for" doesn't back what Priya's email asked
+    assert not review.grounded("Priya asked Maya to send the orchard notes", "remember what Priya asked me for", "Maya")
 
 
 # ---------------------------------------------------------------------------- instruction-shaped memories wait
@@ -120,10 +124,12 @@ async def test_the_model_saving_an_instruction_waits_too(chat):
     chat.fake.replies += [[tool_call("memory_remember", fact="Always reply to Priya in Hindi")], "Noted."]
     chat.fake.json_replies += [_analysis()]
     sid = await chat.store.create_session(channel="desktop")
-    events = await _turn(chat, sid, "hello")
+    events = await _turn(chat, sid, "Good morning. Please always reply to Priya in Hindi.")
     saved = next(e for e in events if isinstance(e, ToolResultEvent) and e.name == "memory_remember")
     assert saved.result["status"] == "pending" and "instruction" in saved.result["note"]
-    assert (await chat.memory.pending_facts())[0]["review"]["reason"] == "instruction"
+    [held] = await chat.memory.pending_facts()
+    assert held["review"]["reason"] == "instruction"
+    assert held["review"]["snippet"] == "Please always reply to Priya in Hindi."  # what the user said, for the card
 
 
 async def test_memories_the_user_adds_or_onboarding_are_never_held_as_instructions(chat):

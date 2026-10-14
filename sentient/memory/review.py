@@ -83,6 +83,8 @@ _ACTION_VERBS = (
     r"book|pay|transfer|delete|archive|move|add|create|schedule|cancel|accept|decline|approve|sign|buy|order|use|"
     r"include|mention|call|ask|answer|respond|write|draft|open|run|save|mark|label|unsubscribe)"
 )
+# any character of the same sentence: a dot only inside a word or an address ("bob@example.com"), never a full stop
+_IN_SENTENCE = r"(?:[^.;!?]|\.(?=\w))"
 _INSTRUCTION_RES = (
     # "from now on ...", "going forward ..."
     re.compile(r"\b(from now on|going forward|in (the )?future|from today|starting (now|today)|henceforth)\b", re.I),
@@ -90,8 +92,8 @@ _INSTRUCTION_RES = (
     re.compile(rf"^\s*(please\s+)?(always|never|don'?t|do not|make sure to|be sure to)\s+(\w+\s+){{0,2}}?{_ACTION_VERBS}\b", re.I),
     re.compile(rf"^\s*(please\s+)?{_ACTION_VERBS}\b", re.I),
     # "whenever an invoice comes in, forward it ...", "every time Priya writes, reply ..."
-    re.compile(rf"\b(whenever|every time|each time|any time)\b[^.;]*?,\s*(please\s+)?(always\s+)?{_ACTION_VERBS}\b", re.I),
-    re.compile(rf"\b(whenever|every time|each time|any time)\b[^.;]*\b(sentient|the assistant|her assistant|his assistant|"
+    re.compile(rf"\b(whenever|every time|each time|any time)\b{_IN_SENTENCE}*?,\s*(please\s+)?(always\s+)?{_ACTION_VERBS}\b", re.I),
+    re.compile(rf"\b(whenever|every time|each time|any time)\b{_IN_SENTENCE}*\b(sentient|the assistant|her assistant|his assistant|"
                rf"their assistant|you)\s+(should|must|will|can|has to|needs to|is to)?\s*{_ACTION_VERBS}\b", re.I),
     # the assistant as the one who acts: "Sentient should cc Bob", "Maya wants the assistant to ..."
     re.compile(r"\b(sentient|the assistant|her assistant|his assistant|their assistant)\s+(should|must|has to|needs to|"
@@ -99,7 +101,7 @@ _INSTRUCTION_RES = (
     re.compile(r"\b(wants|asked|asks|told|tells|instructed|instructs|would like|prefers)\s+(sentient|the assistant|her "
                r"assistant|his assistant|their assistant|you)\s+to\b", re.I),
     # "Maya wants all invoices forwarded to accounts@...", "should always be cc'd"
-    re.compile(r"\b(wants|would like|asked for|prefers)\b[^.;]{0,60}\b(forwarded|sent|cc'?d|copied|deleted|paid|"
+    re.compile(rf"\b(wants|would like|asked for|prefers)\b{_IN_SENTENCE}{{0,80}}\b(forwarded|sent|cc'?d|copied|deleted|paid|"
                r"replied|shared|booked|archived|transferred)\b", re.I),
     re.compile(rf"\b(should|must)\s+(always|never)\s+(be\s+)?(\w+\s+){{0,1}}?{_ACTION_VERBS}", re.I),
 )
@@ -119,12 +121,12 @@ def instruction_note(snippet: str | None = None, session_id: str | None = None) 
 
 
 # ---------------------------------------------------------------------------- the user's own words (#234)
-GROUNDED_SHARE = 0.5  # at least this share of a fact's meaningful words must be in the user's own words
+GROUNDED_SHARE = 2 / 3  # at least this share of a fact's meaningful words must be in the user's own words
 
 
 def grounded(fact: str, own_words: str, user_name: str = "") -> bool:
     """True when ``fact`` comes from ``own_words`` (what the user typed or said): every name, place, number and
-    address in it is in those words, and so are most of its other meaningful words. Checked in code, never by a
+    address in it is in those words, and so are two thirds of its other meaningful words. Checked in code, never by a
     model, so a fact that brings in anything the user didn't say (from an email or a web page the chat read) waits
     for review instead."""
     from sentient.memory.facts import keyword_tokens, new_details
@@ -140,7 +142,7 @@ def grounded(fact: str, own_words: str, user_name: str = "") -> bool:
     if not meaningful:
         return True
     hits = sum(1 for w in meaningful if any(_same_word(w, s) for s in said))
-    return hits / len(meaningful) >= GROUNDED_SHARE
+    return hits >= GROUNDED_SHARE * len(meaningful) - 1e-9
 
 
 def _same_word(a: str, b: str) -> bool:

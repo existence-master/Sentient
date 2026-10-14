@@ -1406,7 +1406,7 @@ out of pending; no model output can:
   imports are not checked. `memory_remember` then returns a `note` saying it waits for review as an instruction.
 - **The user's own words in a marked chat** (#234). In a chat that read outside content, a fact is saved active anyway
   when the user's own words in that turn back all of it (`memory.review.grounded`): every name, place, number and
-  address in it appears in what the user typed or said, and so do at least half of its other meaningful words. For
+  address in it appears in what the user typed or said, and so do at least two thirds of its other meaningful words. For
   facts extracted after a turn the words are the user's message and steer messages; for `memory_remember` they are
   the user messages of the current turn read from the stored chat. Anything else (a fact that needs the email or page)
   waits as before. Work nobody asked for, compression and imports never get this.

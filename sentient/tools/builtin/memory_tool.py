@@ -65,11 +65,11 @@ async def memory_remember(ctx: ToolContext, fact: str) -> dict:
     if await ctx.is_incognito():  # nothing is kept from an incognito chat (#154)
         return {"error": INCOGNITO_REFUSAL}
     held = review.for_context(ctx)  # outside content or unprompted work: the user reviews it first (ADR 0021)
-    own = None
     if held is not None:
         held["snippet"] = review.note("", await _last_outside_result(ctx))["snippet"]
-        if not review.is_unprompted_note(held):  # a chat: a fact the user's own words back is kept (#234)
-            own = await _own_words(ctx)
+    # in a chat, the user's own words this turn: a fact they back is kept even after outside content, and an
+    # instruction's review card shows what the user said (#234)
+    own = None if review.is_unprompted_note(held) else await _own_words(ctx)
     out = await ctx.memory.remember(
         fact, source="conversation", notify=True, review=held, own_words=own, session_id=ctx.session_id
     )

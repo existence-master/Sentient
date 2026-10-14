@@ -72,7 +72,7 @@ Three follow-ups change parts of this decision:
 - **The user's own words stay active in a marked chat.** "A fact learned in such a chat is not used until they do,
   even when it was the user who said it" no longer holds: a fact is saved active when the user's own words in that
   turn back all of it, checked in code (`review.grounded`): every name, place, number and address in it appears in
-  what the user typed or said, and so do at least half of its other words. The model's word that a fact came from
+  what the user typed or said, and so do two thirds of its other words. The model's word that a fact came from
   the user is never trusted; a fact that needs the email or page still waits. Facts extracted after a turn only ever
   see the user's words, so this is the common case; `memory_remember` is checked against the user messages of the
   current turn read back from the stored chat. Compression, imports and work nobody asked for are unchanged.
