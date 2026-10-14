@@ -366,8 +366,9 @@ class Timeline:
             where.append("channel = ?")
             params.append(query.app)
         if query.q:
-            where.append("(title LIKE ? ESCAPE '\\' OR chat_label LIKE ? ESCAPE '\\' OR error LIKE ? ESCAPE '\\')")
-            params += [query.like()] * 3
+            where.append("(title LIKE ? ESCAPE '\\' OR chat_label LIKE ? ESCAPE '\\' OR error LIKE ? ESCAPE '\\'"
+                         " OR channel LIKE ? ESCAPE '\\')")  # "telegram" finds "Sent to Telegram: ..."
+            params += [query.like()] * 4
 
         def build(row: Any) -> Item:
             app, label = self._app(row["channel"])

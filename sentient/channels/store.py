@@ -35,6 +35,7 @@ class ChannelStore:
     async def migrate(self) -> None:
         await self.store.db.executescript(SCHEMA.read_text(encoding="utf-8"))
         await self.store.db.commit()
+        await self.prune_deliveries()  # on every start too, so old rows go even when nothing is sent any more
 
     # ------------------------------------------------------------------ state
     async def state(self, channel: str) -> dict[str, Any]:
@@ -149,9 +150,12 @@ class ChannelStore:
             (row["id"], channel, row["chat_id"], chat_label, title, what, reason, row["status"], error,
              json.dumps(ref) if ref else None, row["created_at"]),
         )
+        await self.prune_deliveries()
+        return row
+
+    async def prune_deliveries(self) -> None:
         cutoff = (datetime.now(UTC) - timedelta(days=DELIVERY_DAYS)).isoformat()
         await self.store.execute("DELETE FROM channel_deliveries WHERE created_at < ?", (cutoff,))
-        return row
 
     # ------------------------------------------------------------------ refusals
     async def refuse_once(self, channel: str, chat_id: str) -> bool:

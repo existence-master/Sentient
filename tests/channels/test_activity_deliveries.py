@@ -36,6 +36,7 @@ async def test_a_delivered_brief_shows_under_messaging_apps(tg):
     assert item["ref"]["type"] == "task" and item["ref"]["id"] == "brief-task"
 
     assert await _sent(tg.app, app="telegram", q="daily brief")
+    assert await _sent(tg.app, q="telegram")  # the app's name, as the line shows it
     assert await _sent(tg.app, app="discord") == []
     assert await _sent(tg.app, q="nothing like this") == []
     assert {"id": "telegram", "label": "Telegram"} in await tg.app.timeline.apps()
@@ -72,3 +73,13 @@ async def test_a_helper_summary_sent_to_its_chat_is_recorded(tg):
     assert item["title"] == "Sent to Telegram: Background work finished"
     assert item["why"].endswith("A helper you started in that chat finished")
     assert item["ref"] == {"type": "chat", "id": chat["session_id"]}
+
+
+async def test_old_deliveries_are_dropped_on_start(tg):
+    chat = await tg.pair(42)
+    store = tg.app.channels.store
+    await store.add_delivery("telegram", chat["chat_id"], chat_label="Maya Rao", title="Old news", what="task",
+                             reason="default", delivered=True)
+    await tg.app.store.execute("UPDATE channel_deliveries SET created_at = '2020-01-01T00:00:00+00:00'")
+    await store.migrate()
+    assert await _sent(tg.app) == []
