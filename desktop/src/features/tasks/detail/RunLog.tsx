@@ -6,13 +6,14 @@ import {
   IconCheck,
   IconChevronRight,
   IconCircleCheckFilled,
+  IconFlask,
   IconInfoCircle,
   IconX
 } from '@tabler/icons-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Button, JsonView, Markdown, Spinner } from '@/components/ui'
-import { argsPreview, toolMeta } from '@/features/chat/toolMeta'
+import { argsPreview, toolMeta, wouldLabel } from '@/features/chat/toolMeta'
 import { useRunEvents } from '@/hooks/tasks'
 import type { ProgressUpdate, Run } from '@/lib/types'
 import { cn, parseDate } from '@/lib/utils'
@@ -121,7 +122,7 @@ export function RunLog({ taskId, run, live, tz, maxHeight = 460 }: { taskId: str
       >
         <ol className="relative">
           {entries.map((e, i) => (
-            <LogEntry key={e.key} entry={e} last={i === lastIndex} live={live && i === lastIndex} tz={tz} />
+            <LogEntry key={e.key} entry={e} last={i === lastIndex} live={live && i === lastIndex} tz={tz} tried={!!run.dry_run} />
           ))}
         </ol>
       </div>
@@ -154,7 +155,7 @@ function Node({ children, tone = 'neutral' }: { children: React.ReactNode; tone?
   return <span className={cn('relative z-10 flex size-6 shrink-0 items-center justify-center rounded-full border', cls)}>{children}</span>
 }
 
-function LogEntry({ entry, last, live, tz }: { entry: Entry; last: boolean; live: boolean; tz: string }) {
+function LogEntry({ entry, last, live, tz, tried = false }: { entry: Entry; last: boolean; live: boolean; tz: string; tried?: boolean }) {
   const [open, setOpen] = useState(false)
   const time = <span className="shrink-0 pt-0.5 font-mono text-2xs tabular-nums text-fg-faint">{stamp(entry.at, tz)}</span>
   const rail = !last && <span aria-hidden className="absolute bottom-0 left-[11.5px] top-6 w-px bg-border" />
@@ -163,6 +164,8 @@ function LogEntry({ entry, last, live, tz }: { entry: Entry; last: boolean; live
     const meta = toolMeta(entry.name)
     const running = !entry.hasResult && live
     const preview = argsPreview(entry.args)
+    // a try run (#142) only noted this call: say what it would do, never that it did it
+    const noted = !!entry.result && typeof entry.result === 'object' && (entry.result as { try_run?: unknown }).try_run === true
     return (
       <li className="relative flex gap-2.5 pb-3">
         {rail}
@@ -171,13 +174,15 @@ function LogEntry({ entry, last, live, tz }: { entry: Entry; last: boolean; live
         </Node>
         <div className="min-w-0 flex-1">
           <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex w-full min-w-0 items-center gap-2 text-left">
-            <span className={cn('shrink-0 text-sm font-medium', running ? 'text-fg-muted' : 'text-fg')}>{running ? meta.running : meta.done}</span>
+            <span className={cn('shrink-0 text-sm font-medium', running ? 'text-fg-muted' : 'text-fg')}>{running ? meta.running : noted ? wouldLabel(entry.name) : meta.done}</span>
             {preview && <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-subtle">{preview}</span>}
             {!preview && <span className="flex-1" />}
             {running ? (
               <Spinner size={12} className="text-info" />
             ) : entry.isError ? (
               <IconX size={13} className="text-danger" />
+            ) : noted ? (
+              <IconFlask size={13} className="text-accent-text" />
             ) : entry.hasResult ? (
               <IconCheck size={13} className="text-success" />
             ) : null}
@@ -242,7 +247,7 @@ function LogEntry({ entry, last, live, tz }: { entry: Entry; last: boolean; live
         </Node>
         <div className="min-w-0 flex-1 rounded-xl border border-success/20 bg-success/6 px-3 py-2.5">
           <div className="mb-1 flex items-center gap-2 text-2xs font-semibold uppercase tracking-wide text-success">
-            Final answer <span className="flex-1" />
+            {tried ? 'Final answer (a try run: nothing was sent, changed or run)' : 'Final answer'} <span className="flex-1" />
             {time}
           </div>
           <Markdown className="text-sm">{entry.content}</Markdown>

@@ -742,8 +742,11 @@ task-creation prompt sets it for requests like "every morning"; a window the req
                       "kind": "question|limit|stuck", "reason": "...|null"} | null,
  "last_activity_at": "...|null",
  "memory_sources": [MemorySource],
- "sources": [AnswerSource]}
+ "sources": [AnswerSource],
+ "dry_run": false,
+ "would_do": [TryRunAction]}
 ```
+`dry_run` is true for a try run (see "Try it first" below); `would_do` lists what it noted, `[]` for other runs.
 `pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question", "Limits on a run"
 and "Stuck runs" below). `kind` says why it waits; `reason` is set for `stuck` only. An `approval` question also has
 `expires_at` and `preview` (what the held call would send, an `ActionPreview`, section 10, #142; `null` when there is
@@ -801,6 +804,8 @@ A run that called no tool and answers nothing still fails. Chat replies (`done.c
 - `POST /api/tasks/{id}/decline` → `Task`
 - `POST /api/tasks/{id}/rerun` → `Task` (new copy, v2 behaviour) 
 - `POST /api/tasks/{id}/run-now` → `Task` (recurring/triggered: start a run immediately)
+- `POST /api/tasks/{id}/dry-run` → `Task` (Try it first, #142: starts a try run; see below. 409 while the task is being
+  planned, for swarm and script tasks, without a plan, or while another try run of it is going)
 - `POST /api/tasks/{id}/archive` → `Task`
 - `POST /api/tasks/{id}/chat` `{message}` → `Task` (change request → replanning)
 - `POST /api/tasks/{id}/clarifications` `{answers: [{question_id, answer_text}]}` → `Task`
@@ -846,6 +851,28 @@ Behaviour notes:
 - On restart, runs left `processing` resume from their transcript checkpoint (`tasks.resume_interrupted_runs`), else they end with error `Interrupted by restart`.
   Runs `waiting_for_user` are left alone: they keep waiting, with their question, until answered or cancelled.
 - Disconnecting an integration sets `enabled: false` on tasks whose plan or trigger uses it (instead of v2's delete) and sends a notification.
+
+### Try it first (#142, ADR 0026)
+A **try run** (`POST /api/tasks/{id}/dry-run`) runs the task's plan once with every call that would send, post, buy,
+delete, change or run something noted instead of made. Look-ups (effective risk `read`) run for real, so it works on
+real data. Decided in code from each call's effective risk (`sentient/agent/dry_run.py`), after Never rules and Read
+only connections (which still refuse) and before approvals, Ask rules and the second look (so it never pauses for an
+approval). The run's own `ask_user` question still asks. A one-call task (`fixed_call`) notes its one call.
+- The model gets `{"ok": true, "try_run": true, "note": "TRY RUN: this was not really done, ..."}` for a noted call.
+- Each noted call is added to the run's `would_do`, saved as it happens:
+  **TryRunAction** `{tool, plugin, app, title, kind: "email|message|post|delete|trash|purchase|run|change", risk,
+  preview: ActionPreview|null (section 10), arguments, asks, at, summary}`. `asks` is true when a real run would stop
+  and ask first (an Ask rule, a purchase, or sending after outside content). `summary` is one plain line
+  ("Send an email in Gmail: To sam@example.com, Subject Lunch").
+- The run's `result.summary` is written in code from `would_do`, never by a model: "Try run finished. Nothing was
+  sent, changed or run. A real run would do 2 things:" and one line per call (or "A real run would only look things
+  up..."). The notification has `payload.event: "dry_run_finished"` (with `run_id`); a failed try run sends
+  `run_failed`.
+- A try run never changes the task: its `status`, `next_execution_at`, `last_execution_at` and `error` stay as they
+  are (a plan waiting for approval can be tried first), it does not hold a task busy for `run-now`, `retry` or
+  scheduling, and it is not the task's last result (change requests, recurring tasks' memory of earlier runs, the
+  self-improvement reviewer and `task.run_finished` all skip it). Its own question, cancel, retry (a try run again)
+  and resume after a restart work as for any run.
 
 ### Where results go
 A task's `deliver_to` decides which messaging apps (section 14) get its notifications: run results and failures,
@@ -1813,6 +1840,28 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - **Restore from Activity.** A chat call that moved something to the trash, whose app has a way back (`restore`,
   `untrash`, `recover`, `undelete`, `unarchive` with the same object words), has `undo: {action: "restore", label:
   "Restore"}` on its timeline item (section 21).
+- **Try runs** of tasks: section 4, "Try it first".
+- **File snapshots before code writes** (config `tools.snapshots`: `enabled` true, `max_file_mb` 5, `max_total_mb`
+  25, `max_files` 500, `keep_days` 7, `max_kept_mb` 1000; code `sentient/snapshots/`). Before `terminal_run` runs a
+  command that isn't on the never-ask list, before `execute_code` runs a script as a local process (`process` backend;
+  Docker can only touch its own folder) and before `file_write` writes, Sentient copies the files they could change
+  into `<home>/snapshots/<id>/`: for a command or a script, the allowed folders of section 18 (the command's own folder
+  first) and the files folder; for `file_write`, its one file. `.git`, `node_modules`, `__pycache__`, `.venv` and
+  similar folders and Sentient's own working folders are never looked at.
+  What to copy is decided from `stat` alone, without opening a file: a file over `max_file_mb` or with a name that
+  says it isn't text (images, archives, media, office files, databases...) gets no copy and a plain `note`. If the rest
+  is more than `max_files` files or `max_total_mb`, or the folders hold more than 10,000 files, **nothing** is copied
+  for that call (never a partial set); its files are still listed, so if it changes any, the row and the Activity item
+  say "Too many files to keep a copy" and offer no Restore. Otherwise each file is copied (one whose first 8 KB has a
+  zero byte is not text after all and gets the note instead). When the call ends (also when it fails or is stopped)
+  the copies of unchanged files are dropped; if anything changed, a `file_snapshots` row lists
+  `files: [{path, change: "changed"|"deleted", bytes, copy, note}]`, the files it made (`created`, not put back) and
+  `notes`, and the Activity timeline shows it with Restore (section 21). Nothing is copied for incognito chats or with
+  `enabled` off. Copies older than `keep_days` go, and all of them stay under `max_kept_mb` (oldest first; every 6
+  hours). Restore is crash-safe: it sets `restoring_at` before writing and `restored_at` only once every file is
+  back; a restore cut short by a crash is cleared at start (`repair`) and can be done again. Python API:
+  `async with app.snapshots.guard(roots, ctx, source=..., what=...)`, `await app.snapshots.restore(id)`,
+  `await app.snapshots.repair()`, `await app.snapshots.prune()`.
 
 ### Subagents
 - Tools (plugin `subagents`):
@@ -1873,7 +1922,9 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   (e.g. `outputs/<run_id>/chart.png`, usable with `/api/files`). `error` is a plain-language sentence when `ok` is false:
   syntax errors (checked before running, with the line number), runtime errors with the failing line, timeouts, code
   execution turned off, Docker not running when the backend is `docker`.
-- Python API: `await app.sandbox.run(code, *, session_id=None, channel="system", timeout_s=None, allowed_tools=None, on_output=None, read_only=False) -> dict` (SandboxResult).
+- Python API: `await app.sandbox.run(code, *, session_id=None, channel="system", timeout_s=None, allowed_tools=None, on_output=None, read_only=False, ctx=None, purpose="") -> dict` (SandboxResult).
+  `ctx` and `purpose`: the tool call that runs it, so the file copies kept before a local run (section 10, "File
+  snapshots") say where it ran and what it was for.
   `allowed_tools`: tool names or plugin ids the script may call (`None` = every tool the policy allows).
   `on_output(kind, text)`: sync or async callback per output chunk. `read_only`: only effective risk `read` tool calls run.
 - Backends: `process` runs the engine's Python (`-I`, one process per run, killed as a whole tree on timeout) in an
@@ -2783,15 +2834,16 @@ here calls a model or changes anything.
 ```json
 {"id": "run:<run id>", "kind": "tasks", "at": "2026-10-13T07:30:04+00:00",
  "title": "Made your Daily Brief", "why": "It runs every weekday at 7:30 AM", "detail": "3 events today",
- "status": "done|failed|waiting|declined|running|stopped|scheduled|paused|null",
+ "status": "done|failed|waiting|declined|running|stopped|scheduled|paused|restored|null",
  "app": "gmail|null", "app_label": "Gmail|null",
  "ref": {"type": "chat|task|memory|dream|skill|about|backups|usage|approvals|notification", "id": "...",
          "run_id": "...", "message_id": "...", "notification_id": "...", "review": true},
  "upcoming": false,
  "undo": {"action": "restore|cancel", "label": "Restore|Cancel"} | null}
 ```
-`undo` (#142) is set on a chat call that moved something to the trash when its app can bring it back; the window
-shows a **Restore** button that calls `POST /api/timeline/restore`. On an upcoming timer or reminder (#150) it is
+`undo` (#142) is set on a chat call that moved something to the trash when its app can bring it back, and on files
+code changed while Sentient kept copies (`snap:<id>` items, below); the window shows a **Restore** button (**Undo**
+for a restore) that calls `POST /api/timeline/restore`. On an upcoming timer or reminder (#150) it is
 `{"action": "cancel", "label": "Cancel"}`: the window shows **Cancel**, which calls `POST /api/timeline/cancel`. A send the user undid in its undo window is a
 `stopped` item, "You pressed Undo, so nothing was sent."
 `title` says what happened and `why` says why, in plain words. `ref` is where the item came from (the window opens
@@ -2813,9 +2865,10 @@ What each source gives (past):
 | `messages` (role `tool`, not incognito) | "Used Gmail: Search" + the call's first arguments; an answered approval is an `approvals` item ("Asked you before "Send" in Gmail (to Arjun)", detail "You chose Allow once." or "You said no, so it was not done.") |
 | `messages` (assistant replies in channel chats) | "Replied to you on Telegram" |
 | `channel_deliveries` (section 14) | "Sent to Telegram: Your Daily Brief" or "Couldn't send to Telegram: ..." (`status: "failed"`, `detail` says why); `why` names the chat and why it went there ("To your chat "Maya Rao". The task sends its updates there"); `ref` opens the task, chat or notification it came from |
-| `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked |
+| `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked. A try run (#142): "Tried X", `why` "You chose Try it first, ..." |
+| `file_snapshots` (#142) | "A command changed 2 files", "Code changed 1 file", "Wrote over notes.txt", "Put back 2 files"; `kind` `tasks` when a task run did it, else `chat`; `app` `terminal`, `code` or `files`; `detail` the command or script and the file names; `undo` Restore while the copies are kept and not put back yet; `status: "restored"` after |
 | `tasks.script.checks` | "Checked X: nothing new (3 checks)", "X changed. You were told" |
-| `notifications` | questions and approvals from tasks (with the answer), plans waiting, suggestions, routines paused, backup and budget notices. Not shown again: `run_completed`, `run_failed` and `script_alert` (the run or check is shown), `brief` (the run), `skill` (the skills log) and dream notices (the dream) |
+| `notifications` | questions and approvals from tasks (with the answer), plans waiting, suggestions, routines paused, backup and budget notices. Not shown again: `run_completed`, `run_failed`, `dry_run_finished` and `script_alert` (the run or check is shown), `brief` (the run), `skill` (the skills log) and dream notices (the dream) |
 | `reminders` (section 23) | "Your 10 minute timer went off", "Reminded you: call Ravi", "Cancelled your pasta timer" (`status: "stopped"`); `why` where it was set ("You set it by voice", "You set it on Telegram"); a reminder that went off late says when it was due. The `reminder` notification is not listed again |
 | `facts` | "Remembered something about you" (or "Saved a memory for your review"), `why` from its source |
 | `dreams`, `evolution_log` | memory tidy-ups; skill changes; profile updates |
@@ -2840,7 +2893,11 @@ What each source gives (past):
   messaging apps with chats or deliveries, task triggers).
 - `POST /api/timeline/restore` `{id}` → `{ok: true, result}`: run the app's restore tool for an item with `undo`
   (#142), with the arguments the trash call was given. It goes through `Agent.run_tool`, so Never rules and Read only
-  connections still apply. 409 with a plain `detail` when the item has nothing to restore or the restore failed.
+  connections still apply. For a `snap:<id>` item it puts the kept copies back where they were instead and returns
+  `{ok: true, restored: n, message: "Put back 2 files."}`; what they replace is copied first, so the restore shows as
+  its own item with **Undo**. Files the code made are left alone. 409 with a plain `detail` when the item has nothing
+  to restore (no copies were kept: "Too many files to keep a copy"), it was put back already or is being put back,
+  the copies are gone, or the restore failed.
 - `POST /api/timeline/cancel` `{id}` → `{ok: true, reminder}`: cancel the timer or reminder of an upcoming item
   (`reminder:<id>`, section 23). 409 with a plain `detail` when it already went off or was cancelled.
 

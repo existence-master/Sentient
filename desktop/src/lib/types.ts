@@ -1526,6 +1526,28 @@ export interface Run {
   memory_sources?: MemorySource[]
   /** Pages, emails, files and apps the run used (#291), like a chat reply's sources. Older engines leave it out. */
   sources?: AnswerSource[]
+  /** A try run ("Try it first", #142): it only noted what it would send, change or run. */
+  dry_run?: boolean
+  /** Try runs only: what a real run would do, in order. */
+  would_do?: TryRunAction[]
+}
+
+/** One call a try run noted instead of making (#142). Built by the engine from the call itself. */
+export interface TryRunAction {
+  tool: string
+  plugin?: string
+  app: string | null
+  /** The tool's plain name ("Send email"). */
+  title: string
+  kind: 'email' | 'message' | 'post' | 'delete' | 'trash' | 'purchase' | 'run' | 'change' | string
+  risk: string
+  preview: ActionPreview | null
+  arguments: Record<string, unknown>
+  /** A real run would stop and ask you first (a tool set to Ask, a purchase, sending after outside content). */
+  asks: boolean
+  at: ISODate | null
+  /** One plain line: "Send an email in Gmail: To sam@example.com". */
+  summary: string
 }
 
 export interface TaskChatMessage {
@@ -2687,7 +2709,7 @@ export type TimelineKind =
   | 'backups'
   | 'cost'
 
-export type TimelineStatus = 'done' | 'failed' | 'waiting' | 'declined' | 'running' | 'stopped' | 'scheduled' | 'paused'
+export type TimelineStatus = 'done' | 'failed' | 'waiting' | 'declined' | 'running' | 'stopped' | 'scheduled' | 'paused' | 'restored'
 
 /** Where an item came from, for the click-through (the window maps it to a screen). */
 export interface TimelineRef {
@@ -2714,8 +2736,8 @@ export interface TimelineItem {
   app_label: string | null
   ref: TimelineRef | null
   upcoming: boolean
-  /** A way back the window can offer: Restore for something moved to the trash (#142), Cancel for a timer or
-   *  reminder that has not gone off yet (#150). */
+  /** A way back the window can offer: Restore for something moved to the trash (#142) or for files code changed
+   *  (Sentient kept copies first), Cancel for a timer or reminder that has not gone off yet (#150). */
   undo?: { action: 'restore' | 'cancel'; label: string } | null
 }
 
