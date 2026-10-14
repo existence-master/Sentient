@@ -8,7 +8,9 @@ allows everything except tools that would recurse (code, subagents, voice), comm
 computer (terminal, ADR 0019) and purchases, which always ask.
 
 Lasting rules (ADR 0016) only ever take away here: a "never" tool is not listed and is refused,
-and an "ask" tool is refused because a script cannot stop to ask. An "allow" rule changes nothing:
+an "ask" or "only if I asked" tool is refused because a script cannot stop to ask and a script is never the user's
+own words (#140), and a "hand it to me" tool's calls that would change something are refused, since a script can't
+hand anything to the user (its look-ups run as usual). An "allow" rule changes nothing:
 scripts still only read (ADR 0012, docs/PRIVACY.md). A connection set to Read only (#141) takes away the same way,
 even with approvals mode ``off``: its tools that can change things are not listed and calls above ``read`` are refused.
 """
@@ -20,6 +22,8 @@ from dataclasses import dataclass, field
 
 from sentient.tools.base import Risk, Tool, ToolContext, effective_risk
 from sentient.tools.rules import (
+    HAND_OFF,
+    IF_ASKED,
     SETTINGS_HINT,
     is_purchase,
     never_message,
@@ -104,6 +108,11 @@ class BridgePolicy:
                 f"You've set Sentient to always ask before using {label}, and a script cannot stop to ask. "
                 f"Call '{name}' directly as a normal tool call instead. {SETTINGS_HINT}"
             )
+        if rule == IF_ASKED:
+            raise Refused(
+                f"You've set {label} to run without asking only when you ask for it in a chat, and a script cannot "
+                f"stop to ask. Call '{name}' directly as a normal tool call instead. {SETTINGS_HINT}"
+            )
         if read_only_hides(self.read_only_apps(), tool):
             raise Refused(read_only_message(tool, (getattr(ctx, "extra", None) or {}).get("registry")))
         if not self.is_available(tool):
@@ -114,6 +123,11 @@ class BridgePolicy:
                 "Split the work into smaller scripts."
             )
         risk = await effective_risk(tool, arguments, ctx)
+        if rule == HAND_OFF and risk > Risk.read:
+            raise Refused(
+                f"You've set {label} to \"Hand it to me\", so Sentient prepares it for you instead of doing it, and a "
+                f"script can't hand anything over. Call '{name}' directly as a normal tool call instead. {SETTINGS_HINT}"
+            )
         if read_only_blocks(self.read_only_apps(), tool, risk):
             raise Refused(read_only_message(tool, (getattr(ctx, "extra", None) or {}).get("registry")))
         if self.read_only:

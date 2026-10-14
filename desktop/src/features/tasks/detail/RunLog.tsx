@@ -7,12 +7,14 @@ import {
   IconChevronRight,
   IconCircleCheckFilled,
   IconFlask,
+  IconHandFinger,
   IconInfoCircle,
   IconX
 } from '@tabler/icons-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Button, JsonView, Markdown, Spinner } from '@/components/ui'
+import { asHandOff, HandOffCard } from '@/features/chat/HandOffCard'
 import { argsPreview, toolMeta, wouldLabel } from '@/features/chat/toolMeta'
 import { useRunEvents } from '@/hooks/tasks'
 import type { ProgressUpdate, Run } from '@/lib/types'
@@ -164,6 +166,7 @@ function LogEntry({ entry, last, live, tz, tried = false }: { entry: Entry; last
     const meta = toolMeta(entry.name)
     const running = !entry.hasResult && live
     const preview = argsPreview(entry.args)
+    const handOff = entry.hasResult ? asHandOff(entry.result) : null
     // a try run (#142) only noted this call: say what it would do, never that it did it
     const noted = !!entry.result && typeof entry.result === 'object' && (entry.result as { try_run?: unknown }).try_run === true
     return (
@@ -174,7 +177,9 @@ function LogEntry({ entry, last, live, tz, tried = false }: { entry: Entry; last
         </Node>
         <div className="min-w-0 flex-1">
           <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex w-full min-w-0 items-center gap-2 text-left">
-            <span className={cn('shrink-0 text-sm font-medium', running ? 'text-fg-muted' : 'text-fg')}>{running ? meta.running : noted ? wouldLabel(entry.name) : meta.done}</span>
+            <span className={cn('shrink-0 text-sm font-medium', running ? 'text-fg-muted' : 'text-fg')}>
+              {running ? meta.running : noted ? wouldLabel(entry.name) : handOff ? 'Prepared for you' : meta.done}
+            </span>
             {preview && <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-subtle">{preview}</span>}
             {!preview && <span className="flex-1" />}
             {running ? (
@@ -183,6 +188,8 @@ function LogEntry({ entry, last, live, tz, tried = false }: { entry: Entry; last
               <IconX size={13} className="text-danger" />
             ) : noted ? (
               <IconFlask size={13} className="text-accent-text" />
+            ) : handOff ? (
+              <IconHandFinger size={13} className="text-accent" />
             ) : entry.hasResult ? (
               <IconCheck size={13} className="text-success" />
             ) : null}
@@ -216,6 +223,11 @@ function LogEntry({ entry, last, live, tz, tried = false }: { entry: Entry; last
               </motion.div>
             )}
           </AnimatePresence>
+          {handOff && (
+            <div className="mt-2">
+              <HandOffCard handOff={handOff} />
+            </div>
+          )}
         </div>
       </li>
     )

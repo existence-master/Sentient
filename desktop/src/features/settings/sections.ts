@@ -105,7 +105,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'Approvals & safety',
     description: 'When Sentient asks before acting.',
     icon: IconShieldCheck,
-    keywords: ['permissions', 'confirm', 'risk', 'tools', 'disabled', 'ask', 'allow', 'never', 'rules', 'apps', 'always ask', 'allowed for now', 'revoke', 'grant'],
+    keywords: ['permissions', 'confirm', 'risk', 'tools', 'disabled', 'ask', 'allow', 'never', 'only if i asked', 'hand it to me', 'draft', 'rules', 'apps', 'always ask', 'allowed for now', 'revoke', 'grant'],
     schemaSections: ['tools']
   },
   {

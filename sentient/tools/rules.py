@@ -4,7 +4,11 @@ A rule key is a tool name (``gmail_send_email``, ``mcp_files_delete``) or a plug
 ``mcp_files``) meaning every tool of that plugin. A tool's own rule beats its plugin's rule. Values:
 
 - ``allow``: run without asking. Purchases still ask.
+- ``if_asked`` ("Only if I asked", #140): like ``allow`` in a chat turn whose user words ask for this kind of action
+  (``sentient.agent.rule_levels.asked_for``), like ``ask`` everywhere else: tasks, subagents, scripts, proactivity.
 - ``ask``: always ask first, even when approvals are off, after "Allow for this chat" and for look-ups.
+- ``hand_off`` ("Hand it to me", #140): a call that would change, send, delete or run something never runs; Sentient
+  prepares it and hands it to the user to do themselves. Look-ups run as usual.
 - ``never``: the tool is not offered to the model, and a call made anyway is refused without running.
 
 A connection set to Read only (``integrations.read_only``, #141) works like a "never" rule on every tool of that app
@@ -27,7 +31,12 @@ from urllib.parse import urlsplit
 
 from sentient.tools.base import Risk, Tool, describe_call
 
-RULE_CHOICES = ("allow", "ask", "never")
+ALLOW, IF_ASKED, ASK, HAND_OFF, NEVER = "allow", "if_asked", "ask", "hand_off", "never"
+RULE_CHOICES = (ALLOW, IF_ASKED, ASK, HAND_OFF, NEVER)
+# the plain name of each level, as Settings and the "Make this a rule?" card show it
+RULE_TITLES = {
+    ALLOW: "Allow", IF_ASKED: "Only if I asked", ASK: "Always ask", HAND_OFF: "Hand it to me", NEVER: "Never",
+}
 # describe_fn label for money leaving the user (browser: buy, pay, order, subscribe, donate, transfer ...)
 PURCHASE_LABEL = "Purchase"
 SETTINGS_HINT = "Change this in Settings > Approvals & safety."
@@ -66,6 +75,31 @@ def never_message(label: str) -> str:
     return f"You've set Sentient to never use {label}. {SETTINGS_HINT}"
 
 
+def applied_rule(rule: str | None, *, asked: bool = False, risk: Risk | None = None) -> str | None:
+    """The rule a call is treated with: "Only if I asked" is Allow when the user's own words in this chat turn asked
+    for the action (``asked``), else Ask. "Hand it to me" leaves a look-up (effective risk ``read``) to the normal
+    setting, and makes anything else ask wherever it was not handed over first, so it never runs unasked. Every other
+    rule is itself."""
+    if rule == IF_ASKED:
+        return ALLOW if asked else ASK
+    if rule == HAND_OFF:
+        return None if risk is not None and Risk(risk) <= Risk.read else ASK
+    return rule
+
+
+def hands_off(rule: str | None, risk: Risk) -> bool:
+    """True when a call with effective risk ``risk`` must be handed to the user instead of run (#140): a "Hand it to
+    me" rule on a call that would change, send, delete or run something. Look-ups run as usual."""
+    return rule == HAND_OFF and Risk(risk) > Risk.read
+
+
+def hand_off_message(label: str) -> str:
+    """What the model is told when a call was handed to the user instead of run (#140)."""
+    return (f'NOT DONE by Sentient: {label} is set to "Hand it to me", so Sentient did not do it. What you prepared '
+            "is shown to the user in Sentient, with a copy button, for them to finish themselves. Tell the user it is "
+            "ready for them there. Don't try to do it another way.")
+
+
 # ----------------------------------------------------------------------------- read-only connections (#141)
 READ_ONLY_HINT = "Change this in Integrations."
 
@@ -90,22 +124,34 @@ def read_only_message(tool: Tool, registry: Any = None) -> str:
             f'anything. "{tool_title(tool)}" was not done. {READ_ONLY_HINT}')
 
 
-def unattended_ask_message(label: str) -> str:
-    """Why an unattended run (a subagent, a swarm worker) stopped: an "ask" rule, and nobody to ask. Single task
-    runs pause and ask instead (#139)."""
-    return f"{label} is set to Ask, and this work can't stop to ask. Change it in Settings > Approvals & safety."
+def _set_to(rule: str | None) -> str:
+    """ "set to Ask", or for "Only if I asked" a sentence that says only a chat message from the user asks for it."""
+    if rule == IF_ASKED:
+        return "set to \"Only if I asked\", which only the user's own chat message can ask for"
+    return "set to Ask"
 
 
-def approval_hold_message(label: str) -> str:
-    """What the model is told when a task run holds a call for an "ask" rule; the run then pauses and asks (#139)."""
-    return (f"Not done yet: {label} is set to Ask, so the user is being asked first. If it is still needed after "
+def unattended_ask_message(label: str, rule: str | None = ASK) -> str:
+    """Why an unattended run (a subagent, a swarm worker) stopped: an "ask" (or "only if I asked") rule, and nobody to
+    ask. Single task runs pause and ask instead (#139)."""
+    return f"{label} is {_set_to(rule)}, and this work can't stop to ask. Change it in Settings > Approvals & safety."
+
+
+def approval_hold_message(label: str, rule: str | None = ASK) -> str:
+    """What the model is told when a task run holds a call for an "ask" (or "only if I asked") rule; the run then
+    pauses and asks (#139)."""
+    return (f"Not done yet: {label} is {_set_to(rule)}, so the user is being asked first. If it is still needed after "
             "the user answers, it runs then; otherwise finish and say it is waiting for the user's OK.")
 
 
-def approval_question(label: str, arguments: dict, target: str | None = None) -> str:
-    """The question a task run asks before a call held by an "ask" rule (#139)."""
+def approval_question(label: str, arguments: dict, target: str | None = None, rule: str | None = ASK) -> str:
+    """The question a task run asks before a call held by an "ask" (or "only if I asked") rule (#139, #140)."""
     detail = target or _brief(arguments)
-    return f"This task wants to use {label}{f' ({detail})' if detail else ''}. You've set it to ask first. OK to go ahead?"
+    if rule == IF_ASKED:
+        why = "You've set it to go ahead only when you ask for it in a chat."
+    else:
+        why = "You've set it to ask first."
+    return f"This task wants to use {label}{f' ({detail})' if detail else ''}. {why} OK to go ahead?"
 
 
 # Apps whose "internal" changes turn into outside actions later (a task runs its plan on its own), so work nobody

@@ -305,14 +305,23 @@ class Timeline:
                                    f"{words.short(error, 120)}", "failed"
             if approval.get("untrusted"):  # the loop's own sentence: "Sentient read content from Gmail in this chat..."
                 why = str(approval["untrusted"]).rstrip(". ")
+            elif approval.get("warning"):  # a second look found something off (#143): that, not the rule, asked
+                why = f"{str(approval['warning']).rstrip('. ')}. {where}"
             elif approval.get("rule") == "ask":
                 why = f"You set it to ask first. {where}"
+            elif approval.get("rule") == "if_asked":  # "Only if I asked" and these words didn't ask for it (#140)
+                why = f"You set it to go ahead only when you ask for it. {where}"
             else:
                 risk = str(approval.get("risk_label") or "It changes something")
                 why = f"{risk}, so Sentient asks first. {where}"
             return Item(id=row["_key"], kind="approvals", at=row["_at"], title=asked, why=why, detail=said,
                         status=status, app=app, app_label=label, ref=ref, undo=undo, _args=args, _apps=also)
         verb = f"Used {label}: {title}" if label else f"Used {title}"
+        if isinstance(result, dict) and result.get("handed_off") is True:  # "Hand it to me" (#140): never ran
+            return Item(id=row["_key"], kind="chat", at=row["_at"],
+                        title=f"Handed to you: {title}" + (f" in {label}" if label else ""), why=where,
+                        detail="You set it to Hand it to me, so Sentient prepared it and left the last step to you.",
+                        status="stopped", app=app, app_label=label, ref=ref, _apps=also)
         if undone:
             return Item(id=row["_key"], kind="chat", at=row["_at"], title=f"Held back: {title}" + (f" in {label}" if label else ""),
                         why=where, detail="You pressed Undo, so nothing was sent.", status="stopped", app=app,
@@ -382,6 +391,9 @@ class Timeline:
         error = res.get("error") if isinstance(res, dict) else None
         if is_error or error:
             return {"ok": False, "error": str(error or res)[:300]}
+        if isinstance(res, dict) and res.get("handed_off") is True:  # "Hand it to me" (#140): nothing was restored
+            return {"ok": False, "error": f"{res.get('label') or 'Restoring'} is set to Hand it to me, so Sentient "
+                    "didn't restore it. Restore it in the app itself.", "hand_off": res}
         log.info("activity: restored %s with %s", item_id, back.name)
         return {"ok": True, "result": res}
 

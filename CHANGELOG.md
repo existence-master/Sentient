@@ -11,6 +11,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
   instructions ("from now on, always cc Bob on invoices") are never saved quietly: they wait on the Memory page's
   Review tab under "Instructions for Sentient" until you approve them. And in a chat that read an email or a web page,
   what you said yourself is now remembered right away; only what came from the email or page waits for your review.
+- **Two new rules: "Only if I asked" and "Hand it to me".** In Settings > Approvals & safety, each app or tool can
+  now also be set to **Only if I asked**: Sentient goes ahead without asking only when your own message in a chat asks
+  for it ("email Priya the notes"), and asks every other time, including in tasks and anything it does on its own.
+  Or set it to **Hand it to me**: Sentient prepares it, like a draft email or a filled form, shows it to you with
+  **Copy** and **Open in your email app**, and never does it itself. Tasks do the same and send you a "Ready for you"
+  notification. Saying "don't send emails unless I ask" or "just draft them, I'll send them myself" in a chat
+  suggests the matching rule.
 - **Try a task first, and put back files that code changed.** A task waiting for your OK (or any task, from its menu)
   now has **Try it first**: Sentient runs it once for real but only notes everything that would send, post, buy,
   delete, change or run something, and shows you exactly what a real run would do, with the full email or message for

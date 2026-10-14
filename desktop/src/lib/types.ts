@@ -173,8 +173,12 @@ export interface ChatConfig {
 
 export type ApprovalMode = 'off' | 'ask' | 'always'
 
-/** Lasting rule for a tool or a whole app (ADR 0016). No entry means the normal approvals setting. */
-export type ApprovalRule = 'allow' | 'ask' | 'never'
+/**
+ * Lasting rule for a tool or a whole app (ADR 0016). No entry means the normal approvals setting. `if_asked` ("Only if
+ * I asked") runs without asking only when the user's own chat message asks for it; `hand_off` ("Hand it to me")
+ * prepares the action and hands it to the user, never doing it (#140).
+ */
+export type ApprovalRule = 'allow' | 'if_asked' | 'ask' | 'hand_off' | 'never'
 
 export interface ApprovalsConfig {
   mode: ApprovalMode
@@ -187,7 +191,7 @@ export interface ApprovalsConfig {
 }
 
 export interface RuleOrigin {
-  rule: 'allow' | 'ask' | 'never'
+  rule: ApprovalRule
   /** The user's own words, shortened. */
   said: string
   at: ISODate | ''
@@ -229,7 +233,7 @@ export interface RuleProposal {
   session_id: string
   message_id: string | null
   said: string
-  rule: 'ask' | 'never'
+  rule: 'if_asked' | 'ask' | 'hand_off' | 'never'
   keys: string[]
   targets: RuleProposalTarget[]
   status: 'pending' | 'accepted' | 'declined'
@@ -888,6 +892,20 @@ export interface ActionPreview {
   fields: Array<{ label: string; value: string }>
   body?: string | null
   app?: string | null
+}
+/**
+ * §10 The `tool_result` of a call a "Hand it to me" rule handed to the user instead of running (#140). It is not an
+ * error: Sentient prepared it and the user takes the last step.
+ */
+export interface HandOff {
+  handed_off: true
+  message: string
+  /** Plain name of what it was, e.g. `"Send email" in Gmail`. */
+  label: string
+  title: string
+  preview: ActionPreview | null
+  /** Plain details when nothing in the call reads like an email or message (a command, a click). */
+  details?: Array<{ label: string; value: string }>
 }
 /** §10 An email, message or post waiting `seconds` before it goes, so it can still be undone (#142). */
 export interface UndoWindowEvent extends TurnScoped {
