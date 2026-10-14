@@ -69,6 +69,7 @@ _TAUTOLOGY_RE = re.compile(r"^\s*(?P<n>[\w .'-]+?)['\u2019]s name is (?P=n)\s*\.
 MEMORY_COLUMNS = (
     "id, content, source, topics, memory_type, created_at, updated_at, expires_at, previous_content, status, review"
 )
+KEPT_APART_META = "memory.kept_apart"  # pairs the user split again after the tidy-up merged them (#353)
 ACTIVE = "status = 'active'"  # held memories (``pending``) are left out of every read but ``pending_facts``
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -1417,6 +1418,78 @@ class FactMemory:
         await self.forget(drop_id)
         self.publish("DELETE", drop_id, drop["content"], reason="contradicted", superseded_by=keep_id)
         return True
+
+    async def merge_translation(self, keep_id: int, drop_id: int, by: str = "nightly tidying") -> bool:
+        """``drop_id`` says what ``keep_id`` says in another language (#353): it leaves every read (status
+        ``merged``, ``merged_into`` = ``keep_id``, out of the vector index) but stays in the review history, so
+        :meth:`unmerge` can bring it back. The kept memory is not changed."""
+        await self.ensure_schema()
+        drop = await self.store.fetchone(f"SELECT content FROM facts WHERE id = ? AND {ACTIVE}", (drop_id,))
+        keep = await self.store.fetchone(f"SELECT id FROM facts WHERE id = ? AND {ACTIVE}", (keep_id,))
+        if drop is None or keep is None or keep_id == drop_id:
+            return False
+        await self.store.execute(
+            "UPDATE facts SET status = 'merged', merged_into = ?, merged_at = ?, merged_by = ? WHERE id = ?",
+            (keep_id, now_iso(), by, drop_id),
+        )
+        await self.vec.delete(drop_id)
+        self.publish("DELETE", drop_id, drop["content"], reason="merged", merged_into=keep_id)
+        return True
+
+    async def unmerge(self, fid: int) -> dict | None:
+        """Undo :meth:`merge_translation`: the memory is active again, as it was. None when it isn't merged."""
+        await self.ensure_schema()
+        row = await self.store.fetchone(
+            "SELECT content, merged_into FROM facts WHERE id = ? AND status = 'merged'", (fid,)
+        )
+        if row is None:
+            return None
+        [vec] = await self._embed([row["content"]])
+        await self.store.execute(
+            "UPDATE facts SET status = 'active', merged_into = NULL, merged_at = NULL, merged_by = NULL,"
+            " embedding_model = ? WHERE id = ?",
+            (self.llm.model_for("embedding"), fid),
+        )
+        await self.vec.upsert(fid, vec)
+        if row["merged_into"] is not None:  # the user said these two differ: never merge them again
+            apart = await self.kept_apart()
+            apart.add(tuple(sorted((fid, int(row["merged_into"])))))
+            await self.store.set_meta(KEPT_APART_META, json.dumps(sorted(apart)[-1000:]))
+        self.publish("ADD", fid, row["content"], reason="unmerged")
+        return await self.get_fact(fid)
+
+    async def merged_facts(self, limit: int = 100) -> list[dict]:
+        """Memories merged into another one, newest first, each with the memory it was merged into."""
+        await self.ensure_schema()
+        rows = await self.store.fetchall(
+            "SELECT m.id, m.content, m.source, m.merged_into, m.merged_at, m.merged_by, k.content AS kept"
+            " FROM facts m LEFT JOIN facts k ON k.id = m.merged_into WHERE m.status = 'merged'"
+            " ORDER BY m.merged_at DESC, m.id DESC LIMIT ?",
+            (limit,),
+        )
+        return [
+            {"id": int(r["id"]), "text": r["content"], "source": r["source"], "merged_at": r["merged_at"],
+             "by": r["merged_by"] or "nightly tidying",
+             "merged_into": {"id": int(r["merged_into"]), "text": r["kept"]} if r["kept"] is not None else None}
+            for r in rows
+        ]
+
+    async def expire_merged(self, cutoff: str) -> int:
+        """Forget merged memories older than ``cutoff`` for good (their undo window is over)."""
+        rows = await self.store.fetchall(
+            "SELECT id FROM facts WHERE status = 'merged' AND merged_at < ?", (cutoff,)
+        )
+        for r in rows:
+            await self.forget(int(r["id"]))
+        return len(rows)
+
+    async def kept_apart(self) -> set[tuple[int, int]]:
+        """Pairs of memories the user split again after a merge (:meth:`unmerge`), smaller id first."""
+        try:
+            raw = json.loads(await self.store.get_meta(KEPT_APART_META) or "[]")
+            return {(int(a), int(b)) for a, b in raw}
+        except (TypeError, ValueError):
+            return set()
 
     async def promote_recalled(self, min_recalls: int, limit: int = 50) -> list[dict]:
         """Short-term facts recalled at least ``min_recalls`` times become long-term (no expiry)."""

@@ -6,6 +6,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **The same memory in two languages is kept once.** If Sentient remembered "माया शाकाहारी है" and "Maya is
+  vegetarian" separately, the nightly memory tidy-up now notices and keeps just one, in the language most of your
+  memories are in. It only does this when the model is sure they say exactly the same thing: never when one adds a
+  detail or they disagree. Each merge shows up in Memory > Review under "Tidied up overnight", with **Undo**, and a
+  pair you split again is never merged again. Turn it off in Settings > Knowing you.
 - **Undo a send, see exactly what goes out, and the trash by default.** When Sentient sends an email, a message or a
   post from a chat, it now waits 10 seconds first and shows what goes out, with **Undo** and **Send now**, in the chat
   and as a toast (and as buttons in Telegram, Discord and WhatsApp). Undo and nothing is sent. Approval cards for

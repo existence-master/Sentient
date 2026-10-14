@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from sentient.llm.jobs import detached
-from sentient.memory import prompts
+from sentient.memory import languages, prompts, scripts
 from sentient.memory.facts import (
     TIME_WORDING_RE,
     conflict_strength,
@@ -76,6 +76,18 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"true", "yes", "1", "conflict", "y"}
+
+
+def _flag(value: Any) -> bool | None:
+    """A yes/no answer from a model: True, False, or None when it is neither."""
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in {"true", "yes", "1"}:
+        return True
+    if text in {"false", "no", "0"}:
+        return False
+    return None
 
 
 def similar_pairs(facts: list[dict], threshold: float) -> list[tuple[int, int, float]]:
@@ -292,9 +304,9 @@ class DreamingService(Service):
         cfg = self.cfg
         stats = {
             "facts_reviewed": 0, "merged": 0, "contradictions_resolved": 0, "promoted": 0, "expired": 0,
-            "insights_updated": 0,
+            "insights_updated": 0, "languages_merged": 0,
         }
-        notes: dict[str, Any] = {"merged": [], "contradictions": [], "promoted": [], "insights": None}
+        notes: dict[str, Any] = {"merged": [], "languages": [], "contradictions": [], "promoted": [], "insights": None}
         errors: list[str] = []
         status = "completed"
         budget = [cfg.max_model_calls]
@@ -303,6 +315,7 @@ class DreamingService(Service):
             if mem is not None:
                 steps = [
                     ("merge", self._merge_step),
+                    ("languages", self._language_step),
                     ("contradictions", self._contradiction_step),
                 ]
                 for label, step in steps:
@@ -437,6 +450,98 @@ class DreamingService(Service):
             keep = None
         return fact, keep
 
+    async def _language_step(self, stats: dict, notes: dict, budget: list[int]) -> None:
+        """Merge the same memory saved in two languages (#353), only when the model says they mean exactly the same
+        thing, neither adds a detail and they don't conflict. The merged-away one waits in the review history, where
+        the user can undo it; a pair the user split again is never merged again."""
+        cfg, mem, store = self.cfg, self.app.memory, self.app.store
+        assert mem is not None
+        if not cfg.merge_languages:
+            return
+        facts = await mem.active_facts(cfg.max_facts)
+        model = self.app.llm.model_for("embedding")
+        floor = cfg.language_merge_similarity if languages.multilingual(model) else None
+        try:
+            checked_list = [str(k) for k in json.loads(await store.get_meta("dreaming.language_pairs") or "[]")]
+        except (TypeError, ValueError):
+            checked_list = []
+        checked = set(checked_list)
+        kept_apart = await mem.kept_apart()
+        calls = max(1, cfg.max_model_calls // 2)  # leave room for contradictions
+        gone: set[int] = set()
+        name = self._name()
+        for _sim, i, j in languages.language_pairs(facts, self.app.config.assistant.user_name, floor):
+            if budget[0] <= 0 or calls <= 0:
+                break
+            hindi, other = facts[i], facts[j]
+            if hindi["id"] in gone or other["id"] in gone:
+                continue
+            ids = tuple(sorted((hindi["id"], other["id"])))
+            if ids in kept_apart:
+                continue
+            key = f"{hindi['id']}@{hindi['updated_at']}|{other['id']}@{other['updated_at']}"
+            if key in checked:
+                continue
+            budget[0] -= 1
+            calls -= 1
+            verdict = await self._same_meaning(hindi["content"], other["content"], name)
+            if verdict is None:
+                continue  # no clear answer: ask again next time
+            if not verdict:
+                checked.add(key)
+                checked_list.append(key)
+                continue
+            keep, drop = self._clearer(hindi, other, facts)
+            if await mem.merge_translation(keep["id"], drop["id"]):
+                gone.add(drop["id"])
+                stats["merged"] += 1
+                stats["languages_merged"] += 1
+                notes["languages"].append({"kept": keep["content"], "merged": drop["content"]})
+        if checked_list:
+            await store.set_meta("dreaming.language_pairs", json.dumps(checked_list[-MAX_CHECKED_PAIRS:]))
+
+    async def _same_meaning(self, a: str, b: str, name: str) -> bool | None:
+        """True only when the model says the two mean exactly the same thing, with no extra detail and no conflict,
+        and its English for ``a`` has the same words as ``b`` (small models call "every morning" no extra detail);
+        False when it says otherwise; None when its answer is unclear."""
+        try:
+            raw = await self.app.llm.complete_json(
+                self.cfg.role,
+                [
+                    {"role": "system", "content": prompts.DREAM_LANGUAGE_SYSTEM.format(name=name)},
+                    {"role": "user", "content": prompts.DREAM_LANGUAGE_USER.format(a=a, b=b)},
+                ],
+            )
+        except Exception as exc:
+            log.warning("dream language check failed: %s", exc)
+            return None
+        if not isinstance(raw, dict) or "same" not in raw:
+            return None
+        same = _flag(raw.get("same"))
+        extra = str(raw.get("extra") or "none").strip().lower()
+        conflict = _flag(raw.get("conflict"))
+        english = " ".join(str(raw.get("a_in_english") or "").split())
+        log.info(
+            "dream language check: same=%s extra=%s conflict=%s a_in_english=%r for %r / %r",
+            same, extra, conflict, english, a, b,
+        )
+        if same is False:
+            return False
+        if same is None or conflict is None or not english:
+            return None
+        return extra in {"none", "", "neither", "null"} and not conflict and languages.same_words(english, b)
+
+    def _clearer(self, hindi: dict, other: dict, facts: list[dict]) -> tuple[dict, dict]:
+        """(kept, merged away): the wording in the language most of the user's memories are in; on a tie the
+        older one stays."""
+        written = sum(1 for f in facts if scripts.leads_with_devanagari(f["content"]))
+        if written * 2 > len(facts):
+            return hindi, other
+        if written * 2 < len(facts):
+            return other, hindi
+        older_first = (hindi["created_at"], hindi["id"]) <= (other["created_at"], other["id"])
+        return (hindi, other) if older_first else (other, hindi)
+
     @staticmethod
     def contradiction_candidate(a: str, b: str, user_name: str = "") -> bool:
         return conflict_strength(a, b, user_name) > 0
@@ -535,8 +640,12 @@ class DreamingService(Service):
     def journal(self, stats: dict, notes: dict, errors: list[str]) -> str:
         name = self._name()
         did: list[str] = []
-        if stats["merged"]:
-            did.append(f"merged {stats['merged'] + len(notes['merged'])} duplicate memories into {len(notes['merged'])}")
+        duplicates = stats["merged"] - stats.get("languages_merged", 0)
+        if duplicates:
+            did.append(f"merged {duplicates + len(notes['merged'])} duplicate memories into {len(notes['merged'])}")
+        if stats.get("languages_merged"):
+            n = stats["languages_merged"]
+            did.append(f"kept {n} memor{'ies' if n != 1 else 'y'} saved in two languages just once")
         if stats["contradictions_resolved"]:
             n = stats["contradictions_resolved"]
             did.append(f"settled {n} contradiction{'s' if n != 1 else ''}")
@@ -554,6 +663,11 @@ class DreamingService(Service):
         lines = [opening, ""]
         for m in notes["merged"][:MAX_JOURNAL_ITEMS]:
             lines.append(f'- {m["count"]} memories said the same thing, so I kept one: "{_short(m["content"])}"')
+        for m in notes.get("languages", [])[:MAX_JOURNAL_ITEMS]:
+            lines.append(
+                f'- "{_short(m["merged"])}" and "{_short(m["kept"])}" said the same thing in two languages, so I kept '
+                f'"{_short(m["kept"])}". You can undo this in Memory > Review.'
+            )
         for c in notes["contradictions"][:MAX_JOURNAL_ITEMS]:
             change = f" ({c['change']})" if c["change"] else ""
             lines.append(f'- I used to remember "{_short(c["old"])}", but now "{_short(c["new"])}"{change}.')

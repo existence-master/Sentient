@@ -683,7 +683,9 @@ export const api = {
       approve: (kind: 'fact' | 'insight', id: number | string, content?: string) =>
         http.post<OkResponse>(`/api/memories/review/${kind}/${enc(String(id))}/approve`, content === undefined ? {} : { content }),
       discard: (kind: 'fact' | 'insight', id: number | string) => http.delete<OkResponse>(`/api/memories/review/${kind}/${enc(String(id))}`),
-      approveAll: (from: string) => http.post<{ approved: number }>('/api/memories/review/approve-all', { from })
+      approveAll: (from: string) => http.post<{ approved: number }>('/api/memories/review/approve-all', { from }),
+      /** Bring back a memory the nightly tidy-up merged into another one (#353). 404 when it isn't merged. */
+      undoMerge: (id: number) => http.post<OkResponse>(`/api/memories/review/merged/${enc(String(id))}/undo`)
     },
     /** §15 dreams: overnight memory consolidation. */
     dreams: {

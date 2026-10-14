@@ -1991,6 +1991,20 @@ export interface MemoryReviewInbox {
   items: MemoryReviewItem[]
   count: number
   expire_days: number
+  /** Review history (#353): memories the nightly tidy-up merged into another one, newest first. Not in `count`. */
+  merged?: MergedMemory[]
+}
+
+/** A memory the nightly tidy-up merged into another one because they said the same thing in two languages (#353). */
+export interface MergedMemory {
+  id: number
+  text: string
+  source: string
+  merged_at: ISODate
+  /** Who merged it, in plain words ("nightly tidying"). */
+  by: string
+  /** The memory that stayed; null when it was deleted since. */
+  merged_into: { id: number; text: string } | null
 }
 
 export interface MemoryQuery {

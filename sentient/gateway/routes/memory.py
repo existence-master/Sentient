@@ -147,6 +147,17 @@ async def review_approve_all(request: Request, body: dict):
     return {"approved": await memory_review.approve_from(get_core(request), source)}
 
 
+@router.post("/review/merged/{item_id}/undo")
+async def review_undo_merge(request: Request, item_id: str):
+    try:
+        memory = await memory_review.undo_merge(get_core(request), item_id)
+    except KeyError:
+        memory = None
+    if memory is None:
+        raise HTTPException(404, f"memory {item_id} was not merged")
+    return {"ok": True, "memory": memory}
+
+
 @router.post("/review/{kind}/{item_id}/approve")
 async def review_approve(request: Request, kind: str, item_id: str, body: dict | None = None):
     content = (body or {}).get("content")
