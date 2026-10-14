@@ -28,6 +28,10 @@ export const LABELS: Record<string, FieldLabel> = {
   'chat.compress_after_messages': { label: 'Summarize long chats after', unit: 'messages' },
   'chat.show_thinking': { label: 'Show thinking', description: "Show the model's reasoning in a collapsible block." },
   'chat.auto_title': { label: 'Name chats automatically' },
+  'chat.quick_commands': {
+    label: 'Quick timers and reminders',
+    description: 'Simple requests like "set a timer for 10 minutes" or "remind me at 6 pm to call Ravi" happen at once, without the model. English for now.'
+  },
   // memory
   'memory.facts_top_k': { label: 'Facts recalled per message', unit: 'facts' },
   'memory.min_similarity': { label: 'Recall threshold', percent: true },

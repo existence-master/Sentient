@@ -363,6 +363,21 @@ class ChannelService(Service):
             log.exception("could not read where task %s delivers", task_id)
             return "desktop"
 
+    async def _reminder_delivery(self, note: dict) -> str | list[dict]:
+        """The paired chat a timer or reminder was set in, or "desktop" when it was set anywhere else."""
+        session_id = (note.get("payload") or {}).get("session_id")
+        if not session_id:
+            return "desktop"
+        try:
+            found = await self.store.chat_for_session(str(session_id))
+        except Exception:
+            log.exception("could not find the chat of a reminder")
+            return "desktop"
+        if found is None:
+            return "desktop"
+        channel, chat = found
+        return [{"channel": channel, "chat_id": chat["chat_id"]}]
+
     async def _task_result(self, task_id: str | None) -> str:
         getter = getattr(self.app.tasks, "get", None)
         if not task_id or getter is None:
@@ -425,6 +440,8 @@ class ChannelService(Service):
             if not cfg.deliver_briefs or not isinstance(brief, dict) or payload.get("status", "active") != "active":
                 return None
             return f"**{title or 'Your Daily Brief'}**\n{DailyBrief.as_text(brief, links=True)}", None
+        if kind == "reminder":
+            return f"**{title or 'Reminder'}**\n{message}", None
         if payload.get("subagent_id") and cfg.deliver_subagents:
             return f"**{title or 'Background work finished'}**\n{message}", None
         return None
@@ -501,6 +518,8 @@ class ChannelService(Service):
             return "brief"
         if kind == "proactive":
             return "suggestion"
+        if kind == "reminder":
+            return "reminder"
         if kind == "task":
             if event == "question":
                 return "approval" if ChannelService.is_approval(note) else "question"
@@ -544,7 +563,10 @@ class ChannelService(Service):
             if note.get("id") and not (note.get("payload") or {}).get("status"):
                 self._held[str(note["id"])] = note  # the person is looking at the app: ask there first (#139)
             return 0
-        where = await self._task_delivery(note) if note.get("kind") in {"task", "brief"} else "default"
+        if note.get("kind") == "reminder":  # a timer or reminder goes back to the chat it was set in (#150)
+            where = await self._reminder_delivery(note)
+        else:
+            where = await self._task_delivery(note) if note.get("kind") in {"task", "brief"} else "default"
         if where == "desktop":
             return 0
         chosen = isinstance(where, list)
@@ -555,7 +577,8 @@ class ChannelService(Service):
         subagent_id = (note.get("payload") or {}).get("subagent_id")
         sent = 0
         targets = await self._chosen_targets(where) if isinstance(where, list) else await self._delivery_targets()
-        what, ref, reason = self._what(note), self._source_ref(note), "chosen" if chosen else "default"
+        what, ref = self._what(note), self._source_ref(note)
+        reason = "reminder" if note.get("kind") == "reminder" else "chosen" if chosen else "default"
         for ch, chat in targets:
             if subagent_id:
                 key = (str(subagent_id), ch.id, chat["chat_id"])

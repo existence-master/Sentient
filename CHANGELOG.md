@@ -13,6 +13,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
   **Copy** and **Open in your email app**, and never does it itself. Tasks do the same and send you a "Ready for you"
   notification. Saying "don't send emails unless I ask" or "just draft them, I'll send them myself" in a chat
   suggests the matching rule.
+- **Timers and reminders, instantly.** "Set a timer for 10 minutes", "remind me at 6 pm to call Ravi", "remind me in
+  20 minutes", "what timers do I have" and "cancel the pasta timer" now happen at once, in the chat, by voice and
+  in Telegram, Discord and WhatsApp, without waiting for the model, with a short confirmation. When a timer or
+  reminder is due you get a notification at the right time in your timezone, and one set in a messaging app goes off
+  in that chat too. Activity lists the ones coming up, with **Cancel**, and the ones that went off. Anything that could
+  mean two things ("remind me at 6", "every day at 6") still goes to the model, and nothing quick ever sends, buys or
+  deletes. English for now; turn it off in Settings > General > Conversations ("Quick timers and reminders"). There are no smart-home
+  commands yet, since Sentient has no lights integration.
 - **Undo a send, see exactly what goes out, and the trash by default.** When Sentient sends an email, a message or a
   post from a chat, it now waits 10 seconds first and shows what goes out, with **Undo** and **Send now**, in the chat
   and as a toast (and as buttons in Telegram, Discord and WhatsApp). Undo and nothing is sent. Approval cards for

@@ -275,6 +275,11 @@ class ChatConfig(BaseModel):
     )
     show_thinking: bool = Field(True, description="Show the model's reasoning in a collapsible block.")
     auto_title: bool = Field(True, description="Name new chats automatically from the first exchange.")
+    quick_commands: bool = Field(
+        True,
+        description="Do simple timer and reminder requests (\"set a timer for 10 minutes\", \"remind me at 6 pm to "
+        "call Ravi\") at once, without asking the model. Anything else still goes to the model. English for now.",
+    )
     tool_selection: Literal["auto", "all"] = Field(
         "auto",
         description="auto: offer only the tools relevant to each message when there are more than the budget "
