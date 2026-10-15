@@ -121,6 +121,21 @@ async def mcp_values(request: Request, name: str, body: MCPValuesBody):
         raise HTTPException(400, str(exc)) from exc
 
 
+class MCPReviewBody(BaseModel):
+    decisions: dict[str, Literal["approve", "decline"]] = Field(default_factory=dict)
+
+
+@router.post("/mcp/{name}/review")
+async def review_mcp(request: Request, name: str, body: MCPReviewBody):
+    """Approve or decline a server's tools after its safety check (#146)."""
+    try:
+        return await _mgr(request).mcp.review_tools(name, dict(body.decisions))
+    except KeyError as exc:
+        raise HTTPException(404, f"no MCP server named {name}") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.post("/mcp/{name}/sign-in")
 async def sign_in_mcp(request: Request, name: str):
     try:
