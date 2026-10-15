@@ -173,3 +173,15 @@ async def test_an_unrelated_fact_the_model_calls_an_update_is_added(config, isol
 )
 def test_says_something_else(new, old, unrelated):
     assert says_something_else(new, old, "Maya") is unrelated
+
+
+async def test_a_correction_updates_without_the_model_too(config, isolated_home):
+    store, llm, mem = await _memory(config, isolated_home, "nollm.db", duplicate_similarity=0.5)
+    try:
+        first = await mem.remember("Mira starts school in June.", use_llm=False)
+        second = await mem.remember("Mira starts school in July.", use_llm=False)
+        assert second["action"] == "UPDATE" and second["id"] == first["id"]
+        assert [f["content"] for f in await mem.list_facts()] == ["Mira starts school in July."]
+        assert llm.calls == []
+    finally:
+        await store.close()

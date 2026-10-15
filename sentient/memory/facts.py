@@ -1026,19 +1026,20 @@ class FactMemory:
             others |= {r["id"] for r in related if not same_subject(fact, r["content"], user)}
             if others:
                 log.info("CUD for %r: facts %s are about someone else, not offered", fact, sorted(others))
-            fixed = next(
-                (
-                    (n, c) for n in [*close, *related]
-                    if n["id"] not in others and (c := correction_of(fact, n["content"], user))
-                ),
-                None,
-            )
-            if fixed is not None:
-                # the user changed a date, place, number or name of something already saved (#364): small models
-                # answer SKIP or ADD here, so this is decided without them
-                target, corrected = fixed
-                log.info("CUD for %r: corrects fact %s, updated without asking the model", fact, target["id"])
-                return await self._store_update(int(target["id"]), corrected, None, vec if corrected == fact else None)
+        fixed = next(
+            (
+                (n, c) for n in [*close, *related]
+                if n["id"] not in others and (c := correction_of(fact, n["content"], user))
+            ),
+            None,
+        )
+        if fixed is not None:
+            # the user changed a date, place, number or name of something already saved (#364): small models
+            # answer SKIP or ADD here, so this is decided without them
+            target, corrected = fixed
+            log.info("CUD for %r: corrects fact %s, updated without asking the model", fact, target["id"])
+            analysis = None if use_llm else ([DEFAULT_TOPIC], "long-term", None)
+            return await self._store_update(int(target["id"]), corrected, analysis, vec if corrected == fact else None)
         if use_llm:
             similar = [
                 {"id": n["id"], "content": n["content"], "similarity": round(n["similarity"], 2)}
