@@ -193,3 +193,16 @@ def test_review_route(config, isolated_home, monkeypatch):
         tools = {t["mcp_name"]: t["status"] for t in r.json()["review"]["tools"]}
         assert tools["weather"] == "approved" and tools["lookup"] == "declined" and tools["send_data"] == "new"
         assert client.delete("/api/integrations/mcp/Poison").json() == {"ok": True}
+
+
+async def test_an_empty_first_listing_keeps_the_baseline_trust(app):
+    from sentient.integrations.mcp import ServerConn
+
+    mgr = app.integrations.mcp
+    mgr._baseline.add("Old")
+    conn = ServerConn(name="Old", spec={})
+    assert await mgr._review(conn, []) == set()
+    assert "Old" in mgr._baseline  # nothing listed yet: still trusted for its first real listing
+    tool = _tool(name="notes", description="Search notes.")
+    assert await mgr._review(conn, [tool]) == {"notes"}
+    assert "Old" not in mgr._baseline

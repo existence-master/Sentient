@@ -160,7 +160,7 @@ async def approve_skill(request: Request, name: str, body: dict | None = None):
     s = get_core(request)
     had_active = s.skills.get_active_file(name) is not None
     imported = await vet.report_for(s.store, name, s.skills.pending_dir / name.strip().lower())
-    if imported is not None and imported["verdict"] == "high" and not (body or {}).get("accept_risk"):
+    if imported is not None and imported["verdict"] == "high" and (body or {}).get("accept_risk") is not True:
         # high-risk findings default to declined: approving needs an explicit "approve anyway" (#146)
         raise HTTPException(409, "The safety check found high-risk problems in this skill. Approve it anyway only if "
                                  "you trust where it came from.")

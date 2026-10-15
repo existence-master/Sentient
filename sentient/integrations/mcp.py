@@ -603,7 +603,7 @@ class MCPManager:
         unique: dict[str, Any] = {}
         for t in mcp_tools:
             unique.setdefault(t.name, t)
-        if not rows and name in self._baseline:
+        if not rows and unique and name in self._baseline:  # an empty listing keeps the trust for later
             ts = now_iso()  # trusted before reviews existed: what it offers now is what the user had approved
             for t in unique.values():
                 await store.execute(

@@ -168,6 +168,8 @@ def test_import_from_a_link_waits_with_its_report_and_high_risk_needs_approve_an
     blocked = client.post("/api/skills/contact-cleanup/approve")
     assert blocked.status_code == 409 and "trust where it came from" in blocked.json()["detail"]
     assert client.core.skills.get("contact-cleanup") is None
+    for not_true in ("false", "yes", 1, None):  # only the literal true approves anyway
+        assert client.post("/api/skills/contact-cleanup/approve", json={"accept_risk": not_true}).status_code == 409
     ok = client.post("/api/skills/contact-cleanup/approve", json={"accept_risk": True})
     assert ok.status_code == 200 and ok.json()["state"] == "active"
     assert ok.json()["vetting"]["decision"] == "approved" and not ok.json()["vetting"]["changed_since_approval"]
