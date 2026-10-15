@@ -430,6 +430,10 @@ def correction_of(new_fact: str, existing: str, user_name: str = "") -> str | No
         swapped, n = re.subn(rf"\b{re.escape(old_key)}\b", new_value, existing, count=1, flags=re.IGNORECASE)
         if n:
             return swapped.strip()
+    if len(lost) > len(gained):
+        # a value would go with nothing in its place ("works at Infosys in Pune" -> "got a job at Google"): the model
+        # decides, and its update may not drop a name, place or number either
+        return None
     return new_fact.strip()
 
 

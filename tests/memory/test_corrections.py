@@ -57,6 +57,8 @@ def test_a_changed_value_is_a_correction(new, old, stored):
         # only a new detail, nothing replaced
         ("Mira starts school in June at Green Valley.", "Mira starts school in June."),
         ("Mira starts school in June.", "Mira starts school in June."),
+        # a value would be lost with nothing in its place: left to the model and its guard
+        ("Riya got a job at Google.", "Maya's sister Riya works at Infosys in Pune."),
         # a negation or the past is not a correction of the present
         ("Ravi lived in Delhi as a child.", "Ravi lives in Pune."),
         ("Maya does not run 8 km every morning.", "Maya runs 5 km every morning."),
