@@ -1,4 +1,4 @@
-import { IconArchive, IconArrowRight, IconEyeCheck, IconFileAlert, IconPlus, IconSearch, IconSparkles, IconTimeline } from '@tabler/icons-react'
+import { IconArchive, IconArrowRight, IconEyeCheck, IconFileAlert, IconLink, IconPlus, IconSearch, IconSparkles, IconTimeline } from '@tabler/icons-react'
 import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { Alert, Button, EmptyState, Input, PageHeader, SegmentedControl, Skeleton, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui'
@@ -6,6 +6,7 @@ import { CreateSkillDialog, ReviewNowButton } from '@/features/skills/actions'
 import { EvolutionLog } from '@/features/skills/EvolutionLog'
 import { LintList } from '@/features/skills/LintList'
 import { PendingReview } from '@/features/skills/PendingReview'
+import { ImportSkillDialog } from '@/features/skills/SafetyReport'
 import { SkillCard } from '@/features/skills/SkillCard'
 import { SkillDetailSheet } from '@/features/skills/SkillDetail'
 import { useSkills } from '@/hooks/skills'
@@ -68,6 +69,9 @@ export function SkillsPage() {
         actions={
           <>
             <ReviewNowButton onProposed={(names) => set({ tab: 'pending', focus: names[0] ?? null })} />
+            <Button variant="secondary" leftIcon={<IconLink size={15} />} onClick={() => set({ import: '1' })}>
+              Add from a link
+            </Button>
             <Button variant="primary" leftIcon={<IconPlus size={15} />} onClick={() => set({ create: '1' })}>
               Create skill
             </Button>
@@ -180,6 +184,7 @@ export function SkillsPage() {
         onOpenChange={(o) => !o && set({ skill: null, edit: null })}
         onReview={(name) => set({ skill: null, edit: null, tab: 'pending', focus: name })}
       />
+      <ImportSkillDialog open={params.get('import') === '1'} onOpenChange={(o) => set({ import: o ? '1' : null }, true)} onImported={(name) => set({ import: null, tab: 'pending', focus: name, skill: null })} />
       <CreateSkillDialog open={params.get('create') === '1'} onOpenChange={(o) => set({ create: o ? '1' : null }, true)} onCreated={(name) => set({ create: null, skill: name, tab: null })} />
     </div>
   )

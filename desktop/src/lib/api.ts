@@ -624,6 +624,9 @@ export const api = {
       signOut: (name: string) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/sign-out`),
       setEnabled: (name: string, enabled: boolean) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/enabled`, { enabled }),
       setAccess: (name: string, access: ConnectionAccess) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/access`, { access }),
+      /** Approve or decline tools after the safety check (#146), by their name on the server. */
+      review: (name: string, decisions: Record<string, 'approve' | 'decline'>) =>
+        http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/review`, { decisions }),
       /** Fill in the server's own header or env values (keychain only), then it reconnects. */
       setValues: (name: string, values: Record<string, string>, enable = false) =>
         http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/values`, { values, enable })
@@ -704,7 +707,11 @@ export const api = {
     get: (name: string) => http.get<SkillDetail>(`/api/skills/${enc(name)}`),
     create: (body: SkillCreate) => http.post<Skill>('/api/skills', body),
     update: (name: string, body: SkillUpdate) => http.put<Skill>(`/api/skills/${enc(name)}`, body),
-    approve: (name: string) => http.post<Skill>(`/api/skills/${enc(name)}/approve`),
+    /** `acceptRisk`: approve a skill whose safety check found high-risk problems anyway (#146). */
+    approve: (name: string, acceptRisk = false) =>
+      http.post<Skill>(`/api/skills/${enc(name)}/approve`, acceptRisk ? { accept_risk: true } : undefined),
+    /** Add a skill from a web address; it waits in pending with its safety check (#146). */
+    importUrl: (url: string) => http.post<SkillDetail>('/api/skills/import', { url }),
     reject: (name: string) => http.post<OkResponse>(`/api/skills/${enc(name)}/reject`),
     archive: (name: string) => http.post<Skill>(`/api/skills/${enc(name)}/archive`),
     restore: (name: string) => http.post<Skill>(`/api/skills/${enc(name)}/restore`),

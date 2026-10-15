@@ -1071,6 +1071,8 @@ export interface DomainEventMap {
   'integration.updated': Integration
   'memory.updated': MemoryUpdatedData
   'skill.updated': { name: string; state: SkillState }
+  /** A server's tools wait for review, or the user answered (#146). */
+  'mcp.review': { server: string; reason?: 'new' | 'changed'; tools?: string[]; needed: boolean }
   /** Only the fields that changed are sent: a rename (`title`) or the chat's own model (`model`, null = default). */
   'session.updated': { session_id: string; title?: string; model?: string | null }
   /** A chat was deleted: by the user, or an incognito chat that was closed or left idle (#154). */
@@ -1767,6 +1769,27 @@ export interface McpToolInfo {
   per_call?: boolean
 }
 
+/** One tool in a server's safety check (#146). */
+export interface McpToolReview extends McpToolInfo {
+  /** `new` and `changed` tools are not offered until the user decides. */
+  status: 'approved' | 'declined' | 'new' | 'changed'
+  level: VetVerdict
+  findings: SkillLintFinding[]
+  suggested: 'approve' | 'decline'
+  /** `changed` only: the description the user approved before, and that answer. */
+  previous_description?: string
+  previous_decision?: 'approved' | 'declined'
+}
+
+export interface McpReview {
+  /** Some tools wait for the user's answer. */
+  needed: boolean
+  reason: 'new' | 'changed' | null
+  verdict: VetVerdict
+  tools: McpToolReview[]
+  scanner: string
+}
+
 export type McpServerStatus = 'connecting' | 'connected' | 'needs_sign_in' | 'error' | 'disconnected' | 'disabled'
 
 /** How a remote server is signed in to: nothing, static headers, or the MCP OAuth sign-in. */
@@ -1793,7 +1816,10 @@ export interface McpServer {
   /** Read only or Read and write. Older engines leave it out. */
   access?: ConnectionAccess
   status: McpServerStatus | string
+  /** Only the tools Sentient offers (approved, unchanged). */
   tools: McpToolInfo[]
+  /** The safety check of every tool the server listed when it last connected; null before it connects. */
+  review?: McpReview | null
   error: string | null
 }
 
@@ -2171,12 +2197,43 @@ export interface Skill {
   changed_since_proposal?: boolean
   /** What the skill linter found (#164). */
   lint?: SkillLintFinding[]
+  /** Skills from outside (a link or Hermes): the safety check, run again on the files as they are now (#146). */
+  vetting?: SkillVetting | null
 }
 
 export interface SkillLintFinding {
-  rule: 'frontmatter' | 'required' | 'size' | 'reference' | 'danger' | 'log_shaped' | 'sections' | string
+  rule: 'frontmatter' | 'required' | 'size' | 'reference' | 'danger' | 'hidden' | 'outbound' | 'log_shaped' | 'sections' | string
   level: 'error' | 'warning'
   message: string
+}
+
+/** `high`: we suggest declining; approving needs "approve anyway". `check`: notes to read. `clear`: nothing found. */
+export type VetVerdict = 'high' | 'check' | 'clear'
+
+export interface SkillVetFinding extends SkillLintFinding {
+  /** `SKILL.md` or another file in the skill's folder. */
+  file?: string
+}
+
+export interface SkillVetting {
+  verdict: VetVerdict
+  /** One plain sentence for the top of the report. */
+  summary: string
+  findings: SkillVetFinding[]
+  /** Every file the skill brings, relative to its folder. */
+  files: string[]
+  /** Scripts or programs among them. */
+  programs: string[]
+  hash: string
+  scanner: string
+  source: 'link' | 'hermes' | string | null
+  /** The web address or Hermes folder it came from. */
+  origin: string | null
+  imported_at?: ISODate
+  decision?: 'approved' | null
+  changed_since_import?: boolean
+  /** Approved, then its files changed. */
+  changed_since_approval?: boolean
 }
 
 /** A SKILL.md in the skills folder that can't load. */
@@ -2494,6 +2551,8 @@ export interface HermesSkillItem extends HermesItem {
   changed_builtin?: boolean
   /** What the skill linter found in it. */
   lint?: SkillLintFinding[]
+  /** The safety check (#146). Older engines leave it out. */
+  vetting?: SkillVetting
 }
 export interface HermesMemoryItem extends HermesItem {
   kind: 'fact' | 'insight'

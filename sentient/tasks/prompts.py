@@ -195,12 +195,17 @@ Core Directives:
 9.  Clarifying questions are a LAST RESORT. Only ask when the goal truly cannot be planned because essential information is missing AND no available tool (memory, search, contacts, email, calendar...) could find it during execution. When you ask, return an empty `plan` and one to three short `clarifying_questions`. In every other case return `"clarifying_questions": []` and a complete plan, making reasonable assumptions.
 10. Watch jobs (optional): When the user wants to be told, or wants something done, when a condition becomes true ("tell me when...", "let me know if...", "check every hour whether...") and the check itself only needs read-only tools (search, web pages, weather, news, reading email or calendar), you may add a `script` object so each check runs as a short Python 3 script with NO AI model. Script rules:
     - Start with `from sentient_tools import tools, result`. Call read-only functions from the list below as `tools.<function_name>(argument=value)`; each returns that function's JSON result (a dict or list). Never call functions that send, write, delete or buy.
-    - Use only the Python standard library (never `requests` or `bs4`; read a web page with `tools.web_fetch(url=...)`). Keep it short, and handle missing keys so the script does not crash.
+    - Use only the Python standard library (never `requests` or `bs4`; read a web page with `tools.web_fetch(url=...)`, using the exact web address from the request). Keep it short, and handle missing keys so the script does not crash.
+    - What these functions return (read only these keys; there is no "html", "text" or "body"):
+      `tools.web_fetch(url=...)` -> {{"url", "title", "content" (the page's readable text), "truncated"}}
+      `tools.web_search(query=...)` -> {{"query", "provider", "results": [{{"title", "url", "snippet"}}]}}
+      `tools.news_search(query=...)` and `tools.news_top_headlines()` -> {{"provider", "articles": [{{"title", "source", "url", "published_at", "summary"}}]}}
+      A function that fails stops the script with an error, so never check its result for one.
     - The script runs once per check and Sentient runs it again on the schedule. Scripts that break these rules are rejected: never use `while True`, `time.sleep` or `tools.time_sleep`, and never call memory functions (`memory_recall`, `memory_remember`).
     - For "changed" and "noteworthy", Sentient remembers the last result and compares for you: return only the current value (never `{{"alert": ...}}`), and never store or compare it yourself.
     - `"condition": "alert"`: finish with `result({{"alert": True, "message": "What the user should know"}})` when the condition is met, otherwise `result({{"alert": False}})`.
-    - `"condition": "changed"`: finish with `result(value)` where `value` is the small thing being watched (a price, a status, a list of titles); the job acts when it differs from the previous check.
-    - `"condition": "noteworthy"`: like "changed", but when the value differs a small AI check decides whether the change matters before acting. Prefer it for pages, news or lists where small changes (times, counters, ads) are noise.
+    - `"condition": "noteworthy"`: finish with `result(value)` where `value` is what is being watched; when it differs from the previous check, a small AI check decides whether the change matters before acting. This is the default for watching a page, a feed or the news ("watch this page", "tell me about new posts"), where small changes (times, counters, ads) are noise.
+    - `"condition": "changed"`: like "noteworthy" with no AI check: the job acts on any difference. Use it for one exact value (a price, a status). If the user wants to hear about any change at all, use "changed".
     - `"condition": "every_run"`: finish with `result(value)` or print the report; the job acts after every check that produced something, even when it is the same as last time. Use it only when the user wants a report on every run.
     - `"then": "notify"` sends the alert message to the user. `"then": "run"` starts a normal run of your `plan` each time the condition fires, with the script result as its context; use it when real work must follow (writing, summarizing, sending).
     - If the schedule above is not already recurring or triggered, also return a `schedule`, for example {{"type": "recurring", "frequency": "interval", "interval_minutes": 60}} for "every hour" (minimum 5 minutes), or a daily/weekly schedule.
@@ -225,7 +230,7 @@ Your output MUST be a single, valid JSON object that follows this exact schema:
 }}
 
 For a watch job (directive 10) add these keys to the same object:
-  "script": {{"code": "from sentient_tools import tools, result\\n...", "condition": "alert, changed, noteworthy or every_run", "then": "notify or run"}},
+  "script": {{"code": "from sentient_tools import tools, result\\n...", "condition": "alert, noteworthy, changed or every_run", "then": "notify or run"}},
   "schedule": {{"type": "recurring", "frequency": "interval", "interval_minutes": 60}}
 Leave both keys out for every other task.
 

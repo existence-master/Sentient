@@ -188,3 +188,33 @@ CREATE TABLE IF NOT EXISTS approval_grants (
     created_at  TEXT NOT NULL,
     expires_at  TEXT                              -- set for "timed"
 );
+
+-- ---------------------------------------------------------------- skills from outside (#146, docs/API.md section 8)
+-- Where an imported skill came from, the hash of its folder and the safety check that saw it: a lock record that is
+-- checked again whenever the skill is shown or approved.
+CREATE TABLE IF NOT EXISTS skill_imports (
+    name          TEXT PRIMARY KEY,                -- the skill's name in Sentient
+    source        TEXT NOT NULL,                   -- link | hermes
+    origin        TEXT,                            -- the web address or the Hermes folder it came from
+    hash          TEXT NOT NULL,                   -- SHA-256 of its folder when it was imported
+    scanner       TEXT NOT NULL,                   -- version of the safety check
+    verdict       TEXT NOT NULL,                   -- high | check | clear
+    imported_at   TEXT NOT NULL,
+    decision      TEXT,                            -- approved (declined skills are deleted)
+    decided_at    TEXT,
+    approved_hash TEXT                             -- folder hash the user approved
+);
+
+-- ---------------------------------------------------------------- MCP tools the user reviewed (#146, section 5)
+-- One row per tool of an MCP server: the hash of what it said about itself when the user decided. A tool whose hash
+-- changes is held back until the user looks again.
+CREATE TABLE IF NOT EXISTS mcp_tool_reviews (
+    server       TEXT NOT NULL,
+    tool         TEXT NOT NULL,                    -- the tool's name on the server
+    hash         TEXT NOT NULL,                    -- SHA-256 of name, title, description, input schema and hints
+    decision     TEXT NOT NULL,                    -- approved | declined
+    description  TEXT,                             -- the description that was approved, to show what changed
+    decided_at   TEXT NOT NULL,
+    alerted_hash TEXT,                             -- a changed hash the user was already told about
+    PRIMARY KEY (server, tool)
+);

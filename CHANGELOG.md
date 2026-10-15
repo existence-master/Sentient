@@ -6,6 +6,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **A safety check for skills and MCP servers from outside.** Skills brought over from Hermes, and skills you add
+  with the new **Add from a link** button in Skills (a SKILL.md, or a GitHub folder that holds one), wait for your
+  review with a plain safety report: where it came from, and whether it tries to send your data to a fixed address,
+  run downloaded code, turn off approvals, read passwords or the keychain, hide what it does from you, or give
+  Sentient new orders, including in text you can't see (invisible characters, white-on-white text, hidden comments)
+  and in the scripts it brings. When the risk is high, **Decline** is the main button and approving needs
+  **Approve anyway**. A new MCP server's tools are not offered to Sentient until you look at each one: its risk, what
+  its description says, and whether it gives Sentient orders ("always call this first"), hides text or takes the name
+  of one of Sentient's own tools. Risky tools start switched off. Sentient remembers exactly what each approved tool
+  said about itself; if a server changes that later, the tool is held back and you get a notification showing the old
+  and new description side by side. Servers you had before this update keep their tools.
 - **Memory you can see and undo.** Each time Sentient remembers something from a chat, a small "Remembered: ...
   Undo" note appears in that chat; Undo forgets it, or puts back what an update changed. Things that read like
   instructions ("from now on, always cc Bob on invoices") are never saved quietly: they wait on the Memory page's
@@ -164,7 +175,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
   important changes**. Each check is compared with the last one without any AI, so an unchanged page costs nothing
   and stays silent; only when something changed does your fast AI model decide whether it matters, and then you get
   one notification that says what changed. Every watch also keeps a quiet list of its recent checks ("Checked,
-  nothing new", "Something changed. You were told") under Runs.
+  nothing new", "Something changed. You were told") under Runs. When you ask Sentient to watch a page, a feed or the
+  news, it now uses this kind of check by default, so a view counter or a new timestamp no longer sends you a message.
 - **Fuzzy times for repeating tasks:** a daily or weekly task can run "in the morning", "afternoon", "evening" or "at
   night" instead of at an exact time; Sentient picks a time inside that part of the day. Say it in your request
   ("every weekday morning") or pick it in the schedule editor.
@@ -374,6 +386,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
   school now starts in July" replaces June with July instead of being ignored as something Sentient already knew. The
   same goes for a new place ("Ravi moved from Pune to Delhi"), a new number or a new name. Things that are only about
   the same person ("Mira has a piano recital in July") are kept as their own memories.
+- **Page watches read the page.** When you ask Sentient to watch a web page, the check script it writes now reads
+  the page's text. Small local models used to read a part of the page that doesn't exist, so the watch saw nothing
+  on every check and never told you about a change. Sentient now tells the model what a page, a web search and the
+  news give back, and sends a script that reads something they never give back to be rewritten.
 - **Approvals from Telegram, Discord and WhatsApp answer only the request they were sent for.** When a task asks
   about one step and then another, a button or reply from the earlier message can no longer answer the newer request:
   the chat says the message is for an earlier request, and the newer one keeps waiting for its own answer.
