@@ -385,6 +385,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - **Changing a rule while an email waits to go out now counts.** If you set an app or tool to **Ask** while one of
   its emails or messages waits the few seconds before it is sent, Sentient asks you before it goes out instead of
   sending it under the old rule. The same goes for **Only if I asked**, unless your message asked for that email.
+- **Watching a page means watching all of it.** When you ask Sentient to watch, track or monitor something, or to
+  tell you when something happens, the plan no longer reports on every check, and its check no longer looks at only
+  the page's heading or first line (so an event added at the bottom is noticed). If the plan does either, the planner
+  is told why in plain words and writes it again. Asking for "a report every hour" or "the headline" still works.
 - **Telling Sentient something changed updates the memory.** After "Mira starts school in June", saying "Mira's
   school now starts in July" replaces June with July instead of being ignored as something Sentient already knew. The
   same goes for a new place ("Ravi moved from Pune to Delhi"), a new number or a new name. Things that are only about
