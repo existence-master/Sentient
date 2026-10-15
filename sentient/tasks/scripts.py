@@ -70,13 +70,156 @@ def tools_named(code: Any) -> list[str]:
     """The tools a check script uses as ``tools.<name>``, in order and once each. Works on code that does not
     compile, since it is read from the text."""
     return list(dict.fromkeys(_TOOL_CALL.findall(str(code or ""))))
+
+
 _IMPORTABLE = set(sys.stdlib_module_names) | {"sentient_tools"}
+
+# What the read-only tools check scripts call most return (#366), so a script reading a key that is never there
+# (``web_fetch(...)['html']``) is rejected instead of returning "" on every check. The planner's script rules say the
+# same; tests/integrations/test_keyless.py checks these against the real tools. A tool that fails raises in the
+# script, so a result never holds "error".
+ARTICLE_KEYS = ("title", "source", "url", "published_at", "summary")
+RESULT_KEYS: dict[str, tuple[str, ...]] = {
+    "web_fetch": ("url", "title", "content", "truncated"),
+    "web_search": ("query", "provider", "results", "note"),
+    "news_top_headlines": ("provider", "country", "category", "articles"),
+    "news_search": ("provider", "query", "articles"),
+}
+ITEM_KEYS: dict[tuple[str, str], tuple[str, ...]] = {  # (tool, list key): the keys of each item in that list
+    ("web_search", "results"): ("title", "url", "snippet"),
+    ("news_top_headlines", "articles"): ARTICLE_KEYS,
+    ("news_search", "articles"): ARTICLE_KEYS,
+}
+_HARMLESS_KEYS = {"error"}  # reading these finds nothing but breaks nothing
+
+
+class _Shape:
+    """A value whose keys are known: a tool's result (``keys``), or a list in it whose items have ``item`` keys."""
+
+    def __init__(self, what: str, keys: tuple[str, ...] = (), item: _Shape | None = None, tool: str = "") -> None:
+        self.what, self.keys, self.item, self.tool = what, keys, item, tool
+
+
+def _result_shape(tool: str) -> _Shape:
+    return _Shape(f"the result of `tools.{tool}`", RESULT_KEYS[tool], tool=tool)
+
+
+def _key_read(node: ast.AST) -> tuple[ast.expr, str] | None:
+    """``(value, key)`` for ``value['key']`` and ``value.get('key', ...)``."""
+    if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+        return node.value, node.slice.value
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" and node.args
+            and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)):
+        return node.func.value, node.args[0].value
+    return None
+
+
+def _shape_of(node: ast.AST, env: dict[str, _Shape]) -> _Shape | None:
+    if isinstance(node, ast.Name):
+        return env.get(node.id)
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):  # page.get('results') or []
+        return _shape_of(node.values[0], env)
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "tools" and node.func.attr in RESULT_KEYS):
+        return _result_shape(node.func.attr)
+    if isinstance(node, ast.Subscript) and not _key_read(node):  # results[0], results[:5]
+        base = _shape_of(node.value, env)
+        if base is not None and base.item is not None:
+            return base if isinstance(node.slice, ast.Slice) else base.item
+        return None
+    read = _key_read(node)
+    if read:
+        base = _shape_of(read[0], env)
+        items = ITEM_KEYS.get((base.tool, read[1])) if base is not None and base.item is None else None
+        if items:
+            item = _Shape(f"each item of `{read[1]}` from `tools.{base.tool}`", items, tool=base.tool)
+            return _Shape(f"`{read[1]}` from `tools.{base.tool}`", item=item, tool=base.tool)
+    return None
+
+
+def _bindings(tree: ast.AST) -> dict[str, list[tuple[str, ast.expr | None]]]:
+    """Every way each name gets a value: ``("value", expr)``, ``("item", iterable)`` for a loop variable, or
+    ``("other", None)`` for anything this check does not follow (unpacking, arguments, ``+=``...)."""
+    out: dict[str, list[tuple[str, ast.expr | None]]] = {}
+    seen: set[int] = set()
+
+    def bind(target: ast.AST, how: str, expr: ast.expr | None) -> None:
+        if isinstance(target, ast.Name):
+            out.setdefault(target.id, []).append((how, expr))
+            seen.add(id(target))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                bind(target, "value", node.value)
+        elif isinstance(node, ast.NamedExpr):
+            bind(node.target, "value", node.value)
+        elif isinstance(node, ast.For | ast.AsyncFor | ast.comprehension):
+            bind(node.target, "item", node.iter)
+        elif isinstance(node, ast.arg):
+            out.setdefault(node.arg, []).append(("other", None))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and id(node) not in seen:
+            out.setdefault(node.id, []).append(("other", None))
+    return out
+
+
+def _known_shapes(tree: ast.AST) -> dict[str, _Shape]:
+    """Names that always hold a tool result (or a list or item in one). A name that also gets anything else is left
+    out, so the check never guesses."""
+    bindings = _bindings(tree)
+    env: dict[str, _Shape] = {}
+    for _ in range(4):  # a few rounds: page = tools.web_search(...); rows = page['results']; for r in rows
+        found: dict[str, _Shape] = {}
+        for name, ways in bindings.items():
+            shapes = []
+            for how, expr in ways:
+                shape = _shape_of(expr, env) if expr is not None else None
+                if how == "item":
+                    shape = shape.item if shape is not None else None
+                shapes.append(shape)
+            first = shapes[0]
+            if first is not None and all(s is not None and s.what == first.what for s in shapes):
+                found[name] = first
+        if found.keys() == env.keys():
+            break
+        env = found
+    return env
+
+
+def _and(words: tuple[str, ...]) -> str:
+    quoted = [f"`{w}`" for w in words]
+    return quoted[0] if len(quoted) == 1 else ", ".join(quoted[:-1]) + " and " + quoted[-1]
+
+
+def _check_result_keys(tree: ast.AST) -> None:
+    """Reject a read of a key the tool never returns (#366), naming the keys it does return."""
+    env = _known_shapes(tree)
+    for node in ast.walk(tree):
+        read = _key_read(node)
+        if not read:
+            continue
+        shape = _shape_of(read[0], env)
+        key = read[1]
+        if shape is None or key in _HARMLESS_KEYS:
+            continue
+        if shape.item is not None:
+            raise ScriptInvalid(
+                f"The check script reads `{key}` from {shape.what}, which is a list. Loop over it and read "
+                f"{_and(shape.item.keys)} from each item."
+            )
+        if key not in shape.keys:
+            hint = " The page's text is in `content`." if shape.tool == "web_fetch" else ""
+            raise ScriptInvalid(
+                f"The check script reads `{key}` from {shape.what}, which has no `{key}`: it has only "
+                f"{_and(shape.keys)}.{hint}"
+            )
 
 
 def check_rules(code: str, condition: str) -> None:
     """Reject what small models write into check scripts that cannot work (#305), with a plain reason the planner
-    can act on: a package that is not installed, an endless loop, a wait, memory calls, or an alert result on a
-    comparing condition."""
+    can act on: a package that is not installed, an endless loop, a wait, memory calls, an alert result on a
+    comparing condition, or a key a tool's result never has (#366)."""
     tree = ast.parse(code)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import | ast.ImportFrom):
@@ -115,6 +258,7 @@ def check_rules(code: str, condition: str) -> None:
                 f"The check script returns an alert (`{{\"alert\": ...}}`) but its condition is \"{condition}\". "
                 f"Use the condition \"alert\", or return only the watched value and let Sentient compare it."
             )
+    _check_result_keys(tree)
 
 
 def normalize_script(raw: Any, previous: dict | None = None, *, model_written: bool = False) -> dict:
