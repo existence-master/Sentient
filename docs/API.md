@@ -2499,7 +2499,12 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `script` (and a `schedule`, e.g. `interval`) to its reply. The code must use `from sentient_tools import tools, result` and
   read-only tools; it is checked with `ast.parse` and, because a model wrote it, also rejected when it imports a package
   outside the standard library (`requests`, `bs4`), uses `while True`, sleeps (`time.sleep`, `tools.time_sleep`), calls
-  memory functions (`memory_*`) or returns `{"alert": ...}` with a `changed`/`noteworthy` condition. The planner gets one chance to fix a rejected script with the reason. If
+  memory functions (`memory_*`) or returns `{"alert": ...}` with a `changed`/`noteworthy` condition, or reads a key the
+  tool's result never has (#366; `sentient.tasks.scripts.RESULT_KEYS`/`ITEM_KEYS`: `web_fetch` →
+  `{url, title, content, truncated}`, `web_search` → `{query, provider, results: [{title, url, snippet}], note?}`,
+  `news_search`/`news_top_headlines` → `{provider, query|country+category, articles: [{title, source, url,
+  published_at, summary}]}`; for example `tools.web_fetch(...)["html"]`, or a string key on the `results` list). The
+  planner prompt lists the same shapes. The planner gets one chance to fix a rejected script with the reason. If
   that one is rejected too (#310), the task is saved as an ordinary AI-run task instead of failing: `task_type: "single"`,
   `script: null`, one plan step that is the user's own request (`original_prompt`, which keeps the page address the
   script held) with the app the scripts called (`tools.web_fetch`: `web`; else the planner's app; one more step per
