@@ -133,6 +133,39 @@ function formInfo(el) {
   const submitText = clip(submits.map(b => b.innerText || b.value || b.getAttribute('aria-label') || '').join(' | '), 120);
   return { in_form: true, form_payment: payment, form_submit_text: submitText };
 }
+// The text around a sign-up looking element (its card or form), so a price beside a "Subscribe" button is seen (#378).
+// Climbs at most four parents. It stops before a container holding another offer button (the next card on a pricing
+// page) or much more text than one card; when even the first parent is large, it keeps the text just around the element.
+const SIGNUP = /\b(subscribe|sign ?up|follow|notify|updates|join|newsletter|wait ?list)\b/i;
+const OFFER = /\b(subscribe|sign ?up|follow|notify me|join|buy|purchase|pay|order|check ?out|upgrade|trial|get started|choose|select)\b/i;
+const CLICKABLE = 'button, a[href], input[type=submit], input[type=button], input[type=image], [role=button], [role=link]';
+function otherOffer(node, el) {
+  return Array.from(node.querySelectorAll(CLICKABLE)).some(o => o !== el && !o.contains(el) && !el.contains(o) &&
+    OFFER.test(o.innerText || o.value || o.getAttribute('aria-label') || ''));
+}
+function nearText(el, d) {
+  const own = [d.name, d.aria_label, d.title, d.label, d.value, d.form_submit_text].join(' ');
+  if (!SIGNUP.test(own)) return '';
+  let near = '';
+  let node = el.parentElement;
+  for (let i = 0; i < 4 && node && node !== document.documentElement; i++) {
+    const big = node === document.body || (node.textContent || '').length > 4000;
+    const text = big ? '' : (node.innerText || '').replace(/\s+/g, ' ').trim();
+    if (i > 0 && !big && text.length <= 400 && otherOffer(node, el)) break;
+    if (big || text.length > 400) {
+      if (i === 0 && (node.textContent || '').length < 20000) {
+        const all = (node.innerText || '').replace(/\s+/g, ' ');
+        const mine = (el.innerText || el.value || '').replace(/\s+/g, ' ').trim();
+        const at = mine ? all.indexOf(mine) : -1;
+        if (at >= 0) near = all.slice(Math.max(0, at - 150), at + mine.length + 150).trim();
+      }
+      break;
+    }
+    near = text;
+    node = node.parentElement;
+  }
+  return clip(near, 400);
+}
 const els = [];
 let n = 0;
 const max = args.maxElements || 300;
@@ -168,6 +201,7 @@ for (const el of document.querySelectorAll(SELECTOR)) {
     d.value = sel ? clip(sel.label || sel.text, 60) : '';
   }
   Object.assign(d, formInfo(el));
+  d.near = nearText(el, d);
   d.focused = document.activeElement === el;
   els.push(d);
 }

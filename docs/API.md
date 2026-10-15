@@ -1830,7 +1830,7 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   Outside `run_loop`, use `await app.approvals.requires_approval(tool, arguments, ctx) -> (bool, Risk)`;
   `needs_approval(tool, session_id, risk=None, *, arguments=None, ctx=None)` evaluates a synchronous `risk_fn` when
   given `arguments` (an async one counts as at least `send` there).
-- `approval_request` also carries `risk_label` (e.g. "Purchase", "Deletes", "Posts publicly", "Sends", "Runs code",
+- `approval_request` also carries `risk_label` (e.g. "Purchase", "Signs up", "Deletes", "Posts publicly", "Sends", "Runs code",
   "Changes something") and `target` (short label of what is acted on, e.g. "Place order", or null). They come from the
   optional `Tool.describe_fn(arguments, ctx) -> {risk_label?, target?}` (sync or async, also `@tool(..., describe_fn=...)`);
   without it `risk_label` is "Looks something up" / "Changes something" / "Sends" / "Runs code" by effective risk.
@@ -2194,6 +2194,10 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     pay, place order, checkout, send, post, publish, delete, remove, confirm, subscribe, transfer, or it submits a form
     with payment fields → `{ok, clicked, url, message, new_tab?, dialogs?}`. A link opening a new tab makes it active.
     `confirm()` dialogs are accepted only for clicks approved as `send`; alerts are accepted; `dialogs` lists them.
+    Its approval `risk_label` is "Purchase" for buy, pay, order, checkout and the like. A subscribe, follow, sign up or
+    "notify me" reads "Signs up" (normal approval rules) unless the element or the text around it (its card or form)
+    shows a price, currency, billing period ("/month", "per seat"), plan, trial or upgrade; then it stays "Purchase",
+    which always asks.
     Defensive check at call time: a send-looking click that approvals did not rate `send` (page changed, or no approval
     step ran and approvals mode is not `off`) is refused with an explanation.
   - `browser_type(ref, text, submit=False)` write (`send` when submit presses Enter in a payment form, a form whose button

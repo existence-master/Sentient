@@ -49,6 +49,11 @@ PAGES = {
     "help.html": "<!doctype html><title>Help</title><main><h1>Help center</h1></main>",
     "download.html": '<!doctype html><title>Downloads</title><a href="/report.txt" download>Download report</a>',
     "report.txt": "Sentient browser download test.\n",
+    "signup.html": """<!doctype html><meta charset="utf-8"><title>Newsletter</title><main>
+  <section><h2>Weekly notes</h2><p>Free, no spam.</p><button>Subscribe</button></section>
+  <section><h2>Pro</h2><p>All the extras, ₹499/month.</p><button>Subscribe</button></section>
+  <section><h2>Team</h2><div>$20 per seat</div><div><button>Subscribe</button> <a href="/help.html">Learn more</a></div></section>
+</main>""",
 }
 
 

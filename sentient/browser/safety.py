@@ -9,7 +9,8 @@
 
 Element descriptors are the dicts produced by the snapshot script (``snapshot.py``):
 ``{role, name, tag, type, value, href, autocomplete, id, name_attr, label, placeholder,
-aria_label, title, in_form, form_payment, form_submit_text, is_submit}``. Missing keys are fine.
+aria_label, title, in_form, form_payment, form_submit_text, is_submit, near}``. ``near`` is the text around the
+element (its card or form). Missing keys are fine.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ RISKY_CLICK_RE = re.compile(r"\b(?:" + "|".join(_RISKY_WORDS) + r")\b", re.IGNOR
 
 # approval wording: first matching rule names the kind of action for the approval card
 _LABEL_RULES = [
-    (re.compile(r"\b(?:buy|purchase|pay|payment|order|check ?out|donate|subscribe|book now|reserve|transfer|"
+    (re.compile(r"\b(?:buy|purchase|pay|payment|order|check ?out|donate|book now|reserve|transfer|"
                 r"add money|withdraw)\b", re.IGNORECASE), "Purchase"),
     (re.compile(r"\b(?:delete|remove|erase|discard|trash|deactivate|close (?:my )?account)\b", re.IGNORECASE),
      "Deletes"),
@@ -41,6 +42,24 @@ _LABEL_RULES = [
     (re.compile(r"\b(?:send|submit|confirm|reply)\b", re.IGNORECASE), "Sends"),
 ]
 _DEFAULT_LABELS = {"click": "Clicks", "type": "Types into the page", "press": "Presses a key"}
+SIGNUP_LABEL = "Signs up"
+
+# subscribe, follow, notify me: a sign-up, which costs money only when the button or its surroundings say so (#378)
+_SIGNUP_RE = re.compile(
+    r"\b(?:subscribe|sign ?up|follow|notify me|get (?:the )?updates|"
+    r"join (?:the |our )?(?:newsletter|mailing list|wait ?list))\b",
+    re.IGNORECASE,
+)
+# anything that says it may cost money: a price or currency, a billing period, a plan, a trial or an upgrade
+_PAID_RE = re.compile(
+    r"[$¢£¥€₹₩₽₺₫₱฿₦₪₴₨]"
+    r"|\b(?:usd|eur|gbp|inr|jpy|cad|aud|rs|rupees?|dollars?|euros?|pounds?)\b"
+    r"|/\s*(?:mo|mon|month|yr|year|wk|week|day)s?\b"
+    r"|\bper\s+(?:month|year|week|day|user|seat)\b|\b(?:a|each|every)\s+(?:month|year|week)\b"
+    r"|\b(?:plans?|trial|upgrade|premium|pricing|prices?|billed|billing|"
+    r"paid|pay|payment|buy|purchase|checkout|membership|pro)\b",
+    re.IGNORECASE,
+)
 
 
 def approval_target(el: dict | None) -> str:
@@ -54,10 +73,20 @@ def approval_target(el: dict | None) -> str:
     return str(el.get("role") or el.get("tag") or "")[:80]
 
 
-def risk_label_for(text: str, kind: str) -> str:
-    """'Purchase', 'Deletes', 'Posts publicly', 'Sends', else a neutral label for the action kind."""
-    for rx, label in _LABEL_RULES:
-        if rx.search(text or ""):
+def risk_label_for(text: str, kind: str, near: str = "") -> str:
+    """'Purchase', 'Signs up', 'Deletes', 'Posts publicly', 'Sends', else a neutral label for the action kind.
+
+    ``near`` is the text around the element (its card or form). A subscribe, follow or "notify me" reads
+    'Signs up' only when neither the element nor ``near`` shows a price, currency, billing period, plan, trial or
+    upgrade. Otherwise it may cost money, so it stays 'Purchase', which always asks."""
+    text = text or ""
+    purchase_rule, *other_rules = _LABEL_RULES
+    if purchase_rule[0].search(text):
+        return purchase_rule[1]
+    if _SIGNUP_RE.search(text):
+        return purchase_rule[1] if _PAID_RE.search(f"{text} {near or ''}") else SIGNUP_LABEL
+    for rx, label in other_rules:
+        if rx.search(text):
             return label
     return _DEFAULT_LABELS.get(kind, "Changes something")
 
