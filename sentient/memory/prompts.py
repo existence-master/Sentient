@@ -102,7 +102,7 @@ Actions:
 
 Instructions:
 1. Analyze the new information to understand its intent.
-2. Compare it with the existing facts listed (they come with their IDs and similarity scores). Only use IDs from that list. A fact marked "same_subject_attribute" is about the same person and the same attribute (where they live, their job, relationship, diet...): if the new information changes that attribute (e.g. "moved to Bengaluru" vs "lives in Pune"), UPDATE that fact instead of adding a second one.
+2. Compare it with the existing facts listed (they come with their IDs and similarity scores). Only use IDs from that list. A fact marked "same_subject_attribute" is about the same person and the same attribute (where they live, their job, relationship, diet...): if the new information changes that attribute (e.g. "moved to Bengaluru" vs "lives in Pune"), UPDATE that fact instead of adding a second one. A fact marked "changes_value" states a different date, place, number or name for the same thing: the new information is a correction, so UPDATE that fact (e.g. "Mira's school now starts in July" vs "Mira starts school in June"). A correction is never SKIP.
 3. Decide the action. When the existing list is empty, the action is ADD.
 4. For ADD or UPDATE you MUST perform a complete analysis on the new `content`:
    - topics: one or more of: {TOPIC_LIST_STR}

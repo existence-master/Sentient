@@ -6,6 +6,7 @@ import respx
 from sentient import paths
 from sentient.integrations.plugins import news as news_mod
 from sentient.integrations.plugins import web as web_mod
+from sentient.tasks.scripts import ITEM_KEYS, RESULT_KEYS
 
 RSS = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel>
@@ -35,6 +36,8 @@ async def test_duckduckgo_search(app, ctx, monkeypatch):
     assert res["provider"] == "duckduckgo"
     assert res["results"] == [{"title": "Pune monsoon", "url": "https://example.org/pune", "snippet": "Rain update"}]
     assert seen == {"query": "Pune monsoon 2026", "max_results": 3}
+    assert set(res) <= set(RESULT_KEYS["web_search"])  # the shapes check scripts are held to (#366)
+    assert set(res["results"][0]) == set(ITEM_KEYS[("web_search", "results")])
 
 
 async def test_keyed_search_provider_falls_back(app, ctx, monkeypatch):
@@ -100,6 +103,13 @@ async def test_news_top_headlines_uses_country_from_location(app, ctx):
         url = str(route.calls.last.request.url)
     assert "ceid=IN:en" in url and "gl=IN" in url
     assert res["country"] == "IN" and len(res["articles"]) == 2
+    assert set(res) == set(RESULT_KEYS["news_top_headlines"])
+    assert set(res["articles"][0]) == set(ITEM_KEYS[("news_top_headlines", "articles")])
+    with respx.mock() as router:
+        router.get(url__startswith="https://news.google.com/rss").mock(return_value=httpx.Response(200, text=RSS))
+        found = await app.registry.get("news_search").call(ctx, {"query": "monsoon"})
+    assert set(found) == set(RESULT_KEYS["news_search"])
+    assert set(found["articles"][0]) == set(ITEM_KEYS[("news_search", "articles")])
 
 
 async def test_web_fetch_readable_text(app, ctx, monkeypatch):
@@ -110,6 +120,7 @@ async def test_web_fetch_readable_text(app, ctx, monkeypatch):
         router.get("https://example.com/").mock(return_value=httpx.Response(200, text=html, headers={"content-type": "text/html"}))
         res = await app.registry.get("web_fetch").call(ctx, {"url": "https://example.com/"})
     assert res["title"] == "Example"
+    assert set(res) == set(RESULT_KEYS["web_fetch"])
     assert "# Hello" in res["content"] and "World & friends" in res["content"]
     assert "var x" not in res["content"] and "Menu" not in res["content"] and "foot" not in res["content"]
 

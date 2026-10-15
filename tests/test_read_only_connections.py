@@ -269,6 +269,10 @@ def test_access_routes_for_mcp_servers(client):
         time.sleep(0.2)
         server = next(x for x in client.get("/api/integrations/mcp").json() if x["name"] == "Larder")
     assert server["status"] == "connected", server
+    assert server["review"]["needed"] and server["tools"] == []  # a new server's tools wait for the user (#146)
+    decisions = {t["mcp_name"]: "approve" for t in server["review"]["tools"]}
+    server = client.post("/api/integrations/mcp/Larder/review", json={"decisions": decisions}).json()
+    assert not server["review"]["needed"]
     offered = {t["function"]["name"] for t in core.registry.openai_schemas()}
     assert "mcp_larder_echo" in offered and "mcp_larder_add_numbers" not in offered
     r = client.post("/api/integrations/mcp/Larder/access", json={"access": "read_write"})
