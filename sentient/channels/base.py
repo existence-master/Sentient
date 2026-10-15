@@ -613,6 +613,8 @@ class Channel:
         rt.others = [*rt.others, (msg.sender_name or "Someone", text)][-MAX_OTHERS:]
         if not rt.running:  # during a reply they wait, so they never land between a tool call and its result
             await self._flush_others(rt, chat)
+        elif self.app.agent is not None:  # ...but the chat is marked at once, so nothing waiting can be missed
+            await self.app.agent.mark_group_chat(await self.ensure_session(chat), msg.sender_name or "Someone")
 
     async def _flush_others(self, rt: ChatRuntime, chat: dict) -> None:
         if not rt.others or self.app.agent is None:
@@ -757,16 +759,20 @@ class Channel:
 
     # ------------------------------------------------------------------ chat turns
     async def _turn_worker(self, rt: ChatRuntime, chat_id: str, text: str, attachments: list[str], voice_in: bool) -> None:
-        while True:
-            await self.run_reply(chat_id, text, attachments, voice_in=voice_in)
-            if rt.stopped or not rt.queued:
-                if rt.others and (chat := await self.service.store.chat(self.id, chat_id)) is not None:
-                    await self._flush_others(rt, chat)  # group members wrote during the reply: keep it now
-                return
-            batch, rt.queued = rt.queued, []
-            text = "\n\n".join(t for t, _ in batch if t)
-            attachments = [a for _, atts in batch for a in atts]
-            voice_in = False
+        try:
+            while True:
+                await self.run_reply(chat_id, text, attachments, voice_in=voice_in)
+                if rt.stopped or not rt.queued:
+                    return
+                batch, rt.queued = rt.queued, []
+                text = "\n\n".join(t for t, _ in batch if t)
+                attachments = [a for _, atts in batch for a in atts]
+                voice_in = False
+        finally:  # group members wrote during the reply: keep it now, also when the reply failed or was stopped
+            if rt.others:
+                with contextlib.suppress(Exception):
+                    if (chat := await self.service.store.chat(self.id, chat_id)) is not None:
+                        await self._flush_others(rt, chat)
 
     def activity_label(self, tool_name: str) -> str:
         tool = self.app.registry.get(tool_name)

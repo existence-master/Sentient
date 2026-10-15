@@ -1991,11 +1991,16 @@ class Agent:
             return ""
         for sender, text in messages:
             await self.store.add_message(session_id, OTHER_ROLE, text, name=" ".join(sender.split())[:80] or None)
+        return await self.mark_group_chat(session_id, messages[0][0])
+
+    async def mark_group_chat(self, session_id: str, sender: str) -> str:
+        """Mark a chat because a group member wrote in it (ADR 0029), unless it is marked already. Done as soon as the
+        message arrives, also while it waits for a reply to end. Returns the chat's mark."""
         session = await self.store.get_session(session_id)
         current = (session or {}).get("untrusted")
         if current:
             return str(current)
-        source = group_source(messages[0][0])
+        source = group_source(sender)
         await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
         self._publish_mark(session_id, source)
         return source
