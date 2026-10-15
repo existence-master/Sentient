@@ -6,6 +6,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **A safety check for skills and MCP servers from outside.** Skills brought over from Hermes, and skills you add
+  with the new **Add from a link** button in Skills (a SKILL.md, or a GitHub folder that holds one), wait for your
+  review with a plain safety report: where it came from, and whether it tries to send your data to a fixed address,
+  run downloaded code, turn off approvals, read passwords or the keychain, hide what it does from you, or give
+  Sentient new orders, including in text you can't see (invisible characters, white-on-white text, hidden comments)
+  and in the scripts it brings. When the risk is high, **Decline** is the main button and approving needs
+  **Approve anyway**. A new MCP server's tools are not offered to Sentient until you look at each one: its risk, what
+  its description says, and whether it gives Sentient orders ("always call this first"), hides text or takes the name
+  of one of Sentient's own tools. Risky tools start switched off. Sentient remembers exactly what each approved tool
+  said about itself; if a server changes that later, the tool is held back and you get a notification showing the old
+  and new description side by side. Servers you had before this update keep their tools.
 - **Memory you can see and undo.** Each time Sentient remembers something from a chat, a small "Remembered: ...
   Undo" note appears in that chat; Undo forgets it, or puts back what an update changed. Things that read like
   instructions ("from now on, always cc Bob on invoices") are never saved quietly: they wait on the Memory page's
