@@ -90,7 +90,7 @@ export const LABELS: Record<string, FieldLabel> = {
   // approvals & tools
   'tools.approvals.mode': {
     label: 'Ask before acting',
-    description: 'Sentient checks with you before it changes, sends, deletes or runs something. You can also require a yes for every tool. Even with Never ask, it still checks before a purchase, for apps you set to Ask, before sending anything once a chat has read an email or web page, and before a change you just told it never to make until you answer its suggested rule.',
+    description: 'Sentient checks with you before it changes, sends, deletes or runs something. You can also require a yes for every tool. Even with Never ask, it still checks before a purchase, before unlocking a door, turning off the alarm or opening a garage door, for apps you set to Ask, before sending anything once a chat has read an email or web page, and before a change you just told it never to make until you answer its suggested rule.',
     options: { off: 'Never ask', ask: 'When it changes or sends', always: 'Before every tool' }
   },
   'tools.approvals.remember_session': {

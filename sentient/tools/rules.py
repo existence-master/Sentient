@@ -39,6 +39,13 @@ RULE_TITLES = {
 }
 # describe_fn label for money leaving the user (browser: buy, pay, order, subscribe, donate, transfer ...)
 PURCHASE_LABEL = "Purchase"
+# describe_fn labels for a call that opens the user's home (#175, ADR 0028): unlocking a door, turning off the alarm,
+# opening a garage door, gate or door, or switching something that sounds like one. Like a purchase, it always asks.
+UNLOCKS_LABEL = "Unlocks a door"
+DISARMS_LABEL = "Turns off your alarm"
+OPENS_GATE_LABEL = "Opens a garage door or gate"
+SECURITY_SWITCH_LABEL = "Controls a door, lock or alarm"
+OPENS_HOME_LABELS = frozenset({UNLOCKS_LABEL, DISARMS_LABEL, OPENS_GATE_LABEL, SECURITY_SWITCH_LABEL})
 SETTINGS_HINT = "Change this in Settings > Approvals & safety."
 
 
@@ -124,10 +131,16 @@ def read_only_message(tool: Tool, registry: Any = None) -> str:
             f'anything. "{tool_title(tool)}" was not done. {READ_ONLY_HINT}')
 
 
+# not a rule a user sets: why a call that opens the home is held (ADR 0028), for the hold and question wording
+OPENS_HOME = "opens_home"
+
+
 def _set_to(rule: str | None) -> str:
     """ "set to Ask", or for "Only if I asked" a sentence that says only a chat message from the user asks for it."""
     if rule == IF_ASKED:
         return "set to \"Only if I asked\", which only the user's own chat message can ask for"
+    if rule == OPENS_HOME:
+        return "something that opens the user's home, which always asks first"
     return "set to Ask"
 
 
@@ -149,6 +162,8 @@ def approval_question(label: str, arguments: dict, target: str | None = None, ru
     detail = target or _brief(arguments)
     if rule == IF_ASKED:
         why = "You've set it to go ahead only when you ask for it in a chat."
+    elif rule == OPENS_HOME:
+        why = "It opens your home, so Sentient always asks first."
     else:
         why = "You've set it to ask first."
     return f"This task wants to use {label}{f' ({detail})' if detail else ''}. {why} OK to go ahead?"
@@ -431,3 +446,18 @@ async def is_purchase(tool: Tool, arguments: dict, ctx: Any, risk: Risk) -> bool
         return False
     wording = await describe_call(tool, arguments, ctx, Risk(risk))
     return wording.get("risk_label") == PURCHASE_LABEL
+
+
+async def opens_home(tool: Tool, arguments: dict, ctx: Any, risk: Risk) -> bool:
+    """True when the call opens the user's home (#175, ADR 0028): effective risk ``send`` or higher and approval
+    wording in ``OPENS_HOME_LABELS`` (unlock a door, turn off the alarm, open a garage door or gate)."""
+    if Risk(risk) < Risk.send:
+        return False
+    wording = await describe_call(tool, arguments, ctx, Risk(risk))
+    return wording.get("risk_label") in OPENS_HOME_LABELS
+
+
+async def always_asks(tool: Tool, arguments: dict, ctx: Any, risk: Risk) -> bool:
+    """A hard stop: a purchase, or a call that opens the user's home. It asks whatever the approvals mode, an Allow
+    rule, "Allow for this chat" or a grant say, and a script can never make it."""
+    return await is_purchase(tool, arguments, ctx, risk) or await opens_home(tool, arguments, ctx, risk)

@@ -278,3 +278,19 @@ async def test_a_stopped_reply_keeps_its_checks(make_app):
     assert kept["checks"] == checks
     final = [r for r in await app.store.recent_messages(sid, 5) if r["role"] == "assistant"][-1]
     assert final["checks"] == checks
+
+
+async def test_home_assistant_actions_are_checked():
+    from sentient.integrations.plugins import home_assistant
+
+    tool_ = home_assistant.ha_turn_on
+    ok = await outcomes.check(tool_, {"entity_id": "light.desk"}, {"done": True, "devices": ["Desk lamp"]}, False, None,
+                              app="Home Assistant", mcp=False)
+    assert ok["ok"] is True and ok["action"] == "home action done"
+    bad = await outcomes.check(tool_, {"entity_id": "light.desk"}, {"error": "Home Assistant request failed (500)."},
+                               False, None, app="Home Assistant", mcp=False)
+    assert bad["ok"] is False
+    assert outcomes.finalize([bad], "I turned on the desk lamp.")[0]["message"] == (
+        "Sentient said it ran the home action, but Home Assistant reported a problem: Home Assistant request failed "
+        "(500)."
+    )

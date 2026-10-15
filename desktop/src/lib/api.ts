@@ -106,6 +106,8 @@ import type {
   OnboardingRequest,
   Persona,
   PrivacyFilters,
+  IntegrationEntities,
+  EntityChoice,
   ProactivityPreference,
   Brief,
   BriefFeedback,
@@ -615,6 +617,9 @@ export const api = {
     getPrivacyFilters: (id: string) => http.get<PrivacyFilters>(`/api/integrations/${enc(id)}/privacy-filters`),
     setPrivacyFilters: (id: string, filters: PrivacyFilters) =>
       http.put<OkResponse>(`/api/integrations/${enc(id)}/privacy-filters`, filters),
+    /** #175: the devices of an integration with an entity picker, and which ones Sentient may use. */
+    getEntities: (id: string) => http.get<IntegrationEntities>(`/api/integrations/${enc(id)}/entities`),
+    setEntities: (id: string, choice: EntityChoice) => http.put<EntityChoice>(`/api/integrations/${enc(id)}/entities`, choice),
     mcp: {
       list: () => http.get<McpServer[]>('/api/integrations/mcp'),
       add: (body: McpServerCreate) => http.post<McpServer>('/api/integrations/mcp', body),

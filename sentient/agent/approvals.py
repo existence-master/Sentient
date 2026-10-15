@@ -54,8 +54,8 @@ from sentient.agent import grants as grant_rules
 from sentient.config.schema import ApprovalsConfig
 from sentient.tools.base import Risk, Tool, ToolContext, effective_risk
 from sentient.tools.rules import (
+    always_asks,
     applied_rule,
-    is_purchase,
     read_only_blocks,
     read_only_hides,
     read_only_message,
@@ -143,6 +143,21 @@ class ApprovalBroker:
             return None
         return unprompted_message(self.label(tool, registry))
 
+    def quick_runs(self, tool: Tool, session_id: str | None, arguments: dict, *, asked: bool = False) -> bool:
+        """True when a quick command's call (``sentient.agent.fastpath``) may run at once, with no model and no question.
+        That is a call that would run without asking anyway. ``asked``: the user's message named exactly this change
+        (turn off the living room lights, #175), so in mode "ask" those words are the yes for a change (effective risk
+        ``write``), as with an "Only if I asked" rule. Never for anything above a change, in mode "always", with an
+        Ask, Hand it to me or Never rule, or for a Read only connection."""
+        risk = _sync_effective_risk(tool, arguments, None) if tool.risk_fn is not None else tool.risk
+        if not self.needs_approval(tool, session_id, risk, asked=asked):
+            return True
+        if not asked or risk > Risk.write or self.config.mode != "ask":
+            return False
+        if self.rule(tool) is not None:
+            return False  # an Ask, Hand it to me or Never rule (Allow and Only if I asked never get here)
+        return not read_only_blocks(self.read_only(), tool, risk)
+
     async def requires_approval(
         self, tool: Tool, arguments: dict, ctx: ToolContext, session_id: str | None = None
     ) -> tuple[bool, Risk]:
@@ -157,7 +172,8 @@ class ApprovalBroker:
         """``needs_approval`` for a call whose effective risk is known. It also checks whether the call is
         a purchase: purchases always ask, whatever the mode, rules or "allow for this chat" say. ``asked``: the
         user's own words in this chat turn asked for this call (an "Only if I asked" rule then allows it)."""
-        purchase = await is_purchase(tool, arguments, ctx, risk)
+        # a purchase or a call that opens the home (ADR 0028) asks whatever the mode and rules say
+        purchase = await always_asks(tool, arguments, ctx, risk)
         return self.needs_approval(tool, session_id, risk, purchase=purchase, asked=asked)
 
     def needs_approval(
@@ -215,7 +231,7 @@ class ApprovalBroker:
         task_id = (getattr(ctx, "extra", None) or {}).get("task_id")
         if self.grants.covers(tool.name, risk, str(task_id) if task_id else None) is None:
             return False
-        return not await is_purchase(tool, arguments, ctx, risk)
+        return not await always_asks(tool, arguments, ctx, risk)
 
     def create(self, approval_id: str, choices: list[str] | None = None) -> asyncio.Future:
         loop = asyncio.get_running_loop()

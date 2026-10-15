@@ -44,6 +44,7 @@ export const qk = {
     all: ['integrations'] as const,
     detail: (id: string) => ['integrations', id] as const,
     privacyFilters: (id: string) => ['integrations', id, 'privacy-filters'] as const,
+    entities: (id: string) => ['integrations', id, 'entities'] as const,
     mcp: ['integrations-mcp'] as const,
     feeds: ['integrations', 'feeds'] as const
   },

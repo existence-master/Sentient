@@ -22,7 +22,7 @@ agent engine. Sentient's own USPs from v2 are preserved exactly:
   history search.
 - **Proactivity**: watches connected apps, reasons over your context and
   suggests actions, learning per suggestion type from approve/dismiss.
-- **Integrations**: Google Workspace, GitHub, Slack, Notion, Discord, Trello,
+- **Integrations**: Google Workspace, GitHub, Slack, Notion, Discord, Trello, Home Assistant,
   WhatsApp, web search, weather, maps, news, charts, and any MCP server.
 - **Voice mode**: hands-free conversation, and the path to the smart glasses.
 

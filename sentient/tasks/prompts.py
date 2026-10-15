@@ -62,10 +62,10 @@ Instructions:
         - If the user names only a part of the day without an exact time ("every morning", "weekday evenings"), also add `"window"`: "morning", "afternoon", "evening" or "night". The task then runs at some time in that part of the day.
         - For "weekly" frequency, `days` MUST be a list of full day names (e.g., ["Monday", "Wednesday"]). If no day is specified, default to `["Monday"]`.
         - "Every weekday" means frequency "weekly" with days ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"].
-    - Triggered Workflows: Triggered workflows are supported for new calendar events and new emails. If the user tells you to do something "on every new email", "whenever I get an email from ...", or "when a new meeting is added", use the `triggered` type.
-        - `source`: The service that triggers the workflow ("gmail" or "gcalendar").
-        - `event`: The specific event ("new_email" for gmail, "new_event" for gcalendar).
-        - `filter`: A dictionary of conditions to match. Email fields: from, to, subject, snippet, body, labels. Calendar fields: summary, description, location, attendees, organizer_email. Use `{{"field": "value"}}` for exact matches and `{{"field": {{"$contains": "text"}}}}` for partial matches. Use `{{}}` to match every event.
+    - Triggered Workflows: Triggered workflows are supported for new calendar events, new emails and smart home changes. If the user tells you to do something "on every new email", "whenever I get an email from ...", "when a new meeting is added" or "when the front door opens", use the `triggered` type.
+        - `source`: The service that triggers the workflow ("gmail", "gcalendar" or "home_assistant").
+        - `event`: The specific event ("new_email" for gmail, "new_event" for gcalendar, "state_changed" for home_assistant).
+        - `filter`: A dictionary of conditions to match. Email fields: from, to, subject, snippet, body, labels. Calendar fields: summary, description, location, attendees, organizer_email. Smart home fields: name, entity_id, area, from, to (the new state, like "on", "off", "open", "unlocked"). Use `{{"field": "value"}}` for exact matches and `{{"field": {{"$contains": "text"}}}}` for partial matches. Use `{{}}` to match every event.
     - CRUCIAL DISTINCTION: Differentiate between the *task's execution time* (`run_at`) and the *event's time* mentioned in the prompt. A task to arrange a future event (e.g., 'book a flight for next month', 'schedule a meeting for Friday') should be executed *now* to make the arrangement. Therefore, its `run_at` should be null, since setting run_at to null makes the task run immediately. The future date belongs in the task `description`.
     - Ambiguity: Phrases like "weekly hourly" are ambiguous. Interpret "weekly" as the frequency and ignore "hourly".
     - Use the current time and user's timezone to resolve relative dates like "tomorrow", "next Friday at 2pm", etc. correctly.
