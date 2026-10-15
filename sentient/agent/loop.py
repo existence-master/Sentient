@@ -1750,9 +1750,10 @@ class Agent:
 
     # ------------------------------------------------------------------ quick commands (#150)
     async def _quick_plan(self, session_id: str, user_text: str, attachments: list[str]) -> fastpath.QuickPlan | None:
-        """The plan for a plain timer or reminder command, or None to let the model answer: anything else, a message
-        with attachments, or a command whose tool would ask first or is set to Never (the model then shows the usual
-        approval card or refusal)."""
+        """The plan for a plain timer, reminder or light command, or None to let the model answer: anything else, a
+        message with attachments, or a command whose tool would ask first or is set to Never (the model then shows the
+        usual approval card or refusal). A light command is the user's own words for exactly that change, so approvals
+        mode "ask" counts them as the yes (``ApprovalBroker.quick_runs``)."""
         if attachments or self.app is None:
             return None
         try:
@@ -1764,7 +1765,9 @@ class Agent:
             return None
         for call in plan.calls:
             tool = self.registry.get(call.name)
-            if tool is None or self.approvals.is_never(tool) or self.approvals.needs_approval(tool, session_id, tool.risk):
+            if tool is None or self.approvals.is_hidden(tool):
+                return None
+            if not self.approvals.quick_runs(tool, session_id, call.arguments, asked=plan.asked):
                 return None
         return plan
 

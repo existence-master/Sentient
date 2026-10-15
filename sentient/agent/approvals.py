@@ -143,6 +143,21 @@ class ApprovalBroker:
             return None
         return unprompted_message(self.label(tool, registry))
 
+    def quick_runs(self, tool: Tool, session_id: str | None, arguments: dict, *, asked: bool = False) -> bool:
+        """True when a quick command's call (``sentient.agent.fastpath``) may run at once, with no model and no question.
+        That is a call that would run without asking anyway. ``asked``: the user's message named exactly this change
+        (turn off the living room lights, #175), so in mode "ask" those words are the yes for a change (effective risk
+        ``write``), as with an "Only if I asked" rule. Never for anything above a change, in mode "always", with an
+        Ask, Hand it to me or Never rule, or for a Read only connection."""
+        risk = _sync_effective_risk(tool, arguments, None) if tool.risk_fn is not None else tool.risk
+        if not self.needs_approval(tool, session_id, risk, asked=asked):
+            return True
+        if not asked or risk > Risk.write or self.config.mode != "ask":
+            return False
+        if self.rule(tool) is not None:
+            return False  # an Ask, Hand it to me or Never rule (Allow and Only if I asked never get here)
+        return not read_only_blocks(self.read_only(), tool, risk)
+
     async def requires_approval(
         self, tool: Tool, arguments: dict, ctx: ToolContext, session_id: str | None = None
     ) -> tuple[bool, Risk]:

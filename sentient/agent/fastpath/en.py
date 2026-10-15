@@ -1,4 +1,5 @@
-"""English quick commands (#150): timers, one-off reminders, and listing or cancelling them.
+"""English quick commands (#150): timers, one-off reminders, and listing or cancelling them; with Home Assistant
+connected, also lights and switches (#175): "turn off the living room lights", "dim the bedroom lamp to 30%".
 
 The grammar is deliberately narrow. A message must be *only* the command (with "please", "hey Sentient" and the
 like around it); anything else, or anything that could mean two things, is left to the model:
@@ -14,7 +15,7 @@ import re
 from collections.abc import Sequence
 from datetime import datetime, time, timedelta
 
-from sentient.agent.fastpath.base import ANY, REMINDER, TIMER, Command
+from sentient.agent.fastpath.base import ANY, LIGHT, REMINDER, SWITCH, TIMER, Command
 
 code = "en"
 
@@ -367,6 +368,71 @@ def _list(s: str) -> Command | None:
     return None
 
 
+# ---------------------------------------------------------------------------- lights and switches (#175)
+_ON_OFF_A = re.compile(r"^(?:turn|switch|shut|put)\s+(?P<power>on|off)\s+(?P<target>.+)$", re.I)
+_ON_OFF_B = re.compile(r"^(?:turn|switch|shut|put)\s+(?P<target>.+?)\s+(?P<power>on|off)$", re.I)
+_ON_OFF_C = re.compile(  # "living room lights off", never a question ("is the porch light on")
+    r"^(?!(?:is|are|was|were|what|which|why|how|do|does|did|can|could|should|would|will|when|who|where|leave|keep)\b)"
+    r"(?P<target>.+?)\s+(?P<power>on|off)$", re.I,
+)
+_LEVEL = re.compile(
+    r"^(?:set|dim|brighten|turn(?:\s+(?:up|down))?|put)\s+(?P<target>.+?)(?:\s+brightness)?\s+(?:to|at)\s+"
+    r"(?P<level>\d{1,3})\s*(?:%|percent|per\s+cent)(?:\s+brightness)?$", re.I,
+)
+_DEVICES = {
+    "light": (LIGHT, False), "lights": (LIGHT, True), "lamp": (LIGHT, False), "lamps": (LIGHT, True),
+    "bulb": (LIGHT, False), "bulbs": (LIGHT, True), "switch": (SWITCH, False), "switches": (SWITCH, True),
+    "plug": (SWITCH, False), "plugs": (SWITCH, True), "socket": (SWITCH, False), "sockets": (SWITCH, True),
+}
+# never a quick home command: settings, Sentient's own things, and locks and alarms (they always ask) go to the model
+_NOT_HOME = re.compile(r"\b(?:timers?|reminders?|notifications?|alerts?|approvals?|sentient|wi-?fi|bluetooth|"
+                       r"computer|laptop|phone|everything|all of it|alarms?|locks?|unlock(?:ed)?)\b", re.I)
+
+
+def _target(raw: str) -> tuple[str, str, bool, bool] | None:
+    """``(which, device, plural, all)`` for a device as named: "the living room lights", "all the lights", "the lights
+    in the kitchen", "the bedroom lamp". None when it is not a plain name of a device."""
+    t = " ".join(raw.lower().split())
+    everything = False
+    m = re.match(r"^all(?:\s+of)?(?:\s+(?:the|my|our))?\s+(.+)$", t)
+    if m:
+        t, everything = m.group(1), True
+    t = re.sub(r"^(?:the|my|our)\s+", "", t)
+    m = re.match(r"^(?P<dev>.+?)\s+in\s+(?:the\s+|my\s+|our\s+)?(?P<room>.+)$", t)
+    if m and m["dev"].split()[-1] in _DEVICES:  # "the lights in the kitchen" -> "kitchen lights"
+        t = f"{m['room']} {m['dev']}"
+    words = t.split()
+    if not words or len(words) > 6 or _NOT_HOME.search(t) or not re.fullmatch(r"[a-z0-9' -]+", t):
+        return None
+    device, plural = _DEVICES.get(words[-1], ("", False))
+    if everything and not plural:
+        return None  # "all the lamp"
+    if not device and len(words) > 4:
+        return None
+    return t, device, plural, everything
+
+
+def _home(s: str) -> Command | None:
+    m = _LEVEL.match(s)
+    if m:
+        found = _target(m["target"])
+        level = int(m["level"])
+        if found is None or found[1] != LIGHT or not 1 <= level <= 100:
+            return None
+        which, device, plural, everything = found
+        return Command("home", which=which, device=device, plural=plural, all=everything, power="on", level=level)
+    for pat in (_ON_OFF_A, _ON_OFF_B, _ON_OFF_C):
+        m = pat.match(s)
+        if m is None:
+            continue
+        found = _target(m["target"])
+        if found is None or (pat is _ON_OFF_C and not found[1]):
+            return None
+        which, device, plural, everything = found
+        return Command("home", which=which, device=device, plural=plural, all=everything, power=m["power"].lower())
+    return None
+
+
 def parse(text: str, now: datetime, names: Sequence[str] = ()) -> Command | None:
     s = _strip_polite(_normalize(text), names)
     if not s or len(s) > 300 or "\n" in (text or "").strip():
@@ -375,7 +441,7 @@ def parse(text: str, now: datetime, names: Sequence[str] = ()) -> Command | None
         cmd = read(s)
         if cmd is not None:
             return cmd
-    return _reminder(s, now)
+    return _reminder(s, now) or _home(s)
 
 
 # ---------------------------------------------------------------------------- what Sentient says
@@ -508,6 +574,16 @@ def listing(reminders: list[dict], now: datetime) -> str:
 
 def _join(items: list[str]) -> str:
     return items[0] if len(items) == 1 else "; ".join(items[:-1]) + f"; and {items[-1]}"
+
+
+def home_done(command: Command, count: int) -> str:
+    if command.all and command.which in {"lights", "lamps", "bulbs", "switches", "plugs", "sockets"}:
+        what = f"all the {command.which}"
+    else:
+        what = f"the {_yours(command.which)}"
+    if command.level is not None:
+        return f"Set {what} to {command.level}%."
+    return f"Turned {command.power} {what}."
 
 
 def failed(error: str) -> str:

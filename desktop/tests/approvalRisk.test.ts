@@ -158,3 +158,22 @@ test('a write-risk MCP mail delete reads as deletion', () => {
   })
   assert.equal(w.label, 'Deletes')
 })
+
+test('Home Assistant locks, alarms and garage doors read as home security, with a plain caution (#175)', () => {
+  const unlock = approvalRisk({
+    risk: 'send',
+    name: 'home_assistant_unlock',
+    reason: 'home_assistant: Unlock a door lock in Home Assistant. Always asks first.',
+    arguments: { entity_id: 'lock.front_door' }
+  })
+  assert.equal(unlock.label, 'Home security')
+  assert.equal(unlock.verb, 'unlock a door')
+  assert.equal(unlock.tone, 'danger')
+  assert.match(unlock.caution ?? '', /walk in/)
+  const garage = approvalRisk({ risk: 'send', name: 'home_assistant_open_cover', arguments: { entity_id: 'cover.garage_door' } })
+  assert.equal(garage.label, 'Home security')
+  // blinds are only a change: the engine leaves their risk at write
+  const blinds = approvalRisk({ risk: 'write', name: 'home_assistant_open_cover', arguments: { entity_id: 'cover.bedroom_blinds' } })
+  assert.equal(blinds.label, 'Changes things')
+  assert.equal(blinds.caution, undefined)
+})

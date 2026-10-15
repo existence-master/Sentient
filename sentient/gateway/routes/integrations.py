@@ -38,6 +38,11 @@ class PrivacyFilters(BaseModel):
     labels: list[str] = Field(default_factory=list)
 
 
+class EntityChoiceBody(BaseModel):
+    mode: Literal["all", "picked"]
+    picked: list[str] = Field(default_factory=list)
+
+
 class MCPServerBody(BaseModel):
     name: str
     transport: Literal["stdio", "http"] = "stdio"
@@ -225,3 +230,24 @@ async def put_privacy_filters(request: Request, integration_id: str, body: Priva
         raise HTTPException(400, f"{plugin.display_name} doesn't support privacy filters")
     await mgr.set_privacy_filters(integration_id, body.model_dump())
     return {"ok": True}
+
+
+@router.get("/{integration_id}/entities")
+async def get_entities(request: Request, integration_id: str):
+    """The devices of an integration with an entity picker (Home Assistant), and which ones Sentient may use."""
+    try:
+        return await _mgr(request).list_entities(integration_id)
+    except KeyError as exc:
+        raise HTTPException(404, f"unknown integration {integration_id}") from exc
+    except IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.put("/{integration_id}/entities")
+async def put_entities(request: Request, integration_id: str, body: EntityChoiceBody):
+    try:
+        return await _mgr(request).set_entity_choice(integration_id, body.mode, body.picked)
+    except KeyError as exc:
+        raise HTTPException(404, f"unknown integration {integration_id}") from exc
+    except IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc

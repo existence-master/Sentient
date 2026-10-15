@@ -6,6 +6,9 @@ Supports MongoDB-like conditions: ``$or``, ``$and``, ``$not`` and per-field
 Normalized event shapes sent by the pollers:
 - gmail ``new_email``: {id, thread_id, from, sender_email, to, subject, snippet, body, date, labels, url}
 - gcalendar ``new_event``: {id, summary, description, start, end, location, attendees, organizer_email, url, status}
+- home_assistant ``state_changed``: {id, entity_id, name, domain, area, from, to, changed_at, device_class}
+
+Home Assistant names and states compare without regard to case ("front door" matches "Front door").
 
 v2 compatibility: for gmail, ``from`` compares against the sender's email address
 (case-insensitive); ``$contains``/``$regex`` on ``from`` also see the display name.
@@ -87,6 +90,17 @@ def _op_ok(op: str, op_val: Any, value: Any, text_value: Any, email_field: bool)
     return False  # unknown operator never matches
 
 
+def _fold(value: Any) -> Any:
+    """Lower-cased strings, also inside lists and operator dicts (Home Assistant names and states)."""
+    if isinstance(value, str):
+        return value.casefold()
+    if isinstance(value, list):
+        return [_fold(v) for v in value]
+    if isinstance(value, dict):
+        return {k: v if k == "$regex" else _fold(v) for k, v in value.items()}
+    return value
+
+
 def event_matches_filter(event_data: dict[str, Any], task_filter: dict[str, Any] | None, source: str) -> bool:
     if not task_filter:
         return True  # an empty filter matches everything
@@ -101,6 +115,8 @@ def event_matches_filter(event_data: dict[str, Any], task_filter: dict[str, Any]
             text_value: Any = f"{raw} {value}".strip()
         else:
             value = _lookup(event_data, field)
+            if source == "home_assistant":  # names and states as people say them: "front door" is "Front door"
+                value, query = _fold(value), _fold(query)
             text_value = value
         if isinstance(query, dict):
             return all(_op_ok(op, op_val, value, text_value, email_field) for op, op_val in query.items())

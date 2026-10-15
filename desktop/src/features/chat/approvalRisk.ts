@@ -19,6 +19,7 @@
 
 export type RiskLabel =
   | 'Runs a command'
+  | 'Home security'
   | 'Runs code'
   | 'Purchase'
   | 'Deletes'
@@ -36,6 +37,23 @@ export interface RiskWording {
   /** "Sentient wants to ..." */
   verb: string
   tone: RiskTone
+  /** One plain sentence on what could go wrong, for actions on the home's locks, doors and alarm (#175). */
+  caution?: string
+}
+
+/**
+ * Home Assistant's locks, alarm, garage doors and gates (#175), named from the tool name. The engine makes them
+ * ask every time (`send`); a cover only when it is a garage door, gate or door (its risk is raised to `send`).
+ */
+const HOME_SECURITY: Record<string, { verb: string; caution?: string }> = {
+  home_assistant_unlock: { verb: 'unlock a door', caution: 'Anyone at that door can walk in once it is unlocked.' },
+  home_assistant_lock: { verb: 'lock a door' },
+  home_assistant_open_cover: { verb: 'open a garage door or gate', caution: 'Anyone outside can get in while it is open.' },
+  home_assistant_close_cover: { verb: 'close a garage door or gate', caution: 'Make sure nothing and nobody is in the way.' },
+  home_assistant_set_alarm: { verb: 'change your alarm', caution: 'With the alarm off, nothing warns you of a break-in.' },
+  home_assistant_turn_on: { verb: 'switch on something that opens or unlocks', caution: 'It sounds like a door, lock or alarm.' },
+  home_assistant_turn_off: { verb: 'switch off something that guards your home', caution: 'It sounds like a door, lock or alarm.' },
+  home_assistant_run_script: { verb: 'run a script that opens or unlocks', caution: 'It sounds like a door, lock or alarm.' }
 }
 
 /** Tool names that send email: send_email, gmail_send, mailer, ... — checked before any word guessing. */
@@ -92,6 +110,9 @@ export function approvalRisk(approval: {
   const name = [approval.name, ...actionSlugs(approval.arguments)].join(' ')
   if (approval.name === 'terminal_run')
     return { label: 'Runs a command', verb: 'run a command on this computer', tone: 'danger' }
+  const home = HOME_SECURITY[approval.name]
+  if (home && (approval.risk === 'send' || approval.risk === 'exec'))
+    return { label: 'Home security', verb: home.verb, tone: 'danger', ...(home.caution ? { caution: home.caution } : {}) }
   if (approval.risk === 'exec') return { label: 'Runs code', verb: 'run code on your computer', tone: 'danger' }
   if (approval.risk === 'send') {
     if (isEmailTool(name))

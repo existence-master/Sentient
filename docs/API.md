@@ -1104,17 +1104,19 @@ Routines are enabled `active` tasks whose schedule is `recurring` or `triggered`
 
 **Integration object**
 ```json
-{"id": "gmail", "display_name": "Gmail", "description": "...", "category": "productivity|communication|knowledge|development|utilities|core",
+{"id": "gmail", "display_name": "Gmail", "description": "...", "category": "productivity|communication|knowledge|development|home|utilities|core",
  "icon": "gmail", "auth_type": "builtin|oauth|api_key|manual|mcp",
  "connected": false, "account_label": "me@example.com", "status": "disconnected|connecting|connected|error", "error": null,
  "setup": {"fields": [{"key": "client_id", "label": "OAuth Client ID", "secret": false, "required": true, "help": "..."}],
            "instructions_md": "1. Open ... 2. ...", "docs_url": "https://..."},
  "privacy_filters": {"supported": true, "fields": ["keywords", "emails", "labels"]},
  "triggers": [{"event": "new_email", "label": "New email"}],
- "alternative_for": null, "access": "read_write",
+ "alternative_for": null, "access": "read_write", "entity_picker": false,
  "tools": [{"name": "gmail_search", "description": "...", "risk": "read"}]}
 ```
 - `access`: `read` (Read only) or `read_write` (Read and write, the default), see "Read only connections" below.
+- `entity_picker`: the integration has devices to choose from (Home Assistant, see below), so the window shows which
+  ones Sentient may use.
 - `alternative_for`: for optional keyed providers that replace a keyless builtin (`accuweather` → `weather`,
   `newsapi` → `news`, `brave_search`/`google_cse` → `internet_search`, `google_maps` → `maps`); these have no tools
   of their own. `null` otherwise.
@@ -1189,6 +1191,48 @@ Routines are enabled `active` tasks whose schedule is `recurring` or `triggered`
   for backward compatibility with older installations sharing the keychain. Untagged legacy tokens are never migrated automatically
   to prevent cross-endpoint credential reuse, and untagged client registrations are only copied when legacy tokens are tagged for the
   same server address. When a server's URL changes, credentials for the previous URL are deleted from the keychain.
+- `home_assistant` ("Home Assistant", `auth_type: "api_key"`, `category: "home"`, #175): setup fields `url` (the
+  address Home Assistant opens at, for example `http://homeassistant.local:8123`; `http://` only for this computer or
+  the home network: localhost, private and link-local IPs, a name without dots or ending in `.local`, `.lan`, `.home`,
+  `.internal`, `.home.arpa`; anything else needs `https://`) and `token` (a long-lived access token, secret). Connect
+  checks `GET /api/config` and saves `{url, token}` in the keychain (`integration:home_assistant`); `account_label` is
+  the home's `location_name`. Calls use Home Assistant's REST API (`/api/states`, `/api/states/<id>`,
+  `/api/services/<domain>/<service>`) and its websocket (`/api/websocket`: `config/area_registry/list`,
+  `config/device_registry/list`, `config/entity_registry/list` for rooms and devices, cached 5 minutes; without them
+  names still work). Entities Home Assistant hides or turned off are left out.
+  - Tools. Look-ups (`read`): `home_assistant_find_entities(search?, area?, kind?, limit = 25)` (the model finds the
+    few devices it needs and never gets the full list: at most `limit`, then `more` and a hint),
+    `home_assistant_list_areas`, `home_assistant_list_devices(area?)`, `home_assistant_get_state(entity_id)`. Changes
+    (`write`): `home_assistant_turn_on(entity_id, brightness_pct?, color?)` and `home_assistant_turn_off(entity_id)`
+    (lights, switches, fans, media players, thermostats and other on/off kinds; `entity_id` may list several ids
+    separated by commas; locks, covers, alarms and scripts are refused with the right tool to use),
+    `home_assistant_set_temperature(entity_id, temperature, hvac_mode?)`, `home_assistant_activate_scene`,
+    `home_assistant_run_script`, `home_assistant_open_cover` and `home_assistant_close_cover`. Security (`send`, asks
+    every time, never covered by "Allow for this chat" or a grant, `allow_for_chat: false`):
+    `home_assistant_lock`, `home_assistant_unlock`, `home_assistant_set_alarm(entity_id, mode: arm_home|arm_away|
+    arm_night|arm_vacation|disarm)`. The `risk_fn` of turn on/off, scripts and covers raises a call to `send` for a
+    lock or alarm, a cover with `device_class` garage, gate or door, or a switch, script, button or cover whose id or
+    name says lock, door, garage, gate, alarm, security, safe or vault; an entity it can't look up yet counts as
+    security unless its kind never is (lights, fans, thermostats, media players, scenes). `describe_fn` gives a plain
+    `risk_label` ("Unlocks a door") and the device's name as `target`.
+  - Entity picker (`entity_picker: true` on the Integration object): which devices Sentient may see and use. Devices
+    left out are not found by any tool, are refused when named ("Sentient isn't allowed to use ..."), never match a
+    quick command and never start a task. `GET /api/integrations/{id}/entities` → `{mode: "all"|"picked", picked:
+    [entity ids], entities: [{entity_id, name, domain, area, state, allowed}]}` (fetched from Home Assistant; 400
+    when the integration has no picker or isn't connected; 404 unknown integration). `PUT
+    /api/integrations/{id}/entities` `{mode: "all"|"picked", picked: [entity ids]}` → `{mode, picked}`, saved in the
+    integration's settings and applied at once (also emits `integration.updated`; 400 no picker, 422 any other mode).
+    `all` (the default) also covers devices added later.
+  - Live updates (`integrations.home_assistant_live`, default on; feed `kind: "home_assistant_live"` in
+    `GET /api/integrations/feeds`): while connected and background work runs, one websocket subscribes to
+    `state_changed` and publishes `source.items` `{source: "home_assistant", event: "state_changed", origin: "feed",
+    items: [{id: "<entity id>@<last_changed>", entity_id, name, domain, area, from, to, changed_at, device_class}]}`
+    when a device's state changes (not for attribute-only changes, a device going unavailable or coming back,
+    devices left out by the picker, or kinds that change all the time: sensors, numbers, the sun, weather, updates,
+    zones, cameras, buttons, events). Triggered tasks use `schedule: {type: "triggered", source: "home_assistant",
+    event: "state_changed", filter: {"entity_id": "lock.front_door", "to": "unlocked"}}`; for this source, filter values
+    compare without regard to case ("front door" matches "Front door"). A lost connection
+    reconnects with backoff (base 30 s); a refused token marks the integration `status: "error"`.
 - `PUT /api/integrations/{id}/privacy-filters` → 400 when the integration has `privacy_filters.supported: false`
 
 **Read only connections (#141, ADR 0016 amendment).** `integrations.read_only` lists the app ids (`gmail`, `github`,
@@ -1208,7 +1252,7 @@ verb that changes things raises it, whatever the server's own hints say, and a c
 no longer asks for it). The chat's system prompt names the connected Read only apps so the model can say why it
 can't act.
 
-- `GET /api/integrations/feeds` → `[{source, display_name, kind: "gmail_history"|"calendar_sync_token"|"imap_idle", connected, active,
+- `GET /api/integrations/feeds` → `[{source, display_name, kind: "gmail_history"|"calendar_sync_token"|"imap_idle"|"home_assistant_live", connected, active,
   status: "disconnected"|"off"|"starting"|"ok"|"error", last_sync_at, last_success_at, last_error, note, failures, next_attempt_at, emitted}]`
   (change feeds and push watchers, section 16; `note` explains a re-baseline such as expired Gmail history)
 - `POST /api/integrations/feeds/{source}/sync` → `{ok, emitted, rebaselined}` or `{ok: false, error, failures, retry_in_s, emitted: 0}`
@@ -2378,6 +2422,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
     records its highest UID, and a changed UIDVALIDITY re-baselines that folder. IDLE push only works for the
     selected folder, so Sentient stays IDLE-subscribed to the first folder in the list and checks the rest right
     after each wake or NOOP. Wrong app password marks the integration `status: "error"`.
+  - Home Assistant: a websocket subscribed to `state_changed` pushes device changes as they happen (section 5).
   - Failures back off exponentially (base interval doubling, max 30 minutes) with a readable `last_error`
     (see `GET /api/integrations/feeds`); a failure never moves the cursor. Disconnecting (or connecting a different
     account) forgets the cursor.
@@ -2394,6 +2439,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   the payload came from the user's webhook named `<name>`. Feed state is read from `app.integrations.feed_active(source) -> bool`
   (sync or async); while it is missing every watched source is timer-polled. `POST /api/proactivity/poll-now` polls regardless.
 - Deduplication key per source: gmail message id; calendar `<event id>:<updated>` (so a later change is new again);
+  Home Assistant `<entity id>@<last_changed>`;
   IMAP `Message-ID` header (else `<uidvalidity>:<uid>`); webhook calls are always new. Keys are kept 30 days.
   Items hidden by privacy filters are recorded as seen and never published.
 - Webhooks: `GET /api/hooks` → `[{id, name, url, created_at, last_called_at, calls}]`;
@@ -3050,7 +3096,7 @@ confirmation), checks again, edits the folder's ignore patterns and shows the `f
 ## 23. Timers, reminders and quick commands (owner: reminders and core, #150)
 
 **Quick commands.** Before a chat turn calls the model, `Agent.run_turn` asks `sentient.agent.fastpath.plan`. When the
-message is *only* a plain timer or reminder command, it is done at once with no model call, on every surface (the
+message is *only* a plain timer, reminder or (with Home Assistant connected) light command, it is done at once with no model call, on every surface (the
 window, voice and devices, Telegram, Discord and WhatsApp): the turn makes the same tool calls the model would
 (`tool_call` and `tool_result` events, kept in the chat like any other), says a short confirmation (`text_delta`, then
 `done`), and the engine logs `quick command: <action> (<language>) done in N ms with no model call`. Anything else,
@@ -3063,12 +3109,17 @@ language under `sentient/agent/fastpath/`, tried for `assistant.language` and th
 | reminder | "remind me at 6 pm to call Ravi", "remind me to call Ravi at 6 pm", "remind me in 20 minutes", "remind me tomorrow at 9 am to pay rent", "remind me tonight at 8 to call mom", "remind me at 18:00 to leave" | a clock time without AM or PM ("at 6"), a repeating wish ("every day"), a day name, "today" at a time that has passed, a time missing ("tonight") |
 | list | "what timers do I have", "how much time is left", "what are my reminders" | |
 | cancel | "cancel the timer", "stop the pasta timer", "cancel the 10 minute timer", "cancel my reminder to stretch", "cancel all timers" | two or more match and "all" was not said; nothing matches the words given; a plural without "all" |
+| home (#175) | "turn off the living room lights", "turn on the bedroom lamp", "living room lights off", "turn the lights in the kitchen off", "switch off all the lights", "dim the living room lights to 30%", "turn on the coffee maker" | Home Assistant not connected or not reachable; the words name no room or device exactly (one light named that, the lights of the room named that, or the lights whose names hold every word); "the bedroom light" when the bedroom has two; "the lights" without a room or "all"; a device left out by the entity picker; locks, alarms, doors, garage doors and gates, and switches that sound like one (never quick); a question ("is the porch light on") |
 
 "Hey Sentient", "please", "can you" and the assistant's own name around a command are fine. A quick command never
 sends, buys or deletes anything ("delete the timer" goes to the model). It runs only when its tool would run without
 asking: with approvals mode `always`, or an "Ask" or "Never" rule on the tool or on `reminders`, the model answers as
-usual. Not used for a message with attachments. Turned off with `chat.quick_commands`. No smart-home commands yet:
-Sentient has no lights or Home Assistant integration.
+usual. A home command calls `home_assistant_turn_on` or `home_assistant_turn_off` (with `brightness_pct` for a
+level) once for every device it names, and says "Turned off the living room lights." or "Set the bedroom lamp to
+30%.". Its words name exactly that change, so in approvals mode `ask` they count as the yes for it (effective risk
+`write` only, ADR 0027); approvals mode `always`, an "Ask", "Hand it to me" or "Never" rule on the tool or on
+`home_assistant`, or a Read only connection send it to the model. Not used for a message with attachments. Turned
+off with `chat.quick_commands`.
 
 **Timers and reminders** (`sentient/reminders/`, table `reminders`). **Reminder**
 `{id, kind: "timer"|"reminder", message, connector: ""|"to"|"about"|"that", label, duration_s, fire_at, status:
