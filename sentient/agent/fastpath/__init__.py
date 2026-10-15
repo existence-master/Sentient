@@ -1,4 +1,5 @@
-"""Quick commands (#150): timers and reminders done at once, without the model.
+"""Quick commands (#150): timers, reminders and, with Home Assistant connected, lights (#175), done at once without
+the model.
 
 ``Agent.run_turn`` asks ``plan`` first. When a message is *only* a plain timer or reminder command ("set a timer for
 10 minutes", "remind me at 6 pm to call Ravi", "cancel the pasta timer", "what timers do I have"), the plan holds the
@@ -7,8 +8,12 @@ with no model call: it takes milliseconds on every surface (chat, voice, Telegra
 or anything that could mean two things, returns None and goes to the model unchanged.
 
 A quick command never sends, buys or deletes anything: it only starts, lists or cancels Sentient's own timers and
-reminders. It runs only when its tool would run without asking (approvals mode, "Ask" and "Never" rules); otherwise
-the model handles the message and the usual approval card appears.
+reminders, or turns lights and switches on and off ("turn off the living room lights", "dim the bedroom lamp to 30%")
+when the words name exactly which ones (``IntegrationManager.home_devices``). Locks, alarms, garage doors and anything
+that sounds like one never go through a quick command. It runs only when its tool would run without asking
+(approvals mode, "Ask" and "Never" rules); a home command is the user's own words for exactly that change, so in
+approvals mode "ask" those words are the yes (``ApprovalBroker.quick_runs``, ``QuickPlan.asked``). Otherwise the model
+handles the message and the usual approval card appears.
 
 Languages: one module per language (``en.py``), see ``base.Language``. The packs for ``assistant.language`` and
 English are tried, in that order. Turned off with ``chat.quick_commands``.
@@ -62,6 +67,9 @@ class QuickPlan:
     # what to say, from each call's (result, is_error); with no calls it says ``said``
     reply: Callable[[list[tuple[Any, bool]]], str] | None = None
     said: str = ""
+    # the user's own words asked for exactly these calls (a home command): approvals mode "ask" counts them as the yes
+    # for a change (``ApprovalBroker.quick_runs``)
+    asked: bool = False
 
     def answer(self, outcomes: list[tuple[Any, bool]]) -> str:
         for res, is_error in outcomes:
@@ -94,7 +102,7 @@ async def plan(app: SentientApp, text: str, *, now: datetime | None = None) -> Q
 
     config = app.config
     reminders = getattr(app, "reminders", None)
-    if not config.chat.quick_commands or reminders is None or not (text or "").strip():
+    if not config.chat.quick_commands or not (text or "").strip():
         return None
     tz = get_tz(user_timezone_name(config.assistant.timezone))
     local = (now or datetime.now(UTC)).astimezone(tz)
@@ -102,6 +110,10 @@ async def plan(app: SentientApp, text: str, *, now: datetime | None = None) -> Q
     if found is None:
         return None
     cmd, pack = found
+    if cmd.action == "home":
+        return await _home(app, cmd, pack, local)
+    if reminders is None:
+        return None
     out = QuickPlan(cmd, pack, local)
     if cmd.action == "timer":
         out.calls = [_call("set_timer", seconds=int(cmd.seconds or 0), label=cmd.label)]
@@ -130,6 +142,25 @@ async def plan(app: SentientApp, text: str, *, now: datetime | None = None) -> Q
         out.reply = lambda results: pack.cancelled([_reminder_of(res) for res, _ in results])
     else:
         return None
+    return out
+
+
+async def _home(app: SentientApp, cmd: Command, pack: Language, now: datetime) -> QuickPlan | None:
+    """Lights and switches through Home Assistant (#175), when it is connected and the words name exactly which."""
+    integrations = getattr(app, "integrations", None)
+    find = getattr(integrations, "home_devices", None)
+    if find is None:
+        return None
+    found = await find(cmd.which, device=cmd.device, plural=cmd.plural, everywhere=cmd.all)
+    if not found or (cmd.level is not None and any(e.get("domain") != "light" for e in found)):
+        return None
+    ids = ",".join(str(e["entity_id"]) for e in found)
+    if cmd.level is not None:
+        call = _call("home_assistant_turn_on", entity_id=ids, brightness_pct=cmd.level)
+    else:
+        call = _call(f"home_assistant_turn_{'on' if cmd.power == 'on' else 'off'}", entity_id=ids)
+    out = QuickPlan(cmd, pack, now, calls=[call], asked=True)
+    out.reply = lambda results: pack.home_done(cmd, len(found))
     return out
 
 

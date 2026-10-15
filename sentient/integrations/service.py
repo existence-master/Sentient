@@ -12,6 +12,9 @@ Other packages use only these methods (signatures are stable):
 - ``await emit_items(source, origin, items, event=None) -> list[dict]``  shared seen record + ``source.items``
 - ``access(plugin_id) -> "read" | "read_write"`` and ``await set_access(plugin_id, access)``: Read only connections
   (``integrations.read_only``, #141). The approvals broker hides and refuses their write, send and exec tools.
+- ``entity_choice(plugin_id) -> {mode, picked}``, ``await list_entities(plugin_id)`` and
+  ``await set_entity_choice(plugin_id, mode, picked)``: the entity picker of integrations with ``entity_picker``
+  (Home Assistant, #175), saying which devices Sentient may see and use.
 
 Every new item from poll, feed or webhook is published once as ``source.items`` (docs/API.md section 16).
 
@@ -316,6 +319,7 @@ class IntegrationManager(Service):
             "triggers": await self._triggers(p),
             "alternative_for": p.optional_alternative_for,
             "access": self.access(plugin_id),
+            "entity_picker": bool(getattr(p, "entity_picker", False)),
             "tools": [{"name": t.name, "description": t.description, "risk": t.risk.name} for t in p.tools],
         }
 
@@ -503,6 +507,54 @@ class IntegrationManager(Service):
             return items
         blocked = email_blocked if kind == "email" else event_blocked
         return [i for i in items if not blocked(i, filters)]
+
+    # ------------------------------------------------------------------ entity picker (#175)
+    def _picker(self, plugin_id: str) -> IntegrationPlugin:
+        p = self.plugin(plugin_id)
+        if p is None:
+            raise KeyError(plugin_id)
+        if not getattr(p, "entity_picker", False):
+            raise IntegrationError(f"{p.display_name} has no devices to choose from.")
+        return p
+
+    def entity_choice(self, plugin_id: str) -> dict:
+        """``{mode: "all"|"picked", picked: [ids]}``: every device, or only the picked ones."""
+        raw = self._get_state(plugin_id)["settings"].get("entities") or {}
+        mode = "picked" if raw.get("mode") == "picked" else "all"
+        picked = [str(x) for x in raw.get("picked") or [] if str(x).strip()]
+        return {"mode": mode, "picked": picked}
+
+    async def list_entities(self, plugin_id: str) -> dict:
+        """``{mode, picked, entities: [{entity_id, name, domain, area, state, allowed}]}`` for the picker."""
+        p = self._picker(plugin_id)
+        if not self._connected_sync(plugin_id):
+            raise IntegrationError(f"Connect {p.display_name} first.")
+        choice = self.entity_choice(plugin_id)
+        rows = await p.entities(self)  # type: ignore[attr-defined]
+        chosen = set(choice["picked"])
+        for row in rows:
+            row["allowed"] = choice["mode"] == "all" or row["entity_id"] in chosen
+        return {**choice, "entities": rows}
+
+    async def set_entity_choice(self, plugin_id: str, mode: str, picked: list[str] | None = None) -> dict:
+        """Save which devices Sentient may use. Applies at once, to chats, tasks and live updates."""
+        self._picker(plugin_id)
+        if mode not in ("all", "picked"):
+            raise IntegrationError("Choose every device or only the ones you pick.")
+        settings = dict(self._get_state(plugin_id)["settings"])
+        settings["entities"] = {"mode": mode, "picked": list(dict.fromkeys(str(x).strip() for x in picked or []
+                                                                         if str(x).strip()))}
+        await self._save_state(plugin_id, settings=settings)
+        await self.publish(plugin_id)
+        return self.entity_choice(plugin_id)
+
+    async def home_devices(self, words: str, *, device: str, plural: bool, everywhere: bool = False) -> list[dict] | None:
+        """The Home Assistant devices a quick command names (``sentient.agent.fastpath``, #175), or None when Home
+        Assistant isn't connected or can't be reached, or the words don't name exactly which devices."""
+        p = self.plugin("home_assistant")
+        if p is None or not self._connected_sync("home_assistant"):
+            return None
+        return await p.quick_match(self, words, device=device, plural=plural, everywhere=everywhere)  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------ polling (proactivity / triggered tasks)
     async def poll_state(self, source: str) -> dict:

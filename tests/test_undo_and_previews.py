@@ -307,3 +307,76 @@ async def test_the_activity_timeline_offers_restore_for_the_trash(config, isolat
         assert (await s.timeline.restore("run:nope"))["ok"] is False
     finally:
         await s.stop()
+
+
+# ----------------------------------------------------------------------------- a rule changed during the window (#365)
+async def _turn_changing_rule(s: SentientApp, sid: str, text: str, rule: str, decision: str = "allow") -> list:
+    """A turn whose send waits in its undo window while the user sets the mailer's rule to ``rule`` in Settings."""
+    events: list = []
+    async for ev in s.agent.run_turn(sid, text, channel="desktop"):
+        events.append(ev)
+        if isinstance(ev, UndoWindow):
+            s.approvals.config.rules = {"mail_send_email": rule}
+        if isinstance(ev, ApprovalRequest):
+            s.approvals.resolve(ev.approval_id, decision)
+    return events
+
+
+async def _start_unasked(config, isolated_home, llm, log):
+    config.tools.approvals.mode = "off"  # the send runs without a question when it is planned
+    config.tools.approvals.second_look_model = False
+    return await _start(config, isolated_home, llm, log, seconds=1)
+
+
+async def test_a_rule_set_to_ask_during_the_window_asks_before_sending(config, isolated_home):
+    log: list[str] = []
+    s = await _start_unasked(config, isolated_home, FakeProvider(replies=[[SEND], "Not sent.", [SEND], "Sent."]), log)
+    try:
+        sid = await s.store.create_session(channel="desktop")
+        events = await _turn_changing_rule(s, sid, "email sam@example.com about lunch", "ask", decision="deny")
+        kinds = [type(e).__name__ for e in events]
+        assert kinds.index("UndoWindow") < kinds.index("ApprovalRequest") < kinds.index("ToolResultEvent")
+        assert log == []
+        assert next(e for e in events if isinstance(e, ToolResultEvent)).result["declined"] is True
+        # a yes then sends it, once
+        s.approvals.config.rules = {}
+        events = await _turn_changing_rule(s, sid, "email sam@example.com about lunch", "ask", decision="allow")
+        assert any(isinstance(e, ApprovalRequest) for e in events) and log == ["send:sam@example.com"]
+    finally:
+        await s.stop()
+
+
+async def test_only_if_i_asked_set_during_the_window(config, isolated_home):
+    log: list[str] = []
+    llm = FakeProvider(replies=[[SEND], "Sent.", [SEND], "Not sent."])
+    s = await _start_unasked(config, isolated_home, llm, log)
+    try:
+        sid = await s.store.create_session(channel="desktop")
+        # the user's own words asked for this email: it goes out without a question
+        events = await _turn_changing_rule(s, sid, "Email sam@example.com about lunch", "if_asked")
+        assert not any(isinstance(e, ApprovalRequest) for e in events) and log == ["send:sam@example.com"]
+        # they asked for something else: it asks first
+        s.approvals.config.rules = {}
+        events = await _turn_changing_rule(s, sid, "What's for lunch on Friday?", "if_asked", decision="deny")
+        assert [e.name for e in events if isinstance(e, ApprovalRequest)] == ["mail_send_email"]
+        assert log == ["send:sam@example.com"]
+    finally:
+        await s.stop()
+
+
+async def test_a_yes_already_given_is_not_asked_again_and_an_unchanged_rule_does_not_ask(config, isolated_home):
+    log: list[str] = []
+    llm = FakeProvider(replies=[[SEND], "Sent.", [SEND], "Sent."])
+    s = await _start(config, isolated_home, llm, log, seconds=1)
+    s.config.tools.approvals.mode = "ask"
+    s.config.tools.approvals.second_look_model = False
+    try:
+        sid = await s.store.create_session(channel="desktop")
+        events = await _turn_changing_rule(s, sid, "email sam@example.com about lunch", "ask")
+        assert sum(isinstance(e, ApprovalRequest) for e in events) == 1 and log == ["send:sam@example.com"]
+        s.config.tools.approvals.mode = "off"
+        s.approvals.config.rules = {"mail_send_email": "allow"}
+        events = await _turn_changing_rule(s, sid, "email sam@example.com again", "allow")
+        assert not any(isinstance(e, ApprovalRequest) for e in events) and len(log) == 2
+    finally:
+        await s.stop()

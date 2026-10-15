@@ -121,7 +121,7 @@
   </tr>
 </table>
 
-**And more:** Gmail, Calendar, Drive, Docs, Sheets, GitHub, Slack, Notion, Trello, Discord, WhatsApp and any MCP
+**And more:** Gmail, Calendar, Drive, Docs, Sheets, GitHub, Slack, Notion, Trello, Discord, WhatsApp, Home Assistant and any MCP
 server · near-instant updates from Gmail and Calendar, IMAP push and webhooks · proactive suggestions you approve
 or dismiss · browser control on your own Edge or Chrome · code that runs in a sandbox · helper agents that work
 beside the chat · messages you can add while it is still answering.

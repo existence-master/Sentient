@@ -27,6 +27,7 @@ from sentient.tools.rules import (
     SETTINGS_HINT,
     is_purchase,
     never_message,
+    opens_home,
     read_only_blocks,
     read_only_hides,
     read_only_message,
@@ -140,6 +141,11 @@ class BridgePolicy:
             raise Refused(
                 f"'{name}' would spend money, which always needs the user's yes. Call '{name}' directly as a "
                 "normal tool call instead."
+            )
+        if await opens_home(tool, arguments, ctx, risk):
+            raise Refused(
+                f"'{name}' would open the user's home (unlock a door, turn off the alarm or open a garage door), which "
+                f"always needs the user's yes. Call '{name}' directly as a normal tool call instead."
             )
         if self.approvals_mode == "off":
             return risk
