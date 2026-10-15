@@ -370,6 +370,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Telling Sentient something changed updates the memory.** After "Mira starts school in June", saying "Mira's
+  school now starts in July" replaces June with July instead of being ignored as something Sentient already knew. The
+  same goes for a new place ("Ravi moved from Pune to Delhi"), a new number or a new name. Things that are only about
+  the same person ("Mira has a piano recital in July") are kept as their own memories.
 - **Approvals from Telegram, Discord and WhatsApp answer only the request they were sent for.** When a task asks
   about one step and then another, a button or reply from the earlier message can no longer answer the newer request:
   the chat says the message is for an earlier request, and the newer one keeps waiting for its own answer.

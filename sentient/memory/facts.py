@@ -134,6 +134,7 @@ _LEAD_SKIP = STOPWORDS | {
     "every", "last", "next", "since", "today", "tonight", "yesterday", "tomorrow", "recently", "currently",
     "lately", "usually", "always", "sometimes", "often", "earlier", "later", "after", "before", "during", "once",
     "still", "morning", "evening", "night", "week", "weekend", "month", "year", "day", "until", "yes", "okay",
+    "actually", "update", "correction", "oh", "well",
 }
 _RELATION_WORDS = {
     "sister", "brother", "mother", "mom", "mum", "father", "dad", "wife", "husband", "partner", "girlfriend",
@@ -346,6 +347,110 @@ def same_thing(new_fact: str, existing: str, user_name: str = "") -> bool:
         a, b = _object_words(new_fact, shared), _object_words(existing, shared)
         return not (a - b and b - a)
     return True
+
+
+# ---------------------------------------------------------------------- is a new fact a correction of an old one?
+# words a correction adds that say nothing about the thing itself ("Mira's school NOW starts in July")
+_CORRECTION_FILLER = frozenset({
+    "now", "actually", "instead", "anymore", "change", "changed", "changes", "update", "updated", "correction",
+    "new", "longer", "turn", "turned", "out", "really", "rather", "fact", "since",
+})
+_NUMBER_WORDS = frozenset({
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "twenty",
+    "thirty", "forty", "fifty", "hundred", "dozen",
+})
+# the old value a correction names as replaced: "from Pune to Delhi", "in July, not June", "instead of 5"
+_REPLACED_RE = re.compile(
+    r"\b(?:from|instead of|rather than|not|no longer)\s+(?:the\s+|a\s+|an\s+)?([A-Z][\w'-]*|\d[\d.,:/-]*\w*)"
+)
+
+
+def _stem(word: str) -> str:
+    for suffix in ("ing", "ed", "es", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[: -len(suffix)]
+    return word
+
+
+def _values(text: str) -> dict[str, str]:
+    """The names, places, dates and numbers a fact states, lowercase -> as written: capitalised words (not the
+    first), numbers and number words."""
+    out: dict[str, str] = {}
+    for i, w in enumerate(_DETAIL_WORD_RE.findall((text or "").replace(_RSQUO, "'"))):
+        base = w.removesuffix("'s").rstrip(".,")
+        if base[:1].isdigit() or (i > 0 and base[:1].isupper()) or base.lower() in _NUMBER_WORDS:
+            out.setdefault(base.lower(), base)
+    return out
+
+
+def _frame(text: str, drop: set[str]) -> set[str]:
+    """What a fact says about its subject: its plain words, stemmed, without the subject, values and fillers."""
+    return {
+        _stem(w) for w in keyword_tokens(text, None)
+        if w not in drop and w not in _CORRECTION_FILLER and not any(ch.isdigit() for ch in w)
+    }
+
+
+def correction_of(new_fact: str, existing: str, user_name: str = "") -> str | None:
+    """When ``new_fact`` corrects ``existing``, the fact to store in its place, else None (#364).
+
+    A correction is about the same subject and action (:func:`same_thing`), says the same thing about it, and
+    changes a value: a date, place, number or name ``existing`` states is gone and a new one is there ("Mira's
+    school now starts in July" for "Maya's daughter Mira starts school in June"). With one value swapped for another
+    the old wording is kept with the new value ("... starts school in July"); otherwise the new fact replaces it."""
+    if not new_fact.strip() or not existing.strip():
+        return None
+    new_fact, existing = new_fact.replace(_RSQUO, "'"), existing.replace(_RSQUO, "'")
+    core = _REPLACED_RE.sub(" ", new_fact)  # "moved from Pune to Delhi" states Delhi; Pune is the old value
+    if bool(NEGATION_RE.search(core)) != bool(NEGATION_RE.search(existing)):
+        return None
+    if bool(PAST_RE.search(core)) != bool(PAST_RE.search(existing)):
+        return None
+    if not same_thing(core, existing, user_name):
+        return None
+    new_vals, old_vals = _values(core), _values(existing)
+    core_words = {w.lower().removesuffix("'s") for w in _DETAIL_WORD_RE.findall(core)}
+    old_words = {w.lower().removesuffix("'s") for w in _DETAIL_WORD_RE.findall(existing)}
+    gained = {k: v for k, v in new_vals.items() if k not in old_words}
+    lost = {k: v for k, v in old_vals.items() if k not in core_words}
+    if not gained or not lost:
+        return None
+    subjects = subject_aliases(core, user_name) | subject_aliases(existing, user_name)
+    drop = {w for s in subjects for w in _TOKEN_RE.findall(s)} | set(new_vals) | set(old_vals)
+    drop |= {"user", (user_name or "").strip().lower()}
+    frame_new, frame_old = _frame(core, drop), _frame(existing, drop)
+    tight = attribute_families(core) & attribute_families(existing) & TIGHT_FAMILIES
+    union = frame_new | frame_old
+    alike = bool(frame_old) and (frame_old <= frame_new or len(frame_new & frame_old) / len(union) >= 0.6)
+    if not (alike or tight):
+        return None
+    if len(gained) == 1 and len(lost) == 1 and frame_new <= frame_old:
+        [(old_key, _)] = lost.items()
+        [new_value] = gained.values()
+        swapped, n = re.subn(rf"\b{re.escape(old_key)}\b", new_value, existing, count=1, flags=re.IGNORECASE)
+        if n:
+            return swapped.strip()
+    return new_fact.strip()
+
+
+def says_something_else(new_fact: str, existing: str, user_name: str = "") -> bool:
+    """True when two facts about the same person say unrelated things: no attribute in common (where they live, job,
+    diet...) and no word of what they say about it. "Mira has a piano recital in July" never replaces "Mira starts
+    school in July", although both are about Mira in July (#364)."""
+    if attribute_families(new_fact) & attribute_families(existing):
+        return False
+    subjects = subject_aliases(new_fact, user_name) | subject_aliases(existing, user_name)
+    drop = {w for s in subjects for w in _TOKEN_RE.findall(s)} | set(_values(new_fact)) | set(_values(existing))
+    drop |= {"user", (user_name or "").strip().lower()}
+    a, b = _frame(new_fact, drop), _frame(existing, drop)
+    return bool(a) and bool(b) and not a & b
+
+
+def changes_value(new_fact: str, existing: str, user_name: str = "") -> bool:
+    """A looser reading for the model's hint: about the same thing, and each fact states a value the other lacks."""
+    if not same_thing(new_fact, existing, user_name):
+        return False
+    return bool(new_details(new_fact, existing)) and bool(new_details(existing, new_fact))
 
 
 # ways a fact names the assistant itself ("doesn't want Sentient to ..." = "doesn't want the assistant to ...")
@@ -874,7 +979,7 @@ class FactMemory:
         if exact:
             return {"action": "SKIP", "id": int(exact["id"]), "content": fact}
         neighbours = await self.recall(fact, top_k=1, min_similarity=0.0, track=False)
-        if neighbours and self._duplicate(fact, neighbours[0]):
+        if neighbours and self._duplicate(fact, neighbours[0]) and not self._corrects(fact, neighbours[0]):
             return {"action": "SKIP", "id": neighbours[0]["id"], "content": neighbours[0]["content"]}
         topics, memory_type, duration = await self.analyze(fact) if use_llm else ([DEFAULT_TOPIC], "long-term", None)
         fid = await self._insert(
@@ -894,7 +999,8 @@ class FactMemory:
             return {"action": "SKIP", "id": int(exact["id"]), "content": fact}
         [vec] = await self._embed([fact])
         neighbours = await self.recall(fact, top_k=5, min_similarity=0.0, track=False)
-        dup = next((n for n in neighbours if self._duplicate(fact, n)), None)
+        # "Mira starts school in July" embeds almost exactly like "... in June": a correction is never a duplicate
+        dup = next((n for n in neighbours if self._duplicate(fact, n) and not self._corrects(fact, n)), None)
         if dup is not None:
             return {"action": "SKIP", "id": dup["id"], "content": dup["content"]}
 
@@ -916,12 +1022,28 @@ class FactMemory:
             others |= {r["id"] for r in related if not same_subject(fact, r["content"], user)}
             if others:
                 log.info("CUD for %r: facts %s are about someone else, not offered", fact, sorted(others))
+            fixed = next(
+                (
+                    (n, c) for n in [*close, *related]
+                    if n["id"] not in others and (c := correction_of(fact, n["content"], user))
+                ),
+                None,
+            )
+            if fixed is not None:
+                # the user changed a date, place, number or name of something already saved (#364): small models
+                # answer SKIP or ADD here, so this is decided without them
+                target, corrected = fixed
+                log.info("CUD for %r: corrects fact %s, updated without asking the model", fact, target["id"])
+                return await self._store_update(int(target["id"]), corrected, None, vec if corrected == fact else None)
+        if use_llm:
             similar = [
                 {"id": n["id"], "content": n["content"], "similarity": round(n["similarity"], 2)}
                 | ({"same_subject_attribute": True} if conflict_strength(fact, n["content"], user) == 2 else {})
+                | ({"changes_value": True} if changes_value(fact, n["content"], user) else {})
                 for n in close if n["id"] not in others
             ] + [
                 {"id": r["id"], "content": r["content"], "same_subject_attribute": True}
+                | ({"changes_value": True} if changes_value(fact, r["content"], user) else {})
                 for r in related if r["id"] not in others
             ]
             try:
@@ -965,9 +1087,13 @@ class FactMemory:
         if action == "UPDATE":
             matched = next((n["content"] for n in candidates if n["id"] == fid), "")
             dropped = new_details(matched, content or "") if matched else set()
-            if matched and not (same_thing(fact, matched, user) and same_thing(content, matched, user)):
+            if matched and not (
+                same_thing(fact, matched, user) and same_thing(content, matched, user)
+                and not says_something_else(fact, matched, user)
+            ):
                 # a different person or action ("files written" vs "files deleted"), in the new fact or in the
-                # model's rewrite that would be stored: both facts hold
+                # model's rewrite that would be stored, or something unrelated about the same person ("a piano
+                # recital in July" vs "starts school in July"): both facts hold
                 log.info("CUD UPDATE of %s kept as ADD for %r (about something else)", fid, fact)
                 action, content, topics = "ADD", fact, None
             elif dropped and not (
@@ -993,17 +1119,35 @@ class FactMemory:
             return {"action": "DELETE", "id": int(fid), "content": content}  # type: ignore[arg-type]
         if topics is None:
             topics, memory_type, duration = await self.analyze(content) if use_llm else ([DEFAULT_TOPIC], "long-term", None)
+        if action == "UPDATE":
+            analysis = (topics, memory_type, duration)
+            return await self._store_update(int(fid), content, analysis, vec if content == fact else None)  # type: ignore[arg-type]
         if content != fact:
             [vec] = await self._embed([content])
-        if action == "UPDATE":
-            before = await self.store.fetchone("SELECT content FROM facts WHERE id = ?", (int(fid),))  # type: ignore[arg-type]
-            await self._update(int(fid), content, vec, topics, memory_type, duration)  # type: ignore[arg-type]
-            previous = str(before["content"]) if before is not None else None
-            return {"action": "UPDATE", "id": int(fid), "content": content, "previous": previous}  # type: ignore[arg-type]
         new_id = await self._insert(
             content, vec, source=source, topics=topics, memory_type=memory_type, duration=duration
         )
         return {"action": "ADD", "id": new_id, "content": content}
+
+    async def _store_update(
+        self,
+        fid: int,
+        content: str,
+        analysis: tuple[list[str], str, str | None] | None,
+        vec: list[float] | None = None,
+    ) -> dict[str, Any]:
+        """Replace fact ``fid`` with ``content`` (analysed now when ``analysis`` is None, embedded unless ``vec`` is
+        given). The result carries ``previous``, the words it replaced, so the save can be undone."""
+        topics, memory_type, duration = analysis if analysis is not None else await self.analyze(content)
+        if vec is None:
+            [vec] = await self._embed([content])
+        before = await self.store.fetchone("SELECT content FROM facts WHERE id = ?", (fid,))
+        await self._update(fid, content, vec, topics, memory_type, duration)
+        previous = str(before["content"]) if before is not None else None
+        return {"action": "UPDATE", "id": fid, "content": content, "previous": previous}
+
+    def _corrects(self, fact: str, neighbour: dict) -> bool:
+        return correction_of(fact, neighbour["content"], self.config.assistant.user_name) is not None
 
     async def update_content(self, fid: int, content: str, *, use_llm: bool = True) -> dict:
         """v2 update_memory: new content, re-analyzed topics/expiry, re-embedded; id kept."""
