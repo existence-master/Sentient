@@ -75,13 +75,18 @@ def test_skill_section_headings_must_match_the_complete_name(isolated_home):
     path = lib.write(
         "heading-boundaries",
         "Test section heading boundaries",
-        "# Heading boundaries\n## Approval required\n- Ask first.\n## Output ##\n- A report.",
+        "# Heading boundaries\n## Approval required\n- Ask first.\n"
+        "## Output ##\n- A report.\n"
+        "   ## Verification\n- Checked.\n"
+        "    ## Inputs and access\n- This is a code block, not a heading.",
     )
     skill = parse_skill_file(path)
     assert skill is not None
     assert "## Approval required" in skill.body
     assert "\n## Approval\n" in skill.body
     assert skill.body.count("## Output") == 1
+    assert skill.body.count("## Verification") == 1
+    assert "\n## Inputs and access\n" in skill.body
 
 
 def test_skill_requires_tools_filter(isolated_home):

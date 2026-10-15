@@ -83,7 +83,7 @@ def ensure_skill_sections(body: str) -> str:
     """Add missing fields to a new or rewritten skill without altering existing sections."""
     out = body.strip()
     for section in SKILL_SECTIONS:
-        heading = rf"^#+[ \t]+{re.escape(section)}(?:[ \t]+#+)?[ \t]*$"
+        heading = rf"^ {{0,3}}#+[ \t]+{re.escape(section)}(?:[ \t]+#+)?[ \t]*$"
         if not re.search(heading, out, flags=re.IGNORECASE | re.MULTILINE):
             separator = "\n\n" if out else ""
             out += f"{separator}## {section}\n{_SECTION_PLACEHOLDERS[section]}"
