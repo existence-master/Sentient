@@ -125,8 +125,13 @@ def test_history_is_bounded_and_switching_condition_keeps_baseline():
 
 def test_diff_and_verdict_helpers():
     assert scripts.diff_text({"price": 100, "title": "Desk"}, {"price": 90, "title": "Desk"}) == (
-        '- "price": 100,\n+ "price": 90,'
+        "- price: 100\n+ price: 90"
     )
+    # a whole web_fetch result: only the line that changed reaches the judge, not the whole page re-added (#298)
+    page = "Community events\nPage views: {}\nSat: Seed library swap\nSun: Park clean-up"
+    before = {"url": "https://example.org/events", "title": "Events", "content": page.format(1155), "truncated": False}
+    after = {**before, "content": page.format(1163)}
+    assert scripts.diff_text(before, after) == "- content: Page views: 1155\n+ content: Page views: 1163"
     assert scripts.read_verdict({"noteworthy": "yes", "change": " New  item "}) == (True, "New item")
     assert scripts.read_verdict("nonsense") == (None, "")
 
