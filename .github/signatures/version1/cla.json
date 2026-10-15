@@ -111,6 +111,14 @@
       "created_at": "2026-10-11T19:48:44Z",
       "repoId": 935822565,
       "pullRequestNo": 289
+    },
+    {
+      "name": "fukalous",
+      "id": 335426989,
+      "comment_id": 6196031293,
+      "created_at": "2026-10-15T15:40:17Z",
+      "repoId": 935822565,
+      "pullRequestNo": 387
     }
   ]
 }
