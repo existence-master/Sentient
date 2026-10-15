@@ -265,7 +265,14 @@ function ItemRow({ part, item }: { part: HermesPart; item: AnyItem }) {
           <div className="break-words text-fg">{title}</div>
           {detail && <div className="truncate font-mono text-2xs text-fg-subtle">{detail}</div>}
           <div className="text-xs text-fg-muted">{item.note}</div>
-          {part === 'skills' && !skip && 'lint' in item && <LintList compact findings={item.lint} className="mt-1" />}
+          {part === 'skills' && !skip && 'vetting' in item && item.vetting && item.vetting.verdict !== 'clear' && (
+            <div className={cn('mt-1 text-xs font-medium', item.vetting.verdict === 'high' ? 'text-danger' : 'text-warning')}>
+              Safety check: {item.vetting.verdict === 'high' ? 'high risk' : 'read the notes'}
+            </div>
+          )}
+          {part === 'skills' && !skip && 'lint' in item && (
+            <LintList compact findings={'vetting' in item && item.vetting ? [...item.vetting.findings, ...(item.lint ?? []).filter((f) => !['danger', 'hidden', 'outbound'].includes(f.rule))] : item.lint} className="mt-1" />
+          )}
           {code && (
             <button type="button" className="mt-1 text-xs font-medium text-accent-text" onClick={() => setShowCode((s) => !s)}>
               {showCode ? 'Hide the script' : 'Show the script'}
