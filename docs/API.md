@@ -2396,7 +2396,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   (`owner_id`). Only the owner talks to Sentient there, and only with messages meant for it (`Incoming.addressed`: a
   command, a mention of the bot, which is taken out of the text, or a reply to one of its messages); the owner's other
   messages are ignored. Messages from anyone else that Sentient can see (Telegram: every one the bot receives,
-  all of them with privacy mode off; Discord: only those that mention the bot or reply to it, since Discord sends
+  all of them with privacy mode off; Discord: only those that mention the bot (a reply that doesn't mention it carries no text), since Discord sends
   no text for others without the privileged Message Content intent) never start a reply, run a command or answer a question; they are
   kept as outside content (section 10, "Group chats", at most 20 waiting while a reply runs and stored when it ends, also
   when it fails or is stopped; the chat is marked at once, `app.agent.mark_group_chat`; with a

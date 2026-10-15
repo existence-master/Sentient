@@ -36,7 +36,7 @@ the user turns delivery on.
   wrote is not "in what you asked", and the card says where it came from ("That address came from another group member
   (Ravi), not from you."). A history search that finds a member's message marks the run.
 - Only messages Sentient can see count: on Discord, a server message carries text only when it mentions the bot
-  or replies to it (without the privileged Message Content intent), so other chatter never reaches Sentient at all.
+  (a reply alone is not enough without the privileged Message Content intent), so other chatter never reaches Sentient.
 - Trusting a chat and storing a member's message take turns per chat, so a message that arrives while the user
   trusts the chat leaves it marked.
 - WhatsApp groups stay ignored: there Sentient is the user's own account, so it would speak as the user.
