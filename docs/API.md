@@ -1514,15 +1514,20 @@ project's own name (`"Kestrel launch"`, up to 40 characters; `Work`/`PERSONAL` a
   app's, else personal, and `always` can't be picked for any of them. Recall for the system prompt, `memory_recall`,
   `memory_search_by_source`, `user_model_ask` and a task's executor prompt reads that scope plus `always`, so a work
   chat never brings up personal family or health memories. `memory_recall` takes `everywhere: true` for when the user
-  asks about one directly; a result from another scope then says where it is kept (`kept_for`). A helper a chat
+  asks about one directly; a result from another scope then says where it is kept (`kept_for`). Scopes filter facts;
+  the rest of the prompt context is shared (below): user-model insights other than relationships, and USER.md
+  without its learned part. A helper a chat
   started reads its chat's scope. Work not tied to a chat or task (proactive look-ups, dreaming, the user model's
   refresh, the profile upkeep below) reads every scope.
-- **Personal files.** MEMORY.md and the "## Learned" part of USER.md are built from personal and always memories only.
+- **Personal files.** MEMORY.md and the "## Learned" part of USER.md are built from personal and always memories and
+  summaries of personal chats only; moving a memory out of them (or resetting Personal or Always) also removes its
+  line from USER.md's learned part, and MEMORY.md is rewritten at its next upkeep.
   A work or project chat leaves out MEMORY.md, the daily notes and USER.md's learned part (the rest of USER.md stays),
   leaves out user-model insights about relationships, and its prompt says which memories it uses.
 - **Saving.** A save goes into the run's scope: facts extracted after a turn, saved when a chat is compressed, and
   `memory_remember` (personal outside a chat or task). Duplicates, updates and corrections only look at memories in
-  that scope and `always`, so a save never changes a memory in another scope. `POST /api/memories`, document imports
+  that scope and `always`, so a save never changes a memory in an unrelated scope (`always` memories are shared, so a
+  correction anywhere can update one). `POST /api/memories`, document imports
   and imports from other assistants (section 19) save to `personal` unless given a scope.
 - **Review.** A held memory keeps the scope it was saved for and is approved into it (ReviewItem `scope`; `null` for
   insights).

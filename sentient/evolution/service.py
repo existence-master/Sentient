@@ -31,6 +31,7 @@ from typing import Any
 from sentient.evolution import prompts
 from sentient.evolution.log import log_event
 from sentient.memory import review as memory_review
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import CLEAN as CLEAN_SUMMARY
 from sentient.memory.topics import TOPIC_NAMES
 from sentient.memory.vectors import cosine
@@ -870,10 +871,11 @@ class EvolutionService(Service):
         # chats that read outside content never feed MEMORY.md (ADR 0021): their facts wait for review and their
         # summaries are left out
         after, params = after_watermark(summaries_mark, "created_at", "id")
+        personal, personal_params = memory_scopes.personal_summary_sql(cfg)  # no work or project chat's (#155)
         new_summaries = await store.fetchall(
-            f"SELECT id, content, created_at FROM summaries WHERE {after} AND {CLEAN_SUMMARY}"
+            f"SELECT id, content, created_at FROM summaries WHERE {after} AND {CLEAN_SUMMARY} AND {personal}"
             " ORDER BY created_at, id LIMIT 8",  # in watermark order, so the limit never jumps over a summary
-            params,
+            (*params, *personal_params),
         )
         await store.set_meta("evolution.profile_last_run", nowiso)
         # saved after every read, also an empty one: the next read starts where this one did, never at this run's time
@@ -897,7 +899,9 @@ class EvolutionService(Service):
             (nowiso,),
         )
         summaries = await store.fetchall(
-            f"SELECT content FROM summaries WHERE {CLEAN_SUMMARY} ORDER BY end_at DESC, rowid DESC LIMIT 8"
+            f"SELECT content FROM summaries WHERE {CLEAN_SUMMARY} AND {personal}"
+            " ORDER BY end_at DESC, rowid DESC LIMIT 8",
+            personal_params,
         )
         current = app.workspace.read_full()["memory"]
         memory_chars = 0

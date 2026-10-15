@@ -19,6 +19,7 @@ from sentient.memory.topics import TOPICS
 router = APIRouter(prefix="/api/memories", tags=["memory"], dependencies=AUTH)
 
 IMPORT_SUFFIXES = {".pdf", ".txt", ".md", ".markdown", ".docx"}
+PROFILE_SCOPES = (memory_scopes.PERSONAL, memory_scopes.ALWAYS)  # what USER.md and MEMORY.md are built from
 
 
 def _memory(request: Request):
@@ -51,9 +52,15 @@ async def scopes(request: Request):
 @router.delete("/scope/{scope:path}")
 async def reset_scope(request: Request, scope: str):
     """Forget every memory in one scope, and nothing else (#155)."""
-    if not memory_scopes.normalize(scope):
+    target = memory_scopes.normalize(scope)
+    if not target:
         raise HTTPException(400, "scope is required")
-    return {"deleted": await _memory(request).forget_scope(scope)}
+    mem = _memory(request)
+    gone = [f["content"] for f in await mem.list_facts(5000, scope=target)]
+    deleted = await mem.forget_scope(target)
+    if target in PROFILE_SCOPES:
+        get_core(request).workspace.remove_learned(gone)
+    return {"deleted": deleted}
 
 
 @router.get("/topics")
@@ -241,9 +248,15 @@ async def move_memory(request: Request, memory_id: int, body: dict):
     if not scope:
         raise HTTPException(400, "scope is required")
     try:
-        return await mem.set_scope(memory_id, scope)
+        before = await mem.scope_of(memory_id)
+        moved = await mem.set_scope(memory_id, scope)
     except KeyError as exc:
         raise HTTPException(404, f"memory {memory_id} not found") from exc
+    if before in PROFILE_SCOPES and moved["scope"] not in PROFILE_SCOPES:
+        # USER.md's learned facts are personal: one moved to work or a project leaves it. MEMORY.md is rewritten
+        # from personal memories at its next upkeep.
+        get_core(request).workspace.remove_learned([moved["content"]])
+    return moved
 
 
 @router.delete("/{memory_id}")

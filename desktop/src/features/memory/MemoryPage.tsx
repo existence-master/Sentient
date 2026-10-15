@@ -79,10 +79,12 @@ export function MemoryPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q])
 
-  const all = useMemories({ limit: 2000 })
+  // a picked scope (#155) is filtered by the engine, before its limits
+  const scoped = p.scope ? { scope: p.scope } : {}
+  const all = useMemories({ limit: 2000, ...scoped })
   const searched = useQuery({
-    queryKey: qk.memories.list({ q: p.q, limit: 200 }),
-    queryFn: () => api.memories.list({ q: p.q, limit: 200 }),
+    queryKey: qk.memories.list({ q: p.q, limit: 200, ...scoped }),
+    queryFn: () => api.memories.list({ q: p.q, limit: 200, ...scoped }),
     enabled: !!p.q,
     placeholderData: keepPreviousData
   })
@@ -117,7 +119,8 @@ export function MemoryPage() {
     if (p.scope) names.push(p.scope)
     return [...new Set(names)]
   }, [scopes.data, memories, p.scope])
-  const scopeCount = (name: string) => memories.filter((m) => (m.scope ?? 'personal') === name).length
+  // how many memories each scope holds, from the engine (the list may be one scope or a page of them)
+  const scopeCount = (name: string) => scopes.data?.find((s) => s.name === name)?.count ?? 0
   const resetScope = async () => {
     const scope = p.scope
     if (!scope) return
@@ -463,7 +466,7 @@ export function MemoryPage() {
         open={confirmReset}
         onOpenChange={setConfirmReset}
         title={`Forget all ${scopeLabel(p.scope)} memories?`}
-        description={`Sentient forgets the ${scopeCount(p.scope)} memories kept for ${scopeLabel(p.scope)}, and any waiting for your review there. Memories in other places stay. This can't be undone.`}
+        description={`Sentient forgets the ${scopeCount(p.scope)} ${scopeCount(p.scope) === 1 ? 'memory' : 'memories'} kept for ${scopeLabel(p.scope)}, and any waiting for your review there. Memories in other places stay. This can't be undone.`}
         confirmLabel="Forget them"
         onConfirm={() => void resetScope()}
       />

@@ -16,6 +16,7 @@ from sentient.memory import export as memory_export
 from sentient.memory import review, scopes
 from sentient.store.db import SCHEMA_VERSION
 from sentient.tasks import executor
+from sentient.tasks.service import TaskConflict
 from tests.conftest import FakeProvider
 from tests.memory.helpers import drain
 
@@ -233,6 +234,9 @@ async def test_tasks_keep_the_scope_of_the_chat_that_made_them(app, monkeypatch)
         await app.tasks.update(plain["task_id"], {"memory_scope": "always"})
     updated = await app.tasks.update(plain["task_id"], {"memory_scope": "Atlas"})
     assert updated["memory_scope"] == "Atlas"
+    await app.tasks.repo.update_task(plain["task_id"], {"status": "processing"})
+    with pytest.raises(TaskConflict):  # a run keeps the memories it started with
+        await app.tasks.update(plain["task_id"], {"memory_scope": "work"})
 
 
 # ---------------------------------------------------------------- the rest of memory
@@ -356,3 +360,38 @@ def test_a_chats_scope_over_rest(client):
     plain = client.post("/api/sessions").json()["session_id"]
     assert next(s for s in client.get("/api/sessions").json() if s["id"] == plain)["memory_scope"] == "personal"
     assert json.dumps(client.get("/api/memories/review").json()["items"]) == "[]"
+
+
+async def test_profile_upkeep_leaves_out_work_chat_summaries(app):
+    app.config.channels.telegram.memory_scope = "work"
+    personal = await app.store.create_session(channel="desktop")
+    work = await app.store.create_session(channel="desktop", memory_scope="Kestrel")
+    telegram = await app.store.create_session(channel="telegram")  # work through its app's scope
+    for sid, text in ((personal, "We planned Meera's visit"), (work, "We reviewed the Kestrel launch plan"),
+                      (telegram, "We triaged Arjun's payment bugs")):
+        await app.store.execute(
+            "INSERT INTO summaries(id, session_id, content, start_at, end_at, message_ids, created_at)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (f"s-{sid}", sid, text, "2026-10-01", "2026-10-01", "[]", "2026-10-01T00:00:00+00:00"),
+        )
+    await _put(app.memory, HEALTH, "personal")
+    app.fake.text_replies.append("# Long-term memory\n\n- notes\n")
+    await app.evolution.update_profile(force=True)
+    sent = app.fake.text_calls[-1]["messages"][1]["content"]
+    assert "Meera's visit" in sent and "Kestrel launch plan" not in sent and "payment bugs" not in sent
+
+
+async def test_moving_a_memory_out_of_personal_takes_it_out_of_user_md(client):
+    core = client.core
+    added = client.post("/api/memories", json={"content": HEALTH}).json()
+    core.workspace.write("user", f"# About Maya\n\n- {HEALTH} (my words)\n\n## Learned\n\n- {HEALTH}\n- {SISTER}\n")
+    client.patch(f"/api/memories/{added['id']}", json={"scope": "work"})
+    text = core.workspace.user.read_text(encoding="utf-8")
+    assert f"- {SISTER}" in text and f"- {HEALTH} (my words)" in text and f"- {HEALTH}\n" not in text
+
+
+def test_a_bad_scope_changes_nothing_else(client):
+    sid = client.post("/api/sessions").json()["session_id"]
+    r = client.patch(f"/api/sessions/{sid}", json={"title": "Renamed", "memory_scope": "always"})
+    assert r.status_code == 422
+    assert next(s for s in client.get("/api/sessions").json() if s["id"] == sid)["title"] != "Renamed"

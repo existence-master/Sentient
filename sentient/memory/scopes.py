@@ -115,6 +115,20 @@ def without_learned(user_md: str) -> str:
     return (user_md[: m.start()] + (rest[nxt.start():] if nxt else "")).strip()
 
 
+def personal_summary_sql(config: Any) -> tuple[str, list[str]]:
+    """SQL condition (with parameters) on ``summaries`` that keeps summaries of personal chats (and of chats that are
+    gone): the profile files never read a work or project chat's summary. Follows :func:`of_session`, messaging-app
+    fallback included."""
+    apps = [(app, scope) for app in ("telegram", "discord", "whatsapp") if (scope := channel_scope(config, app))]
+    case = "CASE s.channel " + " ".join("WHEN ? THEN ?" for _ in apps) + " ELSE 'personal' END" if apps else "'personal'"
+    params = [x for pair in apps for x in pair]
+    sql = (
+        "NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = summaries.session_id"
+        f" AND COALESCE(NULLIF(s.memory_scope, ''), {case}) NOT IN ('personal', 'always'))"
+    )
+    return sql, params
+
+
 def prompt_note(scope: str) -> str:
     name = label(scope)
     return (

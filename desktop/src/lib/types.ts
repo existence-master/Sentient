@@ -1650,6 +1650,8 @@ export interface TaskCreateRequest {
   assignee?: 'ai'
   model?: string
   browser_profile?: string
+  /** The memories its runs use (#155); personal when left out. */
+  memory_scope?: string
 }
 
 export interface TaskPreview {

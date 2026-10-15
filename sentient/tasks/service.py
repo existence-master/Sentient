@@ -575,7 +575,10 @@ class TaskService(Service):
         if "browser_profile" in data:
             changes["browser_profile"] = self._browser_profile(data["browser_profile"])
         if "memory_scope" in data:  # #155: None or "" goes back to personal; "always" is refused (ValueError)
-            changes["memory_scope"] = memory_scopes.chat_scope(data["memory_scope"])
+            scope = memory_scopes.chat_scope(data["memory_scope"])
+            if scope != task.get("memory_scope") and task["status"] in BUSY:  # a run keeps the scope it started with
+                raise TaskConflict("This task is running right now. Try again when the run has finished.")
+            changes["memory_scope"] = scope
         if "deliver_to" in data:
             changes["deliver_to"] = stored(data["deliver_to"])
         if "notepad" in data:

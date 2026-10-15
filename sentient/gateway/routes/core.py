@@ -327,15 +327,17 @@ async def update_session(request: Request, session_id: str, body: SessionPatch):
     session = await s.store.get_session(session_id)
     if session is None:
         raise HTTPException(404, "no such chat")
+    # every field is checked before anything is written, so a 422 changes nothing
+    model = _chat_model(body.model) if "model" in body.model_fields_set else None
+    scope = _chat_scope(body.memory_scope) if "memory_scope" in body.model_fields_set else None
     changed: dict[str, Any] = {}
     if body.title is not None:
         changed["title"] = body.title.strip()[:120]
         await s.store.rename_session(session_id, changed["title"])
     if "model" in body.model_fields_set:
-        changed["model"] = _chat_model(body.model)
-        await s.store.set_session_model(session_id, changed["model"])
+        changed["model"] = model
+        await s.store.set_session_model(session_id, model)
     if "memory_scope" in body.model_fields_set:
-        scope = _chat_scope(body.memory_scope)
         await s.store.set_session_scope(session_id, scope)
         changed["memory_scope"] = memory_scopes.of_session(s.config, {**session, "memory_scope": scope})
     if changed:
