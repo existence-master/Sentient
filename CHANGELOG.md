@@ -164,7 +164,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
   important changes**. Each check is compared with the last one without any AI, so an unchanged page costs nothing
   and stays silent; only when something changed does your fast AI model decide whether it matters, and then you get
   one notification that says what changed. Every watch also keeps a quiet list of its recent checks ("Checked,
-  nothing new", "Something changed. You were told") under Runs.
+  nothing new", "Something changed. You were told") under Runs. When you ask Sentient to watch a page, a feed or the
+  news, it now uses this kind of check by default, so a view counter or a new timestamp no longer sends you a message.
 - **Fuzzy times for repeating tasks:** a daily or weekly task can run "in the morning", "afternoon", "evening" or "at
   night" instead of at an exact time; Sentient picks a time inside that part of the day. Say it in your request
   ("every weekday morning") or pick it in the schedule editor.
