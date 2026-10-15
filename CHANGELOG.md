@@ -386,6 +386,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - **A reply that fails no longer looks stuck:** when the model can't answer (it is unreachable, out of credits or
   turns the request down), the chat shows the error and goes back to ready at once, instead of showing "replying"
   and the stop button until your next message.
+- **The approval card no longer calls an email "posting publicly":** a send like `send_email` is now named from
+  the tool's name and declared risk ("Sentient wants to send an email"). The card's word guessing never reads the
+  arguments' content, so an email body mentioning "post", "publish" or "tweet" cannot be misread: the only
+  exception is multi-execute tools (Composio), where the `tool_slug`/`action_slug`/`slug` keys name the action
+  being run (e.g. `GMAIL_DELETE_MESSAGE`) and are treated like tool names.
 - A long web or email result that Sentient saved to read later, and files you downloaded, are now marked as
   outside content when Sentient reads them back, so instructions hidden in them are treated as plain text.
 - Learning about you and skill reviews no longer skip a message or fact saved at the same moment as the last one
