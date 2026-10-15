@@ -1513,7 +1513,13 @@ Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
 - `GET /api/memories/graph` → `{nodes: [{id, label, title, content, topics, memory_type, source, created_at}], links: [{source, target, value}]}` (`label` = content truncated to 25 chars, `title` = full content, as in v2; a link means cosine similarity ≥ `memory.graph_link_similarity`, `value` is that similarity)
 - `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. Facts that name someone else are never offered to the model, so it can't update, skip or delete them, and the
 near-duplicate shortcut needs the same person too; names in Devanagari (Hindi) count, and match across scripts
-("माया" is "Maya", "प्रिया" is not "Riya") (#339). An UPDATE only replaces a fact about the same person and the same action on the same thing ("doesn't want files written" or "doesn't want emails deleted" never replaces "doesn't want files deleted"; it is added instead), and a new fact that an existing one already says in full, with no new name, place or number ("sister lives in a city" next to "sister Meera lives in Lisbon"), returns `SKIP` with that fact)
+("माया" is "Maya", "प्रिया" is not "Riya") (#339). An UPDATE only replaces a fact about the same person and the same action on the same thing ("doesn't want files written" or "doesn't want emails deleted" never replaces "doesn't want files deleted"; it is added instead), and a new fact that an existing one already says in full, with no new name, place or number ("sister lives in a city" next to "sister Meera lives in Lisbon"), returns `SKIP` with that fact. A correction always UPDATEs, decided in code without the model and never skipped as a
+near-duplicate (#364): a new fact about the same person and action that says the same thing about it with a changed
+date, place, number or name ("Mira's school now starts in July" for "Maya's daughter Mira starts school in June").
+With one value swapped for another the old wording is kept with the new value ("... starts school in July"); the
+result carries `previous` as any update does. Looser cases are marked `changes_value` for the model, which is told a
+correction is never `SKIP`. An UPDATE the model picks for something unrelated about the same person, with no
+attribute and no word of what it says in common ("a piano recital in July" for "starts school in July"), is added instead)
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)
 - `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
 - `DELETE /api/memories/source/{source}` → `{deleted: n}`
@@ -1964,6 +1970,11 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   window ends. `undo.respond`/`POST /api/undo` with `undo` means it never runs: its `tool_result` is
   `{"error": "NOT SENT. The user pressed Undo ...", "undone": true}`, which the model reads. `send_now` ends the
   window early. Stopping the reply (`chat.cancel`, Stop everything) during the window means it is not sent.
+  The rules are read again when the window ends (#365): a call set to Never or Hand it to me meanwhile is refused or
+  handed over (#140), and one that ran without the user's yes now asks first (an `approval_request` after the
+  `undo_window`, before its `tool_result`) when its rule became Ask, or Only if I asked and the user's words in that
+  turn don't ask for it, unless a grant covers it. That holds after **Send now** too. A yes already given to that call
+  is not asked again.
   Purchases and running code never wait (a purchase's yes is deliberate and holding code back does not help), nor do
   calls in runs nobody is watching: task runs, briefs, script jobs, subagents and other unprompted work. A task's
   approval in the window is the user's look at the exact call; the Activity timeline then lists what it did.
@@ -2553,7 +2564,12 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `script` (and a `schedule`, e.g. `interval`) to its reply. The code must use `from sentient_tools import tools, result` and
   read-only tools; it is checked with `ast.parse` and, because a model wrote it, also rejected when it imports a package
   outside the standard library (`requests`, `bs4`), uses `while True`, sleeps (`time.sleep`, `tools.time_sleep`), calls
-  memory functions (`memory_*`) or returns `{"alert": ...}` with a `changed`/`noteworthy` condition. The planner gets one chance to fix a rejected script with the reason. If
+  memory functions (`memory_*`) or returns `{"alert": ...}` with a `changed`/`noteworthy` condition, or reads a key the
+  tool's result never has (#366; `sentient.tasks.scripts.RESULT_KEYS`/`ITEM_KEYS`: `web_fetch` →
+  `{url, title, content, truncated}`, `web_search` → `{query, provider, results: [{title, url, snippet}], note?}`,
+  `news_search`/`news_top_headlines` → `{provider, query|country+category, articles: [{title, source, url,
+  published_at, summary}]}`; for example `tools.web_fetch(...)["html"]`, or a string key on the `results` list). The
+  planner prompt lists the same shapes. The planner gets one chance to fix a rejected script with the reason. If
   that one is rejected too (#310), the task is saved as an ordinary AI-run task instead of failing: `task_type: "single"`,
   `script: null`, one plan step that is the user's own request (`original_prompt`, which keeps the page address the
   script held) with the app the scripts called (`tools.web_fetch`: `web`; else the planner's app; one more step per

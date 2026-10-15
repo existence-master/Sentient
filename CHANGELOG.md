@@ -389,6 +389,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Changing a rule while an email waits to go out now counts.** If you set an app or tool to **Ask** while one of
+  its emails or messages waits the few seconds before it is sent, Sentient asks you before it goes out instead of
+  sending it under the old rule. The same goes for **Only if I asked**, unless your message asked for that email.
+- **Telling Sentient something changed updates the memory.** After "Mira starts school in June", saying "Mira's
+  school now starts in July" replaces June with July instead of being ignored as something Sentient already knew. The
+  same goes for a new place ("Ravi moved from Pune to Delhi"), a new number or a new name. Things that are only about
+  the same person ("Mira has a piano recital in July") are kept as their own memories.
+- **Page watches read the page.** When you ask Sentient to watch a web page, the check script it writes now reads
+  the page's text. Small local models used to read a part of the page that doesn't exist, so the watch saw nothing
+  on every check and never told you about a change. Sentient now tells the model what a page, a web search and the
+  news give back, and sends a script that reads something they never give back to be rewritten.
 - **Approvals from Telegram, Discord and WhatsApp answer only the request they were sent for.** When a task asks
   about one step and then another, a button or reply from the earlier message can no longer answer the newer request:
   the chat says the message is for an earlier request, and the newer one keeps waiting for its own answer.

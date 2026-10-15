@@ -108,6 +108,7 @@ from sentient.tools.base import (
 from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import (
+    ASK,
     HAND_OFF,
     IF_ASKED,
     OPENS_HOME,
@@ -484,6 +485,7 @@ class _CallPlan:
     swapped_from: str = ""  # the delete-for-good tool the model called; its trash twin runs instead (#142)
     level: str | None = None  # the lasting rule the call was planned under ("if_asked" before it is applied)
     handed_off: bool = False  # a "Hand it to me" rule: prepared for the user, never run (#140)
+    undo: str = ""  # how its undo window ended, when it waited in one (#142)
 
 
 class Agent:
@@ -913,38 +915,10 @@ class Agent:
                     if p.preset is not None:
                         p.outcome = p.preset
                     elif p.needs_approval:
-                        assert p.tool is not None
-                        approval_id = new_id()
-                        wording = await describe_call(p.tool, p.tc.arguments, ctx, p.risk)
-                        # how wide a yes may be (#139): only "once" for purchases, raised risks, code, outside content
-                        # and calls a second look flagged (#143)
-                        offered = grant_rules.choices(
-                            p.tool, p.risk, purchase=wording["risk_label"] == PURCHASE_LABEL and p.risk >= Risk.send,
-                            untrusted=bool(p.untrusted or p.warning), chat=bool(ctx.session_id),
-                            remember_session=self.approvals.config.remember_session,
-                        )
-                        self.approvals.create(approval_id, offered)
-                        purchase = wording["risk_label"] == PURCHASE_LABEL and p.risk >= Risk.send
-                        yield ApprovalRequest(
-                            approval_id=approval_id, call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments,
-                            risk=p.risk.name, reason=f"{p.tool.plugin}: {p.tool.description[:160]}",
-                            risk_label=wording["risk_label"], target=wording["target"],
-                            untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
-                            grant_minutes=self.approvals.config.grant_minutes,
-                            preview=preview.build(p.tc.name, p.tc.arguments, purchase=purchase), **ev,
-                        )
-                        asked_at = now_iso()
-                        decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)
-                        p.approval = {
-                            "decision": decision, "asked_at": asked_at, "answered_at": now_iso(),
-                            "target": wording["target"], "risk_label": wording["risk_label"],
-                            "untrusted": p.untrusted or None, "rule": self.approvals.rule(p.tool),
-                            "warning": p.warning or None,
-                        }
-                        if decision in grant_rules.ALLOWING:
+                        async for e in self._ask(p, ctx, ev):
+                            yield e
+                        if p.outcome is None:
                             runnable.append(p)
-                        else:
-                            p.outcome = ({"error": DECLINED, "declined": True}, True, 0)
                     else:
                         runnable.append(p)
                 if runnable and undo_rules.attended(ctx.channel, source, unprompted):
@@ -953,6 +927,13 @@ class Agent:
                     for p in runnable:
                         async for e in self._undo_window(p, ctx, ev):
                             yield e
+                        if p.outcome is None and p.undo and await self._asks_now(p, ctx):
+                            # its rule became Ask or Only if I asked while it waited (#365): the stricter rule wins
+                            log.info("the rule for %s changed during its undo window: asking first", p.tc.name)
+                            async for e in self._ask(p, ctx, ev):
+                                yield e
+                            if p.approval is not None:
+                                p.approval["undo"] = p.undo
                         if p.outcome is None:
                             kept.append(p)
                     runnable = kept
@@ -1217,10 +1198,60 @@ class Agent:
                          preview=preview.build(p.tc.name, p.tc.arguments), **ev)
         outcome = await broker.wait(undo_id)
         log.info("undo window for %s ended: %s", p.tc.name, outcome)
+        p.undo = outcome
         if p.approval is not None:
             p.approval["undo"] = outcome
         if outcome == undo_rules.UNDONE:
             p.outcome = ({"error": undo_rules.UNDONE_MESSAGE, "undone": True}, True, 0)
+
+    async def _ask(self, p: _CallPlan, ctx: ToolContext, ev: dict) -> AsyncIterator[AgentEvent]:
+        """Ask the user about one call and wait for the answer. Sets ``p.approval``, and ``p.outcome`` when the user
+        said no."""
+        assert p.tool is not None
+        approval_id = new_id()
+        wording = await describe_call(p.tool, p.tc.arguments, ctx, p.risk)
+        purchase = wording["risk_label"] == PURCHASE_LABEL and p.risk >= Risk.send
+        # how wide a yes may be (#139): only "once" for purchases, raised risks, code, outside content and calls a
+        # second look flagged (#143)
+        offered = grant_rules.choices(
+            p.tool, p.risk, purchase=purchase, untrusted=bool(p.untrusted or p.warning), chat=bool(ctx.session_id),
+            remember_session=self.approvals.config.remember_session,
+        )
+        self.approvals.create(approval_id, offered)
+        yield ApprovalRequest(
+            approval_id=approval_id, call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments,
+            risk=p.risk.name, reason=f"{p.tool.plugin}: {p.tool.description[:160]}",
+            risk_label=wording["risk_label"], target=wording["target"],
+            untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
+            grant_minutes=self.approvals.config.grant_minutes,
+            preview=preview.build(p.tc.name, p.tc.arguments, purchase=purchase), **ev,
+        )
+        asked_at = now_iso()
+        decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)
+        p.approval = {
+            "decision": decision, "asked_at": asked_at, "answered_at": now_iso(),
+            "target": wording["target"], "risk_label": wording["risk_label"],
+            "untrusted": p.untrusted or None, "rule": self.approvals.rule(p.tool),
+            "warning": p.warning or None,
+        }
+        if decision not in grant_rules.ALLOWING:
+            p.outcome = ({"error": DECLINED, "declined": True}, True, 0)
+
+    async def _asks_now(self, p: _CallPlan, ctx: ToolContext) -> bool:
+        """True when a call that waited in its undo window without the user's yes must ask before it runs (#365): its
+        lasting rule became Ask, or Only if I asked while the user's words in this chat turn don't ask for it, and no
+        grant covers it. Never and Hand it to me are checked again when the call runs."""
+        if p.tool is None or (p.approval is not None and p.approval.get("decision") in grant_rules.ALLOWING):
+            return False  # the user already said yes to this very call
+        rule = self.approvals.rule(p.tool)
+        if rule == p.level or rule not in {ASK, IF_ASKED}:
+            return False
+        asked = rule == IF_ASKED and rule_levels.asked_for(
+            p.tool, ctx.user_words, self._app_name(p.tool), p.risk, self._other_apps(p.tool)
+        )
+        if applied_rule(rule, asked=asked, risk=p.risk) != ASK:
+            return False
+        return not await self.approvals.granted(p.tool, p.risk, p.tc.arguments, ctx)
 
     def _app_name(self, tool: Tool) -> str:
         plugin = self.registry.plugin(tool.plugin)
