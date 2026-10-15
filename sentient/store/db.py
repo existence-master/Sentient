@@ -30,7 +30,8 @@ _PKG_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_VERSION = 11  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
 # 6: approval_grants (#139); 7: usage.cost_usd (#148); 8: evolution_reviews.activity_mark (#297)
 # 9: messages.approval and the activity timeline's indexes (#147); 10: try runs and file snapshots (#142)
-# 11: memory scopes: facts.scope, sessions.memory_scope, tasks.memory_scope, summaries.scope (#155)
+# 11: memory scopes: facts.scope, sessions.memory_scope, tasks.memory_scope, summaries.scope (#155); also
+#     messages.checks and task_runs.checks (#165), which arrived without a bump
 PACKAGE_SCHEMAS = [
     "tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox",
     "folders", "reminders", "snapshots",
