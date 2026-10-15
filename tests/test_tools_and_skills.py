@@ -69,6 +69,21 @@ def test_new_skills_get_the_six_field_shape_and_legacy_skills_still_load(isolate
     assert legacy.body == "# Legacy skill\n## Procedure\n1. Keep working."
 
 
+def test_skill_section_headings_must_match_the_complete_name(isolated_home):
+    paths.ensure_layout()
+    lib = SkillLibrary()
+    path = lib.write(
+        "heading-boundaries",
+        "Test section heading boundaries",
+        "# Heading boundaries\n## Approval required\n- Ask first.\n## Output ##\n- A report.",
+    )
+    skill = parse_skill_file(path)
+    assert skill is not None
+    assert "## Approval required" in skill.body
+    assert "\n## Approval\n" in skill.body
+    assert skill.body.count("## Output") == 1
+
+
 def test_skill_requires_tools_filter(isolated_home):
     paths.ensure_layout()
     lib = SkillLibrary()
