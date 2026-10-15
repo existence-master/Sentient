@@ -44,6 +44,8 @@ SECTIONS = ["When to use", "Procedure", "Pitfalls", "Verification"]
 TRANSCRIPT_BUDGET = 14_000
 REVIEW_LOOKBACK_DAYS = 3
 STABLE_TOPICS = set(TOPIC_NAMES) - {"Miscellaneous"}
+# the memory scopes the profile files (MEMORY.md, USER.md) are built from (#155); work and project chats leave them out
+PROFILE_SCOPES = "COALESCE(scope, 'personal') IN ('personal', 'always')"
 DONE_STATUSES = {"completed", "completed_with_errors"}
 FAILED_RUN_STATUSES = {"error", "failed", "completed_with_errors"}
 REPAIR_TRANSCRIPT_BUDGET = 6_000
@@ -858,10 +860,11 @@ class EvolutionService(Service):
         facts_mark = await store.get_meta(PROFILE_FACTS_MARK) or since
         summaries_mark = await store.get_meta(PROFILE_SUMMARIES_MARK) or since
         after, params = after_watermark(facts_mark, "updated_at", "id")
+        # MEMORY.md and USER.md are personal: work and project memories never go in them (#155)
         new_facts = await store.fetchall(
             "SELECT id, content, topics, source, updated_at FROM facts WHERE status = 'active'"
             f" AND memory_type = 'long-term' AND {after} AND (expires_at IS NULL OR expires_at > ?)"
-            " ORDER BY updated_at, id",
+            f" AND {PROFILE_SCOPES} ORDER BY updated_at, id",
             (*params, nowiso),
         )
         # chats that read outside content never feed MEMORY.md (ADR 0021): their facts wait for review and their
@@ -890,7 +893,7 @@ class EvolutionService(Service):
         budget = cfg.memory.workspace_budget_chars
         all_facts = await store.fetchall(
             "SELECT content FROM facts WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?)"
-            " ORDER BY updated_at DESC, id DESC LIMIT 80",
+            f" AND {PROFILE_SCOPES} ORDER BY updated_at DESC, id DESC LIMIT 80",
             (nowiso,),
         )
         summaries = await store.fetchall(

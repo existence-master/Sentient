@@ -6,6 +6,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Keep work, personal and project memories apart.** Each memory is now kept for Personal, Work, a project you name,
+  or every chat (for things like your name or how you like answers). Pick a chat's memories from the button at the
+  top of the chat, or before you start one. A work chat then uses your work memories and the ones for every chat,
+  and never brings up personal things like family or health unless you ask about them; what Sentient learns there
+  is kept for work too. Tasks a chat creates keep its memories, and each messaging app can be set to one in
+  Settings. On the Memory page you can show one place at a time, move a memory to another place, and forget
+  everything kept for one place without touching the rest. Everything you had before is in Personal.
 - **A safety check for skills and MCP servers from outside.** Skills brought over from Hermes, and skills you add
   with the new **Add from a link** button in Skills (a SKILL.md, or a GitHub folder that holds one), wait for your
   review with a plain safety report: where it came from, and whether it tries to send your data to a fixed address,

@@ -11,6 +11,7 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from sentient.gateway.deps import AUTH, get_core
 from sentient.memory import export as memory_export
 from sentient.memory import review as memory_review
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import EpisodicMemory
 from sentient.memory.personas import PERSONAS, render_persona
 from sentient.memory.topics import TOPICS
@@ -29,14 +30,30 @@ def _memory(request: Request):
 
 @router.get("")
 async def list_memories(
-    request: Request, topic: str = "", q: str = "", source: str = "", limit: int = 500, offset: int = 0
+    request: Request, topic: str = "", q: str = "", source: str = "", limit: int = 500, offset: int = 0,
+    scope: str = "",
 ):
     s = get_core(request)
     if s.memory is None:
         return []
     return await s.memory.list_facts(
-        max(1, min(limit, 2000)), max(0, offset), topic=topic or None, source=source or None, q=q or None
+        max(1, min(limit, 2000)), max(0, offset), topic=topic or None, source=source or None, q=q or None,
+        scope=scope or None,
     )
+
+
+@router.get("/scopes")
+async def scopes(request: Request):
+    """Always, Personal and Work, then every project in use, each with how many memories it holds (#155)."""
+    return await memory_scopes.list_scopes(get_core(request))
+
+
+@router.delete("/scope/{scope:path}")
+async def reset_scope(request: Request, scope: str):
+    """Forget every memory in one scope, and nothing else (#155)."""
+    if not memory_scopes.normalize(scope):
+        raise HTTPException(400, "scope is required")
+    return {"deleted": await _memory(request).forget_scope(scope)}
 
 
 @router.get("/topics")
@@ -108,7 +125,7 @@ async def personas(request: Request):
 
 
 @router.post("/import")
-async def import_document(request: Request, file: UploadFile = File(...)):
+async def import_document(request: Request, file: UploadFile = File(...), scope: str = ""):
     s = get_core(request)
     mem = _memory(request)
     name = Path(file.filename or "document.txt").name
@@ -120,7 +137,9 @@ async def import_document(request: Request, file: UploadFile = File(...)):
         with path.open("wb") as fh:
             shutil.copyfileobj(file.file, fh)
         try:
-            return await mem.import_document(path, username=s.config.assistant.user_name, source=f"file:{name}")
+            return await mem.import_document(
+                path, username=s.config.assistant.user_name, source=f"file:{name}", scope=scope or None
+            )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -198,7 +217,8 @@ async def create_memory(request: Request, body: dict):
     content = str(body.get("content", "")).strip()
     if not content:
         raise HTTPException(400, "content is required")
-    return await mem.remember(content, source=str(body.get("source") or "manual"), notify=True)
+    scope = memory_scopes.normalize(body.get("scope"), memory_scopes.PERSONAL)  # #155
+    return await mem.remember(content, source=str(body.get("source") or "manual"), notify=True, scope=scope)
 
 
 @router.put("/{memory_id}")
@@ -209,6 +229,19 @@ async def update_memory(request: Request, memory_id: int, body: dict):
         raise HTTPException(400, "content is required")
     try:
         return await mem.update_content(memory_id, content)
+    except KeyError as exc:
+        raise HTTPException(404, f"memory {memory_id} not found") from exc
+
+
+@router.patch("/{memory_id}")
+async def move_memory(request: Request, memory_id: int, body: dict):
+    """Move a memory to another scope (#155): ``{scope}``."""
+    mem = _memory(request)
+    scope = memory_scopes.normalize(body.get("scope"))
+    if not scope:
+        raise HTTPException(400, "scope is required")
+    try:
+        return await mem.set_scope(memory_id, scope)
     except KeyError as exc:
         raise HTTPException(404, f"memory {memory_id} not found") from exc
 

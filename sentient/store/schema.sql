@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     untrusted       TEXT,                         -- app whose content this chat read ("Gmail"); sends then ask (ADR 0018)
     visited_hosts   TEXT,                         -- JSON list of web hosts this chat loaded (ADR 0018)
     incognito       INTEGER NOT NULL DEFAULT 0,   -- 1: nothing is learned from it and it is deleted when closed (#154)
-    model           TEXT                          -- the model picked for this chat; NULL follows the default (#312)
+    model           TEXT,                         -- the model picked for this chat; NULL follows the default (#312)
+    memory_scope    TEXT                          -- the memories this chat uses (#155); NULL: its app's, else personal
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -85,7 +86,8 @@ CREATE TABLE IF NOT EXISTS facts (
     embedding_model TEXT,
     previous_content TEXT,                                  -- kept on UPDATE so edits are auditable
     status          TEXT NOT NULL DEFAULT 'active',         -- active | pending (held for the user's review, ADR 0021)
-    review          TEXT                                    -- JSON {from, snippet, session_id}: where a held memory came from
+    review          TEXT,                                   -- JSON {from, snippet, session_id}: where a held memory came from
+    scope           TEXT NOT NULL DEFAULT 'personal'        -- personal | work | always | a project's name (#155)
 );
 CREATE INDEX IF NOT EXISTS idx_facts_expires ON facts(expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_facts_source ON facts(source);

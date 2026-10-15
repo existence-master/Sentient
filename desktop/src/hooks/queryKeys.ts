@@ -65,6 +65,7 @@ export const qk = {
     workspace: ['memories', 'workspace'] as const,
     personas: ['memories', 'personas'] as const,
     review: ['memories', 'review'] as const,
+    scopes: ['memories', 'scopes'] as const,
     dreams: ['memories', 'dreams'] as const
   },
   userModel: ['user-model'] as const,

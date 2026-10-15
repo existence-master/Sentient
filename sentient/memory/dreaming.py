@@ -383,6 +383,8 @@ class DreamingService(Service):
             return x
 
         for i, j, _sim in similar_pairs(facts, cfg.merge_similarity):
+            if facts[i].get("scope") != facts[j].get("scope"):
+                continue  # memory scopes stay apart (#155): a work memory never folds into a personal one
             a, b = facts[i]["content"], facts[j]["content"]
             if word_overlap(a, b) < cfg.merge_min_overlap:
                 continue
@@ -474,7 +476,7 @@ class DreamingService(Service):
             if budget[0] <= 0 or calls <= 0:
                 break
             hindi, other = facts[i], facts[j]
-            if hindi["id"] in gone or other["id"] in gone:
+            if hindi["id"] in gone or other["id"] in gone or hindi.get("scope") != other.get("scope"):
                 continue
             ids = tuple(sorted((hindi["id"], other["id"])))
             if ids in kept_apart:
@@ -598,7 +600,7 @@ class DreamingService(Service):
             if budget[0] <= 0:
                 break
             older, newer = sorted((facts[i], facts[j]), key=lambda f: (f["updated_at"], f["id"]))
-            if older["id"] in gone or newer["id"] in gone:
+            if older["id"] in gone or newer["id"] in gone or older.get("scope") != newer.get("scope"):
                 continue
             pair_key = f"{older['id']}@{older['updated_at']}|{newer['id']}@{newer['updated_at']}"
             if pair_key in checked:

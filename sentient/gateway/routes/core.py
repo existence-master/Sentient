@@ -26,6 +26,7 @@ from sentient.gateway.deps import get_core
 from sentient.llm import availability
 from sentient.llm.events import Done, Error
 from sentient.llm.spending import BudgetError
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.personas import render_persona
 from sentient.tools.rules import SCREEN_FOLDER, SELECTION_FOLDER
 
@@ -248,8 +249,10 @@ async def patch_config(request: Request, body: dict):
 # ----------------------------------------------------------------------------- sessions
 @router.get("/api/sessions", dependencies=_auth)
 async def sessions(request: Request, limit: int = 100):
-    rows = await get_core(request).store.list_sessions(limit)
+    s = get_core(request)
+    rows = await s.store.list_sessions(limit)
     for row in rows:  # stored as JSON text; the API gives a list (or null)
+        row["memory_scope"] = memory_scopes.of_session(s.config, row)  # the scope it uses now (#155)
         raw = row.get("visited_hosts")
         try:
             row["visited_hosts"] = json.loads(raw) if raw else None
@@ -267,9 +270,25 @@ def _chat_model(value: str | None) -> str | None:
         raise HTTPException(422, str(exc)) from exc
 
 
+def _chat_scope(value: str | None) -> str | None:
+    """A chat's memory scope (#155): None follows the default; 422 for "always"."""
+    try:
+        return memory_scopes.chat_scope(value)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.post("/api/sessions", dependencies=_auth)
-async def create_session(request: Request, channel: str = "desktop", incognito: bool = False, model: str | None = None):
-    sid = await get_core(request).store.create_session(channel=channel, incognito=incognito, model=_chat_model(model))
+async def create_session(
+    request: Request,
+    channel: str = "desktop",
+    incognito: bool = False,
+    model: str | None = None,
+    memory_scope: str | None = None,
+):
+    sid = await get_core(request).store.create_session(
+        channel=channel, incognito=incognito, model=_chat_model(model), memory_scope=_chat_scope(memory_scope)
+    )
     return {"session_id": sid}
 
 
@@ -297,13 +316,16 @@ class SessionPatch(BaseModel):
     title: str | None = None
     # the chat's own model (#312): "provider/model" keeps it for this chat; null or "" follows the default again
     model: str | None = None
+    # the memories it uses (#155): "personal", "work" or a project's name; null or "" follows the default again
+    memory_scope: str | None = None
 
 
 @router.patch("/api/sessions/{session_id}", dependencies=_auth)
 async def update_session(request: Request, session_id: str, body: SessionPatch):
-    """Rename a chat, or pick its model. Only the fields sent change."""
+    """Rename a chat, or pick its model or memory scope. Only the fields sent change."""
     s = get_core(request)
-    if await s.store.get_session(session_id) is None:
+    session = await s.store.get_session(session_id)
+    if session is None:
         raise HTTPException(404, "no such chat")
     changed: dict[str, Any] = {}
     if body.title is not None:
@@ -312,6 +334,10 @@ async def update_session(request: Request, session_id: str, body: SessionPatch):
     if "model" in body.model_fields_set:
         changed["model"] = _chat_model(body.model)
         await s.store.set_session_model(session_id, changed["model"])
+    if "memory_scope" in body.model_fields_set:
+        scope = _chat_scope(body.memory_scope)
+        await s.store.set_session_scope(session_id, scope)
+        changed["memory_scope"] = memory_scopes.of_session(s.config, {**session, "memory_scope": scope})
     if changed:
         s.bus.publish("session.updated", {"session_id": session_id, **changed})
     return {"ok": True, **changed}

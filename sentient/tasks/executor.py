@@ -30,6 +30,7 @@ from sentient.agent.loop import CAN_PAUSE_KEY, Budget, LoopResult, history_to_op
 from sentient.agent.sources import AnswerSources
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
 from sentient.llm.provider import ToolCall
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.sources import MemorySources
 from sentient.tasks import ask, continuity, limits, stuck
 from sentient.tasks.jsonio import complete_json_object
@@ -244,7 +245,8 @@ async def _executor_system_prompt(
             str(x) for x in (task.get("name"), task.get("description"), (run.get("trigger_data") or {}).get("subject")) if x
         )[:500]
         try:
-            facts = [f for f in await app.memory.recall(query) if f.get("content")]
+            scopes = memory_scopes.recall_scopes(memory_scopes.of_task(task))  # the task's scope plus always (#155)
+            facts = [f for f in await app.memory.recall(query, scopes=scopes) if f.get("content")]
         except Exception as exc:
             log.debug("memory recall for task %s skipped: %s", task["id"], exc)
     earlier, remembered = await _earlier_section(svc, task, run)
@@ -374,6 +376,7 @@ async def execute_single(
                 })
 
             ctx = app.agent.tool_context(None, "task")
+            ctx.memory_scope = memory_scopes.of_task(task)  # what it recalls and saves (#155)
             # CAN_PAUSE_KEY: an "ask" rule holds the call and the run pauses to ask, instead of failing (#139)
             ctx.extra.update({"task_id": task_id, "run_id": run_id, ask.STATE_KEY: asking, CAN_PAUSE_KEY: True})
             if task.get("browser_profile"):  # the browser tools use the task's profile (docs/API.md section 12)
@@ -566,6 +569,7 @@ async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume:
     ctx = app.agent.tool_context(None, "task") if app.agent is not None else None
     if ctx is not None:
         ctx.extra.update({"task_id": task_id, "run_id": run_id})
+        ctx.memory_scope = memory_scopes.of_task(task)
         if task.get("browser_profile"):
             ctx.extra["browser_profile"] = task["browser_profile"]
     if tool.plugin in app.approvals.read_only():  # a Read only connection (#141) refuses it like a "never" rule

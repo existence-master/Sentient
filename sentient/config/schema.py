@@ -1047,6 +1047,10 @@ class ChannelAppConfig(BaseModel):
     show_tool_activity: bool = Field(
         True, description="Briefly show what the assistant is doing (for example 'Searching the web...')."
     )
+    memory_scope: str = Field(
+        "personal",
+        description="Which memories chats in this app use and save new ones to: personal, work, or a project's name.",
+    )
 
 
 class ChannelsConfig(BaseModel):

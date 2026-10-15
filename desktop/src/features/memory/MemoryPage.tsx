@@ -21,13 +21,14 @@ import {
   IconX
 } from '@tabler/icons-react'
 import { useNavigate } from 'react-router'
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 import {
   Alert,
   Button,
+  ConfirmDialog,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -55,7 +56,8 @@ import { MemoryList, MemoryTimeline } from '@/features/memory/MemoryList'
 import { EXPIRING_SOON_MS, countdown, expiresInMs, sourceMeta, TOPIC_META, TOPIC_ORDER, topicMeta, topicText, topicTint, type MemoryWithHistory } from '@/features/memory/meta'
 import { ProfileTab } from '@/features/memory/ProfileTab'
 import { ReviewTab } from '@/features/memory/ReviewTab'
-import { useMemories, useMemoryGraph, useMemoryReview, useMemorySummaries, useMemoryTopics } from '@/hooks/memory'
+import { ScopeIcon, scopeLabel } from '@/features/memory/bits'
+import { useMemories, useMemoryGraph, useMemoryReview, useMemoryScopes, useMemorySummaries, useMemoryTopics } from '@/hooks/memory'
 import { qk } from '@/hooks/queryKeys'
 import { api, errorMessage } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
@@ -89,6 +91,9 @@ export function MemoryPage() {
   const summaries = useMemorySummaries(100)
   const graph = useMemoryGraph()
   const review = useMemoryReview()
+  const scopes = useMemoryScopes()
+  const qc = useQueryClient()
+  const [confirmReset, setConfirmReset] = useState(false)
   const now = useNow()
 
   const memories = useMemo(() => all.data ?? [], [all.data])
@@ -100,11 +105,32 @@ export function MemoryPage() {
         (m) =>
           (!p.topic || m.topics.includes(p.topic)) &&
           (!p.source || m.source === p.source) &&
+          (!p.scope || (m.scope ?? 'personal') === p.scope) &&
           (p.type === 'all' || m.memory_type === p.type)
       ),
-    [base, p.topic, p.source, p.type]
+    [base, p.topic, p.source, p.scope, p.type]
   )
-  const filtering = !!(p.topic || p.source || p.type !== 'all' || searching)
+  const filtering = !!(p.topic || p.source || p.scope || p.type !== 'all' || searching)
+  const scopeNames = useMemo(() => {
+    const names = ['personal', 'work', 'always', ...(scopes.data ?? []).map((s) => s.name)]
+    memories.forEach((m) => m.scope && names.push(m.scope))
+    if (p.scope) names.push(p.scope)
+    return [...new Set(names)]
+  }, [scopes.data, memories, p.scope])
+  const scopeCount = (name: string) => memories.filter((m) => (m.scope ?? 'personal') === name).length
+  const resetScope = async () => {
+    const scope = p.scope
+    if (!scope) return
+    try {
+      const r = await api.memories.resetScope(scope)
+      toast.success(`Forgot ${r.deleted} ${r.deleted === 1 ? 'memory' : 'memories'} from ${scopeLabel(scope)}`)
+      p.set({ scope: null })
+    } catch (e) {
+      toast.error("Couldn't forget those memories", { description: errorMessage(e) })
+    } finally {
+      void qc.invalidateQueries({ queryKey: qk.memories.all })
+    }
+  }
   const matches = useMemo(() => (filtering ? new Set(filtered.map((m) => m.id)) : null), [filtering, filtered])
 
   const sources = useMemo(() => {
@@ -167,7 +193,7 @@ export function MemoryPage() {
   }
   const clearFilters = () => {
     setSearch('')
-    p.set({ topic: null, source: null, type: null, q: null })
+    p.set({ topic: null, source: null, type: null, q: null, scope: null })
   }
 
   return (
@@ -214,6 +240,11 @@ export function MemoryPage() {
                 <DropdownMenuItem icon={<IconTrashX />} danger disabled={!sources.length} onSelect={() => (setForgetInitial(undefined), p.set({ forget: 1 }, false))}>
                   Forget everything from a source…
                 </DropdownMenuItem>
+                {p.scope && (
+                  <DropdownMenuItem icon={<IconTrashX />} danger onSelect={() => setConfirmReset(true)}>
+                    Forget all {scopeLabel(p.scope)} memories…
+                  </DropdownMenuItem>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           </>
@@ -283,6 +314,16 @@ export function MemoryPage() {
                         </button>
                       )
                     }
+                  />
+                  <Select
+                    className="w-40"
+                    aria-label="Used in"
+                    value={p.scope || '__all'}
+                    onValueChange={(v) => p.set({ scope: v === '__all' ? null : v })}
+                    options={[
+                      { value: '__all', label: 'All chats' },
+                      ...scopeNames.map((n) => ({ value: n, label: `${scopeLabel(n)} (${scopeCount(n)})`, icon: <ScopeIcon scope={n} size={14} /> }))
+                    ]}
                   />
                   <Select
                     className="w-40"
@@ -410,13 +451,21 @@ export function MemoryPage() {
           p.set({ m: null, forget: 1 }, false)
         }}
       />
-      <AddMemoryDialog open={p.addOpen} onOpenChange={(o) => p.set({ add: o ? 1 : null })} onShow={(id) => p.set({ add: null, m: id })} />
+      <AddMemoryDialog open={p.addOpen} onOpenChange={(o) => p.set({ add: o ? 1 : null })} onShow={(id) => p.set({ add: null, m: id })} scope={p.scope || undefined} />
       <ImportDialog open={p.importOpen} onOpenChange={(o) => p.set({ import: o ? 1 : null })} />
       <AssistantImportDialog
         open={p.assistantImportOpen}
         onOpenChange={(o) => p.set({ import: o ? 'assistant' : null, app: null, path: null })}
         initialApp={p.importApp}
         initialPath={p.importPath}
+      />
+      <ConfirmDialog
+        open={confirmReset}
+        onOpenChange={setConfirmReset}
+        title={`Forget all ${scopeLabel(p.scope)} memories?`}
+        description={`Sentient forgets the ${scopeCount(p.scope)} memories kept for ${scopeLabel(p.scope)}, and any waiting for your review there. Memories in other places stay. This can't be undone.`}
+        confirmLabel="Forget them"
+        onConfirm={() => void resetScope()}
       />
       <ForgetSourceDialog key={forgetInitial ?? 'none'} open={p.forgetOpen} onOpenChange={(o) => p.set({ forget: o ? 1 : null })} sources={sources} initial={forgetInitial} />
     </div>

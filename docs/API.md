@@ -88,10 +88,10 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"\|"declined"`; a task question (`payload.event = "question"`) gains `payload.status = "answered"` with `payload.answer`, or `"cancelled"`) |
 | `notification.read` / `notification.deleted` | `{id}` (`null` = all) |
 | `integration.updated` | **Integration** (§5) |
-| `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending", reason?, previous?, session_id?}`; `status: "pending"` means the memory waits in the review inbox (section 7), with `reason: "instruction"` when it reads like an instruction (#234); `previous` is an UPDATE's words before it and `session_id` the chat a memory was learned in (extraction after a turn, `memory_remember`): that chat shows "Remembered: ... Undo" (Undo is `DELETE /api/memories/{id}`, or `PUT` with `previous` for an update) or "Waiting for your review: ..." with Review (#234); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE) |
+| `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending", reason?, previous?, session_id?}`; `status: "pending"` means the memory waits in the review inbox (section 7), with `reason: "instruction"` when it reads like an instruction (#234); `previous` is an UPDATE's words before it and `session_id` the chat a memory was learned in (extraction after a turn, `memory_remember`): that chat shows "Remembered: ... Undo" (Undo is `DELETE /api/memories/{id}`, or `PUT` with `previous` for an update) or "Waiting for your review: ..." with Review (#234); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE). Memory scopes (#155, section 7): a save carries `scope` (where it was kept); moving a memory sends UPDATE with `reason: "moved"`, `scope` and `previous_scope`; resetting a scope sends a bulk DELETE with `reason: "scope_reset"`, `scope` and `count` |
 | `skill.updated` | `{name, state: "active"\|"pending_review"\|"stale"\|"archived"\|"rejected"\|"deleted"}` |
 | `mcp.review` | `{server, reason?: "new"\|"changed", tools?: [tool names on the server], needed}`: an MCP server's tools wait for review, or the user answered (section 5) |
-| `session.updated` | `{session_id, title?, model?}`: only what changed. `title` after a rename or an automatic title; `model` (`null` = the default) after the chat's model was picked (section 2) |
+| `session.updated` | `{session_id, title?, model?, memory_scope?}`: only what changed. `title` after a rename or an automatic title; `model` (`null` = the default) after the chat's model was picked; `memory_scope` (the scope it uses now) after its memories were picked (section 2) |
 | `session.deleted` | `{session_id, reason?: "incognito"}`: a chat was deleted (`DELETE /api/sessions/{id}`, or an incognito chat closed by the engine, section 2) |
 | `rule_proposal.updated` | **RuleProposal** (section 2, rules from chat): a new "Make this a rule?" card, or one the user answered |
 | `approval_grants.updated` | `{count}`: a task or timed grant was added, revoked or ran out (section 2, "Scoped answers"); refetch `GET /api/approvals/grants` |
@@ -296,15 +296,20 @@ accept or loosen a rule.
   "From your answer on <date>"). An entry is dropped when its rule is changed or removed.
 
 ### Sessions (chats)
-- `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts, incognito, model}]` newest first
+- `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts, incognito, model, memory_scope}]` newest first
   (`untrusted`: the app whose content the chat read, e.g. `"Gmail"`, `""` when clean, `null` before its first turn;
   `visited_hosts`: list of web hosts it loaded, or `null`; section 10; `incognito`: bool, below. The window keeps
-  incognito chats out of its chat list; `model`: the chat's own model, `null` when it follows the default, below)
-- `POST /api/sessions?incognito=false&model=` → `{session_id}` (`model` optional: a new chat that starts on its own
-  model; 422 when it isn't `provider/model`)
-- `PATCH /api/sessions/{id}` `{title?, model?}` → `{ok, title?, model?}`: only the fields sent change. `model`
+  incognito chats out of its chat list; `model`: the chat's own model, `null` when it follows the default, below;
+  `memory_scope`: the memories it uses now, section 7 "Memory scopes": its own, else its messaging app's, else
+  `"personal"`)
+- `POST /api/sessions?incognito=false&model=&memory_scope=` → `{session_id}` (`model` optional: a new chat that starts on its own
+  model; 422 when it isn't `provider/model`. `memory_scope` optional: `personal`, `work` or a project's name; 422 for
+  `always`)
+- `PATCH /api/sessions/{id}` `{title?, model?, memory_scope?}` → `{ok, title?, model?, memory_scope?}`: only the fields sent change. `model`
   `"provider/model"` keeps that model for the chat; `null` or `""` makes it follow the default again ("Use the
-  default"). 404 unknown chat, 422 a `model` that isn't `provider/model`. Publishes `session.updated` with what changed.
+  default"). `memory_scope` picks the chat's memories (#155); `null` or `""` goes back to the default, and the response
+  carries the scope it uses now. 404 unknown chat, 422 a `model` that isn't `provider/model` or `memory_scope: "always"`.
+  Publishes `session.updated` with what changed.
 - **The chat's model** (#312). `sessions.model` is the one place a chat's model is kept: set it with `POST
   /api/sessions?model=` (a new chat) or `PATCH /api/sessions/{id}` `{model}`, or `/model chat <model>` in a messaging
   app (section 14). A `model` on `chat.send` or `POST /api/chat` is for that message only and never changes it.
@@ -750,7 +755,7 @@ Routes:
   "swarm_details": {"goal": "...", "items": [], "total_agents": 0, "completed_agents": 0,
                     "progress_updates": [{"worker_id": "agent-1|aggregator", "timestamp": "...", "status": "processing|completed|error|aggregating", "message": "..."}],
                     "aggregated_results": []} | null,
-  "enabled": true, "keep_running": false, "model": null, "browser_profile": "x-posting|null",
+  "enabled": true, "keep_running": false, "model": null, "browser_profile": "x-posting|null", "memory_scope": "personal",
   "deliver_to": "default" | "desktop" | [{"channel": "telegram|discord|whatsapp", "chat_id": "..."}],
   "notepad": "...|null",
   "original_context": {"source": "manual_creation|chat|proactive|trigger", "...": "..."},
@@ -760,6 +765,8 @@ Routes:
 ```
 `swarm_details` is `null` for single tasks. `script` is `null` unless `task_type` is `script` (section 16).
 `browser_profile` is the browser profile its runs use (section 12); `null` means `default`.
+`memory_scope` is the memories its runs use and save to (section 7, "Memory scopes"): `personal` unless set; a task a
+chat creates (`create_task_from_prompt`) takes that chat's scope.
 `deliver_to` is where the task's notifications go besides the app (see "Where results go" below).
 `notepad` is the notes a recurring task's runs keep for the next run (see "Recurring tasks remember" below); `null` when empty.
 `error` holds the last planning/run failure message (v2 `task.error`).
@@ -830,9 +837,11 @@ A run that called no tool and answers nothing still fails. Chat replies (`done.c
 ### Endpoints
 - `GET /api/tasks` → `[Task]`
 - `GET /api/tasks/{id}` → `Task`
-- `POST /api/tasks` `{prompt, is_swarm?: bool, assignee?: "ai", model?, browser_profile?}` → `Task` (status `planning`; refinement + planning continue in the background and arrive as `task.updated`)
+- `POST /api/tasks` `{prompt, is_swarm?: bool, assignee?: "ai", model?, browser_profile?, memory_scope?}` → `Task` (status `planning`; refinement + planning continue in the background and arrive as `task.updated`)
 - `POST /api/tasks/preview` `{prompt}` → `{name, description, priority, schedule}` (v2 generate-plan)
-- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile, deliver_to, notepad, keep_running}` → `Task`
+- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile, memory_scope, deliver_to, notepad, keep_running}` → `Task`
+  (`memory_scope`: the memories its runs recall and save to, section 7 "Memory scopes"; `null` or `""` is personal, 400
+  for `always`)
   (`keep_running: true`: never paused while the user is away, see "Routines pause while you are away")
   (`notepad`: text, trimmed and cut to 1500 characters; `null` or `""` clears it)
   (`browser_profile`: a name from `browser.profiles`, 400 for an unknown one; `null`, `""` or `"default"` clear it)
@@ -1445,7 +1454,7 @@ offered to proactive look-ups.
 
 ## 7. Memory
 
-**Memory** `{id: int, content, topics: string[], source, memory_type: "long-term|short-term", created_at, updated_at, expires_at, previous_content: string|null, status: "active"|"pending", review: ReviewNote|null}` (`previous_content` is the text before the last UPDATE; `review` says where a held memory came from)
+**Memory** `{id: int, content, topics: string[], source, memory_type: "long-term|short-term", created_at, updated_at, expires_at, previous_content: string|null, status: "active"|"pending", review: ReviewNote|null, scope}` (`previous_content` is the text before the last UPDATE; `review` says where a held memory came from; `scope`: where it is kept, below)
 
 **ReviewNote** `{from, snippet: string|null, session_id: string|null, title?, dated?, export?}`: `from` names the source
 in plain words ("Gmail", "Hermes", "ChatGPT", "resume.pdf", "a proactive check"), `snippet` is the text it came from
@@ -1456,10 +1465,10 @@ conversation, note or file it was in, such as "10K training plan" or "Saved memo
 Topics are the v2 set: Personal Identity, Interests & Lifestyle, Work & Learning, Health & Wellbeing,
 Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
 
-- `GET /api/memories?topic=&q=&source=&limit=&offset=` → `[Memory]` newest first, expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
+- `GET /api/memories?topic=&q=&source=&scope=&limit=&offset=` → `[Memory]` newest first (`scope`: one scope only), expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
 - `GET /api/memories/topics` → `[{name, description, count}]`
 - `GET /api/memories/graph` → `{nodes: [{id, label, title, content, topics, memory_type, source, created_at}], links: [{source, target, value}]}` (`label` = content truncated to 25 chars, `title` = full content, as in v2; a link means cosine similarity ≥ `memory.graph_link_similarity`, `value` is that similarity)
-- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. Facts that name someone else are never offered to the model, so it can't update, skip or delete them, and the
+- `POST /api/memories` `{content, source?, scope?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending", scope?}` (`scope` defaults to `personal`; runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. Facts that name someone else are never offered to the model, so it can't update, skip or delete them, and the
 near-duplicate shortcut needs the same person too; names in Devanagari (Hindi) count, and match across scripts
 ("माया" is "Maya", "प्रिया" is not "Riya") (#339). An UPDATE only replaces a fact about the same person and the same action on the same thing ("doesn't want files written" or "doesn't want emails deleted" never replaces "doesn't want files deleted"; it is added instead), and a new fact that an existing one already says in full, with no new name, place or number ("sister lives in a city" next to "sister Meera lives in Lisbon"), returns `SKIP` with that fact. A correction always UPDATEs, decided in code without the model and never skipped as a
 near-duplicate (#364): a new fact about the same person and action that says the same thing about it with a changed
@@ -1469,17 +1478,23 @@ result carries `previous` as any update does. Looser cases are marked `changes_v
 correction is never `SKIP`. An UPDATE the model picks for something unrelated about the same person, with no
 attribute and no word of what it says in common ("a piano recital in July" for "starts school in July"), is added instead)
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)
+- `PATCH /api/memories/{id}` `{scope}` → `Memory`: moves it to another scope (below). 400 empty `scope`, 404 if missing.
 - `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
 - `DELETE /api/memories/source/{source}` → `{deleted: n}`
+- `GET /api/memories/scopes` → `[{name, label, count, built_in}]`: `always`, `personal` and `work` first, then every
+  project a memory, chat, task or messaging app uses, by name; `count` = active memories in it.
+- `DELETE /api/memories/scope/{scope}` → `{deleted: n}`: resets one scope. Every memory in it goes (also ones waiting
+  for review), nothing in any other scope changes.
 - `POST /api/memories/export` `{format: "markdown"|"sqlite"}` → `{path, folder, name, format, memories, about_you,
   waiting}`: writes everything Sentient remembers to a new file in `<home>/files/exports/`
   (`sentient-memory-YYYYMMDD-HHMMSS.md|.db`, never overwriting one). Markdown: active facts grouped by first topic,
-  then insights ("About <name>"), then what waits for review, each line saying where it came from and when. SQLite:
-  tables `memories (id, content, source, topics, memory_type, status, created_at, updated_at, expires_at, came_from)`
+  then insights ("About <name>"), then what waits for review, each line saying where it came from and when (and
+  its scope when it isn't Personal: "Work, a chat, 3 Oct 2026"). SQLite:
+  tables `memories (id, content, source, topics, memory_type, status, created_at, updated_at, expires_at, came_from, scope)`
   and `about_you (id, dimension, statement, confidence, status, source, created_at, updated_at, came_from)`
   (`came_from` = the ReviewNote JSON or null). Retired insights and embeddings are left out. `memories` and
   `about_you` count active ones, `waiting` held ones. 400 for another format. Code: `sentient/memory/export.py`.
-- `POST /api/memories/import` multipart `file` (pdf/txt/md/docx) → `{added, updated, skipped, pending, source}` (`source` = `file:<name>`; the facts wait for review, `pending` counts them, and existing memories are kept; 400 for other types)
+- `POST /api/memories/import?scope=` multipart `file` (pdf/txt/md/docx) → `{added, updated, skipped, pending, source}` (`scope` defaults to `personal`; `source` = `file:<name>`; the facts wait for review, `pending` counts them, and existing memories are kept; 400 for other types)
 - `GET /api/memories/summaries?limit=` → `[{id, content, start_at, end_at, session_id, untrusted}]` (`untrusted` = the app whose content that chat read, else `null`; such summaries are listed here but kept out of other chats, see below)
 - `GET /api/memories/workspace` → `{soul, user, memory, today, yesterday}` (full file contents, not the prompt-budgeted snapshot)
 - `PUT /api/memories/workspace/{soul|user|memory}` `{content}` → `{saved}`
@@ -1488,6 +1503,33 @@ attribute and no word of what it says in common ("a piano recital in July" for "
 - `GET /api/memories/dreams?limit=`, `POST /api/memories/dreams/run`, `GET /api/memories/dreams/{id}`: see section 15.
 
 When sqlite-vec cannot load, list/topics/graph return empty data and write routes return 503.
+
+### Memory scopes (#155)
+Every memory has a `scope`: `personal` (the default, and where every memory saved before scopes went), `work`, a
+project's own name (`"Kestrel launch"`, up to 40 characters; `Work`/`PERSONAL` are read as the built-in names), or
+`always` for the few things every chat should know (the user's name, how they like answers). Code:
+`sentient/memory/scopes.py`.
+- **What a run reads.** A chat (`sessions.memory_scope`), a task (`tasks.memory_scope`) and a messaging app
+  (`channels.<app>.memory_scope`, default `personal`) each have a scope; a chat without its own uses its messaging
+  app's, else personal, and `always` can't be picked for any of them. Recall for the system prompt, `memory_recall`,
+  `memory_search_by_source`, `user_model_ask` and a task's executor prompt reads that scope plus `always`, so a work
+  chat never brings up personal family or health memories. `memory_recall` takes `everywhere: true` for when the user
+  asks about one directly; a result from another scope then says where it is kept (`kept_for`). A helper a chat
+  started reads its chat's scope. Work not tied to a chat or task (proactive look-ups, dreaming, the user model's
+  refresh, the profile upkeep below) reads every scope.
+- **Personal files.** MEMORY.md and the "## Learned" part of USER.md are built from personal and always memories only.
+  A work or project chat leaves out MEMORY.md, the daily notes and USER.md's learned part (the rest of USER.md stays),
+  leaves out user-model insights about relationships, and its prompt says which memories it uses.
+- **Saving.** A save goes into the run's scope: facts extracted after a turn, saved when a chat is compressed, and
+  `memory_remember` (personal outside a chat or task). Duplicates, updates and corrections only look at memories in
+  that scope and `always`, so a save never changes a memory in another scope. `POST /api/memories`, document imports
+  and imports from other assistants (section 19) save to `personal` unless given a scope.
+- **Review.** A held memory keeps the scope it was saved for and is approved into it (ReviewItem `scope`; `null` for
+  insights).
+- **Incognito** chats (section 2) have a scope too; it only decides what they read, as nothing is saved from them.
+- **Dreaming** (section 15) never merges or settles two memories from different scopes.
+- **Backups** (section 20) carry scopes in `sentient.db`; restoring a backup from before scopes puts every memory in
+  `personal` (`SCHEMA_VERSION` 11).
 
 ### Memories waiting for review (ADR 0021)
 A memory that did not come from the user's own words in a clean chat is held: `status: "pending"` for facts, status
@@ -2200,6 +2242,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   - `qr`: WhatsApp only, while `status` is `linking`: the text to render as a QR code (it changes about every 20 s and
     arrives through `channel.updated`); `null` otherwise.
 - **PairedChat** `{chat_id, label, paired_at, deliver: bool, session_id}` (`deliver` defaults to `channels.<id>.deliver_default`).
+- `channels.<id>.memory_scope` (default `personal`, #155): the memories that app's chats use and save to, unless a chat
+  has its own (section 7, "Memory scopes").
 - `GET /api/channels` → `[Channel]` (always all three ids).
 - `POST /api/channels/{id}/connect` `{fields: {bot_token}}` → `Channel`. The token is checked with the service (Telegram
   `getMe`, Discord `GET /users/@me`), stored in the OS keychain as `channel_<id>_token` (never in config, the database or
@@ -2881,6 +2925,10 @@ Sentient takes one:
 - before `POST /api/import/hermes/apply` (section 19);
 - before a restore replaces the data (so a restore can be undone).
 A snapshot that fails is logged and never keeps Sentient from starting.
+
+Memory scopes (#155) are part of `sentient.db` (`facts.scope`, `sessions.memory_scope`, `tasks.memory_scope`), so a
+backup keeps them. Restoring a backup made before them (database version 10 or older) adds the columns on the next
+start, with every memory in `personal`.
 
 **Restore** is two steps, so nothing in use is swapped under the running engine: `POST /api/backups/restore` checks the
 archive (manifest, names, SQLite `quick_check`) and unpacks it into `<home>/backups/restore-pending`; the next engine
