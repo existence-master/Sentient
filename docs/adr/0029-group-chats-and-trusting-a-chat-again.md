@@ -35,6 +35,10 @@ the user turns delivery on.
 - The second look reads marked blocks inside user turns as outside content with their source, so an address a member
   wrote is not "in what you asked", and the card says where it came from ("That address came from another group member
   (Ravi), not from you."). A history search that finds a member's message marks the run.
+- Only messages Sentient can see count: on Discord, a server message carries text only when it mentions the bot
+  or replies to it (without the privileged Message Content intent), so other chatter never reaches Sentient at all.
+- Trusting a chat and storing a member's message take turns per chat, so a message that arrives while the user
+  trusts the chat leaves it marked.
 - WhatsApp groups stay ignored: there Sentient is the user's own account, so it would speak as the user.
 
 **Trusting a chat again.** The user can clear a chat's mark after checking what it read: "I've checked it" on the bar

@@ -531,6 +531,9 @@ class Agent:
         self._turn_tasks: weakref.WeakSet[asyncio.Task] = weakref.WeakSet()  # tasks running a chat reply
         # session id -> chat turns not finished yet, counted until their last write (incognito cleanup waits, #154)
         self._busy: dict[str, int] = {}
+        # one at a time per chat: trusting it again and a group member's new message (ADR 0029), so a message that
+        # arrives while the user trusts the chat always leaves it marked
+        self._mark_locks: dict[str, asyncio.Lock] = {}
         self._session_tasks: dict[str, set[asyncio.Task]] = {}  # session id -> tasks running its chat turns
 
     # ------------------------------------------------------------------ steering
@@ -1996,12 +1999,13 @@ class Agent:
     async def mark_group_chat(self, session_id: str, sender: str) -> str:
         """Mark a chat because a group member wrote in it (ADR 0029), unless it is marked already. Done as soon as the
         message arrives, also while it waits for a reply to end. Returns the chat's mark."""
-        session = await self.store.get_session(session_id)
-        current = (session or {}).get("untrusted")
-        if current:
-            return str(current)
-        source = group_source(sender)
-        await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
+        async with self._mark_locks.setdefault(session_id, asyncio.Lock()):
+            session = await self.store.get_session(session_id)
+            current = (session or {}).get("untrusted")
+            if current:
+                return str(current)
+            source = group_source(sender)
+            await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
         self._publish_mark(session_id, source)
         return source
 
@@ -2010,17 +2014,19 @@ class Agent:
         sends there stop asking just because of what it read. Only the user can do this (the window, or /trust in a
         paired chat from the person who paired it); no tool does it. Logged in the chat as an ``event`` row, which the
         Activity timeline lists. Returns the source the chat had read ("" when it wasn't marked), None for no chat."""
-        session = await self.store.get_session(session_id)
-        if session is None:
-            return None
-        was = await self._chat_untrusted(session_id, session)
-        if not was:
-            return ""
-        await self.store.execute("UPDATE sessions SET untrusted = '' WHERE id = ?", (session_id,))
-        await self.store.add_message(
-            session_id, EVENT_ROLE, json.dumps({"event": TRUSTED_EVENT, "was": was, "via": via}, ensure_ascii=False),
-            name=TRUSTED_EVENT,
-        )
+        async with self._mark_locks.setdefault(session_id, asyncio.Lock()):
+            session = await self.store.get_session(session_id)
+            if session is None:
+                return None
+            was = await self._chat_untrusted(session_id, session)
+            if not was:
+                return ""
+            # only the mark the user saw: one a new group message set meanwhile stays (ADR 0029)
+            await self.store.execute("UPDATE sessions SET untrusted = '' WHERE id = ? AND untrusted = ?", (session_id, was))
+            await self.store.add_message(
+                session_id, EVENT_ROLE, json.dumps({"event": TRUSTED_EVENT, "was": was, "via": via}, ensure_ascii=False),
+                name=TRUSTED_EVENT,
+            )
         self._publish_mark(session_id, "")
         return was
 

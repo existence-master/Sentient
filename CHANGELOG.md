@@ -14,7 +14,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
   unless you turn them on.
 - **Trust a chat again after you've checked it.** A chat that read an email, a web page or a group member's message
   shows a bar saying so above the message box. If you've looked at it and it's fine, click **I've checked it** (or
-  send `/trust` in Telegram, Discord or WhatsApp) and sending from that chat follows your usual approval settings
+  send `/trust`, then `/trust yes`, in Telegram, Discord or WhatsApp) and sending from that chat follows your usual approval settings
   again. It's noted in the chat and in Activity, and anything new from outside makes it ask again.
 - **Keep work, personal and project memories apart.** Each memory is now kept for Personal, Work, a project you name,
   or every chat (for things like your name or how you like answers). Pick a chat's memories from the button at the
