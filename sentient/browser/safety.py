@@ -88,23 +88,34 @@ def _partial_offer(text: str, near: str, near_cut: bool) -> bool:
     return len(re.sub(r"\W+", "", rest)) < 20
 
 
+def paid_signup(text: str, near: str = "", near_cut: bool = False) -> bool:
+    """True when ``text`` is a subscribe, sign up or follow that the approval card calls a 'Purchase'."""
+    text = text or ""
+    return bool(_SIGNUP_RE.search(text)) and not _LABEL_RULES[0][0].search(text) and (
+        risk_label_for(text, "click", near, near_cut) == _LABEL_RULES[0][1])
+
+
 def risk_label_for(text: str, kind: str, near: str = "", near_cut: bool = False) -> str:
     """'Purchase', 'Signs up', 'Deletes', 'Posts publicly', 'Sends', else a neutral label for the action kind.
 
     ``near`` is the text around the element (its card or form). A subscribe, follow or "notify me" reads
     'Signs up' only when the element or ``near`` says what free thing it is (a newsletter, updates, a waitlist,
     alerts, "free" ...) and neither shows a price, currency, billing period, plan, trial or upgrade. Anything else
-    may cost money, so it stays 'Purchase', which always asks: a bare "Subscribe" is a purchase. ``near_cut`` says
-    the context stopped early (at another offer's button); then only a whole card of text can show it is free."""
+    may cost money, so it is 'Purchase', which always asks: a bare "Subscribe" is a purchase. A "Sign up" with
+    neither a free nor a money signal keeps the plain label it had before (#378). ``near_cut`` says the context stopped
+    early (at another offer's button); then only a whole card of text can show it is free. A 'Purchase' label on a
+    sign-up comes with ``send`` risk (:func:`paid_signup`, :func:`click_risk`), so its hard stop can't be skipped."""
     text = text or ""
     purchase_rule, *other_rules = _LABEL_RULES
     if purchase_rule[0].search(text):
         return purchase_rule[1]
     if _SIGNUP_RE.search(text):
         context = f"{text} {near or ''}"
-        free = (_FREE_RE.search(context) and not _PAID_RE.search(context)
-                and not _partial_offer(text, near, near_cut))
-        return SIGNUP_LABEL if free else purchase_rule[1]
+        paid = _PAID_RE.search(context)
+        if _FREE_RE.search(context) and not paid and not _partial_offer(text, near, near_cut):
+            return SIGNUP_LABEL
+        if paid or RISKY_CLICK_RE.search(text):
+            return purchase_rule[1]
     for rx, label in other_rules:
         if rx.search(text):
             return label
@@ -141,6 +152,9 @@ def click_risk(el: dict | None) -> Risk:
         return Risk.send
     if el.get("is_submit") and el.get("form_payment"):
         return Risk.send
+    # a sign-up the approval card calls a purchase is at least send, so "Purchases always ask" holds (#378)
+    if paid_signup(approval_target(el), str(el.get("near") or ""), bool(el.get("near_cut"))):
+        return Risk.send
     return Risk.write
 
 
@@ -155,6 +169,9 @@ def type_risk(el: dict | None, submit: bool) -> Risk:
         return Risk.send
     label = " ".join(_norm(el.get(k)) for k in ("name", "aria_label", "label", "placeholder", "name_attr", "id"))
     if _MESSAGE_FIELD_RE.search(label):
+        return Risk.send
+    context = " ".join([approval_target(el), str(el.get("form_submit_text") or "")])
+    if paid_signup(context, str(el.get("near") or ""), bool(el.get("near_cut"))):
         return Risk.send
     return Risk.write
 

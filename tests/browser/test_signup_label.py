@@ -30,11 +30,40 @@ def test_a_free_word_in_a_cut_short_context_is_not_enough():
     assert safety.risk_label_for("Subscribe", "click", near, True) == "Signs up"
 
 
-@pytest.mark.parametrize("name", ["Subscribe", "Sign up"])
-def test_a_bare_subscribe_needs_a_free_signal_nearby(name):
-    assert safety.risk_label_for(name, "click") == PURCHASE_LABEL
-    assert safety.risk_label_for(name, "click", near="Team plan " + name) == PURCHASE_LABEL
-    assert safety.risk_label_for(name, "click", near="The weekly newsletter. Free, no spam. " + name) == "Signs up"
+def test_a_bare_subscribe_needs_a_free_signal_nearby():
+    assert safety.risk_label_for("Subscribe", "click") == PURCHASE_LABEL
+    assert safety.risk_label_for("Subscribe", "click", near="Team plan Subscribe") == PURCHASE_LABEL
+    near = "The weekly newsletter. Free, no spam. Subscribe"
+    assert safety.risk_label_for("Subscribe", "click", near=near) == "Signs up"
+
+
+def test_a_bare_sign_up_keeps_its_plain_label_unless_money_shows():
+    # "Sign up" was never a risky click; with no free and no money signal it stays an ordinary click, as before
+    assert safety.risk_label_for("Sign up", "click") == "Clicks"
+    assert safety.click_risk({"role": "button", "name": "Sign up"}) == Risk.write
+    assert safety.risk_label_for("Sign up", "click", near="Free forever. Sign up") == "Signs up"
+    assert safety.risk_label_for("Sign up", "click", near="Pro plan, $9/month. Sign up") == PURCHASE_LABEL
+
+
+@pytest.mark.parametrize("name, near", [
+    ("Sign up", "Pro plan, $9/month. Sign up"),
+    ("Follow", "Upgrade to follow more creators"),
+    ("Notify me", "Price drops to 20 EUR per month"),
+    ("Subscribe to the newsletter", ""),  # with near_cut below: the price may be out of reach
+])
+def test_a_purchase_label_on_a_sign_up_is_always_send(name, near):
+    """CodeRabbit #382: a 'Purchase' label must come with send risk, or is_purchase would skip its hard stop."""
+    el = {"role": "button", "name": name, "near": near or name, "near_cut": not near}
+    assert safety.risk_label_for(name, "click", el["near"], el["near_cut"]) == PURCHASE_LABEL
+    assert safety.click_risk(el) == Risk.send
+    field = {"name": "Email", "form_submit_text": name, "near": el["near"], "near_cut": el["near_cut"]}
+    assert safety.type_risk(field, submit=True) == Risk.send
+
+
+def test_free_sign_ups_keep_their_risk():
+    assert safety.click_risk({"role": "button", "name": "Follow"}) == Risk.write
+    assert safety.click_risk({"role": "button", "name": "Notify me"}) == Risk.write
+    assert safety.click_risk({"role": "button", "name": "Subscribe", "near": "Free newsletter. Subscribe"}) == Risk.send
 
 
 @pytest.mark.parametrize("name, near", [
