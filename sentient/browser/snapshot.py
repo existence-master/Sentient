@@ -135,7 +135,7 @@ function formInfo(el) {
 }
 // The text around a sign-up looking element (its card or form), so a price beside a "Subscribe" button is seen (#378).
 // Climbs at most four parents. It stops before a container holding another offer button (the next card on a pricing
-// page) or much more text than one card; when even the first parent is large, it keeps the text just around the element.
+// page); in a container with much more text than one card it keeps the text just before and after the element.
 const SIGNUP = /\b(subscribe|sign ?up|follow|notify|updates|join|newsletter|wait ?list)\b/i;
 const OFFER = /\b(subscribe|sign ?up|follow|notify me|join|buy|purchase|pay|order|check ?out|upgrade|trial|get started|choose|select)\b/i;
 const CLICKABLE = 'button, a[href], input[type=submit], input[type=button], input[type=image], [role=button], [role=link]';
@@ -143,28 +143,29 @@ function otherOffer(node, el) {
   return Array.from(node.querySelectorAll(CLICKABLE)).some(o => o !== el && !o.contains(el) && !el.contains(o) &&
     OFFER.test(o.innerText || o.value || o.getAttribute('aria-label') || ''));
 }
+function windowText(node, el, before) {
+  const r = document.createRange();
+  if (before) { r.setStart(node, 0); r.setEndBefore(el); } else { r.setStartAfter(el); r.setEnd(node, node.childNodes.length); }
+  return r.toString().replace(/\s+/g, ' ').trim();
+}
 function nearText(el, d) {
   const own = [d.name, d.aria_label, d.title, d.label, d.value, d.form_submit_text].join(' ');
   if (!SIGNUP.test(own)) return '';
   let near = '';
   let node = el.parentElement;
   for (let i = 0; i < 4 && node && node !== document.documentElement; i++) {
-    const big = node === document.body || (node.textContent || '').length > 4000;
-    const text = big ? '' : (node.innerText || '').replace(/\s+/g, ' ').trim();
-    if (i > 0 && !big && text.length <= 400 && otherOffer(node, el)) break;
-    if (big || text.length > 400) {
-      if (i === 0 && (node.textContent || '').length < 20000) {
-        const all = (node.innerText || '').replace(/\s+/g, ' ');
-        const mine = (el.innerText || el.value || '').replace(/\s+/g, ' ').trim();
-        const at = mine ? all.indexOf(mine) : -1;
-        if (at >= 0) near = all.slice(Math.max(0, at - 150), at + mine.length + 150).trim();
-      }
+    const huge = node === document.body || (node.textContent || '').length > 20000;
+    if (i > 0 && !huge && otherOffer(node, el)) break;
+    const text = (node.textContent || '').length > 4000 ? '' : (node.innerText || '').replace(/\s+/g, ' ').trim();
+    if (!text || text.length > 400) {
+      // a larger card or section: keep the text just before and after the element inside it
+      if (!huge) near = [windowText(node, el, true).slice(-400), near, windowText(node, el, false).slice(0, 200)].join(' ');
       break;
     }
     near = text;
     node = node.parentElement;
   }
-  return clip(near, 400);
+  return clip(near, 700);
 }
 const els = [];
 let n = 0;

@@ -79,8 +79,9 @@ async def test_live_snapshot_sees_the_price_beside_a_button(browser, site):
     ctx = make_ctx(browser.app)
     await bt.browser_open.call(ctx, {"url": f"{site}/signup.html"})
     refs = [r for r, e in browser._snap["refs"].items() if e.get("name") == "Subscribe"]
-    assert len(refs) == 3
+    assert len(refs) == 4
     labels = [browser.describe_for("click", {"ref": r})["risk_label"] for r in refs]
-    assert labels == ["Signs up", PURCHASE_LABEL, PURCHASE_LABEL]  # the third card's price sits two levels up
+    # the third card's price sits two levels up; the fourth card has more text than one small card holds
+    assert labels == ["Signs up", PURCHASE_LABEL, PURCHASE_LABEL, PURCHASE_LABEL]
     assert "₹499/month" in browser._snap["refs"][refs[1]]["near"]
     assert "₹499" not in browser._snap["refs"][refs[0]]["near"]

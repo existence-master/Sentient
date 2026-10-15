@@ -53,6 +53,8 @@ PAGES = {
   <section><h2>Weekly notes</h2><p>Free, no spam.</p><button>Subscribe</button></section>
   <section><h2>Pro</h2><p>All the extras, ₹499/month.</p><button>Subscribe</button></section>
   <section><h2>Team</h2><div>$20 per seat</div><div><button>Subscribe</button> <a href="/help.html">Learn more</a></div></section>
+  <section><h2>Studio</h2><p>""" + "Long notes on every plant we grow, with photos and care steps. " * 8 + """</p>
+    <p>Studio pass, ₹999/month.</p><div><button>Subscribe</button> <a href="/help.html">Learn more</a></div></section>
 </main>""",
 }
 
