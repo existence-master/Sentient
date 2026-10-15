@@ -5,7 +5,7 @@
  *   assistant rows (with tool_calls) + their tool rows becomes ONE assistant turn.
  * - `applyAgentEvent` reduces live events into the same `AssistantTurnView`.
  */
-import type { ActionPreview, AgentEvent, AnswerSource, ApprovalDecision, ContextMeter, MemorySource, Risk, TranscriptMessage, UsageEvent } from './types'
+import type { ActionPreview, AgentEvent, AnswerSource, ApprovalDecision, ContextMeter, MemorySource, OutcomeCheck, Risk, TranscriptMessage, UsageEvent } from './types'
 import { safeJsonParse } from './utils'
 
 export type ToolStatus = 'running' | 'awaiting_approval' | 'done' | 'error' | 'denied'
@@ -39,6 +39,8 @@ export interface ToolCallView {
   status: ToolStatus
   progress?: ToolProgressView
   undo?: UndoView
+  /** What code found the call really did (#165), live from its `tool_result`. */
+  check?: OutcomeCheck | null
 }
 
 const MAX_STREAM_CHARS = 24_000
@@ -92,6 +94,8 @@ export interface AssistantTurnView {
   memorySources?: MemorySource[]
   /** Pages, emails, files and apps the reply used (#174), from `done` live or the final assistant row. */
   sources?: AnswerSource[]
+  /** What code found the reply's calls really did (#165), from `done` live or the final assistant row. */
+  checks?: OutcomeCheck[]
   createdAt: string
   /** True while the turn lives in the chat store (not yet reloaded from history). */
   live?: boolean
@@ -212,6 +216,7 @@ export function foldTranscript(rows: TranscriptMessage[]): TimelineItem[] {
       if (!row.tool_calls?.length) turn.messageId = row.id
       if (row.memory_sources?.length) turn.memorySources = row.memory_sources
       if (row.sources?.length) turn.sources = row.sources
+      if (row.checks?.length) turn.checks = row.checks
     } else if (row.role === 'tool') {
       const callId = row.tool_call_id ?? ''
       const target = turn?.tools[callId]
@@ -334,6 +339,7 @@ export function applyAgentEvent(turn: AssistantTurnView, ev: AgentEvent): Assist
             ...prev,
             result: ev.result,
             isError: ev.is_error,
+            check: ev.check ?? null,
             durationMs: ev.duration_ms,
             status: denied ? 'denied' : ev.is_error ? 'error' : 'done',
             undo: prev.undo ? { ...prev.undo, status: undone ? 'undone' : ev.is_error ? 'failed' : 'sent' } : undefined
@@ -360,16 +366,17 @@ export function applyAgentEvent(turn: AssistantTurnView, ev: AgentEvent): Assist
     case 'done': {
       const memorySources = ev.memory_sources?.length ? ev.memory_sources : turn.memorySources
       const sources = ev.sources?.length ? ev.sources : turn.sources
+      const checks = ev.checks?.length ? ev.checks : turn.checks
       if (ev.cancelled) {
         const error = turn.error?.message === 'Stopped.' ? undefined : turn.error
-        return { ...turn, status: 'cancelled', error, messageId: ev.message_id, memorySources, sources }
+        return { ...turn, status: 'cancelled', error, messageId: ev.message_id, memorySources, sources, checks }
       }
       const hasText = turn.segments.some((s) => s.kind === 'text' && s.text.trim())
       const segments = !hasText && ev.content?.trim() ? [...turn.segments, { kind: 'text' as const, text: ev.content }] : turn.segments
       const tools = Object.fromEntries(
         Object.entries(turn.tools).map(([k, t]) => [k, t.status === 'running' || t.status === 'awaiting_approval' ? { ...t, status: 'done' as const } : t])
       )
-      return { ...turn, segments, tools, status: turn.error && !hasText && !ev.content ? 'error' : 'done', messageId: ev.message_id, memorySources, sources }
+      return { ...turn, segments, tools, status: turn.error && !hasText && !ev.content ? 'error' : 'done', messageId: ev.message_id, memorySources, sources, checks }
     }
     default:
       return turn

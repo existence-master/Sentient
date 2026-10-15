@@ -1,4 +1,4 @@
-import { IconCheck, IconChevronRight, IconClockHour4, IconHandFinger, IconShieldQuestion, IconX } from '@tabler/icons-react'
+import { IconAlertTriangle, IconCheck, IconChevronRight, IconClockHour4, IconHandFinger, IconShieldQuestion, IconX } from '@tabler/icons-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useState } from 'react'
 import { JsonView, Spinner } from '@/components/ui'
@@ -19,11 +19,14 @@ import { argsPreview, toolMeta } from './toolMeta'
 function GenericToolCard({
   tool,
   approval,
-  onApprove
+  onApprove,
+  problem
 }: {
   tool: ToolCallView
   approval?: ApprovalView
   onApprove?: (approvalId: string, decision: ApprovalDecision) => void
+  /** What a check found didn't happen (#165): the call said it worked, but it didn't (fully). */
+  problem?: string
 }) {
   const [open, setOpen] = useState(false)
   const meta = toolMeta(tool.name)
@@ -79,6 +82,10 @@ function GenericToolCard({
               <StatusGlyph status="denied" />
             ) : handOff ? (
               <IconHandFinger size={14} className="text-accent" />
+            ) : problem ? (
+              <span title={problem} className="flex">
+                <IconAlertTriangle size={14} className="text-warning" />
+              </span>
             ) : (
               <IconCheck size={14} className="text-success" />
             )}
@@ -138,7 +145,7 @@ function GenericToolCard({
 type ApproveFn = (approvalId: string, decision: ApprovalDecision) => void
 
 /** Picks a dedicated card for code runs, commands, helpers and device photos; everything else uses the generic row. */
-export function ToolCallCard({ tool, approval, onApprove }: { tool: ToolCallView; approval?: ApprovalView; onApprove?: ApproveFn }) {
+export function ToolCallCard({ tool, approval, onApprove, problem }: { tool: ToolCallView; approval?: ApprovalView; onApprove?: ApproveFn; problem?: string }) {
   const special =
     tool.name === 'execute_code' ? (
       <CodeRunCard tool={tool} />
@@ -159,7 +166,7 @@ export function ToolCallCard({ tool, approval, onApprove }: { tool: ToolCallView
   }
   return (
     <div className="space-y-2">
-      <GenericToolCard tool={tool} approval={approval} onApprove={onApprove} />
+      <GenericToolCard tool={tool} approval={approval} onApprove={onApprove} problem={problem} />
       <DeviceMedia tool={tool} />
     </div>
   )

@@ -30,6 +30,7 @@ from sentient.tools.base import (
     ToolContext,
     ToolPlugin,
     UrlFn,
+    VerifyFn,
     tool,
 )
 
@@ -181,14 +182,16 @@ def _http_error_message(exc: httpx.HTTPStatusError) -> str:
 def itool(
     plugin_id: str, name: str, *, risk: Risk = Risk.read, description: str | None = None, internal: bool = False,
     exfiltrates: bool | ExfilFn = False, url_fn: UrlFn | None = None, risk_fn: RiskFn | None = None,
-    describe_fn: DescribeFn | None = None, allow_for_chat: bool = True,
+    describe_fn: DescribeFn | None = None, allow_for_chat: bool = True, outcome: str | None = None,
+    verify: VerifyFn | None = None,
 ):
-    """Like ``@tool`` but errors become friendly ``{"error": ...}`` results."""
+    """Like ``@tool`` but errors become friendly ``{"error": ...}`` results. ``outcome``/``verify``: the check after
+    the call ran (#165, ``sentient.agent.outcomes``)."""
 
     def wrap(fn: Callable[..., Awaitable[Any]]) -> Tool:
         t = tool(
             name, risk=risk, description=description, internal=internal, exfiltrates=exfiltrates, url_fn=url_fn,
-            risk_fn=risk_fn, describe_fn=describe_fn, allow_for_chat=allow_for_chat,
+            risk_fn=risk_fn, describe_fn=describe_fn, allow_for_chat=allow_for_chat, outcome=outcome, verify=verify,
         )(fn)
 
         @functools.wraps(fn)

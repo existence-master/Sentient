@@ -53,7 +53,7 @@ async def discord_read_messages(ctx: ToolContext, channel_id: str, limit: int = 
          "timestamp": m.get("timestamp")} for m in rows]}
 
 
-@itool(PID, "discord_send_message", risk=Risk.send)
+@itool(PID, "discord_send_message", risk=Risk.send, outcome="message")
 async def discord_send_message(ctx: ToolContext, channel_id: str, content: str) -> dict:
     """Send a message to a Discord channel as the Sentient bot."""
     if not content.strip():

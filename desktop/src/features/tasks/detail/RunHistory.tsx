@@ -26,6 +26,7 @@ import { ActionPreview } from '@/features/chat/ActionPreview'
 import { AnswerSources } from '@/features/chat/AnswerSources'
 import { ContextGauge } from '@/features/chat/ContextMeter'
 import { MemorySources } from '@/features/chat/MemorySources'
+import { failedChecks, OutcomeChecks } from '@/features/chat/OutcomeChecks'
 import { useBootstrap } from '@/hooks/core'
 import { api, errorMessage } from '@/lib/api'
 import { useRetryRun } from '@/hooks/tasks'
@@ -224,7 +225,8 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
               {run.trigger_event_data && Object.keys(run.trigger_event_data).length > 0 && (
                 <TriggerEventCard source={task.schedule?.type === 'triggered' ? task.schedule.source : undefined} data={run.trigger_event_data} tz={tz} />
               )}
-              {run.error && (
+              {!run.dry_run && !!run.checks?.length && <OutcomeChecks checks={run.checks} />}
+              {run.error && !(run.status === 'completed_with_errors' && failedChecks(run.checks).length) && (
                 <Alert tone="danger" icon={<IconAlertCircle />} title={run.status === 'cancelled' ? 'This run was stopped' : 'This run failed'} action={retryable ? retryButton : undefined}>
                   {run.error}
                 </Alert>
