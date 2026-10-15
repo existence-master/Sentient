@@ -40,7 +40,7 @@ def _check_session(resp: httpx.Response, session: str) -> None:
         raise IntegrationError(f"The WAHA session is {status}. Scan the QR code in the WAHA dashboard first.")
 
 
-@itool(PID, "whatsapp_send_message", risk=Risk.send)
+@itool(PID, "whatsapp_send_message", risk=Risk.send, outcome="message")
 async def whatsapp_send_message(ctx: ToolContext, message: str) -> dict:
     """Send a WhatsApp message to the USER'S OWN number (reminders, alerts, results of a task). It cannot message anyone else."""
     c = await creds(ctx, PID)

@@ -162,6 +162,9 @@ RiskFn = Callable[[dict, ToolContext], "Risk | Awaitable[Risk | None] | None"]
 DescribeFn = Callable[[dict, ToolContext], "dict | Awaitable[dict | None] | None"]
 ExfilFn = Callable[[dict, ToolContext], bool]
 UrlFn = Callable[[dict, ToolContext], "str | None"]
+# Reads a call's effect back after it ran (#165): ``verify(arguments, result, ctx) -> {ok, detail?}`` (sync or async);
+# None or an exception means it couldn't tell, and the tool's own result stands. Code only, never a model.
+VerifyFn = Callable[[dict, Any, ToolContext], "dict | Awaitable[dict | None] | None"]
 
 # Default wording for approval prompts, by effective risk.
 RISK_LABELS = {
@@ -199,6 +202,11 @@ class Tool:
     # Optional shorter version of a result too long for the model (``shorten_fn(result) -> result | None``), read
     # instead of a plain cut; the full result is still saved and shown (#264).
     shorten_fn: Callable[[Any], Any] | None = None
+    # The kind of effect a call has, for the outcome check after it runs (#165, ``sentient.agent.outcomes``):
+    # "email", "message", "file", "event" or "home". None: not checked (MCP tools are checked by their names).
+    outcome: str | None = None
+    # Reads the effect back after a call that said it worked (see ``VerifyFn``): the file, the Sent folder, the event.
+    verify: VerifyFn | None = None
 
     def openai_schema(self) -> dict:
         schema = self.params_model.model_json_schema()
@@ -301,6 +309,8 @@ def tool(
     exfiltrates: bool | ExfilFn = False,
     url_fn: UrlFn | None = None,
     allow_for_chat: bool = True,
+    outcome: str | None = None,
+    verify: VerifyFn | None = None,
 ):
     """Decorator turning ``async def fn(ctx, arg: type = default)`` into a Tool."""
 
@@ -311,7 +321,7 @@ def tool(
         return Tool(
             name=tool_name, description=desc, fn=fn, params_model=model, risk=risk, internal=internal,
             risk_fn=risk_fn, describe_fn=describe_fn, untrusted_output=untrusted_output, exfiltrates=exfiltrates,
-            url_fn=url_fn, allow_for_chat=allow_for_chat,
+            url_fn=url_fn, allow_for_chat=allow_for_chat, outcome=outcome, verify=verify,
         )
 
     return wrap

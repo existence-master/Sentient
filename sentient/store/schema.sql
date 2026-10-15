@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS messages (
     approval      TEXT,                           -- JSON (tool messages): how the user answered the call's approval
                                                   -- request {decision, asked_at, answered_at, target, risk_label,
                                                   -- untrusted, rule}; NULL when it did not ask (activity timeline, #147)
+    checks        TEXT,                           -- JSON list: outcome checks of a final reply's calls (#165)
     created_at    TEXT NOT NULL,
     summarized    INTEGER NOT NULL DEFAULT 0
 );

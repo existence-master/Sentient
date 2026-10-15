@@ -25,7 +25,7 @@ const EMBEDDED_LIMIT = 200
 
 type Entry =
   | { kind: 'info' | 'thought' | 'final_answer' | 'error'; key: string; at: string; content: string }
-  | { kind: 'tool'; key: string; at: string; name: string; args?: Record<string, unknown>; result?: unknown; hasResult: boolean; isError: boolean; resultAt?: string }
+  | { kind: 'tool'; key: string; at: string; name: string; args?: Record<string, unknown>; result?: unknown; hasResult: boolean; isError: boolean; resultAt?: string; problem?: string }
 
 function buildEntries(updates: ProgressUpdate[]): Entry[] {
   const out: Entry[] = []
@@ -45,6 +45,7 @@ function buildEntries(updates: ProgressUpdate[]): Entry[] {
         call.hasResult = true
         call.isError = !!m.is_error
         call.resultAt = u.timestamp
+        if (m.check?.ok === false) call.problem = m.check.detail || 'It did not do what it said'
       } else {
         out.push({ kind: 'tool', key, at: u.timestamp, name: m.tool_name ?? 'tool', result: m.result, hasResult: true, isError: !!m.is_error })
       }
@@ -186,6 +187,10 @@ function LogEntry({ entry, last, live, tz, tried = false }: { entry: Entry; last
               <Spinner size={12} className="text-info" />
             ) : entry.isError ? (
               <IconX size={13} className="text-danger" />
+            ) : entry.problem ? (
+              <span title={entry.problem} className="flex">
+                <IconAlertTriangle size={13} className="text-warning" />
+              </span>
             ) : noted ? (
               <IconFlask size={13} className="text-accent-text" />
             ) : handOff ? (

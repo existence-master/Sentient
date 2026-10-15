@@ -14,6 +14,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
   still applies in every chat. Tasks a chat creates keep its memories, and each messaging app can be set to one in
   Settings. On the Memory page you can show one place at a time, move a memory to another place, and forget
   everything kept for one place without touching the rest. Everything you had before is in Personal.
+- **Sentient checks what really happened, not what the model says happened.** After it writes a file, sends an
+  email or a message, creates a calendar event or runs a Home Assistant action, Sentient checks the result itself: the app said it worked, and
+  where it can, it reads it back (the file holds what was written, the email is in your Gmail Sent folder, the event
+  is on your calendar). MCP tools are checked too, including a send that worked for some people but not others. When
+  something didn't happen, a task run is marked **Needs attention** instead of done and says so plainly ("Sentient
+  said it sent the email, but mailer reported a problem: it couldn't do it for bad@example.com (mailbox not
+  found)."), and so does a chat reply. A clean run shows "Checked: file written, email sent."
 - **Home Assistant, your smart home.** Connect it with your Home Assistant address and a long-lived access token (kept
   in your system keychain), then choose which devices Sentient may use. Sentient finds the devices it needs by room,
   kind or name, turns lights and switches on and off, sets brightness and thermostats, and runs scenes and scripts.

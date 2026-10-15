@@ -35,7 +35,7 @@ from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sentient.agent import dry_run
+from sentient.agent import dry_run, outcomes
 from sentient.agent import grants as grant_rules
 from sentient.llm.jobs import detached
 from sentient.llm.provider import PlainProviderError, ProviderError
@@ -1726,7 +1726,29 @@ class TaskService(Service):
         except Exception as exc:
             log.exception("executor failed for task %s run %s", task_id, run_id)
             status, error = "error", f"Executor agent failed: {exc}"
+        # the outcome, not the model's opinion of it (#165): a call that didn't do what it said needs attention
+        if (
+            status == "completed" and loop_result is not None
+            and (needs := await self._settle_checks(task_id, run_id, loop_result.text or ""))
+        ):
+            status, error = "completed_with_errors", needs
         await self._finish_run(task_id, run_id, status, error=error, loop_result=loop_result, aggregated=aggregated)
+
+    async def _settle_checks(self, task_id: str, run_id: str, final: str) -> str | None:
+        """Settle a finished run's outcome checks (#165): save each failure that still stands with its plain sentence,
+        worded from what the final answer claimed. Returns those sentences, or None when every check passed (then
+        the log says what was checked: "Checked: file written, email sent.")."""
+        run = await self.repo.get_run(run_id) or {}
+        checks = outcomes.finalize(run.get("checks") or [], final)
+        if not checks:
+            return None
+        await self.repo.update_run(run_id, {"checks": checks})
+        line = outcomes.summary(checks)
+        if outcomes.failures(checks):
+            return line
+        if line:
+            await self.progress(task_id, run_id, {"type": "info", "content": line})
+        return None
 
     async def _finish_run(
         self, task_id: str, run_id: str, status: str, *, error: str | None,
@@ -1765,7 +1787,10 @@ class TaskService(Service):
         name = task.get("name") or "Untitled task"
         if is_swarm and status in {"completed", "completed_with_errors"}:
             await self._notify(task, f"Swarm task '{name}' has completed.", "Swarm task completed", "run_completed")
-        elif status in {"completed", "completed_with_errors"}:
+        elif status == "completed_with_errors":  # it finished, but a check found something didn't happen (#165)
+            await self._notify(task, f"Task '{name}' finished, but needs your attention.\n\n{error or ''}".strip(),
+                               "Task needs attention", "run_completed", {"run_id": run_id, "needs_attention": True})
+        elif status == "completed":
             if quiet:
                 return  # the tool delivered its own notification (the Daily Brief)
             await self._notify(task, f"Task '{name}' has finished with status: {status}.", "Task completed", "run_completed")
@@ -2101,7 +2126,7 @@ class TaskService(Service):
             fields = {"status": "active", "next_execution_at": None}
         else:
             fields = {"status": run_status, "next_execution_at": None}
-            if run_status == "error":
+            if run_status in {"error", "completed_with_errors"}:
                 fields["error"] = error
         await self._set(task_id, fields)
 

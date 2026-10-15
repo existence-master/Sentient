@@ -27,7 +27,7 @@ jobs:
   engine:
     name: Engine tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -46,7 +46,8 @@ jobs:
       - name: Install
         run: uv pip install -e ".[dev,voice,node,whatsapp]" keyrings.alt
       - name: Test
-        run: python -m pytest -q -p no:warnings --timeout=300 --durations=30
+        # one worker per CPU: in one process the Windows job took 35 to 43 minutes
+        run: python -m pytest -q -p no:warnings -n auto --timeout=300 --durations=30
 
   desktop:
     name: Desktop typecheck and build

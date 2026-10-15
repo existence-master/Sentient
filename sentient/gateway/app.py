@@ -101,7 +101,7 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                     await send({"type": "error", "message": DROPPED_NOTE, "session_id": session_id, "recoverable": True,
                                 "dropped": True, "client_id": client_id})
                     await send({"type": "done", "content": "", "session_id": session_id, "cancelled": True,
-                                "dropped": [str(msg.get("text", ""))], "client_id": client_id})
+                                "dropped": [str(msg.get("text", ""))], "checks": [], "client_id": client_id})
                     return
                 turn = s.agent.run_turn(
                     session_id,
@@ -124,7 +124,7 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                 kept = {"message_id": stopped["message_id"]} if stopped.get("message_id") else {}
                 await send({"type": "done", "content": "", "session_id": session_id, "cancelled": True, **kept,
                             "memory_sources": stopped.get("memory_sources") or [],
-                            "sources": stopped.get("sources") or []})
+                            "sources": stopped.get("sources") or [], "checks": stopped.get("checks") or []})
                 raise
             except Exception as exc:
                 log.exception("chat turn failed")
@@ -133,7 +133,7 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                 await send({"type": "error", "message": str(exc), "session_id": session_id, "recoverable": False})
                 # every turn ends with one done, also when it broke (docs/API.md section 1, #334)
                 await send({"type": "done", "content": "", "session_id": session_id, "message_id": None,
-                            "error": str(exc)})
+                            "error": str(exc), "checks": []})
             finally:
                 chain = turns.get(session_id) or []
                 if me in chain:

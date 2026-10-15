@@ -161,6 +161,7 @@ class Store:
         await self.ensure_column("messages", "memory_sources", "TEXT")
         await self.ensure_column("messages", "sources", "TEXT")
         await self.ensure_column("messages", "approval", "TEXT")
+        await self.ensure_column("messages", "checks", "TEXT")
         await self.ensure_column("facts", "status", "TEXT NOT NULL DEFAULT 'active'")
         await self.ensure_column("facts", "review", "TEXT")
         # memory scopes (#155): every memory saved before them is personal
@@ -302,11 +303,12 @@ class Store:
         memory_sources: list[dict] | None = None,
         sources: list[dict] | None = None,
         approval: dict | None = None,
+        checks: list[dict] | None = None,
     ) -> str:
         mid = new_id()
         await self.execute(
             "INSERT INTO messages(id, session_id, role, content, tool_calls, tool_call_id, name, thinking, attachments,"
-            " interjection, memory_sources, sources, approval, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " interjection, memory_sources, sources, approval, checks, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 mid,
                 session_id,
@@ -321,6 +323,7 @@ class Store:
                 json.dumps(memory_sources, ensure_ascii=False) if memory_sources else None,
                 json.dumps(sources, ensure_ascii=False) if sources else None,
                 json.dumps(approval, ensure_ascii=False) if approval else None,
+                json.dumps(checks, ensure_ascii=False) if checks else None,
                 now_iso(),
             ),
         )
@@ -341,6 +344,7 @@ class Store:
             d["memory_sources"] = json.loads(d["memory_sources"]) if d.get("memory_sources") else []
             d["sources"] = json.loads(d["sources"]) if d.get("sources") else []
             d["approval"] = json.loads(d["approval"]) if d.get("approval") else None
+            d["checks"] = json.loads(d["checks"]) if d.get("checks") else []
             out.append(d)
         return out
 

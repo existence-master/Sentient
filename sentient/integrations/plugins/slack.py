@@ -79,7 +79,7 @@ async def slack_list_channels(ctx: ToolContext, include_private: bool = False, l
                           "topic": (c.get("topic") or {}).get("value")} for c in data.get("channels") or []]}
 
 
-@itool(PID, "slack_post_message", risk=Risk.send)
+@itool(PID, "slack_post_message", risk=Risk.send, outcome="message")
 async def slack_post_message(ctx: ToolContext, channel: str, text: str) -> dict:
     """Post a message to a Slack channel (channel id like C0123 or a name like #general)."""
     data = await _call(ctx, "chat.postMessage", json={"channel": await _channel_id(ctx, channel), "text": text})
@@ -103,7 +103,7 @@ async def slack_thread_replies(ctx: ToolContext, channel: str, thread_ts: str, l
     return {"channel": cid, "thread_ts": thread_ts, "messages": [_msg(m) for m in data.get("messages") or []]}
 
 
-@itool(PID, "slack_reply_in_thread", risk=Risk.send)
+@itool(PID, "slack_reply_in_thread", risk=Risk.send, outcome="message")
 async def slack_reply_in_thread(ctx: ToolContext, channel: str, thread_ts: str, text: str) -> dict:
     """Reply inside a Slack thread."""
     data = await _call(ctx, "chat.postMessage", json={"channel": await _channel_id(ctx, channel), "text": text,

@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     sources       TEXT,                           -- JSON list: pages, emails, files and apps the run used (sentient/agent/sources.py)
     dry_run       INTEGER NOT NULL DEFAULT 0,     -- 1: a try run (#142), which only notes what it would send, change or run
     would_do      TEXT,                           -- JSON list (try runs): what a real run would do (sentient/agent/dry_run.py)
+    checks        TEXT,                           -- JSON list: outcome checks of the calls it made (#165, sentient/agent/outcomes.py)
     started_at    TEXT,
     finished_at   TEXT,
     created_at    TEXT NOT NULL
