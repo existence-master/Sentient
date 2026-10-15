@@ -374,11 +374,19 @@ async def test_profile_upkeep_leaves_out_work_chat_summaries(app):
             " VALUES(?,?,?,?,?,?,?)",
             (f"s-{sid}", sid, text, "2026-10-01", "2026-10-01", "[]", "2026-10-01T00:00:00+00:00"),
         )
+    # a deleted chat's summary keeps the scope it was written in
+    gone = await app.store.create_session(channel="desktop", memory_scope="work")
+    await app.store.add_message(gone, "user", "Plan the Kestrel retro")
+    [msg] = await app.store.recent_messages(gone, 5)
+    await app.memory.episodic.add_summary(gone, "We planned the Kestrel retro", [msg])
+    assert (await app.store.fetchone("SELECT scope FROM summaries WHERE session_id = ?", (gone,)))["scope"] == "work"
+    await app.store.execute("DELETE FROM sessions WHERE id = ?", (gone,))
     await _put(app.memory, HEALTH, "personal")
     app.fake.text_replies.append("# Long-term memory\n\n- notes\n")
     await app.evolution.update_profile(force=True)
     sent = app.fake.text_calls[-1]["messages"][1]["content"]
     assert "Meera's visit" in sent and "Kestrel launch plan" not in sent and "payment bugs" not in sent
+    assert "Kestrel retro" not in sent
 
 
 async def test_moving_a_memory_out_of_personal_takes_it_out_of_user_md(client):

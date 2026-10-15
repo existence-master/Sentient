@@ -116,15 +116,18 @@ def without_learned(user_md: str) -> str:
 
 
 def personal_summary_sql(config: Any) -> tuple[str, list[str]]:
-    """SQL condition (with parameters) on ``summaries`` that keeps summaries of personal chats (and of chats that are
-    gone): the profile files never read a work or project chat's summary. Follows :func:`of_session`, messaging-app
-    fallback included."""
+    """SQL condition (with parameters) on ``summaries`` that keeps summaries of personal chats: the profile files never
+    read a work or project chat's summary. A chat that still exists counts with its scope now (:func:`of_session`,
+    messaging-app fallback included); for one that was deleted, the scope it had when the summary was written
+    (``summaries.scope``) counts."""
     apps = [(app, scope) for app in ("telegram", "discord", "whatsapp") if (scope := channel_scope(config, app))]
     case = "CASE s.channel " + " ".join("WHEN ? THEN ?" for _ in apps) + " ELSE 'personal' END" if apps else "'personal'"
     params = [x for pair in apps for x in pair]
     sql = (
-        "NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = summaries.session_id"
+        "(CASE WHEN EXISTS (SELECT 1 FROM sessions s WHERE s.id = summaries.session_id)"
+        " THEN NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = summaries.session_id"
         f" AND COALESCE(NULLIF(s.memory_scope, ''), {case}) NOT IN ('personal', 'always'))"
+        " ELSE COALESCE(summaries.scope, 'personal') IN ('personal', 'always') END)"
     )
     return sql, params
 

@@ -56,7 +56,8 @@ async def reset_scope(request: Request, scope: str):
     if not target:
         raise HTTPException(400, "scope is required")
     mem = _memory(request)
-    gone = [f["content"] for f in await mem.list_facts(5000, scope=target)]
+    rows = await get_core(request).store.fetchall("SELECT content FROM facts WHERE scope = ?", (target,))
+    gone = [r["content"] for r in rows]  # all of them, not one page
     deleted = await mem.forget_scope(target)
     if target in PROFILE_SCOPES:
         get_core(request).workspace.remove_learned(gone)

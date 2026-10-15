@@ -277,7 +277,7 @@ export function MemoryPage() {
             </Alert>
           ) : all.isLoading ? (
             <LoadingState />
-          ) : !memories.length ? (
+          ) : !memories.length && !p.scope ? (
             <EmptyState
               icon={<IconBrain />}
               title="Sentient doesn't remember anything yet"

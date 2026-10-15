@@ -30,7 +30,7 @@ _PKG_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_VERSION = 11  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
 # 6: approval_grants (#139); 7: usage.cost_usd (#148); 8: evolution_reviews.activity_mark (#297)
 # 9: messages.approval and the activity timeline's indexes (#147); 10: try runs and file snapshots (#142)
-# 11: memory scopes: facts.scope, sessions.memory_scope, tasks.memory_scope (#155)
+# 11: memory scopes: facts.scope, sessions.memory_scope, tasks.memory_scope, summaries.scope (#155)
 PACKAGE_SCHEMAS = [
     "tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox",
     "folders", "reminders", "snapshots",
@@ -166,6 +166,7 @@ class Store:
         # memory scopes (#155): every memory saved before them is personal
         await self.ensure_column("facts", "scope", "TEXT NOT NULL DEFAULT 'personal'")
         await self.ensure_column("summaries", "untrusted", "TEXT")
+        await self.ensure_column("summaries", "scope", "TEXT")  # the chat's memory scope when written (#155)
         await self.ensure_column("usage", "cost_usd", "REAL")
         # the activity timeline's spending lines (#147); after ensure_column: older databases get cost_usd above
         await self.db.execute("CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope, status)")

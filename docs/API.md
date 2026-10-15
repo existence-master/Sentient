@@ -1520,7 +1520,7 @@ project's own name (`"Kestrel launch"`, up to 40 characters; `Work`/`PERSONAL` a
   started reads its chat's scope. Work not tied to a chat or task (proactive look-ups, dreaming, the user model's
   refresh, the profile upkeep below) reads every scope.
 - **Personal files.** MEMORY.md and the "## Learned" part of USER.md are built from personal and always memories and
-  summaries of personal chats only; moving a memory out of them (or resetting Personal or Always) also removes its
+  summaries of personal chats only (a deleted chat's summary keeps the scope it was written in, `summaries.scope`); moving a memory out of them (or resetting Personal or Always) also removes its
   line from USER.md's learned part, and MEMORY.md is rewritten at its next upkeep.
   A work or project chat leaves out MEMORY.md, the daily notes and USER.md's learned part (the rest of USER.md stays),
   leaves out user-model insights about relationships, and its prompt says which memories it uses.
