@@ -161,6 +161,15 @@ def _bindings(tree: ast.AST) -> dict[str, list[tuple[str, ast.expr | None]]]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and id(node) not in seen:
             out.setdefault(node.id, []).append(("other", None))
+        # a result the script changes itself (page["price"] = ..., page.update(...)) may hold keys of its own
+        changed = node if isinstance(node, ast.Subscript) and not isinstance(node.ctx, ast.Load) else None
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"update", "setdefault", "__setitem__"}):
+            changed = node.func.value
+        while isinstance(changed, ast.Subscript | ast.Attribute):
+            changed = changed.value
+        if isinstance(changed, ast.Name):
+            out.setdefault(changed.id, []).append(("other", None))
     return out
 
 
@@ -169,7 +178,7 @@ def _known_shapes(tree: ast.AST) -> dict[str, _Shape]:
     out, so the check never guesses."""
     bindings = _bindings(tree)
     env: dict[str, _Shape] = {}
-    for _ in range(4):  # a few rounds: page = tools.web_search(...); rows = page['results']; for r in rows
+    for _ in range(len(bindings) + 1):  # until nothing changes: page = tools.web_search(...); rows = page['results']...
         found: dict[str, _Shape] = {}
         for name, ways in bindings.items():
             shapes = []
@@ -197,7 +206,7 @@ def _check_result_keys(tree: ast.AST) -> None:
     env = _known_shapes(tree)
     for node in ast.walk(tree):
         read = _key_read(node)
-        if not read:
+        if not read or (isinstance(node, ast.Subscript) and not isinstance(node.ctx, ast.Load)):
             continue
         shape = _shape_of(read[0], env)
         key = read[1]

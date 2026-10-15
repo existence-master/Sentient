@@ -108,6 +108,8 @@ async def test_refine_failure_still_keeps_the_spoken_interval(make_app):
     (f"{TOOLS}rows = tools.news_top_headlines()['articles']\ntop = rows[0]\nresult(top['link'])\n", "changed",
      "no `link`"),
     (f"{TOOLS}res = tools.web_search(query='x')\nresult(res['results']['title'])\n", "changed", "which is a list"),
+    (f"{TOOLS}page = tools.web_fetch(url='https://x')\na = page\nb = a\nc = b\nd = c\ne = d\nresult(e.get('html', ''))\n",
+     "changed", "no `html`"),  # any number of aliases
 ])
 def test_bad_model_scripts_are_rejected_with_a_reason(code, condition, reason):
     with pytest.raises(ScriptInvalid) as err:
@@ -133,6 +135,9 @@ def test_bad_model_scripts_are_rejected_with_a_reason(code, condition, reason):
     (f"{TOOLS}page = tools.web_fetch(url='https://x')\nresult(None if page.get('error') else page['title'])\n",
      "changed"),
     (f"{TOOLS}w = tools.weather_current()\nresult(w['temp'])\n", "changed"),  # shapes only for the common tools
+    (f"{TOOLS}page = tools.web_fetch(url='https://x')\npage['price'] = '40'\nresult(page['price'])\n", "changed"),
+    (f"{TOOLS}hits = tools.web_search(query='x')\nfor h in hits['results']:\n    h.update(seen=True)\n"
+     "result([h['seen'] for h in hits['results']])\n", "changed"),  # keys the script adds itself
 ])
 def test_good_scripts_pass(code, condition):
     check_rules(code, condition)
