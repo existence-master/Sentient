@@ -1585,7 +1585,7 @@ project's own name (`"Kestrel launch"`, up to 40 characters; `Work`/`PERSONAL` a
   insights).
 - **Incognito** chats (section 2) have a scope too; it only decides what they read, as nothing is saved from them.
 - **Dreaming** (section 15) never merges or settles two memories from different scopes.
-- **Backups** (section 20) carry scopes in `sentient.db`; restoring a backup from before scopes puts every memory in
+- **Backups** (section 20) carry scopes in `sentient.db` (`summaries.scope` too); restoring a backup from before scopes puts every memory in
   `personal` (`SCHEMA_VERSION` 11).
 
 ### Memories waiting for review (ADR 0021)
@@ -2990,7 +2990,8 @@ Sentient takes one:
 - before a restore replaces the data (so a restore can be undone).
 A snapshot that fails is logged and never keeps Sentient from starting.
 
-Memory scopes (#155) are part of `sentient.db` (`facts.scope`, `sessions.memory_scope`, `tasks.memory_scope`), so a
+Memory scopes (#155) are part of `sentient.db` (`facts.scope`, `sessions.memory_scope`, `tasks.memory_scope`,
+`summaries.scope`), so a
 backup keeps them. Restoring a backup made before them (database version 10 or older) adds the columns on the next
 start, with every memory in `personal`.
 
