@@ -48,6 +48,7 @@ from typing import Any
 import yaml
 
 from sentient.memory import review as memory_review
+from sentient.skills import vet
 from sentient.skills.lint import lint_file
 from sentient.skills.loader import slugify, valid_name
 from sentient.tasks.delivery import MAX_CHATS, WHATSAPP_SELF
@@ -265,7 +266,13 @@ def _plan_skills(app: Any, home: Path) -> list[dict]:
             note = "You changed this built-in Hermes skill. " + note
         # lint on import (#164): the review screen shows these again next to the skill
         lint = lint_file(folder / "SKILL.md", check_name=False)
-        items.append(_item(key, "import", note, target=target, changed_builtin=changed, lint=lint, **info))
+        # safety check (#146): shown here and again on the review card; high-risk skills are declined by default there
+        report = vet.vet_folder(folder, source="hermes", origin=rel)
+        if report["verdict"] == "high":
+            note = "The safety check found high-risk problems. " + note.replace(
+                "It stays off until you approve it.", "We suggest you decline it there.")
+        items.append(_item(key, "import", note, target=target, changed_builtin=changed, lint=lint,
+                           vetting=report, **info))
     return items
 
 
@@ -787,6 +794,9 @@ async def apply(app: Any, path: str | None, parts: list[str] | None, skip: list[
         for item in _picked(plan["skills"], left_out):
             try:
                 imported.append(_copy_skill(app, home, item))
+                folder = app.skills.pending_dir / item["target"]
+                await vet.record_import(app.store, item["target"],
+                                        vet.vet_folder(folder, source="hermes", origin=item["folder"]))
             except Exception as exc:
                 log.warning("could not import Hermes skill %s: %s", item["folder"], exc)
                 failed.append({"key": item["key"], "name": item["name"], "note": "Couldn't copy it."})

@@ -15,6 +15,7 @@
  *   integration.updated   -> upsert into ['integrations'], refetch change feeds (+ ['hooks'] for the webhook integration)
  *   memory.updated        -> invalidate ['memories']
  *   skill.updated         -> invalidate ['skills']
+ *   mcp.review            -> invalidate ['integrations-mcp'] (an MCP server's tools wait for review, #146)
  *   session.updated       -> rename or set the chat's model in ['sessions']
  *   session.deleted       -> remove from ['sessions'] and refetch its transcript (an incognito chat that was closed)
  *   rule_proposal.updated -> refetch that chat's ['rule-proposals'] ("Make this a rule?" cards)
@@ -58,11 +59,13 @@ import { live, type SocketState } from './ws'
 export function notificationRoute(n: Notification): string {
   if (n.task_id) return `/tasks?task=${encodeURIComponent(n.task_id)}`
   if (n.kind === 'skill') return '/skills'
+  if (n.payload && typeof n.payload === 'object' && 'mcp_review' in n.payload) return '/integrations?section=mcp'
   return '/notifications'
 }
 
 function plain(md: string, max = 180): string {
-  const s = md.replace(/[`*_#>[\]()!]/g, '').replace(/\s+/g, ' ').trim()
+  // underscores inside a word stay (tool names such as send_data); emphasis underscores go
+  const s = md.replace(/[`*#>[\]()!]/g, '').replace(/(^|\W)_+|_+(?=\W|$)/g, '$1').replace(/\s+/g, ' ').trim()
   return s.length > max ? `${s.slice(0, max - 1)}…` : s
 }
 
@@ -180,6 +183,7 @@ export function installDomainEvents(qc: QueryClient): () => void {
   )
   offs.push(live.onDomain('memory.updated', () => void qc.invalidateQueries({ queryKey: qk.memories.all })))
   offs.push(live.onDomain('skill.updated', () => void qc.invalidateQueries({ queryKey: qk.skills.all })))
+  offs.push(live.onDomain('mcp.review', () => void qc.invalidateQueries({ queryKey: qk.integrations.mcp })))
 
   offs.push(
     live.onDomain('session.updated', (e) => {
