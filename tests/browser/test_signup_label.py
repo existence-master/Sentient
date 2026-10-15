@@ -22,6 +22,14 @@ def test_free_signup_reads_signs_up(name):
     assert safety.risk_label_for(name, "click", near="Our weekly newsletter. Free, no spam. " + name) == "Signs up"
 
 
+def test_a_free_word_in_a_cut_short_context_is_not_enough():
+    # the context stopped at another offer and holds only the button: a price may be just out of reach
+    assert safety.risk_label_for("Subscribe to the newsletter", "click", "Subscribe to the newsletter", True) == "Purchase"
+    # a whole free card was read before the stop: fine
+    near = "The weekly newsletter. Short tips every Sunday. Free, no spam. Subscribe"
+    assert safety.risk_label_for("Subscribe", "click", near, True) == "Signs up"
+
+
 @pytest.mark.parametrize("name", ["Subscribe", "Sign up"])
 def test_a_bare_subscribe_needs_a_free_signal_nearby(name):
     assert safety.risk_label_for(name, "click") == PURCHASE_LABEL
@@ -96,9 +104,13 @@ async def test_live_snapshot_sees_the_price_beside_a_button(browser, site):
 
 
 async def test_live_priced_card_whose_context_stops_early_is_a_purchase(browser, site):
-    """The context stops at the "Choose" button before the price; with no free word it must stay a purchase."""
+    """The context stops at the "Choose" button before the price. With no free word, or with a free word but no whole
+    card read, it must stay a purchase so an allow rule can never let it through."""
     ctx = make_ctx(browser.app)
     await bt.browser_open.call(ctx, {"url": f"{site}/signup-choose.html"})
-    ref = next(r for r, e in browser._snap["refs"].items() if e.get("name") == "Subscribe")
-    assert "2,999" not in browser._snap["refs"][ref]["near"]  # the price really is out of reach
-    assert browser.describe_for("click", {"ref": ref})["risk_label"] == PURCHASE_LABEL
+    refs = browser._snap["refs"]
+    for name in ("Subscribe", "Subscribe to the newsletter"):
+        ref = next(r for r, e in refs.items() if e.get("name") == name)
+        assert refs[ref]["near_cut"] is True
+        assert "2,999" not in refs[ref]["near"] and "1,499" not in refs[ref]["near"]  # the price really is out of reach
+        assert browser.describe_for("click", {"ref": ref})["risk_label"] == PURCHASE_LABEL, name

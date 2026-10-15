@@ -60,6 +60,8 @@ PAGES = {
     "signup-choose.html": """<!doctype html><meta charset="utf-8"><title>Team</title><main>
   <section><h2>Team plan</h2><p>₹2,999/month for five seats.</p>
     <div><div><button>Subscribe</button></div><div><button>Choose</button></div></div></section>
+  <section><h2>Insider</h2><p>₹1,499/month, billed yearly.</p>
+    <div><div><button>Subscribe to the newsletter</button></div><div><button>Choose</button></div></div></section>
 </main>""",
 }
 

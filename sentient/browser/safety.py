@@ -9,8 +9,8 @@
 
 Element descriptors are the dicts produced by the snapshot script (``snapshot.py``):
 ``{role, name, tag, type, value, href, autocomplete, id, name_attr, label, placeholder,
-aria_label, title, in_form, form_payment, form_submit_text, is_submit, near}``. ``near`` is the text around the
-element (its card or form). Missing keys are fine.
+aria_label, title, in_form, form_payment, form_submit_text, is_submit, near, near_cut}``. ``near`` is the text around the
+element (its card or form); ``near_cut`` says it stopped early at another offer. Missing keys are fine.
 """
 
 from __future__ import annotations
@@ -79,20 +79,31 @@ def approval_target(el: dict | None) -> str:
     return str(el.get("role") or el.get("tag") or "")[:80]
 
 
-def risk_label_for(text: str, kind: str, near: str = "") -> str:
+def _partial_offer(text: str, near: str, near_cut: bool) -> bool:
+    """True when the context stopped early and holds little besides the element itself: no whole card was read,
+    so a price may sit just out of reach."""
+    if not near_cut:
+        return False
+    rest = (near or "").replace(text, " ") if text else (near or "")
+    return len(re.sub(r"\W+", "", rest)) < 20
+
+
+def risk_label_for(text: str, kind: str, near: str = "", near_cut: bool = False) -> str:
     """'Purchase', 'Signs up', 'Deletes', 'Posts publicly', 'Sends', else a neutral label for the action kind.
 
     ``near`` is the text around the element (its card or form). A subscribe, follow or "notify me" reads
     'Signs up' only when the element or ``near`` says what free thing it is (a newsletter, updates, a waitlist,
     alerts, "free" ...) and neither shows a price, currency, billing period, plan, trial or upgrade. Anything else
-    may cost money, so it stays 'Purchase', which always asks: a bare "Subscribe" is a purchase."""
+    may cost money, so it stays 'Purchase', which always asks: a bare "Subscribe" is a purchase. ``near_cut`` says
+    the context stopped early (at another offer's button); then only a whole card of text can show it is free."""
     text = text or ""
     purchase_rule, *other_rules = _LABEL_RULES
     if purchase_rule[0].search(text):
         return purchase_rule[1]
     if _SIGNUP_RE.search(text):
         context = f"{text} {near or ''}"
-        free = _FREE_RE.search(context) and not _PAID_RE.search(context)
+        free = (_FREE_RE.search(context) and not _PAID_RE.search(context)
+                and not _partial_offer(text, near, near_cut))
         return SIGNUP_LABEL if free else purchase_rule[1]
     for rx, label in other_rules:
         if rx.search(text):

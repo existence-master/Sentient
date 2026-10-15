@@ -150,22 +150,24 @@ function windowText(node, el, before) {
 }
 function nearText(el, d) {
   const own = [d.name, d.aria_label, d.title, d.label, d.value, d.form_submit_text].join(' ');
-  if (!SIGNUP.test(own)) return '';
-  let near = '';
+  if (!SIGNUP.test(own)) return { near: '', cut: false };
+  // cut: the climb stopped early (another offer button, or a container too big to read), so a price may be out of reach
+  let near = '', cut = false;
   let node = el.parentElement;
   for (let i = 0; i < 4 && node && node !== document.documentElement; i++) {
     const huge = node === document.body || (node.textContent || '').length > 20000;
-    if (i > 0 && !huge && otherOffer(node, el)) break;
+    if (i > 0 && !huge && otherOffer(node, el)) { cut = true; break; }
     const text = (node.textContent || '').length > 4000 ? '' : (node.innerText || '').replace(/\s+/g, ' ').trim();
     if (!text || text.length > 400) {
       // a larger card or section: keep the text just before and after the element inside it
-      if (!huge) near = [windowText(node, el, true).slice(-400), near, windowText(node, el, false).slice(0, 200)].join(' ');
+      if (huge) cut = true;
+      else near = [windowText(node, el, true).slice(-400), near, windowText(node, el, false).slice(0, 200)].join(' ');
       break;
     }
     near = text;
     node = node.parentElement;
   }
-  return clip(near, 700);
+  return { near: clip(near, 700), cut };
 }
 const els = [];
 let n = 0;
@@ -202,7 +204,9 @@ for (const el of document.querySelectorAll(SELECTOR)) {
     d.value = sel ? clip(sel.label || sel.text, 60) : '';
   }
   Object.assign(d, formInfo(el));
-  d.near = nearText(el, d);
+  const around = nearText(el, d);
+  d.near = around.near;
+  d.near_cut = around.cut;
   d.focused = document.activeElement === el;
   els.push(d);
 }

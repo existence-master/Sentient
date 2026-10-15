@@ -1419,7 +1419,8 @@ class BrowserService(Service):
         target = safety.approval_target(el)
         context = " ".join([target, str((el or {}).get("form_submit_text") or "")]) if kind == "type" else target
         near = str((el or {}).get("near") or "")
-        return {"risk_label": safety.risk_label_for(context, kind, near), "target": target}
+        cut = bool((el or {}).get("near_cut"))
+        return {"risk_label": safety.risk_label_for(context, kind, near, cut), "target": target}
 
     def _eval_window(self) -> float:
         return float(self.app.config.tools.approvals.timeout_s) + 120.0
