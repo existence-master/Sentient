@@ -216,8 +216,8 @@ async def test_streaming_edits_are_throttled(tg, monkeypatch):
     await tg.say(42, "stream please")
     # the first delta sends the message, then one edit per simulated second, then the final edit at the end
     assert times == [("sendMessage", 0.25), *(("editMessageText", t + 0.25) for t in range(1, 10)), ("editMessageText", 10.0)]
-    # between updates, the throttle only planned an update for exactly one second after the last one
-    assert later and all(due in {t + 0.25 for t in range(1, 11)} for due in later), later
+    # after each update, the next delta planned one later update for exactly one second after it
+    assert later == [t + 0.25 for t in range(1, 11)], later
     assert tg.api.screen()[-1] == "abcde" * 40
 
 
