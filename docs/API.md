@@ -36,7 +36,7 @@ All carry `session_id` and `turn_id`.
 | `text_delta` | `text` |
 | `tool_call` | `call_id`, `name`, `arguments` |
 | `tool_progress` | `call_id`, `name`, `kind: stdout\|stderr\|status\|frame\|subagent`, `text?`, `image?`, `data?` (section 10) |
-| `tool_result` | `call_id`, `name`, `result`, `is_error`, `duration_ms` (a call the user declined has `result: {error, declined: true}`; a call a "Hand it to me" rule handed to the user has `result: HandOff`, section 2, #140) |
+| `tool_result` | `call_id`, `name`, `result`, `is_error`, `duration_ms` (a call the user declined has `result: {error, declined: true}`; a call a "Hand it to me" rule handed to the user has `result: HandOff`, section 2, #140), `check?: OutcomeCheck` (what code found the call really did, section 4 "Checking the outcome", #165; absent for calls that aren't checked) |
 | `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10), `warning?` (what a second look found off, section 10, #143), `choices?: string[]` (the answers offered, in order, section 2 "Scoped answers"), `grant_minutes?` (how long `allow_timed` lasts), `preview?: ActionPreview` (what will be sent or changed, the way a person reads it, section 10, #142) |
 | `undo_window` | `undo_id`, `call_id`, `name`, `seconds`, `until` (ISO time it ends), `preview?: ActionPreview`: an email, message or post waits `seconds` before it runs, so it can still be undone (section 10, #142). Its `tool_result` follows when the window ends; after Undo that result is `{error, undone: true}` and nothing was sent |
 | `user_interjection` | `text` (a steer message the model just received, section 10) |
@@ -44,7 +44,7 @@ All carry `session_id` and `turn_id`.
 | `usage` | `model`, `prompt_tokens`, `completion_tokens`, `context_used`, `context_length`, `context_percent`, `context_warning` (context meter, below) |
 | `error` | `message`, `recoverable`, `code?`: `"local_only"` (Local only kept a cloud model from being used) or `"budget_reached"` (this month's model budget is used up; offer **Keep going this month**, section 2 "Cost meter") |
 | `notice` | `message`, `code`, `model?`, `used?`: a plain note about this reply that is not an error, sent at most once per reply. `code: "model_fallback"`: the chat's own model (`model`) can't answer, so `used` (the default) answers (section 2, chat's model) |
-| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `sources: [AnswerSource]` (pages, emails, files and apps it used, section 2; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id` and its `memory_sources` too (none when it was stopped before it started). `error?`: set when the turn failed (the `error` event just before it has the message to show); nothing was saved then and `message_id` is `null` |
+| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `sources: [AnswerSource]` (pages, emails, files and apps it used, section 2; `[]` when none), `checks: [OutcomeCheck]` (what code found this reply's calls really did, section 4 "Checking the outcome", #165; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id`, its `memory_sources` and its `checks` too (none when it was stopped before it started). `error?`: set when the turn failed (the `error` event just before it has the message to show); nothing was saved then and `message_id` is `null` |
 | `approval.ack` | `approval_id`, `resolved` |
 
 **Every turn ends with exactly one `done`** (#334). That holds on `/ws`, on `POST /api/chat` and in the messaging
@@ -336,7 +336,7 @@ accept or loosen a rule.
   {"id": "...", "role": "user|assistant|tool", "content": "...", "thinking": "...|null",
    "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "memory_recall", "arguments": "{\"query\":\"sister\"}"}}],
    "tool_call_id": "call_1", "name": "memory_recall", "attachments": ["report.pdf"], "interjection": false,
-   "memory_sources": [], "sources": [], "approval": null, "created_at": "..."}
+   "memory_sources": [], "sources": [], "approval": null, "checks": [], "created_at": "..."}
   ```
   The UI folds each `assistant` message with `tool_calls` plus its following `tool` messages into one assistant turn.
   `approval` (tool messages, #147) is how the user answered that call's approval request, `null` when it did not ask:
@@ -344,6 +344,7 @@ accept or loosen a rule.
   untrusted, rule, warning}` (a request nobody answered in time is `deny`; `rule` is the lasting rule then, e.g.
   `"if_asked"`; `warning` is what a second look found off, #143, else `null`). The activity timeline (section 21)
   reads it and says why it asked: outside content, else the second look's warning, else the rule.
+  `checks` (the final assistant message of a turn, #165) is the `done` event's `checks`; `[]` on every other row.
 - **Memory sources.** The final assistant message of a chat turn (also a stopped one) carries `memory_sources`, the
   memories that reply had in mind, also sent on its `done` event. Every other row has `[]`. A **MemorySource** is
   `{kind: "fact"|"insight", id, text, source, via: "prompt"|"tool"}`: `id` is the Memory id (int, section 7) or the
@@ -793,7 +794,8 @@ task-creation prompt sets it for requests like "every morning"; a window the req
  "memory_sources": [MemorySource],
  "sources": [AnswerSource],
  "dry_run": false,
- "would_do": [TryRunAction]}
+ "would_do": [TryRunAction],
+ "checks": [OutcomeCheck]}
 ```
 `dry_run` is true for a try run (see "Try it first" below); `would_do` lists what it noted, `[]` for other runs.
 `pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question", "Limits on a run"
@@ -922,6 +924,42 @@ approval). The run's own `ask_user` question still asks. A one-call task (`fixed
   scheduling, and it is not the task's last result (change requests, recurring tasks' memory of earlier runs, the
   self-improvement reviewer and `task.run_finished` all skip it). Its own question, cancel, retry (a try run again)
   and resume after a restart work as for any run.
+
+### Checking the outcome (#165)
+Code, never a model, checks what a call that should change something really did, right after it runs
+(`sentient/agent/outcomes.py`). Checked: tools that declare `Tool.outcome` (`"email"|"message"|"file"|"event"|"home"`)
+or `Tool.verify`, and every MCP tool that is not a look-up (its kind guessed from its name: `send_email` is `email`).
+Today that is `file_write`, `gmail_send`, `gmail_reply`, `email_imap_send`, `gcal_create_event`, `gcal_quick_add`,
+`slack_post_message`, `slack_reply_in_thread`, `discord_send_message`, `whatsapp_send_message`, the Home Assistant
+actions (`home_assistant_turn_on`/`turn_off`/`set_temperature`/`activate_scene`/`run_script`/`open_cover`/`close_cover`/
+`lock`/`unlock`/`set_alarm`, result only) and MCP tools. A call
+the user declined or undid, a try run's noted call and a call handed to the user are never checked.
+1. The result says it worked: no `error`, no `ok`/`success`/`sent`/`created: false`, no failed `status`, and no
+   non-empty `failed`/`errors`/`rejected`/`bounced`/`not_sent` list, looked for one level down too (an MCP result's
+   `structured` part, or `content` that is JSON). Text `content` starting with "Error" or "Failed" counts as failed.
+2. Read back, where the tool declares `verify(arguments, result, ctx) -> {ok, detail?}` (sync or async, 15 s at most):
+   `file_write` reads the file (it exists and holds what was written, line endings aside), Gmail finds the sent
+   message with the `SENT` label, Google Calendar finds the event and it is not cancelled. A read-back that can't run
+   (offline) leaves the result's own answer standing.
+
+**OutcomeCheck** `{tool, app, kind: "email"|"message"|"file"|"event"|"home"|null, action: "email sent", ok, detail,
+how: "result"|"read_back", targets: [...], missed: [...], settled?, message?}`. `detail` is the plain reason it failed
+("mailer reported a problem: it couldn't do it for bad@example.com (mailbox not found)"); `targets` are what the call
+acted on (recipients, a file name, a title) and `missed` what the result says failed. At the end of a run or reply a
+failure is `settled: true` when a later successful call of the same tool covered what it missed (the model fixed it);
+every other failure gets `message`, worded from what the final answer claimed: "Sentient said it sent the email, but
+mailer reported a problem: ..." (or "Sentient tried to send the email, but ..." when the answer claims nothing). A failure that names nothing it acted on (arguments the tool couldn't read) is settled only by the very next call of
+that tool, if it worked.
+- Task runs keep `checks` on the run, saved as each call finishes (also for an approved held call and a one-call
+  task), and each `tool_result` progress update carries its `check`. A run whose model finished but has a failure
+  that still stands ends **`completed_with_errors`** (the app shows it as Needs attention) instead of `completed`:
+  its `error` (and a one-off task's `error`) is the `message`s, the log gets an `error` update with them, and the
+  notification is "Task needs attention" (`payload.event: "run_completed"`, `run_id`, `needs_attention: true`). A
+  clean run logs one `info` update: "Checked: file written, email sent." The report writer gets the same line as
+  `checked_outcome` and is told to believe it. Try runs and swarm runs are not checked.
+- Chat replies carry the reply's `checks` on `done` and on the saved message; the app shows "Checked: ..." under the
+  reply, or the failures in a Needs your attention box. A failed check also counts in the turn's `tool_errors`
+  (`chat.turn_completed`), so the self-improvement reviewer sees it.
 
 ### Where results go
 A task's `deliver_to` decides which messaging apps (section 14) get its notifications: run results and failures,
@@ -1815,6 +1853,10 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   `LoopResult.tool_result_limit`; else `chat.tool_result_max_chars`), so a part is never cut and saved again. The limit (`await app.agent.tool_result_limit(role, model)`, kept on `LoopResult.tool_result_limit` and worked out again for a fallback model that answered) is
   `chat.tool_result_max_chars` (default 16000), and at most `chat.tool_result_context_share` (default 0.25) of the
   model's context length at 3 characters per token, never below 1500: 6144 characters on an 8,192-token local model.
+  A tool can declare what its calls change for the outcome check (#165, section 4 "Checking the outcome"):
+  `Tool.outcome` (`"email"|"message"|"file"|"event"|"home"`) and `Tool.verify(arguments, result, ctx) -> {ok, detail?}`,
+  which reads the effect back in code (also on `@tool(...)` and `@itool(...)`). `await app.agent.check_outcome(tool,
+  arguments, result, is_error, ctx)` → OutcomeCheck | None checks one call; `LoopResult.checks` lists a loop's checks.
   A tool can give a shorter version of a long result with `Tool.shorten_fn(result) -> result | None`; the model then
   reads that (`[Result shortened from M characters to its main parts. ...]`), still cut if it is longer than the limit.
   MCP tools get one by their own tool name (`sentient.integrations.mcp_shorten`): `COMPOSIO_SEARCH_TOOLS` keeps the

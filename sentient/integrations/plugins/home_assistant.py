@@ -533,7 +533,7 @@ async def _switch(ctx: ToolContext, entity_id: str, on: bool, data: dict | None 
             "now": [x for r in results for x in r.get("now", [])]}
 
 
-@itool(PID, "home_assistant_turn_on", risk=Risk.write, risk_fn=_security_risk,
+@itool(PID, "home_assistant_turn_on", outcome="home", risk=Risk.write, risk_fn=_security_risk,
        describe_fn=_describe("Turns something on", SECURITY_SWITCH_LABEL))
 async def ha_turn_on(ctx: ToolContext, entity_id: str, brightness_pct: int | None = None,
                      color: str | None = None) -> dict:
@@ -549,7 +549,7 @@ async def ha_turn_on(ctx: ToolContext, entity_id: str, brightness_pct: int | Non
 
 
 
-@itool(PID, "home_assistant_turn_off", risk=Risk.write, risk_fn=_security_risk,
+@itool(PID, "home_assistant_turn_off", outcome="home", risk=Risk.write, risk_fn=_security_risk,
        describe_fn=_describe("Turns something off", SECURITY_SWITCH_LABEL))
 async def ha_turn_off(ctx: ToolContext, entity_id: str) -> dict:
     """Turn off lights, switches, fans and other Home Assistant devices. `entity_id` is one id or several separated
@@ -558,7 +558,7 @@ async def ha_turn_off(ctx: ToolContext, entity_id: str) -> dict:
 
 
 
-@itool(PID, "home_assistant_set_temperature", risk=Risk.write, describe_fn=_describe("Sets a temperature"))
+@itool(PID, "home_assistant_set_temperature", outcome="home", risk=Risk.write, describe_fn=_describe("Sets a temperature"))
 async def ha_set_temperature(ctx: ToolContext, entity_id: str, temperature: float, hvac_mode: str | None = None) -> dict:
     """Set a thermostat (climate entity) to a temperature, in the units Home Assistant uses. `hvac_mode` is optional:
     heat, cool, heat_cool, auto or off."""
@@ -572,13 +572,13 @@ async def ha_set_temperature(ctx: ToolContext, entity_id: str, temperature: floa
     return await _service(ctx, domain, "set_temperature", [e for e in entities if e["domain"] == domain], data)
 
 
-@itool(PID, "home_assistant_activate_scene", risk=Risk.write, describe_fn=_describe("Starts a scene"))
+@itool(PID, "home_assistant_activate_scene", outcome="home", risk=Risk.write, describe_fn=_describe("Starts a scene"))
 async def ha_activate_scene(ctx: ToolContext, entity_id: str) -> dict:
     """Activate a Home Assistant scene, like "Movie night" (scene.movie_night)."""
     return await _service(ctx, "scene", "turn_on", await _resolve(ctx, entity_id, {"scene"}, "{name} isn't a scene."))
 
 
-@itool(PID, "home_assistant_run_script", risk=Risk.write, risk_fn=_security_risk,
+@itool(PID, "home_assistant_run_script", outcome="home", risk=Risk.write, risk_fn=_security_risk,
        describe_fn=_describe("Runs a script", SECURITY_SWITCH_LABEL))
 async def ha_run_script(ctx: ToolContext, entity_id: str) -> dict:
     """Run a Home Assistant script (script.<name>). One that sounds like it opens, unlocks or disarms something
@@ -587,7 +587,7 @@ async def ha_run_script(ctx: ToolContext, entity_id: str) -> dict:
 
 
 
-@itool(PID, "home_assistant_open_cover", risk=Risk.write, risk_fn=_security_risk,
+@itool(PID, "home_assistant_open_cover", outcome="home", risk=Risk.write, risk_fn=_security_risk,
        describe_fn=_describe("Opens something", OPENS_GATE_LABEL))
 async def ha_open_cover(ctx: ToolContext, entity_id: str) -> dict:
     """Open blinds, shades, curtains, a garage door or a gate (cover entities). Garage doors, gates and doors ask
@@ -596,7 +596,7 @@ async def ha_open_cover(ctx: ToolContext, entity_id: str) -> dict:
 
 
 
-@itool(PID, "home_assistant_close_cover", risk=Risk.write, risk_fn=_security_risk,
+@itool(PID, "home_assistant_close_cover", outcome="home", risk=Risk.write, risk_fn=_security_risk,
        describe_fn=_describe("Closes something"))
 async def ha_close_cover(ctx: ToolContext, entity_id: str) -> dict:
     """Close blinds, shades, curtains, a garage door or a gate (cover entities). Garage doors, gates and doors ask
@@ -605,7 +605,7 @@ async def ha_close_cover(ctx: ToolContext, entity_id: str) -> dict:
 
 
 
-@itool(PID, "home_assistant_lock", risk=Risk.send, allow_for_chat=False,
+@itool(PID, "home_assistant_lock", outcome="home", risk=Risk.send, allow_for_chat=False,
        describe_fn=_describe("Locks a door"))
 async def ha_lock(ctx: ToolContext, entity_id: str) -> dict:
     """Lock a door lock in Home Assistant."""
@@ -613,7 +613,7 @@ async def ha_lock(ctx: ToolContext, entity_id: str) -> dict:
 
 
 
-@itool(PID, "home_assistant_unlock", risk=Risk.send, allow_for_chat=False,
+@itool(PID, "home_assistant_unlock", outcome="home", risk=Risk.send, allow_for_chat=False,
        describe_fn=_describe(UNLOCKS_LABEL))
 async def ha_unlock(ctx: ToolContext, entity_id: str) -> dict:
     """Unlock a door lock in Home Assistant. Always asks first."""
@@ -621,7 +621,7 @@ async def ha_unlock(ctx: ToolContext, entity_id: str) -> dict:
 
 
 
-@itool(PID, "home_assistant_set_alarm", risk=Risk.send, allow_for_chat=False,
+@itool(PID, "home_assistant_set_alarm", outcome="home", risk=Risk.send, allow_for_chat=False,
        describe_fn=_describe_alarm)
 async def ha_set_alarm(ctx: ToolContext, entity_id: str, mode: str) -> dict:
     """Arm or disarm a Home Assistant alarm panel. `mode` is arm_home, arm_away, arm_night, arm_vacation or disarm.

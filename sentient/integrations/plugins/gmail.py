@@ -229,7 +229,23 @@ async def gmail_read_thread(ctx: ToolContext, thread_id: str) -> dict:
     return out
 
 
-@itool(PID, "gmail_send", risk=Risk.send)
+async def in_sent(arguments: dict, result: Any, ctx: ToolContext) -> dict | None:
+    """Read a sent email back (#165): it is in the Sent folder. None when the result names no message."""
+    mid = result.get("id") if isinstance(result, dict) else None
+    if not mid:
+        return None
+    try:
+        msg = await gapi(ctx, PID, "GET", f"{API}/messages/{mid}", params={"format": "minimal"})
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return {"ok": False, "detail": "Gmail doesn't have the email it said it sent"}
+        raise
+    if "SENT" not in (msg.get("labelIds") or []):
+        return {"ok": False, "detail": "the email isn't in your Gmail Sent folder"}
+    return {"ok": True}
+
+
+@itool(PID, "gmail_send", risk=Risk.send, outcome="email", verify=in_sent)
 async def gmail_send(ctx: ToolContext, to: str, subject: str, body: str, cc: str | None = None,
                      bcc: str | None = None) -> dict:
     """Send a new email. `to`, `cc`, `bcc` accept comma-separated addresses. Body is plain text."""
@@ -259,7 +275,7 @@ async def _reply_parts(ctx: ToolContext, message_id: str, reply_all: bool) -> di
             "references": h.get("references"), "thread_id": orig.get("threadId")}
 
 
-@itool(PID, "gmail_reply", risk=Risk.send)
+@itool(PID, "gmail_reply", risk=Risk.send, outcome="email", verify=in_sent)
 async def gmail_reply(ctx: ToolContext, message_id: str, body: str, reply_all: bool = False) -> dict:
     """Reply to an email in its thread (to the sender, or everyone with reply_all=true). Body is plain text."""
     p = await _reply_parts(ctx, message_id, reply_all)

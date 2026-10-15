@@ -594,7 +594,7 @@ class Timeline:
             done, fail, wait, run = (f"Ran {name}", f"{name} didn't finish", f"{name} is waiting for you",
                                      f"Running {name}")
         title, state = {
-            "completed": (done, "done"), "completed_with_errors": (f"{done}, with some errors", "done"),
+            "completed": (done, "done"), "completed_with_errors": (f"{done}, but it needs your attention", "done"),
             "error": (fail, "failed"), "waiting_for_user": (wait, "waiting"), "processing": (run, "running"),
             "cancelled": (f"Stopped {name}", "stopped"),
         }.get(status, (f"{name}: {status.replace('_', ' ')}", None))

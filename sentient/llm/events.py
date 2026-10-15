@@ -54,6 +54,9 @@ class ToolResultEvent(_Event):
     result: Any = None
     is_error: bool = False
     duration_ms: int | None = None
+    # what code found the call really did (#165, ``sentient.agent.outcomes``): {tool, app, kind, action, ok, detail,
+    # how, targets, missed}; None for calls that aren't checked
+    check: dict[str, Any] | None = None
 
 
 class ApprovalRequest(_Event):
@@ -143,6 +146,8 @@ class Done(_Event):
     memory_sources: list[dict[str, Any]] = Field(default_factory=list)
     # pages, emails, files and apps this reply used (sentient.agent.sources, #174)
     sources: list[dict[str, Any]] = Field(default_factory=list)
+    # the outcome checks of this reply's calls (#165), each failure that still stands with its plain ``message``
+    checks: list[dict[str, Any]] = Field(default_factory=list)
 
 
 AgentEvent = (

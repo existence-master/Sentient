@@ -253,6 +253,7 @@ You will be provided with a JSON object containing the full context of a complet
 - `plan`: The sequence of steps the executor agent was supposed to follow.
 - `execution_log`: A detailed, timestamped log of the agent's tool calls, tool results and final answer.
 - `aggregated_results` (for swarm tasks): A list of final outputs from parallel worker agents.
+- `checked_outcome` (when present): what Sentient checked really happened. It is the truth: if it says something failed, the summary says so plainly, whatever the log or the final answer claims.
 
 **Your Task:**
 Based on the provided context, you must generate a final report that summarizes what was accomplished.

@@ -221,7 +221,7 @@ def test_messages_queued_before_the_stop_are_dropped(config, isolated_home, monk
             assert first["cancelled"] is True and "dropped" not in first
             second = _until(ws, "done", seen)
             assert second == {"type": "done", "content": "", "session_id": sid, "cancelled": True,
-                              "dropped": ["then this"], "client_id": "k2"}  # client_id: the window matches its message
+                              "dropped": ["then this"], "checks": [], "client_id": "k2"}  # client_id: the window matches its message
             assert {"type": "error", "message": "Stopped. Your queued message wasn't sent.", "session_id": sid,
                     "recoverable": True, "dropped": True, "client_id": "k2"} in seen
             assert len(llm.calls) == 1  # neither queued message reached the model
