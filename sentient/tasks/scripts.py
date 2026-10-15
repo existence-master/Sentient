@@ -460,15 +460,29 @@ def normalize_script(
 
 
 # the user asks to hear about a change itself ("when it changes", "anything", "everything"): no AI check decides that.
-# Not a bare "every": "every 10 minutes" is a schedule. "important changes" (group 1) asks for the AI check.
+# Not a bare "every": "every 10 minutes" is a schedule. Qualified changes (group 1) ask for the AI check; one word
+# may sit between the qualifier and "changes" ("important page changes", "significant price changes").
 _ANY_CHANGE = re.compile(
-    r"\b(?:(important|big|major|significant|meaningful)\s+)?chang(?:e|es|ed|ing)\b|\bany\s?thing\b|\bevery\s?thing\b",
+    r"\b(?:(important|big|major|significant|meaningful)\s+(?:\w+\s+)?)?chang(?:e|es|ed|ing)\b"
+    r"|\bany\s?thing\b|\bevery\s?thing\b",
+    re.IGNORECASE,
+)
+_NEGATED_ANY_CHANGE = re.compile(
+    r"\bnot\s*$"
+    r"|\b(?:do(?:es)?\s+not|don['\u2019]t|doesn['\u2019]t|never)\s+"
+    r"(?:want|need|report|send|notify|tell|show|include|track|watch|monitor)\b[^.;,!?\n]*$"
+    r"|\bno\s+need\b[^.;,!?\n]*$",
     re.IGNORECASE,
 )
 
 
 def _asks_for_any_change(request: str) -> bool:
-    return any(not m.group(1) for m in _ANY_CHANGE.finditer(request or ""))
+    text = request or ""
+    asks_for_any: bool | None = None
+    for match in _ANY_CHANGE.finditer(text):
+        negated = _NEGATED_ANY_CHANGE.search(text[:match.start()]) is not None
+        asks_for_any = not match.group(1) and not negated
+    return asks_for_any is True
 
 
 def _is_fetch(node: ast.AST, pages: set[str]) -> bool:
