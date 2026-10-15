@@ -1865,6 +1865,11 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   window ends. `undo.respond`/`POST /api/undo` with `undo` means it never runs: its `tool_result` is
   `{"error": "NOT SENT. The user pressed Undo ...", "undone": true}`, which the model reads. `send_now` ends the
   window early. Stopping the reply (`chat.cancel`, Stop everything) during the window means it is not sent.
+  The rules are read again when the window ends (#365): a call set to Never or Hand it to me meanwhile is refused or
+  handed over (#140), and one that ran without the user's yes now asks first (an `approval_request` after the
+  `undo_window`, before its `tool_result`) when its rule became Ask, or Only if I asked and the user's words in that
+  turn don't ask for it, unless a grant covers it. That holds after **Send now** too. A yes already given to that call
+  is not asked again.
   Purchases and running code never wait (a purchase's yes is deliberate and holding code back does not help), nor do
   calls in runs nobody is watching: task runs, briefs, script jobs, subagents and other unprompted work. A task's
   approval in the window is the user's look at the exact call; the Activity timeline then lists what it did.

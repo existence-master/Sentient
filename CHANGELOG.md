@@ -371,6 +371,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Changing a rule while an email waits to go out now counts.** If you set an app or tool to **Ask** or **Only if
+  I asked** while one of its emails or messages waits the few seconds before it is sent, Sentient asks you before it
+  goes out instead of sending it under the old rule.
 - **Approvals from Telegram, Discord and WhatsApp answer only the request they were sent for.** When a task asks
   about one step and then another, a button or reply from the earlier message can no longer answer the newer request:
   the chat says the message is for an earlier request, and the newer one keeps waiting for its own answer.
