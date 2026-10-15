@@ -12,8 +12,11 @@ import type { ChatNoteView, OtherMessageView } from '@/lib/chatFold'
 import { queryClient } from '@/lib/queryClient'
 import type { Session } from '@/lib/types'
 
-/** Shown above the message box while the chat carries the mark. */
-export function OutsideContentBar({ sessionId, source }: { sessionId: string; source: string }) {
+/**
+ * Shown above the message box while the chat carries the mark. Trusting covers what the window has shown
+ * (`lastSeenId`): a newer message from someone else keeps the chat marked, and the bar then names its writer.
+ */
+export function OutsideContentBar({ sessionId, source, lastSeenId }: { sessionId: string; source: string; lastSeenId: string | null }) {
   const [open, setOpen] = useState(false)
   return (
     <>
@@ -48,10 +51,15 @@ export function OutsideContentBar({ sessionId, source }: { sessionId: string; so
         confirmLabel="Trust this chat"
         onConfirm={async () => {
           try {
-            await api.sessions.trust(sessionId)
-            queryClient.setQueryData<Session[]>(qk.sessions, (old) => old?.map((s) => (s.id === sessionId ? { ...s, untrusted: '' } : s)))
+            const res = await api.sessions.trust(sessionId, lastSeenId)
+            const mark = res.trusted ? '' : res.untrusted || source
+            queryClient.setQueryData<Session[]>(qk.sessions, (old) => old?.map((s) => (s.id === sessionId ? { ...s, untrusted: mark } : s)))
             void queryClient.invalidateQueries({ queryKey: qk.messages(sessionId) })
-            toast.success('This chat is trusted again')
+            if (res.trusted) toast.success('This chat is trusted again')
+            else
+              toast.warning(res.writer ? `${res.writer} wrote something new` : 'This chat read something new', {
+                description: 'It came in after what you checked, so Sentient still checks with you first. Have a look, then try again.'
+              })
           } catch (e) {
             toast.error("Couldn't change that", { description: errorMessage(e) })
           }

@@ -37,15 +37,18 @@ the user turns delivery on.
   (Ravi), not from you."). A history search that finds a member's message marks the run.
 - Only messages Sentient can see count: on Discord, a server message carries text only when it mentions the bot
   (a reply alone is not enough without the privileged Message Content intent), so other chatter never reaches Sentient.
-- Trusting a chat and storing a member's message take turns per chat, so a message that arrives while the user
-  trusts the chat leaves it marked.
+- Trusting a chat and storing a member's message take turns per chat, and trusting covers only what the user had
+  seen (below), so a message that arrives while the user decides leaves it marked.
+- A group's chat in Sentient is titled with the group's name, so Activity and the chat list name the group.
 - WhatsApp groups stay ignored: there Sentient is the user's own account, so it would speak as the user.
 
 **Trusting a chat again.** The user can clear a chat's mark after checking what it read: "I've checked it" on the bar
 above the message box (with a confirmation that says what changes), or `/trust` then `/trust yes` from the owner of a
 paired chat. `POST /api/sessions/{id}/trust` and `Agent.trust_chat` set `sessions.untrusted` to `""`, log an `event`
 row in the chat (shown there as a quiet line, never sent to the model) and the Activity timeline lists it under
-approvals. No tool does this, so a model cannot. New outside content marks the chat again; Ask and Never rules, the
+approvals. Trust covers only what the user had in front of them: the window sends the newest message it has shown,
+and `/trust yes` covers the chat as it was at the owner's `/trust`. Outside content stored after that point (another
+member's message, a page read since) keeps the chat marked, and the bar or the reply names who wrote it. No tool does this, so a model cannot. New outside content marks the chat again; Ask and Never rules, the
 second look, purchases and hard stops are unchanged, and summaries or memories already held for review stay held.
 
 ## Consequences

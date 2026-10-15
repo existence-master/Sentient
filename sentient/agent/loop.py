@@ -404,6 +404,16 @@ def repeat_message(name: str, times: int) -> str:
 
 
 @dataclass
+class TrustResult:
+    """What trusting a chat again did (ADR 0029)."""
+
+    was: str  # what the chat had read, "" when it was clean
+    trusted: bool  # the mark was cleared
+    still: str = ""  # the chat's mark when outside content newer than what the user checked keeps it marked
+    writer: str = ""  # the group member who wrote that newer message, "" when it came from elsewhere
+
+
+@dataclass
 class Budget:
     """Spending limits for one unattended run (a task run, a swarm, a subagent), checked before each model call.
 
@@ -2009,26 +2019,66 @@ class Agent:
         self._publish_mark(session_id, source)
         return source
 
-    async def trust_chat(self, session_id: str, *, via: str = "desktop") -> str | None:
+    async def last_message_id(self, session_id: str) -> str | None:
+        """The id of the newest message stored in a chat, None when it has none."""
+        row = await self.store.fetchone(
+            "SELECT id FROM messages WHERE session_id = ? ORDER BY rowid DESC LIMIT 1", (session_id,)
+        )
+        return str(row["id"]) if row else None
+
+    async def _newer_outside(self, session_id: str, upto: str) -> tuple[str, str] | None:
+        """(source, writer) of the newest outside content stored after message ``upto``: a group member's message or
+        a tool result that brought outside content in. None when there is none. ValueError for a message that isn't
+        in this chat."""
+        row = await self.store.fetchone("SELECT rowid FROM messages WHERE id = ? AND session_id = ?", (upto, session_id))
+        if row is None:
+            raise ValueError("that message isn't in this chat")
+        rows = await self.store.fetchall(
+            "SELECT role, name, content FROM messages WHERE session_id = ? AND rowid > ? AND role IN (?, 'tool')"
+            " ORDER BY rowid DESC",
+            (session_id, row[0], OTHER_ROLE),
+        )
+        for r in rows:
+            if r["role"] == OTHER_ROLE:
+                return group_source(str(r["name"] or "")), " ".join(str(r["name"] or "").split())[:40] or "Someone"
+            if source := outside_source(dict(r), self.registry):
+                return source, ""
+        return None
+
+    async def trust_chat(self, session_id: str, *, via: str = "desktop", upto: str | None = None) -> TrustResult | None:
         """The user's "I've checked it, trust this chat again" (ADR 0029): clear the chat's outside-content mark, so
         sends there stop asking just because of what it read. Only the user can do this (the window, or /trust in a
         paired chat from the person who paired it); no tool does it. Logged in the chat as an ``event`` row, which the
-        Activity timeline lists. Returns the source the chat had read ("" when it wasn't marked), None for no chat."""
+        Activity timeline lists.
+
+        ``upto``: the newest message the user had in front of them. Outside content stored after it (a group member's
+        new message, a page read since) is not covered: the chat stays marked, now naming that newer source. None for
+        no chat; ValueError when ``upto`` isn't a message of this chat."""
         async with self._mark_locks.setdefault(session_id, asyncio.Lock()):
             session = await self.store.get_session(session_id)
             if session is None:
                 return None
             was = await self._chat_untrusted(session_id, session)
             if not was:
-                return ""
-            # only the mark the user saw: one a new group message set meanwhile stays (ADR 0029)
-            await self.store.execute("UPDATE sessions SET untrusted = '' WHERE id = ? AND untrusted = ?", (session_id, was))
-            await self.store.add_message(
-                session_id, EVENT_ROLE, json.dumps({"event": TRUSTED_EVENT, "was": was, "via": via}, ensure_ascii=False),
-                name=TRUSTED_EVENT,
-            )
+                return TrustResult(was="", trusted=False)
+            newer = await self._newer_outside(session_id, upto) if upto else None
+            if newer is not None:
+                still, writer = newer
+                if still != was:
+                    await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (still, session_id))
+            else:
+                await self.store.execute("UPDATE sessions SET untrusted = '' WHERE id = ?", (session_id,))
+                await self.store.add_message(
+                    session_id, EVENT_ROLE,
+                    json.dumps({"event": TRUSTED_EVENT, "was": was, "via": via, "upto": upto}, ensure_ascii=False),
+                    name=TRUSTED_EVENT,
+                )
+        if newer is not None:
+            if still != was:
+                self._publish_mark(session_id, still)
+            return TrustResult(was=was, trusted=False, still=still, writer=writer)
         self._publish_mark(session_id, "")
-        return was
+        return TrustResult(was=was, trusted=True)
 
     async def _persist_stopped(
         self, session_id: str, partial: str, sources: MemorySources, used: AnswerSources | None = None,

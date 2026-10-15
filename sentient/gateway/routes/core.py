@@ -345,17 +345,26 @@ async def update_session(request: Request, session_id: str, body: SessionPatch):
     return {"ok": True, **changed}
 
 
+class TrustBody(BaseModel):
+    # the newest message the window had shown: outside content stored after it keeps the chat marked
+    upto: str | None = None
+
+
 @router.post("/api/sessions/{session_id}/trust", dependencies=_auth)
-async def trust_session(request: Request, session_id: str):
-    """"I've checked it, trust this chat again" (ADR 0029): clear the chat's outside-content mark. The user's own
-    action in the window; the model has no way to call it."""
+async def trust_session(request: Request, session_id: str, body: TrustBody | None = None):
+    """"I've checked it, trust this chat again" (ADR 0029): clear the chat's outside-content mark, up to the message
+    the user had seen. The user's own action in the window; the model has no way to call it."""
     s = get_core(request)
     if s.agent is None:
         raise HTTPException(503, "the assistant isn't ready yet")
-    was = await s.agent.trust_chat(session_id, via="desktop")
-    if was is None:
+    try:
+        res = await s.agent.trust_chat(session_id, via="desktop", upto=(body.upto if body else None) or None)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    if res is None:
         raise HTTPException(404, "no such chat")
-    return {"ok": True, "was": was}
+    return {"ok": True, "was": res.was, "trusted": res.trusted, "untrusted": res.still if not res.trusted else "",
+            "writer": res.writer}
 
 
 @router.delete("/api/sessions/{session_id}", dependencies=_auth)

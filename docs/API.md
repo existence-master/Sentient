@@ -334,10 +334,15 @@ accept or loosen a rule.
     (`subagents.role: primary`), except Claude Code, which only answers chats. Background work after a reply (titles,
     memory, rule checks, summaries) and tasks keep their own role models.
   - Incognito chats keep a model the same way.
-- `POST /api/sessions/{id}/trust` → `{ok, was}`: "I've checked it, trust this chat again" (ADR 0029, section 10
-  "Outside content"). Clears the chat's outside-content mark (`sessions.untrusted` = `""`); `was` is what it had read
-  (`""` when it was clean: nothing changes and nothing is logged). Logs an `event` row in the chat and publishes
-  `session.updated` `{untrusted: ""}`. 404 unknown chat. No tool can do this.
+- `POST /api/sessions/{id}/trust` `{upto?: message id}` → `{ok, was, trusted, untrusted, writer}`: "I've checked it,
+  trust this chat again" (ADR 0029, section 10 "Outside content"). `upto` is the newest message the window has shown;
+  the window always sends it. Clears the chat's outside-content mark (`sessions.untrusted` = `""`) unless outside
+  content was stored after `upto` (a group member's message, a tool result that brought outside content in): then
+  `trusted: false`, the chat stays marked, now with that newer source (`untrusted`, e.g. `"another group member
+  (Priya)"`, published with `session.updated`), and `writer` names the member ("" for other content). `was` is what it
+  had read (`""` when it was clean: nothing changes and nothing is logged). A clear logs an `event` row in the chat
+  (content `{event, was, via, upto}`) and publishes `session.updated` `{untrusted: ""}`. Without `upto` it covers
+  everything stored. 404 unknown chat, 422 an `upto` that isn't a message of this chat. No tool can do this.
 - `DELETE /api/sessions/{id}` → `{ok}` (helpers the chat started are cancelled first; publishes `session.deleted`)
 - `GET /api/sessions/{id}/messages?limit=500` → raw transcript rows, oldest first (404 when the chat doesn't exist, e.g. a
   closed incognito chat):
@@ -2017,11 +2022,14 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   `chat.mark_outside_content` says. They never reach `ToolContext.user_words`, rule checks, fact extraction or quick
   commands. `memory_search_history` marks the run when a hit is an `other` row (its hits carry `from`).
 - **Trusting a chat again** (ADR 0029): only the user, from the window (`POST /api/sessions/{id}/trust`) or with
-  `/trust yes` in a paired chat (section 14), through `app.agent.trust_chat(session_id, via=)` → the source it had read,
-  `""` when clean, `None` for no chat. It sets `sessions.untrusted` to `""` (so the chat is not classified again), adds
-  an `event` row (`rules.EVENT_ROLE`, `name` `rules.TRUSTED_EVENT`) and publishes `session.updated`. New outside content
-  marks it again. Rules, the second look and memories already held for review are unchanged.
-  `app.agent.chat_mark(session_id)` reads the mark.
+  `/trust yes` in a paired chat (section 14), through `app.agent.trust_chat(session_id, via=, upto=)` →
+  `TrustResult{was, trusted, still, writer}` (`None` for no chat, `ValueError` for an `upto` outside the chat). It covers
+  the messages up to `upto` (the newest one the user had seen): outside content stored after it keeps the chat marked
+  (`still`, also saved as the mark). Otherwise it sets `sessions.untrusted` to `""` (so the chat is not classified
+  again), adds an `event` row (`rules.EVENT_ROLE`, `name` `rules.TRUSTED_EVENT`) and publishes `session.updated`. It
+  and `mark_group_chat` take turns per chat. New outside content marks it again. Rules, the second look and memories
+  already held for review are unchanged. `app.agent.chat_mark(session_id)` reads the mark and
+  `app.agent.last_message_id(session_id)` gives the newest message.
 - A result that says so itself (ADR 0025): a tool result whose **first key** is `outside_content` (a string naming
   where it came from) counts as outside content even when its tool does not: it marks the run, is wrapped for the
   model and counts in `rules.untrusted_in` (`rules.result_outside_source(result_or_stored_text)`). It only adds a
@@ -2406,8 +2414,12 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 - A paired chat is a normal Sentient chat (`channel` = channel id, so the desktop shows a badge). Commands: `/new` starts a
   fresh chat (new session), `/stop` cancels the reply (the partial text is kept with "(stopped)"), `/stopall` (or
   `/stop all`) is Stop everything and `/resume` undoes it (section 17; source `telegram` or `discord`), `/model`, `/help`,
-  `/trust` (says what the chat read and why sending asks; `/trust yes` trusts it again, `Agent.trust_chat` with
-  `via` = the channel id, section 10); other
+  `/trust` (says what the chat read and why sending asks, and remembers the newest message then; `/trust yes` trusts
+  the chat up to that message, `Agent.trust_chat` with `via` = the channel id, section 10: anything from outside that
+  arrived after the owner's `/trust`, also a member's message still waiting for a reply to end, keeps it marked and the
+  reply says who wrote, "Ravi wrote in this chat after you sent /trust, ..."; `/trust yes` alone covers what is stored
+  now; `/new` forgets it). A group chat's Sentient chat is titled with the group's name (Telegram title, Discord
+  `#<channel id>`), never its first message, so Activity and the chat list name the group; other
   `/commands` get a hint. Unpaired chats cannot use any command except `/pair`. Replies stream by editing the message at most once per `channels.<id>.edit_interval_s` (1 s) when
   `stream_edits` is on; long replies are split (Telegram 4096, Discord 2000 characters, code blocks kept balanced).
   Telegram replies use HTML parse mode (bold, italics, strikethrough, code, code blocks, links, lists, quotes; everything

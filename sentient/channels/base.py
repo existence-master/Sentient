@@ -132,6 +132,7 @@ class ChatRuntime:
     pair_failures: list[float] = field(default_factory=list)
     stopped: bool = False
     others: list[tuple[str, str]] = field(default_factory=list)  # group members' messages not yet in the chat
+    trust_upto: str | None = None  # the newest message when the owner sent /trust: what /trust yes covers (ADR 0029)
 
     @property
     def running(self) -> bool:
@@ -485,7 +486,8 @@ class Channel:
         if cmd == "new":
             await self.cancel_turn(chat_id)
             rt.queued.clear()
-            session_id = await self.app.store.create_session(channel=self.id)
+            rt.trust_upto = None
+            session_id = await self.new_session(chat)
             await store.update_chat(self.id, chat_id, session_id=session_id)
             await self.service.publish_channel(self.id)
             await self.reply(chat_id, "Started a fresh chat. What's next?")
@@ -510,7 +512,7 @@ class Channel:
                 await self._model_command(chat_id, arg)
             return
         if cmd == "trust":
-            await self._trust_command(chat, arg)
+            await self._trust_command(rt, chat, arg)
             return
         if cmd == "stop":
             rt.queued.clear()
@@ -623,8 +625,10 @@ class Channel:
         session_id = await self.ensure_session(chat)
         await self.app.agent.add_group_messages(session_id, batch)
 
-    async def _trust_command(self, chat: dict, arg: str) -> None:
-        """/trust: explain the chat's outside-content mark; /trust yes clears it, like "I've checked it" in Sentient."""
+    async def _trust_command(self, rt: ChatRuntime, chat: dict, arg: str) -> None:
+        """/trust: explain the chat's outside-content mark; /trust yes clears it, like "I've checked it" in Sentient.
+        It covers what the chat held when the owner first sent /trust: anything from outside that arrived since
+        keeps the chat marked (ADR 0029)."""
         chat_id = str(chat["chat_id"])
         agent = self.app.agent
         if agent is None:
@@ -633,14 +637,28 @@ class Channel:
         group = ("\n\nIn a group, messages from other people count as outside content too, so a new one makes it ask "
                  "again.") if chat.get("is_group") else ""
         if arg.strip().lower() in TRUST_YES:
-            was = await agent.trust_chat(session_id, via=self.id)
-            if not was:
+            upto, rt.trust_upto = rt.trust_upto or await agent.last_message_id(session_id), None
+            waiting = rt.others[-1][0] if rt.others else ""  # a member wrote during a reply: not stored yet
+            try:
+                res = await agent.trust_chat(session_id, via=self.id, upto=upto) if not waiting else None
+            except ValueError:  # the chat was started over since /trust
+                await self.reply(chat_id, "This chat changed since you sent /trust. Send /trust again to see what it read.")
+                return
+            if res is not None and not res.was:
                 await self.reply(chat_id, "This chat hasn't read anything from outside, so there's nothing to clear.")
                 return
-            await self.reply(chat_id, f"Done. You trusted this chat again after checking what it read from {was}. "
+            if waiting or (res is not None and not res.trusted):
+                who = waiting or (res.writer if res else "")
+                what = f"{who} wrote in this chat" if who else f"This chat read new content from {res.still if res else ''}"
+                await self.reply(chat_id, f"{what} after you sent /trust, so Sentient still checks with you before "
+                                          "sending anything from it. Read it, then send /trust again if it's fine.")
+                return
+            assert res is not None
+            await self.reply(chat_id, f"Done. You trusted this chat again after checking what it read from {res.was}. "
                                       "Sending from it follows your usual approval settings now, and it's listed "
                                       "in Activity in Sentient. New outside content will make it ask again." + group)
             return
+        rt.trust_upto = await agent.last_message_id(session_id)  # /trust yes covers what is here now
         was = await agent.chat_mark(session_id)
         if not was:
             await self.reply(chat_id, "This chat hasn't read anything from outside, so sending from it follows your "
@@ -655,9 +673,17 @@ class Channel:
         sid = chat.get("session_id")
         if sid and await self.app.store.get_session(sid) is not None:
             return sid
-        sid = await self.app.store.create_session(channel=self.id)
+        sid = await self.new_session(chat)
         await self.service.store.update_chat(self.id, chat["chat_id"], session_id=sid)
         chat["session_id"] = sid
+        return sid
+
+    async def new_session(self, chat: dict) -> str:
+        """A new Sentient chat for a paired chat. A group's chat keeps the group's name as its title (Activity, the
+        chat list), never its first message (ADR 0029)."""
+        sid = await self.app.store.create_session(channel=self.id)
+        if chat.get("is_group") and str(chat.get("label") or "").strip():
+            await self.app.store.rename_session(sid, str(chat["label"]).strip()[:120])
         return sid
 
     async def stop_all_turns(self) -> int:
@@ -737,7 +763,7 @@ class Channel:
         result = await self.service.store.redeem_code(self.id, code, cfg.pairing_max_attempts)
         if result == PairingResult.OK:
             rt.pair_failures.clear()
-            session_id = await self.app.store.create_session(channel=self.id)
+            session_id = await self.new_session({"is_group": msg.group, "label": msg.label})
             # a group's owner is the person who paired it; task results stay out of a group unless turned on (ADR 0029)
             chat = await self.service.store.add_chat(
                 self.id, chat_id, msg.label or chat_id, deliver=self.cfg.deliver_default and not msg.group,
