@@ -190,12 +190,73 @@ async def test_seed_safety_pauses_tasks_and_channel_deliveries(config, isolated_
         await app.stop()
 
     report = _seed_safety().quiet(isolated_home)
-    assert report == {"tasks_paused": 1, "chats_muted": 1, "channels_off": True}
+    assert report == {"tasks_paused": 1, "plans_stopped": 0, "runs_stopped": 0, "chats_muted": 1, "channels_off": True}
     assert load_config().channels.enabled is False
     app = await SentientApp(load_config(), llm=FakeProvider(), enable_background=False).start()
     try:
         assert (await app.tasks.repo.get_task("demo-daily"))["enabled"] is False
         assert (await app.channels.store.chat("telegram", "100200301"))["deliver"] is False
+    finally:
+        await app.stop()
+
+
+class NoModel(FakeProvider):
+    """A model that must never be called: every call is recorded and fails."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.used: list[str] = []
+
+    async def stream(self, role, messages, tools=None, *, model=None):
+        self.used.append(f"stream:{role}")
+        raise RuntimeError("seed_safety let a model call through")
+        yield  # pragma: no cover
+
+    async def complete_text(self, role, messages, *, model=None):
+        self.used.append(f"text:{role}")
+        raise RuntimeError("seed_safety let a model call through")
+
+    async def complete_json(self, role, messages, *, model=None):
+        self.used.append(f"json:{role}")
+        raise RuntimeError("seed_safety let a model call through")
+
+    async def embed(self, texts, *, model=None):
+        self.used.append("embed")
+        raise RuntimeError("seed_safety let a model call through")
+
+
+async def test_seed_safety_keeps_planning_tasks_and_live_runs_from_calling_the_model(config, isolated_home, user_home):
+    """#388: the engine plans 'planning' tasks and resumes 'processing' runs on start even when they are paused."""
+    from sentient.config.loader import load_config, save_config
+
+    save_config(config)
+    now = "2026-10-01T00:00:00+00:00"
+    app = await SentientApp(config, llm=FakeProvider(), enable_background=False).start()
+    try:
+        repo = app.tasks.repo
+        await repo.insert_task({"id": "demo-planning", "name": "Find gift ideas for Anika", "status": "planning",
+                                "enabled": True, "plan": [], "original_prompt": "Find gift ideas for Anika",
+                                "created_at": now, "updated_at": now})
+        await repo.insert_task({"id": "demo-running", "name": "Collect onboarding examples", "status": "processing",
+                                "enabled": True, "plan": [{"tool": "web", "description": "Read the pages"}],
+                                "schedule": {"type": "once", "run_at": None, "timezone": "UTC"},
+                                "created_at": now, "updated_at": now})
+        run_id = await repo.insert_run("demo-running", now=now, plan=[{"tool": "web", "description": "Read the pages"}])
+    finally:
+        await app.stop()
+
+    report = _seed_safety().quiet(isolated_home)
+    assert report["plans_stopped"] == 1 and report["runs_stopped"] == 1
+    llm = NoModel()
+    app = await SentientApp(load_config(), llm=llm, enable_background=True).start()
+    try:
+        await app.tasks.drain(timeout=10)
+        assert llm.used == []
+        planning = await app.tasks.repo.get_task("demo-planning")
+        assert (planning["status"], planning["enabled"]) == ("declined", False)
+        assert (await app.tasks.repo.get_task("demo-running"))["status"] == "cancelled"
+        run = await app.tasks.repo.get_run(run_id)
+        assert run["status"] == "cancelled" and run["finished_at"]
     finally:
         await app.stop()
 
