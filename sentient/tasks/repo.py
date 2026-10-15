@@ -24,11 +24,12 @@ TASK_COLUMNS = {
 TASK_BOOL_FIELDS = {"enabled", "keep_running"}
 RUN_JSON_FIELDS = {
     "plan", "trigger_data", "messages", "result", "pending_question", "limits", "memory_sources", "sources", "would_do",
+    "checks",
 }
 RUN_COLUMNS = {
     "status", "plan", "trigger_data", "messages", "result", "error", "resume_count", "retry_of",
     "pending_question", "limits", "last_activity_at", "started_at", "finished_at", "created_at", "memory_sources",
-    "sources", "dry_run", "would_do",
+    "sources", "dry_run", "would_do", "checks",
 }
 # Columns added after the first stub schema; ensured on start for older databases.
 _ADDED_TASK_COLUMNS = {
@@ -51,6 +52,7 @@ _ADDED_RUN_COLUMNS = {
     "plan": "TEXT", "resume_count": "INTEGER NOT NULL DEFAULT 0", "retry_of": "TEXT", "pending_question": "TEXT",
     "limits": "TEXT", "last_activity_at": "TEXT", "memory_sources": "TEXT", "sources": "TEXT",
     "dry_run": "INTEGER NOT NULL DEFAULT 0", "would_do": "TEXT",  # try runs (#142)
+    "checks": "TEXT",  # outcome checks (#165)
 }
 # SQL condition: a real run, not a try run (#142). Try runs never hold a task busy or count as its last result.
 REAL_RUN = "COALESCE(dry_run, 0) = 0"
@@ -364,6 +366,8 @@ class TaskRepo:
             "sources": run.get("sources") or [],
             "dry_run": bool(run.get("dry_run")),  # a try run (#142): nothing was sent, changed or run
             "would_do": (run.get("would_do") or []) if run.get("dry_run") else [],
+            # what code found the run's calls really did (#165): each failure that still stands has its ``message``
+            "checks": run.get("checks") or [],
         }
 
     @staticmethod

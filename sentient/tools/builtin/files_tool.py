@@ -117,7 +117,29 @@ def _fit_part(name: str, text: str, offset: int, want: int, budget: int, total: 
     return res
 
 
-@tool("file_write", risk=Risk.write, internal=True)
+def _lines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _wrote(arguments: dict, result: object, ctx: ToolContext) -> dict | None:
+    """Read a written file back (#165): it exists and holds what was written (line endings aside)."""
+    name = str((arguments or {}).get("name") or "")
+    if not name:
+        return None
+    p = _safe(name)
+    if not p.is_file():
+        return {"ok": False, "detail": f"the file {name} isn't in the files folder"}
+    try:
+        text = p.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return {"ok": False, "detail": f"the file {name} couldn't be read back ({type(exc).__name__})"}
+    want = _lines(str((arguments or {}).get("content") or ""))
+    if _lines(text) != want:
+        return {"ok": False, "detail": f"the file {name} doesn't hold what was written"}
+    return {"ok": True}
+
+
+@tool("file_write", risk=Risk.write, internal=True, outcome="file", verify=_wrote)
 async def file_write(ctx: ToolContext, name: str, content: str) -> dict:
     """Write a text file into the files folder. Tell the user the name so they can open it."""
     p = _safe(name)

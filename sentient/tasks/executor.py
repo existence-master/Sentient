@@ -14,6 +14,8 @@ of making it (``sentient/agent/dry_run.py``); its look-ups run for real, and wha
 The memories a run had in mind (facts in its prompt, facts memory tools returned that the model read) are kept on
 the run as ``memory_sources``, merged across pauses, resumes and restarts (``sentient/memory/sources.py``). The pages,
 emails, files and apps it used are kept the same way as ``sources`` (``sentient/agent/sources.py``, #291).
+What code found each call really did (``sentient/agent/outcomes.py``, #165) is kept as ``checks``, saved as they come;
+the service decides from them whether the run is done or needs attention.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
-from sentient.agent import dry_run, preview, rule_levels
+from sentient.agent import dry_run, outcomes, preview, rule_levels
 from sentient.agent.loop import CAN_PAUSE_KEY, Budget, LoopResult, history_to_openai
 from sentient.agent.sources import AnswerSources
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
@@ -163,10 +165,11 @@ def select_tools(
 class ProgressMapper:
     """Turns streamed agent events into persisted ProgressUpdates."""
 
-    def __init__(self, svc: TaskService, task_id: str, run_id: str):
+    def __init__(self, svc: TaskService, task_id: str, run_id: str, checks: list[dict] | None = None):
         self.svc = svc
         self.task_id = task_id
         self.run_id = run_id
+        self.checks: list[dict] = list(checks or [])  # outcome checks so far, carried across pauses (#165)
         self.thought = ""
         self.text = ""
         self.warned = False  # the context warning goes into the log once per run
@@ -193,7 +196,11 @@ class ProgressMapper:
         elif isinstance(event, ToolResultEvent):
             # a call handed to the user (#140) keeps its whole preview: the run log shows it to finish from
             shown = event.result if rule_levels.is_handed_off(event.result) else truncate(event.result)
-            await self._emit({"type": "tool_result", "tool_name": event.name, "result": shown, "is_error": event.is_error})
+            await self._emit({"type": "tool_result", "tool_name": event.name, "result": shown, "is_error": event.is_error,
+                              **({"check": event.check} if event.check else {})})
+            if event.check:  # what really happened (#165), saved at once so a restart keeps it
+                self.checks.append(event.check)
+                await self.svc.repo.update_run(self.run_id, {"checks": self.checks})
             # run_loop appends the tool message right after yielding this event; include it now
             tool_msg = {
                 "role": "tool",
@@ -295,9 +302,14 @@ async def _run_approved_call(
     await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": call["name"], "parameters": call["arguments"]})
     res, is_error, content = await svc.app.agent.run_tool(ToolCall(**call), ctx, role="executor", model=model)
     handed = rule_levels.is_handed_off(res)  # set to "Hand it to me" while the run waited (#140): handed over
+    tool = svc.app.registry.get(call["name"])
+    check = await svc.app.agent.check_outcome(tool, call["arguments"], res, is_error, ctx) if tool is not None else None
     await svc.progress(task_id, run_id, {
         "type": "tool_result", "tool_name": call["name"], "result": res if handed else truncate(res), "is_error": is_error,
+        **({"check": check} if check else {}),
     })
+    if check:
+        await add_check(svc, run_id, check)
     if handed:
         task = await svc.repo.get_task(task_id)
         if task is not None:
@@ -405,7 +417,7 @@ async def execute_single(
                 tool_names = [*tool_names, ask.ASK_TOOL]
             if continuity.applies(task) and app.registry.get(continuity.NOTEPAD_TOOL) is not None:
                 tool_names = [*tool_names, continuity.NOTEPAD_TOOL]
-            mapper = ProgressMapper(svc, task_id, run_id)
+            mapper = ProgressMapper(svc, task_id, run_id, (await svc.repo.get_run(run_id) or run).get("checks"))
             checked = (run.get("trigger_data") or {}).get("script_result")
             if checked is not None:  # a check script started this run: what it found is part of an answer (#322)
                 result.findings.append(("check_script", "The check", checked))
@@ -531,6 +543,12 @@ async def execute_single(
     return result
 
 
+async def add_check(svc: TaskService, run_id: str, check: dict) -> None:
+    """Add one outcome check (#165) to what the run has saved."""
+    run = await svc.repo.get_run(run_id) or {}
+    await svc.repo.update_run(run_id, {"checks": [*(run.get("checks") or []), check]})
+
+
 def trying(svc: TaskService, run: dict) -> dry_run.DryRun:
     """The try-run notes of ``run``, carried on from what it noted before a pause or restart and saved as they grow."""
     run_id = run["id"]
@@ -601,9 +619,13 @@ async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume:
     except Exception as exc:
         result = {"error": f"{type(exc).__name__}: {exc}"}
     is_error = isinstance(result, dict) and bool(result.get("error"))
-    await svc.progress(
-        task_id, run_id, {"type": "tool_result", "tool_name": name, "result": truncate(result), "is_error": is_error}
-    )
+    check = await app.agent.check_outcome(tool, arguments, result, is_error, ctx) if app.agent is not None else None
+    await svc.progress(task_id, run_id, {
+        "type": "tool_result", "tool_name": name, "result": truncate(result), "is_error": is_error,
+        **({"check": check} if check else {}),
+    })
+    if check:
+        await add_check(svc, run_id, check)
     if is_error:
         raise RunFailed(str(result["error"]))
     final = str(call.get("done_text") or "Done.")
@@ -716,6 +738,8 @@ async def generate_result(
         "execution_log": execution_log[-80:],
         "aggregated_results": truncate(aggregated, 12000) if aggregated is not None else None,
     }
+    if checked := outcomes.summary(run.get("checks") or []):  # what code found really happened beats the log (#165)
+        context["checked_outcome"] = checked
     data: Any = None
     try:
         data = await complete_json_object(app.llm,

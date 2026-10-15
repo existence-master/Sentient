@@ -6,6 +6,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Sentient checks what really happened, not what the model says happened.** After it writes a file, sends an
+  email or a message, or creates a calendar event, Sentient checks the result itself: the app said it worked, and
+  where it can, it reads it back (the file holds what was written, the email is in your Gmail Sent folder, the event
+  is on your calendar). MCP tools are checked too, including a send that worked for some people but not others. When
+  something didn't happen, a task run is marked **Needs attention** instead of done and says so plainly ("Sentient
+  said it sent the email, but mailer reported a problem: it couldn't do it for bad@example.com (mailbox not
+  found)."), and so does a chat reply. A clean run shows "Checked: file written, email sent."
 - **A safety check for skills and MCP servers from outside.** Skills brought over from Hermes, and skills you add
   with the new **Add from a link** button in Skills (a SKILL.md, or a GitHub folder that holds one), wait for your
   review with a plain safety report: where it came from, and whether it tries to send your data to a fixed address,

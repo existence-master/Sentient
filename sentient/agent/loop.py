@@ -44,6 +44,7 @@ from sentient.agent import (
     dry_run,
     fastpath,
     findings,
+    outcomes,
     preview,
     reversible,
     rule_levels,
@@ -368,6 +369,8 @@ class LoopResult:
     from_findings: bool = False
     # calls a "Hand it to me" rule handed to the user instead of running (#140): their results, with a preview
     handed_off: list[dict] = field(default_factory=list)
+    # the outcome checks of the calls that ran (#165, ``sentient.agent.outcomes``), in order; written by code only
+    checks: list[dict] = field(default_factory=list)
 
 
 def _hosts(raw: Any) -> set[str]:
@@ -1363,8 +1366,13 @@ class Agent:
                 ctx.untrusted = clipped  # a web page clipped into the user's notes (ADR 0025)
         if p.tool is not None and rule_levels.is_handed_off(res):
             result.handed_off.append(res)  # handed to the user, at planning or right before it ran (#140)
+        check = await self._check_outcome(p, res, is_error, ctx) if ran else None
+        if check is not None:
+            result.checks.append(check)
         if (is_error or err) and err != DECLINED:
             result.tool_errors.append({"name": tc.name, "error": err or str(res)[:500]})
+        elif check is not None and check.get("ok") is False:  # the call said it worked but did not (#165)
+            result.tool_errors.append({"name": tc.name, "error": str(check.get("detail") or "")[:500]})
         elif (
             tc.name == "skill_view"
             and isinstance(tc.arguments.get("name"), str)
@@ -1380,7 +1388,29 @@ class Agent:
         if persist:  # stored as it is; marked again when the transcript is read back (mark_outside_messages)
             extra = {"approval": p.approval} if p.approval else {}
             await persist("tool", content, tool_call_id=tc.id, name=tc.name, **extra)
-        yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
+        yield ToolResultEvent(
+            call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, check=check, **ev
+        )
+
+    async def _check_outcome(self, p: _CallPlan, res: Any, is_error: bool, ctx: ToolContext) -> dict | None:
+        return await self.check_outcome(p.tool, p.tc.arguments, res, is_error, ctx) if p.tool is not None else None
+
+    async def check_outcome(self, tool: Tool, arguments: dict, res: Any, is_error: bool, ctx: ToolContext) -> dict | None:
+        """The outcome check of a call that ran (#165): what its result says and, where the tool can, what reading
+        the effect back shows. None for calls that aren't checked or were handed to the user. Never raises."""
+        if rule_levels.is_handed_off(res):
+            return None
+        plugin = self.registry.plugin(tool.plugin)
+        mcp = getattr(plugin, "auth", "") == "mcp"
+        try:
+            return await outcomes.check(
+                tool, arguments, res, is_error, ctx, app=self._app_name(tool) or tool.plugin, mcp=mcp
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("outcome check of %s skipped: %s", tool.name, exc)
+            return None
 
     def outside_content(self, content: str, tool: Tool, arguments: dict | None = None) -> str:
         """A tool message as the model reads it: wrapped as outside content when ``tool`` brings text someone else
@@ -1707,12 +1737,14 @@ class Agent:
             else:
                 memory_sources = await sources.resolve(self.store)
                 used.add_prompt_notes(notes, result.text, user_text)  # the notes the reply drew on (#354)
+                checks = outcomes.finalize(result.checks, result.text)  # what really happened (#165)
                 message_id = await self.store.add_message(
                     session_id, "assistant", result.text, thinking=result.thinking or None, memory_sources=memory_sources,
-                    sources=used.items(),
+                    sources=used.items(), checks=checks,
                 )
                 yield Done(
-                    content=result.text, message_id=message_id, memory_sources=memory_sources, sources=used.items(), **ev
+                    content=result.text, message_id=message_id, memory_sources=memory_sources, sources=used.items(),
+                    checks=checks, **ev,
                 )
 
                 said = "\n\n".join([user_text, *result.interjections]).strip()

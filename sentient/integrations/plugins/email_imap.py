@@ -575,7 +575,7 @@ async def email_imap_read(ctx: ToolContext, message_id: str, mailbox: str = "INB
     return item
 
 
-@itool(PID, "email_imap_send", risk=Risk.send)
+@itool(PID, "email_imap_send", risk=Risk.send, outcome="email")
 async def email_imap_send(ctx: ToolContext, to: str, subject: str, body: str, cc: str | None = None,
                           bcc: str | None = None, reply_to_message_id: str | None = None) -> dict:
     """Send an email from the IMAP-connected account. `to`, `cc`, `bcc` accept comma-separated addresses; body is
