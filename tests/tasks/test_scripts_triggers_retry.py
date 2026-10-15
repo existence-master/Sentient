@@ -382,7 +382,7 @@ async def test_changing_a_watch_in_chat_to_any_change_keeps_changed(make_app):
     "I don't want every change; only important page changes",
     "Actually don't report every change",
 ])
-async def test_changing_a_watch_in_chat_to_only_important_changes_keeps_noteworthy(make_app, chat_message):
+async def test_changing_a_watch_in_chat_to_exclude_every_change_keeps_noteworthy(make_app, chat_message):
     request = "Watch this page and tell me about new events: https://example.org/events"
     initial = {**PLAN_SCRIPT, "name": "Watch", "description": request,
                "script": {"code": PAGE_CODE, "condition": "noteworthy", "then": "notify"}}
