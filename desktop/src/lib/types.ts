@@ -2961,7 +2961,7 @@ export interface FoldersUpdated {
 }
 
 // ---------------------------------------------------------------------------- §23 timers and reminders (#150)
-export type ReminderKind = 'timer' | 'reminder'
+export type ReminderKind = 'timer' | 'reminder' | 'alarm'
 export type ReminderStatus = 'scheduled' | 'fired' | 'cancelled'
 
 export interface Reminder {
@@ -2970,7 +2970,7 @@ export interface Reminder {
   /** What to remind about ("call Ravi"); '' for a timer. */
   message: string
   connector: '' | 'to' | 'about' | 'that'
-  /** A timer's name ("pasta"). */
+  /** A timer's or an alarm's name ("pasta", "gym"). */
   label: string
   /** A timer's length, or a reminder set "in 20 minutes". */
   duration_s: number | null

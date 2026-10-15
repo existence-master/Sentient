@@ -1524,8 +1524,10 @@ class TaskService(Service):
         raw = data.get("script")
         if not isinstance(raw, dict) or raw.get("code") is None:
             return previous, data, None
+        request = self._script_request(task)
         try:
-            return self._default_condition(task, normalize_script(raw, previous, model_written=True)), data, None
+            script = normalize_script(raw, previous, model_written=True, request=request)
+            return self._default_condition(task, script), data, None
         except ScriptInvalid as exc:
             log.info("planner script for task %s rejected, asking for a fix: %s", task["id"], exc)
             retry = [*parts, (
@@ -1544,7 +1546,8 @@ class TaskService(Service):
         raw = fixed.get("script")
         if isinstance(raw, dict) and raw.get("code") is not None:
             try:
-                return self._default_condition(task, normalize_script(raw, previous, model_written=True)), fixed, None
+                script = normalize_script(raw, previous, model_written=True, request=request)
+                return self._default_condition(task, script), fixed, None
             except ScriptInvalid as exc:
                 log.info("planner script for task %s rejected again, saving an AI-run task instead: %s", task["id"], exc)
             codes.append(str(raw.get("code")))
@@ -1558,6 +1561,16 @@ class TaskService(Service):
         if not fixed.get("schedule") and data.get("schedule"):
             fixed = {**fixed, "schedule": data["schedule"]}
         return None, fixed, tools_named("\n".join(codes))
+
+    @staticmethod
+    def _script_request(task: dict) -> str:
+        """What the user asked for, for the planner's script checks (#375): the request, what they said in the task's
+        chat since and their answers to clarifying questions."""
+        said = [str(task.get("original_prompt") or task.get("description") or task.get("name") or "")]
+        said += [str(m.get("content") or "") for m in task.get("chat_history") or []
+                 if isinstance(m, dict) and m.get("role") == "user"]
+        said += [str(q.get("answer") or "") for q in task.get("clarifying_questions") or [] if isinstance(q, dict)]
+        return "\n".join(s for s in said if s.strip())
 
     @staticmethod
     def _default_condition(task: dict, script: dict) -> dict:

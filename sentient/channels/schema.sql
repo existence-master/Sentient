@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS channel_deliveries (
     chat_label TEXT,
     title      TEXT NOT NULL,                 -- the message's first line, short
     what       TEXT NOT NULL,                 -- task | question | approval | plan | brief | suggestion | subagent | other
-    reason     TEXT NOT NULL,                 -- chosen (the task picked this chat) | default (the chat's delivery is on) | chat
+    reason     TEXT NOT NULL,                 -- chosen (the task picked this chat) | default (the chat's delivery is on) | chat | reminder | reminder_copy
     status     TEXT NOT NULL,                 -- delivered | failed
     error      TEXT,
     ref        TEXT,
