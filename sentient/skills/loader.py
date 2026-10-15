@@ -16,7 +16,11 @@
     ---
     # Weekly review
     ## When to use ...
+    ## Inputs and access ...
     ## Procedure ...
+    ## Verification ...
+    ## Output ...
+    ## Approval ...
 
 Progressive disclosure keeps prompts small: the system prompt lists only names
 and descriptions; the model calls ``skill_view`` to read the body when needed.
@@ -41,8 +45,25 @@ from sentient.store.db import now_iso
 
 _FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
+_FENCE_OPEN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 RESERVED = {"pending", "archived"}
 _UNSET: Any = object()
+SKILL_SECTIONS = (
+    "When to use",
+    "Inputs and access",
+    "Procedure",
+    "Verification",
+    "Output",
+    "Approval",
+)
+_SECTION_PLACEHOLDERS = {
+    "When to use": "- (describe the triggering request)",
+    "Inputs and access": "- (list required information, tools and access)",
+    "Procedure": "1. (add the steps)",
+    "Verification": "- (state how to tell it worked)",
+    "Output": "- (state what to return)",
+    "Approval": "- Follow each tool's normal approval rules.",
+}
 
 
 def slugify(name: str) -> str:
@@ -57,6 +78,44 @@ def valid_name(name: str) -> bool:
 def content_hash(text: str) -> str:
     """Hash of a SKILL.md as written, ignoring line endings and surrounding blank space."""
     return hashlib.sha256(text.replace("\r\n", "\n").strip().encode("utf-8")).hexdigest()
+
+
+def _without_fenced_code(body: str) -> str:
+    """Blank fenced code while preserving the surrounding Markdown lines."""
+    fence: tuple[str, int] | None = None
+    lines: list[str] = []
+    for line in body.splitlines():
+        if fence is None:
+            match = _FENCE_OPEN.match(line)
+            if match is not None:
+                marker = match.group("marker")
+                if marker[0] == "~" or "`" not in match.group("info"):
+                    fence = (marker[0], len(marker))
+                    lines.append("")
+                    continue
+            lines.append(line)
+            continue
+
+        marker, minimum = fence
+        candidate = line.lstrip(" ")
+        if len(line) - len(candidate) <= 3 and re.fullmatch(
+            rf"{re.escape(marker)}{{{minimum},}}[ \t]*", candidate
+        ):
+            fence = None
+        lines.append("")
+    return "\n".join(lines)
+
+
+def ensure_skill_sections(body: str) -> str:
+    """Add missing fields to a new or rewritten skill without altering existing sections."""
+    out = body.strip()
+    searchable = _without_fenced_code(out)
+    for section in SKILL_SECTIONS:
+        heading = rf"^ {{0,3}}#+[ \t]+{re.escape(section)}(?:[ \t]+#+)?[ \t]*$"
+        if not re.search(heading, searchable, flags=re.IGNORECASE | re.MULTILINE):
+            separator = "\n\n" if out else ""
+            out += f"{separator}## {section}\n{_SECTION_PLACEHOLDERS[section]}"
+    return out
 
 
 @dataclass
@@ -171,7 +230,7 @@ def render_skill(
     if created_by_review:
         meta["created_by_review"] = True
     front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
-    return f"---\n{front}\n---\n\n{body.strip()}\n"
+    return f"---\n{front}\n---\n\n{ensure_skill_sections(body)}\n"
 
 
 class SkillLibrary:

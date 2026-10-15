@@ -6,6 +6,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Skills say what they need, return and ask before doing.** New skills now use the same six-part template whether
+  you write them or Sentient learns them: when to use the skill, its inputs and access, the procedure, how to verify
+  it, what to return, and which steps need approval. Older skills keep working as written (#186).
 - **Sentient checks what really happened, not what the model says happened.** After it writes a file, sends an
   email or a message, creates a calendar event or runs a Home Assistant action, Sentient checks the result itself: the app said it worked, and
   where it can, it reads it back (the file holds what was written, the email is in your Gmail Sent folder, the event

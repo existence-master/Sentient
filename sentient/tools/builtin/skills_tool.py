@@ -44,8 +44,8 @@ async def skill_save(
 ) -> dict:
     """Save a reusable skill you worked out: a multi-step procedure that succeeded after
     trial and error, or a workflow the user will want again. Saving an existing name patches it.
-    Write the body as markdown with sections: When to use, Procedure (numbered), Pitfalls,
-    Verification. The user may review it first."""
+    Write the body as markdown with sections: When to use, Inputs and access, Procedure
+    (numbered), Verification, Output, and Approval. The user may review it first."""
     lib = _lib(ctx)
     if lib is None:
         return {"error": "skills unavailable"}

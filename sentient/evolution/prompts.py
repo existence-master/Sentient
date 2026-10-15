@@ -27,12 +27,16 @@ The body MUST use exactly this structure:
 # <Title>
 ## When to use
 - ...
+## Inputs and access
+- Required information, files, tools and connected services.
 ## Procedure
 1. ... (name the actual tools, e.g. call `gmail_search` with ...)
-## Pitfalls
-- ...
 ## Verification
 - ...
+## Output
+- What to return to the user or save.
+## Approval
+- Which steps need the user's approval; say "Normal tool approval rules" when there are no extra requirements.
 
 If nothing is worth saving respond {"decision": "none", "reason": "..."}.
 """
@@ -47,10 +51,10 @@ Skills already waiting for review:
 {transcript}
 """
 
-MERGE_SYSTEM = """Two skills of a personal assistant overlap. Merge them into ONE skill that keeps every useful step, pitfall and verification check and drops repetition.
+MERGE_SYSTEM = """Two skills of a personal assistant overlap. Merge them into ONE skill that keeps every useful input, step, verification check, output and approval requirement and drops repetition.
 
 Respond with ONLY a JSON object:
-{"name": "<one of the two existing names>", "description": "one sentence", "tags": [], "requires_tools": [], "body": "full markdown with sections # Title, ## When to use, ## Procedure, ## Pitfalls, ## Verification"}
+{"name": "<one of the two existing names>", "description": "one sentence", "tags": [], "requires_tools": [], "body": "full markdown with sections # Title, ## When to use, ## Inputs and access, ## Procedure, ## Verification, ## Output, ## Approval"}
 """
 
 PROFILE_SYSTEM = """You maintain MEMORY.md, the big-picture notes a personal assistant reads at the start of every conversation with {user}.
@@ -90,13 +94,13 @@ REPAIR_SYSTEM = """You repair a SKILL: a short playbook a personal assistant fol
 
 You get the current skill, what went wrong, and an excerpt of the work.
 If the skill was not at fault (a service was down, the user changed their mind), respond {"decision": "none", "reason": "..."}.
-Otherwise fix the skill: keep every step that still holds, change only what the failure shows is wrong or missing, and add the lesson under Pitfalls.
+Otherwise fix the skill: keep every field that still holds and change only what the failure shows is wrong or missing. Put a new guard in Procedure and its success check in Verification.
 
 Respond with ONLY a JSON object:
 {"decision": "patch",
  "reason": "one sentence: what failed and what the fix changes",
  "description": "one sentence (keep the current one unless it is wrong)",
- "body": "the COMPLETE updated markdown body with sections # Title, ## When to use, ## Procedure, ## Pitfalls, ## Verification"}
+ "body": "the COMPLETE updated markdown body with sections # Title, ## When to use, ## Inputs and access, ## Procedure, ## Verification, ## Output, ## Approval"}
 """
 
 REPAIR_USER = """Skill "{name}" as it is now:
