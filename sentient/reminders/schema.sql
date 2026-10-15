@@ -2,10 +2,10 @@
 
 CREATE TABLE IF NOT EXISTS reminders (
     id            TEXT PRIMARY KEY,
-    kind          TEXT NOT NULL,                      -- "timer" | "reminder"
+    kind          TEXT NOT NULL,                      -- "timer" | "reminder" | "alarm" (#359)
     message       TEXT NOT NULL DEFAULT '',           -- what to remind about ("call Ravi"); '' for a timer
     connector     TEXT NOT NULL DEFAULT '',           -- how it was asked: "to" | "about" | "that" | ''
-    label         TEXT NOT NULL DEFAULT '',           -- a timer's name ("pasta")
+    label         TEXT NOT NULL DEFAULT '',           -- a timer's or an alarm's name ("pasta", "gym")
     duration_s    REAL,                               -- a timer's length, or a reminder set "in 20 minutes"
     fire_at       TEXT NOT NULL,                      -- UTC ISO time it is due
     status        TEXT NOT NULL DEFAULT 'scheduled',  -- "scheduled" | "fired" | "cancelled"

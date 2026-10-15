@@ -18,6 +18,7 @@ import { errorMessage, isNotImplemented } from '@/lib/api'
 import type { Channel, ChannelPairing, PairedChat } from '@/lib/types'
 import { cn, relativeTime } from '@/lib/utils'
 import { previewMode } from '@/features/devices/preview'
+import { SchemaForm } from '@/features/settings/SchemaForm'
 import { useChannelActions, useChannels } from './hooks'
 import { ChannelTile } from './meta'
 import { WhatsAppLinkDialog } from './WhatsAppLink'
@@ -74,6 +75,9 @@ export function MessagingApps() {
         {channels.map((c) => (
           <ChannelCard key={c.id} channel={c} onConnect={() => setConnect(c)} onPair={() => setPair(c)} />
         ))}
+      </div>
+      <div className="mt-6 max-w-2xl">
+        <SchemaForm section="channels" title="Reminders" include={['channels.deliver_reminders']} />
       </div>
       <WhatsAppLinkDialog channel={connect?.id === 'whatsapp' ? connect : null} onClose={() => setConnect(null)} />
       <ConnectChannelDialog

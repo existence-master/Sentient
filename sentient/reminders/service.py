@@ -1,10 +1,11 @@
-"""Timers and one-off reminders (#150): kept in SQLite, fired on time as notifications.
+"""Timers, one-off reminders and alarms (#150, #359): kept in SQLite, fired on time as notifications.
 
 A timer or reminder is set by a quick command (``sentient.agent.fastpath``, no model), by the model through the
 ``reminders`` tools, or over REST. One clock task sleeps until the next one is due (at most ``MAX_SLEEP_S``, so a
 computer waking from sleep or a clock change is noticed) and fires it with ``app.notify("reminder", ...)``: the
 window shows it (a native notification when the window is not in front), and a reminder set in a Telegram, Discord or
-WhatsApp chat goes back to that chat (``ChannelService``). One that came due while Sentient was not running fires
+WhatsApp chat goes back to that chat (``ChannelService``), and with ``channels.deliver_reminders`` a reminder or alarm
+set anywhere else goes to the delivery chats too. An alarm's notification makes the window ring. One that came due while Sentient was not running fires
 as soon as it starts, saying when it was due.
 
 Firing never asks the model, and it is not paused by Stop everything: a timer the user set still rings.
@@ -23,7 +24,7 @@ from sentient.store.db import new_id, now_iso
 
 log = logging.getLogger(__name__)
 
-KINDS = ("timer", "reminder")
+KINDS = ("timer", "reminder", "alarm")
 STATUSES = ("scheduled", "fired", "cancelled")
 MAX_SLEEP_S = 30.0
 LATE_AFTER_S = 90.0      # fired this much after it was due: the notification says when it was due
@@ -101,7 +102,7 @@ class ReminderService(Service):
         language: str = "en", source: str = "chat",
     ) -> dict:
         if kind not in KINDS:
-            raise ReminderError("A reminder is a timer or a reminder.")
+            raise ReminderError("A reminder is a timer, a reminder or an alarm.")
         if fire_at.tzinfo is None:
             raise ReminderError("The time needs a timezone.")
         now = datetime.now(UTC)
@@ -213,6 +214,8 @@ class ReminderService(Service):
         tz = get_tz(user_timezone_name(self.app.config.assistant.timezone))
         if item["kind"] == "timer":
             title, body = pack.timer_done(item)
+        elif item["kind"] == "alarm":
+            title, body = pack.alarm_due(item, due.astimezone(tz), late)
         else:
             title, body = pack.reminder_due(item, due.astimezone(tz) if late else None)
         payload = {"event": item["kind"], "reminder_id": item["id"], "fire_at": item["fire_at"], "late": late,
