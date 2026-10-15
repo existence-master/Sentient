@@ -81,6 +81,8 @@ dev = [
     "ruff>=0.16.10",
     "respx>=0.23.1",
     "pytest-timeout>=2.4.0",
+    # runs the tests in parallel (pytest -n auto); CI uses it to keep the Windows job short
+    "pytest-xdist>=3.8.0",
     # packaging: freezes the engine for the installer (packaging/build_engine.py)
     "pyinstaller>=6.22.3",
 ]
