@@ -364,17 +364,22 @@ class ChannelService(Service):
             return "desktop"
 
     async def _reminder_delivery(self, note: dict) -> str | list[dict]:
-        """The paired chat a timer or reminder was set in, or "desktop" when it was set anywhere else."""
-        session_id = (note.get("payload") or {}).get("session_id")
+        """The paired chat a timer, reminder or alarm was set in. One set anywhere else stays on the desktop, except
+        that with ``channels.deliver_reminders`` a reminder or alarm also goes to the delivery chats ("default", #359)."""
+        payload = note.get("payload") or {}
+        elsewhere = "default" if (
+            self.app.config.channels.deliver_reminders and payload.get("event") in {"reminder", "alarm"}
+        ) else "desktop"
+        session_id = payload.get("session_id")
         if not session_id:
-            return "desktop"
+            return elsewhere
         try:
             found = await self.store.chat_for_session(str(session_id))
         except Exception:
             log.exception("could not find the chat of a reminder")
-            return "desktop"
+            return elsewhere
         if found is None:
-            return "desktop"
+            return elsewhere
         channel, chat = found
         return [{"channel": channel, "chat_id": chat["chat_id"]}]
 
@@ -578,7 +583,10 @@ class ChannelService(Service):
         sent = 0
         targets = await self._chosen_targets(where) if isinstance(where, list) else await self._delivery_targets()
         what, ref = self._what(note), self._source_ref(note)
-        reason = "reminder" if note.get("kind") == "reminder" else "chosen" if chosen else "default"
+        if note.get("kind") == "reminder":
+            reason = "reminder" if chosen else "reminder_copy"  # its own chat, or a copy for the delivery chats
+        else:
+            reason = "chosen" if chosen else "default"
         for ch, chat in targets:
             if subagent_id:
                 key = (str(subagent_id), ch.id, chat["chat_id"])

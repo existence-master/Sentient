@@ -2331,7 +2331,9 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   The Daily Brief (`kind: "brief"`, `payload.status: "active"`) is sent as its sections and lines, with links.
   A "Make this a rule?" proposal (`rule_proposal.updated`, section 2) made in a paired chat goes back to that chat
   (whatever `deliver` says) with **Make it a rule** / **Not now** (`rp:a:<id>` / `rp:d:<id>`).
-  Toggles: `channels.deliver_task_results`, `deliver_plans`, `deliver_suggestions`, `deliver_subagents`, `deliver_briefs`.
+  Toggles: `channels.deliver_task_results`, `deliver_plans`, `deliver_suggestions`, `deliver_subagents`, `deliver_briefs`,
+  and `deliver_reminders` (off by default, #359): reminders and alarms set outside a paired chat (the window, voice) also go
+  to the delivery chats (section 23).
 - Answering a task's question by replying: the delivered question ends with "Tap an option, or reply to this message
   with your answer." (without options: "Reply to this message with your answer."). The ids of the messages that carried
   the question are stored per chat in SQLite (`channel_questions`, kept 90 days), so this survives restarts. A text
@@ -2380,8 +2382,9 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `channel.delivery` `{id, channel, chat_id, title, status: "delivered"|"failed", ref}`: a notification (or a background
   helper's summary) was sent to a paired chat, or sending it failed (#345). Each is kept in `channel_deliveries` (`id,
   channel, chat_id, chat_label, title` (the message's first line), `what` (`task|question|approval|plan|brief|suggestion|
-  subagent|other`), `reason` (`chosen`: the task picked the chat; `default`: the chat's delivery is on; `chat`: a helper
-  started in that chat), `status`, `error` (a plain sentence, no token), `ref` (JSON: the task, chat or notification it
+  subagent|reminder|other`), `reason` (`chosen`: the task picked the chat; `default`: the chat's delivery is on; `chat`: a
+  helper started in that chat; `reminder`: a timer, reminder or alarm set in that chat; `reminder_copy`: a reminder or
+  alarm set elsewhere, sent there by `channels.deliver_reminders`), `status`, `error` (a plain sentence, no token), `ref` (JSON: the task, chat or notification it
   came from), `created_at`; kept 365 days) for the Activity timeline (section 21).
 
 ## 15. Knowing the user (owner: memory)
@@ -3164,10 +3167,11 @@ searched). `progress` counts the new or changed files of the running scan.
 Settings > Folders lists them with their status and counts, adds one with the folder picker, removes one (with a
 confirmation), checks again, edits the folder's ignore patterns and shows the `folders` config section.
 
-## 23. Timers, reminders and quick commands (owner: reminders and core, #150)
+## 23. Timers, reminders, alarms and quick commands (owner: reminders and core, #150, #359)
 
 **Quick commands.** Before a chat turn calls the model, `Agent.run_turn` asks `sentient.agent.fastpath.plan`. When the
-message is *only* a plain timer, reminder or (with Home Assistant connected) light command, it is done at once with no model call, on every surface (the
+message is *only* a plain timer, reminder, alarm or (with Home Assistant connected) light command, or "what's next
+on my calendar", it is done at once with no model call, on every surface (the
 window, voice and devices, Telegram, Discord and WhatsApp): the turn makes the same tool calls the model would
 (`tool_call` and `tool_result` events, kept in the chat like any other), says a short confirmation (`text_delta`, then
 `done`), and the engine logs `quick command: <action> (<language>) done in N ms with no model call`. Anything else,
@@ -3179,8 +3183,21 @@ language under `sentient/agent/fastpath/`, tried for `assistant.language` and th
 | timer | "set a timer for 10 minutes", "start a 10 minute timer", "set a pasta timer for 8 minutes", "timer for 90 seconds", "set a timer for half an hour" | no length ("set a timer"), over 24 hours, anything more in the message |
 | reminder | "remind me at 6 pm to call Ravi", "remind me to call Ravi at 6 pm", "remind me in 20 minutes", "remind me tomorrow at 9 am to pay rent", "remind me tonight at 8 to call mom", "remind me at 18:00 to leave" | a clock time without AM or PM ("at 6"), a repeating wish ("every day"), a day name, "today" at a time that has passed, a time missing ("tonight") |
 | list | "what timers do I have", "how much time is left", "what are my reminders" | |
-| cancel | "cancel the timer", "stop the pasta timer", "cancel the 10 minute timer", "cancel my reminder to stretch", "cancel all timers" | two or more match and "all" was not said; nothing matches the words given; a plural without "all" |
+| cancel | "cancel the timer", "stop the pasta timer", "cancel the 10 minute timer", "cancel my reminder to stretch", "cancel all timers", "turn off the gym alarm" | two or more match and "all" was not said; nothing matches the words given; a plural without "all" |
 | home (#175) | "turn off the living room lights", "turn on the bedroom lamp", "living room lights off", "turn the lights in the kitchen off", "switch off all the lights", "dim the living room lights to 30%", "turn on the coffee maker" | Home Assistant not connected or not reachable; the words name no room or device exactly (one light named that, the lights of the room named that, or the lights whose names hold every word); "the bedroom light" when the bedroom has two; "the lights" without a room or "all"; a device left out by the entity picker; locks, alarms, doors, garage doors and gates, and switches that sound like one (never quick); a question ("is the porch light on") |
+| alarm (#359) | "wake me at 7", "wake me up at 6:30 am", "set an alarm for 6:30", "set an alarm for 6:30 tomorrow", "set a 6:30 alarm", "set an alarm for 7 called gym", "wake me up in 20 minutes" | a repeating wish, a day name, "today" at a time that has passed, "tomorrow morning" |
+| calendar (#359) | "what's next on my calendar", "what's my next meeting", "when is my next meeting", "what do I have next" | no calendar connected; anything more ("... and email it to Ravi"), another day ("what's on my calendar tomorrow"), a bare "what's next" |
+
+An alarm is the one place a clock time without AM or PM is fine, as on a phone: "set an alarm for 6:30" rings at the
+next 6:30, "wake me at 7" at the next 7 before 7 PM (so 7 AM; a nap "wake me at 4" in the afternoon is 4 PM), and with
+"tomorrow" the morning one. The confirmation always says which ("Alarm set for 7:00 AM tomorrow."), and the list
+("what alarms do I have", "when is my alarm") and cancel commands work for alarms too.
+
+"What's next on my calendar" calls `gcal_list_events` (risk `read`, from now to 7 days ahead, 10 events) when Google
+Calendar is connected, and answers from the events with no model: an event happening now ("Right now: Standup, until
+3:15 PM."), the next one ("Next on your calendar: Design review with Maya Rao, today at 4:30 PM (Room 4).") and the one
+after it on the same day, or "Nothing on your calendar in the next 7 days." With no calendar connected, or the tool
+behind an Ask or Never rule, the model answers (it may use another calendar, or say to connect one).
 
 "Hey Sentient", "please", "can you" and the assistant's own name around a command are fine. A quick command never
 sends, buys or deletes anything ("delete the timer" goes to the model). It runs only when its tool would run without
@@ -3192,19 +3209,24 @@ level) once for every device it names, and says "Turned off the living room ligh
 `home_assistant`, or a Read only connection send it to the model. Not used for a message with attachments. Turned
 off with `chat.quick_commands`.
 
-**Timers and reminders** (`sentient/reminders/`, table `reminders`). **Reminder**
-`{id, kind: "timer"|"reminder", message, connector: ""|"to"|"about"|"that", label, duration_s, fire_at, status:
+**Timers, reminders and alarms** (`sentient/reminders/`, table `reminders`). **Reminder**
+`{id, kind: "timer"|"reminder"|"alarm", message, connector: ""|"to"|"about"|"that", label, duration_s, fire_at, status:
 "scheduled"|"fired"|"cancelled", session_id, channel, language, source: "quick"|"chat"|"api", created_at, fired_at,
 cancelled_at, notification_id}`. `fire_at` is UTC; a clock time is read in the user's timezone
 (`assistant.timezone`). `duration_s` is a timer's length or a reminder's "in 20 minutes". `session_id` is the chat it
-was set in (null in an incognito chat). A timer runs 1 second to 24 hours; a reminder can be up to a year ahead.
+was set in (null in an incognito chat). A timer runs 1 second to 24 hours; a reminder or alarm can be up to a year
+ahead. An alarm has no `message`; its `label` names it ("gym").
 
 When one comes due, the engine sends a `reminder` notification (`notification.new`): title "Timer done" (message "Your
-10 minute timer is done.") or "Reminder" (message: what to remind about), payload `{event: "timer"|"reminder",
-reminder_id, fire_at, late, channel, session_id?}`. One that came due while Sentient was not running goes off when it
+10 minute timer is done."), "Reminder" (message: what to remind about) or "Alarm" / "Alarm: gym" (message "It's
+7:00 AM.", or when late "Your 7:00 AM alarm went off while Sentient wasn't running."), payload `{event:
+"timer"|"reminder"|"alarm", reminder_id, fire_at, late, channel, session_id?}`. The window rings for an alarm: a
+banner with **Stop** and a chime (Web Audio, no sound file) that plays until Stop, for 3 minutes at most. One that came due while Sentient was not running goes off when it
 starts, and says when it was due (`late: true`). A reminder set in a Telegram, Discord or WhatsApp chat is also sent
-to that chat (the delivery is listed on the Activity timeline as "A timer or reminder you set"); one set anywhere
-else stays on the desktop. Firing never asks the model and Stop everything does not hold it back. Fired and cancelled
+to that chat (the delivery is listed on the Activity timeline as "A timer, reminder or alarm you set"); one set
+anywhere else stays on the desktop, unless `channels.deliver_reminders` is on (#359, off by default; "Reminders and
+alarms on your phone too" on the Channels page): then a reminder or alarm set in the window or by voice also goes to
+every paired chat whose delivery is on (delivery `reason: "reminder_copy"`). Timers always stay where they were set. Firing never asks the model and Stop everything does not hold it back. Fired and cancelled
 ones are forgotten after 30 days.
 
 ### Tools (plugin `reminders`, "Timers & reminders", all `internal`)
@@ -3212,7 +3234,10 @@ ones are forgotten after 30 days.
 - `set_reminder(message = "", at = "", in_minutes = 0, connector = "to")` (risk `write`) → `{status, reminder}`.
   `at` is a local "YYYY-MM-DD HH:MM" (or ISO with an offset). Repeating reminders are tasks
   (`create_task_from_prompt`).
-- `list_reminders(kind = "any")` (risk `read`) → `{status, reminders}`, soonest first.
+- `set_alarm(at = "", in_minutes = 0, label = "")` (risk `write`, #359) → `{status, reminder}`. `at` as for
+  `set_reminder`.
+- `list_reminders(kind = "any")` (risk `read`; `kind` "timer", "reminder", "alarm" or "any") → `{status, reminders}`,
+  soonest first.
 - `cancel_reminder(reminder_id)` (risk `write`) → `{status, reminder}`.
 
 Each `reminder` in a result also has `fire_at_local` and `seconds_left`.
@@ -3220,7 +3245,7 @@ Each `reminder` in a result also has `fire_at_local` and `seconds_left`.
 ### REST
 - `GET /api/reminders?status=scheduled|fired|cancelled|all&limit=100` → `{reminders: [Reminder]}`; scheduled soonest
   first, others newest first.
-- `POST /api/reminders` `{kind: "timer"|"reminder", minutes?, at?, message?, label?}` → Reminder (`source: "api"`).
+- `POST /api/reminders` `{kind: "timer"|"reminder"|"alarm", minutes?, at?, message?, label?}` → Reminder (`source: "api"`).
   400 with a plain `detail` when it can't be set.
 - `POST /api/reminders/{id}/cancel` → Reminder. 404 when unknown, 409 when it already went off or was cancelled.
 - Event `reminder.updated` (section 1). The Activity timeline (section 21) lists them under `reminders`.

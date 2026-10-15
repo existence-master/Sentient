@@ -824,6 +824,8 @@ class Timeline:
             fired = row["status"] == "fired"
             if row["kind"] == "timer":
                 title = f"Your {what} went off" if fired else f"Cancelled your {what}"
+            elif row["kind"] == "alarm":
+                title = f"Your {what} rang" if fired else f"Cancelled your {what}"
             else:
                 message = words.short(row["message"], 80)
                 title = (f"Reminded you: {message}" if message else "Reminded you") if fired else \
@@ -1243,6 +1245,8 @@ class Timeline:
                 continue
             if r["kind"] == "timer":
                 title = f"Your {words.reminder_name(r)} ends"
+            elif r["kind"] == "alarm":
+                title = f"Your {words.reminder_name(r)} rings"
             else:
                 message = words.short(r["message"], 80)
                 title = f"Will remind you: {message}" if message else "Will remind you"
