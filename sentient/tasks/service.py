@@ -61,7 +61,9 @@ from sentient.tasks.schedule import (
     normalize_schedule,
     parse_iso,
     parse_run_at,
+    spoken_interval,
     spoken_schedule,
+    spoken_window,
     user_timezone_name,
 )
 from sentient.tasks.scripts import ScriptInvalid, normalize_script, tools_named, validate_code
@@ -1480,6 +1482,12 @@ class TaskService(Service):
                 # a watch job that would check only once is almost never what was meant
                 sched = normalize_schedule({"type": "recurring", "frequency": "interval", "interval_minutes": 60}, tz)
             fields["schedule"] = sched
+        if script is not None or no_script:
+            repaired = self._web_watch_schedule(
+                fields.get("schedule") or schedule, script, script_tools, task, data.get("schedule"), tz
+            )
+            if repaired is not None:
+                fields["schedule"] = repaired
         if is_change:
             fields["chat_history"] = [*history, {
                 "role": "assistant",
@@ -1551,6 +1559,34 @@ class TaskService(Service):
         if not fixed.get("schedule") and data.get("schedule"):
             fixed = {**fixed, "schedule": data["schedule"]}
         return None, fixed, tools_named("\n".join(codes))
+
+    def _web_watch_schedule(
+        self, schedule: dict, script: dict | None, script_tools: list[str] | None, task: dict, proposed: Any, tz: str,
+    ) -> dict | None:
+        """A recurring schedule for a web check stuck on a trigger it has nothing to do with (#389), else None.
+
+        The check reads a page, a search or the news, so it must run on a timer to notice anything; a ``triggered``
+        schedule (a small model's guess for "tell me when a new event is added") would only run it when, say, a
+        calendar event arrives. A trigger the script reads, or one the request names, stays. The repair uses the
+        interval the user said, else the planner's daily or weekly schedule, else every hour."""
+        if (schedule or {}).get("type") != "triggered":
+            return None
+        code = str((script or {}).get("code") or "")
+        tools = tools_named(code) if script is not None else list(script_tools or [])
+        request = self._script_request(task)
+        if not scripts.polls_the_web(tools) or scripts.trigger_is_real(schedule, code, request):
+            return None
+        minutes = spoken_interval(request)
+        planned = normalize_schedule(proposed, tz) if isinstance(proposed, dict) and proposed else None
+        if minutes is not None:
+            sched = normalize_schedule({"type": "recurring", "frequency": "interval", "interval_minutes": minutes}, tz)
+        elif planned is not None and planned["type"] == "recurring" and planned["frequency"] != "interval":
+            sched = spoken_window(planned, request)  # "every morning": the planner's daily or weekly schedule
+        else:  # an interval nobody asked for (small models pick 5 minutes) or none: every hour
+            sched = normalize_schedule({"type": "recurring", "frequency": "interval", "interval_minutes": 60}, tz)
+        log.info("web check for task %s had a %s trigger it never uses, checking on a timer instead",
+                 task["id"], schedule.get("source") or "blank")
+        return sched
 
     @staticmethod
     def _script_request(task: dict) -> str:
