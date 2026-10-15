@@ -150,6 +150,9 @@ def test_addresses_are_cleaned_and_plain_http_stays_at_home():
     assert ha.ws_url("https://maya.duckdns.org") == "wss://maya.duckdns.org/api/websocket"
     with pytest.raises(IntegrationError, match="https"):
         ha.check_url("http://maya.duckdns.org:8123")
+    with pytest.raises(IntegrationError, match="https"):
+        ha.check_url("http://[2606:4700::1111]:8123")  # a public IPv6 address has no dots but is not at home
+    assert ha.check_url("http://[fe80::1]:8123") == "http://[fe80::1]:8123"
     with pytest.raises(IntegrationError):
         ha.check_url("")
 
@@ -290,10 +293,13 @@ def test_matching_is_exact_or_it_goes_to_the_model():
     assert ha.match(index, "garage opener", device="", plural=False) is None  # sounds like a garage door
     assert ha.match(index, "front door", device="", plural=False) is None  # a lock
     assert ha.match(index, "kitchen lights", device="light", plural=True) is None
+    # "all the bedroom lights" means both, even when one of them is named exactly that
+    named = [*index, {**index[2], "entity_id": "light.bedroom_lights", "name": "Bedroom lights"}]
+    assert len(ha.match(named, "bedroom lights", device="light", plural=True) or []) == 1
+    assert len(ha.match(named, "bedroom lights", device="light", plural=True, everywhere=True) or []) == 3
     assert en.home_done(en.parse("turn off the living room lights", None), 2) == "Turned off the living room lights."
     assert en.home_done(en.parse("switch off all the lights", None), 4) == "Turned off all the lights."
-    assert en.home_done(en.parse("dim my bedroom lamp to 30%", None), 1) == "Set the your bedroom lamp to 30%." \
-        or en.home_done(en.parse("dim my bedroom lamp to 30%", None), 1) == "Set the bedroom lamp to 30%."
+    assert en.home_done(en.parse("dim my bedroom lamp to 30%", None), 1) == "Set the bedroom lamp to 30%."
 
 
 async def test_living_room_lights_go_off_with_no_model_call(config, isolated_home):
@@ -510,3 +516,4 @@ def test_trigger_filters_ignore_case_for_home_assistant():
     assert event_matches_filter(item, {"name": {"$in": ["FRONT DOOR"]}}, "home_assistant")
     assert not event_matches_filter(item, {"to": "locked"}, "home_assistant")
     assert not event_matches_filter(item, wanted, "webhook")  # other sources stay exact
+    assert event_matches_filter({**item, "name": "Straße"}, {"name": {"$regex": "^Stra.e$"}}, "home_assistant")

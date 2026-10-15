@@ -23,7 +23,8 @@ just said.
   entity picker leaves out. Then the model answers and the usual approval card or refusal follows.
 - Locks, alarms, garage doors, gates and anything that sounds like one never go through a quick command: the parser
   skips "lock", "unlock" and "alarm", the matcher refuses security devices, and their tools are `send` with
-  `allow_for_chat: false`, so they ask every time with only "Allow once".
+  `allow_for_chat: false`: in approvals modes "ask" and "always" they ask every time with only "Allow once". With
+  approvals "off" they don't ask, like every other send, unless an Ask rule is set on them or on `home_assistant`.
 - Anything not exactly clear ("the bedroom light" when there are two, "the lights" with no room) goes to the model
   unchanged.
 

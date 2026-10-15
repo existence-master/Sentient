@@ -96,13 +96,11 @@ def normalize_url(raw: str) -> str:
 
 def _local_host(host: str) -> bool:
     h = host.strip("[]").lower()
-    if h in {"localhost"} or "." not in h or h.endswith((".local", ".lan", ".home", ".internal", ".localdomain",
-                                                          ".home.arpa", ".localhost", ".test")):
-        return True
-    try:
+    try:  # an IP address first: a public IPv6 address has no dots but is not at home
         ip = ipaddress.ip_address(h)
     except ValueError:
-        return False
+        return h == "localhost" or "." not in h or h.endswith((
+            ".local", ".lan", ".home", ".internal", ".localdomain", ".home.arpa", ".localhost", ".test"))
     return ip.is_private or ip.is_loopback or ip.is_link_local
 
 
@@ -633,7 +631,7 @@ def match(entities: list[dict], words: str, *, device: str, plural: bool, everyw
         return " ".join(w[:-1] if w.endswith("s") and len(w) > 3 else w for w in ws)
 
     exact = [e for e in entities if " ".join(_words(e["name"])) in {" ".join(said), singular(said)}]
-    if exact:
+    if exact and not everywhere:  # "all the kitchen lights" means every one, not only the one named that
         e = exact[0]
         return [e] if len(exact) == 1 and e["domain"] in QUICK_DOMAINS and not is_security(e) else None
     if not kinds:

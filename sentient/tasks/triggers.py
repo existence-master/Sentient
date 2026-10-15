@@ -115,9 +115,9 @@ def event_matches_filter(event_data: dict[str, Any], task_filter: dict[str, Any]
             text_value: Any = f"{raw} {value}".strip()
         else:
             value = _lookup(event_data, field)
+            text_value = value  # $regex and $contains see the raw value (they ignore case already)
             if source == "home_assistant":  # names and states as people say them: "front door" is "Front door"
                 value, query = _fold(value), _fold(query)
-            text_value = value
         if isinstance(query, dict):
             return all(_op_ok(op, op_val, value, text_value, email_field) for op, op_val in query.items())
         if email_field:
