@@ -152,7 +152,7 @@ def _bindings(tree: ast.AST) -> dict[str, list[tuple[str, ast.expr | None]]]:
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 bind(target, "value", node.value)
-        elif isinstance(node, ast.NamedExpr):
+        elif isinstance(node, ast.NamedExpr) or (isinstance(node, ast.AnnAssign) and node.value is not None):
             bind(node.target, "value", node.value)
         elif isinstance(node, ast.For | ast.AsyncFor | ast.comprehension):
             bind(node.target, "item", node.iter)
@@ -225,10 +225,167 @@ def _check_result_keys(tree: ast.AST) -> None:
             )
 
 
-def check_rules(code: str, condition: str) -> None:
+# A request to watch something for news (#375): "watch", "track", "monitor", "keep an eye on", "tell me when"...
+_WATCH = re.compile(
+    r"\b(?:watch|track|monitor|keep\s+an\s+eye|keep\s+tabs)\w*\b"
+    r"|\b(?:tell|let|notify|alert|ping|message|text)\s+(?:me|us)\s+(?:know\s+)?(?:when|if|whenever|as\s+soon\s+as)\b",
+    re.IGNORECASE,
+)
+# ...that still asks for a report on every check: "a report every hour", "each time you check", "daily summary".
+_EVERY_REPORT = re.compile(
+    r"\b(?:report|summary|digest|update|recap)s?\s+(?:every|each)\b"
+    r"|\b(?:every|each)\s+(?:run|check)\b|\b(?:every|each)\s+time\s+(?:you|it)\s+(?:check|run|look)s?\b"
+    r"|\b(?:hourly|daily|nightly|weekly|monthly)\s+(?:report|summary|digest|update|recap)\b"
+    r"|\beven\s+(?:if|when)\s+nothing\b",
+    re.IGNORECASE,
+)
+# The request names the part of the page to watch, so keeping only it is right.
+_NAMES_PART = re.compile(
+    r"\b(?:first|top|opening|1st)\s+(?:line|item|entry|row|post|story|event|result|article|paragraph)s?\b"
+    r"|\b(?:heading|headline|title|header|banner)s?\b",
+    re.IGNORECASE,
+)
+_LINE_SPLITS = {"split", "rsplit", "splitlines", "partition", "rpartition"}
+_SAME_TEXT = {"strip", "lstrip", "rstrip", "lower", "upper", "casefold"}
+SHORT_CUT_CHARS = 500  # content[:n] with a smaller n keeps only the top of the page
+
+
+def is_watch_request(request: str) -> bool:
+    """The user asks to watch something for news, not for a report on every run (#375). The request holds what they
+    said later too (a change in the task's chat), so the last of "watch" and "report every..." wins."""
+    text = request or ""
+    watch = [m.start() for m in _WATCH.finditer(text)]
+    report = [m.start() for m in _EVERY_REPORT.finditer(text)]
+    return bool(watch) and (not report or watch[-1] > report[-1])
+
+
+def _page_text_names(tree: ast.AST, env: dict[str, _Shape]) -> tuple[set[str], set[str]]:
+    """``(texts, lines)``: names that always hold the fetched page's text, and names that always hold it split into
+    pieces (``content.splitlines()``)."""
+    bindings = _bindings(tree)
+    texts: set[str] = set()
+    lines: set[str] = set()
+    for _ in range(len(bindings) + 1):
+        found_texts = {n for n, ways in bindings.items()
+                       if all(how == "value" and expr is not None and _is_page_text(expr, env, texts)
+                              for how, expr in ways)}
+        found_lines = {n for n, ways in bindings.items()
+                       if all(how == "value" and expr is not None and _splits_page(expr, env, found_texts)
+                              for how, expr in ways)}
+        if found_texts == texts and found_lines == lines:
+            break
+        texts, lines = found_texts, found_lines
+    return texts, lines
+
+
+def _is_page_text(node: ast.AST, env: dict[str, _Shape], texts: set[str]) -> bool:
+    """The whole text of a ``tools.web_fetch`` page: ``page['content']``, ``page.get('content', '')``, a name holding
+    it, ``... or ''``, ``str(...)`` or ``.strip()``/``.lower()`` of it."""
+    if isinstance(node, ast.Name):
+        return node.id in texts
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+        return _is_page_text(node.values[0], env, texts)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "str" and len(node.args) == 1:
+        return _is_page_text(node.args[0], env, texts)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _SAME_TEXT:
+        return _is_page_text(node.func.value, env, texts)
+    read = _key_read(node)
+    if read and read[1] == "content":
+        shape = _shape_of(read[0], env)
+        return shape is not None and shape.tool == "web_fetch" and shape.item is None
+    return False
+
+
+def _splits_page(node: ast.AST, env: dict[str, _Shape], texts: set[str]) -> bool:
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _LINE_SPLITS
+            and _is_page_text(node.func.value, env, texts))
+
+
+def _first_piece(node: ast.Subscript) -> bool:
+    """``x[0]`` or ``x[:1]``."""
+    s = node.slice
+    if isinstance(s, ast.Constant):
+        return s.value == 0
+    return (isinstance(s, ast.Slice) and s.lower is None and s.step is None and isinstance(s.upper, ast.Constant)
+            and s.upper.value == 1)
+
+
+def _returned_page_keys(tree: ast.AST, env: dict[str, _Shape]) -> set[str] | None:
+    """The keys of a ``tools.web_fetch`` result that reach what the script returns (``result(...)`` or ``print(...)``),
+    following names through their assignments; None when the script returns nothing."""
+    bindings = _bindings(tree)
+    keys: set[str] = set()
+
+    def collect(node: ast.AST, seen: frozenset[str]) -> None:
+        if isinstance(node, ast.Name):
+            if node.id not in seen:
+                for how, expr in bindings.get(node.id, ()):
+                    if how == "value" and expr is not None:
+                        collect(expr, seen | {node.id})
+            return
+        read = _key_read(node)
+        if read:
+            shape = _shape_of(read[0], env)
+            if shape is not None and shape.tool == "web_fetch" and shape.item is None:
+                keys.add(read[1])
+        for child in ast.iter_child_nodes(node):
+            collect(child, seen)
+
+    returns = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+               and node.func.id in ("result", "print")]
+    for call in returns:
+        for arg in [*call.args, *(k.value for k in call.keywords)]:
+            collect(arg, frozenset())
+    return keys if returns else None
+
+
+def _check_whole_page(tree: ast.AST) -> None:
+    """Reject a script that cuts a fetched page down to its first line, its heading or its first few characters
+    (#375): a new item further down the page would never be noticed."""
+    env = _known_shapes(tree)
+    texts, lines = _page_text_names(tree, env)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Subscript) or not isinstance(node.ctx, ast.Load):
+            continue
+        base = node.value
+        split = _splits_page(base, env, texts) or (isinstance(base, ast.Name) and base.id in lines)
+        if split and _first_piece(node):
+            raise ScriptInvalid(
+                f"The check script keeps only the first line of the page (`{ast.unparse(node)}`), which is usually "
+                "its heading, so something new further down the page would never be noticed. Return the page's whole "
+                "`content` instead."
+            )
+        s = node.slice
+        if (_is_page_text(base, env, texts) and isinstance(s, ast.Slice) and s.lower is None
+                and isinstance(s.upper, ast.Constant) and isinstance(s.upper.value, int)
+                and 0 <= s.upper.value < SHORT_CUT_CHARS):
+            raise ScriptInvalid(
+                f"The check script keeps only the first {s.upper.value} characters of the page "
+                f"(`{ast.unparse(node)}`), so something new further down the page would never be noticed. Return the "
+                "page's whole `content` instead."
+            )
+    returned = _returned_page_keys(tree, env)
+    if returned is not None and "title" in returned and "content" not in returned:
+        raise ScriptInvalid(
+            "The check script reads only the page's `title`, so it would never notice anything new on the page "
+            "itself. Return the page's whole `content` instead."
+        )
+
+
+def check_rules(code: str, condition: str, request: str = "") -> None:
     """Reject what small models write into check scripts that cannot work (#305), with a plain reason the planner
     can act on: a package that is not installed, an endless loop, a wait, memory calls, an alert result on a
-    comparing condition, or a key a tool's result never has (#366)."""
+    comparing condition, or a key a tool's result never has (#366).
+
+    With the user's ``request`` (the planner, #375) it also rejects ``every_run`` for a watch request, which would
+    notify on every check, and a script that cuts a page down to its heading or first line when the request does
+    not name that part."""
+    if request and condition == "every_run" and is_watch_request(request):
+        raise ScriptInvalid(
+            "The user asked to watch for something new, but the condition \"every_run\" would send a notification "
+            "after every check, even when nothing changed. Use \"noteworthy\" to watch a page, a feed or the news, "
+            "\"changed\" for one exact value, or \"alert\" with a test."
+        )
     tree = ast.parse(code)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import | ast.ImportFrom):
@@ -268,11 +425,16 @@ def check_rules(code: str, condition: str) -> None:
                 f"Use the condition \"alert\", or return only the watched value and let Sentient compare it."
             )
     _check_result_keys(tree)
+    if request and not _NAMES_PART.search(request):
+        _check_whole_page(tree)
 
 
-def normalize_script(raw: Any, previous: dict | None = None, *, model_written: bool = False) -> dict:
+def normalize_script(
+    raw: Any, previous: dict | None = None, *, model_written: bool = False, request: str = ""
+) -> dict:
     """Merge user/planner input over ``previous``. Changing the code resets the stored state. Code a model wrote
-    (the planner, chat tools) must also pass ``check_rules``; a person may write what they like."""
+    (the planner, chat tools) must also pass ``check_rules``, with the user's ``request`` for the planner; a person
+    may write what they like."""
     if not isinstance(raw, dict):
         raise ScriptInvalid("script must be an object with code, condition and then.")
     prev = dict(previous or {})
@@ -285,7 +447,7 @@ def normalize_script(raw: Any, previous: dict | None = None, *, model_written: b
     if then not in THEN:
         raise ScriptInvalid("script.then must be 'notify' or 'run'.")
     if model_written:
-        check_rules(code, condition)
+        check_rules(code, condition, request)
     out = {"code": code, "condition": condition, "then": then}
     same_code = previous is not None and prev.get("code") == code
     # switching between changed and noteworthy keeps the baseline: both compare the same result

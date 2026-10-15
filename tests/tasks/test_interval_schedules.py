@@ -12,7 +12,7 @@ from tests.conftest import FakeProvider
 from tests.tasks.conftest import PLAN_TIME, json_calls
 
 TOOLS = "from sentient_tools import tools, result\n"
-WATCH = "from sentient_tools import tools, result\npage = tools.web_fetch(url='https://example.com')\nresult(page.get('title'))\n"
+WATCH = "from sentient_tools import tools, result\npage = tools.web_fetch(url='https://example.com')\nresult(page.get('content'))\n"
 
 
 @pytest.mark.parametrize(("prompt", "minutes"), [

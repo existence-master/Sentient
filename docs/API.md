@@ -2611,7 +2611,13 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `{url, title, content, truncated}`, `web_search` → `{query, provider, results: [{title, url, snippet}], note?}`,
   `news_search`/`news_top_headlines` → `{provider, query|country+category, articles: [{title, source, url,
   published_at, summary}]}`; for example `tools.web_fetch(...)["html"]`, or a string key on the `results` list). The
-  planner prompt lists the same shapes. The planner gets one chance to fix a rejected script with the reason. If
+  planner prompt lists the same shapes. With the user's request (the original prompt, their messages in the task's
+  chat and their answers to clarifying questions) the planner's script is also rejected (#375) when the request is a
+  watch request ("watch", "track", "monitor", "keep an eye on", "tell me when", "let me know if"...) and the condition
+  is `every_run`, unless the request asks for a report on every check ("a report every hour", "each time you check",
+  "daily summary"); and when it cuts a `web_fetch` page down to its first line (`content.splitlines()[0]`,
+  `.split("\n")[0]`, `[:1]`, `.partition(...)[0]`), its first characters (`content[:n]` with `n` under 500) or only
+  its `title`, unless the request names that part ("first line", "heading", "headline", "title"...). The planner gets one chance to fix a rejected script with the reason. If
   that one is rejected too (#310), the task is saved as an ordinary AI-run task instead of failing: `task_type: "single"`,
   `script: null`, one plan step that is the user's own request (`original_prompt`, which keeps the page address the
   script held) with the app the scripts called (`tools.web_fetch`: `web`; else the planner's app; one more step per
