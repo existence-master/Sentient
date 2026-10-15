@@ -367,17 +367,19 @@ class ChannelService(Service):
         """The paired chat a timer, reminder or alarm was set in. One set anywhere else stays on the desktop, except
         that with ``channels.deliver_reminders`` a reminder or alarm also goes to the delivery chats ("default", #359)."""
         payload = note.get("payload") or {}
+        # one set in a messaging chat that is no longer paired never goes to other chats
         elsewhere = "default" if (
             self.app.config.channels.deliver_reminders and payload.get("event") in {"reminder", "alarm"}
+            and payload.get("channel") not in self.channels
         ) else "desktop"
         session_id = payload.get("session_id")
         if not session_id:
             return elsewhere
         try:
             found = await self.store.chat_for_session(str(session_id))
-        except Exception:
+        except Exception:  # fail closed
             log.exception("could not find the chat of a reminder")
-            return elsewhere
+            return "desktop"
         if found is None:
             return elsewhere
         channel, chat = found

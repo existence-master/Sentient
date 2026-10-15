@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 from tests.channels.conftest import until
@@ -62,8 +63,31 @@ async def test_with_the_setting_a_desktop_reminder_and_alarm_also_go_to_the_deli
     assert any("Reminder" in t and "Stretch" in t for t in texts)
     assert any("Alarm" in t and "It's" in t for t in texts)
     assert not any("Timer done" in t for t in texts)
-    rows = await tg.app.store.fetchall("SELECT reason, what FROM channel_deliveries ORDER BY rowid DESC LIMIT 2")
+    rows: list = []
+
+    async def recorded() -> bool:
+        rows[:] = await tg.app.store.fetchall("SELECT reason, what FROM channel_deliveries WHERE reason LIKE 'reminder%'")
+        return len(rows) >= 2
+
+    for _ in range(300):
+        if await recorded():
+            break
+        await asyncio.sleep(0.01)
+    assert len(rows) == 2
     assert {r["reason"] for r in rows} == {"reminder_copy"} and {r["what"] for r in rows} == {"reminder"}
+
+
+async def test_a_reminder_from_a_chat_that_is_no_longer_paired_goes_nowhere_else(tg):
+    """#359 review: the copy to the delivery chats is only for reminders set outside a messaging chat."""
+    await tg.pair(42)
+    tg.app.config.channels.deliver_reminders = True
+    note = {"kind": "reminder", "title": "Reminder", "message": "Stretch",
+            "payload": {"event": "reminder", "channel": "telegram", "session_id": "gone"}}
+    assert await tg.app.channels._reminder_delivery(note) == "desktop"
+    desktop = {**note, "payload": {"event": "reminder", "channel": "desktop", "session_id": "a-desktop-chat"}}
+    assert await tg.app.channels._reminder_delivery(desktop) == "default"
+    timer = {**note, "payload": {"event": "timer", "channel": "desktop"}}
+    assert await tg.app.channels._reminder_delivery(timer) == "desktop"
 
 
 async def test_without_the_setting_a_desktop_alarm_stays_on_the_desktop(tg):

@@ -135,6 +135,12 @@ def test_calendar_words():
     assert en.calendar_next(EVENTS[3:], NOW, 7) == "Next on your calendar: Maya's birthday, on Friday, all day."
     cancelled = {**EVENTS[1], "status": "cancelled"}
     assert en.calendar_next([cancelled], NOW, 7) == "Nothing on your calendar in the next 7 days."
+    birthday_today = {"id": "b", "summary": "Maya's birthday", "start": "2026-10-14", "end": "2026-10-15", "all_day": True}
+    trip = {"id": "t", "summary": "Conference trip", "start": "2026-10-13", "end": "2026-10-16", "all_day": True}
+    assert en.calendar_next([birthday_today, trip, EVENTS[1]], NOW, 7) == (
+        "All day today: Maya's birthday and Conference trip. "
+        "Next: Design review with Maya Rao, today at 4:30 PM (Room 4).")  # the meeting is not hidden
+    assert en.calendar_next([birthday_today], NOW, 7) == "All day today: Maya's birthday."
     tomorrow = {**EVENTS[1], "start": "2026-10-15T09:00:00Z"}
     assert en.calendar_next([tomorrow], NOW, 7) == (
         "Next on your calendar: Design review with Maya Rao, tomorrow at 2:30 PM (Room 4).")

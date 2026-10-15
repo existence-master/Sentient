@@ -764,7 +764,9 @@ def _event_text(ev: dict, start: datetime, all_day: bool, now: datetime) -> str:
 
 
 def calendar_next(events: list[dict], now: datetime, days: int) -> str:
-    ongoing, upcoming = [], []
+    """The event on now, today's all-day events, then the next event: a meeting later today is never hidden by an
+    all-day event today."""
+    ongoing, upcoming, all_day_today = [], [], []
     for ev in events:
         if not isinstance(ev, dict) or str(ev.get("status") or "").lower() == "cancelled":
             continue
@@ -774,8 +776,12 @@ def calendar_next(events: list[dict], now: datetime, days: int) -> str:
         at, date_only = start
         all_day = bool(ev.get("all_day")) or date_only
         if all_day:
-            if at.date() >= now.date():
+            end = _event_time(ev.get("end"), now)
+            last = end[0].date() - timedelta(days=1) if end is not None else at.date()  # the end date is exclusive
+            if at.date() > now.date():
                 upcoming.append((at, True, ev))
+            elif last >= now.date():  # today, or a few days that include today
+                all_day_today.append(ev)
             continue
         if at > now:
             upcoming.append((at, False, ev))
@@ -785,16 +791,18 @@ def calendar_next(events: list[dict], now: datetime, days: int) -> str:
             ongoing.append((end[0], ev))
     upcoming.sort(key=lambda item: (item[0], not item[1]))
     said = []
+    if all_day_today:
+        said.append("All day today: " + _and([_event_title(ev) for ev in all_day_today[:3]]) + ".")
     if ongoing:
         end_at, ev = ongoing[0]
         said.append(f"Right now: {_event_title(ev)}, until {_clock_text(end_at)}.")
     if upcoming:
         at, all_day, ev = upcoming[0]
-        said.append(f"{'Next' if ongoing else 'Next on your calendar'}: {_event_text(ev, at, all_day, now)}.")
+        said.append(f"{'Next' if said else 'Next on your calendar'}: {_event_text(ev, at, all_day, now)}.")
         later = [u for u in upcoming[1:] if u[0].date() == at.date() and not u[1]]
         if later and not all_day:
             said.append(f"After that: {_event_text(later[0][2], later[0][0], False, now)}.")
-    elif not ongoing:
+    elif not said:
         return f"Nothing on your calendar in the next {days} days."
     return " ".join(said)
 
