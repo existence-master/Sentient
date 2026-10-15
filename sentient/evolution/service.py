@@ -35,12 +35,11 @@ from sentient.memory.episodic import CLEAN as CLEAN_SUMMARY
 from sentient.memory.topics import TOPIC_NAMES
 from sentient.memory.vectors import cosine
 from sentient.services import Service, cancel_tasks
-from sentient.skills.loader import slugify, valid_name
+from sentient.skills.loader import ensure_skill_sections, slugify, valid_name
 from sentient.store.db import after_watermark, next_watermark, now_iso
 
 log = logging.getLogger(__name__)
 
-SECTIONS = ["When to use", "Procedure", "Pitfalls", "Verification"]
 TRANSCRIPT_BUDGET = 14_000
 REVIEW_LOOKBACK_DAYS = 3
 STABLE_TOPICS = set(TOPIC_NAMES) - {"Miscellaneous"}
@@ -76,14 +75,6 @@ def _parse_ts(value: Any) -> datetime | None:
 
 async def _maybe_await(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
-
-
-def ensure_sections(body: str) -> str:
-    out = body.strip()
-    for sec in SECTIONS:
-        if not re.search(rf"^#+\s*{re.escape(sec)}\b", out, flags=re.IGNORECASE | re.MULTILINE):
-            out += f"\n\n## {sec}\n- (none noted yet)"
-    return out
 
 
 def _count(value: Any) -> int:
@@ -496,7 +487,7 @@ class EvolutionService(Service):
         requires = [str(t) for t in raw.get("requires_tools") or [] if str(t) in plugin_ids]
         tags = [str(t) for t in raw.get("tags") or []][:8]
         lib.write(
-            name, description, ensure_sections(body),
+            name, description, ensure_skill_sections(body),
             author=existing.author if existing else "assistant",
             tags=tags or (existing.tags if existing else []),
             requires_tools=requires or (existing.requires_tools if existing else []),
@@ -726,7 +717,7 @@ class EvolutionService(Service):
         if decision not in {"patch", "repair", "update"} or len(body) < 80:
             log.info("no usable repair for %s (%s: %s)", name, decision, str(raw.get("reason") or "")[:200])
             return None
-        body = ensure_sections(body)  # adds any missing standard section; a fix need not repeat the headings
+        body = ensure_skill_sections(body)  # a fix need not repeat every standard heading
         if " ".join(body.split()) == " ".join(current.body.split()):
             return None
         description = " ".join(str(raw.get("description") or "").split()) or current.description

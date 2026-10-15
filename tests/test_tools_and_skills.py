@@ -1,5 +1,5 @@
 from sentient import paths
-from sentient.skills.loader import SkillLibrary
+from sentient.skills.loader import SKILL_SECTIONS, SkillLibrary, parse_skill_file
 from sentient.tools.base import Risk, ToolContext, tool
 from sentient.tools.registry import ToolRegistry
 
@@ -47,6 +47,26 @@ def test_skill_roundtrip_and_pending(isolated_home):
     lib.reload()
     assert {s.name for s in lib.list()} == {"weekly-review", "secret-sauce"}
     assert lib.get("secret-sauce").author == "assistant"
+
+
+def test_new_skills_get_the_six_field_shape_and_legacy_skills_still_load(isolated_home):
+    paths.ensure_layout()
+    lib = SkillLibrary()
+    path = lib.write("new-skill", "A new procedure", "# New skill\n## Procedure\n1. Do it.")
+    new = parse_skill_file(path)
+    assert new is not None
+    assert [f"## {section}" in new.body for section in SKILL_SECTIONS] == [True] * 6
+
+    legacy_path = lib.root / "legacy-skill" / "SKILL.md"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        "---\nname: legacy-skill\ndescription: An older skill.\n---\n\n"
+        "# Legacy skill\n## Procedure\n1. Keep working.\n",
+        encoding="utf-8",
+    )
+    legacy = parse_skill_file(legacy_path)
+    assert legacy is not None
+    assert legacy.body == "# Legacy skill\n## Procedure\n1. Keep working."
 
 
 def test_skill_requires_tools_filter(isolated_home):

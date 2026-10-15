@@ -22,7 +22,7 @@ async def test_reviewer_creates_pending_skill(app):
     pending = app.skills.get_pending("weekly-inbox-digest")
     assert pending and pending.created_by_review and pending.author == "assistant"
     assert "not-a-plugin" not in pending.requires_tools  # unknown plugins are dropped so the skill stays visible
-    for sec in ("When to use", "Procedure", "Pitfalls", "Verification"):
+    for sec in ("When to use", "Inputs and access", "Procedure", "Verification", "Output", "Approval"):
         assert f"## {sec}" in pending.body
     transcript = app.fake.calls[-1]["messages"][1]["content"]
     assert "TOOL CALL gmail_search" in transcript and "digest" in transcript

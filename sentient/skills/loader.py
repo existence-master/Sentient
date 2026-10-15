@@ -16,7 +16,11 @@
     ---
     # Weekly review
     ## When to use ...
+    ## Inputs and access ...
     ## Procedure ...
+    ## Verification ...
+    ## Output ...
+    ## Approval ...
 
 Progressive disclosure keeps prompts small: the system prompt lists only names
 and descriptions; the model calls ``skill_view`` to read the body when needed.
@@ -43,6 +47,22 @@ _FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 RESERVED = {"pending", "archived"}
 _UNSET: Any = object()
+SKILL_SECTIONS = (
+    "When to use",
+    "Inputs and access",
+    "Procedure",
+    "Verification",
+    "Output",
+    "Approval",
+)
+_SECTION_PLACEHOLDERS = {
+    "When to use": "- (describe the triggering request)",
+    "Inputs and access": "- (list required information, tools and access)",
+    "Procedure": "1. (add the steps)",
+    "Verification": "- (state how to tell it worked)",
+    "Output": "- (state what to return)",
+    "Approval": "- Follow each tool's normal approval rules.",
+}
 
 
 def slugify(name: str) -> str:
@@ -57,6 +77,16 @@ def valid_name(name: str) -> bool:
 def content_hash(text: str) -> str:
     """Hash of a SKILL.md as written, ignoring line endings and surrounding blank space."""
     return hashlib.sha256(text.replace("\r\n", "\n").strip().encode("utf-8")).hexdigest()
+
+
+def ensure_skill_sections(body: str) -> str:
+    """Add missing fields to a new or rewritten skill without altering existing sections."""
+    out = body.strip()
+    for section in SKILL_SECTIONS:
+        if not re.search(rf"^#+\s*{re.escape(section)}\b", out, flags=re.IGNORECASE | re.MULTILINE):
+            separator = "\n\n" if out else ""
+            out += f"{separator}## {section}\n{_SECTION_PLACEHOLDERS[section]}"
+    return out
 
 
 @dataclass
@@ -171,7 +201,7 @@ def render_skill(
     if created_by_review:
         meta["created_by_review"] = True
     front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
-    return f"---\n{front}\n---\n\n{body.strip()}\n"
+    return f"---\n{front}\n---\n\n{ensure_skill_sections(body)}\n"
 
 
 class SkillLibrary:

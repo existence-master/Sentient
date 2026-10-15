@@ -35,9 +35,12 @@ import { parseSections } from './meta'
 
 const SECTION_ICON: Record<string, ReactNode> = {
   'when to use': <IconBulb size={15} />,
+  'inputs and access': <IconTool size={15} />,
   procedure: <IconListNumbers size={15} />,
   pitfalls: <IconAlertTriangle size={15} />,
-  verification: <IconChecklist size={15} />
+  verification: <IconChecklist size={15} />,
+  output: <IconFilePencil size={15} />,
+  approval: <IconAlertTriangle size={15} />
 }
 
 export function toDraft(s: Pick<SkillDetailType, 'name' | 'description' | 'body' | 'tags' | 'requires_tools'>): SkillDraft {
