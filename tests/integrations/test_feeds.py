@@ -262,7 +262,7 @@ async def test_feed_active_and_status(app, keychain, monkeypatch):
         await mgr.feeds.record_success("gmail", cursor="7")
         assert mgr.feed_active("gmail") is True
         status = {s["source"]: s for s in await mgr.feed_status()}
-        assert set(status) == {"gmail", "gcalendar", "email_imap"}
+        assert set(status) == {"gmail", "gcalendar", "email_imap", "home_assistant"}
         g = status["gmail"]
         assert (g["status"], g["kind"], g["active"], g["connected"]) == ("ok", "gmail_history", True, True)
         assert status["gcalendar"]["status"] == "disconnected" and status["email_imap"]["kind"] == "imap_idle"
@@ -285,7 +285,7 @@ def test_feed_routes(config, isolated_home, monkeypatch, keychain):
     with TestClient(create_app(core)) as client:
         client.headers["Authorization"] = "Bearer feed-token"
         rows = client.get("/api/integrations/feeds").json()
-        assert {r["source"] for r in rows} == {"gmail", "gcalendar", "email_imap"}
+        assert {r["source"] for r in rows} == {"gmail", "gcalendar", "email_imap", "home_assistant"}
         assert client.post("/api/integrations/feeds/gmail/sync").json() == {"ok": False, "skipped": "not connected",
                                                                              "emitted": 0}
         assert client.post("/api/integrations/feeds/weather/sync").status_code == 404

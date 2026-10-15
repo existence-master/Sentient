@@ -4,6 +4,7 @@ import {
   IconBolt,
   IconChevronDown,
   IconCircleCheck,
+  IconDevices,
   IconLockAccess,
   IconPlugConnected,
   IconPlugConnectedX,
@@ -24,6 +25,7 @@ import { cn, formatNumber } from '@/lib/utils'
 import { AccessChoice, hasChangingTools } from './AccessChoice'
 import { BrandIcon } from './BrandIcon'
 import { categoryLabel, plainDescription, RISK_LABEL, riskOf, statusMeta, toolLabel, TRIGGER_HINT } from './meta'
+import { EntityPicker } from './EntityPicker'
 import { PrivacyFiltersEditor } from './PrivacyFiltersEditor'
 
 export function IntegrationDrawer({
@@ -278,6 +280,18 @@ function DrawerBody({
           </button>
         </Section>
       ) : null}
+
+      {/* devices Sentient may use (#175) */}
+      {i.entity_picker && i.connected && (
+        <Section
+          id="section-devices"
+          icon={<IconDevices />}
+          title="Devices Sentient can use"
+          description="Sentient only ever sees and controls the devices you allow here."
+        >
+          <EntityPicker integration={i} />
+        </Section>
+      )}
 
       {/* privacy */}
       {i.privacy_filters.supported && (

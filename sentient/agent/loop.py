@@ -111,6 +111,7 @@ from sentient.tools.rules import (
     ASK,
     HAND_OFF,
     IF_ASKED,
+    OPENS_HOME,
     PURCHASE_LABEL,
     SELECTION_SOURCE,
     address_carries_data,
@@ -126,6 +127,7 @@ from sentient.tools.rules import (
     is_screen_capture,
     is_selection,
     never_message,
+    opens_home,
     outside_source,
     result_outside_source,
     rule_label,
@@ -1121,8 +1123,11 @@ class Agent:
                 tool, plan.risk, tc.arguments, ctx
             ):
                 plan.needs_approval = False
-        elif rule == "ask":
+        elif rule == "ask" or await opens_home(tool, tc.arguments, ctx, plan.risk):
+            # an "ask" rule, or a call that opens the home (ADR 0028), which asks in tasks too whatever the rules say
             label = self.approvals.label(tool, self.registry)
+            if rule != "ask":
+                plan.level = OPENS_HOME  # the hold and the task's question say why it asks
             said = plan.level if chat_rule != "ask" else "ask"  # how the hold explains itself: the rule that asks
             if await self.approvals.granted(tool, plan.risk, tc.arguments, ctx):
                 pass  # the user allowed it for this task or for a while (#139)
@@ -1781,9 +1786,10 @@ class Agent:
 
     # ------------------------------------------------------------------ quick commands (#150)
     async def _quick_plan(self, session_id: str, user_text: str, attachments: list[str]) -> fastpath.QuickPlan | None:
-        """The plan for a plain timer or reminder command, or None to let the model answer: anything else, a message
-        with attachments, or a command whose tool would ask first or is set to Never (the model then shows the usual
-        approval card or refusal)."""
+        """The plan for a plain timer, reminder or light command, or None to let the model answer: anything else, a
+        message with attachments, or a command whose tool would ask first or is set to Never (the model then shows the
+        usual approval card or refusal). A light command is the user's own words for exactly that change, so approvals
+        mode "ask" counts them as the yes (``ApprovalBroker.quick_runs``)."""
         if attachments or self.app is None:
             return None
         try:
@@ -1795,7 +1801,9 @@ class Agent:
             return None
         for call in plan.calls:
             tool = self.registry.get(call.name)
-            if tool is None or self.approvals.is_never(tool) or self.approvals.needs_approval(tool, session_id, tool.risk):
+            if tool is None or self.approvals.is_hidden(tool):
+                return None
+            if not self.approvals.quick_runs(tool, session_id, call.arguments, asked=plan.asked):
                 return None
         return plan
 

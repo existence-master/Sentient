@@ -6,6 +6,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Home Assistant, your smart home.** Connect it with your Home Assistant address and a long-lived access token (kept
+  in your system keychain), then choose which devices Sentient may use. Sentient finds the devices it needs by room,
+  kind or name, turns lights and switches on and off, sets brightness and thermostats, and runs scenes and scripts.
+  Locks, alarms, garage doors and gates always ask you first, with a plain warning and only "Allow once"; unlocking,
+  turning off the alarm and opening a garage door or gate ask even when approvals are off. Tasks can
+  start when a device changes, like "when the front door unlocks". Quick commands now work for lights too: "turn off
+  the living room lights" happens at once, with no model, when it is clear which lights you mean (#175).
 - **A safety check for skills and MCP servers from outside.** Skills brought over from Hermes, and skills you add
   with the new **Add from a link** button in Skills (a SKILL.md, or a GitHub folder that holds one), wait for your
   review with a plain safety report: where it came from, and whether it tries to send your data to a fixed address,

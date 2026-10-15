@@ -1694,7 +1694,7 @@ export interface ClarificationAnswer {
 }
 
 // ============================================================================ §5 Integrations
-export type IntegrationCategory = 'productivity' | 'communication' | 'knowledge' | 'development' | 'utilities' | 'core'
+export type IntegrationCategory = 'productivity' | 'communication' | 'knowledge' | 'development' | 'home' | 'utilities' | 'core'
 export type IntegrationAuthType = 'builtin' | 'oauth' | 'api_key' | 'manual' | 'mcp'
 export type IntegrationStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -1727,7 +1727,31 @@ export interface Integration {
   alternative_for: string | null
   /** Read only (`read`) or Read and write (`read_write`, the default). Older engines leave it out. */
   access?: ConnectionAccess
+  /** #175: the integration has devices to choose from (Home Assistant). Older engines leave it out. */
+  entity_picker?: boolean
   tools: ToolInfo[]
+}
+
+/** #175: one device (entity) of an integration with an entity picker. */
+export interface IntegrationEntity {
+  entity_id: string
+  name: string
+  /** light, switch, climate, lock, cover, sensor... */
+  domain: string
+  area: string
+  state: string | null
+  /** Sentient may see and use it. */
+  allowed: boolean
+}
+
+/** #175: every device, or only the picked ones. */
+export interface EntityChoice {
+  mode: 'all' | 'picked'
+  picked: string[]
+}
+
+export interface IntegrationEntities extends EntityChoice {
+  entities: IntegrationEntity[]
 }
 
 /** #141: a Read only connection hides and refuses its tools that change, send, delete or run something. */

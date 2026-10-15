@@ -2,7 +2,7 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
-import type { ConnectionAccess, Integration, McpServerCreate, PrivacyFilters } from '@/lib/types'
+import type { ConnectionAccess, EntityChoice, Integration, IntegrationEntities, McpServerCreate, PrivacyFilters } from '@/lib/types'
 import { qk } from './queryKeys'
 
 export function upsertIntegration(qc: QueryClient, integration: Integration) {
@@ -30,6 +30,16 @@ export function usePrivacyFilters(id: string | undefined) {
     queryKey: qk.integrations.privacyFilters(id ?? ''),
     queryFn: () => api.integrations.getPrivacyFilters(id as string),
     enabled: !!id
+  })
+}
+
+/** #175: the devices Sentient may use, for integrations with an entity picker (Home Assistant). */
+export function useIntegrationEntities(id: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: qk.integrations.entities(id ?? ''),
+    queryFn: () => api.integrations.getEntities(id as string),
+    enabled: !!id && enabled,
+    retry: false
   })
 }
 
@@ -61,6 +71,21 @@ export function useIntegrationActions() {
     setAccess: useMutation({
       mutationFn: ({ id, access }: { id: string; access: ConnectionAccess }) => api.integrations.setAccess(id, access),
       onSuccess: (res) => upsertIntegration(qc, res)
+    }),
+    setEntities: useMutation({
+      mutationFn: ({ id, choice }: { id: string; choice: EntityChoice }) => api.integrations.setEntities(id, choice),
+      // show the choice at once; the engine applies it at once too
+      onMutate: ({ id, choice }) =>
+        qc.setQueryData<IntegrationEntities>(qk.integrations.entities(id), (old) =>
+          old
+            ? {
+                ...old,
+                ...choice,
+                entities: old.entities.map((e) => ({ ...e, allowed: choice.mode === 'all' || choice.picked.includes(e.entity_id) }))
+              }
+            : old
+        ),
+      onSettled: (_r, _e, { id }) => void qc.invalidateQueries({ queryKey: qk.integrations.entities(id) })
     }),
     setPrivacyFilters: useMutation({
       mutationFn: ({ id, filters }: { id: string; filters: PrivacyFilters }) => api.integrations.setPrivacyFilters(id, filters),
