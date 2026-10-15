@@ -89,6 +89,23 @@ def test_skill_section_headings_must_match_the_complete_name(isolated_home):
     assert "\n## Inputs and access\n" in skill.body
 
 
+def test_skill_section_headings_inside_fences_do_not_count(isolated_home):
+    paths.ensure_layout()
+    lib = SkillLibrary()
+    path = lib.write(
+        "fenced-headings",
+        "Test fenced section headings",
+        "# Fenced headings\n```markdown\n## Approval\n```\n"
+        "~~~markdown\n## Output\n~~~",
+    )
+    skill = parse_skill_file(path)
+    assert skill is not None
+    assert "\n## Output\n- (state what to return)" in skill.body
+    assert skill.body.endswith(
+        "## Approval\n- Follow each tool's normal approval rules."
+    )
+
+
 def test_skill_requires_tools_filter(isolated_home):
     paths.ensure_layout()
     lib = SkillLibrary()
