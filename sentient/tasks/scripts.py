@@ -467,10 +467,22 @@ _ANY_CHANGE = re.compile(
     r"|\bany\s?thing\b|\bevery\s?thing\b",
     re.IGNORECASE,
 )
+_NEGATED_ANY_CHANGE = re.compile(
+    r"\bnot\s*$"
+    r"|\b(?:do(?:es)?\s+not|don['\u2019]t|doesn['\u2019]t|never)\s+"
+    r"(?:want|need|report|send|notify|tell|show|include|track|watch|monitor)\b[^.;,!?\n]*$"
+    r"|\bno\s+need\b[^.;,!?\n]*$",
+    re.IGNORECASE,
+)
 
 
 def _asks_for_any_change(request: str) -> bool:
-    return any(not m.group(1) for m in _ANY_CHANGE.finditer(request or ""))
+    text = request or ""
+    asks_for_any: bool | None = None
+    for match in _ANY_CHANGE.finditer(text):
+        negated = _NEGATED_ANY_CHANGE.search(text[:match.start()]) is not None
+        asks_for_any = not match.group(1) and not negated
+    return asks_for_any is True
 
 
 def _is_fetch(node: ast.AST, pages: set[str]) -> bool:
