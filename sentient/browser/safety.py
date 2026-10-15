@@ -44,7 +44,7 @@ _LABEL_RULES = [
 _DEFAULT_LABELS = {"click": "Clicks", "type": "Types into the page", "press": "Presses a key"}
 SIGNUP_LABEL = "Signs up"
 
-# subscribe, follow, notify me: a sign-up, which costs money only when the button or its surroundings say so (#378)
+# subscribe, follow, notify me: "Signs up" only with a free signal and no money signal on or around it (#378)
 _SIGNUP_RE = re.compile(
     r"\b(?:subscribe|sign ?up|follow|notify me|get (?:the )?updates|"
     r"join (?:the |our )?(?:newsletter|mailing list|wait ?list))\b",
@@ -58,6 +58,12 @@ _PAID_RE = re.compile(
     r"|\bper\s+(?:month|year|week|day|user|seat)\b|\b(?:a|each|every)\s+(?:month|year|week)\b"
     r"|\b(?:plans?|trial|upgrade|premium|pricing|prices?|billed|billing|"
     r"paid|pay|payment|buy|purchase|checkout|membership|pro)\b",
+    re.IGNORECASE,
+)
+# what a free sign-up says about itself; "Signs up" needs one of these, so a bare "Subscribe" stays a purchase
+_FREE_RE = re.compile(
+    r"\b(?:free|news ?letters?|updates?|wait ?list|notify me|notifications?|follow(?:ing)?|digest|alerts?|"
+    r"mailing list|no spam|inbox|emails?|blog|podcast|channel)\b",
     re.IGNORECASE,
 )
 
@@ -77,14 +83,17 @@ def risk_label_for(text: str, kind: str, near: str = "") -> str:
     """'Purchase', 'Signs up', 'Deletes', 'Posts publicly', 'Sends', else a neutral label for the action kind.
 
     ``near`` is the text around the element (its card or form). A subscribe, follow or "notify me" reads
-    'Signs up' only when neither the element nor ``near`` shows a price, currency, billing period, plan, trial or
-    upgrade. Otherwise it may cost money, so it stays 'Purchase', which always asks."""
+    'Signs up' only when the element or ``near`` says what free thing it is (a newsletter, updates, a waitlist,
+    alerts, "free" ...) and neither shows a price, currency, billing period, plan, trial or upgrade. Anything else
+    may cost money, so it stays 'Purchase', which always asks: a bare "Subscribe" is a purchase."""
     text = text or ""
     purchase_rule, *other_rules = _LABEL_RULES
     if purchase_rule[0].search(text):
         return purchase_rule[1]
     if _SIGNUP_RE.search(text):
-        return purchase_rule[1] if _PAID_RE.search(f"{text} {near or ''}") else SIGNUP_LABEL
+        context = f"{text} {near or ''}"
+        free = _FREE_RE.search(context) and not _PAID_RE.search(context)
+        return SIGNUP_LABEL if free else purchase_rule[1]
     for rx, label in other_rules:
         if rx.search(text):
             return label

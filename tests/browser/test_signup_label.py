@@ -15,15 +15,23 @@ PAID_BUTTON = f"Subscribe {chr(0x2013)} {chr(0x20B9)}499/month"  # with an en da
 
 
 @pytest.mark.parametrize("name", [
-    "Subscribe", "Subscribe to newsletter", "Follow", "Notify me", "Sign up", "Get updates", "Join the waitlist",
+    "Subscribe to newsletter", "Follow", "Notify me", "Get updates", "Join the waitlist", "Subscribe to alerts",
 ])
 def test_free_signup_reads_signs_up(name):
     assert safety.risk_label_for(name, "click") == "Signs up"
     assert safety.risk_label_for(name, "click", near="Our weekly newsletter. Free, no spam. " + name) == "Signs up"
 
 
+@pytest.mark.parametrize("name", ["Subscribe", "Sign up"])
+def test_a_bare_subscribe_needs_a_free_signal_nearby(name):
+    assert safety.risk_label_for(name, "click") == PURCHASE_LABEL
+    assert safety.risk_label_for(name, "click", near="Team plan " + name) == PURCHASE_LABEL
+    assert safety.risk_label_for(name, "click", near="The weekly newsletter. Free, no spam. " + name) == "Signs up"
+
+
 @pytest.mark.parametrize("name, near", [
     (PAID_BUTTON, ""),
+    ("Subscribe to newsletter", "Free for 14 days, then 199 INR"),
     ("Subscribe for $5", ""),
     ("Subscribe", "Pro plan ₹499/month Subscribe"),
     ("Subscribe", "Start your 7-day free trial"),
@@ -85,3 +93,12 @@ async def test_live_snapshot_sees_the_price_beside_a_button(browser, site):
     assert labels == ["Signs up", PURCHASE_LABEL, PURCHASE_LABEL, PURCHASE_LABEL]
     assert "₹499/month" in browser._snap["refs"][refs[1]]["near"]
     assert "₹499" not in browser._snap["refs"][refs[0]]["near"]
+
+
+async def test_live_priced_card_whose_context_stops_early_is_a_purchase(browser, site):
+    """The context stops at the "Choose" button before the price; with no free word it must stay a purchase."""
+    ctx = make_ctx(browser.app)
+    await bt.browser_open.call(ctx, {"url": f"{site}/signup-choose.html"})
+    ref = next(r for r, e in browser._snap["refs"].items() if e.get("name") == "Subscribe")
+    assert "2,999" not in browser._snap["refs"][ref]["near"]  # the price really is out of reach
+    assert browser.describe_for("click", {"ref": ref})["risk_label"] == PURCHASE_LABEL

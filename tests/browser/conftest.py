@@ -56,6 +56,11 @@ PAGES = {
   <section><h2>Studio</h2><p>""" + "Long notes on every plant we grow, with photos and care steps. " * 8 + """</p>
     <p>Studio pass, ₹999/month.</p><div><button>Subscribe</button> <a href="/help.html">Learn more</a></div></section>
 </main>""",
+    # a priced card whose context stops early: another offer button ("Choose") shares the row with Subscribe
+    "signup-choose.html": """<!doctype html><meta charset="utf-8"><title>Team</title><main>
+  <section><h2>Team plan</h2><p>₹2,999/month for five seats.</p>
+    <div><div><button>Subscribe</button></div><div><button>Choose</button></div></div></section>
+</main>""",
 }
 
 

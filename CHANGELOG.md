@@ -406,7 +406,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - **A free "Subscribe" button no longer reads as a purchase.** When Sentient asks before clicking a newsletter,
   follow or "notify me" button with no price nearby, the card now says it wants to sign you up, instead of "Make a
   purchase" with "Yes, buy it". It still asks under your usual rules. A button with a price, a plan, a trial, an
-  upgrade or "/month" on it or next to it still reads as a purchase and always asks.
+  upgrade or "/month" on it or next to it, or a plain "Subscribe" with nothing saying it is free, still reads as a
+  purchase and always asks.
 - **Telling Sentient something changed updates the memory.** After "Mira starts school in June", saying "Mira's
   school now starts in July" replaces June with July instead of being ignored as something Sentient already knew. The
   same goes for a new place ("Ravi moved from Pune to Delhi"), a new number or a new name. Things that are only about

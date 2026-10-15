@@ -2195,9 +2195,10 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     with payment fields → `{ok, clicked, url, message, new_tab?, dialogs?}`. A link opening a new tab makes it active.
     `confirm()` dialogs are accepted only for clicks approved as `send`; alerts are accepted; `dialogs` lists them.
     Its approval `risk_label` is "Purchase" for buy, pay, order, checkout and the like. A subscribe, follow, sign up or
-    "notify me" reads "Signs up" (normal approval rules) unless the element or the text around it (its card or form)
-    shows a price, currency, billing period ("/month", "per seat"), plan, trial or upgrade; then it stays "Purchase",
-    which always asks.
+    "notify me" reads "Signs up" (normal approval rules) only when the element or the text around it (its card or
+    form) says what free thing it is (newsletter, updates, waitlist, alerts, "free" ...) and shows no price, currency,
+    billing period ("/month", "per seat"), plan, trial or upgrade. Anything else, a bare "Subscribe" included, stays
+    "Purchase", which always asks.
     Defensive check at call time: a send-looking click that approvals did not rate `send` (page changed, or no approval
     step ran and approvals mode is not `off`) is refused with an explanation.
   - `browser_type(ref, text, submit=False)` write (`send` when submit presses Enter in a payment form, a form whose button
