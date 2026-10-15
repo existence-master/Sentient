@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import itertools
 import json
 import logging
 import wave
@@ -14,6 +13,7 @@ import respx
 
 from sentient import paths
 from sentient.channels import ChannelError
+from sentient.channels.base import ReplyStream
 from sentient.llm.provider import StreamChunk
 from tests.channels.conftest import (
     TOKEN,
@@ -195,18 +195,29 @@ class ClockProvider(FakeProvider):
         yield StreamChunk(done=True, model="fake")
 
 
-async def test_streaming_edits_are_throttled(tg):
+async def test_streaming_edits_are_throttled(tg, monkeypatch):
+    """The throttle's own decisions on a fake clock (#355): it updates the message at once when a second has passed
+    since the last update, and otherwise only schedules a later update for when the second is up. That later update
+    sleeps in real time, so this test records the decision instead of letting it fire at a moment the clock doesn't
+    know about (a slow runner could fire it mid-stream)."""
     await tg.pair(42)
     clock = [0.0]
     tg.ch.clock = lambda: clock[0]
     tg.app.agent.llm = ClockProvider(clock, "abcde" * 40, step=0.25)  # 40 deltas over 10 simulated seconds
+    later: list[float] = []
+
+    async def flush_later(stream: ReplyStream, wait: float) -> None:
+        later.append(clock[0] + wait)  # when the update would come
+        await asyncio.Event().wait()  # cancelled by the next immediate update or by finish()
+
+    monkeypatch.setattr(ReplyStream, "_flush_later", flush_later)
     times: list[tuple[str, float]] = []
     tg.api.on_call = lambda method, params: times.append((method, clock[0])) if method in {"sendMessage", "editMessageText"} else None
     await tg.say(42, "stream please")
-    updates = [t for m, t in times]
-    assert 6 <= len(updates) <= 12
-    gaps = [b - a for a, b in itertools.pairwise(updates[:-1])]  # the final flush may come sooner
-    assert all(g >= 1.0 - 1e-9 for g in gaps[1:]), updates
+    # the first delta sends the message, then one edit per simulated second, then the final edit at the end
+    assert times == [("sendMessage", 0.25), *(("editMessageText", t + 0.25) for t in range(1, 10)), ("editMessageText", 10.0)]
+    # after each update, the next delta planned one later update for exactly one second after it
+    assert later == [t + 0.25 for t in range(1, 11)], later
     assert tg.api.screen()[-1] == "abcde" * 40
 
 
