@@ -1566,7 +1566,7 @@ class TaskService(Service):
     def _default_condition(task: dict, script: dict) -> dict:
         """A page watch the planner left on plain ``changed`` becomes ``noteworthy`` (#298, ``scripts.planner_default``)."""
         previous = task.get("script") if task.get("task_type") == "script" else None
-        return scripts.planner_default(script, str(task.get("original_prompt") or ""), previous)
+        return scripts.planner_default(script, TaskService._script_request(task), previous)
 
     def _no_script_plan(self, task: dict, script_tools: list[str], planned: list[dict]) -> list[dict]:
         """The plan of an AI-run task that replaces a rejected check script (#310): the user's own request as the step,

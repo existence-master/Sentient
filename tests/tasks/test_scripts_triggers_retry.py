@@ -327,6 +327,8 @@ SEARCH_CODE = "from sentient_tools import tools, result\nresult(tools.internet_s
         # "important changes" asks for the AI check, not for every change
         *[(f"Tell me about {q} changes on https://example.org/events", PAGE_CODE, "changed", "noteworthy")
           for q in ("important", "big", "major", "significant", "meaningful")],
+        *[(f"Tell me about {q} page changes on https://example.org/events", PAGE_CODE, "changed", "noteworthy")
+          for q in ("important", "big", "major", "significant", "meaningful")],
         # the user wants every change: "changed" is kept, even for a whole page
         ("Tell me whenever anything at all on this page changes: https://example.org/events", PAGE_CODE, "changed",
          "changed"),
@@ -357,6 +359,23 @@ async def test_planner_watch_defaults_whole_pages_to_important_changes(make_app,
     prompt = json_calls(llm, "planner")[1]["messages"][0]["content"]
     assert "This is the default for watching a page, a feed or the news" in prompt
     assert 'If the user wants to hear about any change at all, use "changed".' in prompt
+
+
+async def test_changing_a_watch_in_chat_to_any_change_keeps_changed(make_app):
+    request = "Watch this page and tell me about new events: https://example.org/events"
+    initial = {**PLAN_SCRIPT, "name": "Watch", "description": request,
+               "script": {"code": PAGE_CODE, "condition": "noteworthy", "then": "notify"}}
+    changed = {**initial, "script": {**initial["script"], "condition": "changed"}}
+    llm = FakeProvider(json_replies=[REFINE_ONCE, initial, changed])
+    app = await make_app(llm)
+    task = await app.tasks.create_task(request)
+    await app.tasks.drain()
+
+    await app.tasks.chat(task["task_id"], "Actually tell me about any change at all on that page")
+    await app.tasks.drain()
+    task = await app.tasks.get(task["task_id"])
+
+    assert task["script"]["condition"] == "changed"
 
 
 FETCH = "from sentient_tools import tools, result\npage = tools.web_fetch(url='https://example.org')\n"
