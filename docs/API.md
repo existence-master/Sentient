@@ -44,7 +44,7 @@ All carry `session_id` and `turn_id`.
 | `usage` | `model`, `prompt_tokens`, `completion_tokens`, `context_used`, `context_length`, `context_percent`, `context_warning` (context meter, below) |
 | `error` | `message`, `recoverable`, `code?`: `"local_only"` (Local only kept a cloud model from being used) or `"budget_reached"` (this month's model budget is used up; offer **Keep going this month**, section 2 "Cost meter") |
 | `notice` | `message`, `code`, `model?`, `used?`: a plain note about this reply that is not an error, sent at most once per reply. `code: "model_fallback"`: the chat's own model (`model`) can't answer, so `used` (the default) answers (section 2, chat's model) |
-| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `sources: [AnswerSource]` (pages, emails, files and apps it used, section 2; `[]` when none), `checks: [OutcomeCheck]` (what code found this reply's calls really did, section 4 "Checking the outcome", #165; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id` and its `memory_sources` too (none when it was stopped before it started). `error?`: set when the turn failed (the `error` event just before it has the message to show); nothing was saved then and `message_id` is `null` |
+| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `sources: [AnswerSource]` (pages, emails, files and apps it used, section 2; `[]` when none), `checks: [OutcomeCheck]` (what code found this reply's calls really did, section 4 "Checking the outcome", #165; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id`, its `memory_sources` and its `checks` too (none when it was stopped before it started). `error?`: set when the turn failed (the `error` event just before it has the message to show); nothing was saved then and `message_id` is `null` |
 | `approval.ack` | `approval_id`, `resolved` |
 
 **Every turn ends with exactly one `done`** (#334). That holds on `/ws`, on `POST /api/chat` and in the messaging
@@ -940,7 +940,8 @@ how: "result"|"read_back", targets: [...], missed: [...], settled?, message?}`. 
 acted on (recipients, a file name, a title) and `missed` what the result says failed. At the end of a run or reply a
 failure is `settled: true` when a later successful call of the same tool covered what it missed (the model fixed it);
 every other failure gets `message`, worded from what the final answer claimed: "Sentient said it sent the email, but
-mailer reported a problem: ..." (or "Sentient tried to send the email, but ..." when the answer claims nothing).
+mailer reported a problem: ..." (or "Sentient tried to send the email, but ..." when the answer claims nothing). A failure that names nothing it acted on (arguments the tool couldn't read) is settled only by the very next call of
+that tool, if it worked.
 - Task runs keep `checks` on the run, saved as each call finishes (also for an approved held call and a one-call
   task), and each `tool_result` progress update carries its `check`. A run whose model finished but has a failure
   that still stands ends **`completed_with_errors`** (the app shows it as Needs attention) instead of `completed`:

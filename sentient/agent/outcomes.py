@@ -277,14 +277,14 @@ def claimed(text: str, kind: str | None) -> bool:
 
 
 def _settled(failed: dict, later: list[dict]) -> bool:
-    """A failed check counts as settled when a later successful call of the same tool covered what it missed."""
+    """A failed check counts as settled when a later successful call of the same tool covered what it missed. A
+    failure that names nothing it acted on (a call with arguments the tool couldn't read) is settled only by the very
+    next call of that tool, if it worked: the model's retry, never an unrelated later call."""
     want = set(failed.get("missed") or []) or set(failed.get("targets") or [])
-    for c in later:
-        if c.get("tool") != failed.get("tool") or not c.get("ok"):
-            continue
-        if not want or want <= set(c.get("targets") or []):
-            return True
-    return False
+    same = [c for c in later if c.get("tool") == failed.get("tool")]
+    if not want:
+        return bool(same) and bool(same[0].get("ok"))
+    return any(c.get("ok") and want <= set(c.get("targets") or []) for c in same)
 
 
 def finalize(checks: list[dict], final_text: str = "") -> list[dict]:

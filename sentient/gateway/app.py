@@ -124,7 +124,7 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                 kept = {"message_id": stopped["message_id"]} if stopped.get("message_id") else {}
                 await send({"type": "done", "content": "", "session_id": session_id, "cancelled": True, **kept,
                             "memory_sources": stopped.get("memory_sources") or [],
-                            "sources": stopped.get("sources") or []})
+                            "sources": stopped.get("sources") or [], "checks": stopped.get("checks") or []})
                 raise
             except Exception as exc:
                 log.exception("chat turn failed")

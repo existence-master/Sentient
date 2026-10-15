@@ -256,3 +256,25 @@ async def test_a_chat_reply_carries_its_checks_and_keeps_them(make_app):
     llm.replies.append("Hello!")
     events = [ev async for ev in app.agent.run_turn(sid, "thanks", channel="desktop")]
     assert next(e for e in events if isinstance(e, Done)).checks == []
+
+
+def test_a_failure_with_no_target_is_settled_only_by_the_next_call_of_that_tool():
+    bad = {"tool": "gcal_quick_add", "kind": "event", "ok": False, "detail": "x", "targets": [], "missed": []}
+    other = {"tool": "file_write", "kind": "file", "ok": True, "targets": ["a.md"], "missed": []}
+    retry = {"tool": "gcal_quick_add", "kind": "event", "ok": True, "targets": ["lunch"], "missed": []}
+    assert outcomes.failures(outcomes.finalize([bad, other, retry], "")) == []  # the retry right after it
+    again = {**bad, "detail": "y"}
+    assert len(outcomes.failures(outcomes.finalize([bad, again, retry], ""))) == 1  # the next call failed too
+
+
+async def test_a_stopped_reply_keeps_its_checks(make_app):
+    from sentient.agent.sources import AnswerSources
+    from sentient.memory.sources import MemorySources
+
+    app = await make_app()
+    sid = await app.store.create_session(channel="desktop")
+    checks = outcomes.finalize([{"tool": "file_write", "kind": "file", "ok": True, "action": "file written"}], "")
+    kept = await app.agent._persist_stopped(sid, "Saving", MemorySources(), AnswerSources(), checks)
+    assert kept["checks"] == checks
+    final = [r for r in await app.store.recent_messages(sid, 5) if r["role"] == "assistant"][-1]
+    assert final["checks"] == checks

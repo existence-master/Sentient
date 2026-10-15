@@ -1715,7 +1715,8 @@ class Agent:
             # the user pressed Stop (or the window went away): keep what was shown
             with contextlib.suppress(Exception):
                 used.add_prompt_notes(notes, partial, user_text)
-                save = asyncio.ensure_future(self._persist_stopped(session_id, partial, sources, used))
+                checks = outcomes.finalize(result.checks, partial)  # what its calls really did, kept too (#165)
+                save = asyncio.ensure_future(self._persist_stopped(session_id, partial, sources, used, checks))
                 while not save.done():  # a second Stop while saving must not lose what the caller sends on
                     with contextlib.suppress(asyncio.CancelledError):
                         await asyncio.shield(save)
@@ -1903,15 +1904,16 @@ class Agent:
         return source
 
     async def _persist_stopped(
-        self, session_id: str, partial: str, sources: MemorySources, used: AnswerSources | None = None
+        self, session_id: str, partial: str, sources: MemorySources, used: AnswerSources | None = None,
+        checks: list[dict] | None = None,
     ) -> dict:
         content = (partial.rstrip() + "\n\n_(stopped)_").strip()
         memory_sources = await sources.resolve(self.store)
         items = used.items() if used is not None else []
         message_id = await self.store.add_message(
-            session_id, "assistant", content, memory_sources=memory_sources, sources=items
+            session_id, "assistant", content, memory_sources=memory_sources, sources=items, checks=checks
         )
-        return {"message_id": message_id, "memory_sources": memory_sources, "sources": items}
+        return {"message_id": message_id, "memory_sources": memory_sources, "sources": items, "checks": checks or []}
 
     def add_answer_source(self, used: AnswerSources, name: str, res: Any) -> None:
         """Record what a successful tool result brought into the reply (#174) or a task run (#291). Never breaks a

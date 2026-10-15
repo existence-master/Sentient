@@ -369,7 +369,7 @@ export function applyAgentEvent(turn: AssistantTurnView, ev: AgentEvent): Assist
       const checks = ev.checks?.length ? ev.checks : turn.checks
       if (ev.cancelled) {
         const error = turn.error?.message === 'Stopped.' ? undefined : turn.error
-        return { ...turn, status: 'cancelled', error, messageId: ev.message_id, memorySources, sources }
+        return { ...turn, status: 'cancelled', error, messageId: ev.message_id, memorySources, sources, checks }
       }
       const hasText = turn.segments.some((s) => s.kind === 'text' && s.text.trim())
       const segments = !hasText && ev.content?.trim() ? [...turn.segments, { kind: 'text' as const, text: ev.content }] : turn.segments
