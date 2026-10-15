@@ -152,7 +152,7 @@ def _bindings(tree: ast.AST) -> dict[str, list[tuple[str, ast.expr | None]]]:
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 bind(target, "value", node.value)
-        elif isinstance(node, ast.NamedExpr):
+        elif isinstance(node, ast.NamedExpr) or (isinstance(node, ast.AnnAssign) and node.value is not None):
             bind(node.target, "value", node.value)
         elif isinstance(node, ast.For | ast.AsyncFor | ast.comprehension):
             bind(node.target, "item", node.iter)
@@ -251,8 +251,12 @@ SHORT_CUT_CHARS = 500  # content[:n] with a smaller n keeps only the top of the 
 
 
 def is_watch_request(request: str) -> bool:
-    """The user asks to watch something for news, not for a report on every run (#375)."""
-    return bool(_WATCH.search(request or "")) and not _EVERY_REPORT.search(request or "")
+    """The user asks to watch something for news, not for a report on every run (#375). The request holds what they
+    said later too (a change in the task's chat), so the last of "watch" and "report every..." wins."""
+    text = request or ""
+    watch = [m.start() for m in _WATCH.finditer(text)]
+    report = [m.start() for m in _EVERY_REPORT.finditer(text)]
+    return bool(watch) and (not report or watch[-1] > report[-1])
 
 
 def _page_text_names(tree: ast.AST, env: dict[str, _Shape]) -> tuple[set[str], set[str]]:
@@ -306,18 +310,41 @@ def _first_piece(node: ast.Subscript) -> bool:
             and s.upper.value == 1)
 
 
+def _returned_page_keys(tree: ast.AST, env: dict[str, _Shape]) -> set[str] | None:
+    """The keys of a ``tools.web_fetch`` result that reach what the script returns (``result(...)`` or ``print(...)``),
+    following names through their assignments; None when the script returns nothing."""
+    bindings = _bindings(tree)
+    keys: set[str] = set()
+
+    def collect(node: ast.AST, seen: frozenset[str]) -> None:
+        if isinstance(node, ast.Name):
+            if node.id not in seen:
+                for how, expr in bindings.get(node.id, ()):
+                    if how == "value" and expr is not None:
+                        collect(expr, seen | {node.id})
+            return
+        read = _key_read(node)
+        if read:
+            shape = _shape_of(read[0], env)
+            if shape is not None and shape.tool == "web_fetch" and shape.item is None:
+                keys.add(read[1])
+        for child in ast.iter_child_nodes(node):
+            collect(child, seen)
+
+    returns = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+               and node.func.id in ("result", "print")]
+    for call in returns:
+        for arg in [*call.args, *(k.value for k in call.keywords)]:
+            collect(arg, frozenset())
+    return keys if returns else None
+
+
 def _check_whole_page(tree: ast.AST) -> None:
     """Reject a script that cuts a fetched page down to its first line, its heading or its first few characters
     (#375): a new item further down the page would never be noticed."""
     env = _known_shapes(tree)
     texts, lines = _page_text_names(tree, env)
-    reads: set[str] = set()
     for node in ast.walk(tree):
-        read = _key_read(node)
-        if read:
-            shape = _shape_of(read[0], env)
-            if shape is not None and shape.tool == "web_fetch" and shape.item is None:
-                reads.add(read[1])
         if not isinstance(node, ast.Subscript) or not isinstance(node.ctx, ast.Load):
             continue
         base = node.value
@@ -337,7 +364,8 @@ def _check_whole_page(tree: ast.AST) -> None:
                 f"(`{ast.unparse(node)}`), so something new further down the page would never be noticed. Return the "
                 "page's whole `content` instead."
             )
-    if "title" in reads and "content" not in reads:
+    returned = _returned_page_keys(tree, env)
+    if returned is not None and "title" in returned and "content" not in returned:
         raise ScriptInvalid(
             "The check script reads only the page's `title`, so it would never notice anything new on the page "
             "itself. Return the page's whole `content` instead."

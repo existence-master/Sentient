@@ -22,6 +22,7 @@ WATCH_EVENTS = "Watch http://192.0.2.1/events.html for new events."
     "Tell me when the library adds a new event",
     "let me know if the shop restocks the lamp",
     "Notify me whenever a new post appears on the blog",
+    "Send me a report every hour on the page\nNo, only tell me when a new event is added",  # a later change wins
 ])
 def test_watch_requests(request_text):
     assert is_watch_request(request_text)
@@ -34,6 +35,7 @@ def test_watch_requests(request_text):
     "Monitor the server page and give me a daily summary",
     "track the queue and tell me its length each time you check",
     "watch the score page, even if nothing changed",
+    "Watch the page for new events\nActually, just send me a report every hour",  # a later change wins
 ])
 def test_not_watch_requests(request_text):
     assert not is_watch_request(request_text)
@@ -58,6 +60,8 @@ def test_every_run_is_rejected_for_a_watch_request_with_a_plain_reason():
     ("result(page['content'][:120])\n", "keeps only the first 120 characters"),
     ("result(page.get('title', ''))\n", "reads only the page's `title`"),
     ("title = page['title']\nresult({'title': title})\n", "only the page's `title`"),
+    ("body = page['content']\nresult(page['title'])\n", "only the page's `title`"),  # content read, not returned
+    ("title: str = page.get('title', '')\nprint(title)\n", "only the page's `title`"),
 ])
 def test_a_script_that_cuts_the_page_down_is_rejected(body, reason):
     code = FETCH + body
