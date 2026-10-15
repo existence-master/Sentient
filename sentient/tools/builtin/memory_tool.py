@@ -13,7 +13,7 @@ from sentient.memory import review
 from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import EpisodicMemory
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
-from sentient.tools.rules import brings_untrusted
+from sentient.tools.rules import OTHER_ROLE, brings_untrusted, group_source
 
 INCOGNITO_REFUSAL = (
     "Not saved: this is an incognito chat, so nothing from it is remembered. Don't tell the user you will remember it."
@@ -201,8 +201,12 @@ async def memory_search_history(ctx: ToolContext, query: str, limit: int = 8) ->
         if rows:
             break
     await _mark_if_outside(ctx, [r.get("session_id") for r in rows])
+    other = next((r for r in rows if r.get("role") == OTHER_ROLE), None)
+    if other is not None and not ctx.untrusted:  # a group member's message, even in a chat trusted again (ADR 0029)
+        ctx.untrusted = group_source(str(other.get("name") or ""))
     return [
-        {"when": r["created_at"], "role": r["role"], "session_id": r["session_id"], "text": (r["content"] or "")[:500]}
+        {"when": r["created_at"], "role": r["role"], "session_id": r["session_id"], "text": (r["content"] or "")[:500],
+         **({"from": r.get("name") or "another group member"} if r.get("role") == OTHER_ROLE else {})}
         for r in rows
     ]
 

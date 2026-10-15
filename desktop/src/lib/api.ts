@@ -473,6 +473,8 @@ export const api = {
     setScope: (id: string, memory_scope: string | null) =>
       http.patch<OkResponse & { memory_scope: string }>(`/api/sessions/${enc(id)}`, { memory_scope }),
     delete: (id: string) => http.delete<OkResponse>(`/api/sessions/${enc(id)}`),
+    /** "I've checked it, trust this chat again" (ADR 0029). `was`: what the chat had read, "" when it was clean. */
+    trust: (id: string) => http.post<OkResponse & { was: string }>(`/api/sessions/${enc(id)}/trust`),
     messages: (id: string, limit = 500) =>
       http.get<TranscriptMessage[]>(`/api/sessions/${enc(id)}/messages`, { query: { limit } }),
     search: (q: string) => http.get<MessageSearchHit[]>('/api/sessions/search', { query: { q } })

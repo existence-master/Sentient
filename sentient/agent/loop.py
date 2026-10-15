@@ -111,11 +111,14 @@ from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import (
     ASK,
+    EVENT_ROLE,
     HAND_OFF,
     IF_ASKED,
     OPENS_HOME,
+    OTHER_ROLE,
     PURCHASE_LABEL,
     SELECTION_SOURCE,
+    TRUSTED_EVENT,
     address_carries_data,
     address_host,
     applied_rule,
@@ -124,6 +127,7 @@ from sentient.tools.rules import (
     attachment_source,
     brings_untrusted,
     call_address,
+    group_source,
     hands_off,
     is_purchase,
     is_screen_capture,
@@ -246,6 +250,12 @@ def history_to_openai(rows: list[dict]) -> list[dict]:
                     "content": r.get("content") or "",
                 }
             )
+        elif role == OTHER_ROLE:
+            # someone else in a paired group chat (ADR 0029): always marked, since inside a user turn the marker is the
+            # only thing that tells it apart from the user's own words (the second look reads it that way too)
+            sender = " ".join(str(r.get("name") or "").split())[:40] or "Someone"
+            body = f"{sender} wrote in the group:\n{r.get('content') or ''}"
+            out.append({"role": "user", "content": mark_outside(body, group_source(sender))})
         elif role in {"user", "system"}:
             content = r.get("content") or ""
             if r.get("attachments"):
@@ -1708,6 +1718,7 @@ class Agent:
                 # marks the chat from the start
                 ctx.untrusted = brought
                 await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (ctx.untrusted, session_id))
+                self._publish_mark(session_id, ctx.untrusted)
             marked = bool(ctx.untrusted)
             ctx.visited = _hosts((session or {}).get("visited_hosts"))
             seen_hosts = len(ctx.visited)
@@ -1755,6 +1766,7 @@ class Agent:
                         await self.store.execute(
                             "UPDATE sessions SET untrusted = ? WHERE id = ?", (ctx.untrusted, session_id)
                         )
+                        self._publish_mark(session_id, ctx.untrusted)  # the window shows the chat's mark (ADR 0029)
                     if len(ctx.visited) != seen_hosts:  # sites this chat loaded never ask for carrying data
                         seen_hosts = len(ctx.visited)
                         await self.store.execute(
@@ -1959,6 +1971,53 @@ class Agent:
         source = untrusted_in(transcript, self.registry)
         await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
         return source
+
+    async def chat_mark(self, session_id: str) -> str:
+        """The app or person whose content a chat read (``sessions.untrusted``), "" when it is clean."""
+        session = await self.store.get_session(session_id)
+        return await self._chat_untrusted(session_id, session) if session is not None else ""
+
+    def _publish_mark(self, session_id: str, source: str) -> None:
+        bus = getattr(self.app, "bus", None)
+        if bus is not None:
+            bus.publish("session.updated", {"session_id": session_id, "untrusted": source})
+
+    async def add_group_messages(self, session_id: str, messages: list[tuple[str, str]]) -> str:
+        """Keep messages other people wrote in a paired group chat (ADR 0029): one ``other`` row each (the sender in
+        ``name``), read by the model as marked outside content, never as the user's words. They mark the chat like any
+        outside content, also when the user had trusted it again. Returns the chat's mark."""
+        messages = [(str(s or ""), str(t or "")) for s, t in messages if str(t or "").strip()]
+        if not messages:
+            return ""
+        for sender, text in messages:
+            await self.store.add_message(session_id, OTHER_ROLE, text, name=" ".join(sender.split())[:80] or None)
+        session = await self.store.get_session(session_id)
+        current = (session or {}).get("untrusted")
+        if current:
+            return str(current)
+        source = group_source(messages[0][0])
+        await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
+        self._publish_mark(session_id, source)
+        return source
+
+    async def trust_chat(self, session_id: str, *, via: str = "desktop") -> str | None:
+        """The user's "I've checked it, trust this chat again" (ADR 0029): clear the chat's outside-content mark, so
+        sends there stop asking just because of what it read. Only the user can do this (the window, or /trust in a
+        paired chat from the person who paired it); no tool does it. Logged in the chat as an ``event`` row, which the
+        Activity timeline lists. Returns the source the chat had read ("" when it wasn't marked), None for no chat."""
+        session = await self.store.get_session(session_id)
+        if session is None:
+            return None
+        was = await self._chat_untrusted(session_id, session)
+        if not was:
+            return ""
+        await self.store.execute("UPDATE sessions SET untrusted = '' WHERE id = ?", (session_id,))
+        await self.store.add_message(
+            session_id, EVENT_ROLE, json.dumps({"event": TRUSTED_EVENT, "was": was, "via": via}, ensure_ascii=False),
+            name=TRUSTED_EVENT,
+        )
+        self._publish_mark(session_id, "")
+        return was
 
     async def _persist_stopped(
         self, session_id: str, partial: str, sources: MemorySources, used: AnswerSources | None = None,

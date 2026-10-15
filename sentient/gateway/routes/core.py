@@ -345,6 +345,19 @@ async def update_session(request: Request, session_id: str, body: SessionPatch):
     return {"ok": True, **changed}
 
 
+@router.post("/api/sessions/{session_id}/trust", dependencies=_auth)
+async def trust_session(request: Request, session_id: str):
+    """"I've checked it, trust this chat again" (ADR 0029): clear the chat's outside-content mark. The user's own
+    action in the window; the model has no way to call it."""
+    s = get_core(request)
+    if s.agent is None:
+        raise HTTPException(503, "the assistant isn't ready yet")
+    was = await s.agent.trust_chat(session_id, via="desktop")
+    if was is None:
+        raise HTTPException(404, "no such chat")
+    return {"ok": True, "was": was}
+
+
 @router.delete("/api/sessions/{session_id}", dependencies=_auth)
 async def delete_session(request: Request, session_id: str):
     await get_core(request).delete_chat(session_id)
