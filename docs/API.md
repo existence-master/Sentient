@@ -36,7 +36,7 @@ All carry `session_id` and `turn_id`.
 | `text_delta` | `text` |
 | `tool_call` | `call_id`, `name`, `arguments` |
 | `tool_progress` | `call_id`, `name`, `kind: stdout\|stderr\|status\|frame\|subagent`, `text?`, `image?`, `data?` (section 10) |
-| `tool_result` | `call_id`, `name`, `result`, `is_error`, `duration_ms` (a call the user declined has `result: {error, declined: true}`; a call a "Hand it to me" rule handed to the user has `result: HandOff`, section 2, #140) |
+| `tool_result` | `call_id`, `name`, `result`, `is_error`, `duration_ms` (a call the user declined has `result: {error, declined: true}`; a call a "Hand it to me" rule handed to the user has `result: HandOff`, section 2, #140), `check?: OutcomeCheck` (what code found the call really did, section 4 "Checking the outcome", #165; absent for calls that aren't checked) |
 | `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10), `warning?` (what a second look found off, section 10, #143), `choices?: string[]` (the answers offered, in order, section 2 "Scoped answers"), `grant_minutes?` (how long `allow_timed` lasts), `preview?: ActionPreview` (what will be sent or changed, the way a person reads it, section 10, #142) |
 | `undo_window` | `undo_id`, `call_id`, `name`, `seconds`, `until` (ISO time it ends), `preview?: ActionPreview`: an email, message or post waits `seconds` before it runs, so it can still be undone (section 10, #142). Its `tool_result` follows when the window ends; after Undo that result is `{error, undone: true}` and nothing was sent |
 | `user_interjection` | `text` (a steer message the model just received, section 10) |
@@ -44,7 +44,7 @@ All carry `session_id` and `turn_id`.
 | `usage` | `model`, `prompt_tokens`, `completion_tokens`, `context_used`, `context_length`, `context_percent`, `context_warning` (context meter, below) |
 | `error` | `message`, `recoverable`, `code?`: `"local_only"` (Local only kept a cloud model from being used) or `"budget_reached"` (this month's model budget is used up; offer **Keep going this month**, section 2 "Cost meter") |
 | `notice` | `message`, `code`, `model?`, `used?`: a plain note about this reply that is not an error, sent at most once per reply. `code: "model_fallback"`: the chat's own model (`model`) can't answer, so `used` (the default) answers (section 2, chat's model) |
-| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `sources: [AnswerSource]` (pages, emails, files and apps it used, section 2; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id` and its `memory_sources` too (none when it was stopped before it started). `error?`: set when the turn failed (the `error` event just before it has the message to show); nothing was saved then and `message_id` is `null` |
+| `done` | `content` (final text), `message_id`, `cancelled?`, `memory_sources: [MemorySource]` (what this reply had in mind, section 2; `[]` when none), `sources: [AnswerSource]` (pages, emails, files and apps it used, section 2; `[]` when none), `checks: [OutcomeCheck]` (what code found this reply's calls really did, section 4 "Checking the outcome", #165; `[]` when none), `dropped?: string[]` (section 17: messages queued behind a stopped reply, never sent). A stopped reply's `done` (`cancelled: true`) carries the kept message's `message_id`, its `memory_sources` and its `checks` too (none when it was stopped before it started). `error?`: set when the turn failed (the `error` event just before it has the message to show); nothing was saved then and `message_id` is `null` |
 | `approval.ack` | `approval_id`, `resolved` |
 
 **Every turn ends with exactly one `done`** (#334). That holds on `/ws`, on `POST /api/chat` and in the messaging
@@ -200,10 +200,16 @@ applied in code before every call and take effect at once:
   (section 4) completes with `"Ready for you: ..."` instead of making the call. Scripts refuse such a call and
   subagents refuse it as needing the user's approval. `LoopResult.handed_off` lists a run's HandOffs.
 - Purchases ask in every approvals mode, `off` included (only `browser.confirm_purchases: false` turns that off),
-  and scripts refuse them in every mode. Rules are read again right before a tool runs and on every script tool call,
+  and scripts refuse them in every mode. A call that opens the user's home is a hard stop the same way (#175, ADR
+  0028): its `describe_fn` label is one of `sentient.tools.rules.OPENS_HOME_LABELS` ("Unlocks a door", "Turns off
+  your alarm", "Opens a garage door or gate", "Controls a door, lock or alarm") at effective risk `send` or higher.
+  It asks in every approvals mode, an `allow` rule, "Allow for this chat" and grants never cover it, only `allow` and
+  `deny` are offered, a task run pauses and asks, subagents and swarm workers stop, and scripts refuse it. Locking
+  and arming follow the normal rules. Rules are read again right before a tool runs and on every script tool call,
   so a rule changed while a call waits for approval, or while a script runs, applies to it.
 - **What still asks with approvals mode `off`** (the complete list; everything else runs without a question, look-ups
-  included, #306): a purchase (above); a tool or app with an `ask` rule, or an `if_asked` rule the user's words did
+  included, #306): a purchase (above); a call that opens the user's home: unlocking a door, turning off the alarm,
+  or opening a garage door, gate or door (above, ADR 0028); a tool or app with an `ask` rule, or an `if_asked` rule the user's words did
   not ask for; in a chat that read outside content, a call
   that can send data out or a data-carrying address to a new site (section 10, ADR 0018); a call that changes, sends,
   deletes or runs something while an undecided rule proposal from that chat covers it (below); a call a second look
@@ -330,7 +336,7 @@ accept or loosen a rule.
   {"id": "...", "role": "user|assistant|tool", "content": "...", "thinking": "...|null",
    "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "memory_recall", "arguments": "{\"query\":\"sister\"}"}}],
    "tool_call_id": "call_1", "name": "memory_recall", "attachments": ["report.pdf"], "interjection": false,
-   "memory_sources": [], "sources": [], "approval": null, "created_at": "..."}
+   "memory_sources": [], "sources": [], "approval": null, "checks": [], "created_at": "..."}
   ```
   The UI folds each `assistant` message with `tool_calls` plus its following `tool` messages into one assistant turn.
   `approval` (tool messages, #147) is how the user answered that call's approval request, `null` when it did not ask:
@@ -338,6 +344,7 @@ accept or loosen a rule.
   untrusted, rule, warning}` (a request nobody answered in time is `deny`; `rule` is the lasting rule then, e.g.
   `"if_asked"`; `warning` is what a second look found off, #143, else `null`). The activity timeline (section 21)
   reads it and says why it asked: outside content, else the second look's warning, else the rule.
+  `checks` (the final assistant message of a turn, #165) is the `done` event's `checks`; `[]` on every other row.
 - **Memory sources.** The final assistant message of a chat turn (also a stopped one) carries `memory_sources`, the
   memories that reply had in mind, also sent on its `done` event. Every other row has `[]`. A **MemorySource** is
   `{kind: "fact"|"insight", id, text, source, via: "prompt"|"tool"}`: `id` is the Memory id (int, section 7) or the
@@ -787,7 +794,8 @@ task-creation prompt sets it for requests like "every morning"; a window the req
  "memory_sources": [MemorySource],
  "sources": [AnswerSource],
  "dry_run": false,
- "would_do": [TryRunAction]}
+ "would_do": [TryRunAction],
+ "checks": [OutcomeCheck]}
 ```
 `dry_run` is true for a try run (see "Try it first" below); `would_do` lists what it noted, `[]` for other runs.
 `pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question", "Limits on a run"
@@ -916,6 +924,42 @@ approval). The run's own `ask_user` question still asks. A one-call task (`fixed
   scheduling, and it is not the task's last result (change requests, recurring tasks' memory of earlier runs, the
   self-improvement reviewer and `task.run_finished` all skip it). Its own question, cancel, retry (a try run again)
   and resume after a restart work as for any run.
+
+### Checking the outcome (#165)
+Code, never a model, checks what a call that should change something really did, right after it runs
+(`sentient/agent/outcomes.py`). Checked: tools that declare `Tool.outcome` (`"email"|"message"|"file"|"event"|"home"`)
+or `Tool.verify`, and every MCP tool that is not a look-up (its kind guessed from its name: `send_email` is `email`).
+Today that is `file_write`, `gmail_send`, `gmail_reply`, `email_imap_send`, `gcal_create_event`, `gcal_quick_add`,
+`slack_post_message`, `slack_reply_in_thread`, `discord_send_message`, `whatsapp_send_message`, the Home Assistant
+actions (`home_assistant_turn_on`/`turn_off`/`set_temperature`/`activate_scene`/`run_script`/`open_cover`/`close_cover`/
+`lock`/`unlock`/`set_alarm`, result only) and MCP tools. A call
+the user declined or undid, a try run's noted call and a call handed to the user are never checked.
+1. The result says it worked: no `error`, no `ok`/`success`/`sent`/`created: false`, no failed `status`, and no
+   non-empty `failed`/`errors`/`rejected`/`bounced`/`not_sent` list, looked for one level down too (an MCP result's
+   `structured` part, or `content` that is JSON). Text `content` starting with "Error" or "Failed" counts as failed.
+2. Read back, where the tool declares `verify(arguments, result, ctx) -> {ok, detail?}` (sync or async, 15 s at most):
+   `file_write` reads the file (it exists and holds what was written, line endings aside), Gmail finds the sent
+   message with the `SENT` label, Google Calendar finds the event and it is not cancelled. A read-back that can't run
+   (offline) leaves the result's own answer standing.
+
+**OutcomeCheck** `{tool, app, kind: "email"|"message"|"file"|"event"|"home"|null, action: "email sent", ok, detail,
+how: "result"|"read_back", targets: [...], missed: [...], settled?, message?}`. `detail` is the plain reason it failed
+("mailer reported a problem: it couldn't do it for bad@example.com (mailbox not found)"); `targets` are what the call
+acted on (recipients, a file name, a title) and `missed` what the result says failed. At the end of a run or reply a
+failure is `settled: true` when a later successful call of the same tool covered what it missed (the model fixed it);
+every other failure gets `message`, worded from what the final answer claimed: "Sentient said it sent the email, but
+mailer reported a problem: ..." (or "Sentient tried to send the email, but ..." when the answer claims nothing). A failure that names nothing it acted on (arguments the tool couldn't read) is settled only by the very next call of
+that tool, if it worked.
+- Task runs keep `checks` on the run, saved as each call finishes (also for an approved held call and a one-call
+  task), and each `tool_result` progress update carries its `check`. A run whose model finished but has a failure
+  that still stands ends **`completed_with_errors`** (the app shows it as Needs attention) instead of `completed`:
+  its `error` (and a one-off task's `error`) is the `message`s, the log gets an `error` update with them, and the
+  notification is "Task needs attention" (`payload.event: "run_completed"`, `run_id`, `needs_attention: true`). A
+  clean run logs one `info` update: "Checked: file written, email sent." The report writer gets the same line as
+  `checked_outcome` and is told to believe it. Try runs and swarm runs are not checked.
+- Chat replies carry the reply's `checks` on `done` and on the saved message; the app shows "Checked: ..." under the
+  reply, or the failures in a Needs your attention box. A failed check also counts in the turn's `tool_errors`
+  (`chat.turn_completed`), so the self-improvement reviewer sees it.
 
 ### Where results go
 A task's `deliver_to` decides which messaging apps (section 14) get its notifications: run results and failures,
@@ -1105,17 +1149,19 @@ Routines are enabled `active` tasks whose schedule is `recurring` or `triggered`
 
 **Integration object**
 ```json
-{"id": "gmail", "display_name": "Gmail", "description": "...", "category": "productivity|communication|knowledge|development|utilities|core",
+{"id": "gmail", "display_name": "Gmail", "description": "...", "category": "productivity|communication|knowledge|development|home|utilities|core",
  "icon": "gmail", "auth_type": "builtin|oauth|api_key|manual|mcp",
  "connected": false, "account_label": "me@example.com", "status": "disconnected|connecting|connected|error", "error": null,
  "setup": {"fields": [{"key": "client_id", "label": "OAuth Client ID", "secret": false, "required": true, "help": "..."}],
            "instructions_md": "1. Open ... 2. ...", "docs_url": "https://..."},
  "privacy_filters": {"supported": true, "fields": ["keywords", "emails", "labels"]},
  "triggers": [{"event": "new_email", "label": "New email"}],
- "alternative_for": null, "access": "read_write",
+ "alternative_for": null, "access": "read_write", "entity_picker": false,
  "tools": [{"name": "gmail_search", "description": "...", "risk": "read"}]}
 ```
 - `access`: `read` (Read only) or `read_write` (Read and write, the default), see "Read only connections" below.
+- `entity_picker`: the integration has devices to choose from (Home Assistant, see below), so the window shows which
+  ones Sentient may use.
 - `alternative_for`: for optional keyed providers that replace a keyless builtin (`accuweather` → `weather`,
   `newsapi` → `news`, `brave_search`/`google_cse` → `internet_search`, `google_maps` → `maps`); these have no tools
   of their own. `null` otherwise.
@@ -1212,6 +1258,50 @@ Routines are enabled `active` tasks whose schedule is `recurring` or `triggered`
   for backward compatibility with older installations sharing the keychain. Untagged legacy tokens are never migrated automatically
   to prevent cross-endpoint credential reuse, and untagged client registrations are only copied when legacy tokens are tagged for the
   same server address. When a server's URL changes, credentials for the previous URL are deleted from the keychain.
+- `home_assistant` ("Home Assistant", `auth_type: "api_key"`, `category: "home"`, #175): setup fields `url` (the
+  address Home Assistant opens at, for example `http://homeassistant.local:8123`; `http://` only for this computer or
+  the home network: localhost, private and link-local IPs, a name without dots or ending in `.local`, `.lan`, `.home`,
+  `.internal`, `.home.arpa`; anything else needs `https://`) and `token` (a long-lived access token, secret). Connect
+  checks `GET /api/config` and saves `{url, token}` in the keychain (`integration:home_assistant`); `account_label` is
+  the home's `location_name`. Calls use Home Assistant's REST API (`/api/states`, `/api/states/<id>`,
+  `/api/services/<domain>/<service>`) and its websocket (`/api/websocket`: `config/area_registry/list`,
+  `config/device_registry/list`, `config/entity_registry/list` for rooms and devices, cached 5 minutes; without them
+  names still work). Entities Home Assistant hides or turned off are left out.
+  - Tools. Look-ups (`read`): `home_assistant_find_entities(search?, area?, kind?, limit = 25)` (the model finds the
+    few devices it needs and never gets the full list: at most `limit`, then `more` and a hint),
+    `home_assistant_list_areas`, `home_assistant_list_devices(area?)`, `home_assistant_get_state(entity_id)`. Changes
+    (`write`): `home_assistant_turn_on(entity_id, brightness_pct?, color?)` and `home_assistant_turn_off(entity_id)`
+    (lights, switches, fans, media players, thermostats and other on/off kinds; `entity_id` may list several ids
+    separated by commas; locks, covers, alarms and scripts are refused with the right tool to use),
+    `home_assistant_set_temperature(entity_id, temperature, hvac_mode?)`, `home_assistant_activate_scene`,
+    `home_assistant_run_script`, `home_assistant_open_cover` and `home_assistant_close_cover`. Security (`send`, asks
+    every time, never covered by "Allow for this chat" or a grant, `allow_for_chat: false`):
+    `home_assistant_lock`, `home_assistant_unlock`, `home_assistant_set_alarm(entity_id, mode: arm_home|arm_away|
+    arm_night|arm_vacation|disarm)`. Unlocking, disarming, opening a garage door, gate or door, and switching a
+    switch, script or button that sounds like one are a hard stop: they ask even with approvals mode `off` and an
+    `allow` rule (section 2, ADR 0028); locking and arming follow the normal rules. The `risk_fn` of turn on/off, scripts and covers raises a call to `send` for a
+    lock or alarm, a cover with `device_class` garage, gate or door, or a switch, script, button or cover whose id or
+    name says lock, door, garage, gate, alarm, security, safe or vault; an entity it can't look up yet counts as
+    security unless its kind never is (lights, fans, thermostats, media players, scenes). `describe_fn` gives a plain
+    `risk_label` ("Unlocks a door") and the device's name as `target`.
+  - Entity picker (`entity_picker: true` on the Integration object): which devices Sentient may see and use. Devices
+    left out are not found by any tool, are refused when named ("Sentient isn't allowed to use ..."), never match a
+    quick command and never start a task. `GET /api/integrations/{id}/entities` → `{mode: "all"|"picked", picked:
+    [entity ids], entities: [{entity_id, name, domain, area, state, allowed}]}` (fetched from Home Assistant; 400
+    when the integration has no picker or isn't connected; 404 unknown integration). `PUT
+    /api/integrations/{id}/entities` `{mode: "all"|"picked", picked: [entity ids]}` → `{mode, picked}`, saved in the
+    integration's settings and applied at once (also emits `integration.updated`; 400 no picker, 422 any other mode).
+    `all` (the default) also covers devices added later.
+  - Live updates (`integrations.home_assistant_live`, default on; feed `kind: "home_assistant_live"` in
+    `GET /api/integrations/feeds`): while connected and background work runs, one websocket subscribes to
+    `state_changed` and publishes `source.items` `{source: "home_assistant", event: "state_changed", origin: "feed",
+    items: [{id: "<entity id>@<last_changed>", entity_id, name, domain, area, from, to, changed_at, device_class}]}`
+    when a device's state changes (not for attribute-only changes, a device going unavailable or coming back,
+    devices left out by the picker, or kinds that change all the time: sensors, numbers, the sun, weather, updates,
+    zones, cameras, buttons, events). Triggered tasks use `schedule: {type: "triggered", source: "home_assistant",
+    event: "state_changed", filter: {"entity_id": "lock.front_door", "to": "unlocked"}}`; for this source, filter values
+    compare without regard to case ("front door" matches "Front door"). A lost connection
+    reconnects with backoff (base 30 s); a refused token marks the integration `status: "error"`.
 - `PUT /api/integrations/{id}/privacy-filters` → 400 when the integration has `privacy_filters.supported: false`
 
 **Read only connections (#141, ADR 0016 amendment).** `integrations.read_only` lists the app ids (`gmail`, `github`,
@@ -1231,7 +1321,7 @@ verb that changes things raises it, whatever the server's own hints say, and a c
 no longer asks for it). The chat's system prompt names the connected Read only apps so the model can say why it
 can't act.
 
-- `GET /api/integrations/feeds` → `[{source, display_name, kind: "gmail_history"|"calendar_sync_token"|"imap_idle", connected, active,
+- `GET /api/integrations/feeds` → `[{source, display_name, kind: "gmail_history"|"calendar_sync_token"|"imap_idle"|"home_assistant_live", connected, active,
   status: "disconnected"|"off"|"starting"|"ok"|"error", last_sync_at, last_success_at, last_error, note, failures, next_attempt_at, emitted}]`
   (change feeds and push watchers, section 16; `note` explains a re-baseline such as expired Gmail history)
 - `POST /api/integrations/feeds/{source}/sync` → `{ok, emitted, rebaselined}` or `{ok: false, error, failures, retry_in_s, emitted: 0}`
@@ -1763,6 +1853,10 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   `LoopResult.tool_result_limit`; else `chat.tool_result_max_chars`), so a part is never cut and saved again. The limit (`await app.agent.tool_result_limit(role, model)`, kept on `LoopResult.tool_result_limit` and worked out again for a fallback model that answered) is
   `chat.tool_result_max_chars` (default 16000), and at most `chat.tool_result_context_share` (default 0.25) of the
   model's context length at 3 characters per token, never below 1500: 6144 characters on an 8,192-token local model.
+  A tool can declare what its calls change for the outcome check (#165, section 4 "Checking the outcome"):
+  `Tool.outcome` (`"email"|"message"|"file"|"event"|"home"`) and `Tool.verify(arguments, result, ctx) -> {ok, detail?}`,
+  which reads the effect back in code (also on `@tool(...)` and `@itool(...)`). `await app.agent.check_outcome(tool,
+  arguments, result, is_error, ctx)` → OutcomeCheck | None checks one call; `LoopResult.checks` lists a loop's checks.
   A tool can give a shorter version of a long result with `Tool.shorten_fn(result) -> result | None`; the model then
   reads that (`[Result shortened from M characters to its main parts. ...]`), still cut if it is longer than the limit.
   MCP tools get one by their own tool name (`sentient.integrations.mcp_shorten`): `COMPOSIO_SEARCH_TOOLS` keeps the
@@ -2436,6 +2530,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
     records its highest UID, and a changed UIDVALIDITY re-baselines that folder. IDLE push only works for the
     selected folder, so Sentient stays IDLE-subscribed to the first folder in the list and checks the rest right
     after each wake or NOOP. Wrong app password marks the integration `status: "error"`.
+  - Home Assistant: a websocket subscribed to `state_changed` pushes device changes as they happen (section 5).
   - Failures back off exponentially (base interval doubling, max 30 minutes) with a readable `last_error`
     (see `GET /api/integrations/feeds`); a failure never moves the cursor. Disconnecting (or connecting a different
     account) forgets the cursor.
@@ -2452,6 +2547,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   the payload came from the user's webhook named `<name>`. Feed state is read from `app.integrations.feed_active(source) -> bool`
   (sync or async); while it is missing every watched source is timer-polled. `POST /api/proactivity/poll-now` polls regardless.
 - Deduplication key per source: gmail message id; calendar `<event id>:<updated>` (so a later change is new again);
+  Home Assistant `<entity id>@<last_changed>`;
   IMAP `Message-ID` header (else `<uidvalidity>:<uid>`); webhook calls are always new. Keys are kept 30 days.
   Items hidden by privacy filters are recorded as seen and never published.
 - Webhooks: `GET /api/hooks` → `[{id, name, url, created_at, last_called_at, calls}]`;
@@ -3119,7 +3215,7 @@ confirmation), checks again, edits the folder's ignore patterns and shows the `f
 ## 23. Timers, reminders and quick commands (owner: reminders and core, #150)
 
 **Quick commands.** Before a chat turn calls the model, `Agent.run_turn` asks `sentient.agent.fastpath.plan`. When the
-message is *only* a plain timer or reminder command, it is done at once with no model call, on every surface (the
+message is *only* a plain timer, reminder or (with Home Assistant connected) light command, it is done at once with no model call, on every surface (the
 window, voice and devices, Telegram, Discord and WhatsApp): the turn makes the same tool calls the model would
 (`tool_call` and `tool_result` events, kept in the chat like any other), says a short confirmation (`text_delta`, then
 `done`), and the engine logs `quick command: <action> (<language>) done in N ms with no model call`. Anything else,
@@ -3132,12 +3228,17 @@ language under `sentient/agent/fastpath/`, tried for `assistant.language` and th
 | reminder | "remind me at 6 pm to call Ravi", "remind me to call Ravi at 6 pm", "remind me in 20 minutes", "remind me tomorrow at 9 am to pay rent", "remind me tonight at 8 to call mom", "remind me at 18:00 to leave" | a clock time without AM or PM ("at 6"), a repeating wish ("every day"), a day name, "today" at a time that has passed, a time missing ("tonight") |
 | list | "what timers do I have", "how much time is left", "what are my reminders" | |
 | cancel | "cancel the timer", "stop the pasta timer", "cancel the 10 minute timer", "cancel my reminder to stretch", "cancel all timers" | two or more match and "all" was not said; nothing matches the words given; a plural without "all" |
+| home (#175) | "turn off the living room lights", "turn on the bedroom lamp", "living room lights off", "turn the lights in the kitchen off", "switch off all the lights", "dim the living room lights to 30%", "turn on the coffee maker" | Home Assistant not connected or not reachable; the words name no room or device exactly (one light named that, the lights of the room named that, or the lights whose names hold every word); "the bedroom light" when the bedroom has two; "the lights" without a room or "all"; a device left out by the entity picker; locks, alarms, doors, garage doors and gates, and switches that sound like one (never quick); a question ("is the porch light on") |
 
 "Hey Sentient", "please", "can you" and the assistant's own name around a command are fine. A quick command never
 sends, buys or deletes anything ("delete the timer" goes to the model). It runs only when its tool would run without
 asking: with approvals mode `always`, or an "Ask" or "Never" rule on the tool or on `reminders`, the model answers as
-usual. Not used for a message with attachments. Turned off with `chat.quick_commands`. No smart-home commands yet:
-Sentient has no lights or Home Assistant integration.
+usual. A home command calls `home_assistant_turn_on` or `home_assistant_turn_off` (with `brightness_pct` for a
+level) once for every device it names, and says "Turned off the living room lights." or "Set the bedroom lamp to
+30%.". Its words name exactly that change, so in approvals mode `ask` they count as the yes for it (effective risk
+`write` only, ADR 0028); approvals mode `always`, an "Ask", "Hand it to me" or "Never" rule on the tool or on
+`home_assistant`, or a Read only connection send it to the model. Not used for a message with attachments. Turned
+off with `chat.quick_commands`.
 
 **Timers and reminders** (`sentient/reminders/`, table `reminders`). **Reminder**
 `{id, kind: "timer"|"reminder", message, connector: ""|"to"|"about"|"that", label, duration_s, fire_at, status:

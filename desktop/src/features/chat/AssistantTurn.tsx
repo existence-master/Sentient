@@ -24,6 +24,7 @@ import { modelShortName } from '@/lib/models'
 import type { ApprovalDecision } from '@/lib/types'
 import { cn, copyText, formatNumber } from '@/lib/utils'
 import { AnswerSources } from './AnswerSources'
+import { OutcomeChecks, toolProblems } from './OutcomeChecks'
 import { ToolCallCard } from './ToolCallCard'
 
 /** Titles for errors the chat can explain (#148); anything else is "Something went wrong". */
@@ -146,6 +147,7 @@ export const AssistantTurn = memo(function AssistantTurn({ turn, assistantName, 
   const blocks = toBlocks(turn.segments)
   const lastBlock = blocks[blocks.length - 1]
   const textOut = turnText(turn)
+  const problems = toolProblems(Object.values(turn.tools), turn.checks)
   const [copied, setCopied] = useState(false)
   const visibleBlocks = showThinking ? blocks : blocks.filter((b) => b.kind !== 'thinking')
   const thinkingNow = streaming && lastBlock?.kind === 'thinking'
@@ -201,7 +203,7 @@ export const AssistantTurn = memo(function AssistantTurn({ turn, assistantName, 
                 }
                 const tool = turn.tools[g.ids[0]]
                 if (!tool) return null
-                return <ToolCallCard key={tool.callId} tool={tool} approval={turn.approvals.find((a) => a.callId === tool.callId)} onApprove={onApprove} />
+                return <ToolCallCard key={tool.callId} tool={tool} approval={turn.approvals.find((a) => a.callId === tool.callId)} onApprove={onApprove} problem={problems[tool.callId]} />
               })}
             </div>
           )
@@ -230,6 +232,8 @@ export const AssistantTurn = memo(function AssistantTurn({ turn, assistantName, 
             )}
           </div>
         )}
+
+        {!streaming && !!turn.checks?.length && <OutcomeChecks checks={turn.checks} />}
 
         {!streaming && (!!turn.sources?.length || !!turn.memorySources?.length) && (
           <AnswerSources sources={turn.sources} memorySources={turn.memorySources} assistantName={assistantName} />

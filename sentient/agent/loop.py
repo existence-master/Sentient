@@ -44,6 +44,7 @@ from sentient.agent import (
     dry_run,
     fastpath,
     findings,
+    outcomes,
     preview,
     reversible,
     rule_levels,
@@ -111,6 +112,7 @@ from sentient.tools.rules import (
     ASK,
     HAND_OFF,
     IF_ASKED,
+    OPENS_HOME,
     PURCHASE_LABEL,
     SELECTION_SOURCE,
     address_carries_data,
@@ -126,6 +128,7 @@ from sentient.tools.rules import (
     is_screen_capture,
     is_selection,
     never_message,
+    opens_home,
     outside_source,
     result_outside_source,
     rule_label,
@@ -369,6 +372,8 @@ class LoopResult:
     from_findings: bool = False
     # calls a "Hand it to me" rule handed to the user instead of running (#140): their results, with a preview
     handed_off: list[dict] = field(default_factory=list)
+    # the outcome checks of the calls that ran (#165, ``sentient.agent.outcomes``), in order; written by code only
+    checks: list[dict] = field(default_factory=list)
 
 
 def _hosts(raw: Any) -> set[str]:
@@ -1121,8 +1126,11 @@ class Agent:
                 tool, plan.risk, tc.arguments, ctx
             ):
                 plan.needs_approval = False
-        elif rule == "ask":
+        elif rule == "ask" or await opens_home(tool, tc.arguments, ctx, plan.risk):
+            # an "ask" rule, or a call that opens the home (ADR 0028), which asks in tasks too whatever the rules say
             label = self.approvals.label(tool, self.registry)
+            if rule != "ask":
+                plan.level = OPENS_HOME  # the hold and the task's question say why it asks
             said = plan.level if chat_rule != "ask" else "ask"  # how the hold explains itself: the rule that asks
             if await self.approvals.granted(tool, plan.risk, tc.arguments, ctx):
                 pass  # the user allowed it for this task or for a while (#139)
@@ -1394,8 +1402,13 @@ class Agent:
                 ctx.untrusted = clipped  # a web page clipped into the user's notes (ADR 0025)
         if p.tool is not None and rule_levels.is_handed_off(res):
             result.handed_off.append(res)  # handed to the user, at planning or right before it ran (#140)
+        check = await self._check_outcome(p, res, is_error, ctx) if ran else None
+        if check is not None:
+            result.checks.append(check)
         if (is_error or err) and err != DECLINED:
             result.tool_errors.append({"name": tc.name, "error": err or str(res)[:500]})
+        elif check is not None and check.get("ok") is False:  # the call said it worked but did not (#165)
+            result.tool_errors.append({"name": tc.name, "error": str(check.get("detail") or "")[:500]})
         elif (
             tc.name == "skill_view"
             and isinstance(tc.arguments.get("name"), str)
@@ -1411,7 +1424,29 @@ class Agent:
         if persist:  # stored as it is; marked again when the transcript is read back (mark_outside_messages)
             extra = {"approval": p.approval} if p.approval else {}
             await persist("tool", content, tool_call_id=tc.id, name=tc.name, **extra)
-        yield ToolResultEvent(call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, **ev)
+        yield ToolResultEvent(
+            call_id=tc.id, name=tc.name, result=res, is_error=is_error, duration_ms=ms, check=check, **ev
+        )
+
+    async def _check_outcome(self, p: _CallPlan, res: Any, is_error: bool, ctx: ToolContext) -> dict | None:
+        return await self.check_outcome(p.tool, p.tc.arguments, res, is_error, ctx) if p.tool is not None else None
+
+    async def check_outcome(self, tool: Tool, arguments: dict, res: Any, is_error: bool, ctx: ToolContext) -> dict | None:
+        """The outcome check of a call that ran (#165): what its result says and, where the tool can, what reading
+        the effect back shows. None for calls that aren't checked or were handed to the user. Never raises."""
+        if rule_levels.is_handed_off(res):
+            return None
+        plugin = self.registry.plugin(tool.plugin)
+        mcp = getattr(plugin, "auth", "") == "mcp"
+        try:
+            return await outcomes.check(
+                tool, arguments, res, is_error, ctx, app=self._app_name(tool) or tool.plugin, mcp=mcp
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("outcome check of %s skipped: %s", tool.name, exc)
+            return None
 
     def outside_content(self, content: str, tool: Tool, arguments: dict | None = None) -> str:
         """A tool message as the model reads it: wrapped as outside content when ``tool`` brings text someone else
@@ -1716,7 +1751,8 @@ class Agent:
             # the user pressed Stop (or the window went away): keep what was shown
             with contextlib.suppress(Exception):
                 used.add_prompt_notes(notes, partial, user_text)
-                save = asyncio.ensure_future(self._persist_stopped(session_id, partial, sources, used))
+                checks = outcomes.finalize(result.checks, partial)  # what its calls really did, kept too (#165)
+                save = asyncio.ensure_future(self._persist_stopped(session_id, partial, sources, used, checks))
                 while not save.done():  # a second Stop while saving must not lose what the caller sends on
                     with contextlib.suppress(asyncio.CancelledError):
                         await asyncio.shield(save)
@@ -1738,12 +1774,14 @@ class Agent:
             else:
                 memory_sources = await sources.resolve(self.store)
                 used.add_prompt_notes(notes, result.text, user_text)  # the notes the reply drew on (#354)
+                checks = outcomes.finalize(result.checks, result.text)  # what really happened (#165)
                 message_id = await self.store.add_message(
                     session_id, "assistant", result.text, thinking=result.thinking or None, memory_sources=memory_sources,
-                    sources=used.items(),
+                    sources=used.items(), checks=checks,
                 )
                 yield Done(
-                    content=result.text, message_id=message_id, memory_sources=memory_sources, sources=used.items(), **ev
+                    content=result.text, message_id=message_id, memory_sources=memory_sources, sources=used.items(),
+                    checks=checks, **ev,
                 )
 
                 said = "\n\n".join([user_text, *result.interjections]).strip()
@@ -1781,9 +1819,10 @@ class Agent:
 
     # ------------------------------------------------------------------ quick commands (#150)
     async def _quick_plan(self, session_id: str, user_text: str, attachments: list[str]) -> fastpath.QuickPlan | None:
-        """The plan for a plain timer or reminder command, or None to let the model answer: anything else, a message
-        with attachments, or a command whose tool would ask first or is set to Never (the model then shows the usual
-        approval card or refusal)."""
+        """The plan for a plain timer, reminder or light command, or None to let the model answer: anything else, a
+        message with attachments, or a command whose tool would ask first or is set to Never (the model then shows the
+        usual approval card or refusal). A light command is the user's own words for exactly that change, so approvals
+        mode "ask" counts them as the yes (``ApprovalBroker.quick_runs``)."""
         if attachments or self.app is None:
             return None
         try:
@@ -1795,7 +1834,9 @@ class Agent:
             return None
         for call in plan.calls:
             tool = self.registry.get(call.name)
-            if tool is None or self.approvals.is_never(tool) or self.approvals.needs_approval(tool, session_id, tool.risk):
+            if tool is None or self.approvals.is_hidden(tool):
+                return None
+            if not self.approvals.quick_runs(tool, session_id, call.arguments, asked=plan.asked):
                 return None
         return plan
 
@@ -1902,15 +1943,16 @@ class Agent:
         return source
 
     async def _persist_stopped(
-        self, session_id: str, partial: str, sources: MemorySources, used: AnswerSources | None = None
+        self, session_id: str, partial: str, sources: MemorySources, used: AnswerSources | None = None,
+        checks: list[dict] | None = None,
     ) -> dict:
         content = (partial.rstrip() + "\n\n_(stopped)_").strip()
         memory_sources = await sources.resolve(self.store)
         items = used.items() if used is not None else []
         message_id = await self.store.add_message(
-            session_id, "assistant", content, memory_sources=memory_sources, sources=items
+            session_id, "assistant", content, memory_sources=memory_sources, sources=items, checks=checks
         )
-        return {"message_id": message_id, "memory_sources": memory_sources, "sources": items}
+        return {"message_id": message_id, "memory_sources": memory_sources, "sources": items, "checks": checks or []}
 
     def add_answer_source(self, used: AnswerSources, name: str, res: Any) -> None:
         """Record what a successful tool result brought into the reply (#174) or a task run (#291). Never breaks a

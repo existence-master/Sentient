@@ -25,6 +25,7 @@ import {
   IconFilePencil,
   IconFolder,
   IconHistory,
+  IconHome,
   IconListCheck,
   IconMail,
   IconMapPin,
@@ -96,6 +97,7 @@ const KNOWN: Record<string, ToolMeta> = {
 }
 
 const PREFIX: Array<[RegExp, Icon]> = [
+  [/^home_assistant/, IconHome],
   [/^memory/, IconBrain],
   [/^file/, IconFile],
   [/^(time|clock|date)/, IconClock],
@@ -138,6 +140,10 @@ export function toolMeta(name: string): ToolMeta {
   const known = KNOWN[name]
   if (known) return known
   const icon = PREFIX.find(([re]) => re.test(name))?.[1] ?? IconTool
+  if (name.startsWith('home_assistant_')) {
+    const label = `Home: ${humanize(name.slice('home_assistant_'.length)).toLowerCase()}`
+    return { running: label, done: label, icon }
+  }
   const [prefix, ...rest] = name.split('_')
   const app = APP_PREFIX[prefix]
   const label = app && rest.length ? `${app}: ${humanize(rest.join('_')).toLowerCase()}` : humanize(name)

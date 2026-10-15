@@ -144,7 +144,24 @@ def invites_others(arguments: dict, ctx: Any) -> bool:
     return any(g and g != owner for g in guests) or bool(arguments.get("send_updates"))
 
 
-@itool(PID, "gcal_create_event", risk=Risk.write, exfiltrates=invites_others)
+async def event_exists(arguments: dict, result: Any, ctx: ToolContext) -> dict | None:
+    """Read a new event back (#165): it is on the calendar and not cancelled. None when the result names no event."""
+    eid = ((result.get("event") or {}) if isinstance(result, dict) else {}).get("id")
+    if not eid:
+        return None
+    cal = quote(str((arguments or {}).get("calendar_id") or "primary"), safe="@")
+    try:
+        event = await gapi(ctx, PID, "GET", f"{API}/calendars/{cal}/events/{eid}")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (404, 410):
+            return {"ok": False, "detail": "the event isn't on your Google Calendar"}
+        raise
+    if event.get("status") == "cancelled":
+        return {"ok": False, "detail": "the event on your Google Calendar is cancelled"}
+    return {"ok": True}
+
+
+@itool(PID, "gcal_create_event", risk=Risk.write, exfiltrates=invites_others, outcome="event", verify=event_exists)
 async def gcal_create_event(ctx: ToolContext, summary: str, start: str, end: str | None = None,
                             duration_minutes: int = 60, description: str | None = None, location: str | None = None,
                             attendees: list[str] | None = None, all_day: bool = False, add_meet_link: bool = False,
@@ -212,7 +229,7 @@ async def gcal_delete_event(ctx: ToolContext, event_id: str, notify_guests: bool
     return {"deleted": True, "event_id": event_id}
 
 
-@itool(PID, "gcal_quick_add", risk=Risk.write)
+@itool(PID, "gcal_quick_add", risk=Risk.write, outcome="event", verify=event_exists)
 async def gcal_quick_add(ctx: ToolContext, text: str, calendar_id: str = "primary") -> dict:
     """Create an event from a short sentence, e.g. "Lunch with Priya at Cafe Mocha tomorrow 1pm"."""
     res = await gapi(ctx, PID, "POST", f"{API}/calendars/{quote(calendar_id, safe='@')}/events/quickAdd",

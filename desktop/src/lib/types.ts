@@ -435,7 +435,32 @@ export interface TranscriptMessage {
   /** Memories the final reply had in mind; `[]` on every other row. */
   memory_sources?: MemorySource[]
   sources?: AnswerSource[]
+  /** What code found the final reply's calls really did (#165); `[]` on every other row. */
+  checks?: OutcomeCheck[]
   created_at: ISODate
+}
+
+/**
+ * §10 What code found one call really did, after it ran (#165): its result said it worked and, where the app can,
+ * the effect was read back (the file, the Sent folder, the event). Never decided by a model.
+ */
+export interface OutcomeCheck {
+  tool: string
+  /** The app it went through ("Gmail", or an MCP server's name). */
+  app: string
+  /** `email`, `message`, `file`, `event`, `home`, or null when only the result was read. */
+  kind: string | null
+  /** Short label once checked: "email sent", "file written". */
+  action: string
+  ok: boolean
+  /** Why it failed, in plain words; "" when it worked. */
+  detail: string
+  /** `read_back`: the effect was read back; `result`: only the call's own result was read. */
+  how: 'read_back' | 'result'
+  /** A later call did the same thing again and it worked, so this failure is settled. */
+  settled?: boolean
+  /** A failure that still stands, as the user reads it: "Sentient said it sent the email, but ...". */
+  message?: string
 }
 
 /**
@@ -861,6 +886,8 @@ export interface ToolResultEvent extends TurnScoped {
   result: unknown
   is_error: boolean
   duration_ms: number | null
+  /** What code found the call really did (#165); absent for calls that aren't checked. */
+  check?: OutcomeCheck | null
 }
 export interface ApprovalRequestEvent extends TurnScoped {
   type: 'approval_request'
@@ -975,6 +1002,8 @@ export interface DoneEvent extends TurnScoped {
   error?: string | null
   memory_sources?: MemorySource[]
   sources?: AnswerSource[]
+  /** What code found this reply's calls really did (#165). */
+  checks?: OutcomeCheck[]
   /** §17: a queued message dropped by Stop everything (its text; never sent). Comes with the `client_id` it was sent with. */
   dropped?: string[]
   client_id?: string | null
@@ -1489,6 +1518,8 @@ export interface ProgressUpdate {
     parameters?: Record<string, unknown>
     result?: unknown
     is_error?: boolean
+    /** `tool_result` only: what code found the call really did (#165). */
+    check?: OutcomeCheck
   }
 }
 
@@ -1550,6 +1581,8 @@ export interface Run {
   dry_run?: boolean
   /** Try runs only: what a real run would do, in order. */
   would_do?: TryRunAction[]
+  /** What code found the run's calls really did (#165). A failure that still stands makes it `completed_with_errors`. */
+  checks?: OutcomeCheck[]
 }
 
 /** One call a try run noted instead of making (#142). Built by the engine from the call itself. */
@@ -1694,7 +1727,7 @@ export interface ClarificationAnswer {
 }
 
 // ============================================================================ §5 Integrations
-export type IntegrationCategory = 'productivity' | 'communication' | 'knowledge' | 'development' | 'utilities' | 'core'
+export type IntegrationCategory = 'productivity' | 'communication' | 'knowledge' | 'development' | 'home' | 'utilities' | 'core'
 export type IntegrationAuthType = 'builtin' | 'oauth' | 'api_key' | 'manual' | 'mcp'
 export type IntegrationStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -1727,7 +1760,31 @@ export interface Integration {
   alternative_for: string | null
   /** Read only (`read`) or Read and write (`read_write`, the default). Older engines leave it out. */
   access?: ConnectionAccess
+  /** #175: the integration has devices to choose from (Home Assistant). Older engines leave it out. */
+  entity_picker?: boolean
   tools: ToolInfo[]
+}
+
+/** #175: one device (entity) of an integration with an entity picker. */
+export interface IntegrationEntity {
+  entity_id: string
+  name: string
+  /** light, switch, climate, lock, cover, sensor... */
+  domain: string
+  area: string
+  state: string | null
+  /** Sentient may see and use it. */
+  allowed: boolean
+}
+
+/** #175: every device, or only the picked ones. */
+export interface EntityChoice {
+  mode: 'all' | 'picked'
+  picked: string[]
+}
+
+export interface IntegrationEntities extends EntityChoice {
+  entities: IntegrationEntity[]
 }
 
 /** #141: a Read only connection hides and refuses its tools that change, send, delete or run something. */

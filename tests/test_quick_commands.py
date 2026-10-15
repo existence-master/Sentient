@@ -99,7 +99,7 @@ TO_THE_MODEL = [
     "buy a kitchen timer",
     "what's the weather",
     "how does a timer work",
-    "turn off the living room lights",               # no smart-home integration yet
+    "turn off the lights and lock the door",         # more than one thing, and a lock (lights alone: #175)
 ]
 
 

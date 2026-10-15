@@ -13,6 +13,7 @@ import {
   IconShieldQuestion,
   IconTerminal2,
   IconTrash,
+  IconLock,
   IconWorldWww,
   IconX,
   type Icon
@@ -21,7 +22,7 @@ import { motion } from 'motion/react'
 import { Badge, Button, JsonView, Markdown, type Tone } from '@/components/ui'
 import type { ApprovalView } from '@/lib/chatFold'
 import type { ApprovalDecision } from '@/lib/types'
-import { cn, truncate } from '@/lib/utils'
+import { cn, humanize, truncate } from '@/lib/utils'
 import { ActionPreview } from './ActionPreview'
 import { hostOf, refLabel } from './cards/bits'
 import { toolMeta } from './toolMeta'
@@ -49,10 +50,12 @@ interface EffectiveRisk {
   verb: string
   icon: Icon
   tone: Tone
+  caution?: string
 }
 
 const RISK_ICONS: Record<RiskLabel, Icon> = {
   'Runs a command': IconTerminal2,
+  'Home security': IconLock,
   'Runs code': IconTerminal2,
   Purchase: IconCreditCard,
   Deletes: IconTrash,
@@ -95,6 +98,16 @@ function actionLine(approval: ApprovalView): string | null {
       return url ? `Open ${hostOf(url)}` : null
     case 'browser_press':
       return `Press ${String(a.key ?? 'a key')}`
+    case 'home_assistant_unlock':
+      return `Unlock “${approval.target ?? String(a.entity_id ?? 'a door')}”`
+    case 'home_assistant_lock':
+      return `Lock “${approval.target ?? String(a.entity_id ?? 'a door')}”`
+    case 'home_assistant_open_cover':
+      return `Open “${approval.target ?? String(a.entity_id ?? '')}”`
+    case 'home_assistant_close_cover':
+      return `Close “${approval.target ?? String(a.entity_id ?? '')}”`
+    case 'home_assistant_set_alarm':
+      return `${humanize(String(a.mode ?? 'change'))}: “${approval.target ?? String(a.entity_id ?? 'your alarm')}”`
     default:
       return null
   }
@@ -162,6 +175,7 @@ export function ApprovalCard({
             </Badge>
           </div>
           {action && <div className="mt-1 text-md font-medium text-fg">{action}</div>}
+          {risk.caution && <div className="mt-1 text-sm font-medium text-danger">{risk.caution}</div>}
           {approval.warning && (
             <div
               role="alert"
