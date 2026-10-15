@@ -517,3 +517,4 @@ def test_trigger_filters_ignore_case_for_home_assistant():
     assert not event_matches_filter(item, {"to": "locked"}, "home_assistant")
     assert not event_matches_filter(item, wanted, "webhook")  # other sources stay exact
     assert event_matches_filter({**item, "name": "Straße"}, {"name": {"$regex": "^Stra.e$"}}, "home_assistant")
+    assert event_matches_filter({**item, "name": "Straße"}, {"name": {"$contains": "Straße"}}, "home_assistant")

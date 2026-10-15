@@ -91,13 +91,14 @@ def _op_ok(op: str, op_val: Any, value: Any, text_value: Any, email_field: bool)
 
 
 def _fold(value: Any) -> Any:
-    """Lower-cased strings, also inside lists and operator dicts (Home Assistant names and states)."""
+    """Case-folded strings, also inside lists and operator dicts (Home Assistant names and states). $regex and
+    $contains keep the raw text: they compare against the raw value and ignore case themselves."""
     if isinstance(value, str):
         return value.casefold()
     if isinstance(value, list):
         return [_fold(v) for v in value]
     if isinstance(value, dict):
-        return {k: v if k == "$regex" else _fold(v) for k, v in value.items()}
+        return {k: v if k in {"$regex", "$contains"} else _fold(v) for k, v in value.items()}
     return value
 
 
