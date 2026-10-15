@@ -242,6 +242,13 @@ async def test_seed_safety_keeps_planning_tasks_and_live_runs_from_calling_the_m
                                 "schedule": {"type": "once", "run_at": None, "timezone": "UTC"},
                                 "created_at": now, "updated_at": now})
         run_id = await repo.insert_run("demo-running", now=now, plan=[{"tool": "web", "description": "Read the pages"}])
+        # finished but never settled, with no result: the engine would ask the model to write one on start
+        await repo.insert_task({"id": "demo-unsettled", "name": "Sort the inbox", "status": "processing",
+                                "enabled": True, "plan": [{"tool": "gmail", "description": "Sort it"}],
+                                "schedule": {"type": "recurring", "frequency": "daily", "time": "09:00"},
+                                "created_at": now, "updated_at": now})
+        done = await repo.insert_run("demo-unsettled", now=now, plan=[])
+        await repo.update_run(done, {"status": "completed", "finished_at": now})
     finally:
         await app.stop()
 
@@ -257,6 +264,7 @@ async def test_seed_safety_keeps_planning_tasks_and_live_runs_from_calling_the_m
         assert (await app.tasks.repo.get_task("demo-running"))["status"] == "cancelled"
         run = await app.tasks.repo.get_run(run_id)
         assert run["status"] == "cancelled" and run["finished_at"]
+        assert (await app.tasks.repo.get_task("demo-unsettled"))["status"] == "active"
     finally:
         await app.stop()
 

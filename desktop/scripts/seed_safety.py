@@ -8,7 +8,8 @@ is sent through Telegram, WhatsApp or Discord.
 
 The engine plans every ``planning`` task and resumes every ``processing`` run when it starts, paused or not, so those
 would still call the model (issue #388). A task still being planned is declined instead (Run again plans a fresh
-copy when the user wants it) and a run in progress is cancelled (the engine settles its task on start).
+copy when the user wants it), a run in progress is cancelled, and a task still marked as running is settled
+(a routine goes back to waiting, anything else is cancelled).
 
 The seed scripts call ``quiet()`` when they finish and ``scripts/smoke.mjs`` runs this file before it starts the app;
 both skip it with ``--keep-live``.
@@ -18,6 +19,7 @@ It refuses the default data folder (``~/.sentient``): that is the real user's, n
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import sys
@@ -32,6 +34,22 @@ STOPPED_RUN = "Stopped so the demo home stays quiet."
 
 def _table_has(db: sqlite3.Connection, table: str, column: str) -> bool:
     return any(row[1] == column for row in db.execute(f"PRAGMA table_info({table})"))
+
+
+def _settle_busy_tasks(db: sqlite3.Connection) -> None:
+    """Settle tasks left ``processing`` with no run in progress, as the engine would but without writing a missing
+    result (that asks the model). A routine goes back to waiting for its next time, anything else is cancelled."""
+    busy = db.execute(
+        "SELECT id, schedule FROM tasks WHERE status = 'processing' AND NOT EXISTS (SELECT 1 FROM task_runs r "
+        "WHERE r.task_id = tasks.id AND r.status IN ('processing', 'waiting_for_user'))"
+    ).fetchall()
+    for task_id, schedule in busy:
+        try:
+            kind = (json.loads(schedule or "null") or {}).get("type")
+        except (ValueError, AttributeError):
+            kind = None
+        status = "active" if kind in {"recurring", "triggered"} else "cancelled"
+        db.execute("UPDATE tasks SET status = ?, next_execution_at = NULL WHERE id = ?", (status, task_id))
 
 
 def quiet(home: str | Path) -> dict:
@@ -68,6 +86,7 @@ def quiet(home: str | Path) -> dict:
                         "finished_at = ? WHERE status = 'processing'",
                         (STOPPED_RUN, datetime.now(UTC).isoformat(timespec="seconds")),
                     ).rowcount
+                    _settle_busy_tasks(db)
                 if _table_has(db, "channel_chats", "deliver"):
                     report["chats_muted"] = db.execute(
                         "UPDATE channel_chats SET deliver = 0 WHERE deliver != 0").rowcount
