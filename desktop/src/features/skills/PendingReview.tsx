@@ -1,4 +1,4 @@
-import { IconAlertTriangle, IconArrowUpRight, IconCheck, IconCode, IconEyeCheck, IconFileDescription, IconFilePencil, IconFirstAidKit, IconPencil, IconSparkles, IconUserEdit, IconX } from '@tabler/icons-react'
+import { IconAlertTriangle, IconArrowUpRight, IconCheck, IconCode, IconEyeCheck, IconFileDescription, IconFilePencil, IconFirstAidKit, IconPackageImport, IconPencil, IconSparkles, IconUserEdit, IconX } from '@tabler/icons-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -13,6 +13,7 @@ import { cn, relativeTime } from '@/lib/utils'
 import { ReviewNowButton } from './actions'
 import { DiffView } from './DiffView'
 import { LintList } from './LintList'
+import { SafetyReport, vetSourceLabel } from './SafetyReport'
 import { AuthorBadge } from './SkillCard'
 import { SkillBody } from './SkillDetail'
 import { SkillEditor, splitList, type SkillDraft } from './SkillEditor'
@@ -124,6 +125,9 @@ function ReviewCard({
   const [draft, setDraft] = useState<SkillDraft | null>(null)
   const [busy, setBusy] = useState<'approve' | 'reject' | null>(null)
   const [confirmReject, setConfirmReject] = useState(false)
+  const [confirmAnyway, setConfirmAnyway] = useState(false)
+  const vetting = pending.vetting ?? null
+  const highRisk = vetting?.verdict === 'high'
 
   useEffect(() => {
     if (focused) ref.current?.scrollIntoView({ block: 'start', behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'instant' })
@@ -143,7 +147,7 @@ function ReviewCard({
     return prev
   }
 
-  const approve = async (edited?: SkillDraft) => {
+  const approve = async (edited?: SkillDraft, anyway = false) => {
     setBusy('approve')
     const prev = dropFromPending()
     try {
@@ -152,7 +156,7 @@ function ReviewCard({
         : null
       // edit the proposal itself (never the active copy), then approve it once
       if (body) await api.skills.update(pending.name, { ...body, target: 'pending' })
-      await actions.approve.mutateAsync(pending.name)
+      await (anyway ? actions.approveAnyway : actions.approve).mutateAsync(pending.name)
       void qc.invalidateQueries({ queryKey: qk.skills.all })
       toast.success(isUpdate ? `Updated ${pending.name}` : `${pending.name} is now active`, {
         description: 'Sentient will use it the next time it applies.',
@@ -197,11 +201,11 @@ function ReviewCard({
               repair ? 'border-warning/30 bg-warning/10 text-warning' : isUpdate ? 'border-info/25 bg-info/10 text-info' : 'border-accent/25 bg-accent/10 text-accent-text'
             )}
           >
-            {repair ? <IconFirstAidKit size={20} /> : isUpdate ? <IconFilePencil size={20} /> : <IconSparkles size={20} />}
+            {repair ? <IconFirstAidKit size={20} /> : isUpdate ? <IconFilePencil size={20} /> : vetting ? <IconPackageImport size={20} /> : <IconSparkles size={20} />}
           </div>
           <div className="min-w-0 flex-1">
             <div className={cn('text-xs font-medium uppercase tracking-wide', repair ? 'text-warning' : 'text-fg-subtle')}>
-              {repair ? 'Fix proposed after a problem' : isUpdate ? 'Proposed improvement' : 'Sentient learned a new skill'}
+              {repair ? 'Fix proposed after a problem' : isUpdate ? 'Proposed improvement' : vetting ? `${vetSourceLabel(vetting)}, not used until you approve it` : 'Sentient learned a new skill'}
               {entry && <span className="normal-case tracking-normal"> · {relativeTime(entry.ts)}</span>}
             </div>
             <h3 className="mt-0.5 flex flex-wrap items-center gap-2 text-md font-semibold text-fg">
@@ -219,7 +223,10 @@ function ReviewCard({
       </div>
 
       <div className="space-y-4 p-5">
-        {/* why */}
+        {/* why, or for a skill from outside its safety check (#146) */}
+        {vetting ? (
+          <SafetyReport vetting={vetting} />
+        ) : (
         <div className={cn('rounded-xl border px-4 py-3', repair ? 'border-warning/25 bg-warning/[0.06]' : 'border-border bg-sunken/50')}>
           <div className={cn('text-xs font-medium', repair ? 'text-warning' : 'text-fg-muted')}>{repair ? 'What went wrong' : 'Why Sentient proposed this'}</div>
           <p className="mt-1 text-sm leading-relaxed text-fg">
@@ -235,6 +242,7 @@ function ReviewCard({
             </button>
           )}
         </div>
+        )}
 
         {changedSince ? (
           <Alert tone="warning" icon={<IconAlertTriangle />} title="You changed this skill after Sentient drafted this">
@@ -245,7 +253,7 @@ function ReviewCard({
             You changed this skill yourself, so Sentient left it as it is and drafted this instead. Approve to switch, or reject to keep yours.
           </Alert>
         ) : null}
-        <LintList findings={pending.lint} title={pending.lint?.some((f) => f.level === 'error') ? 'Check this proposal carefully' : 'Suggestions for this proposal'} />
+        <LintList findings={vetting ? pending.lint?.filter((f) => !['danger', 'hidden', 'outbound'].includes(f.rule)) : pending.lint} title={pending.lint?.some((f) => f.level === 'error') ? 'Check this proposal carefully' : 'Suggestions for this proposal'} />
 
         {/* content */}
         {draft ? (
@@ -285,7 +293,7 @@ function ReviewCard({
 
       {/* actions */}
       <div className="flex flex-wrap items-center gap-2 border-t border-border bg-elevated/40 px-5 py-3">
-        <p className="mr-auto text-xs text-fg-subtle">{userEdited ? 'Approving replaces your edited version.' : repair ? 'Approving updates the skill so the same problem doesn’t happen again.' : isUpdate ? 'Approving replaces the current version.' : 'Nothing is used until you approve.'}</p>
+        <p className={cn('mr-auto text-xs', highRisk ? 'font-medium text-danger' : 'text-fg-subtle')}>{highRisk ? 'We suggest declining. Approve it only if you trust where it came from.' : userEdited ? 'Approving replaces your edited version.' : repair ? 'Approving updates the skill so the same problem doesn’t happen again.' : isUpdate ? 'Approving replaces the current version.' : 'Nothing is used until you approve.'}</p>
         {draft ? (
           <>
             <Button variant="ghost" leftIcon={<IconX size={15} />} onClick={() => setDraft(null)}>
@@ -295,10 +303,27 @@ function ReviewCard({
               Save and approve
             </Button>
           </>
+        ) : highRisk ? (
+          <>
+            <Button variant="ghost" className="text-danger hover:text-danger" leftIcon={<IconAlertTriangle size={15} />} disabled={!!busy} loading={busy === 'approve'} onClick={() => setConfirmAnyway(true)}>
+              Approve anyway
+            </Button>
+            <Button
+              variant="secondary"
+              leftIcon={<IconPencil size={15} />}
+              disabled={!diff.data || !!busy}
+              onClick={() => setDraft({ name: pending.name, description: pending.description, body: proposedBody, tags: pending.tags.join(', '), requires_tools: pending.requires_tools.join(', ') })}
+            >
+              Edit
+            </Button>
+            <Button variant="primary" leftIcon={<IconX size={15} />} disabled={!!busy} loading={busy === 'reject'} onClick={() => void reject()}>
+              Decline skill
+            </Button>
+          </>
         ) : (
           <>
             <Button variant="ghost" className="text-danger hover:text-danger" leftIcon={<IconX size={15} />} disabled={!!busy} loading={busy === 'reject'} onClick={() => setConfirmReject(true)}>
-              Reject
+              {vetting ? 'Decline' : 'Reject'}
             </Button>
             <Button
               variant="secondary"
@@ -321,6 +346,14 @@ function ReviewCard({
         description={isUpdate ? 'The proposed change is discarded and the current version stays active.' : 'Sentient will not use this skill. It may propose something similar again later.'}
         confirmLabel={isUpdate ? 'Reject update' : 'Discard skill'}
         onConfirm={reject}
+      />
+      <ConfirmDialog
+        open={confirmAnyway}
+        onOpenChange={setConfirmAnyway}
+        title={`Approve ${pending.name} anyway?`}
+        description="The safety check found high-risk problems in this skill. Sentient will follow its steps, including any hidden ones, whenever it applies. Only do this if you trust where it came from."
+        confirmLabel="Approve anyway"
+        onConfirm={() => approve(undefined, true)}
       />
     </motion.div>
   )

@@ -344,7 +344,8 @@ class RuleOrigin(BaseModel):
 class ApprovalsConfig(BaseModel):
     mode: Literal["off", "ask", "always"] = Field(
         "ask",
-        description="off: don't ask, except before a purchase, for apps and tools set to Ask (or to Only if I asked, "
+        description="off: don't ask, except before a purchase, before unlocking a door, turning off the alarm or "
+        "opening a garage door or gate, for apps and tools set to Ask (or to Only if I asked, "
         "when you didn't ask for it), before sending anything "
         "once a chat has read an email or web page, and before a change you just told it never to make until you "
         "answer that suggestion. ask: confirm actions that change things outside Sentient, send, delete or run code "

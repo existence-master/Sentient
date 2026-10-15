@@ -110,6 +110,7 @@ from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import (
     HAND_OFF,
     IF_ASKED,
+    OPENS_HOME,
     PURCHASE_LABEL,
     SELECTION_SOURCE,
     address_carries_data,
@@ -125,6 +126,7 @@ from sentient.tools.rules import (
     is_screen_capture,
     is_selection,
     never_message,
+    opens_home,
     outside_source,
     result_outside_source,
     rule_label,
@@ -1140,8 +1142,11 @@ class Agent:
                 tool, plan.risk, tc.arguments, ctx
             ):
                 plan.needs_approval = False
-        elif rule == "ask":
+        elif rule == "ask" or await opens_home(tool, tc.arguments, ctx, plan.risk):
+            # an "ask" rule, or a call that opens the home (ADR 0028), which asks in tasks too whatever the rules say
             label = self.approvals.label(tool, self.registry)
+            if rule != "ask":
+                plan.level = OPENS_HOME  # the hold and the task's question say why it asks
             said = plan.level if chat_rule != "ask" else "ask"  # how the hold explains itself: the rule that asks
             if await self.approvals.granted(tool, plan.risk, tc.arguments, ctx):
                 pass  # the user allowed it for this task or for a while (#139)

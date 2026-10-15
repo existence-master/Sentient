@@ -518,3 +518,62 @@ def test_trigger_filters_ignore_case_for_home_assistant():
     assert not event_matches_filter(item, wanted, "webhook")  # other sources stay exact
     assert event_matches_filter({**item, "name": "Straße"}, {"name": {"$regex": "^Stra.e$"}}, "home_assistant")
     assert event_matches_filter({**item, "name": "Straße"}, {"name": {"$contains": "Straße"}}, "home_assistant")
+
+
+# ---------------------------------------------------------------------------- opening the home always asks (ADR 0028)
+def _call(name: str, **args) -> list[dict]:
+    return [{"id": f"c_{name}", "name": name, "arguments": args}]
+
+
+OPENING = [
+    ("home_assistant_unlock", {"entity_id": "lock.front_door"}, True),
+    ("home_assistant_set_alarm", {"entity_id": "alarm_control_panel.home", "mode": "disarm"}, True),
+    ("home_assistant_open_cover", {"entity_id": "cover.garage_door"}, True),
+    ("home_assistant_turn_on", {"entity_id": "switch.garage_opener"}, True),  # sounds like a garage door
+    ("home_assistant_lock", {"entity_id": "lock.front_door"}, False),  # locking follows the normal rules
+    ("home_assistant_set_alarm", {"entity_id": "alarm_control_panel.home", "mode": "arm_away"}, False),
+    ("home_assistant_open_cover", {"entity_id": "cover.bedroom_blinds"}, False),
+]
+
+
+@pytest.mark.parametrize(("name", "args", "asks"), OPENING)
+async def test_opening_the_home_asks_even_with_approvals_off(config, isolated_home, name, args, asks):
+    llm = FakeProvider(replies=[_call(name, **args), "Done."])
+    s = await _ha_app(config, isolated_home, llm, mode="off")
+    states = [*STATES, _state("alarm_control_panel.home", "armed_away", "House alarm")]
+    try:
+        with respx.mock(assert_all_called=False) as router:
+            fake = FakeHA(router)
+            fake.states = [dict(x) for x in states]
+            await _connected(s)
+            # an Allow rule never lifts it either, like a purchase
+            s.config.tools.approvals.rules = {name: "allow"}
+            sid = await s.store.create_session(channel="desktop")
+            asked, _ = await _turn(s, sid, "do it", decision="deny")
+        if asks:
+            assert len(asked) == 1 and asked[0].choices == ["allow", "deny"] and fake.calls == []
+        else:
+            assert asked == [] and len(fake.calls) == 1
+    finally:
+        await s.stop()
+
+
+async def test_a_task_run_holds_an_unlock_and_scripts_refuse_it(app, ctx):
+    from sentient.agent.loop import LoopResult
+    from sentient.sandbox.policy import BridgePolicy, Refused
+
+    with respx.mock(assert_all_called=False) as router:
+        fake = FakeHA(router)
+        await _connected(app)
+        app.config.tools.approvals.mode = "off"
+        app.agent.llm.replies = [_call("home_assistant_unlock", entity_id="lock.front_door"), "Waiting."]
+        result = LoopResult()
+        messages = [{"role": "user", "content": "unlock the front door"}]
+        async for _ in app.agent.run_loop(messages, ctx, result=result, use_approvals=False, source="subagent"):
+            pass
+        tool_msg = next(m for m in messages if m.get("role") == "tool")
+        assert "opens the user's home" in tool_msg["content"] and fake.calls == []
+        unlock = next(t for t in ha.PLUGIN.tools if t.name == "home_assistant_unlock")
+        policy = BridgePolicy.build(approvals_mode="off", allowed_tools=None, read_only=False, max_tool_calls=10)
+        with pytest.raises(Refused, match="open the user's home"):
+            await policy.check(unlock, unlock.name, {"entity_id": "lock.front_door"}, ctx, 0)

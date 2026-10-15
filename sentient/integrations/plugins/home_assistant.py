@@ -38,6 +38,12 @@ from sentient.integrations.base import (
 )
 from sentient.integrations.common import http_client
 from sentient.tools.base import Risk, ToolContext
+from sentient.tools.rules import (
+    DISARMS_LABEL,
+    OPENS_GATE_LABEL,
+    SECURITY_SWITCH_LABEL,
+    UNLOCKS_LABEL,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.integrations.service import IntegrationManager
@@ -331,17 +337,19 @@ def split_ids(entity_id: str | list | None) -> list[str]:
 NEVER_SECURITY = {"light", "fan", "climate", "media_player", "scene", "humidifier", "water_heater", "remote"}
 
 
+def _maybe_security(entity_id: str) -> bool:
+    """True when the entity is security, or the cache doesn't know it and its kind could be (never a light)."""
+    known = cached_entity(entity_id)
+    if known is None:
+        return entity_id.split(".", 1)[0] not in NEVER_SECURITY
+    return is_security(known)
+
+
 def _security_risk(args: dict, ctx: Any) -> Risk:
     """``send`` when any entity of the call is security (asks every time), else ``write``. Uses only the entity ids
     and the cache, never the network, so the agent loop and quick commands can call it anywhere. An entity the cache
     doesn't know yet counts as security unless its kind never is (a light), so a call never looks safer than it is."""
-    for eid in split_ids(args.get("entity_id")):
-        known = cached_entity(eid)
-        if known is None and eid.split(".", 1)[0] not in NEVER_SECURITY:
-            return Risk.send
-        if is_security(known or {"entity_id": eid}):
-            return Risk.send
-    return Risk.write
+    return Risk.send if any(_maybe_security(e) for e in split_ids(args.get("entity_id"))) else Risk.write
 
 
 def _names(args: dict) -> str:
@@ -349,14 +357,27 @@ def _names(args: dict) -> str:
     return ", ".join(names)[:120]
 
 
-def _describe(label: str):
+def _describe(label: str, security: str | None = None):
+    """Approval wording: ``label``, or ``security`` when the call touches a door, lock or alarm. The labels in
+    ``rules.OPENS_HOME_LABELS`` (unlock, turn off the alarm, open a garage door or gate) make the call a hard stop
+    that asks whatever the approvals mode says (ADR 0028), so an unknown entity gets the security label."""
+
     async def describe(args: dict, ctx: Any) -> dict:
-        if any(cached_entity(e) is None for e in split_ids(args.get("entity_id"))):
-            with contextlib.suppress(Exception):  # the names only make the question plainer
+        ids = split_ids(args.get("entity_id"))
+        if any(cached_entity(e) is None for e in ids):
+            with contextlib.suppress(Exception):  # the names make the question plainer, and say what is security
                 await home(manager_from(ctx))
-        return {"risk_label": label, "target": _names(args)}
+        said = security if security and any(_maybe_security(e) for e in ids) else label
+        return {"risk_label": said, "target": _names(args)}
 
     return describe
+
+
+async def _describe_alarm(args: dict, ctx: Any) -> dict:
+    out = await _describe("Arms your alarm")(args, ctx)
+    if str(args.get("mode") or "").strip().lower().replace(" ", "_") not in ALARM_MODES - {"disarm"}:
+        out["risk_label"] = DISARMS_LABEL  # disarming, or a mode it can't read: asks like turning the alarm off
+    return out
 
 
 # ---------------------------------------------------------------------------- shared tool helpers
@@ -513,7 +534,7 @@ async def _switch(ctx: ToolContext, entity_id: str, on: bool, data: dict | None 
 
 
 @itool(PID, "home_assistant_turn_on", risk=Risk.write, risk_fn=_security_risk,
-       describe_fn=_describe("Turns something on"))
+       describe_fn=_describe("Turns something on", SECURITY_SWITCH_LABEL))
 async def ha_turn_on(ctx: ToolContext, entity_id: str, brightness_pct: int | None = None,
                      color: str | None = None) -> dict:
     """Turn on lights, switches, fans and other Home Assistant devices. `entity_id` is one id or several separated
@@ -529,7 +550,7 @@ async def ha_turn_on(ctx: ToolContext, entity_id: str, brightness_pct: int | Non
 
 
 @itool(PID, "home_assistant_turn_off", risk=Risk.write, risk_fn=_security_risk,
-       describe_fn=_describe("Turns something off"))
+       describe_fn=_describe("Turns something off", SECURITY_SWITCH_LABEL))
 async def ha_turn_off(ctx: ToolContext, entity_id: str) -> dict:
     """Turn off lights, switches, fans and other Home Assistant devices. `entity_id` is one id or several separated
     by commas."""
@@ -558,7 +579,7 @@ async def ha_activate_scene(ctx: ToolContext, entity_id: str) -> dict:
 
 
 @itool(PID, "home_assistant_run_script", risk=Risk.write, risk_fn=_security_risk,
-       describe_fn=_describe("Runs a script"))
+       describe_fn=_describe("Runs a script", SECURITY_SWITCH_LABEL))
 async def ha_run_script(ctx: ToolContext, entity_id: str) -> dict:
     """Run a Home Assistant script (script.<name>). One that sounds like it opens, unlocks or disarms something
     asks every time."""
@@ -567,7 +588,7 @@ async def ha_run_script(ctx: ToolContext, entity_id: str) -> dict:
 
 
 @itool(PID, "home_assistant_open_cover", risk=Risk.write, risk_fn=_security_risk,
-       describe_fn=_describe("Opens something"))
+       describe_fn=_describe("Opens something", OPENS_GATE_LABEL))
 async def ha_open_cover(ctx: ToolContext, entity_id: str) -> dict:
     """Open blinds, shades, curtains, a garage door or a gate (cover entities). Garage doors, gates and doors ask
     every time."""
@@ -587,13 +608,13 @@ async def ha_close_cover(ctx: ToolContext, entity_id: str) -> dict:
 @itool(PID, "home_assistant_lock", risk=Risk.send, allow_for_chat=False,
        describe_fn=_describe("Locks a door"))
 async def ha_lock(ctx: ToolContext, entity_id: str) -> dict:
-    """Lock a door lock in Home Assistant. Always asks first."""
+    """Lock a door lock in Home Assistant."""
     return await _service(ctx, "lock", "lock", await _resolve(ctx, entity_id, {"lock"}, "{name} isn't a lock."))
 
 
 
 @itool(PID, "home_assistant_unlock", risk=Risk.send, allow_for_chat=False,
-       describe_fn=_describe("Unlocks a door"))
+       describe_fn=_describe(UNLOCKS_LABEL))
 async def ha_unlock(ctx: ToolContext, entity_id: str) -> dict:
     """Unlock a door lock in Home Assistant. Always asks first."""
     return await _service(ctx, "lock", "unlock", await _resolve(ctx, entity_id, {"lock"}, "{name} isn't a lock."))
@@ -601,10 +622,10 @@ async def ha_unlock(ctx: ToolContext, entity_id: str) -> dict:
 
 
 @itool(PID, "home_assistant_set_alarm", risk=Risk.send, allow_for_chat=False,
-       describe_fn=_describe("Changes your alarm"))
+       describe_fn=_describe_alarm)
 async def ha_set_alarm(ctx: ToolContext, entity_id: str, mode: str) -> dict:
     """Arm or disarm a Home Assistant alarm panel. `mode` is arm_home, arm_away, arm_night, arm_vacation or disarm.
-    Always asks first. An alarm that needs a code has to be disarmed in Home Assistant itself."""
+    Disarming always asks first. An alarm that needs a code has to be disarmed in Home Assistant itself."""
     m = str(mode or "").strip().lower().replace(" ", "_")
     if m not in ALARM_MODES:
         raise IntegrationError("Choose arm_home, arm_away, arm_night, arm_vacation or disarm.")

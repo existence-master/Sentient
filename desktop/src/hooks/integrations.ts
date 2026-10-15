@@ -131,6 +131,11 @@ export function useMcpActions() {
       mutationFn: ({ name, values, enable }: { name: string; values: Record<string, string>; enable?: boolean }) =>
         api.integrations.mcp.setValues(name, values, enable),
       onSuccess: invalidate
+    }),
+    review: useMutation({
+      mutationFn: ({ name, decisions }: { name: string; decisions: Record<string, 'approve' | 'decline'> }) =>
+        api.integrations.mcp.review(name, decisions),
+      onSuccess: invalidate
     })
   }
 }

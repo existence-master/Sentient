@@ -90,6 +90,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `integration.updated` | **Integration** (§5) |
 | `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending", reason?, previous?, session_id?}`; `status: "pending"` means the memory waits in the review inbox (section 7), with `reason: "instruction"` when it reads like an instruction (#234); `previous` is an UPDATE's words before it and `session_id` the chat a memory was learned in (extraction after a turn, `memory_remember`): that chat shows "Remembered: ... Undo" (Undo is `DELETE /api/memories/{id}`, or `PUT` with `previous` for an update) or "Waiting for your review: ..." with Review (#234); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE) |
 | `skill.updated` | `{name, state: "active"\|"pending_review"\|"stale"\|"archived"\|"rejected"\|"deleted"}` |
+| `mcp.review` | `{server, reason?: "new"\|"changed", tools?: [tool names on the server], needed}`: an MCP server's tools wait for review, or the user answered (section 5) |
 | `session.updated` | `{session_id, title?, model?}`: only what changed. `title` after a rename or an automatic title; `model` (`null` = the default) after the chat's model was picked (section 2) |
 | `session.deleted` | `{session_id, reason?: "incognito"}`: a chat was deleted (`DELETE /api/sessions/{id}`, or an incognito chat closed by the engine, section 2) |
 | `rule_proposal.updated` | **RuleProposal** (section 2, rules from chat): a new "Make this a rule?" card, or one the user answered |
@@ -199,10 +200,16 @@ applied in code before every call and take effect at once:
   (section 4) completes with `"Ready for you: ..."` instead of making the call. Scripts refuse such a call and
   subagents refuse it as needing the user's approval. `LoopResult.handed_off` lists a run's HandOffs.
 - Purchases ask in every approvals mode, `off` included (only `browser.confirm_purchases: false` turns that off),
-  and scripts refuse them in every mode. Rules are read again right before a tool runs and on every script tool call,
+  and scripts refuse them in every mode. A call that opens the user's home is a hard stop the same way (#175, ADR
+  0028): its `describe_fn` label is one of `sentient.tools.rules.OPENS_HOME_LABELS` ("Unlocks a door", "Turns off
+  your alarm", "Opens a garage door or gate", "Controls a door, lock or alarm") at effective risk `send` or higher.
+  It asks in every approvals mode, an `allow` rule, "Allow for this chat" and grants never cover it, only `allow` and
+  `deny` are offered, a task run pauses and asks, subagents and swarm workers stop, and scripts refuse it. Locking
+  and arming follow the normal rules. Rules are read again right before a tool runs and on every script tool call,
   so a rule changed while a call waits for approval, or while a script runs, applies to it.
 - **What still asks with approvals mode `off`** (the complete list; everything else runs without a question, look-ups
-  included, #306): a purchase (above); a tool or app with an `ask` rule, or an `if_asked` rule the user's words did
+  included, #306): a purchase (above); a call that opens the user's home: unlocking a door, turning off the alarm,
+  or opening a garage door, gate or door (above, ADR 0028); a tool or app with an `ask` rule, or an `if_asked` rule the user's words did
   not ask for; in a chat that read outside content, a call
   that can send data out or a data-carrying address to a new site (section 10, ADR 0018); a call that changes, sends,
   deletes or runs something while an undecided rule proposal from that chat covers it (below); a call a second look
@@ -1139,8 +1146,25 @@ Routines are enabled `active` tasks whose schedule is `recurring` or `triggered`
   404 unknown integration, 422 any other value)
 - `GET /api/integrations/{id}/privacy-filters` → `{keywords: [], emails: [], labels: []}`
 - `PUT /api/integrations/{id}/privacy-filters` same shape → `{ok}`
-- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, auth: "none|headers|oauth", header_keys, missing_values, signed_in, signing_in, enabled, access: "read|read_write", status: "connecting|connected|needs_sign_in|error|disconnected|disabled", tools: [{name, mcp_name, description, risk, per_call}], error}]`
+- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, auth: "none|headers|oauth", header_keys, missing_values, signed_in, signing_in, enabled, access: "read|read_write", status: "connecting|connected|needs_sign_in|error|disconnected|disabled", tools: [{name, mcp_name, description, risk, per_call}], review, error}]`
   (`name` is the Sentient tool name `mcp_<server>_<tool>`; `env` and header values are kept in the keychain, only `env_keys` and `header_keys` are returned)
+  - `tools` lists only the tools Sentient offers: ones the user approved exactly as they are now (#146, ADR 0027).
+  - `review` (null until the server has connected): `{needed, reason: "new"|"changed"|null, verdict: "high|check|clear",
+    scanner, tools: [{name, mcp_name, description, risk, per_call, status: "approved|declined|new|changed", level:
+    "high|check|clear", findings: [{rule, level, message}], suggested: "approve|decline", previous_description?,
+    previous_decision?}]}` for every tool the server listed on its last connection. Each connection checks every
+    tool's description, title and input schema texts with the skill linter's `danger`, `hidden` and `outbound` rules,
+    plus `orders` (it tells the model which tools to call and when: "always call this first", "before answering, call
+    ...", "instead of the built-in tools") and `shadows` (its name is one of Sentient's own tools, such as
+    `web_search`), and hashes name, title, description, input schema and annotations (SHA-256). A tool is offered
+    only when the user approved that exact hash (`mcp_tool_reviews` table); `new` and `changed` tools are held back
+    and `needed` is true. `suggested` is `decline` when `level` is `high` (any `error` finding). `description` shows
+    invisible characters as `[U+200B]`. A changed tool carries the description and answer the user gave before.
+    New tools raise one `info` notification ("Check the tools from X"), a changed hash one more ("X changed its
+    tools", once per new hash), both with `payload.mcp_review {server, reason, tools}` and a `mcp.review` event.
+    Servers that were configured when this check first ran are trusted as they are on their first connection (their
+    tools are recorded as approved, `meta.mcp_review_baseline`); a server that is added, imported, or re-added with
+    another command, arguments, URL or transport starts with no approvals.
   - `per_call`: the tool runs other tools named by a slug with their arguments (Composio's `COMPOSIO_MULTI_EXECUTE_TOOL`),
     so each call's risk comes from those slugs (see "Read only connections"); `risk` is the tool's own risk.
   - A call of an MCP tool returns `{content: text, structured?}` or `{error}`. `structured` is the server's
@@ -1161,6 +1185,11 @@ Routines are enabled `active` tasks whose schedule is `recurring` or `triggered`
 - `POST /api/integrations/mcp/{name}/access` `{access: "read"|"read_write"}` → server object; the server keeps running
   (404 unknown server, 422 any other value)
 - `POST /api/integrations/mcp/{name}/test` → `{ok, tools: [mcp tool names], error?}`
+- `POST /api/integrations/mcp/{name}/review` `{decisions: {<tool name on the server>: "approve"|"decline"}}` → server
+  object. Records the answer for each named tool as it is now (its hash); tools not named keep their state. Approved
+  tools are offered at once, declined ones are taken away, and `mcp.review` is published. 404 unknown server, 400 a
+  tool the server didn't list or a server that hasn't connected yet, 422 any other answer. Removing a server deletes
+  its answers.
 - `POST /api/integrations/mcp/{name}/enabled` `{enabled: bool}` → server object (turns a server on or off and nothing else; `enabled` must be a boolean, 422 otherwise; 404 if missing)
 - `POST /api/integrations/mcp/{name}/values` `{values: {name: value}, enable?: bool}` → server object. Fills in the
   values of the server's own `header_keys` (remote) or `env_keys` (local command): they are merged into the keychain
@@ -1210,7 +1239,9 @@ Routines are enabled `active` tasks whose schedule is `recurring` or `triggered`
     `home_assistant_run_script`, `home_assistant_open_cover` and `home_assistant_close_cover`. Security (`send`, asks
     every time, never covered by "Allow for this chat" or a grant, `allow_for_chat: false`):
     `home_assistant_lock`, `home_assistant_unlock`, `home_assistant_set_alarm(entity_id, mode: arm_home|arm_away|
-    arm_night|arm_vacation|disarm)`. The `risk_fn` of turn on/off, scripts and covers raises a call to `send` for a
+    arm_night|arm_vacation|disarm)`. Unlocking, disarming, opening a garage door, gate or door, and switching a
+    switch, script or button that sounds like one are a hard stop: they ask even with approvals mode `off` and an
+    `allow` rule (section 2, ADR 0028); locking and arming follow the normal rules. The `risk_fn` of turn on/off, scripts and covers raises a call to `send` for a
     lock or alarm, a cover with `device_class` garage, gate or door, or a switch, script, button or cover whose id or
     name says lock, door, garage, gate, alarm, security, safe or vault; an entity it can't look up yet counts as
     security unless its kind never is (lights, fans, thermostats, media players, scenes). `describe_fn` gives a plain
@@ -1582,8 +1613,21 @@ facts). Bulk and consolidation changes publish `memory.updated` with `reason` (`
 that profile, section 12, and the result includes it.)
 (`success_count`/`failure_count` count chat turns and task runs that viewed the skill and went well or failed, see section 15)
 
-**Lint finding** `{rule: "frontmatter|required|size|reference|danger|log_shaped|sections", level: "error|warning", message}`
-(plain sentences for the Skills screen; `sentient/skills/lint.py` lists the rules. `danger` is always an `error`.)
+**Lint finding** `{rule: "frontmatter|required|size|reference|danger|hidden|outbound|log_shaped|sections", level: "error|warning", message}`
+(plain sentences for the Skills screen; `sentient/skills/lint.py` lists the rules. `danger` is always an `error`.
+`danger` also covers sending the user's data to a fixed address, reading secrets or the keychain, hiding what it does
+from the user and giving Sentient new orders, and reads text with invisible characters removed. `hidden`: invisible
+characters, text styled to be invisible, hidden comments (an `error` when they hold instructions or an address) and
+text pushed out of view. `outbound` (a `warning`): it always sends to one fixed address.)
+
+**Safety check of skills from outside (#146, ADR 0027).** Skills brought over from Hermes and skills added from a link
+wait in pending with **Vetting** `{verdict: "high|check|clear", summary, findings: [Lint finding & {file}], files,
+programs, hash, scanner, source: "link|hermes", origin, imported_at, decision: "approved"|null, changed_since_import,
+changed_since_approval}`: the `danger`, `hidden` and `outbound` rules on the SKILL.md and every text file in its folder
+(`file` says which; dotfiles and `auth.json` are never opened), plus a `programs` warning listing the scripts it brings.
+`high` = any `error` finding; `check` = only warnings. It is computed again from the files every time it is returned.
+The lock record (`skill_imports` table: source, origin, folder hash, scanner version, verdict, approved hash) is kept
+until the skill is declined or deleted. `changed_since_approval`: an approved skill whose files changed since.
 
 **Edit protection (#164).** Sentient keeps a hash and a copy of each active SKILL.md as it last wrote it (or as first
 seen, or as the user first created it). A file that differs (edited in Skills or in any text editor) is
@@ -1592,17 +1636,28 @@ version in pending (whatever `skills.write_approval` says) with the notification
 didn't overwrite it" and `payload.user_edited: true`, and review, repair and curator proposals were pending already.
 `skill_save` also stages any skill with a `danger` finding. Approving a proposal makes it the new original.
 
-- `GET /api/skills` → `{active: [Skill & {user_edited, can_reset, lint: [Lint finding]}], pending: [Skill & {reason, origin, proposed_at, user_edited, changed_since_proposal, lint}], archived: [Skill & {lint}], broken: [{folder, state: "active|pending_review|archived", path, lint}]}`
+- `GET /api/skills` → `{active: [Skill & {user_edited, can_reset, lint: [Lint finding]}], pending: [Skill & {reason, origin, proposed_at, user_edited, changed_since_proposal, lint, vetting: Vetting|null}], archived: [Skill & {lint}], broken: [{folder, state: "active|pending_review|archived", path, lint}]}`
   (`broken` lists SKILL.md files in the skills folder that can't load, with why; pending `user_edited` is about the active skill it would replace, `changed_since_proposal` means that skill changed after the proposal was drafted, so approving would undo those changes; `active` includes skills whose `state` is `stale`; a pending entry whose name also appears in `active` is a proposed update, see `/diff`; `origin` is `{session_id?, task_id?, run_id?, curator?, merged_from?, repair?: true}` or `null`)
-- `GET /api/skills/{name}` → `Skill & {body, lint, user_edited?, can_reset?}` (active, else pending, else archived copy; 404 if none; `user_edited`/`can_reset` on active skills)
+- `GET /api/skills/{name}` → `Skill & {body, lint, vetting: Vetting|null, user_edited?, can_reset?}` (active, else pending, else archived copy; 404 if none; `user_edited`/`can_reset` on active skills; `vetting` only for skills from outside)
+- `POST /api/skills/import` `{url}` → `Skill & {body, lint, vetting}` (pending, `author: "community"`). `url` is a
+  SKILL.md address or a GitHub file, folder or repository link (`github.com/<o>/<r>/blob|tree/<ref>/<path>` and
+  `github.com/<o>/<r>` read `raw.githubusercontent.com/<o>/<r>/<ref>/<path>/SKILL.md`). Only the SKILL.md is
+  downloaded (at most 256 KB, 20 s, 5 redirects); its header gets the new name and `author: community`, its steps are
+  kept byte for byte. The name comes from its header (else the link) and is made unique with `-imported`. 400 with a
+  plain reason: not http(s), not found, an error from the site, too large, or not a skill. Evolution log
+  `skill_imported {name, source: "link", origin, verdict, pending: true}`.
 - `POST /api/skills` `{name, description, body, tags?, requires_tools?}` → `Skill` (author `user`, active immediately; 400 invalid name, 409 exists)
 - `PUT /api/skills/{name}` `{description?, body?, tags?, requires_tools?}` → `Skill & {body, lint}` (edits the active skill, else the pending proposal; bumps `version` of active skills; an edit to the active skill makes it `user_edited`)
 - `POST /api/skills/{name}/reset` → `Skill & {body, lint}` (puts back the original, undoing the user's edits; 404 no active skill or no original, 409 nothing to undo; evolution log `skill_reset {name, by: "user"}`)
 - `POST /api/skills/{name}/approve` | `/archive` | `/restore` → `Skill`; `/reject` → `{ok}` (404 when there is nothing to act on; restore 409 if an active skill has that name)
+  - `approve` takes `{accept_risk?: bool}`: a skill from outside whose `vetting.verdict` is `high` is declined by default, so
+    approving it returns 409 unless `accept_risk` is true. Approving records the approved hash and logs `source` and
+    `verdict` on `skill_created`. Rejecting a skill from outside deletes its lock record and logs
+    `skill_import_declined {name, source, verdict}`; deleting a skill deletes it too.
 - `DELETE /api/skills/{name}` → `{ok}`
 - `GET /api/skills/{name}/diff` (pending update of an existing skill) → `{current, proposed, user_edited, changed_since_proposal}`
 - `POST /api/skills/review-now` `{session_id?}` → `{reviewed, proposed: [name]}` (with `session_id`: review that chat now; without: every chat with enough tool calls not yet reviewed, plus completed task runs seen on the bus)
-- `GET /api/skills/evolution-log?limit=` → `[{ts, kind: "skill_created|skill_patched|skill_repair_proposed|skill_archived|skill_reset|profile_updated|curator_run|summary_created", detail: {}}]` newest first. `detail` examples: `skill_created {name, pending, reason?, session_id?|task_id?, user_edited?: true}` (`user_edited` on a proposal for a skill the user edited, also on `skill_patched` and `skill_repair_proposed`), `skill_repair_proposed {name, pending: true, origin: "repair", failure: "tool_errors"|"user_correction"|"run_failed", reason, session_id?, turn_id?, task_id?, run_id?}`, `curator_run {staled: [], archived: [], merge_proposals: []}`, `profile_updated {learned_appended, facts_considered, summaries_considered, memory_chars}`, `summary_created {id, session_id, start_at, end_at}`.
+- `GET /api/skills/evolution-log?limit=` → `[{ts, kind: "skill_created|skill_patched|skill_repair_proposed|skill_archived|skill_reset|skill_imported|skill_import_declined|profile_updated|curator_run|summary_created", detail: {}}]` newest first. `detail` examples: `skill_created {name, pending, reason?, session_id?|task_id?, user_edited?: true}` (`user_edited` on a proposal for a skill the user edited, also on `skill_patched` and `skill_repair_proposed`), `skill_repair_proposed {name, pending: true, origin: "repair", failure: "tool_errors"|"user_correction"|"run_failed", reason, session_id?, turn_id?, task_id?, run_id?}`, `curator_run {staled: [], archived: [], merge_proposals: []}`, `profile_updated {learned_appended, facts_considered, summaries_considered, memory_chars}`, `summary_created {id, session_id, start_at, end_at}`.
 
 Skills proposed by the background reviewer or curator always land in pending with a `skill` notification `payload: {skill, action: "create"|"patch", origin}`.
 Repair proposals (section 15) send `payload: {skill, action: "patch", origin: "repair", reason, session_id?, turn_id?, task_id?, run_id?}` with title "Skill fix to review".
@@ -2698,7 +2753,7 @@ databases are never read, skill folders are copied without dotfiles or symlinks,
 `schedule` is `null` and `script` is `null` when it has none; `then` and `condition` are only on script jobs; each
 suggestion may be `null`.
 
-- **Skills** are copied to `~/.sentient/skills/pending/<target>/` (never active; approve them under Skills). Each import item carries `lint` (Lint findings, section 8). A skill
+- **Skills** are copied to `~/.sentient/skills/pending/<target>/` (never active; approve them under Skills). Each import item carries `lint` (Lint findings, section 8) and `vetting` (the safety check of the Hermes folder, section 8); a `high` verdict adds "The safety check found high-risk problems." to the note. Applying records the lock record (`source: "hermes"`, `origin`: the folder inside `skills/`). A skill
   listed in `skills/.bundled_manifest` whose folder still has Hermes' hash is skipped; one the user changed is
   imported with `changed_builtin: true`. Hidden folders (`.archive`, `.hub`, `.curator_*`) are ignored. `target` is
   made unique (`<name>-hermes`, `<name>-hermes-2`...) when Sentient already has that name; a skill whose body Sentient
@@ -3117,7 +3172,7 @@ asking: with approvals mode `always`, or an "Ask" or "Never" rule on the tool or
 usual. A home command calls `home_assistant_turn_on` or `home_assistant_turn_off` (with `brightness_pct` for a
 level) once for every device it names, and says "Turned off the living room lights." or "Set the bedroom lamp to
 30%.". Its words name exactly that change, so in approvals mode `ask` they count as the yes for it (effective risk
-`write` only, ADR 0027); approvals mode `always`, an "Ask", "Hand it to me" or "Never" rule on the tool or on
+`write` only, ADR 0028); approvals mode `always`, an "Ask", "Hand it to me" or "Never" rule on the tool or on
 `home_assistant`, or a Read only connection send it to the model. Not used for a message with attachments. Turned
 off with `chat.quick_commands`.
 
