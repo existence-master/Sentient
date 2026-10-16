@@ -1,9 +1,10 @@
 import { IconCalendar, IconCheck, IconClock, IconHistory, IconHourglassHigh, IconPencil, IconTrash, IconX } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
-import { Alert, Button, ConfirmDialog, Sheet, Textarea } from '@/components/ui'
+import { Alert, Button, ConfirmDialog, Select, Sheet, Textarea } from '@/components/ui'
+import { useMemoryScopes } from '@/hooks/memory'
 import { useHotkey } from '@/hooks/useHotkey'
 import { formatDateTime } from '@/lib/utils'
-import { ExpiryBadge, SourceChip, TopicPill } from './bits'
+import { ExpiryBadge, ScopeIcon, scopeLabel, SourceChip, TopicPill } from './bits'
 import { useNow, useOptimisticMemoryActions } from './hooks'
 import { countdown, expiresInMs, recentRelative, sourceMeta, type MemoryWithHistory } from './meta'
 
@@ -18,7 +19,8 @@ export function MemoryDetail({
   onOpenChange: (open: boolean) => void
   onForgetSource: (source: string) => void
 }) {
-  const { update, remove } = useOptimisticMemoryActions()
+  const { update, remove, move } = useOptimisticMemoryActions()
+  const scopes = useMemoryScopes()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [confirm, setConfirm] = useState(false)
@@ -108,6 +110,19 @@ export function MemoryDetail({
               </div>
               <div className="text-xs text-fg-subtle">{src.description}</div>
             </Row>
+            <Row icon={<ScopeIcon scope={memory.scope} size={14} />} label="Used in">
+              <Select
+                size="sm"
+                className="w-full"
+                aria-label="Move to"
+                value={memory.scope ?? 'personal'}
+                onValueChange={(v) => v !== (memory.scope ?? 'personal') && move.mutate({ id: memory.id, scope: v })}
+                options={scopeOptions(scopes.data?.map((s) => s.name) ?? [], memory.scope ?? 'personal')}
+              />
+              <div className="mt-1 text-xs text-fg-subtle">
+                {memory.scope === 'always' ? 'Every chat can use it.' : `Only ${scopeLabel(memory.scope)} chats use it, plus anything you ask about directly.`}
+              </div>
+            </Row>
             <Row icon={<IconCalendar size={14} />} label="Learned">
               {formatDateTime(memory.created_at)} {recentRelative(memory.created_at) && <span className="text-fg-subtle">· {recentRelative(memory.created_at)}</span>}
             </Row>
@@ -148,6 +163,12 @@ export function MemoryDetail({
       />
     </Sheet>
   )
+}
+
+function scopeOptions(names: string[], current: string) {
+  const all = ['personal', 'work', 'always', ...names.filter((n) => !['personal', 'work', 'always'].includes(n))]
+  if (!all.includes(current)) all.push(current)
+  return all.map((n) => ({ value: n, label: scopeLabel(n), icon: <ScopeIcon scope={n} size={14} /> }))
 }
 
 function Row({ icon, label, children }: { icon: React.ReactNode; label: string; children: React.ReactNode }) {

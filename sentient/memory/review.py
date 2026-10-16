@@ -200,9 +200,13 @@ def _expires(created_at: str | None, days: int) -> str | None:
     return (dt + timedelta(days=days)).isoformat()
 
 
-def _item(kind: str, mid: Any, text: str, source: str, review: dict | None, created_at: str, days: int) -> dict:
+def _item(
+    kind: str, mid: Any, text: str, source: str, review: dict | None, created_at: str, days: int,
+    scope: str | None = None,
+) -> dict:
     review = review or {}
     return {
+        "scope": scope,  # a fact's memory scope (#155): it is approved into it; null for insights
         "kind": kind, "id": mid, "text": text, "source": source,
         "from": review.get("from") or source, "snippet": review.get("snippet"), "session_id": review.get("session_id"),
         "title": review.get("title"), "dated": review.get("dated"), "export": review.get("export"),
@@ -215,7 +219,9 @@ async def _items(app: Any, limit: int) -> list[dict]:
     items: list[dict] = []
     if app.memory is not None:
         for f in await app.memory.pending_facts(limit):
-            items.append(_item("fact", f["id"], f["content"], f["source"], f["review"], f["created_at"], days))
+            items.append(
+                _item("fact", f["id"], f["content"], f["source"], f["review"], f["created_at"], days, f.get("scope"))
+            )
     um = getattr(app, "user_model", None)
     if um is not None:
         for i in await um.pending_insights(limit):

@@ -13,20 +13,20 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-# what a command is about: "timer", "reminder", or "any" (both) for listing and cancelling
-TIMER, REMINDER, ANY = "timer", "reminder", "any"
+# what a command is about: "timer", "reminder", "alarm", or "any" (all of them) for listing and cancelling
+TIMER, REMINDER, ALARM, ANY = "timer", "reminder", "alarm", "any"
 # the kinds of home device a quick command can name (#175): lights (and lamps, bulbs) or switches (and plugs)
 LIGHT, SWITCH = "light", "switch"
 
 
 @dataclass
 class Command:
-    action: str                 # "timer" | "reminder" | "cancel" | "list" | "home"
-    seconds: float | None = None  # a timer's length, or a reminder "in 20 minutes"
-    at: datetime | None = None  # a reminder at a clock time (aware, in the user's timezone)
+    action: str                 # "timer" | "reminder" | "alarm" | "cancel" | "list" | "home" | "calendar_next"
+    seconds: float | None = None  # a timer's length, or a reminder or alarm "in 20 minutes"
+    at: datetime | None = None  # a reminder or alarm at a clock time (aware, in the user's timezone)
     message: str = ""           # what to remind about ("call Ravi")
     connector: str = ""         # how the message was asked for: "to", "about", "that" or "" (none)
-    label: str = ""             # a timer's name ("pasta")
+    label: str = ""             # a timer's or an alarm's name ("pasta", "gym")
     target: str = ANY           # cancel / list: TIMER, REMINDER or ANY
     which: str = ""             # cancel: words naming which one ("pasta", "10 minute", "stretch"); home: the device
                                 # as the user named it ("living room lights", "bedroom lamp")
@@ -55,6 +55,13 @@ class Language(Protocol):
 
     def reminder_set(self, reminder: dict, now: datetime) -> str: ...
 
+    def alarm_set(self, reminder: dict, now: datetime) -> str: ...
+
+    def calendar_next(self, events: list[dict], now: datetime, days: int) -> str:
+        """What's next on the calendar, from ``gcal_list_events`` events (soonest first, ``now`` aware, in the user's
+        timezone); ``days`` is how far ahead was looked."""
+        ...
+
     def cancelled(self, reminders: list[dict]) -> str: ...
 
     def nothing(self, target: str) -> str: ...
@@ -73,4 +80,8 @@ class Language(Protocol):
 
     def reminder_due(self, reminder: dict, late_at: datetime | None) -> tuple[str, str]:
         """(title, body) of a reminder's notification; ``late_at`` is when it was due, when it fires late."""
+        ...
+
+    def alarm_due(self, reminder: dict, at: datetime, late: bool) -> tuple[str, str]:
+        """(title, body) of an alarm's notification; ``at`` is when it was set for, in the user's timezone."""
         ...

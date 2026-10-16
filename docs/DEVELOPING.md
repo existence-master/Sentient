@@ -85,9 +85,10 @@ In Git Bash write smoke routes without a leading slash (`settings/models`), or M
 turns them into Windows paths. Set `SENTIENT_HOME` to a seeded profile to capture
 realistic screens. Demo data seeders live in `desktop/scripts/seed-*.py` (`seed-chats-devices-channels.py` for
 chat tool cards, devices, helpers and messaging channels; `seed-automations-usermodel.py` for About you, dreams,
-watcher jobs and webhooks). When they finish, the seeders pause every task in the home and turn off messaging apps
-and every paired chat's delivery (`desktop/scripts/seed_safety.py`), and `smoke.mjs` does the same before it starts
-the app on a `SENTIENT_HOME`, so a demo never runs a task or messages anyone. Pass `--keep-live` to either to keep
+watcher jobs and webhooks). When they finish, the seeders pause every task in the home, decline any task still
+being planned, cancel any run in progress (the engine would plan or resume those with the model on start) and turn
+off messaging apps and every paired chat's delivery (`desktop/scripts/seed_safety.py`), and `smoke.mjs` does the
+same before it starts the app on a `SENTIENT_HOME`, so a demo never calls a model, runs a task or messages anyone. Pass `--keep-live` to either to keep
 them as seeded. `seed_safety.py` refuses the default `~/.sentient`.
 
 When several people build and capture screenshots at once, take `desktop/.build.lock`

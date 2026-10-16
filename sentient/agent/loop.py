@@ -90,6 +90,7 @@ from sentient.llm.provider import (
     ToolCall,
 )
 from sentient.memory import review as memory_review
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.facts import FactMemory
 from sentient.memory.sources import MemorySources
 from sentient.memory.workspace import Workspace
@@ -583,14 +584,17 @@ class Agent:
             },
         )
 
-    async def _user_model_context(self, user_text: str) -> tuple[str, list[dict]]:
-        """(prompt block, insights in it). Uses ``context_with_sources`` when the user model has it."""
+    async def _user_model_context(self, user_text: str, scope: str | None = None) -> tuple[str, list[dict]]:
+        """(prompt block, insights in it). Uses ``context_with_sources`` when the user model has it. A work or project
+        chat (#155) leaves out what it knows about family and friends."""
         um = getattr(self.app, "user_model", None) if self.app is not None else None
         fn = getattr(um, "context_with_sources", None) or getattr(um, "context_for", None)
         if not callable(fn):
             return "", []
+        personal = memory_scopes.is_personal(scope)
         try:
-            out = await asyncio.wait_for(fn(user_text), timeout=USER_MODEL_TIMEOUT_S)
+            call = fn(user_text) if personal else fn(user_text, leave_out=memory_scopes.PERSONAL_DIMENSIONS)
+            out = await asyncio.wait_for(call, timeout=USER_MODEL_TIMEOUT_S)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # includes the timeout: the user model must never slow a turn down much
@@ -600,11 +604,12 @@ class Agent:
         text = text.strip() if isinstance(text, str) else ""
         return text, (insights if text and isinstance(insights, list) else [])
 
-    async def _recall(self, user_text: str) -> list[dict]:
+    async def _recall(self, user_text: str, scope: str | None = None) -> list[dict]:
+        """Facts for the prompt: in the chat's scope plus always (#155)."""
         if self.memory is None or self.config.memory.facts_top_k <= 0 or not user_text.strip():
             return []
         try:
-            return await self.memory.recall(user_text)
+            return await self.memory.recall(user_text, scopes=memory_scopes.recall_scopes(scope))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -637,12 +642,15 @@ class Agent:
     ) -> tuple[str, MemorySources, list[dict]]:
         """The system prompt, the memories put into it (recalled facts, user-model insights) and the pieces of the
         user's notes put into it (#354). An incognito chat (#154) reads memory and notes only while
-        ``chat.incognito_uses_memory`` is on, and is told nothing will be kept."""
+        ``chat.incognito_uses_memory`` is on, and is told nothing will be kept. The chat's memory scope (#155) decides
+        which facts are recalled; a work or project chat also leaves out the personal profile files."""
         incognito = bool((session or {}).get("incognito"))
         reads_memory = not incognito or self.config.chat.incognito_uses_memory
+        scope = memory_scopes.of_session(self.config, session)
+        personal = memory_scopes.is_personal(scope)
         if reads_memory:
             facts, (user_context, insights), notes = await asyncio.gather(
-                self._recall(user_text), self._user_model_context(user_text), self._prompt_notes(user_text)
+                self._recall(user_text, scope), self._user_model_context(user_text, scope), self._prompt_notes(user_text)
             )
         else:
             facts, user_context, insights, notes = [], "", [], []
@@ -652,6 +660,11 @@ class Agent:
         snapshot = self.workspace.snapshot()
         if not reads_memory:  # only the persona: no profile, memory file or daily notes
             snapshot = {k: (v if k == "soul" else "") for k, v in snapshot.items()}
+        elif not personal:  # MEMORY.md, daily notes and USER.md's learned facts come from personal memories (#155)
+            snapshot = {
+                **snapshot, "memory": "", "today": "", "yesterday": "",
+                "user": memory_scopes.without_learned(snapshot.get("user") or ""),
+            }
         prompt = build_system_prompt(
             snapshot=snapshot,
             facts=facts,
@@ -668,6 +681,8 @@ class Agent:
         )
         if session and session.get("context_summary"):
             prompt += "\n\n## Earlier in this conversation\n" + session["context_summary"]
+        if reads_memory and not personal:
+            prompt += "\n\n" + memory_scopes.prompt_note(scope)
         if incognito:
             prompt += "\n\n" + (INCOGNITO_NOTE if reads_memory else INCOGNITO_NO_MEMORY_NOTE)
         return prompt, sources, notes
@@ -1683,6 +1698,7 @@ class Agent:
             messages: list[dict] = [{"role": "system", "content": system}, *convo]
             ctx = self.tool_context(session_id, channel)
             ctx.incognito = incognito
+            ctx.memory_scope = memory_scopes.of_session(self.config, session)  # recall and saving use it (#155)
             ctx.user_words = [user_text]  # what the user typed or said, never attachments (#140)
             # outside content read earlier in this chat still counts until a new chat starts (ADR 0018)
             ctx.untrusted = await self._chat_untrusted(session_id, session)
@@ -1790,7 +1806,9 @@ class Agent:
                 if self.memory is not None and self.config.memory.extract_after_turn and not incognito:
                     # a chat that read outside content holds what it learns for the user's review (ADR 0021)
                     log.info("chat %s: fact extraction started for this turn", session_id)
-                    self._spawn(self._extract(said, memory_review.for_context(ctx), session_id), "memory")
+                    self._spawn(
+                        self._extract(said, memory_review.for_context(ctx), session_id, ctx.memory_scope), "memory"
+                    )
                 if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
                     self._spawn(self._auto_title(session_id, user_text, result.text), "titles")
                 self._spawn(self._maybe_compress(session_id, flush=not incognito), "memory")
@@ -2049,11 +2067,13 @@ class Agent:
                     "memory.updated", {"action": r["action"], "id": r.get("id"), "content": r.get("content"), **extra}
                 )
 
-    async def _extract(self, user_text: str, review: dict | None = None, session_id: str | None = None) -> None:
+    async def _extract(
+        self, user_text: str, review: dict | None = None, session_id: str | None = None, scope: str | None = None
+    ) -> None:
         """Only the user's own words are mined for facts; the assistant's reply is
         mostly restated context (dates, tool output) and produced junk memories.
         With ``review`` (the chat read outside content) a fact is held for the user's review unless the user's own
-        words back all of it (#234); instruction-shaped ones are always held."""
+        words back all of it (#234); instruction-shaped ones are always held. New facts go in the chat's ``scope``."""
         assert self.memory is not None
         if len(user_text.split()) < 4:
             return
@@ -2061,6 +2081,7 @@ class Agent:
             results = await self.memory.extract_and_store(
                 user_text, self.config.assistant.user_name, own=True, session_id=session_id,
                 **({"review": review} if review else {}),
+                **({"scope": scope} if scope and scope != memory_scopes.PERSONAL else {}),
             )
             self._publish_memory(results, session_id)
         except Exception as exc:
@@ -2083,13 +2104,17 @@ class Agent:
         except Exception as exc:
             log.debug("auto title failed: %s", exc)
 
-    async def _flush_memory(self, transcript: str, untrusted: str = "", session_id: str | None = None) -> None:
+    async def _flush_memory(
+        self, transcript: str, untrusted: str = "", session_id: str | None = None, scope: str | None = None
+    ) -> None:
         """Let the memory package keep durable facts from turns about to be folded into a summary. In a chat that
         read outside content they are held for the user's review (ADR 0021)."""
         flush = getattr(self.memory, "flush_conversation", None) if self.memory is not None else None
         if not callable(flush):
             return
         held = {"review": memory_review.note(untrusted, session_id=session_id)} if untrusted else {}
+        if scope and scope != memory_scopes.PERSONAL:
+            held["scope"] = scope  # the chat's memory scope (#155)
         try:  # publishes its own memory.updated, with the chat so it can offer Undo (#234)
             await flush(transcript, self.config.assistant.user_name, session_id=session_id, **held)
         except Exception as exc:
@@ -2117,7 +2142,10 @@ class Agent:
                 return
             transcript = "\n".join(f"{r['role']}: {(r['content'] or '')[:800]}" for r in older)
             if flush:
-                await self._flush_memory(transcript, (session or {}).get("untrusted") or "", session_id)
+                await self._flush_memory(
+                    transcript, (session or {}).get("untrusted") or "", session_id,
+                    memory_scopes.of_session(self.config, session),
+                )
             prev = (session or {}).get("context_summary") or ""
             summary = await self.llm.complete_text(
                 "fast",

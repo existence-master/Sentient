@@ -123,6 +123,9 @@ class ToolContext:
     # attachments. Set in code by the chat turn only (empty for tasks, subagents and other work); an "Only if I asked"
     # rule (#140) runs a tool without asking only when these words ask for it.
     user_words: list[str] = field(default_factory=list)
+    # the memory scope of this run (#155): a chat's or a task's ("personal", "work", a project). Empty: the chat's own,
+    # or every scope for work not tied to a chat (``memory.scopes.for_context``)
+    memory_scope: str = ""
 
     async def is_incognito(self) -> bool:
         """True when this run belongs to an incognito chat (#154)."""
