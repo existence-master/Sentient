@@ -5,7 +5,9 @@ connected, lights (#175), done at once without the model.
 10 minutes", "remind me at 6 pm to call Ravi", "cancel the pasta timer", "what timers do I have"), the plan holds the
 tool calls to make (the same ``reminders`` tools the model uses) and the confirmation to say, and the turn runs them
 with no model call: it takes milliseconds on every surface (chat, voice, Telegram, Discord, WhatsApp). Anything else,
-or anything that could mean two things, returns None and goes to the model unchanged.
+or anything that could mean two things, returns None and goes to the model unchanged. While a Sentient alarm rings,
+"stop", "turn it off" and "snooze" (#390) stop or snooze it (``stop_alarm``, ``snooze_alarm``); with nothing ringing
+they are not quick commands.
 
 A quick command never sends, buys or deletes anything: it only starts, lists or cancels Sentient's own timers,
 reminders and alarms, reads the connected calendar (``gcal_list_events``; with no calendar connected the model
@@ -109,6 +111,10 @@ async def plan(app: SentientApp, text: str, *, now: datetime | None = None) -> Q
         return None
     tz = get_tz(user_timezone_name(config.assistant.timezone))
     local = (now or datetime.now(UTC)).astimezone(tz)
+    if reminders is not None:
+        ring = await _ringing_plan(app, text, local)
+        if ring is not None:
+            return ring
     found = parse(text, local, lang=config.assistant.language, names=[config.assistant.name])
     if found is None:
         return None
@@ -158,6 +164,35 @@ async def plan(app: SentientApp, text: str, *, now: datetime | None = None) -> Q
     else:
         return None
     return out
+
+
+async def _ringing_plan(app: SentientApp, text: str, now: datetime) -> QuickPlan | None:
+    """ "stop" or "snooze" while a Sentient alarm rings (#390). With nothing ringing these words are not a quick
+    command: "stop the alarm" may mean a house alarm (#175), so the usual parse (and then the model) has them."""
+    config = app.config
+    for pack in _packs(config.assistant.language):
+        cmd = pack.ringing(text, [config.assistant.name])
+        if cmd is not None:
+            break
+    else:
+        return None
+    ringing = await app.reminders.ringing(now.astimezone(UTC))
+    if not ringing or (cmd.which and not any(_matches(r, cmd.which, pack) for r in ringing)):
+        return None
+    out = QuickPlan(cmd, pack, now)
+    if cmd.action == "alarm_stop":
+        out.calls = [_call("stop_alarm", label=cmd.which) if cmd.which else _call("stop_alarm")]
+        out.reply = lambda results: pack.alarm_stopped(_list_of(results[0][0], "stopped"))
+        return out
+    minutes = cmd.seconds / 60 if cmd.seconds else config.chat.alarm_snooze_minutes
+    out.calls = [_call("snooze_alarm", minutes=int(minutes) if float(minutes).is_integer() else round(minutes, 2))]
+    out.reply = lambda results: pack.alarm_snoozed(_reminder_of(results[0][0]), now)
+    return out
+
+
+def _list_of(res: Any, key: str) -> list[dict]:
+    items = res.get(key) if isinstance(res, dict) else None
+    return [i for i in items or [] if isinstance(i, dict)]
 
 
 async def _home(app: SentientApp, cmd: Command, pack: Language, now: datetime) -> QuickPlan | None:

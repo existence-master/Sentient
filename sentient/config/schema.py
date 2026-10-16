@@ -281,6 +281,11 @@ class ChatConfig(BaseModel):
         "to call Ravi\", \"wake me at 7\") and \"what's next on my calendar\" at once, without asking the model. "
         "Anything else still goes to the model. English for now.",
     )
+    alarm_snooze_minutes: int = Field(
+        9, ge=1, le=60,
+        description="How long \"snooze\" puts off a ringing alarm, in minutes, unless you say how long "
+        "(\"snooze for 5 minutes\").",
+    )
     tool_selection: Literal["auto", "all"] = Field(
         "auto",
         description="auto: offer only the tools relevant to each message when there are more than the budget "

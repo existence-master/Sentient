@@ -33,6 +33,11 @@ export const LABELS: Record<string, FieldLabel> = {
     description:
       'Simple requests like "set a timer for 10 minutes", "remind me at 6 pm to call Ravi", "wake me at 7" or "what\'s next on my calendar" happen at once, without the model. English for now.'
   },
+  'chat.alarm_snooze_minutes': {
+    label: 'Snooze length',
+    unit: 'min',
+    description: 'How long "snooze" puts off a ringing alarm, unless you say how long ("snooze for 5 minutes").'
+  },
   // channels (#359)
   'channels.deliver_reminders': {
     label: 'Reminders and alarms on your phone too',
