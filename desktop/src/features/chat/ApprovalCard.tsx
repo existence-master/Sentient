@@ -1,11 +1,14 @@
 import {
   IconAlertTriangle,
+  IconCamera,
   IconCheck,
+  IconClick,
   IconClockX,
   IconCreditCard,
   IconEdit,
   IconEye,
   IconFolder,
+  IconKeyboard,
   IconMail,
   IconMailOpened,
   IconSend,
@@ -26,7 +29,7 @@ import { cn, humanize, truncate } from '@/lib/utils'
 import { ActionPreview } from './ActionPreview'
 import { hostOf, refLabel } from './cards/bits'
 import { toolMeta } from './toolMeta'
-import { approvalRisk, type RiskLabel } from './approvalRisk'
+import { resolveWording, type RiskLabel } from './approvalRisk'
 
 const STATUS_TEXT: Partial<Record<ApprovalView['status'], string>> = {
   allow: 'You allowed this once',
@@ -68,20 +71,46 @@ const RISK_ICONS: Record<RiskLabel, Icon> = {
 }
 
 /**
+ * Icons for the engine's describe_fn action labels (#347). Keyed by label with a generic
+ * fallback: the engine may send labels this table has never seen.
+ */
+const ENGINE_ICONS: Record<string, Icon> = {
+  Purchase: IconCreditCard,
+  Deletes: IconTrash,
+  'Posts publicly': IconSend,
+  'Sends an email': IconMail,
+  Sends: IconSend,
+  Submits: IconSend,
+  'Runs a command': IconTerminal2,
+  'Runs code': IconTerminal2,
+  'Changes something': IconEdit,
+  'Looks something up': IconEye,
+  Clicks: IconClick,
+  'Types into the page': IconKeyboard,
+  'Presses a key': IconKeyboard,
+  'Takes a photo': IconCamera,
+  'Looks at the screen': IconEye,
+  'Moves to the trash': IconTrash
+}
+
+/**
  * The engine reports the effective risk (§10 `risk_fn`: a click on "Place order" becomes `send`).
- * The wording comes from {@link approvalRisk}: the tool's name and declared risk first, word
- * guessing only as a last resort, and never from the arguments' content — except the slug
- * keys of multi-execute tools, which name the action (#344). A trash-kind preview (#142)
- * reads as a move to the trash, not a loss, and is checked first.
+ * The wording comes from {@link resolveWording}: a trash-kind preview (#142) reads as a move to
+ * the trash, not a loss, and is checked first; a browser tool's describe_fn label is trusted
+ * as-is; otherwise the tool's name and declared risk come first (#346, #372), word guessing
+ * only as a last resort and never from the arguments' content — except the slug keys of
+ * multi-execute tools, which name the action (#344). When the rules return a generic label,
+ * the engine's risk_label breaks the tie if a describe_fn actually ran (#347).
  */
 export function effectiveRisk(
-  approval: Pick<ApprovalView, 'risk' | 'reason' | 'name' | 'arguments'> & Pick<Partial<ApprovalView>, 'preview'>
+  approval: Pick<ApprovalView, 'risk' | 'reason' | 'name' | 'arguments'> & Pick<Partial<ApprovalView>, 'preview' | 'riskLabel'>
 ): EffectiveRisk {
-  // a delete for good became its app's trash version (#142): it can come back, so it reads as a change, not a loss
-  if (approval.preview?.kind === 'trash' && approval.risk !== 'exec')
-    return { label: 'Moves to the trash', verb: 'move something to the trash', icon: IconTrash, tone: 'warning' }
-  const wording = approvalRisk(approval)
-  return { ...wording, icon: RISK_ICONS[wording.label] }
+  const wording = resolveWording(approval)
+  const icon =
+    wording.label in RISK_ICONS
+      ? RISK_ICONS[wording.label as RiskLabel]
+      : (ENGINE_ICONS[wording.label] ?? IconShieldQuestion)
+  return { ...wording, icon }
 }
 
 /** One plain line saying what exactly will happen, e.g. `Click "Place order" on amazon.in`. */

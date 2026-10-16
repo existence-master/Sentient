@@ -3,7 +3,7 @@
 // Run with `npm test` (no Electron needed).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { approvalRisk } from '../src/features/chat/approvalRisk.ts'
+import { approvalRisk, engineWording, resolveWording } from '../src/features/chat/approvalRisk.ts'
 
 const email = (name: string, body: string, reason = 'mcp_mailer: Send an email to one address') => ({
   risk: 'send' as const,
@@ -176,4 +176,100 @@ test('Home Assistant locks, alarms and garage doors read as home security, with 
   const blinds = approvalRisk({ risk: 'write', name: 'home_assistant_open_cover', arguments: { entity_id: 'cover.bedroom_blinds' } })
   assert.equal(blinds.label, 'Changes things')
   assert.equal(blinds.caution, undefined)
+})
+
+// #347: the engine's risk_label (from a tool's describe_fn) is used when it is specific;
+// the generic per-risk fallback means no describe_fn ran, so the tool-name rules keep naming it.
+test('a specific engine label is used for the heading', () => {
+  const w = engineWording('Purchase', 'send')
+  assert.equal(w?.label, 'Purchase')
+  assert.equal(w?.verb, 'make a purchase')
+  assert.equal(w?.tone, 'danger')
+})
+
+test('a browser click on an ordinary button reads as a click', () => {
+  const w = engineWording('Clicks', 'write')
+  assert.equal(w?.label, 'Clicks')
+  assert.equal(w?.verb, 'click')
+  assert.equal(w?.tone, 'warning')
+})
+
+test('the generic send fallback keeps the #346 tool-name rules', () => {
+  assert.equal(engineWording('Sends', 'send'), null)
+})
+
+test('the generic write fallback keeps the #346 tool-name rules', () => {
+  assert.equal(engineWording('Changes something', 'write'), null)
+})
+
+test('a missing label keeps the #346 tool-name rules', () => {
+  assert.equal(engineWording(null, 'send'), null)
+  assert.equal(engineWording('   ', 'send'), null)
+})
+
+test('an unknown engine label is shown as-is with a plain verb', () => {
+  const w = engineWording('Does something new', 'write')
+  assert.equal(w?.label, 'Does something new')
+  assert.equal(w?.verb, 'do this')
+  assert.equal(w?.tone, 'warning')
+})
+
+test('labels are trimmed before matching', () => {
+  assert.equal(engineWording('  Clicks  ', 'write')?.label, 'Clicks')
+})
+
+// #347 review: the full precedence — browser labels trusted, tool-name rules first,
+// engine label only as the tiebreaker for generic rule results.
+test('a browser_click labelled Sends reads as Sends, not Purchase', () => {
+  const w = resolveWording({
+    risk: 'send',
+    name: 'browser_click',
+    reason: 'browser: Buttons that buy, pay for things or submit forms',
+    riskLabel: 'Sends'
+  })
+  assert.equal(w.label, 'Sends')
+  assert.equal(w.verb, 'send something on your behalf')
+})
+
+test('a browser_click labelled Purchase still reads as a purchase', () => {
+  const w = resolveWording({
+    risk: 'send',
+    name: 'browser_click',
+    reason: 'browser: Buttons that buy, pay for things or submit forms',
+    riskLabel: 'Purchase'
+  })
+  assert.equal(w.label, 'Purchase')
+})
+
+test('terminal_run keeps the tool-name rules ahead of the engine label', () => {
+  const w = resolveWording({ risk: 'exec', name: 'terminal_run', riskLabel: 'Runs a command' })
+  assert.equal(w.label, 'Runs a command')
+  assert.equal(w.verb, 'run a command on this computer')
+})
+
+test('a Home Assistant unlock keeps its security wording and caution', () => {
+  const w = resolveWording({ risk: 'send', name: 'home_assistant_unlock', riskLabel: 'Unlocks a door' })
+  assert.equal(w.label, 'Home security')
+  assert.equal(w.caution, 'Anyone at that door can walk in once it is unlocked.')
+})
+
+test('a generic rule result lets a specific engine label break the tie', () => {
+  const w = resolveWording({ risk: 'send', name: 'device_take_photo', riskLabel: 'Takes a photo' })
+  assert.equal(w.label, 'Takes a photo')
+  assert.equal(w.verb, 'take a photo')
+})
+
+test('a named rule result is not overridden by a fallback engine label', () => {
+  const w = resolveWording({ risk: 'send', name: 'gmail_send', riskLabel: 'Sends' })
+  assert.equal(w.label, 'Sends an email')
+})
+
+test('a trash preview still reads as a move to the trash', () => {
+  const w = resolveWording({
+    risk: 'write',
+    name: 'gmail_delete',
+    preview: { kind: 'trash' },
+    riskLabel: 'Deletes'
+  })
+  assert.equal(w.label, 'Moves to the trash')
 })

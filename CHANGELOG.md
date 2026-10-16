@@ -403,6 +403,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Approval cards name browser clicks the way the engine sees them.** A browser tool's label reads the clicked
+  element, so clicking an ordinary button reads as a click and "Send feedback" reads as sending, while clicking
+  "Place order" still reads as a purchase. For other tools the card keeps naming the action from the tool's name
+  and declared risk, and only when that gives a generic label does the engine's label break the tie.
 - **Changing a rule while an email waits to go out now counts.** If you set an app or tool to **Ask** while one of
   its emails or messages waits the few seconds before it is sent, Sentient asks you before it goes out instead of
   sending it under the old rule. The same goes for **Only if I asked**, unless your message asked for that email.
