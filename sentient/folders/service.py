@@ -55,6 +55,7 @@ EMBED_BATCH = 32
 EMBED_EVERY_FILES = 25  # embed what is waiting after this many files, so search by meaning improves during a long scan
 PUBLISH_EVERY_S = 1.0
 CANDIDATES = 60  # pieces each search method proposes before they are merged
+MAX_NEIGHBOURS = 4096  # the most neighbours one look in the vector index asks for (sqlite-vec's limit for k)
 RRF_K = 60
 PER_FILE = 2  # most pieces of one file in one search's results
 MIN_SIMILARITY = 0.3
@@ -250,6 +251,7 @@ class FolderService(Service):
         p = self._check_new(path, await self._rows())
         fid = new_id()
         kind = "obsidian" if is_obsidian(p) else "folder"
+        scope = await memory_scopes.resolve(self.app, scope, memory_scopes.ALWAYS)  # an existing project's spelling
         await self.app.store.execute(
             "INSERT INTO folders(id, path, name, kind, ignore, added_at, scope) VALUES(?,?,?,?,?,?,?)",
             (fid, str(p), p.name or str(p), kind, json.dumps(_clean_patterns(ignore)), now_iso(), folder_scope(scope)),
@@ -265,6 +267,8 @@ class FolderService(Service):
         row = await self._row(folder_id)
         if row is None:
             return None
+        if scope is not None:
+            scope = await memory_scopes.resolve(self.app, scope, memory_scopes.ALWAYS)  # an existing project's spelling
         if scope is not None and folder_scope(scope) != folder_scope(row.get("scope")):
             await self.app.store.execute("UPDATE folders SET scope = ? WHERE id = ?", (folder_scope(scope), folder_id))
             log.info("folder %s is now used in %s chats", row["path"], folder_scope(scope))
@@ -627,21 +631,22 @@ class FolderService(Service):
         # only some folders (a scope, #392, or one folder by name): drop the others' pieces before ranking, so a
         # better match in a folder that isn't searched never pushes this one's out of the results or the window
         only = set(allowed) if len(allowed) < len(every) else None
-        k = CANDIDATES * 4 if only else CANDIDATES
         scores: dict[int, float] = {}
         similarity: dict[int, float] = {}
         keyword_rank: dict[int, int] = {}
         words = content_words(query)  # the same words prompt_pieces checks, each once
         if words:
             match = " OR ".join('"' + w.replace('"', "") + '"' for w in words)
+            within, params = "", [match]
+            if only:  # only pieces of the folders searched, before the limit
+                within = (" AND rowid IN (SELECT id FROM folder_chunks WHERE folder_id IN"
+                          f" ({','.join('?' * len(only))}))")
+                params += sorted(only)
             try:
                 fts = await self.app.store.fetchall(
                     "SELECT rowid, bm25(folder_fts, 4.0, 2.0, 1.0) AS b FROM folder_fts WHERE folder_fts MATCH ?"
-                    " ORDER BY b LIMIT ?", (match, k),
+                    f"{within} ORDER BY b LIMIT ?", (*params, CANDIDATES),
                 )
-                if only:
-                    keep = await self._in_folders([int(r[0]) for r in fts], only)
-                    fts = [r for r in fts if int(r[0]) in keep][:CANDIDATES]
             except Exception as exc:
                 log.debug("keyword search failed: %s", exc)
                 fts = []
@@ -655,10 +660,7 @@ class FolderService(Service):
         if await self._vec_ready():
             try:
                 qv = (await self.app.llm.embed([query]))[0]
-                hits = await self.vec.knn(qv, k)
-                if only:
-                    keep = await self._in_folders([cid for cid, _ in hits], only)
-                    hits = [h for h in hits if h[0] in keep][:CANDIDATES]
+                hits = await self._nearest(qv, only)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -710,6 +712,21 @@ class FolderService(Service):
             result["outside_content"] = CLIPPED_SOURCE  # first, so it survives a cut (ADR 0025)
         result["results"] = out
         return result, by_meaning
+
+    async def _nearest(self, qv: list[float], only: set[str] | None) -> list[tuple[int, float]]:
+        """The ``CANDIDATES`` pieces closest in meaning, of the folders in ``only`` (None: every folder). The vector
+        index can't filter by folder, so it asks for more neighbours until enough of them are in those folders, or
+        there are no more (at most ``MAX_NEIGHBOURS``)."""
+        if only is None:
+            return await self.vec.knn(qv, CANDIDATES)
+        k = CANDIDATES * 4
+        while True:
+            hits = await self.vec.knn(qv, k)
+            keep = await self._in_folders([cid for cid, _ in hits], only)
+            mine = [h for h in hits if h[0] in keep]
+            if len(mine) >= CANDIDATES or len(hits) < k or k >= MAX_NEIGHBOURS:
+                return mine[:CANDIDATES]
+            k = min(k * 4, MAX_NEIGHBOURS)
 
     async def _in_folders(self, chunk_ids: list[int], folder_ids: set[str]) -> set[int]:
         """The pieces of ``chunk_ids`` that belong to one of ``folder_ids``."""

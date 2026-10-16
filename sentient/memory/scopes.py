@@ -142,6 +142,16 @@ def prompt_note(scope: str) -> str:
     )
 
 
+async def resolve(app: Any, raw: Any, default: str | None = None) -> str | None:
+    """:func:`normalize`, then the spelling of a project already in use when one matches whatever the case ("atlas"
+    is "Atlas" when a memory, chat, task, messaging app or folder uses "Atlas"), so one project keeps one name."""
+    scope = normalize(raw, default)
+    if not scope or scope in BUILT_IN:
+        return scope
+    want = scope.lower()
+    return next((s["name"] for s in await list_scopes(app) if s["name"].lower() == want), scope)
+
+
 async def list_scopes(app: Any) -> list[dict]:
     """``[{name, label, count, built_in}]``: Always, Personal and Work, then every project a memory, chat, task,
     messaging app or added folder (#392) uses (by name). ``count`` = active memories in it."""

@@ -1031,13 +1031,13 @@ class Channel:
             scope = None
         else:
             try:
-                scope = memory_scopes.chat_scope(value)
+                memory_scopes.chat_scope(value)
             except ValueError:
                 await self.reply(chat_id, "A chat can't use only the memories kept for every chat. "
                                           "Send /scope personal, /scope work or /scope followed by a project's name.")
                 return
             # an existing project keeps its spelling: "/scope kestrel launch" is "Kestrel launch"
-            scope = next((n for n in projects if scope and n.lower() == scope.lower()), scope)
+            scope = await memory_scopes.resolve(self.app, value)
         await self.app.store.set_session_scope(session_id, scope)
         now = memory_scopes.of_session(self.app.config, {**session, "memory_scope": scope})
         self.app.bus.publish("session.updated", {"session_id": session_id, "memory_scope": now})

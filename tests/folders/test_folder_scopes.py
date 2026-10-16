@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sentient.app import SentientApp
+from sentient.folders import service as folder_service
 from sentient.gateway.app import create_app
 from sentient.memory import scopes
 from sentient.store.db import SCHEMA_VERSION
@@ -169,11 +170,12 @@ async def test_folders_added_before_scopes_are_used_everywhere(config, isolated_
     con.close()
 
 
-async def test_a_closer_note_in_another_scope_never_hides_this_ones(app, home_docs, tmp_path):
+async def test_a_closer_note_in_another_scope_never_hides_this_ones(app, home_docs, tmp_path, monkeypatch):
+    monkeypatch.setattr(folder_service, "CANDIDATES", 5)  # so 30 notes are many more than 4 times what one look takes
     office = tmp_path / "Office"
     office.mkdir()
     (office / "office lease.txt").write_text("Office lease: lease rent, lease renewal, lease rent lease.\n", encoding="utf-8")
-    for i in range(70):  # more matching pieces than one search looks at
+    for i in range(30):  # more matching pieces than one search looks at
         (office / f"desk {i}.txt").write_text(f"Desk {i} lease and rent for the office lease.\n", encoding="utf-8")
     await _add(app, office, "work")
     await _add(app, home_docs, "personal")
@@ -188,3 +190,12 @@ async def test_a_closer_note_in_another_scope_never_hides_this_ones(app, home_do
     assert out["results"] == [] and "Folders kept for Work chats weren't searched" in out["note"]
     out = await app.folders.search("Office lease", scope="personal", folder="Office")
     assert all(r["path"] != "office lease.txt" for r in out["results"])
+
+
+async def test_a_folder_reuses_the_spelling_of_a_project_in_use(app, work):
+    await app.memory.remember("Project Atlas ships the new onboarding flow", use_llm=False, scope="Atlas")
+    folder = await _add(app, work, "atlas")
+    assert folder["scope"] == "Atlas"
+    assert (await app.folders.update(folder["id"], None, "ATLAS"))["scope"] == "Atlas"
+    assert [s["name"] for s in await scopes.list_scopes(app)].count("Atlas") == 1
+    assert [h["path"] for h in (await app.folders.search("Kestrel bank demo", scope="Atlas"))["results"]] == ["kestrel.txt"]
