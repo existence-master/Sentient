@@ -206,11 +206,15 @@ class ReminderService(Service):
             if rang is None:
                 continue
             seconds = float(minutes) * 60
-            new = await self.add(
-                "alarm", now + timedelta(seconds=seconds), label=item["label"], duration_s=seconds,
-                session_id=item["session_id"], channel=item["channel"], language=item["language"], source=source,
-                snoozed_from=item["id"],
-            )
+            try:
+                new = await self.add(
+                    "alarm", now + timedelta(seconds=seconds), label=item["label"], duration_s=seconds,
+                    session_id=item["session_id"], channel=item["channel"], language=item["language"], source=source,
+                    snoozed_from=item["id"],
+                )
+            except Exception:  # no new alarm: it keeps ringing rather than being silently lost
+                await self.app.store.execute("UPDATE reminders SET stopped_at = NULL WHERE id = ?", (item["id"],))
+                raise
             log.info("alarm %s snoozed for %s minutes", item["id"][:8], minutes)
             self._changed(rang)  # after the new alarm, so the window shows "snoozed" rather than nothing
             if not reminder_id:

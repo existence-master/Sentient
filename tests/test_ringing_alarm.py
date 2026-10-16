@@ -183,6 +183,22 @@ async def test_the_model_can_stop_and_snooze_too(config, isolated_home):
         await s.stop()
 
 
+async def test_a_snooze_that_cannot_set_its_alarm_leaves_it_ringing(config, isolated_home, monkeypatch):
+    s = await _app(config, isolated_home)
+    try:
+        rang = await _ringing(s)
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(s.reminders, "add", broken)
+        with pytest.raises(RuntimeError):
+            await s.reminders.snooze(9)
+        assert [r["id"] for r in await s.reminders.ringing()] == [rang["id"]]
+    finally:
+        await s.stop()
+
+
 async def test_stop_silences_every_ringing_alarm(config, isolated_home):
     s = await _app(config, isolated_home)
     try:
