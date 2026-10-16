@@ -11,6 +11,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
   propose one that fails. A check that runs code waits until you approve the skill (the button says "Approve and run
   check"), then runs in the code sandbox without your keys, and the skill is only saved if it passes. The Skills
   screen shows each check and how it went (#386).
+- **Home Assistant devices are checked after Sentient changes them.** A moment after it turns on a light, locks a
+  door, opens the blinds, arms the alarm or sets the thermostat, Sentient asks Home Assistant for the device's state
+  again, for a few seconds, and only calls it done when the device really changed. If it didn't, you see it plainly
+  ("Hallway light still reports off."), in chat, in quick commands and in task runs, and never a success. You can
+  change how long it waits in Settings (#386).
+- **Folders and chat apps follow your memory places too.** In Settings, Folders, each folder or Obsidian vault now has
+  a **Used in** choice: every chat (as before, and what your folders already have), Personal, Work or a project. A
+  folder kept for Work only comes up in work chats, so a personal chat never brings up your work notes unless you ask.
+  In Telegram, Discord and WhatsApp, send `/scope work`, `/scope personal` or `/scope` followed by a project's name to
+  pick which memories that chat uses, or `/scope` to see which it uses now. On the Memory page, where a memory is
+  kept now reads "Used in Work" next to its source, so it no longer looks like a topic such as "Work & Learning".
 - **Say "stop" or "snooze" to a ringing alarm.** While a Sentient alarm rings, typing or saying "stop", "stop the
   alarm", "turn it off", "snooze" or "snooze for 5 minutes" in a chat, by voice or in Telegram, Discord or WhatsApp
   stops or snoozes it at once, with no model ("Alarm stopped.", "Snoozed until 7:39 AM."). A snooze is 9 minutes
@@ -433,6 +444,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Approval cards no longer show Sentient's notes to itself.** When the browser (or another built-in app) asked
+  before clicking, the card's small print showed the instructions written for the model, cut off mid-word ("browser:
+  Click the element with this ref ..."). It now shows a short plain label when there is one, like "Purchase" or
+  "Unlocks a door", and otherwise the card's own line (#398).
 - **A page watch always checks the page.** "Track this page and tell me when a new event is added" could be set to
   start only when something arrived in your calendar or smart home, so it never looked at the page. A check that reads
   a page, a search or the news now runs on a timer: every hour, or as often as you asked (#389).

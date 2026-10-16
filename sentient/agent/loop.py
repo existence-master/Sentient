@@ -102,6 +102,7 @@ from sentient.tools.base import (
     Risk,
     Tool,
     ToolContext,
+    approval_reason,
     bind_call,
     describe_call,
     effective_risk,
@@ -639,16 +640,17 @@ class Agent:
             log.warning("recall failed: %s", exc)
             return []
 
-    async def _prompt_notes(self, user_text: str) -> list[dict]:
+    async def _prompt_notes(self, user_text: str, scope: str | None = None) -> list[dict]:
         """Short pieces of the user's notes that clearly match the message (#354), while a folder is added and
-        folder_search is offered. Never slows a turn down much or breaks it."""
+        folder_search is offered, from the folders the chat's scope reads (#392). Never slows a turn down much or
+        breaks it."""
         folders = getattr(self.app, "folders", None) if self.app is not None else None
         if folders is None or self.config.folders.prompt_notes <= 0 or not user_text.strip():
             return []
         if not any(t.name == "folder_search" for t in self.registry.tools()):
             return []
         try:
-            pieces = await asyncio.wait_for(folders.prompt_pieces(user_text), timeout=NOTES_TIMEOUT_S)
+            pieces = await asyncio.wait_for(folders.prompt_pieces(user_text, scope), timeout=NOTES_TIMEOUT_S)
             log.info("note pieces in the prompt: %s", ", ".join(str(p.get("path")) for p in pieces) or "none matched")
             return pieces
         except asyncio.CancelledError:
@@ -673,7 +675,8 @@ class Agent:
         personal = memory_scopes.is_personal(scope)
         if reads_memory:
             facts, (user_context, insights), notes = await asyncio.gather(
-                self._recall(user_text, scope), self._user_model_context(user_text, scope), self._prompt_notes(user_text)
+                self._recall(user_text, scope), self._user_model_context(user_text, scope),
+                self._prompt_notes(user_text, scope),
             )
         else:
             facts, user_context, insights, notes = [], "", [], []
@@ -1261,7 +1264,7 @@ class Agent:
         self.approvals.create(approval_id, offered)
         yield ApprovalRequest(
             approval_id=approval_id, call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments,
-            risk=p.risk.name, reason=f"{p.tool.plugin}: {p.tool.description[:160]}",
+            risk=p.risk.name, reason=approval_reason(wording, p.risk),
             risk_label=wording["risk_label"], target=wording["target"],
             untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
             grant_minutes=self.approvals.config.grant_minutes,
@@ -1458,6 +1461,8 @@ class Agent:
         folder = incognito_outputs.outputs_folder(ctx.session_id) if ctx.incognito and ctx.session_id else "outputs"
         content = await self._tool_content(res, tc.id, tool=p.tool, limit=result.tool_result_limit, folder=folder)
         model_content = self.outside_content(content, p.tool, tc.arguments) if p.tool is not None else content
+        if note := outcomes.model_note(check):  # the result said done, reading it back says not (#386)
+            content, model_content = f"{content}\n{note}", f"{model_content}\n{note}"
         messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": model_content})
         if persist:  # stored as it is; marked again when the transcript is read back (mark_outside_messages)
             extra = {"approval": p.approval} if p.approval else {}
@@ -1902,24 +1907,36 @@ class Agent:
             ctx = self.tool_context(session_id, channel)
             ctx.incognito = bool((session or {}).get("incognito"))
             ctx.extra = {**ctx.extra, "quick": True, "quick_language": plan.language.code}
-            outcomes: list[tuple[Any, bool]] = []
+            results: list[tuple[Any, bool]] = []
+            checks: list[dict] = []
             if plan.calls:
                 await self.store.add_message(session_id, "assistant", None, tool_calls=[c.to_openai() for c in plan.calls])
             for call in plan.calls:
                 yield ToolCallEvent(call_id=call.id, name=call.name, arguments=call.arguments, **ev)
                 res, is_error, ms = await self._run_tool(call, ctx)
-                content = await self._tool_content(res, call.id, tool=self.registry.get(call.name))
+                tool = self.registry.get(call.name)
+                content = await self._tool_content(res, call.id, tool=tool)
+                # what the device really did, read back (#386): a light that stayed off is never "Turned on"
+                check = await self.check_outcome(tool, call.arguments, res, is_error, ctx) if tool is not None else None
+                if check is not None:
+                    checks.append(check)
+                if note := outcomes.model_note(check):
+                    content = f"{content}\n{note}"
                 await self.store.add_message(session_id, "tool", content, tool_call_id=call.id, name=call.name)
-                outcomes.append((res, is_error))
-                yield ToolResultEvent(call_id=call.id, name=call.name, result=res, is_error=is_error, duration_ms=ms, **ev)
-            reply = plan.answer(outcomes)
+                results.append((res, is_error))
+                yield ToolResultEvent(
+                    call_id=call.id, name=call.name, result=res, is_error=is_error, duration_ms=ms, check=check, **ev
+                )
+            missed = [c for c in checks if c.get("ok") is False and c.get("how") == "read_back"]
+            reply = plan.language.unconfirmed(str(missed[0].get("detail") or "")) if missed else plan.answer(results)
+            checks = outcomes.finalize(checks, reply)
             yield TextDelta(text=reply, **ev)
-            message_id = await self.store.add_message(session_id, "assistant", reply)
+            message_id = await self.store.add_message(session_id, "assistant", reply, checks=checks or None)
             log.info(
                 "quick command: %s (%s) done in %d ms with no model call", plan.command.action, plan.language.code,
                 int((time.perf_counter() - started) * 1000),
             )
-            yield Done(content=reply, message_id=message_id, **ev)
+            yield Done(content=reply, message_id=message_id, checks=checks, **ev)
         except Exception as exc:  # every turn still ends with an error and one done (docs/API.md section 1, #334)
             log.exception("quick command %s failed", plan.command.action)
             yield Error(message=plan.language.failed(""), recoverable=False, **ev)
