@@ -1,4 +1,4 @@
-import { IconHourglassHigh } from '@tabler/icons-react'
+import { IconBriefcase, IconFolder, IconHome, IconHourglassHigh, IconInfinity } from '@tabler/icons-react'
 import { cn } from '@/lib/utils'
 import type { Memory } from '@/lib/types'
 import { countdown, EXPIRING_SOON_MS, expiresInMs, sourceMeta, topicMeta, topicText, topicTint } from './meta'
@@ -45,6 +45,35 @@ export function ExpiryBadge({ memory, now, className }: { memory: Memory; now: n
     >
       <IconHourglassHigh size={11} />
       {ms > 0 ? countdown(ms) : 'expiring'}
+    </span>
+  )
+}
+
+/** The plain name of a memory scope (#155): Personal, Work, Every chat, or a project's own name. */
+export function scopeLabel(scope: string | null | undefined): string {
+  if (!scope || scope === 'personal') return 'Personal'
+  if (scope === 'work') return 'Work'
+  if (scope === 'always') return 'Every chat'
+  return scope
+}
+
+export function ScopeIcon({ scope, size = 15, className }: { scope: string | null | undefined; size?: number; className?: string }) {
+  if (!scope || scope === 'personal') return <IconHome size={size} className={className} />
+  if (scope === 'work') return <IconBriefcase size={size} className={className} />
+  if (scope === 'always') return <IconInfinity size={size} className={className} />
+  return <IconFolder size={size} className={className} />
+}
+
+/** Where a memory is kept, shown unless it is the default (Personal). */
+export function ScopeBadge({ scope, className }: { scope: string | null | undefined; className?: string }) {
+  if (!scope || scope === 'personal') return null
+  return (
+    <span
+      title={scope === 'always' ? 'Used in every chat' : `Used in ${scopeLabel(scope)} chats`}
+      className={cn('inline-flex h-4.5 max-w-36 shrink-0 items-center gap-1 rounded-full border border-border bg-active px-1.5 text-2xs font-medium text-fg-muted', className)}
+    >
+      <ScopeIcon scope={scope} size={10} className="shrink-0" />
+      <span className="truncate">{scopeLabel(scope)}</span>
     </span>
   )
 }

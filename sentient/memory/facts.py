@@ -13,6 +13,9 @@ memory from documents, and the similarity graph. Changes:
 - Expired facts are filtered at query time as well as purged hourly.
 - Importing a document adds to memory instead of wiping it (v2 build_initial_memory).
 - Search by source works (v2 formatted a prompt with a missing key and crashed).
+- Every fact has a scope (#155, ``memory.scopes``): personal, work, always or a project. Recall reads the scopes it
+  is given (a chat's own plus always); saving puts the fact in one scope and only compares it with facts in that scope
+  and always, so a save never changes a memory in another scope.
 - Memories from outside content, unprompted work or imports are held for review (``status = 'pending'``, ADR
   0021): they have no vector, and every read here except ``pending_facts`` skips them, so recall, prompts,
   proactivity, the user model and dreaming never see one until the user approves it.
@@ -35,6 +38,7 @@ from sentient.config.schema import SentientConfig
 from sentient.llm.provider import LLMProvider
 from sentient.memory import prompts
 from sentient.memory import review as reviews
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import EpisodicMemory
 from sentient.memory.schema import ensure_memory_schema
 from sentient.memory.scripts import (
@@ -67,7 +71,8 @@ _USER_REF_RE = re.compile(r"\b(the user|USERNAME)\b", re.IGNORECASE)
 _TAUTOLOGY_RE = re.compile(r"^\s*(?P<n>[\w .'-]+?)['\u2019]s name is (?P=n)\s*\.?\s*$", re.IGNORECASE)
 
 MEMORY_COLUMNS = (
-    "id, content, source, topics, memory_type, created_at, updated_at, expires_at, previous_content, status, review"
+    "id, content, source, topics, memory_type, created_at, updated_at, expires_at, previous_content, status, review,"
+    " scope"
 )
 KEPT_APART_META = "memory.kept_apart"  # pairs the user split again after the tidy-up merged them (#353)
 ACTIVE = "status = 'active'"  # held memories (``pending``) are left out of every read but ``pending_facts``
@@ -605,10 +610,18 @@ def _row_to_memory(r: Any, similarity: float | None = None) -> dict:
         "previous_content": r["previous_content"] if "previous_content" in r.keys() else None,  # noqa: SIM118 - sqlite Row, where `in row` checks values
         "status": r["status"] if "status" in r.keys() else "active",  # noqa: SIM118
         "review": reviews.load(r["review"]) if "review" in r.keys() else None,  # noqa: SIM118
+        "scope": (r["scope"] if "scope" in r.keys() else None) or memory_scopes.PERSONAL,  # noqa: SIM118
     }
     if similarity is not None:
         d["similarity"] = round(similarity, 4)
     return d
+
+
+def _in_scopes(scopes: list[str] | None, col: str = "scope") -> tuple[str, list[str]]:
+    """SQL condition (with its parameters) that keeps facts in ``scopes``; ``("1", [])`` for every scope."""
+    if scopes is None:
+        return "1", []
+    return f"{col} IN ({','.join('?' * len(scopes))})", list(scopes)
 
 
 def _analysis_from(raw: Any) -> tuple[list[str] | None, str, str | None]:
@@ -677,14 +690,17 @@ class FactMemory:
         return vec
 
     # ------------------------------------------------------------------ recall
-    async def _keyword_ids(self, tokens: list[str], limit: int, source: str | None) -> list[int]:
+    async def _keyword_ids(
+        self, tokens: list[str], limit: int, source: str | None, scopes: list[str] | None = None
+    ) -> list[int]:
         if not tokens:
             return []
+        in_scope, scope_params = _in_scopes(scopes, "f.scope")
         sql = (
             "SELECT f.id FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid"
-            " WHERE facts_fts MATCH ? AND f.status = 'active'"
+            f" WHERE facts_fts MATCH ? AND f.status = 'active' AND {in_scope}"
         )
-        params: list[Any] = [" OR ".join(f'"{t}"' for t in tokens)]
+        params: list[Any] = [" OR ".join(f'"{t}"' for t in tokens), *scope_params]
         if source is not None:
             sql += " AND f.source = ?"
             params.append(source)
@@ -697,28 +713,31 @@ class FactMemory:
             return []
 
     async def _search(
-        self, query: str, k: int, min_sim: float, source: str | None = None
+        self, query: str, k: int, min_sim: float, source: str | None = None, scopes: list[str] | None = None
     ) -> list[dict]:
         """Hybrid recall: vector neighbours plus FTS5 keyword matches, ranked by
         ``similarity + keyword_weight * share of query words present``. Embedding models
-        compress similarities (unrelated text still scores ~0.65), so exact words help ordering."""
+        compress similarities (unrelated text still scores ~0.65), so exact words help ordering.
+        ``scopes`` keeps facts in those scopes only (#155); None reads every scope."""
         await self.ensure_schema()
         qvec = await self.embed_query(query)
         now = now_iso()
         pool = max(k * 3, 10)
-        if source is None:
+        in_scope, scope_params = _in_scopes(scopes, "f.scope")
+        if source is None and scopes is None:
             sims = dict(await self.vec.knn(qvec, pool))
         else:
+            by_source = "f.source = ?" if source is not None else "1"
             rows = await self.store.fetchall(
                 "SELECT f.id, vec_distance_cosine(v.embedding, ?) AS distance"
-                " FROM facts f JOIN facts_vec v ON v.rowid = f.id WHERE f.source = ? AND f.status = 'active'"
-                " ORDER BY distance LIMIT ?",
-                (pack(qvec), source, pool),
+                f" FROM facts f JOIN facts_vec v ON v.rowid = f.id WHERE {by_source} AND {in_scope}"
+                " AND f.status = 'active' ORDER BY distance LIMIT ?",
+                (pack(qvec), *([source] if source is not None else []), *scope_params, pool),
             )
             sims = {int(r["id"]): 1.0 - float(r["distance"]) for r in rows}
         weight = self.config.memory.keyword_weight
         tokens = keyword_tokens(query)
-        kw_ids = await self._keyword_ids(tokens, pool, source) if weight > 0 else []
+        kw_ids = await self._keyword_ids(tokens, pool, source, scopes) if weight > 0 else []
         missing = [i for i in kw_ids if i not in sims]
         if missing:
             marks = ",".join("?" * len(missing))
@@ -731,8 +750,10 @@ class FactMemory:
         if not sims:
             return []
         marks = ",".join("?" * len(sims))
+        in_scope, scope_params = _in_scopes(scopes)
         rows = await self.store.fetchall(
-            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE id IN ({marks}) AND {ACTIVE}", list(sims)
+            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE id IN ({marks}) AND {ACTIVE} AND {in_scope}",
+            [*sims, *scope_params],
         )
         qset = set(tokens)
         scored = []
@@ -757,15 +778,17 @@ class FactMemory:
         *,
         source: str | None = None,
         track: bool = True,
+        scopes: list[str] | None = None,
     ) -> list[dict]:
         """Relevant facts for ``query``. ``track`` counts the recall (dreaming promotes
-        short-term facts that keep being recalled); internal lookups pass False."""
+        short-term facts that keep being recalled); internal lookups pass False. ``scopes``: only facts in these
+        scopes (``memory.scopes.recall_scopes``: a chat's scope plus always); None reads every scope."""
         top_k = top_k if top_k is not None else self.config.memory.facts_top_k
         min_sim = min_similarity if min_similarity is not None else self.config.memory.min_similarity
         if top_k <= 0 or not query.strip():
             return []
         try:
-            out = await self._search(query, top_k, min_sim, source)
+            out = await self._search(query, top_k, min_sim, source, scopes)
         except Exception as exc:
             log.warning("memory recall skipped: %s", exc)
             return []
@@ -779,8 +802,10 @@ class FactMemory:
                 )
         return out
 
-    async def search_by_source(self, query: str, source: str, top_k: int = 5) -> list[dict]:
-        return await self.recall(query, top_k=top_k, min_similarity=0.0, source=source, track=False)
+    async def search_by_source(
+        self, query: str, source: str, top_k: int = 5, scopes: list[str] | None = None
+    ) -> list[dict]:
+        return await self.recall(query, top_k=top_k, min_similarity=0.0, source=source, track=False, scopes=scopes)
 
     # ------------------------------------------------------------------ write paths
     async def _insert(
@@ -793,17 +818,18 @@ class FactMemory:
         memory_type: str,
         duration: str | None,
         review: dict | None = None,
+        scope: str = memory_scopes.PERSONAL,
     ) -> int:
         """A held fact (``review`` set) is saved as pending without a vector, so recall cannot find it."""
         await self.ensure_schema()
         ts = now_iso()
         cur = await self.store.execute(
             "INSERT INTO facts(content, source, topics, memory_type, created_at, updated_at, expires_at, embedding_model,"
-            " status, review) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            " status, review, scope) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (
                 content, source, json.dumps(topics), memory_type, ts, ts,
                 expires_for(memory_type, duration), self.llm.model_for("embedding"),
-                "pending" if review is not None else "active", reviews.dump(review),
+                "pending" if review is not None else "active", reviews.dump(review), scope,
             ),
         )
         fid = int(cur.lastrowid)
@@ -864,7 +890,44 @@ class FactMemory:
             self.publish("DELETE", None, None, source=source, count=len(rows))
         return len(rows)
 
-    async def _related_facts(self, fact: str, exclude: set[int]) -> list[dict]:
+    async def set_scope(self, fid: int, scope: str) -> dict:
+        """Move a memory to another scope (#155). KeyError when it doesn't exist, ValueError for an empty scope."""
+        target = memory_scopes.normalize(scope)
+        if not target:
+            raise ValueError("scope is empty")
+        row = await self.store.fetchone("SELECT content, scope FROM facts WHERE id = ?", (fid,))
+        if row is None:
+            raise KeyError(fid)
+        if row["scope"] != target:
+            await self.store.execute(
+                "UPDATE facts SET scope = ?, updated_at = ? WHERE id = ?", (target, now_iso(), fid)
+            )
+            self.publish("UPDATE", fid, row["content"], scope=target, previous_scope=row["scope"], reason="moved")
+        fact = await self.get_fact(fid)
+        assert fact is not None
+        return fact
+
+    async def forget_scope(self, scope: str) -> int:
+        """Reset one scope: delete every memory in it (also ones waiting for review), and nothing else."""
+        target = memory_scopes.normalize(scope)
+        if not target:
+            return 0
+        rows = await self.store.fetchall(
+            "SELECT id FROM facts WHERE scope = ? AND status IN ('active', 'pending')", (target,)
+        )
+        for r in rows:
+            await self.forget(int(r["id"]))
+        if rows:
+            self.publish("DELETE", None, None, scope=target, reason="scope_reset", count=len(rows))
+        return len(rows)
+
+    async def scope_of(self, fid: int) -> str | None:
+        row = await self.store.fetchone("SELECT scope FROM facts WHERE id = ?", (fid,))
+        return (row["scope"] or memory_scopes.PERSONAL) if row else None
+
+    async def _related_facts(
+        self, fact: str, exclude: set[int], scopes: list[str] | None = None
+    ) -> list[dict]:
         """Up to 3 facts about the same subject and attribute family as ``fact``, found by keyword rather
         than embedding ("moved to Bengaluru last month" scores low against "lives in Pune")."""
         user = self.config.assistant.user_name
@@ -874,7 +937,9 @@ class FactMemory:
         terms = [t for s in sorted(prof.subjects) for t in keyword_tokens(s)]
         for fam in sorted(prof.families):
             terms.extend(FAMILY_TERMS.get(fam, []))
-        ids = [i for i in await self._keyword_ids(list(dict.fromkeys(terms))[:24], 60, None) if i not in exclude]
+        ids = [
+            i for i in await self._keyword_ids(list(dict.fromkeys(terms))[:24], 60, None, scopes) if i not in exclude
+        ]
         if not ids:
             return []
         marks = ",".join("?" * len(ids))
@@ -930,17 +995,20 @@ class FactMemory:
         review: dict | None = None,
         own_words: str | None = None,
         session_id: str | None = None,
+        scope: str | None = None,
     ) -> dict[str, Any]:
-        """Store one fact with dedup / CUD logic. Returns {action, id, content} (an UPDATE adds ``previous``, the
-        words it replaced, so the save can be undone).
+        """Store one fact with dedup / CUD logic in ``scope`` (#155; personal when None). Returns {action, id, content}
+        (an UPDATE adds ``previous``, the words it replaced, so the save can be undone; an ADD adds ``scope``).
 
         With ``review`` (``memory.review.note``) the fact is held for the user's review instead: it is only ever
         added (never updates or deletes another fact), and the result carries ``status: "pending"``. ``own_words`` is
         what the user typed or said in the chat it came from: a fact those words fully back is saved even in a chat
         that read outside content (#234, ``review.grounded``). A fact from a chat that reads like an instruction for
         how Sentient should act is always held (``review.instruction_shaped``). ``session_id`` goes on the
-        ``memory.updated`` event, so that chat can show "Remembered: ... Undo"."""
+        ``memory.updated`` event, so that chat can show "Remembered: ... Undo". Duplicates, updates and corrections
+        only look at facts in ``scope`` and always: a save never changes a memory in another scope."""
         user = self.config.assistant.user_name
+        scope = memory_scopes.normalize(scope, memory_scopes.PERSONAL) or memory_scopes.PERSONAL
         if review is not None and own_words and reviews.grounded(fact, own_words, user):
             log.info("kept from the user's own words although the chat read outside content: %r", fact)
             review = None
@@ -951,9 +1019,11 @@ class FactMemory:
             else:  # held for outside content already: it keeps that source, and says it is an instruction too
                 review = {**review, "reason": reviews.INSTRUCTION}
         if review is not None:
-            result = await self._hold(fact, source=source, use_llm=use_llm, review=review)
+            result = await self._hold(fact, source=source, use_llm=use_llm, review=review, scope=scope)
         else:
-            result = await self._remember(fact, source=source, use_llm=use_llm)
+            result = await self._remember(fact, source=source, use_llm=use_llm, scope=scope)
+        if result["action"] == "ADD":
+            result["scope"] = scope
         if notify and result["action"] in {"ADD", "UPDATE", "DELETE"}:
             self.publish(result["action"], result["id"], result["content"], **self.event_extra(result, session_id))
         return result
@@ -971,38 +1041,52 @@ class FactMemory:
             extra["previous"] = result["previous"]
         if session_id:
             extra["session_id"] = session_id
+        if result.get("scope"):
+            extra["scope"] = result["scope"]
         return extra
 
-    async def _hold(self, fact: str, *, source: str, use_llm: bool, review: dict) -> dict[str, Any]:
-        """Save ``fact`` as pending. Duplicates of any fact (held or not) are skipped; nothing else changes."""
+    async def _hold(
+        self, fact: str, *, source: str, use_llm: bool, review: dict, scope: str = memory_scopes.PERSONAL
+    ) -> dict[str, Any]:
+        """Save ``fact`` as pending. Duplicates of any fact (held or not) in its scope or always are skipped; nothing
+        else changes."""
         fact = fact.strip()
         if not fact:
             return {"action": "SKIP", "id": None, "content": fact}
         await self.ensure_schema()
-        exact = await self.store.fetchone("SELECT id FROM facts WHERE content = ? COLLATE NOCASE", (fact,))
+        family = memory_scopes.recall_scopes(scope)
+        in_scope, scope_params = _in_scopes(family)
+        exact = await self.store.fetchone(
+            f"SELECT id FROM facts WHERE content = ? COLLATE NOCASE AND {in_scope}", (fact, *scope_params)
+        )
         if exact:
             return {"action": "SKIP", "id": int(exact["id"]), "content": fact}
-        neighbours = await self.recall(fact, top_k=1, min_similarity=0.0, track=False)
+        neighbours = await self.recall(fact, top_k=1, min_similarity=0.0, track=False, scopes=family)
         if neighbours and self._duplicate(fact, neighbours[0]) and not self._corrects(fact, neighbours[0]):
             return {"action": "SKIP", "id": neighbours[0]["id"], "content": neighbours[0]["content"]}
         topics, memory_type, duration = await self.analyze(fact) if use_llm else ([DEFAULT_TOPIC], "long-term", None)
         fid = await self._insert(
-            fact, [], source=source, topics=topics, memory_type=memory_type, duration=duration, review=review
+            fact, [], source=source, topics=topics, memory_type=memory_type, duration=duration, review=review,
+            scope=scope,
         )
         held = {"action": "ADD", "id": fid, "content": fact, "status": "pending"}
         return {**held, "reason": review["reason"]} if review.get("reason") else held
 
-    async def _remember(self, fact: str, *, source: str, use_llm: bool) -> dict[str, Any]:
+    async def _remember(
+        self, fact: str, *, source: str, use_llm: bool, scope: str = memory_scopes.PERSONAL
+    ) -> dict[str, Any]:
         fact = fact.strip()
         if not fact:
             return {"action": "SKIP", "id": None, "content": fact}
+        family = memory_scopes.recall_scopes(scope)
+        in_scope, scope_params = _in_scopes(family)
         exact = await self.store.fetchone(
-            f"SELECT id FROM facts WHERE content = ? COLLATE NOCASE AND {ACTIVE}", (fact,)
+            f"SELECT id FROM facts WHERE content = ? COLLATE NOCASE AND {ACTIVE} AND {in_scope}", (fact, *scope_params)
         )
         if exact:
             return {"action": "SKIP", "id": int(exact["id"]), "content": fact}
         [vec] = await self._embed([fact])
-        neighbours = await self.recall(fact, top_k=5, min_similarity=0.0, track=False)
+        neighbours = await self.recall(fact, top_k=5, min_similarity=0.0, track=False, scopes=family)
         # "Mira starts school in July" embeds almost exactly like "... in June": a correction is never a duplicate
         dup = next((n for n in neighbours if self._duplicate(fact, n) and not self._corrects(fact, n)), None)
         if dup is not None:
@@ -1020,7 +1104,7 @@ class FactMemory:
         others = {n["id"] for n in close if not same_subject(fact, n["content"], user)}
         if use_llm:
             try:
-                related = await self._related_facts(fact, {n["id"] for n in close})
+                related = await self._related_facts(fact, {n["id"] for n in close}, family)
             except Exception as exc:
                 log.debug("related-fact lookup skipped: %s", exc)
             others |= {r["id"] for r in related if not same_subject(fact, r["content"], user)}
@@ -1130,7 +1214,7 @@ class FactMemory:
         if content != fact:
             [vec] = await self._embed([content])
         new_id = await self._insert(
-            content, vec, source=source, topics=topics, memory_type=memory_type, duration=duration
+            content, vec, source=source, topics=topics, memory_type=memory_type, duration=duration, scope=scope
         )
         return {"action": "ADD", "id": new_id, "content": content}
 
@@ -1241,7 +1325,13 @@ class FactMemory:
         return text[-max_chars:] if len(text) > max_chars else text
 
     async def flush_conversation(
-        self, transcript: str, user_name: str, *, review: dict | None = None, session_id: str | None = None
+        self,
+        transcript: str,
+        user_name: str,
+        *,
+        review: dict | None = None,
+        session_id: str | None = None,
+        scope: str | None = None,
     ) -> list[dict]:
         """Save lasting facts from chat turns that are about to be compressed (docs/API.md section 10).
 
@@ -1272,7 +1362,7 @@ class FactMemory:
             try:
                 results.append(await self.remember(
                     fact, source="conversation", notify=True, review=reviews.with_snippet(review, text, fact),
-                    session_id=session_id,
+                    session_id=session_id, scope=scope,
                 ))
             except Exception as exc:
                 log.warning("memory flush could not store %r: %s", fact, exc)
@@ -1280,7 +1370,7 @@ class FactMemory:
 
     async def extract_and_store(
         self, text: str, username: str, source: str = "conversation", *, notify: bool = False,
-        review: dict | None = None, own: bool = False, session_id: str | None = None,
+        review: dict | None = None, own: bool = False, session_id: str | None = None, scope: str | None = None,
     ) -> list[dict]:
         """Pull atomic facts out of text and remember each (v2 cud_memory). With ``review`` they are held for review,
         each with the sentence of ``text`` it most likely came from. ``own``: ``text`` is the user's own words (a chat
@@ -1295,13 +1385,15 @@ class FactMemory:
             try:
                 results.append(await self.remember(
                     f, source=source, notify=notify, review=reviews.with_snippet(review, text, f),
-                    own_words=text if own else None, session_id=session_id,
+                    own_words=text if own else None, session_id=session_id, scope=scope,
                 ))
             except Exception as exc:
                 log.warning("failed to store fact %r: %s", f, exc)
         return results
 
-    async def import_document(self, path: Path, *, username: str, source: str | None = None) -> dict:
+    async def import_document(
+        self, path: Path, *, username: str, source: str | None = None, scope: str | None = None
+    ) -> dict:
         """v2 build_initial_memory for one file, without wiping existing memories. The facts are held for the
         user's review (``pending`` counts them), so nothing already remembered changes."""
         from sentient.files.extract import extract_text
@@ -1312,7 +1404,7 @@ class FactMemory:
         counts = {"added": 0, "updated": 0, "skipped": 0, "pending": 0}
         review = reviews.note(path.name)
         for chunk in chunk_text(text, self.config.memory.import_chunk_chars):
-            for r in await self.extract_and_store(chunk, username, source=source, review=review):
+            for r in await self.extract_and_store(chunk, username, source=source, review=review, scope=scope):
                 key = {"ADD": "added", "UPDATE": "updated", "DELETE": "updated"}.get(r["action"], "skipped")
                 counts[key] += 1
                 counts["pending"] += r.get("status") == "pending"
@@ -1335,13 +1427,17 @@ class FactMemory:
         topic: str | None = None,
         source: str | None = None,
         q: str | None = None,
+        scope: str | None = None,
     ) -> list[dict]:
+        """Active facts, newest first. ``scope`` keeps one scope only (the Memory screen's filter, #155)."""
         if topic:
             topic = normalize_topics([topic])[0]
+        one = memory_scopes.normalize(scope)
         if q and q.strip():
             try:
                 hits = await self._search(
-                    q, min(offset + limit, 500) * (3 if topic else 1), self.config.memory.min_similarity, source
+                    q, min(offset + limit, 500) * (3 if topic else 1), self.config.memory.min_similarity, source,
+                    [one] if one else None,
                 )
                 if topic:
                     hits = [h for h in hits if topic in h["topics"]]
@@ -1353,6 +1449,9 @@ class FactMemory:
         if source:
             where.append("source = ?")
             params.append(source)
+        if one:
+            where.append("scope = ?")
+            params.append(one)
         if topic:
             where.append("EXISTS (SELECT 1 FROM json_each(facts.topics) WHERE value = ?)")
             params.append(topic)
@@ -1468,8 +1567,10 @@ class FactMemory:
         if row is None:
             return None
         text = " ".join(str(content or "").split()) or row["content"]
+        # it is approved into the scope it was held in (#155): only a memory there or in always counts as the same
+        in_scope, scope_params = _in_scopes(memory_scopes.recall_scopes(await self.scope_of(fid)))
         same = await self.store.fetchone(
-            f"SELECT id FROM facts WHERE content = ? COLLATE NOCASE AND {ACTIVE}", (text,)
+            f"SELECT id FROM facts WHERE content = ? COLLATE NOCASE AND {ACTIVE} AND {in_scope}", (text, *scope_params)
         )
         if same is not None:
             await self.forget(fid)

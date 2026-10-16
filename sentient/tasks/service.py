@@ -39,6 +39,7 @@ from sentient.agent import dry_run, outcomes
 from sentient.agent import grants as grant_rules
 from sentient.llm.jobs import detached
 from sentient.llm.provider import PlainProviderError, ProviderError
+from sentient.memory import scopes as memory_scopes
 from sentient.services import Service, cancel_tasks
 from sentient.tasks import ask, away, catchup, continuity, executor, limits, scripts, stuck, swarm
 from sentient.tasks.away import AwayWatch
@@ -76,7 +77,7 @@ STATUSES = {
 }
 UPDATABLE_FIELDS = {
     "name", "description", "priority", "schedule", "plan", "enabled", "status", "model", "assignee", "script",
-    "browser_profile", "deliver_to", "notepad", "keep_running",
+    "browser_profile", "deliver_to", "notepad", "keep_running", "memory_scope",
 }
 SANDBOX_RESULT = {
     "ok": False, "backend": None, "stdout": "", "stderr": "", "result": None, "files_created": [],
@@ -334,11 +335,13 @@ class TaskService(Service):
         model: str | None = None,
         auto_approve: bool = False,
         browser_profile: str | None = None,
+        memory_scope: str | None = None,
     ) -> dict:
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("A prompt is required.")
         browser_profile = self._browser_profile(browser_profile)
+        memory_scope = memory_scopes.chat_scope(memory_scope)
         context = dict(original_context or {})
         context.setdefault("source", "manual_creation" if source == "user" else source)
         now = self.now_iso()
@@ -353,6 +356,7 @@ class TaskService(Service):
             "enabled": True,
             "model": model or None,
             "browser_profile": browser_profile,
+            "memory_scope": memory_scope,
             "original_context": context,
             "plan": [],
             "chat_history": [],
@@ -570,6 +574,11 @@ class TaskService(Service):
             changes["model"] = data["model"] or None
         if "browser_profile" in data:
             changes["browser_profile"] = self._browser_profile(data["browser_profile"])
+        if "memory_scope" in data:  # #155: None or "" goes back to personal; "always" is refused (ValueError)
+            scope = memory_scopes.chat_scope(data["memory_scope"])
+            if scope != task.get("memory_scope") and task["status"] in BUSY:  # a run keeps the scope it started with
+                raise TaskConflict("This task is running right now. Try again when the run has finished.")
+            changes["memory_scope"] = scope
         if "deliver_to" in data:
             changes["deliver_to"] = stored(data["deliver_to"])
         if "notepad" in data:
@@ -706,7 +715,8 @@ class TaskService(Service):
         task = await self._require(task_id)
         now = self.now_iso()
         keep = ("name", "description", "priority", "task_type", "schedule", "original_prompt", "source",
-                "assignee", "model", "browser_profile", "deliver_to", "original_context", "chat_history")
+                "assignee", "model", "browser_profile", "memory_scope", "deliver_to", "original_context",
+                "chat_history")
         fields = {k: task.get(k) for k in keep}
         fields.update(status="planning", enabled=True, plan=[], clarifying_questions=[], error=None,
                       created_at=now, updated_at=now)
@@ -1514,8 +1524,10 @@ class TaskService(Service):
         raw = data.get("script")
         if not isinstance(raw, dict) or raw.get("code") is None:
             return previous, data, None
+        request = self._script_request(task)
         try:
-            return self._default_condition(task, normalize_script(raw, previous, model_written=True)), data, None
+            script = normalize_script(raw, previous, model_written=True, request=request)
+            return self._default_condition(task, script), data, None
         except ScriptInvalid as exc:
             log.info("planner script for task %s rejected, asking for a fix: %s", task["id"], exc)
             retry = [*parts, (
@@ -1534,7 +1546,8 @@ class TaskService(Service):
         raw = fixed.get("script")
         if isinstance(raw, dict) and raw.get("code") is not None:
             try:
-                return self._default_condition(task, normalize_script(raw, previous, model_written=True)), fixed, None
+                script = normalize_script(raw, previous, model_written=True, request=request)
+                return self._default_condition(task, script), fixed, None
             except ScriptInvalid as exc:
                 log.info("planner script for task %s rejected again, saving an AI-run task instead: %s", task["id"], exc)
             codes.append(str(raw.get("code")))
@@ -1548,6 +1561,16 @@ class TaskService(Service):
         if not fixed.get("schedule") and data.get("schedule"):
             fixed = {**fixed, "schedule": data["schedule"]}
         return None, fixed, tools_named("\n".join(codes))
+
+    @staticmethod
+    def _script_request(task: dict) -> str:
+        """What the user asked for, for the planner's script checks (#375): the request, what they said in the task's
+        chat since and their answers to clarifying questions."""
+        said = [str(task.get("original_prompt") or task.get("description") or task.get("name") or "")]
+        said += [str(m.get("content") or "") for m in task.get("chat_history") or []
+                 if isinstance(m, dict) and m.get("role") == "user"]
+        said += [str(q.get("answer") or "") for q in task.get("clarifying_questions") or [] if isinstance(q, dict)]
+        return "\n".join(s for s in said if s.strip())
 
     @staticmethod
     def _default_condition(task: dict, script: dict) -> dict:

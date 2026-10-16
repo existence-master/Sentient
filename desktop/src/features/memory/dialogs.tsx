@@ -12,6 +12,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useRef, useState, type DragEvent } from 'react'
 import { toast } from 'sonner'
 import { Alert, Button, Dialog, Input, ProgressBar, Textarea } from '@/components/ui'
+import { scopeLabel } from '@/features/memory/bits'
 import { qk } from '@/hooks/queryKeys'
 import { api, errorMessage } from '@/lib/api'
 import type { MemoryImportResult, MemoryWriteResult } from '@/lib/types'
@@ -26,12 +27,23 @@ const ACTION_COPY: Record<MemoryWriteResult['action'], { title: string; body: st
   SKIP: { title: 'Already remembered', body: 'Sentient already knows this, so nothing was added.', icon: <IconCopy />, tone: 'warning' }
 }
 
-export function AddMemoryDialog({ open, onOpenChange, onShow }: { open: boolean; onOpenChange: (o: boolean) => void; onShow: (id: number) => void }) {
+/** `scope` (#155): where the memory is kept, the Memory screen's filter when one is picked; Personal otherwise. */
+export function AddMemoryDialog({
+  open,
+  onOpenChange,
+  onShow,
+  scope
+}: {
+  open: boolean
+  onOpenChange: (o: boolean) => void
+  onShow: (id: number) => void
+  scope?: string
+}) {
   const qc = useQueryClient()
   const [content, setContent] = useState('')
   const [result, setResult] = useState<MemoryWriteResult | null>(null)
   const create = useMutation({
-    mutationFn: (text: string) => api.memories.create(text, 'manual'),
+    mutationFn: (text: string) => api.memories.create(text, 'manual', scope || undefined),
     onSuccess: (r) => {
       setResult(r)
       if (r.action !== 'SKIP') setContent('')
@@ -53,7 +65,9 @@ export function AddMemoryDialog({ open, onOpenChange, onShow }: { open: boolean;
       open={open}
       onOpenChange={close}
       title="Add a memory"
-      description="Tell Sentient something about you. It checks for duplicates and updates what it already knows."
+      description={`Tell Sentient something about you. It checks for duplicates and updates what it already knows.${
+        scope && scope !== 'personal' ? ` It is kept for ${scope === 'always' ? 'every chat' : `${scopeLabel(scope)} chats`}.` : ''
+      }`}
       modalLock={!!content}
       footer={
         <>

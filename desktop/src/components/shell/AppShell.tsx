@@ -9,6 +9,7 @@ import { useActivityPing } from '@/hooks/useActivityPing'
 import { getBridge } from '@/lib/bridge'
 import { Button, Spinner } from '@/components/ui'
 import { useConnection } from '@/stores/connection'
+import { AlarmBanner } from './AlarmBanner'
 import { CommandPalette } from './CommandPalette'
 import { StoppedBanner } from './StopControls'
 import { Sidebar } from './Sidebar'
@@ -41,6 +42,7 @@ export function AppShell() {
         <Sidebar />
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-tl-xl border-l border-t border-border bg-surface">
           <EngineBanner />
+          <AlarmBanner />
           <StoppedBanner />
           <div className="min-h-0 flex-1">
             <Outlet />

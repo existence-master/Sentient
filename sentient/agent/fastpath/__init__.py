@@ -1,5 +1,5 @@
-"""Quick commands (#150): timers, reminders and, with Home Assistant connected, lights (#175), done at once without
-the model.
+"""Quick commands (#150, #359): timers, reminders, alarms, "what's next on my calendar" and, with Home Assistant
+connected, lights (#175), done at once without the model.
 
 ``Agent.run_turn`` asks ``plan`` first. When a message is *only* a plain timer or reminder command ("set a timer for
 10 minutes", "remind me at 6 pm to call Ravi", "cancel the pasta timer", "what timers do I have"), the plan holds the
@@ -7,10 +7,11 @@ tool calls to make (the same ``reminders`` tools the model uses) and the confirm
 with no model call: it takes milliseconds on every surface (chat, voice, Telegram, Discord, WhatsApp). Anything else,
 or anything that could mean two things, returns None and goes to the model unchanged.
 
-A quick command never sends, buys or deletes anything: it only starts, lists or cancels Sentient's own timers and
-reminders, or turns lights and switches on and off ("turn off the living room lights", "dim the bedroom lamp to 30%")
+A quick command never sends, buys or deletes anything: it only starts, lists or cancels Sentient's own timers,
+reminders and alarms, reads the connected calendar (``gcal_list_events``; with no calendar connected the model
+answers), or turns lights and switches on and off ("turn off the living room lights", "dim the bedroom lamp to 30%")
 when the words name exactly which ones (``IntegrationManager.home_devices``). Locks, alarms, garage doors and anything
-that sounds like one never go through a quick command. It runs only when its tool would run without asking
+that sounds like one never go through a home command. It runs only when its tool would run without asking
 (approvals mode, "Ask" and "Never" rules); a home command is the user's own words for exactly that change, so in
 approvals mode "ask" those words are the yes (``ApprovalBroker.quick_runs``, ``QuickPlan.asked``). Otherwise the model
 handles the message and the usual approval card appears.
@@ -27,16 +28,18 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from sentient.agent.fastpath import en
-from sentient.agent.fastpath.base import ANY, REMINDER, TIMER, Command, Language
+from sentient.agent.fastpath.base import ALARM, ANY, REMINDER, TIMER, Command, Language
 from sentient.llm.provider import ToolCall
 from sentient.store.db import new_id
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.app import SentientApp
 
-__all__ = ["ANY", "LANGUAGES", "REMINDER", "TIMER", "Command", "Language", "QuickPlan", "language", "parse", "plan"]
+__all__ = ["ALARM", "ANY", "CALENDAR_DAYS", "LANGUAGES", "REMINDER", "TIMER", "Command", "Language", "QuickPlan", "language", "parse", "plan"]
 
 LANGUAGES: dict[str, Language] = {"en": en}  # type: ignore[dict-item]
+CALENDAR_DAYS = 7  # "what's next on my calendar" looks this far ahead
+CALENDAR_PLUGIN, CALENDAR_TOOL = "gcalendar", "gcal_list_events"
 
 
 def language(code: str | None) -> Language:
@@ -112,9 +115,11 @@ async def plan(app: SentientApp, text: str, *, now: datetime | None = None) -> Q
     cmd, pack = found
     if cmd.action == "home":
         return await _home(app, cmd, pack, local)
+    out = QuickPlan(cmd, pack, local)
+    if cmd.action == "calendar_next":
+        return await _calendar_plan(app, out)
     if reminders is None:
         return None
-    out = QuickPlan(cmd, pack, local)
     if cmd.action == "timer":
         out.calls = [_call("set_timer", seconds=int(cmd.seconds or 0), label=cmd.label)]
         out.reply = lambda results: pack.timer_set(float(_reminder_of(results[0][0]).get("duration_s") or cmd.seconds or 0),
@@ -127,12 +132,22 @@ async def plan(app: SentientApp, text: str, *, now: datetime | None = None) -> Q
             args["at"] = cmd.at.isoformat()
         out.calls = [_call("set_reminder", **args)]
         out.reply = lambda results: pack.reminder_set(_reminder_of(results[0][0]), local)
+    elif cmd.action == "alarm":
+        alarm: dict[str, Any] = {"label": cmd.label}
+        if cmd.seconds is not None:
+            alarm["in_minutes"] = cmd.seconds / 60
+        elif cmd.at is not None:
+            alarm["at"] = cmd.at.isoformat()
+        out.calls = [_call("set_alarm", **alarm)]
+        out.reply = lambda results: pack.alarm_set(_reminder_of(results[0][0]), local)
     elif cmd.action == "list":
         out.calls = [_call("list_reminders", kind=cmd.target)]
         out.reply = lambda results: _listing(pack, results[0][0], cmd.target, local)
     elif cmd.action == "cancel":
         active = [r for r in await reminders.list() if cmd.target == ANY or r["kind"] == cmd.target]
         if not active:
+            if cmd.target == ALARM:
+                return None  # "turn off the alarm" with none set may mean a home alarm: the model asks
             out.said = pack.nothing(cmd.target)
             return out
         chosen = [r for r in active if _matches(r, cmd.which, pack)] if cmd.which else active
@@ -162,6 +177,27 @@ async def _home(app: SentientApp, cmd: Command, pack: Language, now: datetime) -
     out = QuickPlan(cmd, pack, now, calls=[call], asked=True)
     out.reply = lambda results: pack.home_done(cmd, len(found))
     return out
+
+
+async def _calendar_plan(app: SentientApp, out: QuickPlan) -> QuickPlan | None:
+    """Read what's next from the connected calendar; None (the model answers) when no calendar is connected."""
+    integrations = getattr(app, "integrations", None)
+    if integrations is None or app.registry.get(CALENDAR_TOOL) is None:
+        return None
+    try:
+        if not await integrations.is_connected(CALENDAR_PLUGIN):
+            return None
+    except Exception:
+        return None
+    pack, now = out.language, out.now
+    out.calls = [_call(CALENDAR_TOOL, max_results=10)]  # from now to CALENDAR_DAYS ahead, soonest first
+    out.reply = lambda results: pack.calendar_next(_events(results[0][0]), now, CALENDAR_DAYS)
+    return out
+
+
+def _events(res: Any) -> list[dict]:
+    items = res.get("events") if isinstance(res, dict) else None
+    return [e for e in items or [] if isinstance(e, dict)]
 
 
 def _listing(pack: Language, res: Any, target: str, now: datetime) -> str:

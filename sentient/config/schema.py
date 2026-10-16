@@ -277,8 +277,9 @@ class ChatConfig(BaseModel):
     auto_title: bool = Field(True, description="Name new chats automatically from the first exchange.")
     quick_commands: bool = Field(
         True,
-        description="Do simple timer and reminder requests (\"set a timer for 10 minutes\", \"remind me at 6 pm to "
-        "call Ravi\") at once, without asking the model. Anything else still goes to the model. English for now.",
+        description="Do simple timer, reminder and alarm requests (\"set a timer for 10 minutes\", \"remind me at 6 pm "
+        "to call Ravi\", \"wake me at 7\") and \"what's next on my calendar\" at once, without asking the model. "
+        "Anything else still goes to the model. English for now.",
     )
     tool_selection: Literal["auto", "all"] = Field(
         "auto",
@@ -1053,6 +1054,10 @@ class ChannelAppConfig(BaseModel):
     show_tool_activity: bool = Field(
         True, description="Briefly show what the assistant is doing (for example 'Searching the web...')."
     )
+    memory_scope: str = Field(
+        "personal",
+        description="Which memories chats in this app use and save new ones to: personal, work, or a project's name.",
+    )
 
 
 class ChannelsConfig(BaseModel):
@@ -1074,6 +1079,11 @@ class ChannelsConfig(BaseModel):
     deliver_suggestions: bool = Field(True, description="Send proactive suggestions, with Approve and Dismiss buttons.")
     deliver_subagents: bool = Field(True, description="Send summaries when background work finishes.")
     deliver_briefs: bool = Field(True, description="Send your Daily Brief to delivery chats.")
+    deliver_reminders: bool = Field(
+        False,
+        description="Reminders and alarms you set on this computer or by voice also go off in your delivery chats. "
+        "Ones you set in a chat always go off in that chat.",
+    )
 
 
 # ----------------------------------------------------------------------------- know you (owner: memory agent)

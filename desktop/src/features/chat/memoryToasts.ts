@@ -6,6 +6,7 @@
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
+import { scopeLabel } from '@/features/memory/bits'
 import { qk } from '@/hooks/queryKeys'
 import { api, errorMessage } from '@/lib/api'
 import { queryClient } from '@/lib/queryClient'
@@ -55,7 +56,9 @@ export function useMemorySaveToasts(sessionId: string | undefined) {
         })
         return
       }
+      const where = d.scope && d.scope !== 'personal' ? (d.scope === 'always' ? 'For every chat' : `In ${scopeLabel(d.scope)}`) : undefined
       toast(`${d.action === 'UPDATE' ? 'Updated' : 'Remembered'}: ${text}`, {
+        description: where, // the memory scope it was saved to (#155), when not Personal
         action: { label: 'Undo', onClick: () => void undo(d) },
         duration: 8000
       })

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from sentient.agent.loop import Budget, LoopResult
 from sentient.llm.provider import parse_json_loose
+from sentient.memory import scopes as memory_scopes
 from sentient.tasks.executor import run_budget, select_tools
 from sentient.tasks.jsonio import complete_json
 from sentient.tasks.prompts import (
@@ -134,6 +135,7 @@ async def run_worker(
             },
         ]
         ctx = app.agent.tool_context(None, "task")
+        ctx.memory_scope = memory_scopes.of_task(task)  # #155
         ctx.extra.update({"task_id": task_id, "run_id": run_id, "worker_id": worker_id})
         result = LoopResult()
         async for _event in app.agent.run_loop(
