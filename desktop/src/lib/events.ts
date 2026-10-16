@@ -183,6 +183,8 @@ export function installDomainEvents(qc: QueryClient): () => void {
       if (e.data?.id === 'webhook') void qc.invalidateQueries({ queryKey: qk.hooks })
     })
   )
+  // #390: a ringing alarm stopped or snoozed anywhere (a chat, voice, a messaging app) updates the banner
+  offs.push(live.onDomain('reminder.updated', (e) => useAlarm.getState().updated(e.data)))
   offs.push(live.onDomain('memory.updated', () => void qc.invalidateQueries({ queryKey: qk.memories.all })))
   offs.push(live.onDomain('skill.updated', () => void qc.invalidateQueries({ queryKey: qk.skills.all })))
   offs.push(live.onDomain('mcp.review', () => void qc.invalidateQueries({ queryKey: qk.integrations.mcp })))
