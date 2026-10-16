@@ -794,7 +794,7 @@ Each run embeds its most recent 200 progress updates; the full log is at the `/e
 `interval` schedules (every `interval_minutes`, minimum 5; `frequency: "hourly"` is normalized to 60) are additive. The
 task-creation prompt produces them for repeats measured in minutes or hours, and a request that says so ("every 10
 minutes", "every hour", "every 2 hours", "every 30 min", "hourly") is always saved as `interval`, whatever the model
-wrote (triggered schedules stay triggered). The planner also uses `interval` for script jobs.
+wrote (triggered schedules stay triggered, except a web check's, section 16). The planner also uses `interval` for script jobs.
 **Fuzzy windows:** a daily or weekly schedule with `window` runs at a random minute inside that part of the day, in its
 timezone, instead of at `time` (kept for the editor): `morning` 07:00-10:00, `afternoon` 12:00-16:00, `evening`
 17:00-20:00, `night` 20:00-23:00. `next_execution_at` is the next window that has not started yet (so a run inside
@@ -2729,6 +2729,11 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   for this, so the AI will do it at each run instead."). Its runs use the recurring-task memory ("Recurring tasks
   remember"). The same rules apply to script code changed by chat tools; code a person edits
   (`PATCH /api/tasks/{id}`) only has to compile. A script job the planner leaves on an immediate one-off schedule becomes `interval` 60.
+  A script job (or the AI-run task that replaced one) that reads the web (`web_fetch`, `web_search`, `news_search`,
+  `news_top_headlines`) never keeps a `triggered` schedule it has no use for (#389): unless the code reads
+  `trigger_event` or the request names the trigger's app ("email", "inbox", "calendar", "meeting", "door", "lights",
+  "webhook"...), it becomes recurring: the interval the request says, else the planner's daily or weekly schedule,
+  else `interval` 60.
   The planner is told to use `noteworthy` by default for a page, a feed or the news, and `changed` for one exact value
   or when the user wants to hear about any change at all (#298). A `changed` script it proposes that returns the whole
   result of `tools.web_fetch` (the page or its `content`) is stored as `noteworthy`, unless the request talks about a
