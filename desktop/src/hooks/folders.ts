@@ -20,5 +20,16 @@ function useFolderMutation<A>(fn: (arg: A) => Promise<unknown>) {
 export const useAddFolder = () => useFolderMutation((path: string) => api.folders.add(path))
 export const useRemoveFolder = () => useFolderMutation((id: string) => api.folders.remove(id))
 export const useRescanFolder = () => useFolderMutation((id: string) => api.folders.rescan(id))
+/** Where a folder's notes are used (#392). A new project name also shows up in the memory scope pickers. */
+export function useFolderScope() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, scope }: { id: string; scope: string }) => api.folders.setScope(id, scope),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: qk.folders })
+      void qc.invalidateQueries({ queryKey: qk.memories.scopes })
+    }
+  })
+}
 export const useFolderIgnore = () =>
   useFolderMutation(({ id, ignore }: { id: string; ignore: string[] }) => api.folders.update(id, ignore))

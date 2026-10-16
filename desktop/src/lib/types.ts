@@ -2936,6 +2936,9 @@ export interface WatchedFolder {
   kind: 'folder' | 'obsidian'
   /** This folder's own ignore patterns (Settings > Folders adds them to `folders.ignore`). */
   ignore: string[]
+  /** The chats its notes are used in (#392): `always` (every chat, the default), `personal`, `work` or a project.
+   * Missing on older engines. */
+  scope?: string
   status: FolderStatus
   /** While a look through it runs: new or changed files read so far. */
   progress: { done: number; total: number } | null

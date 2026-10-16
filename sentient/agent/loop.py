@@ -102,6 +102,7 @@ from sentient.tools.base import (
     Risk,
     Tool,
     ToolContext,
+    approval_reason,
     bind_call,
     describe_call,
     effective_risk,
@@ -639,16 +640,17 @@ class Agent:
             log.warning("recall failed: %s", exc)
             return []
 
-    async def _prompt_notes(self, user_text: str) -> list[dict]:
+    async def _prompt_notes(self, user_text: str, scope: str | None = None) -> list[dict]:
         """Short pieces of the user's notes that clearly match the message (#354), while a folder is added and
-        folder_search is offered. Never slows a turn down much or breaks it."""
+        folder_search is offered, from the folders the chat's scope reads (#392). Never slows a turn down much or
+        breaks it."""
         folders = getattr(self.app, "folders", None) if self.app is not None else None
         if folders is None or self.config.folders.prompt_notes <= 0 or not user_text.strip():
             return []
         if not any(t.name == "folder_search" for t in self.registry.tools()):
             return []
         try:
-            pieces = await asyncio.wait_for(folders.prompt_pieces(user_text), timeout=NOTES_TIMEOUT_S)
+            pieces = await asyncio.wait_for(folders.prompt_pieces(user_text, scope), timeout=NOTES_TIMEOUT_S)
             log.info("note pieces in the prompt: %s", ", ".join(str(p.get("path")) for p in pieces) or "none matched")
             return pieces
         except asyncio.CancelledError:
@@ -673,7 +675,8 @@ class Agent:
         personal = memory_scopes.is_personal(scope)
         if reads_memory:
             facts, (user_context, insights), notes = await asyncio.gather(
-                self._recall(user_text, scope), self._user_model_context(user_text, scope), self._prompt_notes(user_text)
+                self._recall(user_text, scope), self._user_model_context(user_text, scope),
+                self._prompt_notes(user_text, scope),
             )
         else:
             facts, user_context, insights, notes = [], "", [], []
@@ -1261,7 +1264,7 @@ class Agent:
         self.approvals.create(approval_id, offered)
         yield ApprovalRequest(
             approval_id=approval_id, call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments,
-            risk=p.risk.name, reason=f"{p.tool.plugin}: {p.tool.description[:160]}",
+            risk=p.risk.name, reason=approval_reason(wording, p.risk),
             risk_label=wording["risk_label"], target=wording["target"],
             untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
             grant_minutes=self.approvals.config.grant_minutes,

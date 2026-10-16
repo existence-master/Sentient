@@ -40,6 +40,7 @@ from sentient.llm.events import (
     ToolResultEvent,
     UndoWindow,
 )
+from sentient.memory import scopes as memory_scopes
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.channels.service import ChannelService
@@ -59,6 +60,7 @@ ACTIVITY = {
     "charts": "Making a chart",
     "files": "Working with files",
     "memory": "Checking my memory",
+    "folders": "Looking in your notes",
     "skills": "Looking through my skills",
     "time": "Checking the time",
     "tasks": "Working on your tasks",
@@ -487,7 +489,9 @@ class Channel:
             await self.cancel_turn(chat_id)
             rt.queued.clear()
             rt.trust_upto = None
-            session_id = await self.new_session(chat)
+            # a fresh chat keeps the memories this chat was set to with /scope (#392)
+            old = await self.app.store.get_session(chat["session_id"]) if chat.get("session_id") else None
+            session_id = await self.new_session(chat, memory_scope=(old or {}).get("memory_scope"))
             await store.update_chat(self.id, chat_id, session_id=session_id)
             await self.service.publish_channel(self.id)
             await self.reply(chat_id, "Started a fresh chat. What's next?")
@@ -510,6 +514,9 @@ class Channel:
                 await self._chat_model_command(chat, arg.strip()[4:].strip())
             else:
                 await self._model_command(chat_id, arg)
+            return
+        if cmd == "scope":
+            await self._scope_command(chat, arg)
             return
         if cmd == "trust":
             await self._trust_command(rt, chat, arg)
@@ -678,10 +685,10 @@ class Channel:
         chat["session_id"] = sid
         return sid
 
-    async def new_session(self, chat: dict) -> str:
+    async def new_session(self, chat: dict, memory_scope: str | None = None) -> str:
         """A new Sentient chat for a paired chat. A group's chat keeps the group's name as its title (Activity, the
-        chat list), never its first message (ADR 0029)."""
-        sid = await self.app.store.create_session(channel=self.id)
+        chat list), never its first message (ADR 0029). ``memory_scope``: the one /scope set before /new (#392)."""
+        sid = await self.app.store.create_session(channel=self.id, memory_scope=memory_scope or None)
         if chat.get("is_group") and str(chat.get("label") or "").strip():
             await self.app.store.rename_session(sid, str(chat["label"]).strip()[:120])
         return sid
@@ -733,6 +740,7 @@ class Channel:
             "/resume - start scheduled tasks and suggestions again after /stopall",
             "/model - switch between local and cloud models",
             "/model chat <model> - use a model in this chat only (/model chat default to go back)",
+            "/scope - which memories this chat uses: /scope work, /scope personal or /scope <project>",
             "/trust - see why sending asks first here, and trust this chat again after you've checked it",
             "/help - show this message",
         ]
@@ -1121,6 +1129,51 @@ class Channel:
             await self.reply(chat_id, f"This chat follows your default model again, {default}.")
         else:
             await self.reply(chat_id, f"This chat now uses {availability.label(model)}. Send /model chat default to go back.")
+
+    # ------------------------------------------------------------------ /scope
+    async def _scope_command(self, chat: dict, value: str) -> None:
+        """``/scope work``, ``/scope personal`` or ``/scope <project>`` picks the memories (and folder notes) this chat
+        uses and saves to (#392), like the scope picker in a chat's header; ``/scope default`` follows the app's
+        setting again; ``/scope`` says which it uses. Answered here, never by a model."""
+        chat_id = str(chat["chat_id"])
+        session_id = await self.ensure_session(chat)
+        session = await self.app.store.get_session(session_id) or {}
+        current = memory_scopes.of_session(self.app.config, session)
+        names = [s["name"] for s in await memory_scopes.list_scopes(self.app)]
+        projects = [n for n in names if n not in memory_scopes.BUILT_IN]
+        value = " ".join(value.split())
+        if not value:
+            lines = [f"This chat uses your {memory_scopes.label(current)} memories, plus the ones kept for every chat.",
+                     "Send /scope work, /scope personal or /scope followed by a project's name to change it."]
+            if projects:
+                lines.append("Your projects: " + ", ".join(projects) + ".")
+            await self.reply(chat_id, "\n".join(lines))
+            return
+        if value.lower() in {"default", "reset"}:
+            scope = None
+        else:
+            try:
+                memory_scopes.chat_scope(value)
+            except ValueError:
+                await self.reply(chat_id, "A chat can't use only the memories kept for every chat. "
+                                          "Send /scope personal, /scope work or /scope followed by a project's name.")
+                return
+            # an existing project keeps its spelling: "/scope kestrel launch" is "Kestrel launch"
+            scope = await memory_scopes.resolve(self.app, value)
+        await self.app.store.set_session_scope(session_id, scope)
+        now = memory_scopes.of_session(self.app.config, {**session, "memory_scope": scope})
+        self.app.bus.publish("session.updated", {"session_id": session_id, "memory_scope": now})
+        log.info("%s: a chat now uses %s memories (/scope)", self.id, now)
+        if now == current:
+            await self.reply(chat_id, f"This chat already uses your {memory_scopes.label(now)} memories.")
+            return
+        new = scope is not None and scope not in memory_scopes.BUILT_IN and scope not in projects
+        lines = [f"Done. This chat now uses your {memory_scopes.label(now)} memories, plus the ones kept for every chat.",
+                 f"It no longer brings up your {memory_scopes.label(current)} memories, and what it learns is kept for "
+                 f"{memory_scopes.label(now)}."]
+        if new:
+            lines.append(f"{now} is a new project, so it has no memories yet.")
+        await self.reply(chat_id, "\n".join(lines))
 
     async def _preset_outcome(self, name: str | None) -> str:
         """Apply a preset (None = undo the last switch) and describe the result in plain words."""
