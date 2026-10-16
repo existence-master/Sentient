@@ -101,3 +101,24 @@ async def test_without_the_setting_a_desktop_alarm_stays_on_the_desktop(tg):
     note = (await tg.app.notifications.list())[0]
     assert await tg.app.channels.deliver_notification(note) == 0
     assert len(tg.api.sent("sendMessage")) == before
+
+
+async def test_a_ringing_alarm_is_snoozed_and_stopped_from_telegram(tg, llm):
+    """#390: "snooze" and "stop" work the same in a paired chat, with no model call."""
+    await tg.pair(42)
+    item = await tg.app.reminders.add("alarm", datetime.now(UTC) - timedelta(seconds=1), channel="telegram", source="quick")
+    assert await tg.app.reminders.fire_due() == 1
+    before = len(tg.api.sent("sendMessage"))
+    await tg.say(42, "snooze for 5 minutes")
+    await until(lambda: any("Snoozed until" in m["text"] for m in tg.api.sent("sendMessage")[before:]))
+    assert llm.calls == []
+    new = (await tg.app.reminders.list(kind="alarm"))[0]
+    assert new["snoozed_from"] == item["id"] and new["channel"] == "telegram"
+
+    await tg.app.store.execute("UPDATE reminders SET fire_at = ? WHERE id = ?",
+                               ((datetime.now(UTC) - timedelta(seconds=1)).isoformat(), new["id"]))
+    assert await tg.app.reminders.fire_due() == 1
+    before = len(tg.api.sent("sendMessage"))
+    await tg.say(42, "stop")
+    await until(lambda: any("Alarm stopped" in m["text"] for m in tg.api.sent("sendMessage")[before:]))
+    assert llm.calls == [] and await tg.app.reminders.ringing() == []

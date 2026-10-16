@@ -122,6 +122,7 @@ import type {
   RoleName,
   Reminder,
   ReminderStatus,
+  SnoozedAlarm,
   RuleProposal,
   SecretStatus,
   SentientConfig,
@@ -882,6 +883,7 @@ export const api = {
     list: () => http.get<FoldersOverview>('/api/folders'),
     add: (path: string, ignore?: string[]) => http.post<WatchedFolder>('/api/folders', { path, ignore }),
     update: (id: string, ignore: string[]) => http.patch<WatchedFolder>(`/api/folders/${id}`, { ignore }),
+    setScope: (id: string, scope: string) => http.patch<WatchedFolder>(`/api/folders/${id}`, { scope }),
     remove: (id: string) => http.delete<{ removed: boolean }>(`/api/folders/${id}`),
     rescan: (id: string) => http.post<{ queued: boolean }>(`/api/folders/${id}/rescan`, {})
   },
@@ -902,7 +904,11 @@ export const api = {
   // §23 timers and reminders (#150) -------------------------------------------------------------
   reminders: {
     list: (status: ReminderStatus | 'all' = 'scheduled') => http.get<{ reminders: Reminder[] }>('/api/reminders', { query: { status } }),
-    cancel: (id: string) => http.post<Reminder>(`/api/reminders/${enc(id)}/cancel`)
+    cancel: (id: string) => http.post<Reminder>(`/api/reminders/${enc(id)}/cancel`),
+    /** Stop a ringing alarm (#390). */
+    stop: (id: string) => http.post<Reminder>(`/api/reminders/${enc(id)}/stop`),
+    /** Snooze a ringing alarm (#390); minutes default to the snooze setting. */
+    snooze: (id: string, minutes?: number) => http.post<SnoozedAlarm>(`/api/reminders/${enc(id)}/snooze`, minutes ? { minutes } : {})
   },
 
   // §16 webhooks --------------------------------------------------------------------------

@@ -29,7 +29,6 @@ function MemoryCard({ memory, selected, onSelect, now, compact }: { memory: Memo
           <TopicPill key={t} topic={t} size="xs" />
         ))}
         <ExpiryBadge memory={memory} now={now} className="h-4.5" />
-        <ScopeBadge scope={memory.scope} />
         {typeof memory.similarity === 'number' && (
           <span className="rounded-full bg-accent/12 px-1.5 text-2xs font-medium text-accent-text">{Math.round(memory.similarity * 100)}% match</span>
         )}
@@ -43,6 +42,7 @@ function MemoryCard({ memory, selected, onSelect, now, compact }: { memory: Memo
         {memory.updated_at && memory.created_at && memory.updated_at > memory.created_at && (
           <span className="shrink-0 text-fg-faint">· edited {relativeTime(memory.updated_at)}</span>
         )}
+        <ScopeBadge scope={memory.scope} className="ml-auto" />
       </div>
     </motion.button>
   )
