@@ -16,7 +16,7 @@
  *   memory.updated        -> invalidate ['memories']
  *   skill.updated         -> invalidate ['skills']
  *   mcp.review            -> invalidate ['integrations-mcp'] (an MCP server's tools wait for review, #146)
- *   session.updated       -> rename or set the chat's model in ['sessions']
+ *   session.updated       -> rename, set the chat's model or its outside-content mark in ['sessions']
  *   session.deleted       -> remove from ['sessions'] and refetch its transcript (an incognito chat that was closed)
  *   rule_proposal.updated -> refetch that chat's ['rule-proposals'] ("Make this a rule?" cards)
  *   approval_grants.updated -> refetch ['approval-grants'] (Settings > Approvals, #139)
@@ -50,6 +50,7 @@ import { upsertSubagent } from '@/features/chat/subagents'
 import { deviceKeys, removeDevice, upsertDevice } from '@/features/devices/hooks'
 import { useChat } from '@/stores/chat'
 import { useNotificationStore } from '@/stores/notifications'
+import { isAlarm, useAlarm } from '@/stores/alarm'
 import { useUI } from '@/stores/ui'
 import { getBridge } from './bridge'
 import { approvalTarget, settledApprovalRun } from './nativeApproval'
@@ -125,6 +126,7 @@ export function installDomainEvents(qc: QueryClient): () => void {
       )
       useNotificationStore.getState().push(n)
       if (n.kind === 'brief') refreshBrief()
+      if (isAlarm(n)) useAlarm.getState().ring(n) // #359: it rings until Stop
       const title = n.title || 'Sentient'
       toast(title, {
         description: plain(n.message),
@@ -197,6 +199,8 @@ export function installDomainEvents(qc: QueryClient): () => void {
         })
       )
       if (!found) void qc.invalidateQueries({ queryKey: qk.sessions })
+      // a group member wrote, or the user trusted the chat again: their rows are in the transcript now (ADR 0029)
+      if ('untrusted' in changed) void qc.invalidateQueries({ queryKey: qk.messages(session_id) })
     })
   )
   offs.push(

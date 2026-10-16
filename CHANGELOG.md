@@ -6,6 +6,25 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Sentient in group chats, safely.** You can now pair a Telegram group or a Discord server channel with the same
+  `/pair` code. Sentient answers only you there, when you mention it, reply to it or send a command. What other people
+  write is treated like an email from a stranger: Sentient can read it, but never takes orders from it, and after
+  someone else writes, anything it would send checks with you first, naming who wrote it ("That address came from
+  another group member (Ravi), not from you."). Only you can press its buttons, and task results stay out of a group
+  unless you turn them on.
+- **Trust a chat again after you've checked it.** A chat that read an email, a web page or a group member's message
+  shows a bar saying so above the message box. If you've looked at it and it's fine, click **I've checked it** (or
+  send `/trust`, then `/trust yes`, in Telegram, Discord or WhatsApp) and sending from that chat follows your usual approval settings
+  again. It covers only what you've seen: if someone writes while you decide, the chat keeps asking and says who
+  wrote. It's noted in the chat and in Activity, and anything new from outside makes it ask again.
+- **Keep work, personal and project memories apart.** Each memory is now kept for Personal, Work, a project you name,
+  or every chat (for things like your name or how you like answers). Pick a chat's memories from the button at the
+  top of the chat, or before you start one. A work chat then uses your work memories and the ones for every chat,
+  and leaves out your personal memories (like family or health) unless you ask about them; what Sentient learns
+  there is kept for work too. How you like things done (your answer style and other preferences it has picked up)
+  still applies in every chat. Tasks a chat creates keep its memories, and each messaging app can be set to one in
+  Settings. On the Memory page you can show one place at a time, move a memory to another place, and forget
+  everything kept for one place without touching the rest. Everything you had before is in Personal.
 - **Sentient checks what really happened, not what the model says happened.** After it writes a file, sends an
   email or a message, creates a calendar event or runs a Home Assistant action, Sentient checks the result itself: the app said it worked, and
   where it can, it reads it back (the file holds what was written, the email is in your Gmail Sent folder, the event
@@ -20,6 +39,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
   turning off the alarm and opening a garage door or gate ask even when approvals are off. Tasks can
   start when a device changes, like "when the front door unlocks". Quick commands now work for lights too: "turn off
   the living room lights" happens at once, with no model, when it is clear which lights you mean (#175).
+- **Alarms, "what's next on my calendar", and reminders on your phone.** "Wake me at 7" and "set an alarm for 6:30"
+  now work at once, without the model, like timers: Sentient says exactly when it will ring ("Alarm set for 7:00 AM
+  tomorrow."), and when it does, the window shows a banner with **Stop** and plays a chime until you stop it. "What
+  alarms do I have" and "turn off the gym alarm" work too. "What's next on my calendar" (or "what's my next meeting")
+  answers straight from your connected Google Calendar, also without the model. And a new switch on the Channels page,
+  **Reminders and alarms on your phone too**, sends the reminders and alarms you set on your computer to your paired
+  Telegram, Discord or WhatsApp chat as well.
 - **A safety check for skills and MCP servers from outside.** Skills brought over from Hermes, and skills you add
   with the new **Add from a link** button in Skills (a SKILL.md, or a GitHub folder that holds one), wait for your
   review with a plain safety report: where it came from, and whether it tries to send your data to a fixed address,
@@ -396,6 +422,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **A page watch always checks the page.** "Track this page and tell me when a new event is added" could be set to
+  start only when something arrived in your calendar or smart home, so it never looked at the page. A check that reads
+  a page, a search or the news now runs on a timer: every hour, or as often as you asked (#389).
 - **Changing a rule while an email waits to go out now counts.** If you set an app or tool to **Ask** while one of
   its emails or messages waits the few seconds before it is sent, Sentient asks you before it goes out instead of
   sending it under the old rule. The same goes for **Only if I asked**, unless your message asked for that email.

@@ -151,6 +151,26 @@ class Workspace:
         self.user.write_text(body, encoding="utf-8")
         return new
 
+    def remove_learned(self, facts: list[str], heading: str = "## Learned") -> int:
+        """Remove bullets that say exactly these facts from USER.md's Learned section (a memory moved out of
+        Personal, #155). The user's own text is never touched. Returns how many lines went."""
+        if not facts or not self.user.exists():
+            return 0
+        gone = {f.strip().lower() for f in facts if f.strip()}
+        lines = self.user.read_text(encoding="utf-8", errors="replace").splitlines()
+        out: list[str] = []
+        inside, removed = False, 0
+        for line in lines:
+            if line.startswith("#"):
+                inside = line.strip().lower() == heading.lower()
+            if inside and line.startswith("- ") and line[2:].strip().lower() in gone:
+                removed += 1
+                continue
+            out.append(line)
+        if removed:
+            self.user.write_text("\n".join(out) + "\n", encoding="utf-8")
+        return removed
+
     def append_note(self, text: str, day: date | None = None) -> Path:
         day = day or date.today()
         p = self.note(day)

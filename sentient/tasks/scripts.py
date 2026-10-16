@@ -372,6 +372,46 @@ def _check_whole_page(tree: ast.AST) -> None:
         )
 
 
+# Tools that read the web: a script using them polls a page, a search or the news (#389).
+WEB_TOOLS = ("web_fetch", "web_search", "news_top_headlines", "news_search")
+# Words that name a trigger's app in a request: "when I get an email", "when a meeting is added to my calendar".
+_SOURCE_WORDS: dict[str, re.Pattern] = {
+    "gmail": re.compile(r"\b(?:e-?mails?|mail|inbox|gmail)\b", re.IGNORECASE),
+    "email_imap": re.compile(r"\b(?:e-?mails?|mail|inbox)\b", re.IGNORECASE),
+    "gcalendar": re.compile(r"\b(?:calendars?|meetings?|appointments?)\b", re.IGNORECASE),
+    "home_assistant": re.compile(
+        r"\b(?:home\s+assistant|smart\s+home|doors?|lights?|locks?|sensors?|thermostats?|garage|alarms?|switch(?:es)?)\b",
+        re.IGNORECASE),
+    "webhook": re.compile(r"\b(?:webhooks?|hooks?)\b", re.IGNORECASE),
+}
+
+
+def _reads_trigger_event(code: str) -> bool:
+    """The code reads the ``trigger_event`` variable; a comment or a string that only mentions it does not count."""
+    try:
+        tree = ast.parse(code or "")
+    except SyntaxError:
+        return False
+    return any(isinstance(node, ast.Name) and node.id == "trigger_event" and isinstance(node.ctx, ast.Load)
+               for node in ast.walk(tree))
+
+
+def polls_the_web(tools: list[str]) -> bool:
+    """A script (or the AI-run task that replaced one) that reads pages, a search or the news."""
+    return any(t in WEB_TOOLS for t in tools)
+
+
+def trigger_is_real(schedule: dict, code: str, request: str) -> bool:
+    """Whether a ``triggered`` schedule can be what a web check runs on (#389): the script reads the event that
+    started it (``trigger_event``), or the user's request names the trigger's app ("when I get an email"). Small
+    models give a page watch like "tell me when a new event is added" a Google Calendar trigger, so it would only
+    run when a calendar event arrives and never look at the page."""
+    if _reads_trigger_event(code):
+        return True
+    words = _SOURCE_WORDS.get(str(schedule.get("source") or "").strip().lower())
+    return bool(words and words.search(request or ""))
+
+
 def check_rules(code: str, condition: str, request: str = "") -> None:
     """Reject what small models write into check scripts that cannot work (#305), with a plain reason the planner
     can act on: a package that is not installed, an endless loop, a wait, memory calls, an alert result on a

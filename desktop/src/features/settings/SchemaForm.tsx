@@ -29,8 +29,15 @@ export const LABELS: Record<string, FieldLabel> = {
   'chat.show_thinking': { label: 'Show thinking', description: "Show the model's reasoning in a collapsible block." },
   'chat.auto_title': { label: 'Name chats automatically' },
   'chat.quick_commands': {
-    label: 'Quick timers and reminders',
-    description: 'Simple requests like "set a timer for 10 minutes" or "remind me at 6 pm to call Ravi" happen at once, without the model. English for now.'
+    label: 'Quick timers, reminders and alarms',
+    description:
+      'Simple requests like "set a timer for 10 minutes", "remind me at 6 pm to call Ravi", "wake me at 7" or "what\'s next on my calendar" happen at once, without the model. English for now.'
+  },
+  // channels (#359)
+  'channels.deliver_reminders': {
+    label: 'Reminders and alarms on your phone too',
+    description:
+      'Reminders and alarms you set on this computer or by voice also go off in your paired chats that get notifications. Ones you set in a chat always go off in that chat.'
   },
   // memory
   'memory.facts_top_k': { label: 'Facts recalled per message', unit: 'facts' },

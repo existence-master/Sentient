@@ -8,6 +8,21 @@ export function useMemories(query: MemoryQuery = {}) {
   return useQuery({ queryKey: qk.memories.list(query), queryFn: () => api.memories.list(query) })
 }
 
+/** Memory scopes (#155). An older engine without the route has just Personal. */
+export function useMemoryScopes() {
+  return useQuery({
+    queryKey: qk.memories.scopes,
+    queryFn: async () => {
+      try {
+        return await api.memories.scopes()
+      } catch (err) {
+        if (isNotImplemented(err)) return [{ name: 'personal', label: 'Personal', count: 0, built_in: true }]
+        throw err
+      }
+    }
+  })
+}
+
 export function useMemoryTopics() {
   return useQuery({ queryKey: qk.memories.topics, queryFn: api.memories.topics })
 }

@@ -23,13 +23,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     untrusted       TEXT,                         -- app whose content this chat read ("Gmail"); sends then ask (ADR 0018)
     visited_hosts   TEXT,                         -- JSON list of web hosts this chat loaded (ADR 0018)
     incognito       INTEGER NOT NULL DEFAULT 0,   -- 1: nothing is learned from it and it is deleted when closed (#154)
-    model           TEXT                          -- the model picked for this chat; NULL follows the default (#312)
+    model           TEXT,                         -- the model picked for this chat; NULL follows the default (#312)
+    memory_scope    TEXT                          -- the memories this chat uses (#155); NULL: its app's, else personal
 );
 
 CREATE TABLE IF NOT EXISTS messages (
     id            TEXT PRIMARY KEY,
     session_id    TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    role          TEXT NOT NULL,                  -- system | user | assistant | tool
+    role          TEXT NOT NULL,                  -- system | user | assistant | tool | other | event (ADR 0029)
     content       TEXT,
     tool_calls    TEXT,                           -- JSON list (assistant messages)
     tool_call_id  TEXT,                           -- (tool messages)
@@ -49,6 +50,8 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 -- the activity timeline (#147) reads tool calls newest first across every chat
 CREATE INDEX IF NOT EXISTS idx_messages_tool_time ON messages(created_at) WHERE role = 'tool';
+-- ... and what the user did to a chat (role 'event', e.g. trusting it again, ADR 0029)
+CREATE INDEX IF NOT EXISTS idx_messages_event_time ON messages(created_at) WHERE role = 'event';
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content, content='messages', content_rowid='rowid'
@@ -69,8 +72,9 @@ CREATE TABLE IF NOT EXISTS summaries (
     end_at        TEXT NOT NULL,
     message_ids   TEXT NOT NULL,                  -- JSON list
     created_at    TEXT NOT NULL,
-    untrusted     TEXT                            -- app whose content the chat had read (ADR 0018/0021): kept out of
+    untrusted     TEXT,                           -- app whose content the chat had read (ADR 0018/0021): kept out of
                                                   -- other chats, proactivity and MEMORY.md; "" or NULL = clean
+    scope         TEXT                            -- the chat's memory scope when written (#155); NULL = personal
 );
 
 -- ---------------------------------------------------------------- semantic memory (atomic facts)
@@ -86,7 +90,8 @@ CREATE TABLE IF NOT EXISTS facts (
     embedding_model TEXT,
     previous_content TEXT,                                  -- kept on UPDATE so edits are auditable
     status          TEXT NOT NULL DEFAULT 'active',         -- active | pending (held for the user's review, ADR 0021)
-    review          TEXT                                    -- JSON {from, snippet, session_id}: where a held memory came from
+    review          TEXT,                                   -- JSON {from, snippet, session_id}: where a held memory came from
+    scope           TEXT NOT NULL DEFAULT 'personal'        -- personal | work | always | a project's name (#155)
 );
 CREATE INDEX IF NOT EXISTS idx_facts_expires ON facts(expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_facts_source ON facts(source);

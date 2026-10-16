@@ -27,9 +27,11 @@ _PKG_ROOT = Path(__file__).resolve().parents[1]
 # Feature packages own their tables. Each file must be idempotent. Order matters for foreign keys.
 # Bump when a change to a schema.sql or an ensure_column needs existing databases updated. Opening a database
 # with another version takes a snapshot first (issue #151); so does the first column added to an existing one.
-SCHEMA_VERSION = 10  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
+SCHEMA_VERSION = 11  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
 # 6: approval_grants (#139); 7: usage.cost_usd (#148); 8: evolution_reviews.activity_mark (#297)
 # 9: messages.approval and the activity timeline's indexes (#147); 10: try runs and file snapshots (#142)
+# 11: memory scopes: facts.scope, sessions.memory_scope, tasks.memory_scope, summaries.scope (#155); also
+#     messages.checks and task_runs.checks (#165), which arrived without a bump
 PACKAGE_SCHEMAS = [
     "tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox",
     "folders", "reminders", "snapshots",
@@ -154,6 +156,7 @@ class Store:
         await self.ensure_column("sessions", "visited_hosts", "TEXT")
         await self.ensure_column("sessions", "incognito", "INTEGER NOT NULL DEFAULT 0")
         await self.ensure_column("sessions", "model", "TEXT")
+        await self.ensure_column("sessions", "memory_scope", "TEXT")  # #155
         await self.ensure_column("messages", "attachments", "TEXT")
         await self.ensure_column("messages", "interjection", "INTEGER NOT NULL DEFAULT 0")
         await self.ensure_column("messages", "memory_sources", "TEXT")
@@ -162,9 +165,13 @@ class Store:
         await self.ensure_column("messages", "checks", "TEXT")
         await self.ensure_column("facts", "status", "TEXT NOT NULL DEFAULT 'active'")
         await self.ensure_column("facts", "review", "TEXT")
+        # memory scopes (#155): every memory saved before them is personal
+        await self.ensure_column("facts", "scope", "TEXT NOT NULL DEFAULT 'personal'")
         await self.ensure_column("summaries", "untrusted", "TEXT")
+        await self.ensure_column("summaries", "scope", "TEXT")  # the chat's memory scope when written (#155)
         await self.ensure_column("usage", "cost_usd", "REAL")
         # the activity timeline's spending lines (#147); after ensure_column: older databases get cost_usd above
+        await self.db.execute("CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope, status)")
         await self.db.execute("CREATE INDEX IF NOT EXISTS idx_usage_paid ON usage(created_at) WHERE cost_usd > 0")
         # summaries written before the mark existed take it from their chat (ADR 0021)
         await self.db.execute(
@@ -223,15 +230,27 @@ class Store:
 
     # ------------------------------------------------------------------ sessions & messages
     async def create_session(
-        self, channel: str = "web", title: str | None = None, *, incognito: bool = False, model: str | None = None
+        self,
+        channel: str = "web",
+        title: str | None = None,
+        *,
+        incognito: bool = False,
+        model: str | None = None,
+        memory_scope: str | None = None,
     ) -> str:
         sid = new_id()
         ts = now_iso()
         await self.execute(
-            "INSERT INTO sessions(id, title, channel, created_at, updated_at, incognito, model) VALUES(?,?,?,?,?,?,?)",
-            (sid, title, channel, ts, ts, int(bool(incognito)), model or None),
+            "INSERT INTO sessions(id, title, channel, created_at, updated_at, incognito, model, memory_scope)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (sid, title, channel, ts, ts, int(bool(incognito)), model or None, memory_scope or None),
         )
         return sid
+
+    async def set_session_scope(self, session_id: str, scope: str | None) -> bool:
+        """The memories one chat uses (#155); None makes it follow its app's scope, else personal. False: no such chat."""
+        cur = await self.execute("UPDATE sessions SET memory_scope = ? WHERE id = ?", (scope or None, session_id))
+        return cur.rowcount > 0
 
     async def set_session_model(self, session_id: str, model: str | None) -> bool:
         """Pick the model for one chat (#312); None (or "") makes it follow the default again. False: no such chat."""

@@ -27,11 +27,12 @@ DELIVERY_REASONS = {
     "default": "That chat gets Sentient's notifications",
     "chat": "A helper you started in that chat finished",
     "reminder": "You set it in that chat",
+    "reminder_copy": "Your reminders and alarms go to this chat too",
 }
 DELIVERY_WHAT = {
     "task": "A task update", "question": "A question from a task", "approval": "An approval request from a task",
     "plan": "A plan waiting for your OK", "brief": "Your brief", "suggestion": "A suggestion",
-    "subagent": "Background work that finished", "reminder": "A timer or reminder you set",
+    "subagent": "Background work that finished", "reminder": "A timer, reminder or alarm you set",
 }
 WINDOW_PHRASES = {"morning": "in the morning", "afternoon": "in the afternoon", "evening": "in the evening",
                   "night": "at night"}

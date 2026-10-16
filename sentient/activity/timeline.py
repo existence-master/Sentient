@@ -217,7 +217,7 @@ class Timeline:
         limit = max(1, min(int(limit or 50), MAX_LIMIT))
         cur = decode_cursor(before)
         sources: list[Source] = [
-            self._chat_tools, self._channel_replies, self._channel_deliveries, self._task_runs, self._script_checks, self._notifications,
+            self._chat_tools, self._chat_events, self._channel_replies, self._channel_deliveries, self._task_runs, self._script_checks, self._notifications,
             self._reminders_past, self._facts, self._dreams, self._skills, self._backups_past, self._always_allowed, self._cost,
             self._file_snapshots,
         ]
@@ -470,6 +470,44 @@ class Timeline:
         return Item(id=row["_key"], kind="tasks" if row["task_id"] else "chat", at=row["_at"], title=title, why=why,
                     detail=words.short(detail, 240) or None, status=status, app=app, app_label=label, ref=ref,
                     undo=undo)
+
+    # -- chats the user trusted again after checking what they read (ADR 0029)
+    async def _chat_events(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
+        if not query.wants("approvals"):
+            return [], None
+        where = ["m.role = 'event'", "m.name = 'trusted'", "s.incognito = 0"]
+        params: list = []
+        if query.app:
+            if query.app not in CHANNELS:
+                return [], None
+            where.append("s.channel = ?")
+            params.append(query.app)
+        if query.q:
+            where.append("(s.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\')")
+            params += [query.like()] * 2
+
+        def build(row: Any) -> Item:
+            data = _loads(row["content"])
+            data = data if isinstance(data, dict) else {}
+            was = str(data.get("was") or "").strip()
+            via = str(data.get("via") or "desktop")
+            chat = (row["title"] or "").strip()
+            title = f'You trusted the chat "{words.short(chat, 60)}" again' if chat else "You trusted a chat again"
+            read = f"It had read content from {words.short(was, 80)}. " if was else ""
+            how = "in Sentient" if via == "desktop" else f"with /trust on {words.app_label(via)}"
+            also = frozenset({row["channel"]}) if row["channel"] in CHANNELS else frozenset()
+            return Item(id=row["_key"], kind="approvals", at=row["_at"], title=title,
+                        why=f"{read}You said you checked it ({how}), so sending from it stops asking just because of "
+                            "what it read. New outside content asks again.",
+                        status="done", ref={"type": "chat", "id": row["session_id"], "message_id": row["id"]},
+                        _apps=also)
+
+        return await self._sql(
+            select="SELECT m.created_at AS _at, ('trust:' || m.id) AS _key, m.id, m.session_id, m.content, s.title,"
+                   " s.channel FROM messages m JOIN sessions s ON s.id = m.session_id",
+            where=where, params=params, ts="m.created_at", key="('trust:' || m.id)", build=build,
+            cur=cur, n=n, query=query, filtered=False,
+        )
 
     # -- messaging apps: Sentient's replies in Telegram, Discord and WhatsApp chats
     async def _channel_replies(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
@@ -824,6 +862,8 @@ class Timeline:
             fired = row["status"] == "fired"
             if row["kind"] == "timer":
                 title = f"Your {what} went off" if fired else f"Cancelled your {what}"
+            elif row["kind"] == "alarm":
+                title = f"Your {what} rang" if fired else f"Cancelled your {what}"
             else:
                 message = words.short(row["message"], 80)
                 title = (f"Reminded you: {message}" if message else "Reminded you") if fired else \
@@ -1243,6 +1283,8 @@ class Timeline:
                 continue
             if r["kind"] == "timer":
                 title = f"Your {words.reminder_name(r)} ends"
+            elif r["kind"] == "alarm":
+                title = f"Your {words.reminder_name(r)} rings"
             else:
                 message = words.short(r["message"], 80)
                 title = f"Will remind you: {message}" if message else "Will remind you"

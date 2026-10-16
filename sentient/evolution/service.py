@@ -31,6 +31,7 @@ from typing import Any
 from sentient.evolution import prompts
 from sentient.evolution.log import log_event
 from sentient.memory import review as memory_review
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import CLEAN as CLEAN_SUMMARY
 from sentient.memory.topics import TOPIC_NAMES
 from sentient.memory.vectors import cosine
@@ -44,6 +45,8 @@ SECTIONS = ["When to use", "Procedure", "Pitfalls", "Verification"]
 TRANSCRIPT_BUDGET = 14_000
 REVIEW_LOOKBACK_DAYS = 3
 STABLE_TOPICS = set(TOPIC_NAMES) - {"Miscellaneous"}
+# the memory scopes the profile files (MEMORY.md, USER.md) are built from (#155); work and project chats leave them out
+PROFILE_SCOPES = "COALESCE(scope, 'personal') IN ('personal', 'always')"
 DONE_STATUSES = {"completed", "completed_with_errors"}
 FAILED_RUN_STATUSES = {"error", "failed", "completed_with_errors"}
 REPAIR_TRANSCRIPT_BUDGET = 6_000
@@ -858,19 +861,21 @@ class EvolutionService(Service):
         facts_mark = await store.get_meta(PROFILE_FACTS_MARK) or since
         summaries_mark = await store.get_meta(PROFILE_SUMMARIES_MARK) or since
         after, params = after_watermark(facts_mark, "updated_at", "id")
+        # MEMORY.md and USER.md are personal: work and project memories never go in them (#155)
         new_facts = await store.fetchall(
             "SELECT id, content, topics, source, updated_at FROM facts WHERE status = 'active'"
             f" AND memory_type = 'long-term' AND {after} AND (expires_at IS NULL OR expires_at > ?)"
-            " ORDER BY updated_at, id",
+            f" AND {PROFILE_SCOPES} ORDER BY updated_at, id",
             (*params, nowiso),
         )
         # chats that read outside content never feed MEMORY.md (ADR 0021): their facts wait for review and their
         # summaries are left out
         after, params = after_watermark(summaries_mark, "created_at", "id")
+        personal, personal_params = memory_scopes.personal_summary_sql(cfg)  # no work or project chat's (#155)
         new_summaries = await store.fetchall(
-            f"SELECT id, content, created_at FROM summaries WHERE {after} AND {CLEAN_SUMMARY}"
+            f"SELECT id, content, created_at FROM summaries WHERE {after} AND {CLEAN_SUMMARY} AND {personal}"
             " ORDER BY created_at, id LIMIT 8",  # in watermark order, so the limit never jumps over a summary
-            params,
+            (*params, *personal_params),
         )
         await store.set_meta("evolution.profile_last_run", nowiso)
         # saved after every read, also an empty one: the next read starts where this one did, never at this run's time
@@ -890,11 +895,13 @@ class EvolutionService(Service):
         budget = cfg.memory.workspace_budget_chars
         all_facts = await store.fetchall(
             "SELECT content FROM facts WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?)"
-            " ORDER BY updated_at DESC, id DESC LIMIT 80",
+            f" AND {PROFILE_SCOPES} ORDER BY updated_at DESC, id DESC LIMIT 80",
             (nowiso,),
         )
         summaries = await store.fetchall(
-            f"SELECT content FROM summaries WHERE {CLEAN_SUMMARY} ORDER BY end_at DESC, rowid DESC LIMIT 8"
+            f"SELECT content FROM summaries WHERE {CLEAN_SUMMARY} AND {personal}"
+            " ORDER BY end_at DESC, rowid DESC LIMIT 8",
+            personal_params,
         )
         current = app.workspace.read_full()["memory"]
         memory_chars = 0
