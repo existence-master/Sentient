@@ -70,7 +70,7 @@ class FakeHA:
     def __init__(self, router: respx.Router, url: str = "http://homeassistant.local:8123"):
         self.url = url
         self.calls: list[tuple[str, dict]] = []
-        self.states = [dict(s) for s in STATES]
+        self.states = json.loads(json.dumps(STATES))  # attributes too, so a test never changes STATES
         self.ignore: set[str] = set()  # devices that take the call and do nothing (#386)
         self.lag: dict[str, int] = {}  # devices that report the change only after this many more reads
         self.pending: dict[str, str] = {}
@@ -108,6 +108,8 @@ class FakeHA:
                         self.pending[s["entity_id"]] = after
                         continue
                     s["state"] = after
+                    if service == "set_temperature":
+                        s["attributes"]["temperature"] = body.get("temperature")
                     changed.append(s)
             return httpx.Response(200, json=changed)
 
@@ -733,3 +735,16 @@ async def test_a_quick_command_never_says_turned_on_when_the_lamp_stayed_off(con
         assert _reply(again) == "Turned on the bedroom lamp." and again[-1].checks[0]["how"] == "read_back"
     finally:
         await s.stop()
+
+
+async def test_a_thermostat_is_read_back_and_a_kind_the_call_skipped_is_not(app, ctx):
+    app.config.integrations.home_assistant_check_s = 0.1
+    with respx.mock(assert_all_called=False) as router:
+        fake = FakeHA(router)
+        fake.states.append(_state("water_heater.tank", "eco", "Water tank", temperature=40))
+        await _connected(app)
+        args = {"entity_id": "climate.hallway_thermostat, water_heater.tank", "temperature": 22}
+        check = await _checked(app, ctx, "home_assistant_set_temperature", args)
+        assert fake.calls[-1][1]["entity_id"] == ["climate.hallway_thermostat"]  # one kind per call
+        assert check["ok"] is True and check["how"] == "read_back"
+        assert "climate.hallway_thermostat" in fake.reads and "water_heater.tank" not in fake.reads

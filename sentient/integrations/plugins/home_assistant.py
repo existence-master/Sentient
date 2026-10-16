@@ -507,8 +507,10 @@ def _reads_back(action: str):
     (the call's own result stands) when nothing clear is expected or the read-back is turned off."""
 
     async def verify(arguments: dict, result: Any, ctx: ToolContext) -> dict | None:
-        wants = {eid: w for eid in split_ids(arguments.get("entity_id"))
-                 if (w := _expected(action, arguments, eid)) is not None}
+        ids = split_ids(arguments.get("entity_id"))
+        if action == "set_temperature" and ids:  # only the first id's kind is set (ha_set_temperature)
+            ids = [e for e in ids if e.split(".", 1)[0] == ids[0].split(".", 1)[0]]
+        wants = {eid: w for eid in ids if (w := _expected(action, arguments, eid)) is not None}
         budget = _check_seconds(ctx)
         if not wants or budget <= 0:
             return None
