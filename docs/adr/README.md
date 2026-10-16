@@ -33,6 +33,7 @@ proposing a change to one of them.
 | [0026](0026-undo-windows-and-reversible-defaults.md) | Hold sends in an undo window and prefer the trash | Accepted | 2026-10-14 |
 | [0027](0027-vet-skills-and-mcp-tools-from-outside.md) | Check skills and MCP tools from outside before the model sees them | Accepted | 2026-10-15 |
 | [0028](0028-quick-home-commands-are-their-own-yes.md) | Let a quick light command count as its own yes, and make opening the home always ask | Accepted | 2026-10-15 |
+| [0029](0029-group-chats-and-trusting-a-chat-again.md) | Treat other people in a group chat as outside content, and let the user trust a chat again | Accepted | 2026-10-15 |
 
 ## Adding a record
 

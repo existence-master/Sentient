@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-11
+- **Amended by:** [ADR 0029](0029-group-chats-and-trusting-a-chat-again.md) (messages from other people in a group chat are marked too)
 
 ## Context
 
@@ -39,7 +40,8 @@ browser, email and other apps' look-ups, MCP servers, code runs, subagents, devi
   review card and raw-history search see the real text. Task checkpoints keep the marked text; text the engine
   already marked is never wrapped twice, and it is recognized by its code, so a result that fakes the markers is
   wrapped like any other.
-- The user's own messages, including chats from paired messaging apps, are never marked.
+- The user's own messages, including chats from paired messaging apps, are never marked. Messages other people
+  wrote in a paired group chat are, always, as user turns from "another group member (<name>)" ([ADR 0029](0029-group-chats-and-trusting-a-chat-again.md)).
 - `chat.mark_outside_content` (default on) turns it off, so it can be measured on local models.
 
 This adds a soft layer in front of ADR 0018. The code gates stay the defence: nothing here lowers a call's risk or
