@@ -6,9 +6,10 @@
  *
  * The rule (#344, refined by #347): the heading comes from the tool's NAME and its DECLARED RISK first
  * (e.g. `send_email`, `gmail_send` means "send an email"; Home Assistant's locks read as "Home security").
- * Two exceptions: a browser tool's describe_fn always runs and reads the actual element, so its risk_label
+ * Two exceptions: a click/type/press tool's describe_fn always runs and reads the actual element, so its risk_label
  * names the action better than the rules (a "Send feedback" button reads as Sends, not Purchase); and when
  * the rules return a generic label, the engine's risk_label breaks the tie if a describe_fn actually ran.
+ * When the engine's label has no known verb, the heading falls back to what the rules would have said.
  * Word guessing is a last resort and only ever looks at the tool name and the reason (the tool's description,
  * e.g. "mcp_mailer: Send an email to one address"): never at the arguments' content, so an email body
  * mentioning "post", "publish" or "tweet" cannot read as posting publicly.
@@ -180,7 +181,7 @@ const ENGINE_FALLBACK: Record<'read' | 'write' | 'send' | 'exec', string> = {
 
 /**
  * Plain verbs for the engine's describe_fn action labels (sentient/browser/safety.py,
- * terminal, nodes): "Sentient wants to ..." + verb.
+ * terminal, nodes, home assistant): "Sentient wants to ..." + verb.
  */
 const ENGINE_VERBS: Record<string, string> = {
   Purchase: 'make a purchase',
@@ -189,6 +190,7 @@ const ENGINE_VERBS: Record<string, string> = {
   'Sends an email': 'send an email',
   Sends: 'send something on your behalf',
   Submits: 'submit something for you',
+  'Signs up': 'sign you up for something',
   'Runs a command': 'run a command on this computer',
   'Runs code': 'run code on your computer',
   'Changes something': 'make a change',
@@ -199,6 +201,13 @@ const ENGINE_VERBS: Record<string, string> = {
   'Takes a photo': 'take a photo',
   'Looks at the screen': 'look at the screen'
 }
+
+/**
+ * The browser tools whose describe_fn reads the actual element (sentient/browser/tools.py):
+ * only these get a risk_kind, so only their risk_label is trusted as-is. The other
+ * browser_* tools (e.g. browser_select) keep the tool-name rules.
+ */
+const BROWSER_DESCRIBE_TOOLS: ReadonlySet<string> = new Set(['browser_click', 'browser_type', 'browser_press'])
 
 const ENGINE_TONE: Record<'read' | 'write' | 'send' | 'exec', RiskTone> = {
   read: 'neutral',
@@ -225,11 +234,16 @@ export interface EngineWording {
  */
 export function engineWording(
   riskLabel: string | null | undefined,
-  risk: 'read' | 'write' | 'send' | 'exec'
+  risk: 'read' | 'write' | 'send' | 'exec',
+  /**
+   * What the tool-name rules said: used for the heading when the engine's label
+   * has no known verb, so the heading stays a real sentence (#347 review).
+   */
+  fallbackVerb = 'do this'
 ): EngineWording | null {
   const label = (riskLabel ?? '').trim()
   if (!label || label === ENGINE_FALLBACK[risk]) return null
-  return { label, verb: ENGINE_VERBS[label] ?? 'do this', tone: ENGINE_TONE[risk] }
+  return { label, verb: ENGINE_VERBS[label] ?? fallbackVerb, tone: ENGINE_TONE[risk] }
 }
 
 /**
@@ -251,8 +265,9 @@ export interface CardWording {
  * The full heading precedence for an approval card, icon aside (#347):
  *
  * 1. A trash-kind preview (#142) reads as a move to the trash, not a loss.
- * 2. A browser tool's describe_fn always runs and reads the actual element, so its
- *    risk_label is trusted as-is: "Send feedback" reads as Sends, not Purchase.
+ * 2. A click/type/press tool's describe_fn always runs and reads the actual element, so
+ *    its risk_label is trusted as-is: "Send feedback" reads as Sends, not Purchase.
+ *    Other browser_* tools have no describe_fn and keep the tool-name rules.
  * 3. The tool-name rules (#346, #372) come first otherwise: terminal_run, Home security
  *    and the rest already name the action with their caution and icon.
  * 4. When the rules return a generic label, the engine's risk_label breaks the tie if
@@ -268,11 +283,13 @@ export function resolveWording(approval: {
 }): CardWording {
   if (approval.preview?.kind === 'trash' && approval.risk !== 'exec')
     return { label: 'Moves to the trash', verb: 'move something to the trash', tone: 'warning' }
-  if (approval.name.startsWith('browser_')) {
+  if (BROWSER_DESCRIBE_TOOLS.has(approval.name)) {
     const label = (approval.riskLabel ?? '').trim()
-    if (label) return { label, verb: ENGINE_VERBS[label] ?? 'do this', tone: ENGINE_TONE[approval.risk] }
+    // The verb falls back to what the rules would have said, so an engine label
+    // with no known verb (e.g. a future "Signs up") still reads as a sentence.
+    if (label) return { label, verb: ENGINE_VERBS[label] ?? approvalRisk(approval).verb, tone: ENGINE_TONE[approval.risk] }
   }
   const wording = approvalRisk(approval)
   if (!GENERIC_RISK_LABELS.has(wording.label)) return wording
-  return engineWording(approval.riskLabel, approval.risk) ?? wording
+  return engineWording(approval.riskLabel, approval.risk, wording.verb) ?? wording
 }

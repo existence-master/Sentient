@@ -259,6 +259,36 @@ test('a generic rule result lets a specific engine label break the tie', () => {
   assert.equal(w.verb, 'take a photo')
 })
 
+// #347 review round 2: an engine label with no known verb keeps the rules' verb for
+// the heading, so it stays a real sentence. The badge still shows the engine's label.
+test('an unknown engine label falls back to the rules verb', () => {
+  const w = resolveWording({ risk: 'write', name: 'home_assistant_set_temperature', riskLabel: 'Sets a temperature' })
+  assert.equal(w.label, 'Sets a temperature')
+  assert.equal(w.verb, 'make a change')
+})
+
+test('a browser_click labelled Signs up reads as signing up', () => {
+  const w = resolveWording({
+    risk: 'send',
+    name: 'browser_click',
+    reason: 'browser: Buttons that buy, pay for things or submit forms',
+    riskLabel: 'Signs up'
+  })
+  assert.equal(w.label, 'Signs up')
+  assert.equal(w.verb, 'sign you up for something')
+})
+
+test('a browser_select without a describe_fn keeps the tool-name rules', () => {
+  const w = resolveWording({
+    risk: 'write',
+    name: 'browser_select',
+    reason: 'browser: Dropdowns and selects',
+    riskLabel: 'Changes something'
+  })
+  assert.equal(w.label, 'Changes things')
+  assert.equal(w.verb, 'make a change')
+})
+
 test('a named rule result is not overridden by a fallback engine label', () => {
   const w = resolveWording({ risk: 'send', name: 'gmail_send', riskLabel: 'Sends' })
   assert.equal(w.label, 'Sends an email')
