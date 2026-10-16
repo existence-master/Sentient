@@ -502,7 +502,7 @@ def normalize_script(
 # the user asks to hear about a change itself ("when it changes", "anything", "everything"): no AI check decides that.
 # Not a bare "every": "every 10 minutes" is a schedule. "important changes" (group 1) asks for the AI check.
 _ANY_CHANGE = re.compile(
-    r"\b(?:(important|big|major|significant|meaningful)\s+)?chang(?:e|es|ed|ing)\b|\bany\s?thing\b|\bevery\s?thing\b",
+    r"\b(?:(important|big|major|significant|meaningful)\s+(?:\w+\s+)?)?chang(?:e|es|ed|ing)\b|\bany\s?thing\b|\bevery\s?thing\b",
     re.IGNORECASE,
 )
 

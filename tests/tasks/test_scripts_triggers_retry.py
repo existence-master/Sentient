@@ -326,7 +326,7 @@ SEARCH_CODE = "from sentient_tools import tools, result\nresult(tools.internet_s
          "noteworthy"),
         # "important changes" asks for the AI check, not for every change
         *[(f"Tell me about {q} changes on https://example.org/events", PAGE_CODE, "changed", "noteworthy")
-          for q in ("important", "big", "major", "significant", "meaningful")],
+          for q in ("important", "big", "major", "significant", "meaningful", "important page", "significant price")],
         # the user wants every change: "changed" is kept, even for a whole page
         ("Tell me whenever anything at all on this page changes: https://example.org/events", PAGE_CODE, "changed",
          "changed"),
@@ -357,6 +357,25 @@ async def test_planner_watch_defaults_whole_pages_to_important_changes(make_app,
     prompt = json_calls(llm, "planner")[1]["messages"][0]["content"]
     assert "This is the default for watching a page, a feed or the news" in prompt
     assert 'If the user wants to hear about any change at all, use "changed".' in prompt
+
+
+@pytest.mark.parametrize(("role", "stored"), [("user", "changed"), ("assistant", "noteworthy")])
+async def test_planner_watch_default_uses_user_chat(make_app, role, stored):
+    watch = {**PLAN_SCRIPT, "script": {"code": PAGE_CODE, "condition": "changed", "then": "notify"}}
+    app = await make_app(FakeProvider(json_replies=[watch]))
+    task_id = await _script_task(
+        app, condition="noteworthy", code=PAGE_CODE,
+        original_prompt="Watch this page for new events: https://example.org/events",
+        chat_history=[{"role": "assistant", "content": "Tell me about any change at all."}],
+    )
+    if role == "user":
+        await app.tasks.chat(task_id, "Actually tell me about any change at all on that page")
+    else:
+        await app.tasks.chat(task_id, "Check every ten minutes instead")
+    await app.tasks.drain()
+    task = await app.tasks.get(task_id)
+    assert task["status"] == "approval_pending"
+    assert task["script"]["condition"] == stored
 
 
 FETCH = "from sentient_tools import tools, result\npage = tools.web_fetch(url='https://example.org')\n"
