@@ -6,6 +6,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Home Assistant devices are checked after Sentient changes them.** A moment after it turns on a light, locks a
+  door, opens the blinds, arms the alarm or sets the thermostat, Sentient asks Home Assistant for the device's state
+  again, for a few seconds, and only calls it done when the device really changed. If it didn't, you see it plainly
+  ("Hallway light still reports off."), in chat, in quick commands and in task runs, and never a success. You can
+  change how long it waits in Settings (#386).
 - **Keep work, personal and project memories apart.** Each memory is now kept for Personal, Work, a project you name,
   or every chat (for things like your name or how you like answers). Pick a chat's memories from the button at the
   top of the chat, or before you start one. A work chat then uses your work memories and the ones for every chat,

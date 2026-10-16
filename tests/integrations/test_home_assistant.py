@@ -15,7 +15,7 @@ import respx
 from fastapi.testclient import TestClient
 from websockets.asyncio.server import serve
 
-from sentient.agent import fastpath
+from sentient.agent import fastpath, outcomes
 from sentient.agent.fastpath import en
 from sentient.app import SentientApp
 from sentient.gateway.app import create_app
@@ -71,6 +71,10 @@ class FakeHA:
         self.url = url
         self.calls: list[tuple[str, dict]] = []
         self.states = [dict(s) for s in STATES]
+        self.ignore: set[str] = set()  # devices that take the call and do nothing (#386)
+        self.lag: dict[str, int] = {}  # devices that report the change only after this many more reads
+        self.pending: dict[str, str] = {}
+        self.reads: list[str] = []
 
         def authed(request: httpx.Request) -> bool:
             return request.headers.get("authorization") == f"Bearer {TOKEN}"
@@ -84,7 +88,12 @@ class FakeHA:
             return httpx.Response(200, json=self.states) if authed(request) else httpx.Response(401)
 
         def one(request, entity_id):
+            self.reads.append(entity_id)
             hit = next((s for s in self.states if s["entity_id"] == entity_id), None)
+            if hit and entity_id in self.pending:
+                self.lag[entity_id] = self.lag.get(entity_id, 0) - 1
+                if self.lag[entity_id] < 0:
+                    hit["state"] = self.pending.pop(entity_id)
             return httpx.Response(200, json=hit) if hit else httpx.Response(404, json={"message": "Entity not found."})
 
         def service(request, domain, service):
@@ -92,9 +101,13 @@ class FakeHA:
             self.calls.append((f"{domain}.{service}", body))
             changed = []
             for s in self.states:
-                if s["entity_id"] in body.get("entity_id", []):
-                    s["state"] = {"turn_off": "off", "turn_on": "on", "unlock": "unlocked", "lock": "locked"}.get(
+                if s["entity_id"] in body.get("entity_id", []) and s["entity_id"] not in self.ignore:
+                    after = {"turn_off": "off", "turn_on": "on", "unlock": "unlocked", "lock": "locked"}.get(
                         service, s["state"])
+                    if self.lag.get(s["entity_id"]):
+                        self.pending[s["entity_id"]] = after
+                        continue
+                    s["state"] = after
                     changed.append(s)
             return httpx.Response(200, json=changed)
 
@@ -112,6 +125,8 @@ def _fresh_cache(monkeypatch):
         return REGISTRY
 
     monkeypatch.setattr(ha, "_registry", registry)
+    monkeypatch.setattr(ha, "SETTLE_S", 0.0)  # the read-back's waits, kept short here
+    monkeypatch.setattr(ha, "RETRY_S", 0.01)
     yield
     ha.forget_cache()
 
@@ -577,3 +592,144 @@ async def test_a_task_run_holds_an_unlock_and_scripts_refuse_it(app, ctx):
         policy = BridgePolicy.build(approvals_mode="off", allowed_tools=None, read_only=False, max_tool_calls=10)
         with pytest.raises(Refused, match="open the user's home"):
             await policy.check(unlock, unlock.name, {"entity_id": "lock.front_door"}, ctx, 0)
+
+
+# ---------------------------------------------------------------------------- reading the change back (#386)
+def _tools() -> dict:
+    return {t.name: t for t in ha.PLUGIN.tools}
+
+
+async def _checked(app, ctx, name: str, args: dict) -> dict | None:
+    tool = _tools()[name]
+    res = await tool.call(ctx, args)
+    return await app.agent.check_outcome(tool, args, res, False, ctx)
+
+
+async def test_a_device_that_obeys_is_read_back_and_one_that_ignores_the_call_is_not_done(app, ctx):
+    app.config.integrations.home_assistant_check_s = 0.2
+    with respx.mock(assert_all_called=False) as router:
+        fake = FakeHA(router)
+        await _connected(app)
+        ok = await _checked(app, ctx, "home_assistant_turn_on", {"entity_id": "light.bedroom_lamp"})
+        assert ok["ok"] is True and ok["how"] == "read_back" and "light.bedroom_lamp" in fake.reads
+        fake.ignore.add("light.bedroom_strip")
+        tool = _tools()["home_assistant_turn_on"]
+        res = await tool.call(ctx, {"entity_id": "light.bedroom_strip"})
+        assert res["done"] is True  # Home Assistant took the call...
+        bad = await app.agent.check_outcome(tool, {"entity_id": "light.bedroom_strip"}, res, False, ctx)
+        assert bad["ok"] is False and bad["how"] == "read_back"  # ...but the strip stayed off
+        assert bad["detail"] == "Bedroom strip still reports off"
+        assert fake.reads.count("light.bedroom_strip") >= 2  # it read again before saying so
+        assert bad["targets"] == ["light.bedroom_strip"] and bad["missed"] == ["light.bedroom_strip"]
+        [final] = outcomes.finalize([bad], "I turned on the bedroom strip.")
+        assert final["message"] == "Sentient said it ran the home action, but Bedroom strip still reports off."
+        # another light that came on doesn't settle it; the strip coming on at the next try does
+        assert outcomes.failures(outcomes.finalize([bad, ok]))
+        fake.ignore.clear()
+        retry = await _checked(app, ctx, "home_assistant_turn_on", {"entity_id": "light.bedroom_strip"})
+        assert retry["ok"] is True and not outcomes.failures(outcomes.finalize([bad, ok, retry]))
+
+
+async def test_a_slow_device_is_read_again_until_it_reports_the_change(app, ctx):
+    app.config.integrations.home_assistant_check_s = 1.0
+    with respx.mock(assert_all_called=False) as router:
+        fake = FakeHA(router)
+        await _connected(app)
+        await _tools()["home_assistant_unlock"].call(ctx, {"entity_id": "lock.front_door"})
+        fake.lag["lock.front_door"] = 2  # still unlocked on the first two reads
+        check = await _checked(app, ctx, "home_assistant_lock", {"entity_id": "lock.front_door"})
+        assert check["ok"] is True and fake.reads.count("lock.front_door") == 3
+
+
+def test_what_counts_as_done_for_each_kind():
+    def verdict(action, args, eid, state, **attrs):
+        want = ha._expected(action, args, eid)
+        return None if want is None else ha._compare(want, _state(eid, state, "Thing", **attrs))[0]
+
+    assert verdict("turn_on", {}, "light.a", "on") == "ok"
+    assert verdict("turn_off", {}, "switch.a", "on") == "wrong"
+    assert verdict("turn_on", {}, "media_player.tv", "playing") == "ok"  # "on" can be many states
+    assert verdict("turn_on", {}, "media_player.tv", "off") == "wrong"
+    assert verdict("turn_on", {}, "scene.movie_night", "x") is None  # nothing clear to expect
+    assert ha._expected("run_script", {}, "script.morning") is None
+    assert verdict("lock", {}, "lock.a", "locking") == "moving"
+    assert verdict("lock", {}, "lock.a", "jammed") == "wrong"
+    assert verdict("unlock", {}, "lock.a", "unavailable") == "wrong"
+    assert verdict("close_cover", {}, "cover.garage", "closing") == "moving"
+    assert verdict("open_cover", {}, "cover.blinds", "closed") == "wrong"
+    assert verdict("set_alarm", {"mode": "arm_away"}, "alarm_control_panel.a", "armed_away") == "ok"
+    assert verdict("set_alarm", {"mode": "disarm"}, "alarm_control_panel.a", "armed_home") == "wrong"
+    assert verdict("set_temperature", {"temperature": 22}, "climate.a", "heat", temperature=22.0) == "ok"
+    assert verdict("set_temperature", {"temperature": 22}, "climate.a", "heat", temperature=20) == "wrong"
+    assert verdict("set_temperature", {"temperature": 22, "hvac_mode": "cool"}, "climate.a", "heat",
+                   temperature=22) == "wrong"
+    want = ha._expected("set_temperature", {"temperature": 22}, "climate.a")
+    assert ha._compare(want, _state("climate.a", "heat", "Hallway thermostat", temperature=20))[1] == (
+        "Hallway thermostat is still set to 20°, not 22°")
+    assert ha._compare(ha._expected("turn_on", {}, "light.a"), _state("light.a", "unavailable", "Porch"))[1] == (
+        "Porch isn't responding (Home Assistant says it is unavailable)")
+
+
+async def test_a_door_still_moving_is_not_a_failure_and_the_check_can_be_off(app, ctx):
+    app.config.integrations.home_assistant_check_s = 0.05
+    with respx.mock(assert_all_called=False) as router:
+        fake = FakeHA(router)
+        await _connected(app)
+        fake.ignore.add("cover.garage_door")
+        next(s for s in fake.states if s["entity_id"] == "cover.garage_door")["state"] = "opening"
+        check = await _checked(app, ctx, "home_assistant_open_cover", {"entity_id": "cover.garage_door"})
+        assert check["ok"] is True and check["how"] == "read_back"
+        assert check["detail"] == "Garage door is still opening"
+        scene = await _checked(app, ctx, "home_assistant_activate_scene", {"entity_id": "scene.movie_night"})
+        assert scene["ok"] is True and scene["how"] == "result"  # nothing clear to read back
+        app.config.integrations.home_assistant_check_s = 0
+        fake.ignore.add("light.bedroom_strip")
+        reads = len(fake.reads)
+        off = await _checked(app, ctx, "home_assistant_turn_on", {"entity_id": "light.bedroom_strip"})
+        assert off["ok"] is True and off["how"] == "result" and len(fake.reads) == reads
+
+
+async def test_the_model_and_the_reply_hear_that_the_light_stayed_off(config, isolated_home):
+    llm = FakeProvider(replies=[_call("home_assistant_turn_on", entity_id="light.bedroom_strip"),
+                                "The bedroom strip did not turn on."])
+    s = await _ha_app(config, isolated_home, llm, mode="off")
+    s.config.integrations.home_assistant_check_s = 0.1
+    try:
+        with respx.mock(assert_all_called=False) as router:
+            fake = FakeHA(router)
+            fake.ignore.add("light.bedroom_strip")
+            await _connected(s)
+            sid = await s.store.create_session(channel="desktop")
+            _, events = await _turn(s, sid, "make the strip in the bedroom glow")
+        result = next(e for e in events if isinstance(e, ToolResultEvent))
+        assert result.check["ok"] is False and result.check["detail"] == "Bedroom strip still reports off"
+        # the model read the read-back, not only the result that said done
+        assert "it did not work: Bedroom strip still reports off" in json.dumps(llm.calls[-1], default=str)
+        done = events[-1]
+        assert isinstance(done, Done) and done.checks[0]["message"].endswith("Bedroom strip still reports off.")
+    finally:
+        await s.stop()
+
+
+async def test_a_quick_command_never_says_turned_on_when_the_lamp_stayed_off(config, isolated_home):
+    llm = FakeProvider()
+    s = await _ha_app(config, isolated_home, llm)
+    s.config.integrations.home_assistant_check_s = 0.1
+    try:
+        with respx.mock(assert_all_called=False) as router:
+            fake = FakeHA(router)
+            fake.ignore.add("light.bedroom_lamp")
+            await _connected(s)
+            sid = await s.store.create_session(channel="desktop")
+            _, events = await _turn(s, sid, "turn on the bedroom lamp")
+            fake.ignore.clear()
+            _, again = await _turn(s, sid, "turn on the bedroom lamp")
+        assert llm.calls == [] and fake.calls[0] == ("light.turn_on", {"entity_id": ["light.bedroom_lamp"]})
+        assert _reply(events) == "I tried, but Bedroom lamp still reports off."
+        done = events[-1]
+        assert done.checks[0]["ok"] is False and "Bedroom lamp still reports off" in done.checks[0]["message"]
+        result = next(e for e in events if isinstance(e, ToolResultEvent))
+        assert result.check["ok"] is False
+        assert _reply(again) == "Turned on the bedroom lamp." and again[-1].checks[0]["how"] == "read_back"
+    finally:
+        await s.stop()

@@ -421,6 +421,118 @@ async def _service(ctx: ToolContext, domain: str, service: str, entities: list[d
             **({"now": now} if now else {})}
 
 
+# ---------------------------------------------------------------------------- reading the change back (#386)
+# Devices can still be changing right after a call, so the read-back waits a moment, then reads again a few times.
+# The whole wait is ``integrations.home_assistant_check_s`` (0 turns the read-back off).
+SETTLE_S = 0.5
+RETRY_S = 1.0
+MAX_CHECK_S = 10.0
+# kinds whose "on" and "off" are exactly that state
+ON_OFF = {"light", "switch", "fan", "input_boolean", "siren", "automation", "remote", "humidifier"}
+# kinds whose "on" can be many states (playing, idle, heat, eco): only "not off" is clear
+ON_IS_NOT_OFF = {"media_player", "climate", "water_heater"}
+COVER_STATES = {"open_cover": ({"open"}, {"opening"}), "close_cover": ({"closed"}, {"closing"})}
+LOCK_STATES = {"lock": ({"locked"}, {"locking"}), "unlock": ({"unlocked", "open"}, {"unlocking", "opening"})}
+ALARM_MOVING = {"arming", "pending"}
+
+
+def _expected(action: str, arguments: dict, entity_id: str) -> dict | None:
+    """What a call should leave one entity as: ``{states?, not?, moving, temperature?}``, or None when nothing clear
+    is expected (scenes, scripts, a kind that has no plain on and off)."""
+    domain = entity_id.split(".", 1)[0]
+    if action in ("turn_on", "turn_off"):
+        on = action == "turn_on"
+        if domain in ON_OFF:
+            return {"states": {"on" if on else "off"}, "moving": set()}
+        if domain in ON_IS_NOT_OFF:
+            return {"not": "off", "moving": set()} if on else {"states": {"off"}, "moving": set()}
+        return None
+    if action in COVER_STATES:
+        states, moving = COVER_STATES[action]
+        return {"states": states, "moving": moving}
+    if action in LOCK_STATES:
+        states, moving = LOCK_STATES[action]
+        return {"states": states, "moving": moving}
+    if action == "set_alarm":
+        mode = str(arguments.get("mode") or "").strip().lower().replace(" ", "_")
+        if mode not in ALARM_MODES:
+            return None
+        want = "disarmed" if mode == "disarm" else "armed_" + mode[len("arm_"):]
+        return {"states": {want}, "moving": ALARM_MOVING}
+    if action == "set_temperature":
+        out: dict[str, Any] = {"moving": set()}
+        mode = str(arguments.get("hvac_mode") or "").strip().lower()
+        if mode:
+            out["states"] = {mode}
+        with contextlib.suppress(TypeError, ValueError):
+            out["temperature"] = float(arguments["temperature"])
+        return out if len(out) > 1 else None
+    return None
+
+
+def _said(state: Any) -> str:
+    return str(state or "nothing").replace("_", " ")
+
+
+def _compare(want: dict, s: dict) -> tuple[str, str]:
+    """``("ok"|"moving"|"wrong", plain detail)`` for one entity's state ``s`` against what was asked."""
+    name = str((s.get("attributes") or {}).get("friendly_name") or s.get("entity_id"))
+    state = s.get("state")
+    if state in UNSETTLED:
+        return "wrong", f"{name} isn't responding (Home Assistant says it is {_said(state)})"
+    if state in want["moving"]:
+        return "moving", f"{name} is still {_said(state)}"
+    if "states" in want and state not in want["states"]:
+        return "wrong", f"{name} still reports {_said(state)}"
+    if "not" in want and state == want["not"]:
+        return "wrong", f"{name} still reports {_said(state)}"
+    if "temperature" in want:
+        set_to = (s.get("attributes") or {}).get("temperature")
+        if isinstance(set_to, int | float) and abs(float(set_to) - want["temperature"]) > 0.25:
+            return "wrong", f"{name} is still set to {set_to:g}°, not {want['temperature']:g}°"
+    return "ok", ""
+
+
+def _check_seconds(ctx: ToolContext) -> float:
+    try:
+        value = float(manager_from(ctx).app.config.integrations.home_assistant_check_s)
+    except Exception:  # no app (a test calling the tool directly): the default
+        value = 4.0
+    return max(0.0, min(value, MAX_CHECK_S))
+
+
+def _reads_back(action: str):
+    """``Tool.verify`` for one kind of call: after a short settle wait, read each entity's state again (retrying for
+    a few seconds) and confirm it changed as asked, like a light that is now on or a lock that is now locked. None
+    (the call's own result stands) when nothing clear is expected or the read-back is turned off."""
+
+    async def verify(arguments: dict, result: Any, ctx: ToolContext) -> dict | None:
+        wants = {eid: w for eid in split_ids(arguments.get("entity_id"))
+                 if (w := _expected(action, arguments, eid)) is not None}
+        budget = _check_seconds(ctx)
+        if not wants or budget <= 0:
+            return None
+        c = await _creds(ctx)
+        started = time.monotonic()
+        await asyncio.sleep(min(SETTLE_S, budget))
+        while True:
+            states = await asyncio.gather(*(rest(c, "GET", f"/api/states/{quote(eid)}") for eid in wants))
+            found = [(eid, *_compare(wants[eid], s or {"entity_id": eid})) for eid, s in zip(wants, states, strict=True)]
+            wrong = [(eid, d) for eid, verdict, d in found if verdict == "wrong"]
+            moving = [d for _eid, verdict, d in found if verdict == "moving"]
+            left = budget - (time.monotonic() - started)
+            if not wrong and not moving:
+                return {"ok": True}
+            if left <= 0:
+                break
+            await asyncio.sleep(min(RETRY_S, left))
+        if wrong:
+            return {"ok": False, "detail": "; ".join(d for _eid, d in wrong), "missed": [eid for eid, _d in wrong]}
+        return {"ok": True, "detail": "; ".join(moving)}  # on its way there (a garage door takes a while)
+
+    return verify
+
+
 def _short(e: dict) -> dict:
     out = {"entity_id": e["entity_id"], "name": e["name"], "state": e["state"]}
     if e.get("area"):
@@ -533,7 +645,7 @@ async def _switch(ctx: ToolContext, entity_id: str, on: bool, data: dict | None 
             "now": [x for r in results for x in r.get("now", [])]}
 
 
-@itool(PID, "home_assistant_turn_on", outcome="home", risk=Risk.write, risk_fn=_security_risk,
+@itool(PID, "home_assistant_turn_on", outcome="home", verify=_reads_back("turn_on"), risk=Risk.write, risk_fn=_security_risk,
        describe_fn=_describe("Turns something on", SECURITY_SWITCH_LABEL))
 async def ha_turn_on(ctx: ToolContext, entity_id: str, brightness_pct: int | None = None,
                      color: str | None = None) -> dict:
@@ -549,7 +661,7 @@ async def ha_turn_on(ctx: ToolContext, entity_id: str, brightness_pct: int | Non
 
 
 
-@itool(PID, "home_assistant_turn_off", outcome="home", risk=Risk.write, risk_fn=_security_risk,
+@itool(PID, "home_assistant_turn_off", outcome="home", verify=_reads_back("turn_off"), risk=Risk.write, risk_fn=_security_risk,
        describe_fn=_describe("Turns something off", SECURITY_SWITCH_LABEL))
 async def ha_turn_off(ctx: ToolContext, entity_id: str) -> dict:
     """Turn off lights, switches, fans and other Home Assistant devices. `entity_id` is one id or several separated
@@ -558,7 +670,7 @@ async def ha_turn_off(ctx: ToolContext, entity_id: str) -> dict:
 
 
 
-@itool(PID, "home_assistant_set_temperature", outcome="home", risk=Risk.write, describe_fn=_describe("Sets a temperature"))
+@itool(PID, "home_assistant_set_temperature", outcome="home", verify=_reads_back("set_temperature"), risk=Risk.write, describe_fn=_describe("Sets a temperature"))
 async def ha_set_temperature(ctx: ToolContext, entity_id: str, temperature: float, hvac_mode: str | None = None) -> dict:
     """Set a thermostat (climate entity) to a temperature, in the units Home Assistant uses. `hvac_mode` is optional:
     heat, cool, heat_cool, auto or off."""
@@ -587,7 +699,7 @@ async def ha_run_script(ctx: ToolContext, entity_id: str) -> dict:
 
 
 
-@itool(PID, "home_assistant_open_cover", outcome="home", risk=Risk.write, risk_fn=_security_risk,
+@itool(PID, "home_assistant_open_cover", outcome="home", verify=_reads_back("open_cover"), risk=Risk.write, risk_fn=_security_risk,
        describe_fn=_describe("Opens something", OPENS_GATE_LABEL))
 async def ha_open_cover(ctx: ToolContext, entity_id: str) -> dict:
     """Open blinds, shades, curtains, a garage door or a gate (cover entities). Garage doors, gates and doors ask
@@ -596,7 +708,7 @@ async def ha_open_cover(ctx: ToolContext, entity_id: str) -> dict:
 
 
 
-@itool(PID, "home_assistant_close_cover", outcome="home", risk=Risk.write, risk_fn=_security_risk,
+@itool(PID, "home_assistant_close_cover", outcome="home", verify=_reads_back("close_cover"), risk=Risk.write, risk_fn=_security_risk,
        describe_fn=_describe("Closes something"))
 async def ha_close_cover(ctx: ToolContext, entity_id: str) -> dict:
     """Close blinds, shades, curtains, a garage door or a gate (cover entities). Garage doors, gates and doors ask
@@ -605,7 +717,7 @@ async def ha_close_cover(ctx: ToolContext, entity_id: str) -> dict:
 
 
 
-@itool(PID, "home_assistant_lock", outcome="home", risk=Risk.send, allow_for_chat=False,
+@itool(PID, "home_assistant_lock", outcome="home", verify=_reads_back("lock"), risk=Risk.send, allow_for_chat=False,
        describe_fn=_describe("Locks a door"))
 async def ha_lock(ctx: ToolContext, entity_id: str) -> dict:
     """Lock a door lock in Home Assistant."""
@@ -613,7 +725,7 @@ async def ha_lock(ctx: ToolContext, entity_id: str) -> dict:
 
 
 
-@itool(PID, "home_assistant_unlock", outcome="home", risk=Risk.send, allow_for_chat=False,
+@itool(PID, "home_assistant_unlock", outcome="home", verify=_reads_back("unlock"), risk=Risk.send, allow_for_chat=False,
        describe_fn=_describe(UNLOCKS_LABEL))
 async def ha_unlock(ctx: ToolContext, entity_id: str) -> dict:
     """Unlock a door lock in Home Assistant. Always asks first."""
@@ -621,7 +733,7 @@ async def ha_unlock(ctx: ToolContext, entity_id: str) -> dict:
 
 
 
-@itool(PID, "home_assistant_set_alarm", outcome="home", risk=Risk.send, allow_for_chat=False,
+@itool(PID, "home_assistant_set_alarm", outcome="home", verify=_reads_back("set_alarm"), risk=Risk.send, allow_for_chat=False,
        describe_fn=_describe_alarm)
 async def ha_set_alarm(ctx: ToolContext, entity_id: str, mode: str) -> dict:
     """Arm or disarm a Home Assistant alarm panel. `mode` is arm_home, arm_away, arm_night, arm_vacation or disarm.

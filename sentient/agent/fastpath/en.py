@@ -811,6 +811,11 @@ def failed(error: str) -> str:
     return f"I couldn't do that: {error}" if error else "I couldn't do that."
 
 
+def unconfirmed(detail: str) -> str:
+    detail = detail.strip().rstrip(".")
+    return f"I tried, but {detail}." if detail else "I tried, but it didn't seem to work."
+
+
 def timer_done(reminder: dict) -> tuple[str, str]:
     label = str(reminder.get("label") or "")
     if label:
