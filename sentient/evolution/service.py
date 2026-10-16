@@ -36,6 +36,7 @@ from sentient.memory.episodic import CLEAN as CLEAN_SUMMARY
 from sentient.memory.topics import TOPIC_NAMES
 from sentient.memory.vectors import cosine
 from sentient.services import Service, cancel_tasks
+from sentient.skills import checks as skill_checks
 from sentient.skills.loader import slugify, valid_name
 from sentient.store.db import after_watermark, next_watermark, now_iso
 
@@ -498,14 +499,19 @@ class EvolutionService(Service):
         plugin_ids = {p.id for p in self.app.registry.plugins()}
         requires = [str(t) for t in raw.get("requires_tools") or [] if str(t) in plugin_ids]
         tags = [str(t) for t in raw.get("tags") or []][:8]
+        validate = skill_checks.parse(raw.get("validate"))[0] or (existing.validate if existing else [])
+        report = await self.check_skill(name, validate, origin=origin)
+        if skill_checks.failure(report):
+            return None  # a skill whose own check fails isn't proposed (#386)
         lib.write(
             name, description, ensure_sections(body),
             author=existing.author if existing else "assistant",
             tags=tags or (existing.tags if existing else []),
             requires_tools=requires or (existing.requires_tools if existing else []),
-            pending=True, created_by_review=True,
+            pending=True, created_by_review=True, validate=validate,
         )
         await lib.record_patch(name, "pending_review", self.app.store)
+        await lib.record_check(name, report, self.app.store)
         user_edited = existing is not None and (await lib.edit_state(name, self.app.store))["user_edited"]
         kind = "skill_patched" if existing else "skill_created"
         detail = {"name": name, "pending": True, "reason": raw.get("reason"), **origin}
@@ -529,6 +535,20 @@ class EvolutionService(Service):
             "skill", msg, title=title, payload={"skill": name, "action": decision, "origin": origin}
         )
         return name
+
+    async def check_skill(self, name: str, validate: list[dict], *, origin: dict) -> dict | None:
+        """Run a drafted skill's checks before it is proposed (#386): its file checks now, in the active skill's folder
+        and Sentient's files folder. This is work Sentient started itself, so a code check never runs here (ADR 0017):
+        it waits for the user's approval. A failure is logged as ``skill_check_failed`` and the draft is dropped."""
+        if not validate:
+            return None
+        current = self.app.skills.get_active_file(name)
+        report = await skill_checks.run(self.app, name, validate, [current.dir] if current else [], run_code=False)
+        if reason := skill_checks.failure(report):
+            log.info("skill %s not proposed: its check failed (%s)", name, reason)
+            clean = {k: v for k, v in origin.items() if v is not None}
+            await log_event(self.app.store, "skill_check_failed", {"name": name, "reason": reason, **clean})
+        return report
 
     # ------------------------------------------------------------------ repair during use
     async def handle_repair_event(self, event: dict) -> list[str]:
@@ -735,11 +755,17 @@ class EvolutionService(Service):
         description = " ".join(str(raw.get("description") or "").split()) or current.description
         fix = " ".join(str(raw.get("reason") or "").split())
         full_reason = (reason.rstrip(". ") + (f". {fix}" if fix else ""))[:400]
+        validate = skill_checks.parse(raw.get("validate"))[0] or current.validate
+        report = await self.check_skill(name, validate, origin={"repair": True, **origin})
+        if skill_checks.failure(report):
+            return None  # the fix doesn't pass the skill's own check (#386)
         lib.write(
             name, description, body, author=current.author, tags=current.tags,
             requires_tools=current.requires_tools, pending=True, created_by_review=current.created_by_review,
+            validate=validate,
         )
         await lib.record_patch(name, "pending_review", self.app.store)
+        await lib.record_check(name, report, self.app.store)
         clean_origin = {k: v for k, v in origin.items() if v is not None}
         detail = {"name": name, "pending": True, "origin": "repair", "failure": failure_kind, "reason": full_reason, **clean_origin}
         if user_edited:

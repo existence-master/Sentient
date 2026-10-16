@@ -14,7 +14,7 @@ proposing a change to one of them.
 | [0007](0007-one-agent-loop.md) | Use one agent loop for every surface | Accepted | 2026-09-15 |
 | [0008](0008-effective-risk-and-approvals.md) | Decide approvals by each call's effective risk | Accepted | 2026-09-15 |
 | [0009](0009-memory-pushed-into-the-prompt.md) | Push memory into every turn and consolidate it nightly | Accepted | 2026-09-15 |
-| [0010](0010-self-evolution-with-human-review.md) | Let Sentient write its own skills, with human review | Accepted | 2026-09-12 |
+| [0010](0010-self-evolution-with-human-review.md) | Let Sentient write its own skills, with human review (amended: skill checks, #386) | Accepted | 2026-09-12 |
 | [0011](0011-device-node-protocol.md) | Connect devices with a small JSON protocol over WebSockets | Accepted | 2026-09-15 |
 | [0012](0012-code-execution-sandbox.md) | Run model-written code in a sandbox that calls tools | Accepted | 2026-09-15 |
 | [0013](0013-push-before-poll.md) | Prefer change feeds and scripts over model calls | Accepted | 2026-09-15 |

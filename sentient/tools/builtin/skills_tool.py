@@ -4,6 +4,7 @@ teach itself repeatable procedures (staged for review when configured)."""
 from __future__ import annotations
 
 from sentient.evolution.log import log_event
+from sentient.skills import checks as skill_checks
 from sentient.skills.lint import has_danger, lint_text
 from sentient.skills.loader import render_skill, slugify, valid_name
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
@@ -65,6 +66,13 @@ async def skill_save(
     )
     risky = has_danger(findings)  # instructions to skip approvals, wipe files... always wait for the user
     pending = pending or protected or risky
+    app = ctx.extra.get("app")
+    report = None
+    if existing is not None and existing.validate and app is not None:  # the skill's own check comes first (#386)
+        report = await skill_checks.run(app, name, existing.validate, [existing.dir], run_code=False)
+        if reason := skill_checks.failure(report):
+            return {"error": f"The skill's own check failed, so it wasn't saved: {reason}. Fix the steps and try again."}
+        pending = pending or report["status"] == "waiting"  # a code check runs when the user approves it
     path = lib.write(
         name, description, body, author=existing.author if existing else "assistant",
         tags=tags, requires_tools=requires_tools, pending=pending,
@@ -72,11 +80,12 @@ async def skill_save(
     lib.reload()
     state = "pending_review" if pending else "active"
     action = "patched" if existing else "created"
-    app = ctx.extra.get("app")
     if ctx.store is not None:
         if not pending:
             await lib.record_origin(name, ctx.store)
         await lib.record_patch(name, state, ctx.store)
+        if report is not None:
+            await lib.record_check(name, report, ctx.store)
         detail = {"name": name, "pending": pending, "via": "skill_save", "session_id": ctx.session_id}
         if protected:
             detail["user_edited"] = True

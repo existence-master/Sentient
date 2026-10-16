@@ -12,6 +12,9 @@
     tags: [productivity]
     requires_tools: [gcalendar]     # optional: skill is hidden if a tool plugin is missing
     browser_profile: x-growth       # optional: browser tools use this profile once the skill is read
+    validate:                       # optional: how to check it works (sentient/skills/checks.py, #386)
+      - file: notes/weekly-review.md
+        expect: "## Next week"
     created_by_review: false
     ---
     # Weekly review
@@ -26,6 +29,7 @@ Usage counters and lifecycle state live in the ``skill_stats`` table.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -36,6 +40,7 @@ from typing import Any
 import yaml
 
 from sentient import paths
+from sentient.skills import checks as skill_checks
 from sentient.skills.lint import lint_file
 from sentient.store.db import now_iso
 
@@ -72,6 +77,8 @@ class Skill:
     state: str = "active"     # active | pending_review | archived  (stale comes from skill_stats)
     created_by_review: bool = False
     browser_profile: str | None = None
+    # how to check that it works (``validate`` in the header, ``sentient.skills.checks``)
+    validate: list[dict] = field(default_factory=list)
 
     @property
     def dir(self) -> Path:
@@ -109,6 +116,8 @@ class Skill:
             "last_failure_at": stats.get("last_failure_at"),
             "created_by_review": self.created_by_review,
             "browser_profile": self.browser_profile,
+            "validate": self.validate,
+            "check": SkillLibrary.check_of(stats) if self.validate else None,
         }
         if body:
             d["body"] = self.body
@@ -143,7 +152,20 @@ def parse_skill_file(path: Path) -> Skill | None:
         state=state,
         created_by_review=bool(meta.get("created_by_review", False)),
         browser_profile=str(meta.get("browser_profile") or "").strip() or None,
+        validate=skill_checks.parse(meta.get("validate"))[0],
     )
+
+
+class _Dumper(yaml.SafeDumper):
+    """Writes a multi-line value (a check's code) as a readable ``|`` block."""
+
+
+def _str(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
+    style = "|" if "\n" in value.strip() else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+_Dumper.add_representer(str, _str)
 
 
 def render_skill(
@@ -157,6 +179,7 @@ def render_skill(
     requires_tools: list[str] | None,
     created_by_review: bool = False,
     browser_profile: str | None = None,
+    validate: list[dict] | None = None,
 ) -> str:
     meta: dict[str, Any] = {
         "name": name,
@@ -170,7 +193,9 @@ def render_skill(
         meta["browser_profile"] = browser_profile
     if created_by_review:
         meta["created_by_review"] = True
-    front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
+    if validate:
+        meta["validate"] = validate
+    front = yaml.dump(meta, Dumper=_Dumper, sort_keys=False, allow_unicode=True).strip()
     return f"---\n{front}\n---\n\n{body.strip()}\n"
 
 
@@ -272,9 +297,10 @@ class SkillLibrary:
         pending: bool = False,
         created_by_review: bool = False,
         version: int | None = None,
+        validate: list[dict] | None = None,
     ) -> Path:
         """Create a skill. With ``pending`` and an active skill of the same name, this stores a
-        proposed update next to it (see ``diff``)."""
+        proposed update next to it (see ``diff``). ``validate``: its checks (None keeps the active skill's)."""
         name = name.strip().lower()
         if not valid_name(name):
             raise ValueError("skill name must be lowercase letters, digits and dashes (2-64 chars)")
@@ -289,6 +315,7 @@ class SkillLibrary:
                 name, description, body, author=author, version=version, tags=tags,
                 requires_tools=requires_tools, created_by_review=created_by_review,
                 browser_profile=current.browser_profile if current else None,
+                validate=validate if validate is not None else (current.validate if current else None),
             ),
             encoding="utf-8",
         )
@@ -352,6 +379,7 @@ class SkillLibrary:
                 requires_tools=requires_tools if requires_tools is not None else skill.requires_tools,
                 created_by_review=skill.created_by_review,
                 browser_profile=skill.browser_profile,
+                validate=skill.validate,
             ),
             encoding="utf-8",
         )
@@ -419,6 +447,8 @@ class SkillLibrary:
         await store.ensure_column("skill_stats", "origin_hash", "TEXT")
         await store.ensure_column("skill_stats", "origin_text", "TEXT")
         await store.ensure_column("skill_stats", "proposal_base_hash", "TEXT")
+        # the last run of the skill's own checks (#386, ``sentient.skills.checks``), as JSON
+        await store.ensure_column("skill_stats", "check_report", "TEXT")
         await store.db.commit()
         self._stats_ready = True
 
@@ -541,6 +571,28 @@ class SkillLibrary:
             active = self._file(self.root, name.strip().lower())
             base = content_hash(active.read_text(encoding="utf-8", errors="replace")) if active.exists() else None
             await store.execute("UPDATE skill_stats SET proposal_base_hash = ? WHERE name = ?", (base, name.strip().lower()))
+
+    async def record_check(self, name: str, report: dict | None, store: Any = None) -> None:
+        """Keep the last report of the skill's checks (None: it declares none) for the Skills screen."""
+        store = store or self.store
+        if store is None:
+            return
+        await self._ensure_stats(store)
+        await store.execute(
+            "INSERT INTO skill_stats(name, state, created_at, check_report) VALUES(?, 'pending_review', ?, ?)"
+            " ON CONFLICT(name) DO UPDATE SET check_report = excluded.check_report",
+            (name.strip().lower(), now_iso(), json.dumps(report) if report else None),
+        )
+
+    @staticmethod
+    def check_of(stats: dict | None) -> dict | None:
+        """The last check report kept in a ``skill_stats`` row, or None."""
+        raw = (stats or {}).get("check_report")
+        try:
+            report = json.loads(raw) if raw else None
+        except ValueError:
+            return None
+        return report if isinstance(report, dict) else None
 
     # ------------------------------------------------------------------ edit protection (#164)
     async def record_origin(self, name: str, store: Any = None, *, text: str | None = None) -> None:

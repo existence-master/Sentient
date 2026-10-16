@@ -6,6 +6,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Skills can say how to check they work.** A skill can list a file that must exist or a few lines of Python with the
+  output they should print. Sentient checks a skill it drafted for itself before it shows it to you, and doesn't
+  propose one that fails. A check that runs code waits until you approve the skill (the button says "Approve and run
+  check"), then runs in the code sandbox without your keys, and the skill is only saved if it passes. The Skills
+  screen shows each check and how it went (#386).
 - **Keep work, personal and project memories apart.** Each memory is now kept for Personal, Work, a project you name,
   or every chat (for things like your name or how you like answers). Pick a chat's memories from the button at the
   top of the chat, or before you start one. A work chat then uses your work memories and the ones for every chat,
