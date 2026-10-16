@@ -873,6 +873,7 @@ export const api = {
     list: () => http.get<FoldersOverview>('/api/folders'),
     add: (path: string, ignore?: string[]) => http.post<WatchedFolder>('/api/folders', { path, ignore }),
     update: (id: string, ignore: string[]) => http.patch<WatchedFolder>(`/api/folders/${id}`, { ignore }),
+    setScope: (id: string, scope: string) => http.patch<WatchedFolder>(`/api/folders/${id}`, { scope }),
     remove: (id: string) => http.delete<{ removed: boolean }>(`/api/folders/${id}`),
     rescan: (id: string) => http.post<{ queued: boolean }>(`/api/folders/${id}/rescan`, {})
   },

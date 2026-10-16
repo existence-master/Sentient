@@ -143,8 +143,8 @@ def prompt_note(scope: str) -> str:
 
 
 async def list_scopes(app: Any) -> list[dict]:
-    """``[{name, label, count, built_in}]``: Always, Personal and Work, then every project a memory, chat, task or
-    messaging app uses (by name). ``count`` = active memories in it."""
+    """``[{name, label, count, built_in}]``: Always, Personal and Work, then every project a memory, chat, task,
+    messaging app or added folder (#392) uses (by name). ``count`` = active memories in it."""
     store = app.store
     counts: dict[str, int] = {}
     names: list[str] = []
@@ -160,6 +160,7 @@ async def list_scopes(app: Any) -> list[dict]:
     for sql in (
         "SELECT DISTINCT memory_scope AS s FROM sessions WHERE memory_scope IS NOT NULL",
         "SELECT DISTINCT memory_scope AS s FROM tasks WHERE memory_scope IS NOT NULL",
+        "SELECT DISTINCT scope AS s FROM folders WHERE scope IS NOT NULL",
     ):
         with contextlib.suppress(Exception):  # an older database without the column
             names += [n for r in await store.fetchall(sql) if (n := normalize(r["s"]))]

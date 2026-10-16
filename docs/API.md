@@ -1572,7 +1572,7 @@ attribute and no word of what it says in common ("a piano recital in July" for "
 - `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
 - `DELETE /api/memories/source/{source}` → `{deleted: n}`
 - `GET /api/memories/scopes` → `[{name, label, count, built_in}]`: `always`, `personal` and `work` first, then every
-  project a memory, chat, task or messaging app uses, by name; `count` = active memories in it.
+  project a memory, chat, task, messaging app or added folder uses, by name; `count` = active memories in it.
 - `DELETE /api/memories/scope/{scope}` → `{deleted: n}`: resets one scope. Every memory in it goes (also ones waiting
   for review), nothing in any other scope changes.
 - `POST /api/memories/export` `{format: "markdown"|"sqlite"}` → `{path, folder, name, format, memories, about_you,
@@ -1623,8 +1623,13 @@ project's own name (`"Kestrel launch"`, up to 40 characters; `Work`/`PERSONAL` a
   insights).
 - **Incognito** chats (section 2) have a scope too; it only decides what they read, as nothing is saved from them.
 - **Dreaming** (section 15) never merges or settles two memories from different scopes.
-- **Backups** (section 20) carry scopes in `sentient.db` (`summaries.scope` too); restoring a backup from before scopes puts every memory in
-  `personal` (`SCHEMA_VERSION` 11).
+- **Folders** (#392, section 22) have a scope too (`folders.scope`, default `always`, also for folders added before
+  it): their notes come up only in runs that read that scope (note pieces in a chat's prompt, `folder_search`,
+  `folder_read`), and `GET /api/memories/scopes` lists a project a folder uses.
+- **Messaging apps:** `/scope <work|personal|project>` sets a chat's `sessions.memory_scope` from the app itself
+  (section 14).
+- **Backups** (section 20) carry scopes in `sentient.db` (`summaries.scope` and `folders.scope` too); restoring a backup from before scopes puts every memory in
+  `personal` (`SCHEMA_VERSION` 11) and every folder in `always` (`SCHEMA_VERSION` 12).
 
 ### Memories waiting for review (ADR 0021)
 A memory that did not come from the user's own words in a clean chat is held: `status: "pending"` for facts, status
@@ -2367,7 +2372,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   (groups are ignored). Discord: direct messages only (server messages are ignored).
 - A paired chat is a normal Sentient chat (`channel` = channel id, so the desktop shows a badge). Commands: `/new` starts a
   fresh chat (new session), `/stop` cancels the reply (the partial text is kept with "(stopped)"), `/stopall` (or
-  `/stop all`) is Stop everything and `/resume` undoes it (section 17; source `telegram` or `discord`), `/model`, `/help`; other
+  `/stop all`) is Stop everything and `/resume` undoes it (section 17; source `telegram` or `discord`), `/model`, `/scope`, `/help`; other
   `/commands` get a hint. Unpaired chats cannot use any command except `/pair`. Replies stream by editing the message at most once per `channels.<id>.edit_interval_s` (1 s) when
   `stream_edits` is on; long replies are split (Telegram 4096, Discord 2000 characters, code blocks kept balanced).
   Telegram replies use HTML parse mode (bold, italics, strikethrough, code, code blocks, links, lists, quotes; everything
@@ -2378,6 +2383,12 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   options). Choosing one applies it, settles the message to "Switched to <name>" and sends anything still missing
   ("Still needed: ..."). `/model <number or name>` applies directly (numbers count the usable presets in order),
   `/model undo` undoes the last switch. Paired chats only, like every command.
+- `/scope` (#392) picks the memories this chat uses and saves to (its `sessions.memory_scope`, section 7 "Memory
+  scopes"; publishes `session.updated` with `memory_scope`), answered without a model: `/scope work`, `/scope personal`
+  or `/scope <project>` (an existing project matches whatever the case and spacing; a new name starts a project),
+  `/scope default` follows `channels.<id>.memory_scope` again, `/scope` alone says which one it uses and lists the
+  projects. `/scope always` is refused with a plain reason. `/new` keeps the chat's scope. Paired chats only, like
+  every command.
 - `/model chat <provider/model>` (#312) keeps a model for this conversation only (its `sessions.model`, section 2;
   publishes `session.updated`); presets and other chats are untouched. It is refused with the plain reason when the
   model can't answer right now (no key, Claude Code off, not downloaded). `/model chat default` follows the default
@@ -3042,9 +3053,10 @@ Sentient takes one:
 A snapshot that fails is logged and never keeps Sentient from starting.
 
 Memory scopes (#155) are part of `sentient.db` (`facts.scope`, `sessions.memory_scope`, `tasks.memory_scope`,
-`summaries.scope`), so a
+`summaries.scope`, `folders.scope`), so a
 backup keeps them. Restoring a backup made before them (database version 10 or older) adds the columns on the next
-start, with every memory in `personal`.
+start, with every memory in `personal`; one made before folder scopes (version 11 or older) puts every folder in
+`always` (#392).
 
 **Restore** is two steps, so nothing in use is swapped under the running engine: `POST /api/backups/restore` checks the
 archive (manifest, names, SQLite `quick_check`) and unpacks it into `<home>/backups/restore-pending`; the next engine
@@ -3231,6 +3243,15 @@ answer scored 0.58 to 0.74 and unrelated ones at most 0.65. Clipped web pages ne
 `folder_search` is offered (a folder is added); an incognito chat without memory gets none. The look-up gives up after
 4 s. The notes the reply drew on show as sources with `via: "prompt"` (section 2, "Answer sources").
 
+**Scopes (#392).** A folder has a memory scope (section 7, "Memory scopes"): `always` (the default, and what folders
+added before scopes have), `personal`, `work` or a project's name. A run reads a folder when the folder's scope is
+`always` or the run's scope: note pieces in a chat's prompt use the chat's scope, `folder_search` and `folder_read` the
+run's (`ToolContext`, as `memory_recall`). Work not tied to a chat or task, and `POST /api/folders/search`, read every
+folder. `folder_search(everywhere=true)` reads every folder, and a result from a folder of another scope then carries
+`kept_for` (its scope's label). When every folder belongs to another scope, `folder_search` returns
+`{results: [], note}` saying so; `folder_read` of a note there returns an `error` naming the scope, and reads it with
+`everywhere=true`.
+
 **Clipped web pages (ADR 0025).** A note with a web address under `source`, `url`, `clipped_from`, `source_url`,
 `original_url` or `link` in its front matter, a `clippings`-style tag, or in a `Clippings` folder is a clipping. With
 `folders.clippings_are_outside` (default on) a `folder_search` result that includes one, and a `folder_read` of one,
@@ -3238,36 +3259,39 @@ start with `outside_content: "a web page clipped into your notes"`, so the chat 
 (section 10). The user's own notes are not outside content.
 
 ### Tools (plugin `folders`, "Your folders"; hidden while no folder is added, and `folder_search` is offered on every chat turn while one is, also to local models)
-- `folder_search(query, folder = "", limit = 0)` (risk `read`) → `{outside_content?, results: [{title, folder, path,
-  heading?, text, tags?, file, link?, clipped_from?, similarity?}]}` or `{results: [], note}`. `path` is inside the
-  folder, `file` the full path, `link` an `obsidian://open?vault=&file=` link in a vault. `folder` is a folder's name
-  or id.
-- `folder_read(path, offset = 0, limit = 0)` (risk `read`) → `{outside_content?, title, folder, path, file, link?,
+- `folder_search(query, folder = "", limit = 0, everywhere = false)` (risk `read`) → `{outside_content?, results:
+  [{title, folder, path, heading?, text, tags?, file, link?, clipped_from?, similarity?, kept_for?}]}` or
+  `{results: [], note}`. `path` is inside the folder, `file` the full path, `link` an `obsidian://open?vault=&file=`
+  link in a vault. `folder` is a folder's name or id. Only folders the run's scope reads unless `everywhere`.
+- `folder_read(path, offset = 0, limit = 0, everywhere = false)` (risk `read`) → `{outside_content?, title, folder, path, file, link?,
   clipped_from?, offset, content, total, more, next_offset?}`: a whole indexed file read now from disk, in parts like
   `file_read`. `path` is the full path, the path inside the folder, or `<folder name>/<path inside>` (`.md` may be
   left off). Only files in the index that the current ignore rules keep can be read (never hidden or ignored ones),
   and whether it is a clipping is checked on the file as it is now.
 
 ### REST
-A **Folder** is `{id, path, name, kind: "folder"|"obsidian", ignore: string[], status: "waiting"|"scanning"|"ready"|
+A **Folder** is `{id, path, name, kind: "folder"|"obsidian", ignore: string[], scope, status: "waiting"|"scanning"|"ready"|
 "missing", progress: {done, total}|null, added_at, last_scan_at, last_scan_ms, files, unreadable, chunks, embedded,
 skipped, clippings, error}`: `files` read, `unreadable` that could not be read, `chunks` searchable pieces and
 `embedded` how many of them are searchable by meaning, `skipped` left out at the last scan (too big, over
 `max_files`), `clippings` clipped web pages, `error` a plain sentence (the folder can't be found, only part of it is
-searched). `progress` counts the new or changed files of the running scan.
+searched). `progress` counts the new or changed files of the running scan. `scope`: the chats its notes are used in
+(above).
 
 - `GET /api/folders` → `{folders: [Folder], searching_by_meaning, embedding_error}`
-- `POST /api/folders` `{path, ignore?}` → Folder, and a scan starts. 400 with a plain `detail` when the path is not a
+- `POST /api/folders` `{path, ignore?, scope?}` → Folder (`scope` defaults to `always`), and a scan starts. 400 with a plain `detail` when the path is not a
   full path to an existing folder, is a whole drive or the home folder, holds or is inside Sentient's data folder, is
   already added, or is inside or holds an added folder.
-- `PATCH /api/folders/{id}` `{ignore}` → Folder, and it is scanned again. 404 when unknown.
+- `PATCH /api/folders/{id}` `{ignore?, scope?}` → Folder. New `ignore` patterns scan it again; a new `scope` (empty
+  is `always`) takes effect at once and sends `folders.updated`. 404 when unknown.
 - `DELETE /api/folders/{id}` → `{removed: true}`: forgets the folder and its whole index. 404 when unknown.
 - `POST /api/folders/{id}/rescan` → 202 `{queued: true}`. 404 when unknown.
 - `POST /api/folders/search` `{query, folder?, limit?}` → what `folder_search` returns.
 - Event `folders.updated` (section 1).
 
 Settings > Folders lists them with their status and counts, adds one with the folder picker, removes one (with a
-confirmation), checks again, edits the folder's ignore patterns and shows the `folders` config section.
+confirmation), checks again, edits the folder's ignore patterns, picks where it is used (Every chat, Personal, Work
+or a project) and shows the `folders` config section.
 
 ## 23. Timers, reminders, alarms and quick commands (owner: reminders and core, #150, #359)
 

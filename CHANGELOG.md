@@ -6,6 +6,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Folders and chat apps follow your memory places too.** In Settings, Folders, each folder or Obsidian vault now has
+  a **Used in** choice: every chat (as before, and what your folders already have), Personal, Work or a project. A
+  folder kept for Work only comes up in work chats, so a personal chat never brings up your work notes unless you ask.
+  In Telegram, Discord and WhatsApp, send `/scope work`, `/scope personal` or `/scope` followed by a project's name to
+  pick which memories that chat uses, or `/scope` to see which it uses now. On the Memory page, where a memory is
+  kept now reads "Used in Work" next to its source, so it no longer looks like a topic such as "Work & Learning".
 - **Keep work, personal and project memories apart.** Each memory is now kept for Personal, Work, a project you name,
   or every chat (for things like your name or how you like answers). Pick a chat's memories from the button at the
   top of the chat, or before you start one. A work chat then uses your work memories and the ones for every chat,
