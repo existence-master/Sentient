@@ -37,7 +37,7 @@ RULE_CHOICES = (ALLOW, IF_ASKED, ASK, HAND_OFF, NEVER)
 RULE_TITLES = {
     ALLOW: "Allow", IF_ASKED: "Only if I asked", ASK: "Always ask", HAND_OFF: "Hand it to me", NEVER: "Never",
 }
-# describe_fn label for money leaving the user (browser: buy, pay, order, subscribe, donate, transfer ...)
+# describe_fn label for money leaving the user (browser: buy, pay, order, a priced subscribe, donate, transfer ...)
 PURCHASE_LABEL = "Purchase"
 # describe_fn labels for a call that opens the user's home (#175, ADR 0028): unlocking a door, turning off the alarm,
 # opening a garage door, gate or door, or switching something that sounds like one. Like a purchase, it always asks.
