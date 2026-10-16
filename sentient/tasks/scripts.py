@@ -374,7 +374,6 @@ def _check_whole_page(tree: ast.AST) -> None:
 
 # Tools that read the web: a script using them polls a page, a search or the news (#389).
 WEB_TOOLS = ("web_fetch", "web_search", "news_top_headlines", "news_search")
-_TRIGGER_EVENT = re.compile(r"\btrigger_event\b")
 # Words that name a trigger's app in a request: "when I get an email", "when a meeting is added to my calendar".
 _SOURCE_WORDS: dict[str, re.Pattern] = {
     "gmail": re.compile(r"\b(?:e-?mails?|mail|inbox|gmail)\b", re.IGNORECASE),
@@ -387,6 +386,16 @@ _SOURCE_WORDS: dict[str, re.Pattern] = {
 }
 
 
+def _reads_trigger_event(code: str) -> bool:
+    """The code reads the ``trigger_event`` variable; a comment or a string that only mentions it does not count."""
+    try:
+        tree = ast.parse(code or "")
+    except SyntaxError:
+        return False
+    return any(isinstance(node, ast.Name) and node.id == "trigger_event" and isinstance(node.ctx, ast.Load)
+               for node in ast.walk(tree))
+
+
 def polls_the_web(tools: list[str]) -> bool:
     """A script (or the AI-run task that replaced one) that reads pages, a search or the news."""
     return any(t in WEB_TOOLS for t in tools)
@@ -397,7 +406,7 @@ def trigger_is_real(schedule: dict, code: str, request: str) -> bool:
     started it (``trigger_event``), or the user's request names the trigger's app ("when I get an email"). Small
     models give a page watch like "tell me when a new event is added" a Google Calendar trigger, so it would only
     run when a calendar event arrives and never look at the page."""
-    if _TRIGGER_EVENT.search(code or ""):
+    if _reads_trigger_event(code):
         return True
     words = _SOURCE_WORDS.get(str(schedule.get("source") or "").strip().lower())
     return bool(words and words.search(request or ""))

@@ -39,6 +39,8 @@ async def plan(make_app, prompt: str, *replies: dict) -> dict:
     ({"type": "triggered", "source": "gmail", "event": "new_email", "filter": {}}, WHOLE,
      "Whenever I get an email from the bank, check http://192.0.2.1/status.html", True),
     (CALENDAR, FETCH + "result([trigger_event.get('summary'), page['content']])\n", WATCH, True),
+    (CALENDAR, "# no trigger_event here\n" + WHOLE + "print('trigger_event')\n", WATCH, False),  # only mentioned
+    (CALENDAR, FETCH + "trigger_event(\n", WATCH, False),  # does not compile
 ])
 def test_a_trigger_is_real_when_the_script_reads_it_or_the_request_names_its_app(schedule, code, request_text, real):
     assert trigger_is_real(schedule, code, request_text) is real
