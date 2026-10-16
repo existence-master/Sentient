@@ -227,7 +227,7 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
               )}
               {!run.dry_run && !!run.checks?.length && <OutcomeChecks checks={run.checks} />}
               {run.error && !(run.status === 'completed_with_errors' && failedChecks(run.checks).length) && (
-                <Alert tone="danger" icon={<IconAlertCircle />} title={run.status === 'cancelled' ? 'This run was stopped' : 'This run failed'} action={retryable ? retryButton : undefined}>
+                <Alert tone={run.status === 'cancelled' ? 'neutral' : 'danger'} icon={<IconAlertCircle />} title={run.status === 'cancelled' ? 'This run was stopped' : 'This run failed'} action={retryable ? retryButton : undefined}>
                   {run.error}
                 </Alert>
               )}

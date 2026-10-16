@@ -505,7 +505,7 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
         </Alert>
       )}
 
-      {!task.enabled && ['active', 'pending'].includes(task.status) && (
+      {!task.enabled && (['active', 'pending'].includes(task.status) || (task.status === 'planning' && !!task.error)) && (
         <Alert
           tone="neutral"
           icon={<IconPlayerPause />}
@@ -516,11 +516,13 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
             </Button>
           }
         >
-          {task.original_context?.imported_from && !task.plan.length
-            ? 'Brought over from Hermes. Resume it and Sentient makes a plan for you to approve before it runs.'
-            : pausedWhileAway
-              ? "Sentient paused it while you were away. It won't run until you resume it."
-              : "It won't run on its schedule or triggers until you resume it."}
+          {task.error
+            ? task.error
+            : task.original_context?.imported_from && !task.plan.length
+              ? 'Brought over from Hermes. Resume it and Sentient makes a plan for you to approve before it runs.'
+              : pausedWhileAway
+                ? "Sentient paused it while you were away. It won't run until you resume it."
+                : "It won't run on its schedule or triggers until you resume it."}
         </Alert>
       )}
 
@@ -571,7 +573,7 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
           {last.result ? (
             <RunResult result={last.result} memorySources={last.memory_sources} sources={last.sources} />
           ) : last.error ? (
-            <Alert tone="danger" icon={<IconAlertCircle />}>
+            <Alert tone={last.status === 'cancelled' ? 'neutral' : 'danger'} icon={<IconAlertCircle />}>
               {last.error}
             </Alert>
           ) : (

@@ -35,6 +35,11 @@ MAX_QUESTIONS_PER_RUN = 5
 
 WAITING_NOTE = "Your question was sent to the user. This task is paused until they answer."
 CANCELLED_NOTE = "The user cancelled this run instead of answering. Stop here."
+# a held call whose task was paused while it waited, then Sentient restarted (#304): asked again when resumed
+PAUSED_CALL_NOTE = (
+    "The task was paused before the user answered, so this call was not made. "
+    "If it is still needed, make the same call again and the user will be asked."
+)
 
 # a call held because the run read outside content (ADR 0018)
 GO_AHEAD = "Yes, go ahead"
@@ -68,6 +73,10 @@ def answer_content(answer: str) -> str:
 
 def cancelled_content() -> str:
     return json.dumps({"error": CANCELLED_NOTE}, ensure_ascii=False)
+
+
+def paused_content() -> str:
+    return json.dumps({"error": PAUSED_CALL_NOTE}, ensure_ascii=False)
 
 
 def count_questions(messages: list[dict] | None) -> int:
