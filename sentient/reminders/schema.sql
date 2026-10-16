@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS reminders (
     created_at    TEXT NOT NULL,
     fired_at      TEXT,
     cancelled_at  TEXT,
-    notification_id TEXT
+    notification_id TEXT,
+    stopped_at    TEXT,                               -- an alarm: when it was stopped or snoozed while ringing (#390)
+    snoozed_from  TEXT                                -- an alarm set by a snooze: the id of the alarm that was ringing
 );
 CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status, fire_at);

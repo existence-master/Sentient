@@ -122,6 +122,7 @@ import type {
   RoleName,
   Reminder,
   ReminderStatus,
+  SnoozedAlarm,
   RuleProposal,
   SecretStatus,
   SentientConfig,
@@ -903,7 +904,11 @@ export const api = {
   // §23 timers and reminders (#150) -------------------------------------------------------------
   reminders: {
     list: (status: ReminderStatus | 'all' = 'scheduled') => http.get<{ reminders: Reminder[] }>('/api/reminders', { query: { status } }),
-    cancel: (id: string) => http.post<Reminder>(`/api/reminders/${enc(id)}/cancel`)
+    cancel: (id: string) => http.post<Reminder>(`/api/reminders/${enc(id)}/cancel`),
+    /** Stop a ringing alarm (#390). */
+    stop: (id: string) => http.post<Reminder>(`/api/reminders/${enc(id)}/stop`),
+    /** Snooze a ringing alarm (#390); minutes default to the snooze setting. */
+    snooze: (id: string, minutes?: number) => http.post<SnoozedAlarm>(`/api/reminders/${enc(id)}/snooze`, minutes ? { minutes } : {})
   },
 
   // §16 webhooks --------------------------------------------------------------------------

@@ -12,6 +12,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
   In Telegram, Discord and WhatsApp, send `/scope work`, `/scope personal` or `/scope` followed by a project's name to
   pick which memories that chat uses, or `/scope` to see which it uses now. On the Memory page, where a memory is
   kept now reads "Used in Work" next to its source, so it no longer looks like a topic such as "Work & Learning".
+- **Say "stop" or "snooze" to a ringing alarm.** While a Sentient alarm rings, typing or saying "stop", "stop the
+  alarm", "turn it off", "snooze" or "snooze for 5 minutes" in a chat, by voice or in Telegram, Discord or WhatsApp
+  stops or snoozes it at once, with no model ("Alarm stopped.", "Snoozed until 7:39 AM."). A snooze is 9 minutes
+  unless you say how long or change "Snooze length" in Settings. The banner has a Snooze button too, and after a
+  snooze it shows until when, with Turn off. When no alarm is ringing, these words go to the assistant as before, so
+  "turn off the alarm" can still mean your house alarm (#390).
 - **Sentient in group chats, safely.** You can now pair a Telegram group or a Discord server channel with the same
   `/pair` code. Sentient answers only you there, when you mention it, reply to it or send a command. What other people
   write is treated like an email from a stranger: Sentient can read it, but never takes orders from it, and after
@@ -438,6 +444,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   tell you when something happens, the plan no longer reports on every check, and its check no longer looks at only
   the page's heading or first line (so an event added at the bottom is noticed). If the plan does either, the planner
   is told why in plain words and writes it again. Asking for "a report every hour" or "the headline" still works.
+- **A free "Subscribe" button no longer reads as a purchase.** When Sentient asks before clicking a newsletter,
+  follow or "notify me" button with no price nearby, the card now says it wants to sign you up, instead of "Make a
+  purchase" with "Yes, buy it". It still asks under your usual rules. A button with a price, a plan, a trial, an
+  upgrade or "/month" on it or next to it, or a plain "Subscribe" with nothing saying it is free, still reads as a
+  purchase and always asks.
 - **Telling Sentient something changed updates the memory.** After "Mira starts school in June", saying "Mira's
   school now starts in July" replaces June with July instead of being ignored as something Sentient already knew. The
   same goes for a new place ("Ravi moved from Pune to Delhi"), a new number or a new name. Things that are only about

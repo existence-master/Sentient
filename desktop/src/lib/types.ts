@@ -2994,4 +2994,13 @@ export interface Reminder {
   fired_at: ISODate | null
   cancelled_at: ISODate | null
   notification_id: string | null
+  /** An alarm: when it was stopped or snoozed while ringing (#390). */
+  stopped_at?: ISODate | null
+  /** An alarm made by a snooze: the id of the alarm that was ringing (#390). */
+  snoozed_from?: string | null
+}
+
+export interface SnoozedAlarm {
+  stopped: Reminder
+  reminder: Reminder
 }

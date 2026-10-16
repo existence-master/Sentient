@@ -9,7 +9,8 @@
 
 Element descriptors are the dicts produced by the snapshot script (``snapshot.py``):
 ``{role, name, tag, type, value, href, autocomplete, id, name_attr, label, placeholder,
-aria_label, title, in_form, form_payment, form_submit_text, is_submit}``. Missing keys are fine.
+aria_label, title, in_form, form_payment, form_submit_text, is_submit, near, near_cut}``. ``near`` is the text around the
+element (its card or form); ``near_cut`` says it stopped early at another offer. Missing keys are fine.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ RISKY_CLICK_RE = re.compile(r"\b(?:" + "|".join(_RISKY_WORDS) + r")\b", re.IGNOR
 
 # approval wording: first matching rule names the kind of action for the approval card
 _LABEL_RULES = [
-    (re.compile(r"\b(?:buy|purchase|pay|payment|order|check ?out|donate|subscribe|book now|reserve|transfer|"
+    (re.compile(r"\b(?:buy|purchase|pay|payment|order|check ?out|donate|book now|reserve|transfer|"
                 r"add money|withdraw)\b", re.IGNORECASE), "Purchase"),
     (re.compile(r"\b(?:delete|remove|erase|discard|trash|deactivate|close (?:my )?account)\b", re.IGNORECASE),
      "Deletes"),
@@ -41,6 +42,33 @@ _LABEL_RULES = [
     (re.compile(r"\b(?:send|submit|confirm|reply)\b", re.IGNORECASE), "Sends"),
 ]
 _DEFAULT_LABELS = {"click": "Clicks", "type": "Types into the page", "press": "Presses a key"}
+SIGNUP_LABEL = "Signs up"
+
+# subscribe, follow, notify me: "Signs up" only with a free signal and no money signal on or around it (#378)
+_SIGNUP_RE = re.compile(
+    r"\b(?:subscribe|sign ?up|follow|notify me|get (?:the )?updates|"
+    r"join (?:the |our )?(?:newsletter|mailing list|wait ?list))\b",
+    re.IGNORECASE,
+)
+# anything that says it may cost money: a price or currency, a billing period, a plan, a trial or an upgrade
+_PAID_RE = re.compile(
+    r"[$¢£¥€₹₩₽₺₫₱฿₦₪₴₨]"
+    r"|\b(?:usd|eur|gbp|inr|jpy|cad|aud|rs|rupees?|dollars?|euros?|pounds?)\b"
+    r"|/\s*(?:mo|mon|month|yr|year|wk|week|day)s?\b"
+    r"|\bper\s+(?:month|year|week|day|user|seat)\b|\b(?:a|each|every)\s+(?:month|year|week)\b"
+    # an amount next to a billing word ("499 monthly", "billed annually at 4,999"); "monthly newsletter" stays free
+    r"|\d[\d,.]*\D{0,20}?\b(?:monthly|yearly|annually|annual|quarterly|per\s+annum)\b"
+    r"|\b(?:monthly|yearly|annually|annual|quarterly|per\s+annum)\b\D{0,20}?\d"
+    r"|\b(?:plans?|trial|upgrade|premium|pricing|prices?|billed|billing|"
+    r"paid|pay|payment|buy|purchase|checkout|membership|pro)\b",
+    re.IGNORECASE,
+)
+# what a free sign-up says about itself; "Signs up" needs one of these, so a bare "Subscribe" stays a purchase
+_FREE_RE = re.compile(
+    r"\b(?:free|news ?letters?|updates?|wait ?list|notify me|notifications?|follow(?:ing)?|digest|alerts?|"
+    r"mailing list|no spam|inbox|emails?|blog|podcast|channel)\b",
+    re.IGNORECASE,
+)
 
 
 def approval_target(el: dict | None) -> str:
@@ -54,10 +82,45 @@ def approval_target(el: dict | None) -> str:
     return str(el.get("role") or el.get("tag") or "")[:80]
 
 
-def risk_label_for(text: str, kind: str) -> str:
-    """'Purchase', 'Deletes', 'Posts publicly', 'Sends', else a neutral label for the action kind."""
-    for rx, label in _LABEL_RULES:
-        if rx.search(text or ""):
+def _partial_offer(text: str, near: str, near_cut: bool) -> bool:
+    """True when the context stopped early and holds little besides the element itself: no whole card was read,
+    so a price may sit just out of reach."""
+    if not near_cut:
+        return False
+    rest = (near or "").replace(text, " ") if text else (near or "")
+    return len(re.sub(r"\W+", "", rest)) < 20
+
+
+def paid_signup(text: str, near: str = "", near_cut: bool = False) -> bool:
+    """True when ``text`` is a subscribe, sign up or follow that the approval card calls a 'Purchase'."""
+    text = text or ""
+    return bool(_SIGNUP_RE.search(text)) and not _LABEL_RULES[0][0].search(text) and (
+        risk_label_for(text, "click", near, near_cut) == _LABEL_RULES[0][1])
+
+
+def risk_label_for(text: str, kind: str, near: str = "", near_cut: bool = False) -> str:
+    """'Purchase', 'Signs up', 'Deletes', 'Posts publicly', 'Sends', else a neutral label for the action kind.
+
+    ``near`` is the text around the element (its card or form). A subscribe, follow or "notify me" reads
+    'Signs up' only when the element or ``near`` says what free thing it is (a newsletter, updates, a waitlist,
+    alerts, "free" ...) and neither shows a price, currency, billing period, plan, trial or upgrade. Anything else
+    may cost money, so it is 'Purchase', which always asks: a bare "Subscribe" is a purchase. A "Sign up" with
+    neither a free nor a money signal keeps the plain label it had before (#378). ``near_cut`` says the context stopped
+    early (at another offer's button); then only a whole card of text can show it is free. A 'Purchase' label on a
+    sign-up comes with ``send`` risk (:func:`paid_signup`, :func:`click_risk`), so its hard stop can't be skipped."""
+    text = text or ""
+    purchase_rule, *other_rules = _LABEL_RULES
+    if purchase_rule[0].search(text):
+        return purchase_rule[1]
+    if _SIGNUP_RE.search(text):
+        context = f"{text} {near or ''}"
+        paid = _PAID_RE.search(context)
+        if _FREE_RE.search(context) and not paid and not _partial_offer(text, near, near_cut):
+            return SIGNUP_LABEL
+        if paid or RISKY_CLICK_RE.search(text):
+            return purchase_rule[1]
+    for rx, label in other_rules:
+        if rx.search(text):
             return label
     return _DEFAULT_LABELS.get(kind, "Changes something")
 
@@ -92,6 +155,9 @@ def click_risk(el: dict | None) -> Risk:
         return Risk.send
     if el.get("is_submit") and el.get("form_payment"):
         return Risk.send
+    # a sign-up the approval card calls a purchase is at least send, so "Purchases always ask" holds (#378)
+    if paid_signup(approval_target(el), str(el.get("near") or ""), bool(el.get("near_cut"))):
+        return Risk.send
     return Risk.write
 
 
@@ -106,6 +172,9 @@ def type_risk(el: dict | None, submit: bool) -> Risk:
         return Risk.send
     label = " ".join(_norm(el.get(k)) for k in ("name", "aria_label", "label", "placeholder", "name_attr", "id"))
     if _MESSAGE_FIELD_RE.search(label):
+        return Risk.send
+    context = " ".join([approval_target(el), str(el.get("form_submit_text") or "")])
+    if paid_signup(context, str(el.get("near") or ""), bool(el.get("near_cut"))):
         return Risk.send
     return Risk.write
 

@@ -14,6 +14,7 @@ import {
   IconTerminal2,
   IconTrash,
   IconLock,
+  IconUserPlus,
   IconWorldWww,
   IconX,
   type Icon
@@ -58,6 +59,7 @@ const RISK_ICONS: Record<RiskLabel, Icon> = {
   'Home security': IconLock,
   'Runs code': IconTerminal2,
   Purchase: IconCreditCard,
+  'Signs up': IconUserPlus,
   Deletes: IconTrash,
   'Posts publicly': IconSend,
   Submits: IconSend,
@@ -75,7 +77,7 @@ const RISK_ICONS: Record<RiskLabel, Icon> = {
  * reads as a move to the trash, not a loss, and is checked first.
  */
 export function effectiveRisk(
-  approval: Pick<ApprovalView, 'risk' | 'reason' | 'name' | 'arguments'> & Pick<Partial<ApprovalView>, 'preview'>
+  approval: Pick<ApprovalView, 'risk' | 'reason' | 'name' | 'arguments'> & Pick<Partial<ApprovalView>, 'preview' | 'riskLabel'>
 ): EffectiveRisk {
   // a delete for good became its app's trash version (#142): it can come back, so it reads as a change, not a loss
   if (approval.preview?.kind === 'trash' && approval.risk !== 'exec')

@@ -104,7 +104,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `import.updated` | **MemoryImportJob** (section 19): an import from ChatGPT, Claude or OpenClaw started, read a batch or finished |
 | `backup.updated` | `{what: "backup"\|"snapshot"\|"restore_staged"\|"restore_cancelled"\|"restore_dismissed", name?, source?}` (section 20): refetch `GET /api/backups` |
 | `folders.updated` | `{id, removed?: true, progress?: {done, total}}` (section 22): a folder was added, removed or queued, or a look through it started, moved on (at most once a second) or ended; refetch `GET /api/folders` |
-| `reminder.updated` | **Reminder** (section 23): a timer or reminder was set, cancelled or went off |
+| `reminder.updated` | **Reminder** (section 23): a timer or reminder was set, cancelled or went off, or a ringing alarm was stopped or snoozed |
 
 ---
 
@@ -1895,7 +1895,7 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   Outside `run_loop`, use `await app.approvals.requires_approval(tool, arguments, ctx) -> (bool, Risk)`;
   `needs_approval(tool, session_id, risk=None, *, arguments=None, ctx=None)` evaluates a synchronous `risk_fn` when
   given `arguments` (an async one counts as at least `send` there).
-- `approval_request` also carries `risk_label` (e.g. "Purchase", "Deletes", "Posts publicly", "Sends", "Runs code",
+- `approval_request` also carries `risk_label` (e.g. "Purchase", "Signs up", "Deletes", "Posts publicly", "Sends", "Runs code",
   "Changes something") and `target` (short label of what is acted on, e.g. "Place order", or null). They come from the
   optional `Tool.describe_fn(arguments, ctx) -> {risk_label?, target?}` (sync or async, also `@tool(..., describe_fn=...)`);
   without it `risk_label` is "Looks something up" / "Changes something" / "Sends" / "Runs code" by effective risk.
@@ -2277,6 +2277,13 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     pay, place order, checkout, send, post, publish, delete, remove, confirm, subscribe, transfer, or it submits a form
     with payment fields → `{ok, clicked, url, message, new_tab?, dialogs?}`. A link opening a new tab makes it active.
     `confirm()` dialogs are accepted only for clicks approved as `send`; alerts are accepted; `dialogs` lists them.
+    Its approval `risk_label` is "Purchase" for buy, pay, order, checkout and the like. A subscribe, follow, sign up or
+    "notify me" reads "Signs up" (normal approval rules) only when the element or the text around it (its card or
+    form) says what free thing it is (newsletter, updates, waitlist, alerts, "free" ...) and shows no price, currency,
+    billing period ("/month", "per seat", an amount beside "monthly" or "annually"), plan, trial or upgrade. When that text stops early at another offer's button
+    and holds little besides the button itself, the free word is not enough. Anything else, a bare "Subscribe"
+    included, stays "Purchase", which always asks; a sign-up labelled "Purchase" is always rated `send`. A "Sign up"
+    with neither a free nor a money signal keeps its plain "Clicks" label and `write` risk.
     Defensive check at call time: a send-looking click that approvals did not rate `send` (page changed, or no approval
     step ran and approvals mode is not `off`) is refused with an explanation.
   - `browser_type(ref, text, submit=False)` write (`send` when submit presses Enter in a payment form, a form whose button
@@ -3371,6 +3378,7 @@ language under `sentient/agent/fastpath/`, tried for `assistant.language` and th
 | cancel | "cancel the timer", "stop the pasta timer", "cancel the 10 minute timer", "cancel my reminder to stretch", "cancel all timers", "turn off the gym alarm" | two or more match and "all" was not said; nothing matches the words given; a plural without "all" |
 | home (#175) | "turn off the living room lights", "turn on the bedroom lamp", "living room lights off", "turn the lights in the kitchen off", "switch off all the lights", "dim the living room lights to 30%", "turn on the coffee maker" | Home Assistant not connected or not reachable; the words name no room or device exactly (one light named that, the lights of the room named that, or the lights whose names hold every word); "the bedroom light" when the bedroom has two; "the lights" without a room or "all"; a device left out by the entity picker; locks, alarms, doors, garage doors and gates, and switches that sound like one (never quick); a question ("is the porch light on") |
 | alarm (#359) | "wake me at 7", "wake me up at 6:30 am", "set an alarm for 6:30", "set an alarm for 6:30 tomorrow", "set a 6:30 alarm", "set an alarm for 7 called gym", "wake me up in 20 minutes" | a repeating wish, a day name, "today" at a time that has passed, "tomorrow morning" |
+| stop or snooze a ringing alarm (#390) | only while a Sentient alarm rings: "stop", "stop the alarm", "turn it off", "turn off the gym alarm", "I'm up" (`stop_alarm`, "Alarm stopped."); "snooze", "snooze for 5 minutes", "snooze 10", "5 more minutes" (`snooze_alarm`, "Snoozed until 7:39 AM.") | nothing ringing ("stop the alarm" may mean a house alarm, #175: the usual commands and then the model have it); the words name another alarm ("stop the pasta alarm"); a snooze that is unclear ("snooze for a bit") or over 3 hours |
 | calendar (#359) | "what's next on my calendar", "what's my next meeting", "when is my next meeting", "what do I have next" | no calendar connected; anything more ("... and email it to Ravi"), another day ("what's on my calendar tomorrow"), a bare "what's next" |
 
 An alarm is the one place a clock time without AM or PM is fine, as on a phone: "set an alarm for 6:30" rings at the
@@ -3397,16 +3405,25 @@ off with `chat.quick_commands`.
 **Timers, reminders and alarms** (`sentient/reminders/`, table `reminders`). **Reminder**
 `{id, kind: "timer"|"reminder"|"alarm", message, connector: ""|"to"|"about"|"that", label, duration_s, fire_at, status:
 "scheduled"|"fired"|"cancelled", session_id, channel, language, source: "quick"|"chat"|"api", created_at, fired_at,
-cancelled_at, notification_id}`. `fire_at` is UTC; a clock time is read in the user's timezone
+cancelled_at, notification_id, stopped_at, snoozed_from}`. `fire_at` is UTC; a clock time is read in the user's timezone
 (`assistant.timezone`). `duration_s` is a timer's length or a reminder's "in 20 minutes". `session_id` is the chat it
 was set in (null in an incognito chat). A timer runs 1 second to 24 hours; a reminder or alarm can be up to a year
-ahead. An alarm has no `message`; its `label` names it ("gym").
+ahead. An alarm has no `message`; its `label` names it ("gym"). `stopped_at` is when a ringing alarm was stopped or
+snoozed; `snoozed_from` is set on an alarm made by a snooze, to the id of the alarm that was ringing (#390).
+
+**A ringing alarm (#390).** An alarm counts as ringing for 3 minutes after it goes off (as long as the window's chime
+plays), until it is stopped or snoozed: from the banner's **Stop** or **Snooze**, over REST, or by saying "stop" or
+"snooze" in any chat, by voice or in a messaging app (a quick command, above). A snooze stops it and sets a new alarm
+with the same `label`, `channel` and chat, `chat.alarm_snooze_minutes` from now (9 by default, 1 to 60), or the minutes
+said (1 minute to 3 hours). The engine publishes `reminder.updated` for the new alarm first and then for the one that
+stopped (`stopped_at` set), so the window turns the ringing banner into "Snoozed until 7:39 AM" (with **Turn off**,
+which cancels the snoozed alarm) or hides it when it stopped.
 
 When one comes due, the engine sends a `reminder` notification (`notification.new`): title "Timer done" (message "Your
 10 minute timer is done."), "Reminder" (message: what to remind about) or "Alarm" / "Alarm: gym" (message "It's
 7:00 AM.", or when late "Your 7:00 AM alarm went off while Sentient wasn't running."), payload `{event:
 "timer"|"reminder"|"alarm", reminder_id, fire_at, late, channel, session_id?}`. The window rings for an alarm: a
-banner with **Stop** and a chime (Web Audio, no sound file) that plays until Stop, for 3 minutes at most. One that came due while Sentient was not running goes off when it
+banner with **Stop** and **Snooze** and a chime (Web Audio, no sound file) that plays until Stop, for 3 minutes at most. One that came due while Sentient was not running goes off when it
 starts, and says when it was due (`late: true`). A reminder set in a Telegram, Discord or WhatsApp chat is also sent
 to that chat (the delivery is listed on the Activity timeline as "A timer, reminder or alarm you set"); one set
 anywhere else stays on the desktop, unless `channels.deliver_reminders` is on (#359, off by default; "Reminders and
@@ -3424,6 +3441,10 @@ ones are forgotten after 30 days.
 - `list_reminders(kind = "any")` (risk `read`; `kind` "timer", "reminder", "alarm" or "any") → `{status, reminders}`,
   soonest first.
 - `cancel_reminder(reminder_id)` (risk `write`) → `{status, reminder}`.
+- `stop_alarm()` (risk `write`, #390) → `{status, stopped: [Reminder]}`: stops every ringing alarm. `{error: "No Sentient
+  alarm is ringing right now."}` when none is (the model may then think of a house alarm, #175).
+- `snooze_alarm(minutes = 0)` (risk `write`, #390) → `{status, stopped, reminder}`: the alarm that rang and the new one.
+  `minutes` 0 is `chat.alarm_snooze_minutes`. With several ringing, the newest is snoozed and the others stop.
 
 Each `reminder` in a result also has `fire_at_local` and `seconds_left`.
 
@@ -3433,4 +3454,9 @@ Each `reminder` in a result also has `fire_at_local` and `seconds_left`.
 - `POST /api/reminders` `{kind: "timer"|"reminder"|"alarm", minutes?, at?, message?, label?}` → Reminder (`source: "api"`).
   400 with a plain `detail` when it can't be set.
 - `POST /api/reminders/{id}/cancel` → Reminder. 404 when unknown, 409 when it already went off or was cancelled.
+- `POST /api/reminders/{id}/stop` → Reminder (#390): stop that ringing alarm. 404 when unknown, 409 when it isn't
+  ringing.
+- `POST /api/reminders/{id}/snooze` `{minutes?}` → `{stopped: Reminder, reminder: Reminder}` (#390): snooze that ringing
+  alarm (`minutes` defaults to `chat.alarm_snooze_minutes`; the new alarm has `source: "api"`). 400 for a length
+  outside 1 minute to 3 hours, 404 when unknown, 409 when it isn't ringing.
 - Event `reminder.updated` (section 1). The Activity timeline (section 21) lists them under `reminders`.
