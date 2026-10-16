@@ -2197,7 +2197,7 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     Its approval `risk_label` is "Purchase" for buy, pay, order, checkout and the like. A subscribe, follow, sign up or
     "notify me" reads "Signs up" (normal approval rules) only when the element or the text around it (its card or
     form) says what free thing it is (newsletter, updates, waitlist, alerts, "free" ...) and shows no price, currency,
-    billing period ("/month", "per seat"), plan, trial or upgrade. When that text stops early at another offer's button
+    billing period ("/month", "per seat", an amount beside "monthly" or "annually"), plan, trial or upgrade. When that text stops early at another offer's button
     and holds little besides the button itself, the free word is not enough. Anything else, a bare "Subscribe"
     included, stays "Purchase", which always asks; a sign-up labelled "Purchase" is always rated `send`. A "Sign up"
     with neither a free nor a money signal keeps its plain "Clicks" label and `write` risk.

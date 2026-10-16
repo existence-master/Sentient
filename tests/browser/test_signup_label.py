@@ -60,6 +60,25 @@ def test_a_purchase_label_on_a_sign_up_is_always_send(name, near):
     assert safety.type_risk(field, submit=True) == Risk.send
 
 
+@pytest.mark.parametrize("near", [
+    "Free updates. Subscription 499 monthly. Subscribe",
+    "Free weekly digest, billed annually at 4,999. Subscribe",
+    "Free updates. 12 quarterly issues. Subscribe",
+])
+def test_an_amount_next_to_a_billing_word_is_a_price(near):
+    """CodeRabbit #382: "499 monthly" is a price even with a free word nearby."""
+    assert safety.risk_label_for("Subscribe", "click", near=near) == PURCHASE_LABEL
+
+
+@pytest.mark.parametrize("near", [
+    "Our monthly newsletter. Free, no spam. Subscribe",
+    "The weekly newsletter. Free, no spam. Subscribe",
+    "Free annual garden report updates. Subscribe",
+])
+def test_a_billing_word_alone_is_not_a_price(near):
+    assert safety.risk_label_for("Subscribe", "click", near=near) == "Signs up"
+
+
 def test_free_sign_ups_keep_their_risk():
     assert safety.click_risk({"role": "button", "name": "Follow"}) == Risk.write
     assert safety.click_risk({"role": "button", "name": "Notify me"}) == Risk.write

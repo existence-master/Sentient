@@ -56,6 +56,9 @@ _PAID_RE = re.compile(
     r"|\b(?:usd|eur|gbp|inr|jpy|cad|aud|rs|rupees?|dollars?|euros?|pounds?)\b"
     r"|/\s*(?:mo|mon|month|yr|year|wk|week|day)s?\b"
     r"|\bper\s+(?:month|year|week|day|user|seat)\b|\b(?:a|each|every)\s+(?:month|year|week)\b"
+    # an amount next to a billing word ("499 monthly", "billed annually at 4,999"); "monthly newsletter" stays free
+    r"|\d[\d,.]*\D{0,20}?\b(?:monthly|yearly|annually|annual|quarterly|per\s+annum)\b"
+    r"|\b(?:monthly|yearly|annually|annual|quarterly|per\s+annum)\b\D{0,20}?\d"
     r"|\b(?:plans?|trial|upgrade|premium|pricing|prices?|billed|billing|"
     r"paid|pay|payment|buy|purchase|checkout|membership|pro)\b",
     re.IGNORECASE,
