@@ -45,7 +45,7 @@ validate:
 
 Sentient runs the checks in these places:
 - **Before it proposes a self-evolved skill:** a reviewer draft, a repair or a curator merge. The reviewer may add
-  `validate` to its answer, and a repair or merge keeps the skill's checks. A draft whose check fails is not proposed
+  `validate` to its answer. A repair or merge keeps every check the skill had and can only add new ones. A draft whose check fails is not proposed
   (evolution log `skill_check_failed {name, reason, ...origin}`).
 - **Before `skill_save` changes a skill that has checks:** a failing check leaves the skill unsaved and returns a plain
   error.

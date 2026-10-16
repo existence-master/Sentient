@@ -69,7 +69,9 @@ async def skill_save(
     app = ctx.extra.get("app")
     report = None
     if existing is not None and existing.validate and app is not None:  # the skill's own check comes first (#386)
-        report = await skill_checks.run(app, name, existing.validate, [existing.dir], run_code=False)
+        draft = render_skill(name, description, body, author="assistant", version=1, tags=tags,
+                             requires_tools=requires_tools, validate=existing.validate)
+        report = await skill_checks.run(app, name, existing.validate, [existing.dir], run_code=False, candidate=draft)
         if reason := skill_checks.failure(report):
             return {"error": f"The skill's own check failed, so it wasn't saved: {reason}. Fix the steps and try again."}
         pending = pending or report["status"] == "waiting"  # a code check runs when the user approves it
@@ -85,7 +87,7 @@ async def skill_save(
             await lib.record_origin(name, ctx.store)
         await lib.record_patch(name, state, ctx.store)
         if report is not None:
-            await lib.record_check(name, report, ctx.store)
+            await lib.record_check(name, report, ctx.store, pending=pending)
         detail = {"name": name, "pending": pending, "via": "skill_save", "session_id": ctx.session_id}
         if protected:
             detail["user_edited"] = True

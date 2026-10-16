@@ -37,7 +37,7 @@ from sentient.memory.topics import TOPIC_NAMES
 from sentient.memory.vectors import cosine
 from sentient.services import Service, cancel_tasks
 from sentient.skills import checks as skill_checks
-from sentient.skills.loader import slugify, valid_name
+from sentient.skills.loader import render_skill, slugify, valid_name
 from sentient.store.db import after_watermark, next_watermark, now_iso
 
 log = logging.getLogger(__name__)
@@ -499,19 +499,20 @@ class EvolutionService(Service):
         plugin_ids = {p.id for p in self.app.registry.plugins()}
         requires = [str(t) for t in raw.get("requires_tools") or [] if str(t) in plugin_ids]
         tags = [str(t) for t in raw.get("tags") or []][:8]
-        validate = skill_checks.parse(raw.get("validate"))[0] or (existing.validate if existing else [])
-        report = await self.check_skill(name, validate, origin=origin)
+        validate = skill_checks.merge(existing.validate if existing else [], skill_checks.parse(raw.get("validate"))[0])
+        body = ensure_sections(body)
+        report = await self.check_skill(name, validate, origin=origin, description=description, body=body)
         if skill_checks.failure(report):
             return None  # a skill whose own check fails isn't proposed (#386)
         lib.write(
-            name, description, ensure_sections(body),
+            name, description, body,
             author=existing.author if existing else "assistant",
             tags=tags or (existing.tags if existing else []),
             requires_tools=requires or (existing.requires_tools if existing else []),
             pending=True, created_by_review=True, validate=validate,
         )
         await lib.record_patch(name, "pending_review", self.app.store)
-        await lib.record_check(name, report, self.app.store)
+        await lib.record_check(name, report, self.app.store, pending=True)
         user_edited = existing is not None and (await lib.edit_state(name, self.app.store))["user_edited"]
         kind = "skill_patched" if existing else "skill_created"
         detail = {"name": name, "pending": True, "reason": raw.get("reason"), **origin}
@@ -536,14 +537,19 @@ class EvolutionService(Service):
         )
         return name
 
-    async def check_skill(self, name: str, validate: list[dict], *, origin: dict) -> dict | None:
+    async def check_skill(
+        self, name: str, validate: list[dict], *, origin: dict, description: str, body: str
+    ) -> dict | None:
         """Run a drafted skill's checks before it is proposed (#386): its file checks now, in the active skill's folder
         and Sentient's files folder. This is work Sentient started itself, so a code check never runs here (ADR 0017):
         it waits for the user's approval. A failure is logged as ``skill_check_failed`` and the draft is dropped."""
         if not validate:
             return None
         current = self.app.skills.get_active_file(name)
-        report = await skill_checks.run(self.app, name, validate, [current.dir] if current else [], run_code=False)
+        draft = render_skill(name, description, body, author="assistant", version=1, tags=[], requires_tools=[],
+                             validate=validate)  # what a check of SKILL.md itself reads
+        report = await skill_checks.run(self.app, name, validate, [current.dir] if current else [], run_code=False,
+                                        candidate=draft)
         if reason := skill_checks.failure(report):
             log.info("skill %s not proposed: its check failed (%s)", name, reason)
             clean = {k: v for k, v in origin.items() if v is not None}
@@ -755,8 +761,9 @@ class EvolutionService(Service):
         description = " ".join(str(raw.get("description") or "").split()) or current.description
         fix = " ".join(str(raw.get("reason") or "").split())
         full_reason = (reason.rstrip(". ") + (f". {fix}" if fix else ""))[:400]
-        validate = skill_checks.parse(raw.get("validate"))[0] or current.validate
-        report = await self.check_skill(name, validate, origin={"repair": True, **origin})
+        validate = skill_checks.merge(current.validate, skill_checks.parse(raw.get("validate"))[0])
+        report = await self.check_skill(name, validate, origin={"repair": True, **origin}, description=description,
+                                        body=body)
         if skill_checks.failure(report):
             return None  # the fix doesn't pass the skill's own check (#386)
         lib.write(
@@ -765,7 +772,7 @@ class EvolutionService(Service):
             validate=validate,
         )
         await lib.record_patch(name, "pending_review", self.app.store)
-        await lib.record_check(name, report, self.app.store)
+        await lib.record_check(name, report, self.app.store, pending=True)
         clean_origin = {k: v for k, v in origin.items() if v is not None}
         detail = {"name": name, "pending": True, "origin": "repair", "failure": failure_kind, "reason": full_reason, **clean_origin}
         if user_edited:

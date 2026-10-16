@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -121,6 +122,8 @@ def _file_check(check: dict, folders: list[Path]) -> dict:
         except OSError as exc:
             out["detail"] = f"{check['file']} can't be read ({exc.strerror or exc})"
             return out
+        if path.name == "SKILL.md" and text.startswith("---"):  # its steps: the header holds the expected text itself
+            text = text.split("\n---", 1)[-1]
         if want not in text:
             out["detail"] = f"{check['file']} doesn't contain \"{want}\""
             return out
@@ -173,16 +176,33 @@ def _last_line(text: str) -> str:
     return next((ln.strip() for ln in reversed(text.splitlines()) if ln.strip()), "")[:200]
 
 
+def merge(previous: list[dict], proposed: list[dict]) -> list[dict]:
+    """A skill's checks after a change: every check it had, then the new ones (a repair or merge never drops one)."""
+    out = list(previous or [])
+    out += [c for c in proposed or [] if c not in out]
+    return out[:MAX_CHECKS]
+
+
 async def run(
-    app: Any, skill: str, checks: list[dict], folders: list[Path], *, run_code: bool, outside: bool = False
+    app: Any, skill: str, checks: list[dict], folders: list[Path], *, run_code: bool, outside: bool = False,
+    candidate: str | None = None,
 ) -> dict | None:
     """Run a skill's checks and return the report, or None when it declares none. ``run_code``: the user just
     approved the skill (their yes for its code check); False for work Sentient started itself, where a code check
     waits. ``outside``: the skill came from outside (ADR 0027), so its code check never runs. File checks look in
-    ``folders`` and then Sentient's files folder. Never raises: a check that breaks counts as failed."""
+    ``folders`` and then Sentient's files folder; ``candidate`` is the SKILL.md about to be saved, which a check of
+    ``SKILL.md`` reads instead of the one on disk. Never raises: a check that breaks counts as failed."""
     if not checks:
         return None
-    folders = [*folders, paths.files_dir()]
+    with tempfile.TemporaryDirectory(prefix="skill-check-") as tmp:
+        if candidate is not None:
+            (Path(tmp) / "SKILL.md").write_text(candidate, encoding="utf-8")
+            folders = [Path(tmp), *folders]
+        return await _run(app, skill, checks, [*folders, paths.files_dir()], run_code=run_code, outside=outside)
+
+
+async def _run(app: Any, skill: str, checks: list[dict], folders: list[Path], *, run_code: bool,
+               outside: bool) -> dict:
     results: list[dict] = []
     status = "passed"
     for check in checks:

@@ -117,7 +117,7 @@ class Skill:
             "created_by_review": self.created_by_review,
             "browser_profile": self.browser_profile,
             "validate": self.validate,
-            "check": SkillLibrary.check_of(stats) if self.validate else None,
+            "check": SkillLibrary.check_of(stats, pending=self.state == "pending_review") if self.validate else None,
         }
         if body:
             d["body"] = self.body
@@ -328,6 +328,11 @@ class SkillLibrary:
         if not (src / "SKILL.md").exists():
             raise FileNotFoundError(name)
         if dst.exists():
+            # a proposal holds only its SKILL.md: keep the skill's other files (scripts, references) with it
+            for f in dst.rglob("*"):
+                if f.is_file() and not (src / f.relative_to(dst)).exists():
+                    (src / f.relative_to(dst)).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(f, src / f.relative_to(dst))
             shutil.rmtree(dst)
         shutil.move(str(src), str(dst))
         return dst
@@ -447,8 +452,10 @@ class SkillLibrary:
         await store.ensure_column("skill_stats", "origin_hash", "TEXT")
         await store.ensure_column("skill_stats", "origin_text", "TEXT")
         await store.ensure_column("skill_stats", "proposal_base_hash", "TEXT")
-        # the last run of the skill's own checks (#386, ``sentient.skills.checks``), as JSON
+        # the last run of the skill's own checks (#386, ``sentient.skills.checks``), as JSON: the active skill's, and
+        # its pending proposal's
         await store.ensure_column("skill_stats", "check_report", "TEXT")
+        await store.ensure_column("skill_stats", "pending_check_report", "TEXT")
         await store.db.commit()
         self._stats_ready = True
 
@@ -572,22 +579,24 @@ class SkillLibrary:
             base = content_hash(active.read_text(encoding="utf-8", errors="replace")) if active.exists() else None
             await store.execute("UPDATE skill_stats SET proposal_base_hash = ? WHERE name = ?", (base, name.strip().lower()))
 
-    async def record_check(self, name: str, report: dict | None, store: Any = None) -> None:
-        """Keep the last report of the skill's checks (None: it declares none) for the Skills screen."""
+    async def record_check(self, name: str, report: dict | None, store: Any = None, *, pending: bool = False) -> None:
+        """Keep the last report of the skill's checks (None: it declares none) for the Skills screen: the pending
+        proposal's with ``pending``, else the active skill's."""
         store = store or self.store
         if store is None:
             return
         await self._ensure_stats(store)
+        column = "pending_check_report" if pending else "check_report"
         await store.execute(
-            "INSERT INTO skill_stats(name, state, created_at, check_report) VALUES(?, 'pending_review', ?, ?)"
-            " ON CONFLICT(name) DO UPDATE SET check_report = excluded.check_report",
+            f"INSERT INTO skill_stats(name, state, created_at, {column}) VALUES(?, 'pending_review', ?, ?)"
+            f" ON CONFLICT(name) DO UPDATE SET {column} = excluded.{column}",
             (name.strip().lower(), now_iso(), json.dumps(report) if report else None),
         )
 
     @staticmethod
-    def check_of(stats: dict | None) -> dict | None:
-        """The last check report kept in a ``skill_stats`` row, or None."""
-        raw = (stats or {}).get("check_report")
+    def check_of(stats: dict | None, *, pending: bool = False) -> dict | None:
+        """The last check report kept in a ``skill_stats`` row (the pending proposal's with ``pending``), or None."""
+        raw = (stats or {}).get("pending_check_report" if pending else "check_report")
         try:
             report = json.loads(raw) if raw else None
         except ValueError:

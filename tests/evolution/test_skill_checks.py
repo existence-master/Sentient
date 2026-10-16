@@ -180,3 +180,41 @@ async def test_skill_save_refuses_a_change_that_breaks_the_skills_check(app):
     res = await tool.call(ctx, {"name": NAME, "description": "Digest", "body": SKILL_BODY + "\n- more"})
     assert res["name"] == NAME and "error" not in res
     assert app.skills.get_any(NAME).validate == [{"file": "digests/none.md"}]  # the check is kept
+
+
+# ---------------------------------------------------------------------------------------------- review fixes
+def test_a_change_keeps_every_check_the_skill_had():
+    had = [{"file": "a.md"}]
+    assert checks.merge(had, [{"run": "print(1)"}, {"file": "a.md"}]) == [{"file": "a.md"}, {"run": "print(1)"}]
+    assert checks.merge(had, []) == had
+
+
+async def test_a_check_of_skill_md_reads_the_draft_not_the_saved_skill(app):
+    app.skills.write(NAME, "Digest", SKILL_BODY + "\n- Mention Ravi.", author="assistant",
+                     validate=[{"file": "SKILL.md", "expect": "Mention Ravi"}])
+    app.skills.reload()
+    tool = app.registry.get("skill_save")
+    ctx = app.agent.tool_context(None, "test")
+    res = await tool.call(ctx, {"name": NAME, "description": "Digest", "body": SKILL_BODY})
+    assert "SKILL.md doesn't contain" in res["error"]  # the saved skill has it, the new steps don't
+    res = await tool.call(ctx, {"name": NAME, "description": "Digest", "body": SKILL_BODY + "\n- Mention Ravi first."})
+    assert "error" not in res
+
+
+def test_approving_an_update_keeps_the_skills_files_and_each_copy_keeps_its_own_report(client):
+    core = client.core
+    core.skills.write(NAME, "Digest", SKILL_BODY, author="assistant", validate=[{"file": "scripts/rank.py"}])
+    (core.skills.root / NAME / "scripts").mkdir()
+    (core.skills.root / NAME / "scripts" / "rank.py").write_text("print('ok')", encoding="utf-8")
+    core.skills.write(NAME, "Digest v2", SKILL_BODY + "\n- more", pending=True, created_by_review=True,
+                      validate=[{"file": "scripts/rank.py"}, {"run": "print(1)", "expect": "2"}])
+    refused = client.post(f"/api/skills/{NAME}/approve")
+    assert refused.status_code == 409
+    listing = client.get("/api/skills").json()
+    assert next(s for s in listing["pending"] if s["name"] == NAME)["check"]["status"] == "failed"
+    assert next(s for s in listing["active"] if s["name"] == NAME)["check"] is None  # the active copy is untouched
+    core.skills.write(NAME, "Digest v2", SKILL_BODY + "\n- more", pending=True, created_by_review=True,
+                      validate=[{"file": "scripts/rank.py"}, {"run": "print(1 + 1)", "expect": "2"}])
+    approved = client.post(f"/api/skills/{NAME}/approve").json()
+    assert approved["check"]["status"] == "passed" and approved["description"] == "Digest v2"
+    assert (core.skills.root / NAME / "scripts" / "rank.py").exists()  # the proposal held only its SKILL.md

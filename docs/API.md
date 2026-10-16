@@ -1711,16 +1711,19 @@ expect?, timeout_s: 5-120 (default 30)}` (runs in the code sandbox, section 11, 
 its printed output or result must contain; otherwise it must finish without an error). Unknown keys are ignored; an
 unusable check is dropped with a `validate` lint warning. **CheckReport** `{status: "passed"|"failed"|"waiting"|
 "not_run", results: [{kind: "file"|"run", target, ok: true|false|null, detail}], checked_at}` is the last run, kept
-in `skill_stats.check_report` (`null` when the skill declares no checks or they haven't run). The checks run:
+in `skill_stats.check_report` for the active skill and `pending_check_report` for its pending proposal (`check` on a
+Skill is its own copy's; `null` when it declares no checks or they haven't run). A check of `SKILL.md` reads the steps
+of the version about to be saved, without its header. The checks run:
 - before a reviewer, repair or curator proposal is staged. File checks run then. Code checks never run in this
   background work (ADR 0017) and are `waiting` (`ok: null`). A failing proposal is dropped and logged as
   `skill_check_failed {name, reason, session_id?|task_id?|repair?|curator?}`, with no notification. The reviewer may
-  add `validate` to its answer; a repair or merge keeps the skill's checks.
+  add `validate` to its answer; a repair or merge keeps every check the skill had and adds new ones (at most five).
 - before `skill_save` changes a skill that has checks: a failure returns `{error}` and nothing is saved, and a
   `waiting` code check makes the change wait for review.
 - on `POST /api/skills/{name}/approve`, again, with code: the approve click is the user's yes (the app labels the
   button "Approve and run check"). A failure returns 409 "The skill's check failed: <reason>. It is still waiting for
-  your review." and logs `skill_check_failed {name, reason, by: "user"}`.
+  your review." and logs `skill_check_failed {name, reason, by: "user"}`. Approving an update keeps the skill's other
+  files (a proposal holds only its SKILL.md), so a check of `scripts/x.py` stays true.
 
 A code check is `not_run` with a plain `detail` when code execution is off, `execute_code` has a Never rule or a Read
 only setting, or the skill came from outside (vetting, ADR 0027).
