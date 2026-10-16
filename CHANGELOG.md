@@ -11,6 +11,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
   again, for a few seconds, and only calls it done when the device really changed. If it didn't, you see it plainly
   ("Hallway light still reports off."), in chat, in quick commands and in task runs, and never a success. You can
   change how long it waits in Settings (#386).
+- **Say "stop" or "snooze" to a ringing alarm.** While a Sentient alarm rings, typing or saying "stop", "stop the
+  alarm", "turn it off", "snooze" or "snooze for 5 minutes" in a chat, by voice or in Telegram, Discord or WhatsApp
+  stops or snoozes it at once, with no model ("Alarm stopped.", "Snoozed until 7:39 AM."). A snooze is 9 minutes
+  unless you say how long or change "Snooze length" in Settings. The banner has a Snooze button too, and after a
+  snooze it shows until when, with Turn off. When no alarm is ringing, these words go to the assistant as before, so
+  "turn off the alarm" can still mean your house alarm (#390).
 - **Sentient in group chats, safely.** You can now pair a Telegram group or a Discord server channel with the same
   `/pair` code. Sentient answers only you there, when you mention it, reply to it or send a command. What other people
   write is treated like an email from a stranger: Sentient can read it, but never takes orders from it, and after

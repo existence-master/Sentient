@@ -1,26 +1,48 @@
 /**
  * A ringing alarm (#359). An alarm's `reminder` notification (`payload.event = "alarm"`) starts a chime made with
- * Web Audio, so no sound file ships with the app. It rings until Stop, or for `MAX_RING_MS` at most.
+ * Web Audio, so no sound file ships with the app. It rings until Stop or Snooze, or for `MAX_RING_MS` at most.
+ *
+ * The engine knows which alarm rings too (#390): Stop and Snooze here tell it, and saying "stop" or "snooze" in a chat,
+ * by voice or in a messaging app stops or snoozes it there. Its `reminder.updated` events then update the banner:
+ * a snooze turns it into "Snoozed until 7:39 AM", a stop hides it.
  */
 import { create } from 'zustand'
-import type { Notification } from '@/lib/types'
+import { api } from '@/lib/api'
+import type { Notification, Reminder } from '@/lib/types'
 
-const MAX_RING_MS = 3 * 60_000
+const MAX_RING_MS = 3 * 60_000 // the engine's RING_S
 const PATTERN_MS = 1400
 
 export interface RingingAlarm {
   id: string
+  /** The alarm in the engine (`payload.reminder_id`), when the notification has one. */
+  reminderId?: string
   title: string
   message: string
   startedAt: number
 }
 
+export interface Snoozed {
+  /** The new alarm the snooze set. */
+  reminderId: string
+  title: string
+  until: string
+}
+
 interface AlarmState {
   ringing: RingingAlarm | null
+  snoozed: Snoozed | null
   /** True while the sound is really playing (the audio output started). */
   playing: boolean
   ring: (n: Notification) => void
+  /** Stop button: silence it here and tell the engine. */
   stop: () => void
+  /** Snooze button: silence it here and ask the engine for a snooze. */
+  snooze: () => void
+  /** Turn off a snoozed alarm (cancels the alarm the snooze set). */
+  turnOff: () => void
+  /** A `reminder.updated` event: a stop or snooze from anywhere (#390). */
+  updated: (r: Reminder) => void
 }
 
 let ctx: AudioContext | null = null
@@ -57,12 +79,22 @@ export function isAlarm(n: Notification): boolean {
   return n.kind === 'reminder' && n.payload?.event === 'alarm'
 }
 
+function reminderOf(n: Notification): string | undefined {
+  const id = n.payload?.reminder_id
+  return typeof id === 'string' && id ? id : undefined
+}
+
 export const useAlarm = create<AlarmState>((set, get) => ({
   ringing: null,
+  snoozed: null,
   playing: false,
   ring: (n) => {
     silence()
-    set({ ringing: { id: n.id, title: n.title || 'Alarm', message: n.message, startedAt: Date.now() }, playing: false })
+    set({
+      ringing: { id: n.id, reminderId: reminderOf(n), title: n.title || 'Alarm', message: n.message, startedAt: Date.now() },
+      snoozed: null,
+      playing: false
+    })
     try {
       const audio = new AudioContext()
       ctx = audio
@@ -80,11 +112,45 @@ export const useAlarm = create<AlarmState>((set, get) => ({
       set({ playing: false }) // no audio output: the card and the notification still show
     }
     limit = window.setTimeout(() => {
-      if (get().ringing?.id === n.id) get().stop()
+      if (get().ringing?.id === n.id) {
+        silence() // the engine stops counting it as ringing at the same time
+        set({ ringing: null, playing: false })
+      }
     }, MAX_RING_MS)
   },
   stop: () => {
+    const id = get().ringing?.reminderId
     silence()
     set({ ringing: null, playing: false })
+    if (id) void api.reminders.stop(id).catch(() => undefined) // already stopped elsewhere: nothing to do
+  },
+  snooze: () => {
+    const ringing = get().ringing
+    if (!ringing?.reminderId) return get().stop()
+    silence()
+    set({ ringing: null, playing: false })
+    void api.reminders.snooze(ringing.reminderId).then(
+      ({ reminder }) => {
+        if (!get().ringing) set({ snoozed: { reminderId: reminder.id, title: ringing.title, until: reminder.fire_at } })
+      },
+      () => undefined // it had stopped already
+    )
+  },
+  turnOff: () => {
+    const snoozed = get().snoozed
+    set({ snoozed: null })
+    if (snoozed) void api.reminders.cancel(snoozed.reminderId).catch(() => undefined)
+  },
+  updated: (r) => {
+    const { ringing, snoozed } = get()
+    if (ringing?.reminderId && r.snoozed_from === ringing.reminderId && r.status === 'scheduled') {
+      silence()
+      set({ ringing: null, playing: false, snoozed: { reminderId: r.id, title: ringing.title, until: r.fire_at } })
+    } else if (ringing?.reminderId === r.id && r.stopped_at) {
+      silence()
+      set({ ringing: null, playing: false })
+    } else if (snoozed?.reminderId === r.id && r.status !== 'scheduled') {
+      set({ snoozed: null }) // it was turned off, or it is ringing again
+    }
   }
 }))
