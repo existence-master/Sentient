@@ -143,7 +143,7 @@ def test_approving_runs_the_code_check_in_the_sandbox_and_a_failure_keeps_it_wai
 
     refused = client.post("/api/skills/shopping-total-wrong/approve")
     assert refused.status_code == 409
-    assert refused.json()["detail"] == ("The skill's check failed: the check printed '165', not \"200\". It is still "
+    assert refused.json()["detail"] == ("The skill's check failed: it printed '165', not \"200\". It is still "
                                         "waiting for your review.")
     pending = {s["name"]: s for s in client.get("/api/skills").json()["pending"]}
     assert pending["shopping-total-wrong"]["check"]["status"] == "failed"

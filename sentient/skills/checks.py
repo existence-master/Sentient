@@ -154,12 +154,12 @@ async def _code_check(app: Any, check: dict, skill: str) -> dict:
         printed += "\n" + json.dumps(res.get("result"), ensure_ascii=False, default=str)
     if not res.get("ok"):
         why = str(res.get("error") or "").strip() or _last_line(str(res.get("stderr") or "")) or "it failed"
-        out["detail"] = f"the check's code failed: {why.rstrip('.')}"
+        out["detail"] = f"its code failed: {why.rstrip('.')}"
         return out
     want = check.get("expect")
     if want and want not in printed:
         shown = _last_line(printed) or "nothing"
-        out["detail"] = f"the check printed {shown!r}, not \"{want}\""
+        out["detail"] = f"it printed {shown!r}, not \"{want}\""
         return out
     out["ok"] = True
     return out
