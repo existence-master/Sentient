@@ -35,6 +35,9 @@ class ChannelStore:
     async def migrate(self) -> None:
         await self.store.db.executescript(SCHEMA.read_text(encoding="utf-8"))
         await self.store.ensure_column("channel_questions", "request", "TEXT")  # #337
+        # a group chat (ADR 0029): only the person who paired it (``owner_id``) talks to Sentient there
+        await self.store.ensure_column("channel_chats", "is_group", "INTEGER NOT NULL DEFAULT 0")
+        await self.store.ensure_column("channel_chats", "owner_id", "TEXT")
         await self.store.db.commit()
         await self.prune_deliveries()  # on every start too, so old rows go even when nothing is sent any more
 
@@ -79,13 +82,19 @@ class ChannelStore:
             "paired_at": row["paired_at"],
             "deliver": bool(row["deliver"]),
             "session_id": row["session_id"],
+            "is_group": bool(row["is_group"]),
+            "owner_id": row["owner_id"],
         }
 
-    async def add_chat(self, channel: str, chat_id: str, label: str, *, deliver: bool, session_id: str | None) -> dict:
+    async def add_chat(
+        self, channel: str, chat_id: str, label: str, *, deliver: bool, session_id: str | None, is_group: bool = False,
+        owner_id: str | None = None,
+    ) -> dict:
         await self.store.execute(
-            "INSERT INTO channel_chats(channel, chat_id, label, paired_at, deliver, session_id) VALUES(?,?,?,?,?,?)"
-            " ON CONFLICT(channel, chat_id) DO UPDATE SET label = excluded.label, paired_at = excluded.paired_at",
-            (channel, str(chat_id), label, now_iso(), int(deliver), session_id),
+            "INSERT INTO channel_chats(channel, chat_id, label, paired_at, deliver, session_id, is_group, owner_id)"
+            " VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(channel, chat_id) DO UPDATE SET label = excluded.label,"
+            " paired_at = excluded.paired_at, is_group = excluded.is_group, owner_id = excluded.owner_id",
+            (channel, str(chat_id), label, now_iso(), int(deliver), session_id, int(is_group), owner_id),
         )
         await self.store.execute(
             "DELETE FROM channel_refusals WHERE channel = ? AND chat_id = ?", (channel, str(chat_id))

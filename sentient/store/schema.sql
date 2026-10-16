@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS messages (
     id            TEXT PRIMARY KEY,
     session_id    TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    role          TEXT NOT NULL,                  -- system | user | assistant | tool
+    role          TEXT NOT NULL,                  -- system | user | assistant | tool | other | event (ADR 0029)
     content       TEXT,
     tool_calls    TEXT,                           -- JSON list (assistant messages)
     tool_call_id  TEXT,                           -- (tool messages)
@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 -- the activity timeline (#147) reads tool calls newest first across every chat
 CREATE INDEX IF NOT EXISTS idx_messages_tool_time ON messages(created_at) WHERE role = 'tool';
+-- ... and what the user did to a chat (role 'event', e.g. trusting it again, ADR 0029)
+CREATE INDEX IF NOT EXISTS idx_messages_event_time ON messages(created_at) WHERE role = 'event';
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content, content='messages', content_rowid='rowid'

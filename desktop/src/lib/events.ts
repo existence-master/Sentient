@@ -16,7 +16,7 @@
  *   memory.updated        -> invalidate ['memories']
  *   skill.updated         -> invalidate ['skills']
  *   mcp.review            -> invalidate ['integrations-mcp'] (an MCP server's tools wait for review, #146)
- *   session.updated       -> rename or set the chat's model in ['sessions']
+ *   session.updated       -> rename, set the chat's model or its outside-content mark in ['sessions']
  *   session.deleted       -> remove from ['sessions'] and refetch its transcript (an incognito chat that was closed)
  *   rule_proposal.updated -> refetch that chat's ['rule-proposals'] ("Make this a rule?" cards)
  *   approval_grants.updated -> refetch ['approval-grants'] (Settings > Approvals, #139)
@@ -201,6 +201,8 @@ export function installDomainEvents(qc: QueryClient): () => void {
         })
       )
       if (!found) void qc.invalidateQueries({ queryKey: qk.sessions })
+      // a group member wrote, or the user trusted the chat again: their rows are in the transcript now (ADR 0029)
+      if ('untrusted' in changed) void qc.invalidateQueries({ queryKey: qk.messages(session_id) })
     })
   )
   offs.push(
