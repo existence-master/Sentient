@@ -11,6 +11,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
   again, for a few seconds, and only calls it done when the device really changed. If it didn't, you see it plainly
   ("Hallway light still reports off."), in chat, in quick commands and in task runs, and never a success. You can
   change how long it waits in Settings (#386).
+- **Sentient in group chats, safely.** You can now pair a Telegram group or a Discord server channel with the same
+  `/pair` code. Sentient answers only you there, when you mention it, reply to it or send a command. What other people
+  write is treated like an email from a stranger: Sentient can read it, but never takes orders from it, and after
+  someone else writes, anything it would send checks with you first, naming who wrote it ("That address came from
+  another group member (Ravi), not from you."). Only you can press its buttons, and task results stay out of a group
+  unless you turn them on.
+- **Trust a chat again after you've checked it.** A chat that read an email, a web page or a group member's message
+  shows a bar saying so above the message box. If you've looked at it and it's fine, click **I've checked it** (or
+  send `/trust`, then `/trust yes`, in Telegram, Discord or WhatsApp) and sending from that chat follows your usual approval settings
+  again. It covers only what you've seen: if someone writes while you decide, the chat keeps asking and says who
+  wrote. It's noted in the chat and in Activity, and anything new from outside makes it ask again.
 - **Keep work, personal and project memories apart.** Each memory is now kept for Personal, Work, a project you name,
   or every chat (for things like your name or how you like answers). Pick a chat's memories from the button at the
   top of the chat, or before you start one. A work chat then uses your work memories and the ones for every chat,
@@ -416,6 +427,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **A page watch always checks the page.** "Track this page and tell me when a new event is added" could be set to
+  start only when something arrived in your calendar or smart home, so it never looked at the page. A check that reads
+  a page, a search or the news now runs on a timer: every hour, or as often as you asked (#389).
 - **Changing a rule while an email waits to go out now counts.** If you set an app or tool to **Ask** while one of
   its emails or messages waits the few seconds before it is sent, Sentient asks you before it goes out instead of
   sending it under the old rule. The same goes for **Only if I asked**, unless your message asked for that email.
@@ -423,6 +437,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   tell you when something happens, the plan no longer reports on every check, and its check no longer looks at only
   the page's heading or first line (so an event added at the bottom is noticed). If the plan does either, the planner
   is told why in plain words and writes it again. Asking for "a report every hour" or "the headline" still works.
+- **A free "Subscribe" button no longer reads as a purchase.** When Sentient asks before clicking a newsletter,
+  follow or "notify me" button with no price nearby, the card now says it wants to sign you up, instead of "Make a
+  purchase" with "Yes, buy it". It still asks under your usual rules. A button with a price, a plan, a trial, an
+  upgrade or "/month" on it or next to it, or a plain "Subscribe" with nothing saying it is free, still reads as a
+  purchase and always asks.
 - **Telling Sentient something changed updates the memory.** After "Mira starts school in June", saying "Mira's
   school now starts in July" replaces June with July instead of being ignored as something Sentient already knew. The
   same goes for a new place ("Ravi moved from Pune to Delhi"), a new number or a new name. Things that are only about

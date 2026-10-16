@@ -91,7 +91,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending", reason?, previous?, session_id?}`; `status: "pending"` means the memory waits in the review inbox (section 7), with `reason: "instruction"` when it reads like an instruction (#234); `previous` is an UPDATE's words before it and `session_id` the chat a memory was learned in (extraction after a turn, `memory_remember`): that chat shows "Remembered: ... Undo" (Undo is `DELETE /api/memories/{id}`, or `PUT` with `previous` for an update) or "Waiting for your review: ..." with Review (#234); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE). Memory scopes (#155, section 7): a save carries `scope` (where it was kept); moving a memory sends UPDATE with `reason: "moved"`, `scope` and `previous_scope`; resetting a scope sends a bulk DELETE with `reason: "scope_reset"`, `scope` and `count` |
 | `skill.updated` | `{name, state: "active"\|"pending_review"\|"stale"\|"archived"\|"rejected"\|"deleted"}` |
 | `mcp.review` | `{server, reason?: "new"\|"changed", tools?: [tool names on the server], needed}`: an MCP server's tools wait for review, or the user answered (section 5) |
-| `session.updated` | `{session_id, title?, model?, memory_scope?}`: only what changed. `title` after a rename or an automatic title; `model` (`null` = the default) after the chat's model was picked; `memory_scope` (the scope it uses now) after its memories were picked (section 2) |
+| `session.updated` | `{session_id, title?, model?, memory_scope?, untrusted?}`: only what changed. `title` after a rename or an automatic title; `model` (`null` = the default) after the chat's model was picked; `memory_scope` (the scope it uses now) after its memories were picked (section 2); `untrusted` when the chat's outside-content mark changes (it read outside content, a group member wrote, or the user trusted it again: `""`, section 10) |
 | `session.deleted` | `{session_id, reason?: "incognito"}`: a chat was deleted (`DELETE /api/sessions/{id}`, or an incognito chat closed by the engine, section 2) |
 | `rule_proposal.updated` | **RuleProposal** (section 2, rules from chat): a new "Make this a rule?" card, or one the user answered |
 | `approval_grants.updated` | `{count}`: a task or timed grant was added, revoked or ran out (section 2, "Scoped answers"); refetch `GET /api/approvals/grants` |
@@ -334,16 +334,29 @@ accept or loosen a rule.
     (`subagents.role: primary`), except Claude Code, which only answers chats. Background work after a reply (titles,
     memory, rule checks, summaries) and tasks keep their own role models.
   - Incognito chats keep a model the same way.
+- `POST /api/sessions/{id}/trust` `{upto?: message id}` → `{ok, was, trusted, untrusted, writer}`: "I've checked it,
+  trust this chat again" (ADR 0029, section 10 "Outside content"). `upto` is the newest message the window has shown;
+  the window always sends it. Clears the chat's outside-content mark (`sessions.untrusted` = `""`) unless outside
+  content was stored after `upto` (a group member's message, a tool result that brought outside content in): then
+  `trusted: false`, the chat stays marked, now with that newer source (`untrusted`, e.g. `"another group member
+  (Priya)"`, published with `session.updated`), and `writer` names the member ("" for other content). `was` is what it
+  had read (`""` when it was clean: nothing changes and nothing is logged). A clear logs an `event` row in the chat
+  (content `{event, was, via, upto}`) and publishes `session.updated` `{untrusted: ""}`. Without `upto` it covers
+  everything stored. 404 unknown chat, 422 an `upto` that isn't a message of this chat. No tool can do this.
 - `DELETE /api/sessions/{id}` → `{ok}` (helpers the chat started are cancelled first; publishes `session.deleted`)
 - `GET /api/sessions/{id}/messages?limit=500` → raw transcript rows, oldest first (404 when the chat doesn't exist, e.g. a
   closed incognito chat):
   ```json
-  {"id": "...", "role": "user|assistant|tool", "content": "...", "thinking": "...|null",
+  {"id": "...", "role": "user|assistant|tool|other|event", "content": "...", "thinking": "...|null",
    "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "memory_recall", "arguments": "{\"query\":\"sister\"}"}}],
    "tool_call_id": "call_1", "name": "memory_recall", "attachments": ["report.pdf"], "interjection": false,
    "memory_sources": [], "sources": [], "approval": null, "checks": [], "created_at": "..."}
   ```
   The UI folds each `assistant` message with `tool_calls` plus its following `tool` messages into one assistant turn.
+  `other` (ADR 0029): a message someone other than the owner wrote in a paired group chat, `name` = their display
+  name; the model reads it as outside content, the window shows it as theirs. `event`: something the user did to the
+  chat, never sent to the model; `name: "trusted"` with `content` JSON `{event: "trusted", was, via: "desktop"|<channel
+  id>}` is "trusted this chat again".
   `approval` (tool messages, #147) is how the user answered that call's approval request, `null` when it did not ask:
   `{decision: "allow"|"allow_session"|"allow_timed"|"allow_always"|"deny", asked_at, answered_at, target, risk_label,
   untrusted, rule, warning}` (a request nobody answered in time is `deny`; `rule` is the lasting rule then, e.g.
@@ -781,7 +794,7 @@ Each run embeds its most recent 200 progress updates; the full log is at the `/e
 `interval` schedules (every `interval_minutes`, minimum 5; `frequency: "hourly"` is normalized to 60) are additive. The
 task-creation prompt produces them for repeats measured in minutes or hours, and a request that says so ("every 10
 minutes", "every hour", "every 2 hours", "every 30 min", "hourly") is always saved as `interval`, whatever the model
-wrote (triggered schedules stay triggered). The planner also uses `interval` for script jobs.
+wrote (triggered schedules stay triggered, except a web check's, section 16). The planner also uses `interval` for script jobs.
 **Fuzzy windows:** a daily or weekly schedule with `window` runs at a random minute inside that part of the day, in its
 timezone, instead of at `time` (kept for the editor): `morning` 07:00-10:00, `afternoon` 12:00-16:00, `evening`
 17:00-20:00, `night` 20:00-23:00. `next_execution_at` is the next window that has not started yet (so a run inside
@@ -1889,7 +1902,7 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   Outside `run_loop`, use `await app.approvals.requires_approval(tool, arguments, ctx) -> (bool, Risk)`;
   `needs_approval(tool, session_id, risk=None, *, arguments=None, ctx=None)` evaluates a synchronous `risk_fn` when
   given `arguments` (an async one counts as at least `send` there).
-- `approval_request` also carries `risk_label` (e.g. "Purchase", "Deletes", "Posts publicly", "Sends", "Runs code",
+- `approval_request` also carries `risk_label` (e.g. "Purchase", "Signs up", "Deletes", "Posts publicly", "Sends", "Runs code",
   "Changes something") and `target` (short label of what is acted on, e.g. "Place order", or null). They come from the
   optional `Tool.describe_fn(arguments, ctx) -> {risk_label?, target?}` (sync or async, also `@tool(..., describe_fn=...)`);
   without it `risk_label` is "Looks something up" / "Changes something" / "Sends" / "Runs code" by effective risk.
@@ -2012,6 +2025,23 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   Stored `messages` rows keep the unmarked result; `app.agent.mark_outside_messages(messages)` marks a transcript
   read back from storage (chat history, task checkpoints; a `file_read` is matched to its call's arguments) and
   `app.agent.outside_content(content, tool, arguments)` one tool message. `run_tool` returns the marked content. The user's own messages are never marked.
+- **Group chats** (ADR 0029): a message from anyone but the owner of a paired group chat (section 14) is stored as a
+  `messages` row with role `other` (`rules.OTHER_ROLE`, the sender in `name`) through
+  `app.agent.add_group_messages(session_id, [(sender, text)])`, which marks the chat with
+  `rules.group_source(sender)` (`"another group member (<name>)"`, the name cleaned and at most 40 characters) unless
+  it is marked already, and publishes `session.updated`. `history_to_openai` turns each such row into a user turn
+  `mark_outside("<name> wrote in the group:\n<text>", group_source(name))`, always, whatever
+  `chat.mark_outside_content` says. They never reach `ToolContext.user_words`, rule checks, fact extraction or quick
+  commands. `memory_search_history` marks the run when a hit is an `other` row (its hits carry `from`).
+- **Trusting a chat again** (ADR 0029): only the user, from the window (`POST /api/sessions/{id}/trust`) or with
+  `/trust yes` in a paired chat (section 14), through `app.agent.trust_chat(session_id, via=, upto=)` →
+  `TrustResult{was, trusted, still, writer}` (`None` for no chat, `ValueError` for an `upto` outside the chat). It covers
+  the messages up to `upto` (the newest one the user had seen): outside content stored after it keeps the chat marked
+  (`still`, also saved as the mark). Otherwise it sets `sessions.untrusted` to `""` (so the chat is not classified
+  again), adds an `event` row (`rules.EVENT_ROLE`, `name` `rules.TRUSTED_EVENT`) and publishes `session.updated`. It
+  and `mark_group_chat` take turns per chat. New outside content marks it again. Rules, the second look and memories
+  already held for review are unchanged. `app.agent.chat_mark(session_id)` reads the mark and
+  `app.agent.last_message_id(session_id)` gives the newest message.
 - A result that says so itself (ADR 0025): a tool result whose **first key** is `outside_content` (a string naming
   where it came from) counts as outside content even when its tool does not: it marks the run, is wrapped for the
   model and counts in `rules.untrusted_in` (`rules.result_outside_source(result_or_stored_text)`). It only adds a
@@ -2024,7 +2054,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     number in an argument whose key names a recipient (`to`, `cc`, `bcc`, `recipient_email`, `attendees`, `guests`,
     `phone`...; nested arguments such as Composio's multi-execute are walked) must appear in the user's own words
     (user messages, without outside-content blocks or the time note; in a task run, also its brief in the system
-    prompt), in trusted records read in the run (results of tools that bring no outside content, Google Contacts, a
+    prompt; the blocks, such as a group member's message, count as outside content with the source in their marker,
+    ADR 0029), in trusted records read in the run (results of tools that bring no outside content, Google Contacts, a
     chat's system prompt) or in an active saved memory, or belong to a name the user gave ("email Arjun" and
     `arjun.mehta@...`; the user's own name counts). Every amount of money (`$1,200`, `500 rupees`, a number in an
     `amount`/`price`/`total`... field) must appear there too. After outside content, a link in the call that came
@@ -2253,6 +2284,13 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     pay, place order, checkout, send, post, publish, delete, remove, confirm, subscribe, transfer, or it submits a form
     with payment fields → `{ok, clicked, url, message, new_tab?, dialogs?}`. A link opening a new tab makes it active.
     `confirm()` dialogs are accepted only for clicks approved as `send`; alerts are accepted; `dialogs` lists them.
+    Its approval `risk_label` is "Purchase" for buy, pay, order, checkout and the like. A subscribe, follow, sign up or
+    "notify me" reads "Signs up" (normal approval rules) only when the element or the text around it (its card or
+    form) says what free thing it is (newsletter, updates, waitlist, alerts, "free" ...) and shows no price, currency,
+    billing period ("/month", "per seat", an amount beside "monthly" or "annually"), plan, trial or upgrade. When that text stops early at another offer's button
+    and holds little besides the button itself, the free word is not enough. Anything else, a bare "Subscribe"
+    included, stays "Purchase", which always asks; a sign-up labelled "Purchase" is always rated `send`. A "Sign up"
+    with neither a free nor a money signal keeps its plain "Clicks" label and `write` risk.
     Defensive check at call time: a send-looking click that approvals did not rate `send` (page changed, or no approval
     step ran and approvals mode is not `off`) is refused with an explanation.
   - `browser_type(ref, text, submit=False)` write (`send` when submit presses Enter in a payment form, a form whose button
@@ -2357,7 +2395,9 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
     failed polls in a row or when the token was revoked.
   - `qr`: WhatsApp only, while `status` is `linking`: the text to render as a QR code (it changes about every 20 s and
     arrives through `channel.updated`); `null` otherwise.
-- **PairedChat** `{chat_id, label, paired_at, deliver: bool, session_id}` (`deliver` defaults to `channels.<id>.deliver_default`).
+- **PairedChat** `{chat_id, label, paired_at, deliver: bool, session_id, is_group: bool, owner_id: string|null}`
+  (`deliver` defaults to `channels.<id>.deliver_default`, and to off for a group; `is_group` and `owner_id`, the app's
+  id of the person who paired a group, ADR 0029; `label` of a group is its title, Telegram, or `#<channel id>`, Discord).
 - `channels.<id>.memory_scope` (default `personal`, #155): the memories that app's chats use and save to, unless a chat
   has its own (section 7, "Memory scopes").
 - `GET /api/channels` → `[Channel]` (always all three ids).
@@ -2375,11 +2415,30 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   without it re-checks the token. `ok: false` when not connected or the chat is not paired.
 - Pairing: the user sends `/pair <code>` to the bot. `channels.pairing_max_attempts` (5) wrong codes cancel the active code,
   and a chat that sent that many wrong codes is ignored for the code lifetime. Messages from chats that are not paired get
-  one polite refusal (once per chat, remembered across restarts) and are otherwise ignored. Telegram: private chats only
-  (groups are ignored). Discord: direct messages only (server messages are ignored).
+  one polite refusal (once per chat, remembered across restarts) and are otherwise ignored. Telegram: private chats,
+  groups and supergroups (never channels or bots). Discord: direct messages and server channels (intents
+  `DIRECT_MESSAGES | GUILD_MESSAGES`; a server message carries text only when it mentions the bot). WhatsApp: the
+  user's own chat and chats paired with a code; groups are ignored (Sentient would speak as the user there).
+- **Group chats** (ADR 0029): a group is paired like a direct chat, and the person who sent `/pair` is its owner
+  (`owner_id`). Only the owner talks to Sentient there, and only with messages meant for it (`Incoming.addressed`: a
+  command, a mention of the bot, which is taken out of the text, or a reply to one of its messages); the owner's other
+  messages are ignored. Messages from anyone else that Sentient can see (Telegram: every one the bot receives,
+  all of them with privacy mode off; Discord: only those that mention the bot (a reply that doesn't mention it carries no text), since Discord sends
+  no text for others without the privileged Message Content intent) never start a reply, run a command or answer a question; they are
+  kept as outside content (section 10, "Group chats", at most 20 waiting while a reply runs and stored when it ends, also
+  when it fails or is stopped; the chat is marked at once, `app.agent.mark_group_chat`; with a
+  note for voice notes and files, which are not opened) and mark the chat. Buttons pressed by anyone but the owner
+  answer "Only the person who paired this chat with Sentient can use these buttons." A group message for a chat
+  paired as a direct chat is ignored.
 - A paired chat is a normal Sentient chat (`channel` = channel id, so the desktop shows a badge). Commands: `/new` starts a
   fresh chat (new session), `/stop` cancels the reply (the partial text is kept with "(stopped)"), `/stopall` (or
-  `/stop all`) is Stop everything and `/resume` undoes it (section 17; source `telegram` or `discord`), `/model`, `/help`; other
+  `/stop all`) is Stop everything and `/resume` undoes it (section 17; source `telegram` or `discord`), `/model`, `/help`,
+  `/trust` (says what the chat read and why sending asks, and remembers the newest message then; `/trust yes` trusts
+  the chat up to that message, `Agent.trust_chat` with `via` = the channel id, section 10: anything from outside that
+  arrived after the owner's `/trust`, also a member's message still waiting for a reply to end, keeps it marked and the
+  reply says who wrote, "Ravi wrote in this chat after you sent /trust, ..."; `/trust yes` alone covers what is stored
+  now; `/new` forgets it). A group chat's Sentient chat is titled with the group's name (Telegram title, Discord
+  `#<channel id>`), never its first message, so Activity and the chat list name the group; other
   `/commands` get a hint. Unpaired chats cannot use any command except `/pair`. Replies stream by editing the message at most once per `channels.<id>.edit_interval_s` (1 s) when
   `stream_edits` is on; long replies are split (Telegram 4096, Discord 2000 characters, code blocks kept balanced).
   Telegram replies use HTML parse mode (bold, italics, strikethrough, code, code blocks, links, lists, quotes; everything
@@ -2689,6 +2748,11 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   for this, so the AI will do it at each run instead."). Its runs use the recurring-task memory ("Recurring tasks
   remember"). The same rules apply to script code changed by chat tools; code a person edits
   (`PATCH /api/tasks/{id}`) only has to compile. A script job the planner leaves on an immediate one-off schedule becomes `interval` 60.
+  A script job (or the AI-run task that replaced one) that reads the web (`web_fetch`, `web_search`, `news_search`,
+  `news_top_headlines`) never keeps a `triggered` schedule it has no use for (#389): unless the code reads
+  `trigger_event` or the request names the trigger's app ("email", "inbox", "calendar", "meeting", "door", "lights",
+  "webhook"...), it becomes recurring: the interval the request says, else the planner's daily or weekly schedule,
+  else `interval` 60.
   The planner is told to use `noteworthy` by default for a page, a feed or the news, and `changed` for one exact value
   or when the user wants to hear about any change at all (#298). A `changed` script it proposes that returns the whole
   result of `tools.web_fetch` (the page or its `content`) is stored as `noteworthy`, unless the request talks about a
@@ -3147,6 +3211,7 @@ What each source gives (past):
 |---|---|
 | `messages` (role `tool`, not incognito) | "Used Gmail: Search" + the call's first arguments; an answered approval is an `approvals` item ("Asked you before "Send" in Gmail (to Arjun)", detail "You chose Allow once." or "You said no, so it was not done.") |
 | `messages` (assistant replies in channel chats) | "Replied to you on Telegram" |
+| `messages` (role `event`, `name` `trusted`, ADR 0029) | `approvals` item `trust:<id>`: "You trusted the chat "X" again", `why` "It had read content from Gmail. You said you checked it (in Sentient \| with /trust on Telegram), so sending from it stops asking just because of what it read. New outside content asks again." |
 | `channel_deliveries` (section 14) | "Sent to Telegram: Your Daily Brief" or "Couldn't send to Telegram: ..." (`status: "failed"`, `detail` says why); `why` names the chat and why it went there ("To your chat "Maya Rao". The task sends its updates there"); `ref` opens the task, chat or notification it came from |
 | `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked. A try run (#142): "Tried X", `why` "You chose Try it first, ..." |
 | `file_snapshots` (#142) | "A command changed 2 files", "Code changed 1 file", "Wrote over notes.txt", "Put back 2 files"; `kind` `tasks` when a task run did it, else `chat`; `app` `terminal`, `code` or `files`; `detail` the command or script and the file names; `undo` Restore while the copies are kept and not put back yet; `status: "restored"` after |

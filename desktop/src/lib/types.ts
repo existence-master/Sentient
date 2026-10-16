@@ -412,6 +412,8 @@ export interface Session {
   model?: string | null
   /** The memories this chat uses and saves to (#155): "personal", "work" or a project's name. */
   memory_scope?: string
+  /** Who or what wrote outside content this chat read ("Gmail"), "" when clean, null before its first turn (ADR 0018). */
+  untrusted?: string | null
   [key: string]: unknown
 }
 
@@ -421,7 +423,9 @@ export interface ToolCallRef {
   function: { name: string; arguments: string }
 }
 
-export type MessageRole = 'user' | 'assistant' | 'tool' | 'system'
+/** `other`: a message someone else wrote in a paired group chat (`name` = who); `event`: something the user did to
+ * the chat, e.g. trusting it again (`name: "trusted"`, content JSON `{event, was, via}`), ADR 0029. */
+export type MessageRole = 'user' | 'assistant' | 'tool' | 'system' | 'other' | 'event'
 
 /** Raw transcript row (`GET /api/sessions/{id}/messages`). */
 export interface TranscriptMessage {
@@ -1110,7 +1114,7 @@ export interface DomainEventMap {
   /** A server's tools wait for review, or the user answered (#146). */
   'mcp.review': { server: string; reason?: 'new' | 'changed'; tools?: string[]; needed: boolean }
   /** Only the fields that changed are sent: a rename (`title`) or the chat's own model (`model`, null = default). */
-  'session.updated': { session_id: string; title?: string; model?: string | null }
+  'session.updated': { session_id: string; title?: string; model?: string | null; untrusted?: string }
   /** A chat was deleted: by the user, or an incognito chat that was closed or left idle (#154). */
   'session.deleted': { session_id: string; reason?: 'incognito' }
   'rule_proposal.updated': RuleProposal
@@ -1398,6 +1402,9 @@ export interface PairedChat {
   paired_at: ISODate
   deliver: boolean
   session_id: string | null
+  /** A group chat: only its owner (who paired it) talks to Sentient there (ADR 0029). */
+  is_group?: boolean
+  owner_id?: string | null
 }
 
 export interface Channel {
