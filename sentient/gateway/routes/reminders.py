@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import NoReturn
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -48,6 +49,42 @@ async def add_reminder(request: Request, body: AddBody):
                                         channel="desktop", language=core.config.assistant.language, source="api")
     except ReminderError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+class SnoozeBody(BaseModel):
+    minutes: float | None = None
+
+
+async def _ringing_or_error(request: Request, reminder_id: str) -> NoReturn:
+    item = await get_core(request).reminders.get(reminder_id)
+    if item is None:
+        raise HTTPException(404, "There is no alarm with that id.")
+    raise HTTPException(409, "That alarm isn't ringing.")
+
+
+@router.post("/{reminder_id}/stop")
+async def stop_alarm(request: Request, reminder_id: str):
+    """Stop a ringing alarm (#390), e.g. from the window's banner."""
+    stopped = await get_core(request).reminders.stop(reminder_id)
+    if not stopped:
+        await _ringing_or_error(request, reminder_id)
+    return stopped[0]
+
+
+@router.post("/{reminder_id}/snooze")
+async def snooze_alarm(request: Request, reminder_id: str, body: SnoozeBody | None = None):
+    """Snooze a ringing alarm (#390): it stops and a new alarm rings ``minutes`` from now (default
+    ``chat.alarm_snooze_minutes``)."""
+    core = get_core(request)
+    minutes = (body.minutes if body is not None else None) or core.config.chat.alarm_snooze_minutes
+    try:
+        done = await core.reminders.snooze(minutes, reminder_id, source="api")
+    except ReminderError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if done is None:
+        await _ringing_or_error(request, reminder_id)
+    rang, new = done
+    return {"stopped": rang, "reminder": new}
 
 
 @router.post("/{reminder_id}/cancel")
