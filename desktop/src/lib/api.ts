@@ -473,6 +473,15 @@ export const api = {
     setScope: (id: string, memory_scope: string | null) =>
       http.patch<OkResponse & { memory_scope: string }>(`/api/sessions/${enc(id)}`, { memory_scope }),
     delete: (id: string) => http.delete<OkResponse>(`/api/sessions/${enc(id)}`),
+    /**
+     * "I've checked it, trust this chat again" (ADR 0029), up to `upto`, the newest message the window has shown.
+     * `trusted: false` with `untrusted`/`writer` when outside content newer than that keeps the chat marked.
+     */
+    trust: (id: string, upto?: string | null) =>
+      http.post<OkResponse & { was: string; trusted: boolean; untrusted: string; writer: string }>(
+        `/api/sessions/${enc(id)}/trust`,
+        { upto: upto ?? null }
+      ),
     messages: (id: string, limit = 500) =>
       http.get<TranscriptMessage[]>(`/api/sessions/${enc(id)}/messages`, { query: { limit } }),
     search: (q: string) => http.get<MessageSearchHit[]>('/api/sessions/search', { query: { q } })

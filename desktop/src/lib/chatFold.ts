@@ -120,7 +120,32 @@ export interface UserMessageView {
   notSent?: boolean
 }
 
-export type TimelineItem = UserMessageView | AssistantTurnView
+/** A message someone else wrote in a paired group chat (ADR 0029): outside content, never the user's words. */
+export interface OtherMessageView {
+  kind: 'other'
+  id: string
+  sender: string
+  text: string
+  createdAt: string
+}
+
+/** Something the user did to the chat, shown as a quiet line: trusting it again after checking it (ADR 0029). */
+export interface ChatNoteView {
+  kind: 'note'
+  id: string
+  text: string
+  createdAt: string
+}
+
+export type TimelineItem = UserMessageView | AssistantTurnView | OtherMessageView | ChatNoteView
+
+/** The line a `trusted` event row shows in the chat. */
+export function trustedNote(content: string | null): string {
+  const data = safeJsonParse<{ was?: unknown; via?: unknown }>(content ?? '', {})
+  const was = typeof data.was === 'string' && data.was.trim() ? data.was.trim() : ''
+  const via = typeof data.via === 'string' && data.via !== 'desktop' ? ` with /trust on ${data.via[0].toUpperCase()}${data.via.slice(1)}` : ''
+  return `You trusted this chat again${via}${was ? ` after checking what it read from ${was}` : ''}. Sending from it follows your usual approval settings until new outside content arrives.`
+}
 
 export function emptyTurn(id: string): AssistantTurnView {
   return { kind: 'assistant', id, segments: [], tools: {}, approvals: [], status: 'streaming', createdAt: new Date().toISOString(), live: true }
@@ -188,6 +213,15 @@ export function foldTranscript(rows: TranscriptMessage[]): TimelineItem[] {
       continue
     }
     prevRole = row.role
+    if (row.role === 'other') {
+      turn = null
+      items.push({ kind: 'other', id: row.id, sender: row.name?.trim() || 'Someone', text: row.content ?? '', createdAt: row.created_at })
+      continue
+    }
+    if (row.role === 'event') {
+      if (row.name === 'trusted') items.push({ kind: 'note', id: row.id, text: trustedNote(row.content), createdAt: row.created_at })
+      continue
+    }
     if (row.role === 'user') {
       turn = null
       items.push({

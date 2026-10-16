@@ -72,3 +72,16 @@ async def test_unpaired_chats_cannot_change_a_scope(tg):
     await tg.say(7, "/scope work")
     assert "isn't paired" in tg.api.screen()[-1]
     assert await _scope_of(tg.app) is None
+
+
+async def test_in_a_group_only_the_owner_can_change_the_scope(tg, llm):
+    from tests.channels.test_group_chats import OWNER, RAVI, _group, say
+
+    chat = await _group(tg)
+    shown = len(tg.api.screen())
+    await say(tg, RAVI, "/scope work")
+    assert len(tg.api.screen()) == shown and llm.calls == []
+    assert (await tg.app.store.get_session(chat["session_id"]))["memory_scope"] is None
+    await say(tg, OWNER, "/scope work")
+    assert tg.api.screen()[-1].startswith("Done. This chat now uses your Work memories")
+    assert (await tg.app.store.get_session(chat["session_id"]))["memory_scope"] == "work"

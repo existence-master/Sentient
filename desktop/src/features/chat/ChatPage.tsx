@@ -1,4 +1,5 @@
 import { IconArrowDown, IconFileUpload, IconMessageOff, IconSpy, IconWorldWww } from '@tabler/icons-react'
+import { ChatNote, OtherMessage, OutsideContentBar } from './OutsideContent'
 import { AnimatePresence, motion } from 'motion/react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router'
@@ -309,7 +310,11 @@ function ChatView({
         <>
           <Timeline items={items} streaming={streaming} loading={loadingHistory}>
             {items.map((item, i) =>
-              item.kind === 'user' ? (
+              item.kind === 'other' ? (
+                <OtherMessage key={item.id} message={item} />
+              ) : item.kind === 'note' ? (
+                <ChatNote key={item.id} note={item} />
+              ) : item.kind === 'user' ? (
                 <UserMessage key={item.id} message={item} onRestore={(text) => setInject({ text, nonce: Date.now() })} />
               ) : (
                 <AssistantTurn
@@ -331,6 +336,9 @@ function ChatView({
           </Timeline>
           <div className="shrink-0 px-6 pb-4 pt-2">
             <div className="mx-auto w-full max-w-[760px]">
+              {sessionId && session?.untrusted ? (
+                <OutsideContentBar sessionId={sessionId} source={session.untrusted} lastSeenId={messages.data?.[messages.data.length - 1]?.id ?? null} />
+              ) : null}
               {incognito && (
                 <p className="mb-2 flex items-center justify-center gap-1.5 text-xs text-fg-subtle">
                   <IconSpy size={13} className="text-incognito" aria-hidden />

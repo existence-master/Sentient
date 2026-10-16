@@ -1,8 +1,11 @@
 """Discord bot channel: direct messages to the bot over the Discord gateway websocket.
 
 Identify, heartbeat (with zombie detection), resume, and REST calls for sending, editing and
-component buttons. Only DMs are handled; server messages are ignored. DM message content is
-delivered to bots without the privileged Message Content intent, so only DIRECT_MESSAGES is requested.
+component buttons. Direct messages, and server channels paired with a code (ADR 0029): there only
+the person who paired the channel talks to Sentient, by mentioning the bot or replying to it, and
+other people's messages are outside content. Discord gives a bot the text of DMs and of messages
+that mention it without the privileged Message Content intent, so DIRECT_MESSAGES and GUILD_MESSAGES
+are enough.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ import json
 import logging
 import mimetypes
 import random
+import re
 import sys
 from typing import Any
 
@@ -32,8 +36,9 @@ log = logging.getLogger(__name__)
 
 API = "https://discord.com/api/v10"
 GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
+INTENT_GUILD_MESSAGES = 1 << 9
 INTENT_DIRECT_MESSAGES = 1 << 12
-INTENTS = INTENT_DIRECT_MESSAGES
+INTENTS = INTENT_DIRECT_MESSAGES | INTENT_GUILD_MESSAGES
 BUTTON_STYLES = {"primary": 1, "secondary": 2, "success": 3, "danger": 4}
 FATAL_CLOSE_CODES = {
     4004: "Discord rejected the bot token. Reset it in the Developer Portal and connect again.",
@@ -63,6 +68,9 @@ Your computer must be on with Sentient running for the bot to answer.
    the code, for example `/pair 123456`.
 
 Now send the bot a direct message to talk to Sentient: text, voice messages, images and files all work.
+To use it in a server channel too, mention the bot there with `/pair` and a new code (`@My Sentient /pair 123456`).
+In a channel it answers only you, when you mention it or reply to it; messages from other people are treated as
+outside content, so it checks with you before sending anything after them.
 Commands: `/new` starts a fresh chat, `/stop` stops a reply, `/stopall` stops everything Sentient is doing
 (`/resume` starts it again), `/model` switches between local and cloud models, `/scope work` or `/scope personal`
 keeps this chat to those memories, `/help` shows help.
@@ -313,9 +321,17 @@ class DiscordChannel(Channel):
             self._acked = True
         return None
 
+    def addressed(self, d: dict) -> bool:
+        """In a server channel: a mention of the bot, a reply to one of its messages, or a command."""
+        if not self.bot_id:
+            return False
+        if any(str((u or {}).get("id")) == self.bot_id for u in d.get("mentions") or [] if isinstance(u, dict)):
+            return True
+        replied = (d.get("referenced_message") or {}).get("author") or {}
+        return str(replied.get("id") or "") == self.bot_id or str(d.get("content") or "").lstrip().startswith("/")
+
     def on_message(self, d: dict) -> None:
-        if d.get("guild_id"):
-            return  # direct messages only
+        group = bool(d.get("guild_id"))  # a server channel (ADR 0029); otherwise a direct message
         author = d.get("author") or {}
         if author.get("bot") or (self.bot_id and str(author.get("id")) == self.bot_id):
             return
@@ -332,16 +348,24 @@ class DiscordChannel(Channel):
             else:
                 files.append(fetch)
         text = str(d.get("content") or "")
+        addressed = self.addressed(d) if group else True
+        if group and self.bot_id:  # "<@900> what's on today" -> "what's on today"
+            text = re.sub(rf"<@!?{re.escape(self.bot_id)}>", "", text).strip()
         ref = d.get("message_reference") if isinstance(d.get("message_reference"), dict) else {}
         reply_to = ref.get("message_id") or (d.get("referenced_message") or {}).get("id")
+        name = str(author.get("global_name") or author.get("username") or chat_id)
         self.spawn(self.handle_incoming(Incoming(
             chat_id=chat_id,
-            label=str(author.get("global_name") or author.get("username") or chat_id),
+            label=f"#{d.get('channel_name') or chat_id}" if group else name,
             text=text,
             audio=audio,
             files=files,
             unsupported=not (text or audio or files),
             reply_to=str(reply_to) if reply_to else None,
+            group=group,
+            sender_id=str(author.get("id") or ""),
+            sender_name=name,
+            addressed=addressed,
         )))
 
     def _fetcher(self, att: dict) -> FileFetcher:
@@ -369,8 +393,9 @@ class DiscordChannel(Channel):
         chat_id = str(d.get("channel_id") or "")
         message_id = str((d.get("message") or {}).get("id") or "")
         custom_id = str((d.get("data") or {}).get("custom_id") or "")
+        user = (d.get("member") or {}).get("user") or d.get("user") or {}
         if chat_id and message_id:
-            await self.handle_button(chat_id, message_id, custom_id)
+            await self.handle_button(chat_id, message_id, custom_id, user_id=str(user.get("id") or ""))
 
     # ------------------------------------------------------------------ sending
     def render(self, md: str) -> list[str]:
