@@ -411,6 +411,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **A page watch always checks the page.** "Track this page and tell me when a new event is added" could be set to
+  start only when something arrived in your calendar or smart home, so it never looked at the page. A check that reads
+  a page, a search or the news now runs on a timer: every hour, or as often as you asked (#389).
 - **Changing a rule while an email waits to go out now counts.** If you set an app or tool to **Ask** while one of
   its emails or messages waits the few seconds before it is sent, Sentient asks you before it goes out instead of
   sending it under the old rule. The same goes for **Only if I asked**, unless your message asked for that email.
