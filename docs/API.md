@@ -954,15 +954,25 @@ or `Tool.verify`, and every MCP tool that is not a look-up (its kind guessed fro
 Today that is `file_write`, `gmail_send`, `gmail_reply`, `email_imap_send`, `gcal_create_event`, `gcal_quick_add`,
 `slack_post_message`, `slack_reply_in_thread`, `discord_send_message`, `whatsapp_send_message`, the Home Assistant
 actions (`home_assistant_turn_on`/`turn_off`/`set_temperature`/`activate_scene`/`run_script`/`open_cover`/`close_cover`/
-`lock`/`unlock`/`set_alarm`, result only) and MCP tools. A call
+`lock`/`unlock`/`set_alarm`) and MCP tools. A call
 the user declined or undid, a try run's noted call and a call handed to the user are never checked.
 1. The result says it worked: no `error`, no `ok`/`success`/`sent`/`created: false`, no failed `status`, and no
    non-empty `failed`/`errors`/`rejected`/`bounced`/`not_sent` list, looked for one level down too (an MCP result's
    `structured` part, or `content` that is JSON). Text `content` starting with "Error" or "Failed" counts as failed.
 2. Read back, where the tool declares `verify(arguments, result, ctx) -> {ok, detail?}` (sync or async, 15 s at most):
    `file_write` reads the file (it exists and holds what was written, line endings aside), Gmail finds the sent
-   message with the `SENT` label, Google Calendar finds the event and it is not cancelled. A read-back that can't run
-   (offline) leaves the result's own answer standing.
+   message with the `SENT` label, Google Calendar finds the event and it is not cancelled. Home Assistant (#386)
+   waits a moment (0.5 s), then reads each device's state again (`GET /api/states/<id>`, about once a second, for
+   `integrations.home_assistant_check_s` seconds in all, default 4, 0 turns it off) until it is as asked: on or off
+   for lights, switches, fans and the like (a media player, thermostat or water heater that was turned on only has to
+   be not off), `locked`/`unlocked`, `open`/`closed`, `armed_<mode>`/`disarmed`, and the asked `hvac_mode` and target
+   `temperature`. A device still `opening`, `closing`, `locking`, `unlocking`, `arming` or `pending` when the time is
+   up counts as fine, with `detail` "Garage door is still opening". One that still shows the old state, or is
+   `unavailable`, fails with `detail` "Hallway light still reports off" and `missed` its entity id (`targets` of a
+   Home Assistant check are the call's entity ids). Scenes, scripts and kinds with no plain on
+   and off are not read back. A read-back that can't run (offline) leaves the result's own answer standing.
+   When a read-back fails, the tool message the model reads ends with "[Sentient checked afterwards and it did not
+   work: <detail>. Tell the user plainly; don't say it worked.]", so the reply never calls it done.
 
 **OutcomeCheck** `{tool, app, kind: "email"|"message"|"file"|"event"|"home"|null, action: "email sent", ok, detail,
 how: "result"|"read_back", targets: [...], missed: [...], settled?, message?}`. `detail` is the plain reason it failed
@@ -980,7 +990,9 @@ that tool, if it worked.
   clean run logs one `info` update: "Checked: file written, email sent." The report writer gets the same line as
   `checked_outcome` and is told to believe it. Try runs and swarm runs are not checked.
 - Chat replies carry the reply's `checks` on `done` and on the saved message; the app shows "Checked: ..." under the
-  reply, or the failures in a Needs your attention box. A failed check also counts in the turn's `tool_errors`
+  reply, or the failures in a Needs your attention box. Quick commands (section 23) are checked the
+  same way: when the read-back fails the reply is "I tried, but Bedroom lamp still reports off." instead of "Turned on
+  the bedroom lamp.". A failed check also counts in the turn's `tool_errors`
   (`chat.turn_completed`), so the self-improvement reviewer sees it.
 
 ### Where results go
@@ -3397,7 +3409,8 @@ sends, buys or deletes anything ("delete the timer" goes to the model). It runs 
 asking: with approvals mode `always`, or an "Ask" or "Never" rule on the tool or on `reminders`, the model answers as
 usual. A home command calls `home_assistant_turn_on` or `home_assistant_turn_off` (with `brightness_pct` for a
 level) once for every device it names, and says "Turned off the living room lights." or "Set the bedroom lamp to
-30%.". Its words name exactly that change, so in approvals mode `ask` they count as the yes for it (effective risk
+30%.", or "I tried, but Bedroom lamp still reports off." when reading the device back shows it didn't change
+(section 4, "Checking the outcome", #386). Its words name exactly that change, so in approvals mode `ask` they count as the yes for it (effective risk
 `write` only, ADR 0028); approvals mode `always`, an "Ask", "Hand it to me" or "Never" rule on the tool or on
 `home_assistant`, or a Read only connection send it to the model. Not used for a message with attachments. Turned
 off with `chat.quick_commands`.

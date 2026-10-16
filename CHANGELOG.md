@@ -6,6 +6,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Home Assistant devices are checked after Sentient changes them.** A moment after it turns on a light, locks a
+  door, opens the blinds, arms the alarm or sets the thermostat, Sentient asks Home Assistant for the device's state
+  again, for a few seconds, and only calls it done when the device really changed. If it didn't, you see it plainly
+  ("Hallway light still reports off."), in chat, in quick commands and in task runs, and never a success. You can
+  change how long it waits in Settings (#386).
 - **Folders and chat apps follow your memory places too.** In Settings, Folders, each folder or Obsidian vault now has
   a **Used in** choice: every chat (as before, and what your folders already have), Personal, Work or a project. A
   folder kept for Work only comes up in work chats, so a personal chat never brings up your work notes unless you ask.

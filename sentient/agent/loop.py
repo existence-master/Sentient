@@ -1461,6 +1461,8 @@ class Agent:
         folder = incognito_outputs.outputs_folder(ctx.session_id) if ctx.incognito and ctx.session_id else "outputs"
         content = await self._tool_content(res, tc.id, tool=p.tool, limit=result.tool_result_limit, folder=folder)
         model_content = self.outside_content(content, p.tool, tc.arguments) if p.tool is not None else content
+        if note := outcomes.model_note(check):  # the result said done, reading it back says not (#386)
+            content, model_content = f"{content}\n{note}", f"{model_content}\n{note}"
         messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": model_content})
         if persist:  # stored as it is; marked again when the transcript is read back (mark_outside_messages)
             extra = {"approval": p.approval} if p.approval else {}
@@ -1905,24 +1907,36 @@ class Agent:
             ctx = self.tool_context(session_id, channel)
             ctx.incognito = bool((session or {}).get("incognito"))
             ctx.extra = {**ctx.extra, "quick": True, "quick_language": plan.language.code}
-            outcomes: list[tuple[Any, bool]] = []
+            results: list[tuple[Any, bool]] = []
+            checks: list[dict] = []
             if plan.calls:
                 await self.store.add_message(session_id, "assistant", None, tool_calls=[c.to_openai() for c in plan.calls])
             for call in plan.calls:
                 yield ToolCallEvent(call_id=call.id, name=call.name, arguments=call.arguments, **ev)
                 res, is_error, ms = await self._run_tool(call, ctx)
-                content = await self._tool_content(res, call.id, tool=self.registry.get(call.name))
+                tool = self.registry.get(call.name)
+                content = await self._tool_content(res, call.id, tool=tool)
+                # what the device really did, read back (#386): a light that stayed off is never "Turned on"
+                check = await self.check_outcome(tool, call.arguments, res, is_error, ctx) if tool is not None else None
+                if check is not None:
+                    checks.append(check)
+                if note := outcomes.model_note(check):
+                    content = f"{content}\n{note}"
                 await self.store.add_message(session_id, "tool", content, tool_call_id=call.id, name=call.name)
-                outcomes.append((res, is_error))
-                yield ToolResultEvent(call_id=call.id, name=call.name, result=res, is_error=is_error, duration_ms=ms, **ev)
-            reply = plan.answer(outcomes)
+                results.append((res, is_error))
+                yield ToolResultEvent(
+                    call_id=call.id, name=call.name, result=res, is_error=is_error, duration_ms=ms, check=check, **ev
+                )
+            missed = [c for c in checks if c.get("ok") is False and c.get("how") == "read_back"]
+            reply = plan.language.unconfirmed(str(missed[0].get("detail") or "")) if missed else plan.answer(results)
+            checks = outcomes.finalize(checks, reply)
             yield TextDelta(text=reply, **ev)
-            message_id = await self.store.add_message(session_id, "assistant", reply)
+            message_id = await self.store.add_message(session_id, "assistant", reply, checks=checks or None)
             log.info(
                 "quick command: %s (%s) done in %d ms with no model call", plan.command.action, plan.language.code,
                 int((time.perf_counter() - started) * 1000),
             )
-            yield Done(content=reply, message_id=message_id, **ev)
+            yield Done(content=reply, message_id=message_id, checks=checks, **ev)
         except Exception as exc:  # every turn still ends with an error and one done (docs/API.md section 1, #334)
             log.exception("quick command %s failed", plan.command.action)
             yield Error(message=plan.language.failed(""), recoverable=False, **ev)
