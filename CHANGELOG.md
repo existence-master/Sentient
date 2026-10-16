@@ -422,6 +422,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Approval cards no longer show Sentient's notes to itself.** When the browser (or another built-in app) asked
+  before clicking, the card's small print showed the instructions written for the model, cut off mid-word ("browser:
+  Click the element with this ref ..."). It now shows a short plain label when there is one, like "Purchase" or
+  "Unlocks a door", and otherwise the card's own line (#398).
 - **A page watch always checks the page.** "Track this page and tell me when a new event is added" could be set to
   start only when something arrived in your calendar or smart home, so it never looked at the page. A check that reads
   a page, a search or the news now runs on a timer: every hour, or as often as you asked (#389).
