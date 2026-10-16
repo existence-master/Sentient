@@ -53,7 +53,8 @@ for the bot to answer.
 
 Now just message your bot to talk to Sentient. You can send text, voice notes, photos and files.
 Commands: `/new` starts a fresh chat, `/stop` stops a reply, `/stopall` stops everything Sentient is doing
-(`/resume` starts it again), `/model` switches between local and cloud models, `/help` shows help.
+(`/resume` starts it again), `/model` switches between local and cloud models, `/scope work` or `/scope personal`
+keeps this chat to those memories, `/help` shows help.
 
 **In a group:** add your bot to the group and send `/pair` with a new code there. Sentient then answers only you, when
 you mention it (`@maya_sentient_bot`) or reply to it. Messages from other people are treated as outside content, so it

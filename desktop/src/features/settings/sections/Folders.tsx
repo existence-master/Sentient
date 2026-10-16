@@ -14,7 +14,9 @@ import {
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, ConfirmDialog, EmptyState, FormSection, Input, ProgressBar, Skeleton } from '@/components/ui'
-import { useAddFolder, useFolderIgnore, useFolders, useRemoveFolder, useRescanFolder } from '@/hooks/folders'
+import { ChatScopeMenu } from '@/features/chat/ChatScopeMenu'
+import { scopeLabel } from '@/features/memory/bits'
+import { useAddFolder, useFolderIgnore, useFolders, useFolderScope, useRemoveFolder, useRescanFolder } from '@/hooks/folders'
 import { errorMessage } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
 import type { WatchedFolder } from '@/lib/types'
@@ -114,6 +116,7 @@ function FolderCard({ folder: f }: { folder: WatchedFolder }) {
   const remove = useRemoveFolder()
   const rescan = useRescanFolder()
   const setIgnore = useFolderIgnore()
+  const setScope = useFolderScope()
   const [confirm, setConfirm] = useState(false)
   const [ignore, setIgnoreText] = useState(f.ignore.join(', '))
   const progress = f.progress && f.progress.total > 0 ? f.progress.done / f.progress.total : null
@@ -136,6 +139,17 @@ function FolderCard({ folder: f }: { folder: WatchedFolder }) {
       }
     )
   }
+  const changeScope = (scope: string) =>
+    setScope.mutate(
+      { id: f.id, scope },
+      {
+        onSuccess: () =>
+          toast.success(scope === 'always' ? `${f.name} is used in every chat` : `${f.name} is used in ${scopeLabel(scope)} chats`, {
+            description: scope === 'always' ? undefined : 'Other chats leave its notes out, unless you ask about them.'
+          }),
+        onError: (err) => toast.error("That didn't save", { description: errorMessage(err) })
+      }
+    )
 
   return (
     <div className="rounded-xl border border-border bg-surface p-3.5" data-folder={f.name}>
@@ -161,6 +175,7 @@ function FolderCard({ folder: f }: { folder: WatchedFolder }) {
           {f.status === 'scanning' && <ProgressBar className="mt-2" value={progress} />}
           {f.error && <p className="mt-1.5 text-xs text-warning">{f.error}</p>}
           <div className="mt-2.5 flex items-center gap-2">
+            {f.scope !== undefined && <ChatScopeMenu folder={f.name} value={f.scope} onChange={changeScope} className="border border-border" />}
             <Input
               size="sm"
               value={ignore}
