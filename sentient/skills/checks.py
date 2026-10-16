@@ -179,7 +179,9 @@ def _last_line(text: str) -> str:
 def merge(previous: list[dict], proposed: list[dict]) -> list[dict]:
     """A skill's checks after a change: every check it had, then the new ones (a repair or merge never drops one)."""
     out = list(previous or [])
-    out += [c for c in proposed or [] if c not in out]
+    for check in proposed or []:
+        if check not in out:  # one at a time, so a repeated new check never crowds out another
+            out.append(check)
     return out[:MAX_CHECKS]
 
 

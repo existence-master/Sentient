@@ -68,16 +68,20 @@ async def skill_save(
     pending = pending or protected or risky
     app = ctx.extra.get("app")
     report = None
-    if existing is not None and existing.validate and app is not None:  # the skill's own check comes first (#386)
+    # the skill's own checks come first (#386): the active skill's and a waiting proposal's, none dropped
+    proposal = lib.get_pending(name)
+    validate = skill_checks.merge(existing.validate if existing else [], proposal.validate if proposal else [])
+    if validate and app is not None:
         draft = render_skill(name, description, body, author="assistant", version=1, tags=tags,
-                             requires_tools=requires_tools, validate=existing.validate)
-        report = await skill_checks.run(app, name, existing.validate, [existing.dir], run_code=False, candidate=draft)
+                             requires_tools=requires_tools, validate=validate)
+        folders = [existing.dir] if existing is not None else []
+        report = await skill_checks.run(app, name, validate, folders, run_code=False, candidate=draft)
         if reason := skill_checks.failure(report):
             return {"error": f"The skill's own check failed, so it wasn't saved: {reason}. Fix the steps and try again."}
         pending = pending or report["status"] == "waiting"  # a code check runs when the user approves it
     path = lib.write(
         name, description, body, author=existing.author if existing else "assistant",
-        tags=tags, requires_tools=requires_tools, pending=pending,
+        tags=tags, requires_tools=requires_tools, pending=pending, validate=validate,
     )
     lib.reload()
     state = "pending_review" if pending else "active"

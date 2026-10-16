@@ -187,6 +187,20 @@ def test_a_change_keeps_every_check_the_skill_had():
     had = [{"file": "a.md"}]
     assert checks.merge(had, [{"run": "print(1)"}, {"file": "a.md"}]) == [{"file": "a.md"}, {"run": "print(1)"}]
     assert checks.merge(had, []) == had
+    three = [{"file": f"{i}.md"} for i in range(3)]
+    new, other = {"file": "new.md"}, {"file": "other.md"}
+    assert checks.merge(three, [new, new, other]) == [*three, new, other]  # a repeat never crowds one out
+
+
+async def test_skill_save_keeps_and_runs_the_checks_of_a_proposal_waiting_for_review(app):
+    app.skills.write(NAME, "Digest", SKILL_BODY, author="assistant")
+    app.skills.write(NAME, "Digest v2", SKILL_BODY, pending=True, created_by_review=True,
+                     validate=[{"file": "digests/none.md"}])
+    app.skills.reload()
+    tool = app.registry.get("skill_save")
+    ctx = app.agent.tool_context(None, "test")
+    res = await tool.call(ctx, {"name": NAME, "description": "Digest v3", "body": SKILL_BODY + "\n- more"})
+    assert "digests/none.md doesn't exist" in res["error"]  # the proposal's check ran, though the active has none
 
 
 async def test_a_check_of_skill_md_reads_the_draft_not_the_saved_skill(app):
