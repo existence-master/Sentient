@@ -102,6 +102,7 @@ from sentient.tools.base import (
     Risk,
     Tool,
     ToolContext,
+    approval_reason,
     bind_call,
     describe_call,
     effective_risk,
@@ -1263,7 +1264,7 @@ class Agent:
         self.approvals.create(approval_id, offered)
         yield ApprovalRequest(
             approval_id=approval_id, call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments,
-            risk=p.risk.name, reason=f"{p.tool.plugin}: {p.tool.description[:160]}",
+            risk=p.risk.name, reason=approval_reason(wording, p.risk),
             risk_label=wording["risk_label"], target=wording["target"],
             untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
             grant_minutes=self.approvals.config.grant_minutes,
