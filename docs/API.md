@@ -904,7 +904,8 @@ answer a run that is not waiting),
 
 Behaviour notes:
 - Swarm tasks (`is_swarm: true`) skip approval (v2): `planning → processing → completed|completed_with_errors|error`.
-- `PATCH` with a new `schedule`, a status of `active`/`pending`, or `enabled: true` recomputes `next_execution_at`.
+- `PATCH` with a new `schedule`, a status of `active`/`pending`, or `enabled: true` recomputes `next_execution_at`
+  (except a held one-off task that carries on, see "On restart" below).
 - `run-now` on a one-off task creates a new run immediately; on a swarm task it re-orchestrates.
 - Triggered tasks accept events while a previous run is still `processing` (each event gets its own run).
 - Triggered tasks fire from the `source.items` domain event for every origin (section 16). Each task handles an item id at

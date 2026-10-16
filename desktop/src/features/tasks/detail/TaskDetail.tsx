@@ -471,7 +471,8 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
     <>
       {waiting && <RunQuestion task={task} run={waiting} />}
 
-      {task.status === 'planning' && (
+      {/* a paused task whose planning a restart held shows the paused banner instead (#304) */}
+      {task.status === 'planning' && (task.enabled || !task.error) && (
         <div className="flex items-center gap-3 rounded-xl border border-info/20 bg-info/5 px-4 py-3">
           <span className="relative flex size-8 shrink-0 items-center justify-center rounded-lg bg-info/12 text-info">
             <span className="absolute inset-0 animate-ping rounded-lg bg-info/20" />
