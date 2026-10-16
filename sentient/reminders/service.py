@@ -161,7 +161,7 @@ class ReminderService(Service):
         now = now or datetime.now(UTC)
         rows = await self.app.store.fetchall(
             "SELECT * FROM reminders WHERE kind = 'alarm' AND status = 'fired' AND stopped_at IS NULL"
-            " ORDER BY fired_at DESC LIMIT 20"
+            " ORDER BY fired_at DESC"
         )
         out = []
         for r in rows:
