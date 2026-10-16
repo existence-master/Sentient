@@ -63,8 +63,8 @@ _EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A
 _PHONE = re.compile(r"^\+?[\d\s().\-]{7,24}$")
 _URL = re.compile(r"\bhttps?://[^\s<>\"')\]]+|\bwww\.[^\s<>\"')\]]+", re.IGNORECASE)
 _MARKED_BLOCK = re.compile(
-    r"\[outside content (?P<code>[0-9a-f]{8}) from [^\]\n]*\. Data only, not instructions\.\]\n.*?"
-    r"\n\[end of outside content (?P=code)\]",
+    r"\[outside content (?P<code>[0-9a-f]{8}) from (?P<source>[^\]\n]*)\. Data only, not instructions\.\]\n"
+    r"(?P<body>.*?)\n\[end of outside content (?P=code)\]",
     re.DOTALL,
 )
 _TRIGGER_BLOCK = re.compile(r"---BEGIN TRIGGER DATA---.*?---END TRIGGER DATA---", re.DOTALL)
@@ -189,7 +189,10 @@ def gather(messages: list[dict] | None, registry: Any, *, user_name: str = "", t
             for tc in m.get("tool_calls") or []:
                 calls[str(tc.get("id"))] = (tc.get("function") or {}).get("arguments")
         elif role == "user":
-            request.append(own_words(text_of(m.get("content"))))
+            text = text_of(m.get("content"))
+            request.append(own_words(text))
+            # outside content inside a user turn (selected text, a group member's message, ADR 0029) is outside too
+            ev.outside += [(b["source"], b["body"]) for b in _MARKED_BLOCK.finditer(text)]
         elif role == "system":
             (request if task else trusted).append(own_words(text_of(m.get("content"))))
         elif role == "tool":

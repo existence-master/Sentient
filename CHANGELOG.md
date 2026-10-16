@@ -6,6 +6,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Sentient in group chats, safely.** You can now pair a Telegram group or a Discord server channel with the same
+  `/pair` code. Sentient answers only you there, when you mention it, reply to it or send a command. What other people
+  write is treated like an email from a stranger: Sentient can read it, but never takes orders from it, and after
+  someone else writes, anything it would send checks with you first, naming who wrote it ("That address came from
+  another group member (Ravi), not from you."). Only you can press its buttons, and task results stay out of a group
+  unless you turn them on.
+- **Trust a chat again after you've checked it.** A chat that read an email, a web page or a group member's message
+  shows a bar saying so above the message box. If you've looked at it and it's fine, click **I've checked it** (or
+  send `/trust`, then `/trust yes`, in Telegram, Discord or WhatsApp) and sending from that chat follows your usual approval settings
+  again. It covers only what you've seen: if someone writes while you decide, the chat keeps asking and says who
+  wrote. It's noted in the chat and in Activity, and anything new from outside makes it ask again.
 - **Keep work, personal and project memories apart.** Each memory is now kept for Personal, Work, a project you name,
   or every chat (for things like your name or how you like answers). Pick a chat's memories from the button at the
   top of the chat, or before you start one. A work chat then uses your work memories and the ones for every chat,

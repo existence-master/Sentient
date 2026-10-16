@@ -404,6 +404,22 @@ def attachment_source(name: str) -> str:
     return ""
 
 
+# A message someone other than the user wrote in a paired group chat (ADR 0029) is stored with this role and the
+# sender's name in ``messages.name``. The model reads it as outside content inside a user turn, never as the user's words.
+OTHER_ROLE = "other"
+# A chat's log of something the user did to it (``messages.role``), never sent to the model. ``trusted``: the user
+# cleared the chat's outside-content mark ("I've checked it, trust this chat again", ADR 0029).
+EVENT_ROLE = "event"
+TRUSTED_EVENT = "trusted"
+
+
+def group_source(sender: str) -> str:
+    """Where a group member's message came from, as the approval card and the chat's mark name it:
+    "another group member (Ravi)". The name is the member's own display name, so it is cleaned and kept short."""
+    name = " ".join(re.sub(r"[\[\]()\n\r]", " ", str(sender or "")).split())[:40]
+    return f"another group member ({name})" if name else "another group member"
+
+
 def untrusted_reason(source: str) -> str:
     """Why a chat asks (shown on the approval card)."""
     return f"Sentient read content from {source} in this chat, so it checks with you before sending anything."
