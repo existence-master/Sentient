@@ -11,6 +11,7 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from sentient.gateway.deps import AUTH, get_core
 from sentient.memory import export as memory_export
 from sentient.memory import review as memory_review
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import EpisodicMemory
 from sentient.memory.personas import PERSONAS, render_persona
 from sentient.memory.topics import TOPICS
@@ -18,6 +19,7 @@ from sentient.memory.topics import TOPICS
 router = APIRouter(prefix="/api/memories", tags=["memory"], dependencies=AUTH)
 
 IMPORT_SUFFIXES = {".pdf", ".txt", ".md", ".markdown", ".docx"}
+PROFILE_SCOPES = (memory_scopes.PERSONAL, memory_scopes.ALWAYS)  # what USER.md and MEMORY.md are built from
 
 
 def _memory(request: Request):
@@ -29,14 +31,37 @@ def _memory(request: Request):
 
 @router.get("")
 async def list_memories(
-    request: Request, topic: str = "", q: str = "", source: str = "", limit: int = 500, offset: int = 0
+    request: Request, topic: str = "", q: str = "", source: str = "", limit: int = 500, offset: int = 0,
+    scope: str = "",
 ):
     s = get_core(request)
     if s.memory is None:
         return []
     return await s.memory.list_facts(
-        max(1, min(limit, 2000)), max(0, offset), topic=topic or None, source=source or None, q=q or None
+        max(1, min(limit, 2000)), max(0, offset), topic=topic or None, source=source or None, q=q or None,
+        scope=scope or None,
     )
+
+
+@router.get("/scopes")
+async def scopes(request: Request):
+    """Always, Personal and Work, then every project in use, each with how many memories it holds (#155)."""
+    return await memory_scopes.list_scopes(get_core(request))
+
+
+@router.delete("/scope/{scope:path}")
+async def reset_scope(request: Request, scope: str):
+    """Forget every memory in one scope, and nothing else (#155)."""
+    target = memory_scopes.normalize(scope)
+    if not target:
+        raise HTTPException(400, "scope is required")
+    mem = _memory(request)
+    rows = await get_core(request).store.fetchall("SELECT content FROM facts WHERE scope = ?", (target,))
+    gone = [r["content"] for r in rows]  # all of them, not one page
+    deleted = await mem.forget_scope(target)
+    if target in PROFILE_SCOPES:
+        get_core(request).workspace.remove_learned(gone)
+    return {"deleted": deleted}
 
 
 @router.get("/topics")
@@ -108,7 +133,7 @@ async def personas(request: Request):
 
 
 @router.post("/import")
-async def import_document(request: Request, file: UploadFile = File(...)):
+async def import_document(request: Request, file: UploadFile = File(...), scope: str = ""):
     s = get_core(request)
     mem = _memory(request)
     name = Path(file.filename or "document.txt").name
@@ -120,7 +145,9 @@ async def import_document(request: Request, file: UploadFile = File(...)):
         with path.open("wb") as fh:
             shutil.copyfileobj(file.file, fh)
         try:
-            return await mem.import_document(path, username=s.config.assistant.user_name, source=f"file:{name}")
+            return await mem.import_document(
+                path, username=s.config.assistant.user_name, source=f"file:{name}", scope=scope or None
+            )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -198,7 +225,8 @@ async def create_memory(request: Request, body: dict):
     content = str(body.get("content", "")).strip()
     if not content:
         raise HTTPException(400, "content is required")
-    return await mem.remember(content, source=str(body.get("source") or "manual"), notify=True)
+    scope = memory_scopes.normalize(body.get("scope"), memory_scopes.PERSONAL)  # #155
+    return await mem.remember(content, source=str(body.get("source") or "manual"), notify=True, scope=scope)
 
 
 @router.put("/{memory_id}")
@@ -211,6 +239,25 @@ async def update_memory(request: Request, memory_id: int, body: dict):
         return await mem.update_content(memory_id, content)
     except KeyError as exc:
         raise HTTPException(404, f"memory {memory_id} not found") from exc
+
+
+@router.patch("/{memory_id}")
+async def move_memory(request: Request, memory_id: int, body: dict):
+    """Move a memory to another scope (#155): ``{scope}``."""
+    mem = _memory(request)
+    scope = memory_scopes.normalize(body.get("scope"))
+    if not scope:
+        raise HTTPException(400, "scope is required")
+    try:
+        before = await mem.scope_of(memory_id)
+        moved = await mem.set_scope(memory_id, scope)
+    except KeyError as exc:
+        raise HTTPException(404, f"memory {memory_id} not found") from exc
+    if before in PROFILE_SCOPES and moved["scope"] not in PROFILE_SCOPES:
+        # USER.md's learned facts are personal: one moved to work or a project leaves it. MEMORY.md is rewritten
+        # from personal memories at its next upkeep.
+        get_core(request).workspace.remove_learned([moved["content"]])
+    return moved
 
 
 @router.delete("/{memory_id}")

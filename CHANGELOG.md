@@ -6,6 +6,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Keep work, personal and project memories apart.** Each memory is now kept for Personal, Work, a project you name,
+  or every chat (for things like your name or how you like answers). Pick a chat's memories from the button at the
+  top of the chat, or before you start one. A work chat then uses your work memories and the ones for every chat,
+  and leaves out your personal memories (like family or health) unless you ask about them; what Sentient learns
+  there is kept for work too. How you like things done (your answer style and other preferences it has picked up)
+  still applies in every chat. Tasks a chat creates keep its memories, and each messaging app can be set to one in
+  Settings. On the Memory page you can show one place at a time, move a memory to another place, and forget
+  everything kept for one place without touching the rest. Everything you had before is in Personal.
 - **Sentient checks what really happened, not what the model says happened.** After it writes a file, sends an
   email or a message, creates a calendar event or runs a Home Assistant action, Sentient checks the result itself: the app said it worked, and
   where it can, it reads it back (the file holds what was written, the email is in your Gmail Sent folder, the event

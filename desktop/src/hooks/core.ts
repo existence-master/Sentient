@@ -139,6 +139,18 @@ export function useSetChatModel() {
   })
 }
 
+/** The memories one chat uses (#155). */
+export function useSetChatScope() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, scope }: { id: string; scope: string | null }) => api.sessions.setScope(id, scope),
+    onMutate: ({ id, scope }) => {
+      qc.setQueryData<Session[]>(qk.sessions, (old) => old?.map((s) => (s.id === id ? { ...s, memory_scope: scope ?? 'personal' } : s)))
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.sessions })
+  })
+}
+
 export function useDeleteSession() {
   const qc = useQueryClient()
   return useMutation({

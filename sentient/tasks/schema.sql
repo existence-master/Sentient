@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     browser_profile       TEXT,                       -- named browser profile the task's browser calls use (NULL: default)
     deliver_to            TEXT,                       -- JSON (tasks/delivery.py): "desktop" or [{channel, chat_id}]; NULL: default
     notepad               TEXT,                       -- recurring tasks: notes the runs keep for the next run (tasks/continuity.py)
+    memory_scope          TEXT,                       -- the memories its runs use and save to (#155); NULL: personal
     error                 TEXT,
     next_execution_at     TEXT,                       -- UTC ISO-8601, seconds precision (lexicographically comparable)
     last_execution_at     TEXT,

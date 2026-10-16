@@ -39,6 +39,7 @@ from sentient.agent import dry_run, outcomes
 from sentient.agent import grants as grant_rules
 from sentient.llm.jobs import detached
 from sentient.llm.provider import PlainProviderError, ProviderError
+from sentient.memory import scopes as memory_scopes
 from sentient.services import Service, cancel_tasks
 from sentient.tasks import ask, away, catchup, continuity, executor, limits, scripts, stuck, swarm
 from sentient.tasks.away import AwayWatch
@@ -76,7 +77,7 @@ STATUSES = {
 }
 UPDATABLE_FIELDS = {
     "name", "description", "priority", "schedule", "plan", "enabled", "status", "model", "assignee", "script",
-    "browser_profile", "deliver_to", "notepad", "keep_running",
+    "browser_profile", "deliver_to", "notepad", "keep_running", "memory_scope",
 }
 SANDBOX_RESULT = {
     "ok": False, "backend": None, "stdout": "", "stderr": "", "result": None, "files_created": [],
@@ -334,11 +335,13 @@ class TaskService(Service):
         model: str | None = None,
         auto_approve: bool = False,
         browser_profile: str | None = None,
+        memory_scope: str | None = None,
     ) -> dict:
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("A prompt is required.")
         browser_profile = self._browser_profile(browser_profile)
+        memory_scope = memory_scopes.chat_scope(memory_scope)
         context = dict(original_context or {})
         context.setdefault("source", "manual_creation" if source == "user" else source)
         now = self.now_iso()
@@ -353,6 +356,7 @@ class TaskService(Service):
             "enabled": True,
             "model": model or None,
             "browser_profile": browser_profile,
+            "memory_scope": memory_scope,
             "original_context": context,
             "plan": [],
             "chat_history": [],
@@ -570,6 +574,11 @@ class TaskService(Service):
             changes["model"] = data["model"] or None
         if "browser_profile" in data:
             changes["browser_profile"] = self._browser_profile(data["browser_profile"])
+        if "memory_scope" in data:  # #155: None or "" goes back to personal; "always" is refused (ValueError)
+            scope = memory_scopes.chat_scope(data["memory_scope"])
+            if scope != task.get("memory_scope") and task["status"] in BUSY:  # a run keeps the scope it started with
+                raise TaskConflict("This task is running right now. Try again when the run has finished.")
+            changes["memory_scope"] = scope
         if "deliver_to" in data:
             changes["deliver_to"] = stored(data["deliver_to"])
         if "notepad" in data:
@@ -706,7 +715,8 @@ class TaskService(Service):
         task = await self._require(task_id)
         now = self.now_iso()
         keep = ("name", "description", "priority", "task_type", "schedule", "original_prompt", "source",
-                "assignee", "model", "browser_profile", "deliver_to", "original_context", "chat_history")
+                "assignee", "model", "browser_profile", "memory_scope", "deliver_to", "original_context",
+                "chat_history")
         fields = {k: task.get(k) for k in keep}
         fields.update(status="planning", enabled=True, plan=[], clarifying_questions=[], error=None,
                       created_at=now, updated_at=now)

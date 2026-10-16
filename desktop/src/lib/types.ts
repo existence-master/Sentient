@@ -410,6 +410,8 @@ export interface Session {
   incognito?: boolean
   /** The model picked for this chat (#312); null or missing follows the default model. */
   model?: string | null
+  /** The memories this chat uses and saves to (#155): "personal", "work" or a project's name. */
+  memory_scope?: string
   [key: string]: unknown
 }
 
@@ -1073,13 +1075,18 @@ export interface MemoryUpdatedData {
   content?: string
   source?: string
   /**
-   * `merged` | `contradicted` | `promoted` | `expired` | `approved` | `discarded` | `review_expired`, or
+   * `merged` | `contradicted` | `promoted` | `expired` | `approved` | `discarded` | `review_expired` | `moved` |
+   * `scope_reset` (#155), or
    * `instruction` on a held memory that reads like an instruction for how Sentient should act (#234)
    */
   reason?: string
   count?: number
   /** `pending`: the memory waits in the review inbox (ADR 0021). */
   status?: 'pending'
+  /** The memory's scope (#155) on a save: where it was kept. With `reason: "moved"`, where it moved to (`previous_scope`
+   * is where it was); with `reason: "scope_reset"`, the scope that was forgotten. */
+  scope?: string
+  previous_scope?: string
   /** An UPDATE's words before it, so the save can be undone (#234). */
   previous?: string
   /** The chat it was learned in; that chat shows "Remembered: ... Undo" (#234). */
@@ -1655,6 +1662,8 @@ export interface Task {
   model: string | null
   /** Named browser profile its browser steps use (§12); `null` is the default one. */
   browser_profile?: string | null
+  /** The memories its runs use and save to (#155): "personal", "work" or a project's name. */
+  memory_scope?: string
   /** Where its notifications go besides the app (§4 "Where results go"). Older engines leave it out (default). */
   deliver_to?: TaskDeliverTo
   /** Recurring tasks: short notes its runs keep for the next run (§4 "Recurring tasks remember"). */
@@ -1674,6 +1683,8 @@ export interface TaskCreateRequest {
   assignee?: 'ai'
   model?: string
   browser_profile?: string
+  /** The memories its runs use (#155); personal when left out. */
+  memory_scope?: string
 }
 
 export interface TaskPreview {
@@ -1702,7 +1713,7 @@ export interface DeliveryChat {
 /** `default`: paired chats with delivery on; `desktop`: the app only; a list: only those chats. */
 export type TaskDeliverTo = 'default' | 'desktop' | DeliveryChat[]
 
-export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'deliver_to' | 'notepad' | 'keep_running'>>
+export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'memory_scope' | 'deliver_to' | 'notepad' | 'keep_running'>>
 
 /** `GET /api/tasks/away` (#163): routines pause after a long absence and resume with one click. */
 export interface AwayStatus {
@@ -2095,6 +2106,18 @@ export interface Memory {
   /** Listed memories are always `active`; `pending` ones are only in the review inbox. */
   status?: 'active' | 'pending'
   review?: ReviewNote | null
+  /** Where it is kept (#155): "personal" (default), "work", "always" (every chat) or a project's name. */
+  scope?: string
+}
+
+/** One memory scope (#155) from `GET /api/memories/scopes`. */
+export interface MemoryScope {
+  name: string
+  label: string
+  /** Active memories kept there. */
+  count: number
+  /** Always, Personal and Work; projects are the user's own. */
+  built_in: boolean
 }
 
 /** Where a memory waiting for review came from (ADR 0021). */
@@ -2123,6 +2146,8 @@ export interface MemoryReviewItem {
   created_at: ISODate
   /** When it is let go if nobody reviews it. */
   expires_at: ISODate | null
+  /** A fact's memory scope (#155): it is approved into it. Null for insights. */
+  scope?: string | null
 }
 
 export interface MemoryReviewInbox {
@@ -2149,6 +2174,7 @@ export interface MemoryQuery {
   topic?: string
   q?: string
   source?: string
+  scope?: string
   limit?: number
   offset?: number
 }

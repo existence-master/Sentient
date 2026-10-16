@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { useMemo } from 'react'
 import type { Memory } from '@/lib/types'
 import { cn, formatTime, relativeTime } from '@/lib/utils'
-import { ExpiryBadge, SourceChip, TopicPill } from './bits'
+import { ExpiryBadge, ScopeBadge, SourceChip, TopicPill } from './bits'
 import { useNow } from './hooks'
 import { dayKey, dayLabel, primaryTopic, topicMeta } from './meta'
 
@@ -29,6 +29,7 @@ function MemoryCard({ memory, selected, onSelect, now, compact }: { memory: Memo
           <TopicPill key={t} topic={t} size="xs" />
         ))}
         <ExpiryBadge memory={memory} now={now} className="h-4.5" />
+        <ScopeBadge scope={memory.scope} />
         {typeof memory.similarity === 'number' && (
           <span className="rounded-full bg-accent/12 px-1.5 text-2xs font-medium text-accent-text">{Math.round(memory.similarity * 100)}% match</span>
         )}
