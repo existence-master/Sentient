@@ -602,6 +602,7 @@ class Timeline:
             select="SELECT r.created_at AS _at, ('run:' || r.id) AS _key, r.id, r.task_id, r.status, r.trigger_data,"
                    " r.result, r.error, r.retry_of, r.pending_question, r.started_at, r.finished_at, t.name,"
                    " COALESCE(r.dry_run, 0) AS dry_run,"
+                   " (SELECT p.status FROM task_runs p WHERE p.id = r.retry_of) AS retried_status,"
                    " t.task_type, t.schedule, t.original_context, t.source AS task_source"
                    " FROM task_runs r JOIN tasks t ON t.id = r.task_id",
             where=where, params=params, ts="r.created_at", key="('run:' || r.id)",
@@ -635,11 +636,15 @@ class Timeline:
             "completed": (done, "done"), "completed_with_errors": (f"{done}, but it needs your attention", "done"),
             "error": (fail, "failed"), "waiting_for_user": (wait, "waiting"), "processing": (run, "running"),
             "cancelled": (f"Stopped {name}", "stopped"),
+            # what it reads wasn't there, so the run was skipped (#161)
+            "skipped": (f"Skipped {name}: what it reads wasn't there", "stopped"),
         }.get(status, (f"{name}: {status.replace('_', ' ')}", None))
         # why it ran
         trigger_data = _loads(row["trigger_data"])
         if tried:
             why = "You chose Try it first, so it only noted what it would send, change or run"
+        elif row["retry_of"] and row["retried_status"] == "skipped":
+            why = "It tried again because what it reads wasn't there last time"  # its own retry (#161)
         elif row["retry_of"]:
             why = "You chose Retry"
         elif isinstance(trigger_data, dict) and "script_result" in trigger_data:
@@ -653,7 +658,7 @@ class Timeline:
         else:
             why = words.schedule_why(schedule, tz, registry=self.app.registry)
         detail = None
-        if status == "error" and row["error"]:
+        if status in {"error", "skipped"} and row["error"]:
             detail = words.short(row["error"], 200)
         elif status == "waiting_for_user":
             question = _loads(row["pending_question"]) or {}
@@ -700,6 +705,7 @@ class Timeline:
                     "alert": (f"{name} found something. You were told", "done"),
                     "reported": (f"Checked {name} and told you the result", "done"),
                     "failed": (f"Couldn't check {name}", "failed"),
+                    "skipped": (f"Skipped checking {name}: what it reads wasn't there", "stopped"),
                 }.get(outcome, (f"Checked {name}", "done"))
                 if count > 1:
                     title += f" ({count} checks)"
@@ -720,7 +726,7 @@ class Timeline:
             "kind NOT IN ('brief', 'skill', 'reminder')",
             # a finished run or a check is shown from the run or the check itself
             f"COALESCE({_json('payload', '$.event')}, '') NOT IN ('run_completed', 'run_failed', 'script_alert',"
-            " 'dry_run_finished')",
+            " 'dry_run_finished', 'source_missing')",
             f"{_json('payload', '$.dream_id')} IS NULL",  # the dream itself
         ]
         params: list = []

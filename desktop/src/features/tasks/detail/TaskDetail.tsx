@@ -64,7 +64,8 @@ import { NotepadCard } from './NotepadCard'
 import { Clarifications } from './Clarifications'
 import { RunQuestion } from './RunQuestion'
 import { PlanSection } from './PlanSection'
-import { RunHistory, RunResult } from './RunHistory'
+import { RunHistory, RunResult, skippedReason } from './RunHistory'
+import { SetupChecklist, hasChecklist } from './SetupChecklist'
 import { FilterRulesView, ScheduleEditor } from './ScheduleEditor'
 import { SwarmSection } from './SwarmSection'
 import { TaskChat } from './TaskChat'
@@ -279,6 +280,11 @@ function DetailHeader({ task, layout, onClose, ops, missing, onShowRuns }: { tas
   )
 }
 
+/** Try it first (#142): one run that only notes what it would send, change or run. */
+function canTryFirst(task: Task): boolean {
+  return !['planning', 'clarification_pending'].includes(task.status) && task.task_type === 'single' && task.plan.length > 0 && !task.runs.some((r) => r.dry_run && (r.status === 'processing' || r.status === 'waiting_for_user'))
+}
+
 function ActionBar({ task, ops, missing, layout, onClose, onShowRuns }: { task: Task; ops: Ops; missing: MissingIntegration[]; layout: 'panel' | 'page'; onClose?: () => void; onShowRuns: () => void }) {
   const navigate = useNavigate()
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -287,9 +293,13 @@ function ActionBar({ task, ops, missing, layout, onClose, onShowRuns }: { task: 
   const run = processingRun(task)
   const waiting = (task.runs ?? []).find((r) => r.status === 'waiting_for_user' && !r.dry_run) // the run the task waits on
   const schedulable = kind === 'recurring' || kind === 'triggered' || kind === 'script' || task.status === 'pending'
-  // Try it first (#142): one run that only notes what it would send, change or run
-  const canTry = !['planning', 'clarification_pending'].includes(task.status) && task.task_type === 'single' && task.plan.length > 0 && !task.runs.some((r) => r.dry_run && (r.status === 'processing' || r.status === 'waiting_for_user'))
+  const canTry = canTryFirst(task)
   const tryIt = () => void ops.dryRun(id).then((t) => t && onShowRuns())
+  // approving a routine confirms its setup checklist as it stands (#161)
+  const approve = async () => {
+    if (hasChecklist(task) && !task.setup?.confirmed_at && !(await ops.update(id, { setup: { confirm: true } }))) return
+    void ops.approve(id)
+  }
   const canRunNow = !['planning', 'clarification_pending', 'archived', 'declined'].includes(task.status) && (task.plan.length > 0 || task.task_type === 'swarm' || isScriptJob(task)) && !(task.task_type === 'swarm' && task.status === 'processing') && !((task.status === 'processing' || task.status === 'waiting_for_user') && !schedulable)
 
   const rerun = async () => {
@@ -316,7 +326,7 @@ function ActionBar({ task, ops, missing, layout, onClose, onShowRuns }: { task: 
         </Tooltip>,
         <Tooltip key="approve" content={missing.length ? `Connect ${missing.map((m) => m.label).join(', ')} first` : ''}>
           <span>
-            <Button size="sm" variant="primary" leftIcon={<IconCheck size={15} />} disabled={missing.length > 0 || !task.plan.length} loading={ops.isBusy('approve', id)} onClick={() => void ops.approve(id)}>
+            <Button size="sm" variant="primary" leftIcon={<IconCheck size={15} />} disabled={missing.length > 0 || !task.plan.length} loading={ops.isBusy('approve', id)} onClick={() => void approve()}>
               {approveLabel}
             </Button>
           </span>
@@ -556,6 +566,10 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
         <PropertiesCard task={task} tz={tz} ops={ops} compact />
       )}
 
+      {hasChecklist(task) && (
+        <SetupChecklist task={task} tz={tz} ops={ops} canTry={canTryFirst(task) && missing.length === 0} onTry={() => void ops.dryRun(id).then((t) => t && onShowRuns())} />
+      )}
+
       <DescriptionCard task={task} onSave={(description) => ops.update(id, { description }, 'Description saved')} />
 
       <ScheduleCard task={task} tz={tz} onSave={(schedule) => ops.update(id, { schedule }, 'Schedule updated')} saving={ops.isBusy('update', id)} />
@@ -591,8 +605,8 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
           {last.result ? (
             <RunResult result={last.result} memorySources={last.memory_sources} sources={last.sources} />
           ) : last.error ? (
-            <Alert tone={last.status === 'cancelled' ? 'neutral' : 'danger'} icon={<IconAlertCircle />}>
-              {last.error}
+            <Alert tone={last.status === 'cancelled' ? 'neutral' : last.status === 'skipped' ? 'warning' : 'danger'} icon={<IconAlertCircle />} title={last.status === 'skipped' ? 'Skipped: what it reads wasn’t there' : undefined}>
+              {last.status === 'skipped' ? skippedReason(last.error) : last.error}
             </Alert>
           ) : (
             <p className="text-sm text-fg-subtle">No result recorded for this run.</p>
