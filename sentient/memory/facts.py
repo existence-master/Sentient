@@ -887,17 +887,27 @@ class FactMemory:
         return deleted
 
     # ------------------------------------------------------------------ sources (#153)
-    async def link_sources(self, fid: int, sources: list[str]) -> None:
-        """Record that fact ``fid`` was also learned from ``sources`` (its own ``source`` is never linked twice)."""
+    async def link_sources(self, fid: int, sources: list[str], *, merged_from: int | None = None) -> None:
+        """Record that fact ``fid`` was also learned from ``sources`` (its own ``source`` is never linked twice).
+        ``merged_from``: the links come with fact ``merged_from`` merged into it, and :meth:`unmerge` takes exactly
+        those away again. A source learned for ``fid`` itself is never one a merge brought, even if a merge had."""
         await self.ensure_schema()
         row = await self.store.fetchone("SELECT source FROM facts WHERE id = ?", (fid,))
         if row is None:
             return
         ts = now_iso()
         for src in dict.fromkeys(s for s in sources if s and s != row["source"]):
-            await self.store.execute(
-                "INSERT OR IGNORE INTO fact_sources(fact_id, source, linked_at) VALUES(?,?,?)", (fid, src, ts)
-            )
+            if merged_from is None:
+                await self.store.execute(
+                    "INSERT INTO fact_sources(fact_id, source, linked_at) VALUES(?,?,?)"
+                    " ON CONFLICT(fact_id, source) DO UPDATE SET merged_from = NULL",
+                    (fid, src, ts),
+                )
+            else:  # a link it already had stays its own
+                await self.store.execute(
+                    "INSERT OR IGNORE INTO fact_sources(fact_id, source, linked_at, merged_from) VALUES(?,?,?,?)",
+                    (fid, src, ts, merged_from),
+                )
 
     async def _linked(self, fid: int) -> list[str]:
         rows = await self.store.fetchall(
@@ -1834,7 +1844,7 @@ class FactMemory:
             return False
         indexed = self.vec.ready or await self.vec.exists()
         # its sources (and those of copies merged into it before) back the kept one now (#153)
-        await self.link_sources(keep_id, await self.sources_of(drop_id))
+        await self.link_sources(keep_id, await self.sources_of(drop_id), merged_from=drop_id)
         db = self.store.db
         try:  # the row and its vector change together (one commit)
             await db.execute(
@@ -1870,6 +1880,8 @@ class FactMemory:
             )
             await db.execute(f"DELETE FROM {self.vec.name} WHERE rowid = ?", (fid,))
             await db.execute(f"INSERT INTO {self.vec.name}(rowid, embedding) VALUES(?, ?)", (fid, pack(vec)))
+            # the sources its merge gave the other memory go back with it (#153), and nothing else
+            await db.execute("DELETE FROM fact_sources WHERE merged_from = ?", (fid,))
             await db.commit()
         except BaseException:
             await db.rollback()

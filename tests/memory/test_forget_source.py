@@ -155,6 +155,32 @@ async def test_merged_copies_count_as_sources(app):
     assert (await mem.get_fact(keep["id"]))["source"] == "conversation"
 
 
+async def test_undoing_a_merge_takes_back_the_sources_it_brought(app):
+    mem, store = app.memory, app.store
+    tg = await store.create_session(channel="telegram")
+    keep = await mem.remember("Maya lives in Pune", use_llm=False, session_id=tg)
+    copy = await mem.remember("माया पुणे में रहती है", use_llm=False)  # learned in a desktop chat
+    assert await mem.merge_translation(keep["id"], copy["id"])
+    assert await mem.sources_of(keep["id"]) == ["channel:telegram", "conversation"]
+    assert await mem.unmerge(copy["id"])
+    assert await mem.sources_of(keep["id"]) == ["channel:telegram"]  # the merge's link went back with it
+    assert await mem.purge_source("channel:telegram") == {"deleted": 1, "unlinked": 0}
+    assert await mem.get_fact(keep["id"]) is None
+    assert (await mem.get_fact(copy["id"]))["source"] == "conversation"
+
+
+async def test_undoing_a_merge_keeps_sources_learned_on_their_own(app):
+    mem, store = app.memory, app.store
+    tg = await store.create_session(channel="telegram")
+    before = await mem.remember("Maya lives in Pune", use_llm=False, session_id=tg)
+    await mem.link_sources(before["id"], ["manual"])  # learned again, before any merge
+    copy = await mem.remember("माया पुणे में रहती है", use_llm=False)
+    assert await mem.merge_translation(before["id"], copy["id"])
+    await mem.link_sources(before["id"], ["conversation"])  # and after the merge, from a chat of its own
+    assert await mem.unmerge(copy["id"])
+    assert await mem.sources_of(before["id"]) == ["channel:telegram", "manual", "conversation"]
+
+
 async def test_merging_a_fact_with_merged_copies_keeps_their_sources(app):
     mem, store = app.memory, app.store
     tg = await store.create_session(channel="telegram")

@@ -1635,7 +1635,7 @@ chat is the chat's, plus every added folder whose notes that chat read (its answ
 thing (two of the fact's words or one of its numbers in the excerpt read); a fact held for review because the chat
 read an app's content (Gmail, Home Assistant, an MCP server...) is that app's instead (the ones whose excerpts say it,
 else every app the chat read).
-Forgetting a source deletes the facts no other source backs, with their vectors and merged copies, and takes it off
+A merge of a copy in another language (#353) also links the copy's sources to the kept fact, marked with the copy (`fact_sources.merged_from`); undoing that merge removes exactly those links again, so a source the kept fact only had through the merge no longer backs it. Forgetting a source deletes the facts no other source backs, with their vectors and merged copies, and takes it off
 the others (the next source becomes a fact's own `source`).
 
 Disconnecting an app (`POST /api/integrations/{id}/disconnect?forget=true`), removing an MCP server
