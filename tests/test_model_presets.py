@@ -6,7 +6,7 @@ import respx
 from fastapi.testclient import TestClient
 
 from sentient.app import SentientApp
-from sentient.config.schema import PRESET_CLOUD_MODELS, ModelRoles
+from sentient.config.schema import PRESET_CLOUD_MODELS, ModelPreset, ModelRoles
 from sentient.gateway.app import create_app
 from sentient.llm import presets
 from tests.conftest import FakeProvider
@@ -285,6 +285,12 @@ async def test_the_switch_cant_go_on_with_a_cloud_preset(app, keys):
         await presets.apply(app, "Cloud", local_only=True)
     assert err.value.status == 409 and app.config.models.local_only is False
     assert app.config.models.roles.primary == DEFAULTS.primary
+    # a preset of your own that leaves a cloud model in a role it doesn't set
+    app.config.models.presets = {"Desk": ModelPreset(roles={"primary": DEFAULTS.primary})}
+    app.config.models.roles.vision = "openai/gpt-x"
+    with pytest.raises(presets.PresetError) as err:
+        await presets.apply(app, "Desk", local_only=True)
+    assert err.value.status == 409 and app.config.models.local_only is False
 
 
 async def test_local_only_blocks_presets_with_cloud_models(app, keys):

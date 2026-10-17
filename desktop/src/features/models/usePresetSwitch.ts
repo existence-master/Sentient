@@ -56,7 +56,7 @@ export function usePresetSwitch() {
 
   /** Apply a preset. Returns true when it asks first instead (Local only with the switch off), so a menu can close. */
   const apply = (name: string): boolean => {
-    if (name === LOCAL_PRESET && config.data && !config.data.models.local_only) {
+    if (name === LOCAL_PRESET && !config.data?.models.local_only) { // asks too while the setting is still loading
       setAskLocal(name)
       return true
     }

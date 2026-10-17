@@ -226,13 +226,14 @@ async def apply(app: Any, name: str, *, local_only: bool = False) -> dict[str, A
     preset = find(before, name, hardware(app), plan=await plan_models(app))
     if not preset["available"]:
         raise PresetError(preset["reason"] or f"{preset['name']} can't be used yet.", 409)
-    if local_only and preset["cloud"]:
-        raise PresetError(f"{preset['name']} uses models outside this computer, so Local only can't be turned on "
-                          "with it.", 409)
     cfg = before.model_copy(deep=True)
     roles = cfg.models.roles.model_dump()
     roles.update({r: m or None for r, m in preset["roles"].items()})
     cfg.models.roles = ModelRoles.model_validate(roles)
+    # every role after the switch, also one the preset leaves as it is, must run here for Local only to go on
+    if local_only and any(m and not runs_here(cfg, m) for m in roles.values()):
+        raise PresetError(f"{preset['name']} uses models outside this computer, so Local only can't be turned on "
+                          "with it.", 409)
     for f in SETUP_FIELDS:
         if f in preset:
             value = preset[f]
