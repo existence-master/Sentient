@@ -152,7 +152,6 @@ class EvolutionService(Service):
     async def start(self) -> None:
         app = self.app
         app.skills.store = app.store
-        await app.store.ensure_column("evolution_reviews", "activity_mark", "TEXT")  # #297
         if app.memory is not None:
             app.memory.bus = app.bus
         with contextlib.suppress(Exception):

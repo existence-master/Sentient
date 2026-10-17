@@ -19,6 +19,8 @@ Status flow (single tasks)::
     decline -> declined, archive -> archived
     paused (enabled off) and interrupted by a restart: processing|waiting on an approval -> run cancelled with a note,
                task active|pending; planning stays planning. Resume carries the run on (a retry) or plans it (#304)
+    paused while a run works -> it stops at its next safe point (before a model or tool call) and is held the same
+               way; a run waiting on an approval is held at once (#408)
 
 Swarm tasks skip approval (v2): planning -> processing -> completed | completed_with_errors | error.
 
@@ -46,7 +48,7 @@ from sentient.services import Service, cancel_tasks
 from sentient.tasks import ask, away, catchup, continuity, executor, limits, scripts, stuck, swarm
 from sentient.tasks.away import AwayWatch
 from sentient.tasks.delivery import from_stored, stored
-from sentient.tasks.executor import RunFailed, RunPaused
+from sentient.tasks.executor import RunFailed, RunHeld, RunPaused
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
     CORE_HELPER_PLUGINS,
@@ -93,8 +95,18 @@ MAX_RESUMES = 2
 BUSY = ("processing", "waiting_for_user")
 STALE_ANSWER = "This request was already answered or has changed. Open the task to see what it is waiting for."
 STOPPED_NOTE = "Run stopped by Stop everything."
-# a paused task's work that a restart interrupted is held, not resumed (#304); resuming the task carries it on
+# a paused task's work is held, not carried on: after a restart (#304), or at the next safe point of a run that is
+# working when the user pauses it (#408). Resuming the task carries it on
 PAUSED_NOTE = "Paused before it finished. Resume the task to continue."
+# a run that can't stop part-way when its task is paused (#408) says why in its log, and finishes
+SWARM_FINISHES_NOTE = (
+    "This task's agents work side by side, so this run can't be stopped part-way. It will finish, and the task "
+    "won't run again until you resume it."
+)
+CALL_FINISHES_NOTE = (
+    "This one-step action had already started, so it can't be stopped part-way. It will finish, and the task "
+    "won't run again until you resume it."
+)
 PLAN_PAUSED_NOTE = "Paused before the plan was ready. Resume the task to continue."
 # on a task whose check script was rejected twice (#310): the AI does the job at each run instead
 NO_SCRIPT_NOTE = "I couldn't write a working check script for this, so the AI will do it at each run instead."
@@ -189,6 +201,7 @@ class TaskService(Service):
         self._background: set[asyncio.Task] = set()
         self._runs: dict[str, asyncio.Task] = {}
         self._cancel_requested: set[str] = set()
+        self._holding: set[str] = set()  # runs whose task was paused: they stop at their next safe point (#408)
         self._locks: dict[str, asyncio.Lock] = {}
         self._sem: asyncio.Semaphore | None = None
         self._bus_subscription: Any = None
@@ -201,7 +214,6 @@ class TaskService(Service):
     async def start(self) -> None:
         cfg = self.app.config.tasks
         self._sem = asyncio.Semaphore(cfg.max_concurrent_runs)
-        await self.repo.ensure_schema()
         from sentient.tasks.tools import TasksPlugin
 
         if not any(p.id == TasksPlugin.id for p in self.app.registry.plugins()):
@@ -261,6 +273,11 @@ class TaskService(Service):
         if runs:
             await asyncio.wait(runs, timeout=5)
         return cancelled + await cancel_tasks(self._background)
+
+    def holding(self, run_id: str) -> bool:
+        """True when the user paused this run's task while it worked: it stops before its next model or tool call
+        (#408). Checked by the executor at every safe point."""
+        return run_id in self._holding
 
     def _job_running(self, kind: str, task_id: str) -> bool:
         """True while a background job (``plan``, ``swarm``, ``script``) runs for this task."""
@@ -631,8 +648,13 @@ class TaskService(Service):
             else:
                 changes["status"] = "pending"
                 changes["next_execution_at"] = iso(parse_run_at(schedule) or self.now())
+        pausing = "enabled" in changes and not changes["enabled"] and task["enabled"]
         await self._set(task_id, changes)
+        if pausing:
+            await self._pause_work(task_id)
         if resuming:
+            for run in await self.repo.processing_runs(task_id):  # resumed before it reached a safe point: it goes on
+                self._holding.discard(run["id"])
             await self._carry_on(task_id, held)
         if needs_approval:
             await self.publish(task_id)
@@ -1334,8 +1356,7 @@ class TaskService(Service):
                 )
                 report["failed"].append(run["id"])
         for run in await self.repo.waiting_runs():  # an approval a paused task waits on would only expire
-            pending = run.get("pending_question") or {}
-            if not (pending.get("approval") or pending.get("untrusted_call")):
+            if not self._waits_on_approval(run):
                 continue  # a question to the user keeps waiting for the answer
             task = await self.repo.get_task(run["task_id"])
             if task is not None and not task["enabled"] and await self._hold_run(task, run):
@@ -1378,6 +1399,44 @@ class TaskService(Service):
             self._spawn(self._plan_job(task["id"]), f"plan:{task['id']}")
         else:
             self._spawn(self._refine_and_plan(task["id"]), f"plan:{task['id']}")
+
+    @staticmethod
+    def _waits_on_approval(run: dict) -> bool:
+        """A run waiting on an approval (an Ask rule or a held call), not on a question to the user."""
+        pending = run.get("pending_question") or {}
+        return bool(pending.get("approval") or pending.get("untrusted_call"))
+
+    async def _pause_work(self, task_id: str) -> None:
+        """The user paused the task (#408): a run working right now stops at its next safe point, before its next
+        model or tool call, never in the middle of one (``holding``, ``_held_by_pause``), and a run waiting on an
+        approval is held at once. Both end like work a restart held (#304). A swarm's run, and a one-call run whose
+        call already started, can't stop part-way: they finish, and their log says so."""
+        task = await self.repo.get_task(task_id)
+        if task is None:
+            return
+        for run in await self.repo.processing_runs(task_id):
+            live = self._runs.get(run["id"])
+            if live is None or live.done():
+                continue  # not running in this session: the next start holds it (recover_interrupted)
+            if task.get("task_type") == "swarm":
+                await self.progress(task_id, run["id"], {"type": "info", "content": SWARM_FINISHES_NOTE})
+            elif await self._fixed_call_started(task, run):
+                await self.progress(task_id, run["id"], {"type": "info", "content": CALL_FINISHES_NOTE})
+            else:
+                self._holding.add(run["id"])
+        for run in await self.repo.waiting_runs(task_id):
+            if self._waits_on_approval(run):  # a question to the user keeps waiting, as after a restart
+                await self._hold_run(task, run)
+
+    async def _held_by_pause(self, task_id: str, run_id: str) -> None:
+        """A run stopped at a safe point because its task was paused (#408): it is held with ``PAUSED_NOTE`` and
+        carries on from its transcript when the task is resumed. Resumed meanwhile: it carries on now."""
+        self._holding.discard(run_id)
+        task, run = await self.repo.get_task(task_id), await self.repo.get_run(run_id)
+        if task is None or run is None or not await self._hold_run(task, run):
+            return
+        if (await self.repo.get_task(task_id) or {}).get("enabled"):
+            await self._carry_on(task_id, await self.repo.held_runs(task_id, PAUSED_NOTE))
 
     async def _fixed_call_started(self, task: dict, run: dict) -> bool:
         """An approved one-call run that already started its call: resuming it only ends it, never repeats the call,
@@ -1839,11 +1898,16 @@ class TaskService(Service):
                 )
             except Exception:
                 log.exception("could not record the crash of task run %s", run_id)
+        finally:
+            self._holding.discard(run_id)
 
     async def _execute_locked(self, task_id: str, run_id: str, *, resume: bool, answered: bool = False) -> None:
         run = await self.repo.get_run(run_id)
         task = await self.repo.get_task(task_id)
         if run is None or task is None or run["status"] != "processing":
+            return
+        if self.holding(run_id):  # paused while it waited for a free slot (#408)
+            await self._held_by_pause(task_id, run_id)
             return
         cfg = self.app.config.tasks
         opening = "Resuming the run after a restart." if resume else "Executor has picked up the task and is starting execution."
@@ -1878,6 +1942,9 @@ class TaskService(Service):
                     loop_result = await executor.execute_single(self, task, run, resume=resume, answered=answered)
         except RunPaused as paused:
             await self._pause_run(task_id, run_id, paused.question)
+            return
+        except RunHeld:  # the task was paused: stopped at a safe point (#408)
+            await self._held_by_pause(task_id, run_id)
             return
         except TimeoutError:
             status, error = "error", f"Stopped after {cfg.run_timeout_minutes} minutes without finishing. {limits.LIMITS_HINT}"

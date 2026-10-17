@@ -364,6 +364,8 @@ class LoopResult:
     skills_viewed: list[str] = field(default_factory=list)  # names passed to skill_view
     interjections: list[str] = field(default_factory=list)  # steer messages the model received
     paused: bool = False  # ``stop`` ended the loop after a round of tool results (a task run asked the user)
+    # ``interrupt`` ended the loop at a safe point, before a model call or a tool call (a task the user paused, #408)
+    interrupted: bool = False
     # set when an "ask" rule stopped an unattended run (also copied to ``error``); plain words for the user
     stopped_by_rule: str | None = None
     # set when the loop breaker ended the loop (unattended runs also copy it to ``error``); plain words
@@ -752,6 +754,7 @@ class Agent:
         budget: Budget | None = None,
         repeat_nudge: bool = False,
         fallback: bool = False,
+        interrupt: Callable[[], bool] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Stream a tool-calling conversation. Mutates ``messages`` and fills ``result``.
 
@@ -766,6 +769,10 @@ class Agent:
         ``stop()`` is checked after each round of tool results; when it returns True the loop ends without
         another model call and sets ``result.paused`` (task runs use it to wait for the user's answer). ``budget`` is checked
         before each model call; when it has run out the loop ends with ``result.stopped_by_budget``.
+        ``interrupt()`` is checked at every safe point: before each model call, and before each tool call (never during
+        one). When it returns True the loop ends there and sets ``result.interrupted``; tool calls of the last answer
+        that did not run are left without a result (``history_to_openai`` drops them), so a run that carries on from
+        the transcript makes them again (a task the user paused, #408).
 
         Loop breaker (``tools.repeated_call_limit``): when the same tool with the same arguments gets
         the same result that many times, the loop ends with ``result.stopped_by_repeat`` (and ``error``).
@@ -790,8 +797,18 @@ class Agent:
         tools_disabled = False
         empty_nudged = False
         round_no = 0
+        def interrupted() -> bool:
+            if interrupt is None or not interrupt():
+                return False
+            result.interrupted = True
+            result.text = ""
+            result.messages = messages
+            return True
+
         while round_no < rounds:
             round_no += 1
+            if interrupted():  # before the model call
+                return
             over = budget.exceeded() if budget is not None else None
             if over:
                 result.stopped_by_budget = result.error = over
@@ -904,6 +921,8 @@ class Agent:
                 result.messages = messages
                 return
 
+            if interrupted():  # before any of this answer's calls (and their second look) start: it is asked again
+                return
             # a delete for good becomes its app's trash version unless the user asked for it to be permanent (#142);
             # swapped before the call is saved, so the transcript, approvals and second look all see the trash call
             swapped = self._prefer_trash(tool_calls, messages, ctx)
@@ -952,6 +971,8 @@ class Agent:
                         question=approval_question(label, waiting.tc.arguments, wording["target"], waiting.level),
                     )
             for group in self._groups(plans):
+                if interrupted():  # between calls: the ones that ran keep their results, the rest are made again
+                    return
                 for p in group:
                     yield ToolCallEvent(call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments, **ev)
                 runnable: list[_CallPlan] = []

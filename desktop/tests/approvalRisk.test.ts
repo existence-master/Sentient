@@ -3,7 +3,7 @@
 // Run with `npm test` (no Electron needed).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { approvalRisk, approvalCardReason } from '../src/features/chat/approvalRisk.ts'
+import { approvalCardReason, approvalRisk, engineWording, resolveWording } from '../src/features/chat/approvalRisk.ts'
 
 const email = (name: string, body: string, reason = 'mcp_mailer: Send an email to one address') => ({
   risk: 'send' as const,
@@ -178,6 +178,132 @@ test('Home Assistant locks, alarms and garage doors read as home security, with 
   assert.equal(blinds.caution, undefined)
 })
 
+// #347: the engine's risk_label (from a tool's describe_fn) is used when it is specific;
+// the generic per-risk fallback means no describe_fn ran, so the tool-name rules keep naming it.
+test('a specific engine label is used for the heading', () => {
+  const w = engineWording('Purchase', 'send')
+  assert.equal(w?.label, 'Purchase')
+  assert.equal(w?.verb, 'make a purchase')
+  assert.equal(w?.tone, 'danger')
+})
+
+test('a browser click on an ordinary button reads as a click', () => {
+  const w = engineWording('Clicks', 'write')
+  assert.equal(w?.label, 'Clicks')
+  assert.equal(w?.verb, 'click')
+  assert.equal(w?.tone, 'warning')
+})
+
+test('the generic send fallback keeps the #346 tool-name rules', () => {
+  assert.equal(engineWording('Sends', 'send'), null)
+})
+
+test('the generic write fallback keeps the #346 tool-name rules', () => {
+  assert.equal(engineWording('Changes something', 'write'), null)
+})
+
+test('a missing label keeps the #346 tool-name rules', () => {
+  assert.equal(engineWording(null, 'send'), null)
+  assert.equal(engineWording('   ', 'send'), null)
+})
+
+test('an unknown engine label is shown as-is with a plain verb', () => {
+  const w = engineWording('Does something new', 'write')
+  assert.equal(w?.label, 'Does something new')
+  assert.equal(w?.verb, 'do this')
+  assert.equal(w?.tone, 'warning')
+})
+
+test('labels are trimmed before matching', () => {
+  assert.equal(engineWording('  Clicks  ', 'write')?.label, 'Clicks')
+})
+
+// #347 review: the full precedence — browser labels trusted, tool-name rules first,
+// engine label only as the tiebreaker for generic rule results.
+test('a browser_click labelled Sends reads as Sends, not Purchase', () => {
+  const w = resolveWording({
+    risk: 'send',
+    name: 'browser_click',
+    reason: 'browser: Buttons that buy, pay for things or submit forms',
+    riskLabel: 'Sends'
+  })
+  assert.equal(w.label, 'Sends')
+  assert.equal(w.verb, 'send something on your behalf')
+})
+
+test('a browser_click labelled Purchase still reads as a purchase', () => {
+  const w = resolveWording({
+    risk: 'send',
+    name: 'browser_click',
+    reason: 'browser: Buttons that buy, pay for things or submit forms',
+    riskLabel: 'Purchase'
+  })
+  assert.equal(w.label, 'Purchase')
+})
+
+test('terminal_run keeps the tool-name rules ahead of the engine label', () => {
+  const w = resolveWording({ risk: 'exec', name: 'terminal_run', riskLabel: 'Runs a command' })
+  assert.equal(w.label, 'Runs a command')
+  assert.equal(w.verb, 'run a command on this computer')
+})
+
+test('a Home Assistant unlock keeps its security wording and caution', () => {
+  const w = resolveWording({ risk: 'send', name: 'home_assistant_unlock', riskLabel: 'Unlocks a door' })
+  assert.equal(w.label, 'Home security')
+  assert.equal(w.caution, 'Anyone at that door can walk in once it is unlocked.')
+})
+
+test('a generic rule result lets a specific engine label break the tie', () => {
+  const w = resolveWording({ risk: 'send', name: 'device_take_photo', riskLabel: 'Takes a photo' })
+  assert.equal(w.label, 'Takes a photo')
+  assert.equal(w.verb, 'take a photo')
+})
+
+// #347 review round 2: an engine label with no known verb keeps the rules' verb for
+// the heading, so it stays a real sentence. The badge still shows the engine's label.
+test('an unknown engine label falls back to the rules verb', () => {
+  const w = resolveWording({ risk: 'write', name: 'home_assistant_set_temperature', riskLabel: 'Sets a temperature' })
+  assert.equal(w.label, 'Sets a temperature')
+  assert.equal(w.verb, 'make a change')
+})
+
+test('a browser_click labelled Signs up reads as signing up', () => {
+  const w = resolveWording({
+    risk: 'send',
+    name: 'browser_click',
+    reason: 'browser: Buttons that buy, pay for things or submit forms',
+    riskLabel: 'Signs up'
+  })
+  assert.equal(w.label, 'Signs up')
+  assert.equal(w.verb, 'sign you up for something')
+})
+
+test('a browser_select without a describe_fn keeps the tool-name rules', () => {
+  const w = resolveWording({
+    risk: 'write',
+    name: 'browser_select',
+    reason: 'browser: Dropdowns and selects',
+    riskLabel: 'Changes something'
+  })
+  assert.equal(w.label, 'Changes things')
+  assert.equal(w.verb, 'make a change')
+})
+
+test('a named rule result is not overridden by a fallback engine label', () => {
+  const w = resolveWording({ risk: 'send', name: 'gmail_send', riskLabel: 'Sends' })
+  assert.equal(w.label, 'Sends an email')
+})
+
+test('a trash preview still reads as a move to the trash', () => {
+  const w = resolveWording({
+    risk: 'write',
+    name: 'gmail_delete',
+    preview: { kind: 'trash' },
+    riskLabel: 'Deletes'
+  })
+  assert.equal(w.label, 'Moves to the trash')
+})
+
 // #378: a free subscribe the engine labels "Signs up" reads as a sign-up, not a purchase;
 // a priced one keeps the purchase wording.
 const click = (riskLabel: string) => ({
@@ -214,3 +340,14 @@ test('approval card small print skips the reason when it repeats the badge label
   assert.equal(approvalCardReason(undefined, 'Signs up'), null)
 })
 
+
+// #409 with #367 and #404: the badge comes from resolveWording and the reason is the
+// tool's plain label, so a free Subscribe click's reason and badge are the same words.
+test('a free Subscribe click shows "Signs up" once, a delete click keeps its own reason (#409)', () => {
+  const subscribe = { ...click('Signs up'), reason: 'Signs up' }
+  assert.equal(resolveWording(subscribe).label, 'Signs up')
+  assert.equal(approvalCardReason(subscribe.reason, resolveWording(subscribe).label), null)
+  const remove = { ...click('Deletes'), reason: 'Click "Delete account"' }
+  assert.equal(resolveWording(remove).label, 'Deletes')
+  assert.equal(approvalCardReason(remove.reason, resolveWording(remove).label), 'Click "Delete account"')
+})

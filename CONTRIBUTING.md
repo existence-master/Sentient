@@ -34,9 +34,10 @@ engine on its own and how to capture screenshots, is in [docs/DEVELOPING.md](doc
 
 We use **GitHub flow**:
 
-1. **Find or open an issue.** Look for [`good first issue`](../../labels/good%20first%20issue) and
-   [`help wanted`](../../labels/help%20wanted). For anything bigger than a small fix, comment on the issue first
-   so we can agree on the approach and avoid duplicate work. Small fixes and docs need no issue.
+1. **Find or open an issue, then claim it.** Look for [`good first issue`](../../labels/good%20first%20issue) and
+   [`help wanted`](../../labels/help%20wanted). Comment `/assign` on a free issue and a bot assigns it to you, so
+   nobody else starts the same work. For anything bigger than a small fix, also say how you plan to do it so we
+   can agree on the approach. Small fixes and docs need no issue.
 2. **Fork, then branch from `main`.** Name the branch after what it does, for example
    `fix/telegram-long-messages` or `feat/outlook-integration`.
 3. **Keep the pull request small and focused.** One change per PR is much faster to review.
@@ -46,6 +47,32 @@ We use **GitHub flow**:
 
 There are no long-lived `development` or `staging` branches. `main` is always the latest working version, and
 releases are tags on `main`.
+
+### Claiming an issue
+
+Comment on the issue with just one line:
+
+- `/assign` assigns the issue to you, if nobody has it yet. If someone does, the bot tells you who, so you can
+  pick another issue or offer to team up.
+- `/unassign` hands it back, if it is yours. No explanation needed, and thanks for saying so.
+
+Try to open a pull request (a draft is fine) within a week. If you need longer, just comment on the issue.
+
+### If things go quiet
+
+Life happens, and that's fine. To keep issues moving for everyone, a bot checks once a day:
+
+- **A claimed issue with no pull request and no comment from you for 14 days** gets a friendly ping. After 21
+  days (and at least a week after the ping), you are unassigned so someone else can pick it up. You can
+  `/assign` it again any time while it is free.
+- **A pull request where we asked for changes** and nothing has happened for 7 days gets the
+  `waiting on author` label and one gentle reminder (only ever one per pull request). Pushing a commit or
+  replying removes the label. After 21 days (and at least a week after the reminder) we close it with a
+  thank-you, and unassign you from its issue. You can reopen it whenever you have time, or comment and we will
+  reopen it for you.
+
+Draft pull requests are never touched, and the clock only runs while we are waiting on you, never while you
+are waiting on us.
 
 ### PR titles
 
@@ -78,6 +105,12 @@ The full engine suite takes a few minutes. While you work, run just the folder y
 - Adds or updates tests. Bug fixes come with a test that failed before the fix.
 - Updates [docs/API.md](docs/API.md) in the same PR when it changes anything the desktop app and the engine
   exchange. The contract comes first.
+- Adds a changelog entry when people using Sentient will notice the change: one file,
+  `changes/<issue or PR number>.<type>.md`, such as `changes/412.fixed.md`, with a short bold first sentence in
+  plain language. Don't edit `CHANGELOG.md` itself; the entries are joined into it at release time, so pull
+  requests don't collide there. Types and examples are in [changes/README.md](changes/README.md). The
+  "Changelog entry" check asks for one when you change `sentient/`, `desktop/src/` or `packaging/`; for changes
+  nobody will notice (tests, refactoring, tooling) a maintainer adds the `no changelog` label instead.
 - Includes a screenshot or short clip for visible UI changes.
 - Keeps the product rules: no login or accounts, keys only in the keychain, every tool declares a risk, and
   sending, deleting, buying or running code asks the user first.
@@ -109,8 +142,10 @@ desktop app renders the connect screen from your plugin, so most integrations ne
 
 ## Using AI coding assistants
 
-Welcome. Point your assistant at [CLAUDE.md](CLAUDE.md) (also linked from `AGENTS.md`). You are still the
-author: read the diff, run the checks, and make sure the PR description is yours and accurate.
+Welcome. Point your assistant at [CLAUDE.md](CLAUDE.md) (also linked from `AGENTS.md`). How agents work
+here (testing for real, sharing one computer, what goes in the PR) is in
+[docs/AGENT_WORKFLOW.md](docs/AGENT_WORKFLOW.md). You are still the author: read the diff, run the checks, and
+make sure the PR description is yours and accurate.
 
 ## Contributor License Agreement
 

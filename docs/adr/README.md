@@ -34,6 +34,7 @@ proposing a change to one of them.
 | [0027](0027-vet-skills-and-mcp-tools-from-outside.md) | Check skills and MCP tools from outside before the model sees them | Accepted | 2026-10-15 |
 | [0028](0028-quick-home-commands-are-their-own-yes.md) | Let a quick light command count as its own yes, and make opening the home always ask | Accepted | 2026-10-15 |
 | [0029](0029-group-chats-and-trusting-a-chat-again.md) | Treat other people in a group chat as outside content, and let the user trust a chat again | Accepted | 2026-10-15 |
+| [0030](0030-numbered-migration-files.md) | Change the database shape through numbered migration files | Accepted | 2026-10-17 |
 
 ## Adding a record
 

@@ -76,9 +76,6 @@ class ReminderService(Service):
     async def start(self) -> None:
         from sentient.reminders.tools import RemindersPlugin
 
-        await self.app.store.ensure_column("reminders", "stopped_at", "TEXT")  # #390
-        await self.app.store.ensure_column("reminders", "snoozed_from", "TEXT")
-
         if not any(p.id == RemindersPlugin.id for p in self.app.registry.plugins()):
             self.app.registry.register(RemindersPlugin())
         if self.app.enable_background:
