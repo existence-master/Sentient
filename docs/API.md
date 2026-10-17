@@ -567,11 +567,15 @@ accept or loosen a rule.
   engine's `SENTIENT_DEBUG_BATTERY` environment variable fakes the reading: `ac` (plugged in), `battery` (on battery,
   level unknown) or a percent from 0 to 100 (on battery at that level).
   A stream holds the model until its last chunk; cancelling (Stop everything) frees it.
-- `GET /api/models/claude-code` → `{enabled, installed, version, detail, models}`: Claude through the user's own
+- `GET /api/models/claude-code` → `{enabled, installed, version, detail, models, roles}`: Claude through the user's own
   Claude Code (experimental, ADR 0022). `enabled` is `models.experimental_claude_code` (default false). `installed`
   means a `claude` program is on PATH; `version` is its `claude --version` line, asked only while `enabled` (null
   otherwise or when it doesn't answer). `detail` is a plain sentence for Settings. `models` are the model names to
-  offer (`CLAUDE_CODE_MODELS` in `config/schema.py`: `claude-code/sonnet`, `claude-code/opus`). It never calls a model
+  offer (`CLAUDE_CODE_MODELS` in `config/schema.py`: `claude-code/sonnet`, `claude-code/opus`). `roles` are the roles
+  that may use them with this configuration, today the ones that answer chats (`["primary", "voice", "vision"]`).
+  `claude_code.accepting_roles(config)` decides it in one place, for this report, the refusals, the check-up and
+  `PUT /api/models/roles`. The window offers Claude Code
+  only for these and warns when another role uses it, its own model or the main model it falls back to (#442). It never calls a model
   and never reads Claude's login; `POST /api/models/test` with a `claude-code/` model is the only dry run. `enabled`
   is the saved setting, so a window that has just flipped the switch asks again until it matches.
 - `POST /api/models/checkup` `{roles?: {role: model | null}}` → streams NDJSON while it checks each role's model,
@@ -585,7 +589,9 @@ accept or loosen a rule.
     `hardware` is `GET /api/system/hardware`)
   - `{type: "step", role, label}` progress, e.g. "Trying a tool call"
   - `{type: "role", role, model, provider, local, inherits, status, checks: [Check]}` when a role is finished.
-    `inherits: "primary"` with `status: "skip"` and no checks for an optional role with no model of its own.
+    `inherits: "primary"` with `status: "skip"` and no checks for an optional role with no model of its own. When
+    that main model is Claude Code and the role refuses it (planner, executor), the role is checked with it instead:
+    `model` is the main model (in `start` too), `inherits: "primary"`, and its `connection` check fails (#442).
   - `{type: "done", status, roles: [role results]}` (`status` = the worst role)
 
   `Check` = `{id, label, status: "pass"|"warn"|"fail"|"skip", detail, fix?, action?}`. `detail` and `fix` are
@@ -607,7 +613,7 @@ accept or loosen a rule.
   `{kind: "set_context_length", value, role: string|null, label}` (`models.context_length`, or
   `models.context_length_per_role[role]` when `role` is set). Unknown role → 400. `sentient doctor --models` prints
   the same check-up as a table.
-- `PUT /api/models/roles` `{primary?, fast?, planner?, executor?, embedding?, vision?, voice?}` → updated roles (null = use primary). The `voice` role is used for `channel` voice/glasses turns and defaults to reasoning `none`.
+- `PUT /api/models/roles` `{primary?, fast?, planner?, executor?, embedding?, vision?, voice?}` → updated roles (null = use primary). The `voice` role is used for `channel` voice/glasses turns and defaults to reasoning `none`. A `claude-code/` model for a role that refuses it (not in `roles` of `GET /api/models/claude-code`) is `400` with the plain refusal as `detail` (#442).
 - `PUT /api/models/fallbacks` `{role: [model, ...]}` → `{ok}`
 - `POST /api/models/ollama/pull` `{name}` → streams NDJSON `{status, completed?, total?}`
 - **Model presets** (#212): named setups that switch every role in one step. Three built-ins are generated, never
@@ -672,7 +678,9 @@ accept or loosen a rule.
   (a `ProviderError`); when every model of a role refused, that sentence is the error as is, so a task that fails
   this way has it as its `error` (instead of "Sorry, the AI model is unavailable right now...") and a task route
   answers `503` with it as `detail`. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
-  and vision). Stop everything kills every running Claude Code process tree.
+  and vision, with that role's refusal and a `use_model` action for a chat model in use that isn't Claude Code, the
+  background model first, else the local model sized for this computer when it is downloaded; an empty planner or
+  executor counts when the main model is Claude Code). Stop everything kills every running Claude Code process tree.
 - **Keychain namespaces (#302).** Every secret (API keys, integration tokens, channel bot tokens, MCP headers and
   sign-ins, the ChatGPT sign-in) is an OS keychain entry under one service per data folder. The default data folder
   (`~/.sentient`, used when `SENTIENT_HOME` is unset or points at it) uses the service `sentient`, the entries every

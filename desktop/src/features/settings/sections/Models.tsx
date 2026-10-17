@@ -50,7 +50,7 @@ import {
   StatusDot,
   Switch
 } from '@/components/ui'
-import { ClaudeCodeSection } from '@/features/models/ClaudeCodeSection'
+import { ClaudeCodeRoleWarning, ClaudeCodeSection } from '@/features/models/ClaudeCodeSection'
 import { ConnectPlansSection } from '@/features/models/ConnectPlans'
 import { ModelCheckup } from '@/features/models/ModelCheckup'
 import { ModelPicker } from '@/features/models/ModelPicker'
@@ -127,6 +127,7 @@ export function ModelsSection({ query }: SectionProps) {
 
   return (
     <div className="space-y-10">
+      <ClaudeCodeRoleWarning />
       {(!q || 'local only cloud privacy offline where ai runs'.includes(q)) && (
         <SchemaForm section="models" title="Where AI runs" include={['models.local_only']} />
       )}
@@ -366,6 +367,7 @@ function RoleCard({ role, config }: { role: RoleName; config: SentientConfig }) 
           <ModelPicker
             value={value}
             onChange={changeModel}
+            role={role}
             embedding={meta.embedding}
             noneLabel={meta.required ? undefined : `Use ${ROLE_META[meta.fallsBackTo ?? 'primary'].label.toLowerCase()} (${modelShortName(config.models.roles.primary)})`}
             className="min-w-72 flex-1"
@@ -446,7 +448,7 @@ function FallbackEditor({ role, chain, embedding }: { role: RoleName; chain: str
       {items.map((m, i) => (
         <div key={`${i}-${m}`} className="flex items-center gap-2">
           <span className="w-5 text-center text-xs tabular-nums text-fg-subtle">{i + 1}</span>
-          <ModelPicker size="sm" embedding={embedding} value={m} onChange={(v) => commit(items.map((x, j) => (j === i ? v : x)))} className="flex-1" />
+          <ModelPicker size="sm" role={role} embedding={embedding} value={m} onChange={(v) => commit(items.map((x, j) => (j === i ? v : x)))} className="flex-1" />
           <IconButton size="sm" label="Move up" disabled={i === 0} icon={<IconArrowUp size={14} />} onClick={() => move(i, -1)} />
           <IconButton size="sm" label="Move down" disabled={i === items.length - 1} icon={<IconArrowDown size={14} />} onClick={() => move(i, 1)} />
           <IconButton size="sm" label="Remove" icon={<IconTrash size={14} />} onClick={() => commit(items.filter((_, j) => j !== i))} />

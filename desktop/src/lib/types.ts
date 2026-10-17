@@ -724,6 +724,8 @@ export interface ClaudeCodeStatus {
   version: string | null
   detail: string
   models: string[]
+  /** The roles that may use Claude Code, the ones that answer chats (#442). Missing from older engines. */
+  roles?: RoleName[]
 }
 
 export interface ModelTestResult {

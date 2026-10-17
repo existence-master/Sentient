@@ -83,6 +83,7 @@ REMOVE_TRIES = 20  # Windows keeps a folder busy for a moment after the processe
 REMOVE_DELAY_S = 0.25
 SWEEP_AGE_S = 3600  # scratch folders older than this are leftovers from an engine that didn't clean up
 
+CHAT_ROLES = ("primary", "voice", "vision")  # the roles that answer chats: the only ones Claude Code works for
 OFF = "Claude through your Claude Code is turned off. Turn it on in Settings > Models, or pick another model."
 CHATS_ONLY = ("Claude Code only answers your chats, never work that runs in the background. Pick another model "
               "for this in Settings > Models.")
@@ -253,8 +254,22 @@ def context_window(model: str) -> int | None:
     return int(window) if window else None
 
 
+def accepting_roles(config: SentientConfig) -> tuple[str, ...]:
+    """The roles that may use a ``claude-code/`` model: the ones that answer chats (ADR 0022). The one place that
+    decides it: ``refusal``, the check-up, ``PUT /api/models/roles`` and ``GET /api/models/claude-code`` (which tells
+    the window) all ask here."""
+    return CHAT_ROLES
+
+
+def accepts(config: SentientConfig, role: str | None) -> bool:
+    """Whether ``role`` may use a ``claude-code/`` model with this configuration."""
+    return role in accepting_roles(config)
+
+
 def background_refusal(role: str | None) -> str:
     """Why Claude Code won't do background work in ``role``, and what to change."""
+    if role == "embedding":
+        return NO_EMBEDDINGS
     return ROLE_REFUSALS.get(role or "", CHATS_ONLY)
 
 
@@ -262,8 +277,8 @@ def refusal(config: SentientConfig, role: str | None = None) -> str | None:
     """Why a ``claude-code/`` model can't answer here, or None. Used by the check-up without calling anything."""
     if not config.models.experimental_claude_code:
         return OFF
-    if role is not None and role not in {"primary", "voice", "vision"}:
-        return CHATS_ONLY
+    if role is not None and not accepts(config, role):
+        return background_refusal(role)
     if find_executable() is None:
         return NOT_INSTALLED
     return None
