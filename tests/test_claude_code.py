@@ -914,3 +914,19 @@ async def test_turning_claude_code_off_altogether_says_so(make_app, fake_claude,
     notes = [n for n in await app.notifications.list() if (n.get("payload") or {}).get("kind") == "claude_code_roles"]
     assert len(notes) == 1 and notes[0]["title"] == "Claude Code is turned off"
     assert notes[0]["message"].startswith("Claude Code is turned off. Fast / background now uses qwen3:8b.")
+
+
+def test_with_everything_on_background_roles_can_be_given_it(everywhere, fake_claude, isolated_home):
+    """#444 changes what #442 guards: with Claude Code doing everything, every role but embeddings may use it."""
+    from fastapi.testclient import TestClient
+
+    from sentient.gateway.app import create_app
+
+    with TestClient(create_app(SentientApp(everywhere, llm=FakeProvider(), db_path=isolated_home / "r.db",
+                                           enable_background=False))) as client:
+        auth = {"Authorization": "Bearer not-for-claude"}
+        roles = client.put("/api/models/roles", json={"fast": "claude-code/haiku", "executor": MODEL}, headers=auth)
+        assert roles.status_code == 200 and roles.json()["fast"] == "claude-code/haiku"
+        embedding = client.put("/api/models/roles", json={"embedding": MODEL}, headers=auth)
+        assert embedding.status_code == 400 and embedding.json()["detail"] == claude_code.NO_EMBEDDINGS
+
