@@ -561,7 +561,9 @@ async def test_checkup_names_roles_that_inherit_claude_code(cc_config, fake_clau
     cc_config.models.roles.planner = None
     cc_config.models.roles.executor = None
     cc_config.models.roles.voice = None
-    report = await checkup(cc_config, Provider(cc_config), timeout_s=5)
+    # every role but embedding, whose Ollama model the check-up would really ask
+    roles = {"primary": MODEL, "fast": "fake/background", "planner": None, "executor": None, "voice": None}
+    report = await checkup(cc_config, Provider(cc_config), roles, timeout_s=5)
     by_role = {r["role"]: r for r in report["roles"]}
     planner = by_role["planner"]
     assert planner["model"] == MODEL and planner["inherits"] == "primary" and planner["status"] == "fail"
