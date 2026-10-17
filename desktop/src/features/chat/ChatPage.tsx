@@ -146,7 +146,7 @@ function ChatView({
   }, [messages.data, liveSession])
 
   // ?message=<id> (a memory's source, #152): scroll to that message once it is on screen, and mark it a moment
-  const focusId = new URLSearchParams(location.search).get('message')
+  const focusId = new URLSearchParams(useLocation().search).get("message")
   useEffect(() => {
     if (!focusId || items.length === 0) return
     const t = window.setTimeout(() => {
@@ -411,8 +411,9 @@ function Timeline({ items, streaming, loading, children }: { items: TimelineItem
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
   }, [])
 
-  // `?at=top` keeps the first message in view (deep links from search, screenshots).
-  const atTop = useRef(/(^|[?&])at=top\b/.test(useLocation().search))
+  // `?at=top` keeps the first message in view (deep links from search, screenshots); `?message=` (a memory's source,
+  // #152) doesn't jump to the bottom either, so the page can scroll to that message.
+  const atTop = useRef(/(^|[?&])(at=top\b|message=)/.test(useLocation().search))
   if (atTop.current) stick.current = false
 
   useLayoutEffect(() => {
