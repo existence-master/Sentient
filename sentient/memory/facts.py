@@ -924,7 +924,7 @@ class FactMemory:
         ``on_erase``) the lines of USER.md and MEMORY.md that say it. Its own previous wording goes with it."""
         await self.ensure_schema()
         row = await self.store.fetchone(
-            "SELECT id, content, previous_content, source_ref FROM facts WHERE id = ?", (fid,)
+            "SELECT id, content, previous_content, source_ref, state, superseded_by FROM facts WHERE id = ?", (fid,)
         )
         if row is None:
             return False
@@ -939,6 +939,11 @@ class FactMemory:
         )
         if not await self.forget(fid, notify=notify):
             return False
+        if row["state"] == "superseded" and row["superseded_by"] is not None:
+            await self.store.execute(
+                "UPDATE facts SET previous_content = NULL WHERE id = ? AND previous_content = ?",
+                (row["superseded_by"], row["content"]),
+            )
         rows = [row, *copies]
         texts = list(dict.fromkeys(t for r in rows for t in (r["content"], r["previous_content"]) if t))
         refs = [_load_ref(r["source_ref"]) for r in rows] + [_load_ref(r["ref"]) for r in links]
@@ -1218,7 +1223,9 @@ class FactMemory:
             raise KeyError(fid)
         if row["scope"] != target:
             await self.store.execute(
-                "UPDATE facts SET scope = ?, updated_at = ? WHERE id = ?", (target, now_iso(), fid)
+                "UPDATE facts SET scope = ?, updated_at = CASE WHEN state = 'superseded' THEN updated_at ELSE ? END"
+                " WHERE id = ?",
+                (target, now_iso(), fid),
             )
             self.publish("UPDATE", fid, row["content"], scope=target, previous_scope=row["scope"], reason="moved")
         fact = await self.get_fact(fid)
@@ -1913,13 +1920,35 @@ class FactMemory:
     # ------------------------------------------------------------------ housekeeping
     async def purge_expired(self) -> int:
         rows = await self.store.fetchall(
-            "SELECT id FROM facts WHERE expires_at IS NOT NULL AND expires_at < ?", (now_iso(),)
+            "SELECT id, state FROM facts WHERE expires_at IS NOT NULL AND expires_at < ?", (now_iso(),)
         )
         for r in rows:
-            await self.forget(int(r["id"]))
+            # Superseded rows have derived history too; discard it with the same cascade as retention cleanup.
+            if r["state"] == "superseded":
+                await self.erase(int(r["id"]))
+            else:
+                await self.forget(int(r["id"]))
         if rows:
             self.publish("DELETE", None, None, reason="expired", count=len(rows))
-        return len(rows)
+        return len(rows) + await self.purge_superseded()
+
+    async def purge_superseded(self) -> int:
+        """Erase memories that were superseded more than ``memory.keep_superseded_days`` ago, with everything derived
+        from them (:meth:`erase`). 0 keeps them forever. Current and disputed memories are never touched."""
+        days = self.config.memory.keep_superseded_days
+        if days <= 0:
+            return 0
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        rows = await self.store.fetchall(
+            "SELECT id FROM facts WHERE state = 'superseded' AND updated_at < ?", (cutoff,)
+        )
+        erased = 0
+        for r in rows:
+            if await self.erase(int(r["id"])):
+                erased += 1
+        if erased:
+            self.publish("DELETE", None, None, reason="superseded_expired", count=erased)
+        return erased
 
     async def count(self) -> int:
         row = await self.store.fetchone(f"SELECT COUNT(*) AS n FROM facts WHERE {ACTIVE}")
