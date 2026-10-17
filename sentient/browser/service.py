@@ -1659,12 +1659,19 @@ class BrowserService(Service):
             fell_back = active in tabs_before and not any(
                 p not in tabs_before for p in self._usable_pages(self._context)
             )
-            if active is not page and (fell_back or await self._download_only_tab(active, downloads_before)):
+            if (
+                active is not page
+                and not page.is_closed()
+                and (fell_back or await self._download_only_tab(active, downloads_before))
+            ):
                 # #307: the tab the click opened only carried a download (or is Edge's downloads hub): the page that
-                # was clicked is still the one to work in, and the one to report
-                active = page
-                if not page.is_closed():
-                    self._active = page
+                # was clicked is still the one to work in, and the one to report. A real page that opened meanwhile
+                # in yet another new tab is kept.
+                now = self._active
+                if now is None or now is active or now.is_closed() or now in tabs_before or now in self._internal_pages:
+                    active = self._active = page
+                else:
+                    active = now
             await self._settle(active)
             await self._enforce_domains(active)
             out = {
