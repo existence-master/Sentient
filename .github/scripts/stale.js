@@ -66,7 +66,7 @@ function latestDecisiveReview(reviews, author) {
   return decisive[decisive.length - 1] || null;
 }
 
-/** The last time the author pushed or commented, from the PR timeline. Any new commit counts. */
+/** The last time the author pushed or commented, from the PR timeline. Any new commit or a reopen counts. */
 function lastAuthorActivity(timeline, author) {
   const me = lower(author);
   let last = 0;
@@ -74,6 +74,7 @@ function lastAuthorActivity(timeline, author) {
     let at = 0;
     if (e.event === 'committed') at = time((e.committer && e.committer.date) || (e.author && e.author.date));
     else if (e.event === 'head_ref_force_pushed' && actorOf(e) === me) at = time(e.created_at);
+    else if (e.event === 'reopened') at = time(e.created_at); // reopened by anyone: it is active again
     else if (e.event === 'commented' && actorOf(e) === me) at = time(e.created_at);
     else if (e.event === 'reviewed' && actorOf(e) === me) at = time(e.submitted_at);
     else if (e.event === 'line-commented') {

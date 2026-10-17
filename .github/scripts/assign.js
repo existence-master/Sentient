@@ -62,8 +62,10 @@ async function run({ github, context, core }) {
   const { owner, repo } = context.repo;
   const issue_number = issue.number;
   const commenter = comment.user.login;
-  const assignees = (issue.assignees || []).map((a) => a.login);
-  const { action, reply } = decide({ command, commenter, assignees, issueState: issue.state });
+  // The payload is a snapshot from when the comment was made; read the issue now so two quick claims see each other.
+  const { data: current } = await github.rest.issues.get({ owner, repo, issue_number });
+  const assignees = (current.assignees || []).map((a) => a.login);
+  const { action, reply } = decide({ command, commenter, assignees, issueState: current.state });
   let text = reply;
 
   if (action === 'assign') {

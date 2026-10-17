@@ -1,14 +1,16 @@
-// Run with: node --test .github/scripts/
+// Run with: node --test ".github/scripts/*.test.js"
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const run = require('./assign.js');
 const { parseCommand, decide, MESSAGES } = run;
 
-function fakeGithub({ assignable = true } = {}) {
+// `live` is the issue as GitHub has it now, which can differ from the comment's payload.
+function fakeGithub({ assignable = true, live = null } = {}) {
   const calls = [];
   const github = {
     rest: {
       issues: {
+        get: async () => ({ data: live }),
         addAssignees: async (args) => {
           calls.push(['addAssignees', args]);
           return { data: { assignees: assignable ? args.assignees.map((login) => ({ login })) : [] } };
@@ -22,6 +24,14 @@ function fakeGithub({ assignable = true } = {}) {
 }
 
 const core = { info: () => {} };
+
+// Runs the handler. GitHub's live issue matches the comment's payload unless the fake was given `live`.
+function runWith(github, ctx) {
+  const { state, assignees } = ctx.payload.issue;
+  const get = github.rest.issues.get;
+  github.rest.issues.get = async (args) => ({ data: (await get(args)).data || { state, assignees } });
+  return run({ github, context: ctx, core });
+}
 
 function context({ body, login = 'maya-rao', assignees = [], state = 'open', pr = false, type = 'User' }) {
   return {
@@ -65,7 +75,7 @@ test('decide covers every case', () => {
 
 test('/assign on a free issue assigns the commenter and says so', async () => {
   const { github, calls } = fakeGithub();
-  await run({ github, context: context({ body: '/assign' }), core });
+  await runWith(github, context({ body: '/assign' }));
   assert.deepEqual(calls[0], ['addAssignees', { owner: 'existence-master', repo: 'Sentient', issue_number: 42, assignees: ['maya-rao'] }]);
   assert.equal(calls[1][0], 'createComment');
   assert.equal(calls[1][1].body, `@maya-rao ${MESSAGES.assigned}`);
@@ -74,7 +84,7 @@ test('/assign on a free issue assigns the commenter and says so', async () => {
 
 test('/assign on a taken issue only replies with who has it', async () => {
   const { github, calls } = fakeGithub();
-  await run({ github, context: context({ body: '/assign', assignees: ['ravi'] }), core });
+  await runWith(github, context({ body: '/assign', assignees: ['ravi'] }));
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'createComment');
   assert.match(calls[0][1].body, /^@maya-rao Thanks for offering to help! @ravi is already working on this one/);
@@ -82,14 +92,14 @@ test('/assign on a taken issue only replies with who has it', async () => {
 
 test('/unassign by the assignee removes them', async () => {
   const { github, calls } = fakeGithub();
-  await run({ github, context: context({ body: '/unassign', assignees: ['maya-rao'] }), core });
+  await runWith(github, context({ body: '/unassign', assignees: ['maya-rao'] }));
   assert.deepEqual(calls[0], ['removeAssignees', { owner: 'existence-master', repo: 'Sentient', issue_number: 42, assignees: ['maya-rao'] }]);
   assert.equal(calls[1][1].body, `@maya-rao ${MESSAGES.unassigned}`);
 });
 
 test('/unassign by someone else changes nothing', async () => {
   const { github, calls } = fakeGithub();
-  await run({ github, context: context({ body: '/unassign', assignees: ['ravi'] }), core });
+  await runWith(github, context({ body: '/unassign', assignees: ['ravi'] }));
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'createComment');
 });
@@ -101,20 +111,35 @@ test('comments on pull requests, from bots, and other text are ignored', async (
     context({ body: 'looks good, /assign me later' }),
   ]) {
     const { github, calls } = fakeGithub();
-    await run({ github, context: ctx, core });
+    await runWith(github, ctx);
     assert.equal(calls.length, 0);
   }
 });
 
 test('a silently dropped assignment is reported, not claimed', async () => {
   const { github, calls } = fakeGithub({ assignable: false });
-  await run({ github, context: context({ body: '/assign' }), core });
+  await runWith(github, context({ body: '/assign' }));
   assert.equal(calls[1][1].body, `@maya-rao ${MESSAGES.failed}`);
+});
+
+test('two quick /assign comments: the second sees the first claim', async () => {
+  // Both payloads say the issue is free, but by the time the second job runs GitHub has the first claimer.
+  const { github, calls } = fakeGithub({ live: { state: 'open', assignees: [{ login: 'ravi' }] } });
+  await runWith(github, context({ body: '/assign' }));
+  assert.equal(calls.length, 1);
+  assert.match(calls[0][1].body, /@ravi is already working on this one/);
+});
+
+test('an issue closed since the comment is not assigned', async () => {
+  const { github, calls } = fakeGithub({ live: { state: 'closed', assignees: [] } });
+  await runWith(github, context({ body: '/assign' }));
+  assert.deepEqual(calls.map((c) => c[0]), ['createComment']);
+  assert.equal(calls[0][1].body, `@maya-rao ${MESSAGES.closed}`);
 });
 
 test('the comment text never reaches the API or a reply', async () => {
   const { github, calls } = fakeGithub();
   const body = '/assign\n$(curl evil) ${{ secrets.X }}';
-  await run({ github, context: context({ body }), core });
+  await runWith(github, context({ body }));
   assert.equal(calls.length, 0);
 });

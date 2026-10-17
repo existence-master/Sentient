@@ -9,15 +9,15 @@ on:
 permissions:
   issues: write
 
-concurrency:
-  group: claim-${{ github.event.issue.number }}
-
 jobs:
   claim:
     # Issues only (a PR comment also fires issue_comment), and only comments that mention a command.
     if: >-
       github.event.issue.pull_request == null &&
       (contains(github.event.comment.body, '/assign') || contains(github.event.comment.body, '/unassign'))
+    # Per job, so only real commands queue here and other comments can't cancel a waiting one.
+    concurrency:
+      group: claim-${{ github.event.issue.number }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

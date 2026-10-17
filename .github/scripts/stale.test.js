@@ -1,4 +1,4 @@
-// Run with: node --test .github/scripts/
+// Run with: node --test ".github/scripts/*.test.js"
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const run = require('./stale.js');
@@ -31,6 +31,21 @@ test('a commit, a force push, a comment or a review reply from the author stops 
   }
   // Someone else commenting does not count.
   assert.equal(prWaiting({ author: 'maya', reviews, timeline: [commit(0), comment('ravi', 2)] }).waiting, true);
+});
+
+test('reopening a closed PR restarts it, so it is not closed again the next day', () => {
+  const reviews = [review('itsskofficial', 'CHANGES_REQUESTED', 0)];
+  const timeline = [
+    commit(-1),
+    comment(BOT, 7, `Hi @maya
+
+${MARK.nudge}`),
+    comment(BOT, 21, `Hi @maya
+
+${MARK.close}`),
+    { event: 'reopened', actor: user('maya'), created_at: at(25) },
+  ];
+  assert.equal(prWaiting({ author: 'maya', reviews, timeline }).waiting, false);
 });
 
 test('an approval or dismissal after the request means not waiting', () => {
