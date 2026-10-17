@@ -1644,7 +1644,7 @@ Disconnecting an app (`POST /api/integrations/{id}/disconnect?forget=true`), rem
 folder (`DELETE /api/folders/{id}?forget=true`) with `forget` also forgets what Sentient learned from it, and the
 response carries `forgotten: ForgetCounts`. Without `forget` nothing more is deleted than before. What goes:
 
-- every source: the facts above;
+- every source: the facts above, and the insights about the user inferred only from what goes;
 - a messaging app or a device: its chats with all their messages, and the chat summaries (and their vectors) made of
   them. Paired chats stay paired; the next message starts a new chat;
 - an app: what its tools returned in any chat (each result is replaced by
@@ -1656,9 +1656,11 @@ response carries `forgotten: ForgetCounts`. Without `forget` nothing more is del
 Each forget is kept (`memory_forgets`) and shows in Activity as "Forgot what Sentient learned from Telegram" (section
 21), and publishes `memory.forgotten`.
 
-**ForgetCounts** `{source, memories, shared, chats, messages, summaries, results, items, item_noun: "emails"|"items"}`:
-`memories` deleted, `shared` kept because another source backs them, `chats` and their `messages`, chat `summaries`,
-tool `results` in chats, and `items` an app's cached emails or other items.
+**ForgetCounts** `{source, memories, shared, chats, messages, summaries, results, items, insights, item_noun:
+"emails"|"items"}`: `memories` deleted, `shared` kept because another source backs them, `chats` and their `messages`,
+chat `summaries`, tool `results` in chats, `items` an app's cached emails or other items, and `insights` about the
+user (section 15) Sentient inferred only from what goes (their evidence: those chats' messages and summaries and the
+deleted facts). An insight with other evidence too keeps that evidence; one the user confirmed or wrote stays.
 - `GET /api/memories/scopes` → `[{name, label, count, built_in}]`: `always`, `personal` and `work` first, then every
   project a memory, chat, task, messaging app or added folder uses, by name; `count` = active memories in it.
 - `DELETE /api/memories/scope/{scope}` → `{deleted: n}`: resets one scope. Every memory in it goes (also ones waiting

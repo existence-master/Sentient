@@ -126,6 +126,8 @@ export interface ForgetCounts {
   results: number
   /** emails or other items proactivity kept from it */
   items: number
+  /** insights about the user inferred only from what goes */
+  insights: number
   item_noun: 'emails' | 'items'
 }
 

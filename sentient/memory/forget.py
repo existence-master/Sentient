@@ -7,7 +7,8 @@ can also forget what Sentient learned from it. :func:`preview` says how much tha
 What goes, by source (``memory.origins``):
 
 - every kind: facts only that source backs, with their vectors and merged copies. A fact another source backs too
-  loses this source and keeps the others (``FactMemory.purge_source``);
+  loses this source and keeps the others (``FactMemory.purge_source``). Insights about the user that Sentient inferred
+  only from what goes (its evidence: those facts, chats and summaries) go too; one with other evidence keeps that;
 - a messaging app (``channel:<id>``) or a device (``device:<node id>``): its chats with all their messages, and the
   summaries and summary vectors made of them. Paired chats stay paired, and a new chat starts on the next message;
 - an app (``app:<plugin id>``): what its tools returned in any chat (the tool result is replaced by a short note and
@@ -44,6 +45,7 @@ class Plan:
     source: str
     sessions: list[str] = field(default_factory=list)
     messages: int = 0
+    message_ids: list[str] = field(default_factory=list)
     summaries: list[tuple[int, str]] = field(default_factory=list)  # (rowid, id)
     results: list[int] = field(default_factory=list)  # message rowids of tool results to forget
     answers: list[int] = field(default_factory=list)  # message rowids of replies whose sources name the app
@@ -84,9 +86,9 @@ async def _plan(app: SentientApp, source: str) -> Plan:
         plan.sessions = [str(r["id"]) for r in rows]
         if plan.sessions:
             marks = _marks(len(plan.sessions))
-            plan.messages = await _count(
-                app, f"SELECT COUNT(*) FROM messages WHERE session_id IN ({marks})", tuple(plan.sessions)
-            )
+            rows = await store.fetchall(f"SELECT id FROM messages WHERE session_id IN ({marks})", tuple(plan.sessions))
+            plan.message_ids = [str(r["id"]) for r in rows]
+            plan.messages = len(plan.message_ids)
             rows = await store.fetchall(
                 f"SELECT rowid, id FROM summaries WHERE session_id IN ({marks})", tuple(plan.sessions)
             )
@@ -123,6 +125,38 @@ async def _plan(app: SentientApp, source: str) -> Plan:
     return plan
 
 
+async def _insights(app: SentientApp, plan: Plan, fact_ids: list[int], *, apply: bool) -> int:
+    """User-model insights Sentient inferred only from what goes (#153): their evidence is the forgotten chats'
+    messages, summaries and facts. Such an insight is deleted; one with other evidence too keeps that evidence. An
+    insight the user confirmed or wrote stays. Returns how many are (or would be) deleted."""
+    gone = {("message", m) for m in plan.message_ids} | {("summary", s) for _, s in plan.summaries}
+    gone |= {("fact", str(f)) for f in fact_ids}
+    if not gone:
+        return 0
+    try:
+        rows = await app.store.fetchall("SELECT id, evidence FROM user_insights WHERE source = 'inferred'")
+    except Exception:  # no user model tables yet
+        return 0
+    deleted = 0
+    for r in rows:
+        try:
+            evidence = json.loads(r["evidence"] or "[]")
+        except ValueError:
+            continue
+        if not isinstance(evidence, list) or not evidence:
+            continue
+        kept = [e for e in evidence if not (isinstance(e, dict) and (e.get("kind"), str(e.get("ref"))) in gone)]
+        if len(kept) == len(evidence):
+            continue
+        if not kept:
+            deleted += 1
+            if apply:
+                await app.user_model.delete_insight(str(r["id"]))
+        elif apply:
+            await app.store.execute("UPDATE user_insights SET evidence = ? WHERE id = ?", (json.dumps(kept), r["id"]))
+    return deleted
+
+
 def _display_name(app: SentientApp, plugin: str) -> str:
     p = app.registry.plugin(plugin)
     if p is None and getattr(app, "integrations", None) is not None:
@@ -136,7 +170,9 @@ async def preview(app: SentientApp, source: str) -> dict[str, Any]:
     if not kind:
         raise ValueError(f"not a source you can disconnect: {source}")
     plan = await _plan(app, source)
-    facts = await app.memory.source_counts(source) if app.memory is not None else {"memories": 0, "shared": 0}
+    doomed: list[int] = []
+    facts = await app.memory.source_counts(source, doomed) if app.memory is not None else {"memories": 0, "shared": 0}
+    insights = await _insights(app, plan, doomed, apply=False)
     return {
         "source": source,
         "memories": facts["memories"],
@@ -146,6 +182,7 @@ async def preview(app: SentientApp, source: str) -> dict[str, Any]:
         "summaries": len(plan.summaries),
         "results": len(plan.results),
         "items": plan.items,
+        "insights": insights,
         "item_noun": "emails" if ident in EMAIL_APPS else "items",
     }
 
@@ -214,11 +251,13 @@ async def forget(app: SentientApp, source: str, label: str) -> dict[str, Any]:
     await ensure_memory_schema(app.store)
     plan = await _plan(app, source)
     facts = {"deleted": 0, "unlinked": 0}
+    gone: list[int] = []
     if app.memory is not None:
-        facts = await app.memory.purge_source(source)
+        facts = await app.memory.purge_source(source, gone)
         if facts["deleted"] or facts["unlinked"]:
             app.memory.publish("DELETE", None, None, source=source, count=facts["deleted"], unlinked=facts["unlinked"],
                                reason="forgotten")
+    insights = await _insights(app, plan, gone, apply=True)  # before the evidence it reads goes
     await _delete_summaries(app, plan.summaries)
     for sid in plan.sessions:
         await app.delete_chat(sid, reason="forgotten")
@@ -233,6 +272,7 @@ async def forget(app: SentientApp, source: str, label: str) -> dict[str, Any]:
         "summaries": len(plan.summaries),
         "results": len(plan.results),
         "items": plan.items,
+        "insights": insights,
         "item_noun": "emails" if ident in EMAIL_APPS else "items",
     }
     entry = {"id": new_id(), "source": source, "label": label, "counts": counts, "at": now_iso()}

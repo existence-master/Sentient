@@ -153,10 +153,18 @@ async def test_forget_a_messaging_app(app, tmp_path):
     desk = await store.create_session(channel="desktop")
     await store.add_message(desk, "user", "What's the weather?")
     other = await mem.episodic.add_summary(desk, "Maya asked about the weather.", await store.recent_messages(desk, 100))
+    said = (await store.recent_messages(tg, 100))[0]["id"]
+    here = (await store.recent_messages(desk, 100))[0]["id"]
+    users = app.user_model
+    only_tg = await users._insert("Maya is careful about food", "health", confidence=0.6, status="active",
+                                  source="inferred", evidence=[{"kind": "message", "ref": said, "quote": "peanuts"}])
+    both = await users._insert("Maya plans her week ahead", "habits", confidence=0.6, status="active",
+                               source="inferred", evidence=[{"kind": "message", "ref": said, "quote": "x"},
+                                                            {"kind": "message", "ref": here, "quote": "y"}])
 
     before = await memory_forget.preview(app, "channel:telegram")
     assert before == {"source": "channel:telegram", "memories": 1, "shared": 1, "chats": 1, "messages": 2,
-                      "summaries": 1, "results": 0, "items": 0, "item_noun": "items"}
+                      "summaries": 1, "results": 0, "items": 0, "insights": 1, "item_noun": "items"}
     done = await memory_forget.forget(app, "channel:telegram", "Telegram")
     assert {k: done[k] for k in ("memories", "shared", "chats", "messages", "summaries")} == {
         "memories": 1, "shared": 1, "chats": 1, "messages": 2, "summaries": 1,
@@ -169,13 +177,17 @@ async def test_forget_a_messaging_app(app, tmp_path):
     assert summary["id"] not in summaries and other["id"] in summaries
     assert await _vec_ids(app, "summaries_vec") == {summaries[other["id"]]}
     assert await store.get_session(desk) is not None
+    left = {r["id"]: json.loads(r["evidence"]) for r in await store.fetchall("SELECT id, evidence FROM user_insights")}
+    assert only_tg["id"] not in left  # inferred only from the Telegram chat
+    assert [e["ref"] for e in left[both["id"]]] == [here]  # keeps what the desktop chat showed
     # logged for Activity
     rows = await store.fetchall("SELECT source, label, counts FROM memory_forgets")
     assert [(r["source"], r["label"]) for r in rows] == [("channel:telegram", "Telegram")]
     page = await Timeline(app).past(kinds=["memory"])
     item = next(i for i in page["items"] if i["id"].startswith("forget:"))
     assert item["title"] == "Forgot what Sentient learned from Telegram"
-    assert item["detail"] == "1 memory, 1 chat (2 messages) and 1 chat summary. 1 memory you also shared elsewhere stayed"
+    assert item["detail"] == ("1 memory, 1 chat (2 messages), 1 chat summary and 1 thing it noticed about you. "
+                              "1 memory you also shared elsewhere stayed")
 
 
 async def test_forget_an_app_scrubs_its_results_and_cache(app):
@@ -205,7 +217,7 @@ async def test_forget_an_app_scrubs_its_results_and_cache(app):
 
     before = await memory_forget.preview(app, "app:gmail")
     assert before == {"source": "app:gmail", "memories": 1, "shared": 0, "chats": 0, "messages": 0, "summaries": 1,
-                      "results": 1, "items": 3, "item_noun": "emails"}
+                      "results": 1, "items": 3, "insights": 0, "item_noun": "emails"}
     done = await memory_forget.forget(app, "app:gmail", "Gmail")
     assert done["memories"] == 1 and done["results"] == 1 and done["items"] == 3
     assert await mem.get_fact(held["id"]) is None

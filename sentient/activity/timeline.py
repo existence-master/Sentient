@@ -1409,6 +1409,9 @@ def forgot_detail(counts: dict) -> str:
     n = int(counts.get("summaries") or 0)
     if n:
         parts.append(_count(n, "chat summary", "chat summaries"))
+    n = int(counts.get("insights") or 0)
+    if n:
+        parts.append(_count(n, "thing it noticed about you", "things it noticed about you"))
     text = ", ".join(parts[:-1]) + (" and " if len(parts) > 1 else "") + parts[-1] if parts else "Nothing was saved from it"
     n = int(counts.get("shared") or 0)
     if n:

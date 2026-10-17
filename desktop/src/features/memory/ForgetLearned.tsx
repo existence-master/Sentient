@@ -20,6 +20,7 @@ export function forgetParts(c: ForgetCounts): string {
   if (c.items) parts.push(c.item_noun === 'emails' ? count(c.items, 'saved email', 'saved emails') : count(c.items, 'saved item', 'saved items'))
   if (c.results) parts.push(count(c.results, 'result in your chats', 'results in your chats'))
   if (c.summaries) parts.push(count(c.summaries, 'chat summary', 'chat summaries'))
+  if (c.insights) parts.push(count(c.insights, 'thing it noticed about you', 'things it noticed about you'))
   if (parts.length < 2) return parts.join('')
   return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
 }

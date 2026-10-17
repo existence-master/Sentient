@@ -929,9 +929,10 @@ class FactMemory:
         )
         return [int(r["id"]) for r in rows]
 
-    async def source_counts(self, source: str) -> dict[str, int]:
+    async def source_counts(self, source: str, doomed: list[int] | None = None) -> dict[str, int]:
         """What forgetting ``source`` would do: ``memories`` deleted (no other source backs them) and ``shared``
-        kept because another source still does. Copies merged into another memory are counted with it."""
+        kept because another source still does. Copies merged into another memory are counted with it. The ids that
+        would be deleted are added to ``doomed``."""
         deleted = shared = 0
         for fid in await self._from_source(source):
             row = await self.store.fetchone("SELECT status FROM facts WHERE id = ?", (fid,))
@@ -941,11 +942,14 @@ class FactMemory:
                 shared += 1
             else:
                 deleted += 1
+                if doomed is not None:
+                    doomed.append(fid)
         return {"memories": deleted, "shared": shared}
 
-    async def purge_source(self, source: str) -> dict[str, int]:
+    async def purge_source(self, source: str, gone: list[int] | None = None) -> dict[str, int]:
         """Forget what ``source`` taught: a fact only it backs is deleted with its vector and merged copies; a fact
-        another source backs too loses this source and keeps the others. ``{deleted, unlinked}``."""
+        another source backs too loses this source and keeps the others. ``{deleted, unlinked}``; the deleted ids are
+        added to ``gone``."""
         deleted = unlinked = 0
         for fid in await self._from_source(source):
             row = await self.store.fetchone("SELECT source, status FROM facts WHERE id = ?", (fid,))
@@ -958,6 +962,8 @@ class FactMemory:
             if not others:
                 deleted += 0 if merged else 1
                 await self.forget(fid)
+                if gone is not None:
+                    gone.append(fid)
                 continue
             await self.store.execute("DELETE FROM fact_sources WHERE fact_id = ? AND source = ?", (fid, source))
             if row["source"] == source:  # its next source becomes its own
