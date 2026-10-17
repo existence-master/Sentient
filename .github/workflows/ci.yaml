@@ -94,8 +94,11 @@ jobs:
             exit 0
           fi
 
-          files=$(api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[] | "\(.status) \(.filename)"')
-          touched=$(awk '{print $2}' <<<"$files" | grep -E '^(sentient/|desktop/src/|packaging/)' || true)
+          # "<status> <path> [<path before a rename>]": moving a file out of a watched folder still counts
+          files=$(api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
+            --jq '.[] | "\(.status) \(.filename) \(.previous_filename // "")"')
+          touched=$(awk '{print $2; if ($3 != "") print $3}' <<<"$files" \
+            | grep -E '^(sentient/|desktop/src/|packaging/)' || true)
           entries=$(awk '$1 != "removed" {print $2}' <<<"$files" | grep -E '^changes/' \
             | grep -vE '^changes/(README|template)\.md$' || true)
           valid='^changes/([0-9]+|\+[A-Za-z0-9_-]+)\.(added|changed|deprecated|removed|fixed|security)(\.[0-9]+)?\.md$'
