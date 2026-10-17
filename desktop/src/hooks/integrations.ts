@@ -98,9 +98,13 @@ export function useMcpServers() {
   return useQuery({
     queryKey: qk.integrations.mcp,
     queryFn: api.integrations.mcp.list,
-    // No event tells the window when a browser sign-in finishes or a server connects: poll while one is pending.
-    refetchInterval: (q) => (q.state.data?.some((s) => s.signing_in || s.status === 'connecting') ? 2000 : false)
+    // Health and usage change in the engine without a domain event; keep the open screen current.
+    refetchInterval: 5000
   })
+}
+
+export function useMcpCatalog() {
+  return useQuery({ queryKey: [...qk.integrations.mcp, 'catalog'], queryFn: api.integrations.mcp.catalog })
 }
 
 export function useMcpActions() {
@@ -108,6 +112,7 @@ export function useMcpActions() {
   const invalidate = () => void qc.invalidateQueries({ queryKey: qk.integrations.mcp })
   return {
     add: useMutation({ mutationFn: (body: McpServerCreate) => api.integrations.mcp.add(body), onSuccess: invalidate }),
+    addCatalog: useMutation({ mutationFn: (id: string) => api.integrations.mcp.addCatalog(id), onSuccess: invalidate }),
     remove: useMutation({ mutationFn: (name: string) => api.integrations.mcp.remove(name), onSuccess: invalidate }),
     test: useMutation({ mutationFn: (name: string) => api.integrations.mcp.test(name) }),
     /** Starts a browser sign-in and opens the provider's page; the server list shows when it finishes. */

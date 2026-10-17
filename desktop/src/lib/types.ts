@@ -1896,6 +1896,23 @@ export interface McpServer {
   /** The safety check of every tool the server listed when it last connected; null before it connects. */
   review?: McpReview | null
   error: string | null
+  /** Active transport result; null when disabled, disconnected, connecting, or awaiting sign-in. */
+  health?: 'healthy' | 'failing' | null
+  last_check_at?: ISODate | null
+  /** Number of attempted calls, including calls rejected by the MCP transport. */
+  usage_count?: number
+}
+
+export interface McpCatalogEntry {
+  id: string
+  name: string
+  description: string
+  documentation_url: string
+  transport: 'stdio' | 'http'
+  command?: string
+  args?: string[]
+  required_values: string[]
+  enabled: boolean
 }
 
 export interface McpServerCreate {
