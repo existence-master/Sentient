@@ -93,10 +93,13 @@ def _folder_of(item: dict, folders: list[tuple[str, str, str]]) -> str | None:
     return same[0][0] if len(same) == 1 else None
 
 
-def from_answer_sources(items: list, folders: list[tuple[str, str, str]]) -> list[tuple[str, str]]:
+Read = tuple[str, str, dict]  # (source, what was read: title and excerpt, the answer source item)
+
+
+def from_answer_sources(items: list, folders: list[tuple[str, str, str]]) -> list[Read]:
     """The disconnectable sources among one reply's answer sources (``AnswerSources.items()``), each with what was
-    read from it (title and excerpt)."""
-    out: list[tuple[str, str]] = []
+    read from it (title and excerpt) and the item itself."""
+    out: list[Read] = []
     for item in items if isinstance(items, list) else []:
         if not isinstance(item, dict):
             continue
@@ -108,11 +111,11 @@ def from_answer_sources(items: list, folders: list[tuple[str, str, str]]) -> lis
         elif kind in {"email", "app"} and app and app not in NOT_APPS:
             found = f"app:{app}"
         if found:
-            out.append((found, f"{item.get('title') or ''} {item.get('snippet') or ''}"))
+            out.append((found, f"{item.get('title') or ''} {item.get('snippet') or ''}", item))
     return out
 
 
-async def of_session(store: Any, session_id: str | None) -> tuple[str, list[tuple[str, str]]]:
+async def of_session(store: Any, session_id: str | None) -> tuple[str, list[Read]]:
     """``(the chat's own source, what it read)`` for chat ``session_id``: its app (desktop, messaging app or device),
     and every app and folder its replies read, each ``(source, excerpt)`` in order."""
     if not session_id:
@@ -134,7 +137,7 @@ async def of_session(store: Any, session_id: str | None) -> tuple[str, list[tupl
         " ORDER BY created_at",
         (session_id,),
     )
-    read: list[tuple[str, str]] = []
+    read: list[Read] = []
     if rows:
         folders = await _folders(store)
         for r in rows:
@@ -146,13 +149,95 @@ async def of_session(store: Any, session_id: str | None) -> tuple[str, list[tupl
     return first, read
 
 
-def sources_for(fact: str, first: str, read: list[tuple[str, str]], *, held: bool, user_name: str = "") -> list[str]:
+def sources_for(fact: str, first: str, read: list[Read], *, held: bool, user_name: str = "") -> list[str]:
     """The sources of ``fact`` learned in a chat (:func:`of_session`), its own first. Held for review because the chat
     read outside content: what it read that says it (else everything it read). Otherwise the chat's, plus every
     folder whose notes say it."""
-    said = list(dict.fromkeys(k for k, text in read if backs(fact, text, user_name)))
+    said = list(dict.fromkeys(r[0] for r in read if backs(fact, r[1], user_name)))
     if held:
-        chosen = said or list(dict.fromkeys(k for k, _ in read))
+        chosen = said or list(dict.fromkeys(r[0] for r in read))
         if chosen:
             return chosen
     return [first, *(k for k in said if k.startswith("folder:") and k != first)]
+
+
+# ---------------------------------------------------------------------- spans and confidence (#152)
+QUOTE_CHARS = 200
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def quote(text: str, fact: str) -> str:
+    """The sentence of ``text`` that says most of ``fact`` (its start when none does), short."""
+    parts = [p.strip() for p in _SENTENCE.split(str(text or "")) if p.strip()]
+    if not parts:
+        return ""
+    want = _words(fact)
+    best = max(parts, key=lambda p: len(want & _words(p)))
+    best = " ".join(best.split())
+    return best if len(best) <= QUOTE_CHARS else best[: QUOTE_CHARS - 1].rstrip() + "…"
+
+
+def says(fact: str, text: str, user_name: str = "") -> bool:
+    """Whether ``text`` repeats ``fact``: most of its words (three in five, at least two), besides the user's own
+    name. Stricter than :func:`backs`: it decides what is scrubbed when a memory is deleted."""
+    want = _words(fact) - _words(user_name)
+    if len(want) < 2:
+        return False
+    have = _words(text)
+    return len(want & have) >= max(2, -(-len(want) * 3 // 5))
+
+
+def confidence(source: str, *, held: bool = False) -> float:
+    """How sure Sentient is of a fact when it is first learned, from where it came: the user's own words most, what
+    it read in an app least."""
+    if held:
+        return 0.6
+    kind, _ = split(source)
+    if source in {"manual", "user"}:
+        return 1.0
+    if is_chat(source) or source == "onboarding":
+        return 0.9
+    if kind == "folder":
+        return 0.8
+    if kind == "app":
+        return 0.6
+    return 0.7  # files, imports, tasks, the user model
+
+
+def _item_ref(item: dict, session_id: str, fact: str, folder_id: str | None = None) -> dict:
+    keep = {k: item.get(k) for k in ("kind", "title", "url", "id", "app", "path") if item.get(k)}
+    if keep.get("kind") == "file":
+        keep["kind"] = "note"
+    if folder_id:
+        keep["folder_id"] = folder_id
+    text = f"{item.get('snippet') or ''}"
+    return {**keep, "session_id": session_id, "quote": quote(text, fact) or None}
+
+
+async def spans(
+    store: Any, fact: str, sources: list[str], session_id: str, read: list[Read], user_name: str = ""
+) -> dict[str, dict]:
+    """Exactly where each of ``sources`` said ``fact`` in chat ``session_id``: the user's message for the chat
+    itself (the newest of its last 40 that says it, else the newest), the email, app result or note for what the chat
+    read. ``{source: ref}``; a source with nothing to point at is left out."""
+    out: dict[str, dict] = {}
+    for src in sources:
+        if is_chat(src):
+            rows = await store.fetchall(
+                "SELECT id, content FROM messages WHERE session_id = ? AND role = 'user'"
+                " ORDER BY created_at DESC, rowid DESC LIMIT 40",
+                (session_id,),
+            )
+            if not rows:
+                continue
+            best = next((r for r in rows if backs(fact, r["content"] or "", user_name)), rows[0])
+            out[src] = {"kind": "message", "session_id": session_id, "message_id": best["id"],
+                        "quote": quote(best["content"] or "", fact) or None}
+            continue
+        items = [r for r in read if r[0] == src]
+        if not items:
+            continue
+        item = next((r for r in reversed(items) if backs(fact, r[1], user_name)), items[-1])
+        kind, ident = split(src)
+        out[src] = _item_ref(item[2], session_id, fact, ident if kind == "folder" else None)
+    return out

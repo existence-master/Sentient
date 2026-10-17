@@ -33,14 +33,16 @@ def _memory(request: Request):
 @router.get("")
 async def list_memories(
     request: Request, topic: str = "", q: str = "", source: str = "", limit: int = 500, offset: int = 0,
-    scope: str = "",
+    scope: str = "", state: str = "",
 ):
     s = get_core(request)
     if s.memory is None:
         return []
+    if state and state not in {"all", "current", "disputed", "superseded"}:
+        raise HTTPException(400, "state must be current, disputed, superseded or all")
     return await s.memory.list_facts(
         max(1, min(limit, 2000)), max(0, offset), topic=topic or None, source=source or None, q=q or None,
-        scope=scope or None,
+        scope=scope or None, state=state or None,
     )
 
 
@@ -257,10 +259,30 @@ async def update_memory(request: Request, memory_id: int, body: dict):
         raise HTTPException(404, f"memory {memory_id} not found") from exc
 
 
+@router.get("/{memory_id}")
+async def get_memory(request: Request, memory_id: int):
+    """One memory with every source and exactly where it said it (#152), and what replaced it when superseded."""
+    fact = await _memory(request).get_fact(memory_id)
+    if fact is None:
+        raise HTTPException(404, f"memory {memory_id} not found")
+    if fact.get("superseded_by"):
+        newer = await _memory(request).get_fact(int(fact["superseded_by"]))
+        fact["superseded_by_content"] = newer["content"] if newer else None
+    return fact
+
+
 @router.patch("/{memory_id}")
 async def move_memory(request: Request, memory_id: int, body: dict):
-    """Move a memory to another scope (#155): ``{scope}``."""
+    """Move a memory to another scope (#155): ``{scope}``; or say it isn't right or is (#152): ``{state:
+    "disputed"|"current"}``."""
     mem = _memory(request)
+    if "state" in body:
+        try:
+            return await mem.set_state(memory_id, str(body.get("state") or ""))
+        except KeyError as exc:
+            raise HTTPException(404, f"memory {memory_id} not found") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     scope = memory_scopes.normalize(body.get("scope"))
     if not scope:
         raise HTTPException(400, "scope is required")
@@ -279,7 +301,7 @@ async def move_memory(request: Request, memory_id: int, body: dict):
 @router.delete("/{memory_id}")
 async def delete_memory(request: Request, memory_id: int):
     mem = _memory(request)
-    deleted = await mem.forget(memory_id, notify=True)
+    deleted = await mem.erase(memory_id, notify=True)  # with everything derived from it (#152)
     if not deleted:
         raise HTTPException(404, f"memory {memory_id} not found")
     return {"deleted": True}
