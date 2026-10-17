@@ -26,6 +26,7 @@ from typing import Any
 from sentient import paths, secrets
 from sentient.activity import Timeline
 from sentient.agent import incognito as incognito_outputs
+from sentient.agent import selections
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import ChatRules
 from sentient.agent.grants import GrantStore
@@ -267,12 +268,17 @@ class SentientApp:
         except Exception:
             log.exception("stopping the work of chat %s failed", session_id)
         incognito = await self.store.is_incognito(session_id)
+        selected = await selections.attached(self.store, session_id)
         await self.store.delete_session(session_id)
         if incognito:  # the long tool results it saved go with it (#291); files it wrote on request stay
             try:
                 await asyncio.to_thread(incognito_outputs.delete_outputs, session_id)
             except OSError:
                 log.exception("removing the saved results of incognito chat %s failed", session_id)
+        try:  # text selected in another app and asked about goes with its chat (#332)
+            await selections.delete_with_chat(self.store, selected, incognito=incognito)
+        except OSError:
+            log.exception("removing the selected text of chat %s failed", session_id)
         self.bus.publish("session.deleted", {"session_id": session_id, **({"reason": reason} if reason else {})})
 
     def _after_memory_erased(self, texts: list[str]) -> None:

@@ -18,8 +18,10 @@ import {
   captureCommand,
   cleanSelection,
   COPY_WAIT_MS,
+  forgetCommand,
   HELPER_IDLE_MS,
   parseCapture,
+  parseForget,
   parsePaste,
   pasteBackCommand,
   resizedBounds,
@@ -200,6 +202,7 @@ export class AskController {
   private async capture(): Promise<Captured> {
     const saved = await saveClipboard()
     if (saved !== null) clipboard.clear() // so a copy that does nothing (no selection) reads as nothing
+    const since = Date.now()
     let report: CaptureReport
     if (this.helper) {
       report = parseCapture(await this.helper.request(`capture ${acceleratorKeyCode(this.host.shortcut())} ${process.pid}`))
@@ -221,6 +224,7 @@ export class AskController {
       }
     }
     await restoreClipboard(saved, text)
+    this.forget(text, since)
     const empty = text ? undefined : report.result === 'copied' ? 'nothing' : report.result === 'own' ? 'own-window' : report.result
     return { text, app: report.app, target: report.window, ...(empty ? { empty } : {}) }
   }
@@ -230,6 +234,7 @@ export class AskController {
     const target = this.target
     if (!target || !text) return 'failed'
     const saved = await saveClipboard()
+    const since = Date.now()
     try {
       await clipboard.writeText(text)
     } catch {
@@ -243,10 +248,16 @@ export class AskController {
       if (cmd) outcome = parsePaste(await runOnce(cmd.file, cmd.args))
     }
     if (outcome === 'pasted') {
-      setTimeout(() => void restoreClipboard(saved, text), RESTORE_CLIPBOARD_MS)
+      setTimeout(() => {
+        void restoreClipboard(saved, text)
+        this.forget(text, since)
+      }, RESTORE_CLIPBOARD_MS)
     } else {
       // A password box: nothing typed, the clipboard goes back. Failed: the answer stays on the clipboard to paste.
-      if (outcome === 'password') await restoreClipboard(saved, text)
+      if (outcome === 'password') {
+        await restoreClipboard(saved, text)
+        this.forget(text, since)
+      }
       const win = this.win
       if (win && !win.isDestroyed()) {
         win.show()
@@ -254,6 +265,20 @@ export class AskController {
       }
     }
     return outcome
+  }
+
+  /** Windows keeps every copy in its clipboard history (Win+V) when that is on, and the selection got there through the
+   *  app's own Ctrl+C. Take out what this borrowing of the clipboard put there since `since` (#332). Copy, which the
+   *  user asks for, is left alone. */
+  private forget(text: string, since: number): void {
+    const helper = this.helper
+    if (!helper || !text) return
+    void helper.request(forgetCommand(text, since)).then((line) => {
+      const r = parseForget(line)
+      if (r.result === 'failed') console.warn('[shell] ask: could not take the copied text out of clipboard history')
+      else if (r.result === 'forgot' && r.count === 0) console.warn('[shell] ask: the copied text was not found in clipboard history')
+      else if (r.result === 'forgot') console.info(`[shell] ask: took ${r.count === 1 ? 'a copy' : `${r.count} copies`} out of clipboard history`)
+    })
   }
 
   async copy(text: string): Promise<boolean> {

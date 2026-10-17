@@ -344,7 +344,8 @@ accept or loosen a rule.
   had read (`""` when it was clean: nothing changes and nothing is logged). A clear logs an `event` row in the chat
   (content `{event, was, via, upto}`) and publishes `session.updated` `{untrusted: ""}`. Without `upto` it covers
   everything stored. 404 unknown chat, 422 an `upto` that isn't a message of this chat. No tool can do this.
-- `DELETE /api/sessions/{id}` → `{ok}` (helpers the chat started are cancelled first; publishes `session.deleted`)
+- `DELETE /api/sessions/{id}` → `{ok}` (helpers the chat started are cancelled first; text selected in another app
+  and attached to it is deleted with it, see "Files" below; publishes `session.deleted`)
 - `GET /api/sessions/{id}/messages?limit=500` → raw transcript rows, oldest first (404 when the chat doesn't exist, e.g. a
   closed incognito chat):
   ```json
@@ -445,9 +446,15 @@ accept or loosen a rule.
   reaches the model as `--- Text the user selected in another app ---`, its text wrapped as outside content from
   `"another app"` (`prompt.mark_outside`, ADR 0023; plain when `chat.mark_outside_content` is off), and marks the chat
   as having read outside content from `"another app"` (section 10, ADR 0018). Later turns see `(Attached earlier:
-  ...)`, so the ask window attaches it again with every message. Selection files are kept like any other upload
-  (listed by `GET /api/files`, removed with `DELETE /api/files/{name}`, included in full backups); deleting the chat does
-  not delete them.
+  ...)`, so the ask window attaches it again with every message. Selection files are listed by `GET /api/files`,
+  removed with `DELETE /api/files/{name}` and included in full backups, and they go with their chat (#332): deleting a
+  chat (`DELETE /api/sessions/{id}`, or an incognito chat closed or swept) deletes the `selections/` files its messages
+  had attached, unless another chat still has one attached (never kept for an incognito chat). At start the engine
+  removes `selections/` files no message has that are over an hour old (a chat deleted before #332, or a question
+  never sent). On Windows the shell then takes the copy out of clipboard history (Win+V): after the capture, and
+  after Replace selection pastes an answer, its helper deletes the history entries added since then that hold exactly
+  that text (`Windows.ApplicationModel.DataTransfer.Clipboard.DeleteItemFromHistory`). Copy, which the user asks for,
+  stays in history.
 - `GET /api/files` → `[{name, size, mime, modified_at}]`
 - `GET /api/files/content/{name}` → the file bytes
 - `DELETE /api/files/{name}` → `{ok}`

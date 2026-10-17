@@ -152,3 +152,83 @@ async def test_sending_after_asking_about_a_selection_asks_even_when_allowed(con
         assert (await s.store.get_session(sid))["untrusted"] == "another app"
     finally:
         await s.stop()
+
+
+# ----------------------------------------------------------------------------- deleted with its chat (#332)
+def _ask(client, name: str, text: str = TEXT, **extra) -> tuple[str, str]:
+    up = client.post("/api/files", files={"file": (name, text.encode(), "text/plain")}, data={"source": "selection"}).json()
+    r = client.post("/api/chat", json={"text": "Explain the selected text.", "attachments": [up["name"]], **extra})
+    return up["name"], json.loads(r.text.splitlines()[0])["session_id"]
+
+
+def test_selected_text_is_deleted_with_its_chat(config, isolated_home, monkeypatch):
+    llm = FakeProvider(replies=["One.", "Two.", "Three."])
+    with _client(config, isolated_home, monkeypatch, llm) as client:
+        name, sid = _ask(client, "Notepad.txt")
+        other = client.post("/api/files", files={"file": ("notes.txt", b"mine", "text/plain")}).json()["name"]
+        path = isolated_home / "files" / name
+        assert path.is_file()
+        assert client.delete(f"/api/sessions/{sid}").json() == {"ok": True}
+        assert not path.exists()
+        assert (isolated_home / "files" / other).is_file()  # only selections go
+        assert client.get(f"/api/sessions/{sid}/messages").status_code == 404
+        assert name not in {f["name"] for f in client.get("/api/files").json()}
+
+        # still attached in another chat: kept until that one goes too
+        name, first = _ask(client, "Mail.txt")
+        r = client.post("/api/chat", json={"text": "And this?", "attachments": [name]})
+        second = json.loads(r.text.splitlines()[0])["session_id"]
+        client.delete(f"/api/sessions/{first}")
+        assert (isolated_home / "files" / name).is_file()
+        client.delete(f"/api/sessions/{second}")
+        assert not (isolated_home / "files" / name).exists()
+
+
+def test_selected_text_always_goes_with_an_incognito_chat(config, isolated_home, monkeypatch):
+    llm = FakeProvider(replies=["One.", "Two."])
+    with _client(config, isolated_home, monkeypatch, llm) as client:
+        name, sid = _ask(client, "Notepad.txt", incognito=True)
+        client.post("/api/chat", json={"text": "Same text here.", "attachments": [name]})  # a normal chat has it too
+        client.delete(f"/api/sessions/{sid}")
+        assert not (isolated_home / "files" / name).exists()
+
+
+async def test_selected_text_no_chat_has_is_removed_at_start(config, isolated_home):
+    import os
+    import time
+
+    from sentient.agent import selections
+
+    folder = isolated_home / "files" / "selections"
+    folder.mkdir(parents=True, exist_ok=True)
+    old, fresh, used = folder / "old.txt", folder / "fresh.txt", folder / "used.txt"
+    for p in (old, fresh, used):
+        p.write_text("x", encoding="utf-8")
+    hours_ago = time.time() - 2 * selections.STRAY_AFTER_S
+    for p in (old, used):
+        os.utime(p, (hours_ago, hours_ago))
+    s = SentientApp(config, llm=FakeProvider(), db_path=isolated_home / "st.db", enable_background=False)
+    await s.store.open()
+    sid = await s.store.create_session(title="Ask")
+    await s.store.add_message(sid, "user", "Explain.", attachments=["selections/used.txt"])
+    await s.store.close()
+    await s.start()
+    try:
+        assert not old.exists()  # its chat is gone
+        assert fresh.exists()  # may be waiting for its chat to start
+        assert used.exists()  # a chat still has it
+    finally:
+        await s.stop()
+
+
+async def test_a_selection_stored_with_a_backslash_is_found(config, isolated_home):
+    from sentient.agent import selections
+
+    s = SentientApp(config, llm=FakeProvider(), db_path=isolated_home / "bs.db", enable_background=False)
+    await s.store.open()
+    try:
+        sid = await s.store.create_session(title="Ask")
+        await s.store.add_message(sid, "user", "Explain.", attachments=["selections\\Notes.txt", "uploads/a.txt"])
+        assert await selections.attached(s.store, sid) == {"selections/Notes.txt"}
+    finally:
+        await s.store.close()
