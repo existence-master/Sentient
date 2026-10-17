@@ -83,6 +83,8 @@ dev = [
     "pytest-timeout>=2.4.0",
     # runs the tests in parallel (pytest -n auto); CI uses it to keep the Windows job short
     "pytest-xdist>=3.8.0",
+    # CI runs a failed test once more and lists it as flaky (docs/DEVELOPING.md, Flaky tests)
+    "pytest-rerunfailures>=16.7",
     # packaging: freezes the engine for the installer (packaging/build_engine.py)
     "pyinstaller>=6.22.3",
     # changelog: one file per change in changes/, joined into CHANGELOG.md at release time
@@ -102,6 +104,9 @@ packages = ["sentient"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# keep the temp folders of failed tests only, and of the last run only (they reached 5 GB); see docs/DEVELOPING.md
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1
 
 # Changelog entries: one file per change in changes/ (see changes/README.md). At release time
 # `python packaging/release_changelog.py <version>` turns them into a version section of CHANGELOG.md.

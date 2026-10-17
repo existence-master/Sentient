@@ -4,6 +4,9 @@ on:
     types: [created]
   pull_request_target:
     types: [opened,closed,synchronize]
+  # The merge queue waits for every required check, CLAAssistant included, on each merge group. A pull request
+  # can only join the queue after this check passed on it, so on a merge group it just reports success.
+  merge_group:
 
 permissions:
   actions: write
@@ -15,6 +18,9 @@ jobs:
   CLAAssistant:
     runs-on: ubuntu-latest
     steps:
+      - name: "Signed on the pull request"
+        if: github.event_name == 'merge_group'
+        run: echo "Every pull request in this merge group passed the CLA check before it could join the queue."
       - name: "CLA Assistant"
         if: > 
           github.event_name == 'pull_request_target' ||

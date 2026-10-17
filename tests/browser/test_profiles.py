@@ -1581,6 +1581,7 @@ async def test_download_save_error_includes_underlying_reason(tmp_path, monkeypa
     assert not (tmp_path / "downloads" / "broken.pdf").exists()
 
 
+@pytest.mark.flaky(reruns=2)  # 0.5 s outer guard, timed out on Windows CI: #421
 async def test_stalled_download_cancel_is_bounded_and_partial_file_is_removed(tmp_path, monkeypatch):
     svc = BrowserService(make_app())
     cancel_started = asyncio.Event()

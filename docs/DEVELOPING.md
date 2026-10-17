@@ -172,6 +172,45 @@ missing (a very old database), which `store.ensure_column` already handles.
 because the file names differ. Whoever merges second rebases on `main`, sees `tests/test_migrations.py` fail with
 "two migrations share a number", and renames their file to `0015_...`.
 
+### Where pytest's temporary files go
+
+Every test that uses `tmp_path` gets a folder under pytest's temp root, by default
+`%TEMP%\pytest-of-<you>` (Windows) or `/tmp/pytest-of-<you>`. Sentient's tests make a data folder each, so this
+once reached 5 GB on a C: drive. `pyproject.toml` now keeps only the folders of tests that failed
+(`tmp_path_retention_policy = "failed"`), and only from the last run (`tmp_path_retention_count = 1`); this works
+the same with `-n auto`, where each worker's folders sit in a `popen-gw<N>` subfolder of the run's folder.
+
+To keep them off your system drive, either give each checkout its own folder (pytest empties it at the start of
+every run; `.pytest-tmp/` is ignored by git):
+
+```bash
+.venv/Scripts/python.exe -m pytest -q -n auto --basetemp=.pytest-tmp
+```
+
+or move the whole temp root by setting `TMP` and `TEMP` (Windows) or `TMPDIR` (macOS/Linux) for the shell that
+runs pytest, for example `$env:TMP = "D:\tmp"; $env:TEMP = "D:\tmp"` in PowerShell. When several checkouts run
+tests at once, give each its own `--basetemp`: a run empties its basetemp when it starts, so two runs sharing one
+delete each other's files. The folder above the basetemp must already exist.
+
+### Flaky tests
+
+CI runs a failed test once more (`--reruns 1 --reruns-delay 2`, from pytest-rerunfailures) so one unlucky timing
+on a busy runner doesn't fail a pull request. A rerun is not a pass to ignore: the "Report tests that needed a
+rerun" step lists every such test in the job summary and as a warning on the run.
+
+- A test that needed a rerun gets an issue with the [`flaky`](https://github.com/existence-master/Sentient/labels/flaky)
+  label (search first): the test id, the run link, the error, and what you think the cause is.
+- A test known to be flaky can be marked until it is fixed, with a comment linking its issue:
+
+  ```python
+  @pytest.mark.flaky(reruns=2)  # 5 s wall-clock budget, timed out on Windows CI: #420
+  async def test_polling_backoff_recovery_and_revoked_token(tg): ...
+  ```
+
+- The fix is usually a wall-clock budget that is too tight for a loaded Windows runner with `-n auto`: wait on
+  the thing itself, or use a deadline of several seconds instead of a few short sleeps. Remove the marker in the
+  same pull request as the fix.
+
 ## Packaging
 
 The shipped app carries its own engine, so the person installing it needs neither
@@ -223,7 +262,9 @@ cross-compile). macOS builds are unsigned and unnotarized so far.
 
 - Every pull request runs [CI](../.github/workflows/ci.yaml): ruff, the engine tests on Linux and Windows, the
   desktop typecheck and build, and a secret scan, plus the [changelog check](../.github/workflows/changelog.yaml).
-  They need no secrets, so they run the same on forks.
+  They need no secrets, so they run the same on forks. The same checks, and CLAAssistant, also run on each merge
+  group when `main` uses GitHub's merge queue; there the changelog and CLA checks just pass, because a pull request
+  can only join the queue after passing them.
 - **Changelog entries are files, not edits to CHANGELOG.md.** A pull request that changes what people get adds
   `changes/<issue or PR number>.<type>.md` (type `added`, `changed`, `deprecated`, `removed`, `fixed` or
   `security`; details in [changes/README.md](../changes/README.md)). The "Changelog entry" job fails when a pull
