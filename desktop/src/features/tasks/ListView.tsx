@@ -121,9 +121,13 @@ export function ListView({
   )
 }
 
+const HELD_STATUSES: string[] = ['planning', 'pending', 'active']
+
 /** Second line of a task row: what's going on right now. */
 export function taskHeadline(task: Task): string {
   const run = processingRun(task)
+  // a paused task whose work a restart held says so (#304)
+  if (!task.enabled && task.error && HELD_STATUSES.includes(task.status)) return truncate(task.error, 140)
   switch (task.status) {
     case 'planning':
       return task.task_type === 'swarm' ? 'Splitting the work across agents…' : 'Sentient is drafting a plan…'

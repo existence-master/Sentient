@@ -6,9 +6,10 @@ Pauses every task (``enabled = 0``: the scheduler and triggers skip it), turns o
 switch and turns messaging apps off in config.yaml (``channels.enabled: false``), so no seeded task runs and nothing
 is sent through Telegram, WhatsApp or Discord.
 
-The engine plans every ``planning`` task and resumes every ``processing`` run when it starts, paused or not, so those
-would still call the model (issue #388). A task still being planned is declined instead (Run again plans a fresh
-copy when the user wants it), a run in progress is cancelled, and a task still marked as running is settled
+The engine holds a paused task's work when it starts (issue #304: a run in progress or a plan being made waits,
+with a note, until the task is resumed), but resuming a seeded task would then carry seeded work on with the model,
+and older engines resumed it at once (issue #388). So a task still being planned is declined instead (Run again plans
+a fresh copy when the user wants it), a run in progress is cancelled, and a task still marked as running is settled
 (a routine goes back to waiting, anything else is cancelled).
 
 The seed scripts call ``quiet()`` when they finish and ``scripts/smoke.mjs`` runs this file before it starts the app;

@@ -471,7 +471,8 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
     <>
       {waiting && <RunQuestion task={task} run={waiting} />}
 
-      {task.status === 'planning' && (
+      {/* a paused task whose planning a restart held shows the paused banner instead (#304) */}
+      {task.status === 'planning' && (task.enabled || !task.error) && (
         <div className="flex items-center gap-3 rounded-xl border border-info/20 bg-info/5 px-4 py-3">
           <span className="relative flex size-8 shrink-0 items-center justify-center rounded-lg bg-info/12 text-info">
             <span className="absolute inset-0 animate-ping rounded-lg bg-info/20" />
@@ -505,7 +506,7 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
         </Alert>
       )}
 
-      {!task.enabled && ['active', 'pending'].includes(task.status) && (
+      {!task.enabled && (['active', 'pending'].includes(task.status) || (task.status === 'planning' && !!task.error)) && (
         <Alert
           tone="neutral"
           icon={<IconPlayerPause />}
@@ -516,11 +517,13 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
             </Button>
           }
         >
-          {task.original_context?.imported_from && !task.plan.length
-            ? 'Brought over from Hermes. Resume it and Sentient makes a plan for you to approve before it runs.'
-            : pausedWhileAway
-              ? "Sentient paused it while you were away. It won't run until you resume it."
-              : "It won't run on its schedule or triggers until you resume it."}
+          {task.error
+            ? task.error
+            : task.original_context?.imported_from && !task.plan.length
+              ? 'Brought over from Hermes. Resume it and Sentient makes a plan for you to approve before it runs.'
+              : pausedWhileAway
+                ? "Sentient paused it while you were away. It won't run until you resume it."
+                : "It won't run on its schedule or triggers until you resume it."}
         </Alert>
       )}
 
@@ -571,7 +574,7 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
           {last.result ? (
             <RunResult result={last.result} memorySources={last.memory_sources} sources={last.sources} />
           ) : last.error ? (
-            <Alert tone="danger" icon={<IconAlertCircle />}>
+            <Alert tone={last.status === 'cancelled' ? 'neutral' : 'danger'} icon={<IconAlertCircle />}>
               {last.error}
             </Alert>
           ) : (

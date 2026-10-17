@@ -904,7 +904,8 @@ answer a run that is not waiting),
 
 Behaviour notes:
 - Swarm tasks (`is_swarm: true`) skip approval (v2): `planning → processing → completed|completed_with_errors|error`.
-- `PATCH` with a new `schedule`, a status of `active`/`pending`, or `enabled: true` recomputes `next_execution_at`.
+- `PATCH` with a new `schedule`, a status of `active`/`pending`, or `enabled: true` recomputes `next_execution_at`
+  (except a held one-off task that carries on, see "On restart" below).
 - `run-now` on a one-off task creates a new run immediately; on a swarm task it re-orchestrates.
 - Triggered tasks accept events while a previous run is still `processing` (each event gets its own run).
 - Triggered tasks fire from the `source.items` domain event for every origin (section 16). Each task handles an item id at
@@ -923,6 +924,17 @@ Behaviour notes:
   `request_task_change(task_id, message)` (write, internal; same as `POST /chat`).
 - On restart, runs left `processing` resume from their transcript checkpoint (`tasks.resume_interrupted_runs`), else they end with error `Interrupted by restart`.
   Runs `waiting_for_user` are left alone: they keep waiting, with their question, until answered or cancelled.
+  A paused task (`enabled: false`) is held instead (#304): its runs left `processing` (except a swarm's, and a
+  one-call run whose call had started, which end as above without repeating anything) and its runs
+  waiting on an approval (an Ask rule or a held call) end `cancelled` with `error` and an `info` update
+  `Paused before it finished. Resume the task to continue.` (a withdrawn approval's notification gets
+  `status: "cancelled"`); the task gets the same `error`, and goes back to `active` (recurring or triggered, next run
+  computed) or `pending` with no `next_execution_at` (anything else). A paused task left `planning` stays `planning`
+  with `error: "Paused before the plan was ready. Resume the task to continue."` and is not planned. Nothing calls the
+  model for it. `PATCH {enabled: true}` then carries each held run on as a Retry (a new run with `retry_of`, continuing
+  from its transcript and starting with `The task was resumed. Carrying on from where it stopped.`; a withdrawn
+  approval is asked again), plans a held `planning` task, and clears the note. A held one-off task is not also
+  scheduled for a fresh run.
 - Disconnecting an integration sets `enabled: false` on tasks whose plan or trigger uses it (instead of v2's delete) and sends a notification.
 
 ### Try it first (#142, ADR 0026)

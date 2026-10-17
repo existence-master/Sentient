@@ -405,6 +405,12 @@ RETRY_NOTE = (
     "the remaining steps, then give your final answer."
 )
 
+PAUSE_RESUMED_NOTE = (
+    "The user paused this task while you were executing this plan and has now resumed it. Everything above this "
+    "message already happened. Continue from where you left off: do not repeat steps whose tool results are "
+    "already shown, finish the remaining steps, then give your final answer."
+)
+
 RESUME_NOTE = (
     "The application was restarted while you were executing this plan. Everything above this message "
     "already happened. Continue from where you left off: do not repeat steps whose tool results are "
