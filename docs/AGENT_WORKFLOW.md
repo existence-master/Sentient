@@ -24,15 +24,18 @@ have to actually see it work.
   checked is free (see [Ports](#ports)):
 
   ```bash
-  export SENTIENT_HOME="$PWD/.test-homes/issue-123"     # a new, empty folder (ignored by git), never ~/.sentient
+  PY=.venv/Scripts/python.exe; [ -x "$PY" ] || PY=.venv/bin/python   # Windows, else macOS/Linux
+  export SENTIENT_HOME="$(pwd -W 2>/dev/null || pwd)/.test-homes/issue-123"   # new and empty; never ~/.sentient
   unset SENTIENT_KEYCHAIN_NAMESPACE                       # an inherited override would win over the test home
-  export SENTIENT_GATEWAY_TOKEN="$(.venv/Scripts/python.exe -c 'import secrets; print(secrets.token_urlsafe(24))')"
-  .venv/Scripts/python.exe -m sentient serve --port 8791   # macOS/Linux: .venv/bin/python
+  export SENTIENT_GATEWAY_TOKEN="$("$PY" -c 'import secrets; print(secrets.token_urlsafe(24))')"
+  "$PY" -m sentient serve --port 8791
   curl -H "Authorization: Bearer $SENTIENT_GATEWAY_TOKEN" http://127.0.0.1:8791/api/config
   ```
 
   Drive it over REST and `WS /ws?token=...` as [docs/API.md](API.md) describes. In Git Bash on Windows set
-  `MSYS_NO_PATHCONV=1`, or it rewrites `/api/...` arguments into Windows paths.
+  `MSYS_NO_PATHCONV=1`, or it rewrites `/api/...` arguments into Windows paths. That also stops it translating
+  Git Bash paths such as `/c/work/...` for Python, which is why the snippet uses `pwd -W` (it prints
+  `C:/work/...`); with plain `$PWD` the engine would quietly use a different folder. `.test-homes/` is ignored by git.
 - **Use a real model where the model matters.** Sentient must work on small local models, so test with
   `ollama_chat/qwen3:8b`, and take the [Ollama lock](#the-ollama-lock) first. Always the `ollama_chat/` prefix:
   with `ollama/`, qwen writes its tool calls as plain text. If you also have a cloud model or the Claude Code
@@ -43,6 +46,8 @@ have to actually see it work.
   the screenshots yourself. A build that passes is not a screen that looks right.
 - **For repository and CI changes,** prove the mechanism on GitHub: a dry-run log, a run on a fork, or a unit
   test of the script when neither is possible.
+- **For documentation only,** check what you wrote against the code it describes, run any commands it shows,
+  and say so in the PR. No engine or model run is needed when nothing that runs has changed.
 - **Stop what you started** (engines, apps, servers) and delete your test homes when you are done.
 
 ## Sharing one computer

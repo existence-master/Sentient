@@ -11,7 +11,8 @@
 ## Real test
 
 <!-- Unit tests are not enough: what did you run for real, end to end? See docs/AGENT_WORKFLOW.md.
-     - Setup: engine from this branch with its own SENTIENT_HOME, or the built app; for repo/CI changes, the run on GitHub.
+     - Setup: engine from this branch with its own SENTIENT_HOME, or the built app; for repo/CI changes, the run on
+       GitHub; for docs only, what you checked the text against.
      - Model: which one, by id (for example ollama_chat/qwen3:8b), or "no model involved".
      - What you did and what happened: steps, plus trimmed log lines, API responses or a run link.
      - Attach screenshots or traces to this PR (drag them in). A path on your computer is not evidence.
