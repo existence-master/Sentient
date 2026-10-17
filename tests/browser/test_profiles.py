@@ -2031,3 +2031,44 @@ async def test_a_click_that_only_opened_a_download_tab_stays_on_the_page(monkeyp
     svc._download_tasks.add(task)
     assert await svc._download_only_tab(Page("about:blank"), before)  # a download started from it
     await task
+
+
+def test_a_closed_or_hub_tab_goes_back_to_the_tab_it_came_from():
+    """#307: with several tabs open, a blank download tab that closes, or a new tab that turns out to be Edge's
+    downloads hub, hands back to the tab that was active when it opened, not to the last tab."""
+    svc = BrowserService(make_app())
+
+    class Page:
+        def __init__(self, url):
+            self.url = url
+
+        @property
+        def main_frame(self):
+            return self
+
+        def is_closed(self):
+            return False
+
+        def on(self, *_):
+            return None
+
+    clicked, other = Page("https://example.com/reports"), Page("https://example.com/help")
+    context = type("Context", (), {"pages": [clicked, other]})()
+    svc._context = context
+    svc._closing = True  # no status publishing in this unit test
+    svc._active = clicked
+
+    blank = Page("")
+    context.pages.append(blank)
+    svc._on_page(blank)
+    assert svc._active is blank
+    context.pages.remove(blank)
+    svc._on_page_closed(blank)
+    assert svc._active is clicked
+
+    hub = Page("")
+    context.pages.append(hub)
+    svc._on_page(hub)
+    hub.url = "edge://downloads-hub/"
+    svc._on_navigated(hub, hub)
+    assert svc._active is clicked

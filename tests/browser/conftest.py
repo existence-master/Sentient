@@ -49,7 +49,8 @@ PAGES = {
     "help.html": "<!doctype html><title>Help</title><main><h1>Help center</h1></main>",
     "download.html": '<!doctype html><title>Downloads</title><a href="/report.txt" download>Download report</a>',
     # #307: a link that opens its file in a new tab
-    "download-tab.html": '<!doctype html><title>Downloads</title><a href="/direct-download" target="_blank">Get it in a new tab</a>',
+    "download-tab.html": ('<!doctype html><title>Downloads</title><a href="/direct-download" target="_blank">Get it in a new tab</a> '
+                          '<a href="/help.html" target="_blank">Open help in new tab</a>'),
     "report.txt": "Sentient browser download test.\n",
     "signup.html": """<!doctype html><meta charset="utf-8"><title>Newsletter</title><main>
   <section><h2>Weekly notes</h2><p>Free, no spam.</p><button>Subscribe</button></section>

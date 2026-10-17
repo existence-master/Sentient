@@ -206,3 +206,19 @@ async def test_download_from_a_new_tab_link_keeps_the_page(browser, site):
     assert (paths.files_dir() / download_paths[0]).read_text(encoding="utf-8") == "Direct browser-open download test.\n"
     later = await bt.browser_snapshot.call(ctx, {})
     assert later["url"] == f"{site}/download-tab.html" and later["title"] == "Downloads"
+
+
+async def test_download_tab_link_with_another_tab_open_keeps_the_clicked_page(browser, site):
+    """#307: when the blank download tab closes, the clicked tab stays active, not the last other tab."""
+    ctx = make_ctx(browser.app)
+    text = (await bt.browser_open.call(ctx, {"url": f"{site}/download-tab.html"}))["text"]
+    assert (await bt.browser_click.call(ctx, {"ref": ref_of(text, r'link "Open help in new tab"')})).get("new_tab")
+    await bt.browser_switch_tab.call(ctx, {"index": 0})
+    text = (await bt.browser_snapshot.call(ctx, {}))["text"]
+    result = await bt.browser_click.call(ctx, {"ref": ref_of(text, r'link "Get it in a new tab"')})
+    assert result["url"] == f"{site}/download-tab.html" and "new_tab" not in result
+    later = await bt.browser_snapshot.call(ctx, {})
+    assert later["url"] == f"{site}/download-tab.html"
+    pending = [task for task in browser._download_tasks if not task.done()]
+    if pending:
+        await asyncio.wait_for(asyncio.gather(*pending), timeout=10)
