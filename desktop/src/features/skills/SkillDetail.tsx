@@ -28,6 +28,7 @@ import { errorMessage } from '@/lib/api'
 import type { SkillDetail as SkillDetailType, SkillsList } from '@/lib/types'
 import { formatDateTime, relativeTime } from '@/lib/utils'
 import { LintList } from './LintList'
+import { SkillChecks } from './SkillChecks'
 import { SafetyReport } from './SafetyReport'
 import { AuthorBadge, SkillStat } from './SkillCard'
 import { SkillEditor, splitList, type SkillDraft } from './SkillEditor'
@@ -253,6 +254,7 @@ export function SkillDetailSheet({
               )}
               {s.vetting && (s.vetting.verdict !== 'clear' || s.vetting.changed_since_approval) && <SafetyReport vetting={s.vetting} />}
               <LintList findings={s.vetting ? s.lint?.filter((f) => !['danger', 'hidden', 'outbound'].includes(f.rule)) : s.lint} />
+              <SkillChecks skill={s} />
 
               {hasPendingUpdate && (
                 <Alert

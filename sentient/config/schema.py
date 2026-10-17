@@ -637,6 +637,12 @@ class IntegrationsConfig(BaseModel):
         description="Listen to Home Assistant for changes (a door opening, a light turning on) so tasks can start "
         "when they happen. Uses no model calls.",
     )
+    home_assistant_check_s: float = Field(
+        4.0, ge=0, le=10,
+        description="After Sentient turns on a light, locks a door or changes another device in Home Assistant, how "
+        "many seconds it waits for the device to report its new state, so it never says done when the device didn't "
+        "change. 0 turns this check off.",
+    )
     fast_sync_seconds: int = Field(
         60, ge=0, le=3600,
         description=(

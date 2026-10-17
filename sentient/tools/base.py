@@ -281,6 +281,14 @@ async def describe_call(tool: Tool, arguments: dict, ctx: ToolContext, risk: Ris
     return out
 
 
+def approval_reason(wording: dict, risk: Risk) -> str:
+    """The reason line of an approval card (#398): the label a ``describe_fn`` gave when it says more than the risk
+    alone ("Purchase", "Deletes", "Unlocks a door", "Takes a photo"), else empty, so the card writes its own line.
+    Never the tool's description: that is written for the model ("Click the element with this ref ...")."""
+    label = str((wording or {}).get("risk_label") or "").strip()
+    return "" if label == RISK_LABELS.get(Risk(risk), "") else label
+
+
 def _params_model_from_signature(fn: Callable, name: str) -> type[BaseModel]:
     sig = inspect.signature(fn)
     hints = typing.get_type_hints(fn, include_extras=True)

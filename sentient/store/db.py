@@ -27,11 +27,12 @@ _PKG_ROOT = Path(__file__).resolve().parents[1]
 # Feature packages own their tables. Each file must be idempotent. Order matters for foreign keys.
 # Bump when a change to a schema.sql or an ensure_column needs existing databases updated. Opening a database
 # with another version takes a snapshot first (issue #151); so does the first column added to an existing one.
-SCHEMA_VERSION = 11  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
+SCHEMA_VERSION = 12  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
 # 6: approval_grants (#139); 7: usage.cost_usd (#148); 8: evolution_reviews.activity_mark (#297)
 # 9: messages.approval and the activity timeline's indexes (#147); 10: try runs and file snapshots (#142)
 # 11: memory scopes: facts.scope, sessions.memory_scope, tasks.memory_scope, summaries.scope (#155); also
 #     messages.checks and task_runs.checks (#165), which arrived without a bump
+# 12: folders.scope (#392): folders added before it are recalled in every chat
 PACKAGE_SCHEMAS = [
     "tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox",
     "folders", "reminders", "snapshots",
@@ -182,6 +183,7 @@ class Store:
             extra = _PKG_ROOT / pkg / "schema.sql"
             if extra.exists():
                 await self._db.executescript(extra.read_text(encoding="utf-8"))
+        await self.ensure_column("folders", "scope", "TEXT NOT NULL DEFAULT 'always'")  # #392, after folders/schema.sql
         await self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await self._db.commit()
         return self

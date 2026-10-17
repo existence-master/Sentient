@@ -83,6 +83,11 @@ class Language(Protocol):
 
     def failed(self, error: str) -> str: ...
 
+    def unconfirmed(self, detail: str) -> str:
+        """What to say when the call said it worked but reading it back shows it didn't (#386): ``detail`` is
+        "Hallway light still reports off"."""
+        ...
+
     def home_done(self, command: Command, count: int) -> str:
         """What to say after a home command switched ``count`` devices ("Turned off the living room lights.")."""
         ...

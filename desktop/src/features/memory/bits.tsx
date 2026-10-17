@@ -64,16 +64,26 @@ export function ScopeIcon({ scope, size = 15, className }: { scope: string | nul
   return <IconFolder size={size} className={className} />
 }
 
-/** Where a memory is kept, shown unless it is the default (Personal). */
+/**
+ * Where a memory is kept, shown unless it is the default (Personal). It reads "Used in Work" in a dashed, square
+ * outline next to the source, so it never looks like a topic pill such as "Work & Learning" (#392).
+ */
 export function ScopeBadge({ scope, className }: { scope: string | null | undefined; className?: string }) {
   if (!scope || scope === 'personal') return null
+  const where = scope === 'always' ? 'every chat' : scopeLabel(scope)
   return (
     <span
-      title={scope === 'always' ? 'Used in every chat' : `Used in ${scopeLabel(scope)} chats`}
-      className={cn('inline-flex h-4.5 max-w-36 shrink-0 items-center gap-1 rounded-full border border-border bg-active px-1.5 text-2xs font-medium text-fg-muted', className)}
+      title={scope === 'always' ? 'Every chat uses this memory' : `Only ${scopeLabel(scope)} chats use this memory`}
+      data-scope-badge={scope}
+      className={cn(
+        'inline-flex h-5 min-w-0 max-w-44 shrink items-center gap-1 rounded-md border border-dashed border-border-strong px-1.5 text-2xs text-fg-subtle',
+        className
+      )}
     >
-      <ScopeIcon scope={scope} size={10} className="shrink-0" />
-      <span className="truncate">{scopeLabel(scope)}</span>
+      <ScopeIcon scope={scope} size={11} className="shrink-0" />
+      <span className="truncate">
+        Used in <span className="font-medium text-fg-muted">{where}</span>
+      </span>
     </span>
   )
 }

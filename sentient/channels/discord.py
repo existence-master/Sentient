@@ -72,7 +72,8 @@ To use it in a server channel too, mention the bot there with `/pair` and a new 
 In a channel it answers only you, when you mention it or reply to it; messages from other people are treated as
 outside content, so it checks with you before sending anything after them.
 Commands: `/new` starts a fresh chat, `/stop` stops a reply, `/stopall` stops everything Sentient is doing
-(`/resume` starts it again), `/model` switches between local and cloud models, `/help` shows help.
+(`/resume` starts it again), `/model` switches between local and cloud models, `/scope work` or `/scope personal`
+keeps this chat to those memories, `/help` shows help.
 
 **Keep the token private.** If it leaks, click **Reset Token** again and connect with the new one.
 """
