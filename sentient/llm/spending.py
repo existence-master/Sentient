@@ -190,6 +190,7 @@ class Spending:
 def _summarise(rows: list[Any]) -> dict[str, Any]:
     models: dict[str, dict[str, Any]] = {}
     roles: dict[str, dict[str, Any]] = {}
+    claude_roles: dict[str, dict[str, Any]] = {}  # Claude Code calls by role (#444): what used the plan for what
     totals = {"cost_usd": 0.0, "paid_calls": 0, "unpriced_calls": 0, "plan_calls": 0, "plan_tokens": 0,
               "local_calls": 0, "local_tokens": 0, "calls": 0, "tokens": 0}
     for r in rows:
@@ -198,6 +199,11 @@ def _summarise(rows: list[Any]) -> dict[str, Any]:
         cost = r["cost_usd"]
         totals["calls"] += 1
         totals["tokens"] += tokens
+        if str(r["model"]).startswith("claude-code/"):
+            item = claude_roles.setdefault(r["role"] or "other", {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
+            item["calls"] += 1
+            item["prompt_tokens"] += int(r["p"] or 0)
+            item["completion_tokens"] += int(r["c"] or 0)
         if kind == "paid":
             totals["paid_calls"] += 1
             if cost is None:
@@ -238,4 +244,7 @@ def _summarise(rows: list[Any]) -> dict[str, Any]:
         return sorted(out, key=lambda x: (-(x["cost_usd"] or 0.0), -(x["prompt_tokens"] + x["completion_tokens"])))
 
     totals["cost_usd"] = round(totals["cost_usd"], 6)
-    return {**totals, "by_model": ordered(models, "model"), "by_role": ordered(roles, "role")}
+    claude_code = sorted(({"role": k, **v} for k, v in claude_roles.items()),
+                         key=lambda x: -(x["prompt_tokens"] + x["completion_tokens"]))
+    return {**totals, "by_model": ordered(models, "model"), "by_role": ordered(roles, "role"),
+            "claude_code_by_role": claude_code}

@@ -184,13 +184,13 @@ async def model_busy(request: Request):
 
 @router.get("/models/claude-code")
 async def claude_code_status(request: Request):
-    """Claude through the user's own Claude Code (experimental, ADR 0022): turned on, installed, version, and the
-    roles that may use it. Runs ``claude --version`` only while it is turned on; never a model call, never reads
+    """Claude through the user's own Claude Code (experimental, ADR 0022): turned on, installed, version, the roles
+    that may use it, and whether it does everything (ADR 0032). Runs ``claude --version`` only while it is turned on; never a model call, never reads
     Claude's login."""
-    from sentient.config.schema import CLAUDE_CODE_MODELS
+    from sentient.config.schema import CLAUDE_CODE_FAST_MODEL, CLAUDE_CODE_MODELS
 
     return {**await claude_code.status(get_core(request).config), "models": list(CLAUDE_CODE_MODELS),
-            "roles": list(claude_code.accepting_roles(get_core(request).config))}
+            "roles": list(claude_code.accepting_roles(get_core(request).config)), "fast_model": CLAUDE_CODE_FAST_MODEL}
 
 
 class EmbedTestBody(BaseModel):

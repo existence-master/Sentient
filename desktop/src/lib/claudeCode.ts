@@ -69,3 +69,18 @@ export function refusingRoles(roles: Record<string, string | null | undefined>, 
 export function otherModel(candidates: readonly (string | null | undefined)[]): string {
   return candidates.find((m): m is string => !!m && !isClaudeCode(m)) ?? ''
 }
+
+/** What Settings shows next to Claude Code: off, chats only, or everything. */
+export function claudeCodeState(enabled: boolean, everywhere: boolean): { label: string; tone: 'neutral' | 'warning' | 'danger' } {
+  if (!enabled) return { label: 'Off', tone: 'neutral' }
+  return everywhere ? { label: 'Does everything', tone: 'danger' } : { label: 'Chats only', tone: 'warning' }
+}
+
+export type ClaudeWay = 'key' | 'credits' | 'code_chats' | 'code_everything'
+
+/** The Connect Claude choice that matches what is set up now (`primary` is the main model in use or picked). */
+export function claudeWayFor(models: { experimental_claude_code?: boolean; claude_code_everywhere?: boolean } | undefined, primary: string): ClaudeWay {
+  if (models?.experimental_claude_code && models.claude_code_everywhere) return 'code_everything'
+  if (isClaudeCode(primary)) return 'code_chats'
+  return 'key'
+}

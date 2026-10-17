@@ -5,7 +5,8 @@ import { Alert, Badge, Button, Card, Field, IconButton, Input, ProgressBar, Segm
 import { InstructionsGuide } from '@/features/integrations/InstructionsGuide'
 import { ChatGPTMark } from '@/features/models/ChatGPTBrand'
 import { CLAUDE_CODE_STREAMING, CLAUDE_CODE_WARNING } from '@/features/models/ClaudeCodeSection'
-import { CLAUDE_PLAN_STEPS, ChatGPTConnect, chatgptPlanModels, NOUS_STEPS, OpenRouterConnect } from '@/features/models/ConnectPlans'
+import { ConnectClaude } from '@/features/models/ConnectClaude'
+import { ChatGPTConnect, chatgptPlanModels, NOUS_STEPS, OpenRouterConnect } from '@/features/models/ConnectPlans'
 import { ModelCheckup } from '@/features/models/ModelCheckup'
 import { ModelPicker } from '@/features/models/ModelPicker'
 import { ModelTest } from '@/features/models/ModelTest'
@@ -321,6 +322,13 @@ function CloudBrain() {
   const cloud = (providers.data ?? []).filter((p) => p.kind === 'cloud')
   const selected = cloud.find((p) => p.id === d.cloudProvider)
   const isChatGPT = selected?.id === 'chatgpt'
+  const isClaude = selected?.id === 'anthropic'
+  const onClaudeCode = isClaude && isClaudeCode(d.primary)
+  const config = useConfig()
+  // Claude Code for chats only: background work needs a model that isn't Claude Code, and an Anthropic model only
+  // works with a key. Then the saved background model (not Claude Code) does it.
+  const savedFast = config.data?.models.roles.fast ?? ''
+  const fastForChatsOnly = isClaudeCode(d.fast) || (d.fast.startsWith('anthropic/') && !selected?.key_set) ? (isClaudeCode(savedFast) ? '' : savedFast) : d.fast
   const plan = useModelCatalog('chatgpt', isChatGPT && !!selected?.key_set)
 
   // Signed in with ChatGPT: start from the plan's models by the same rule as Settings (the plan's first model, for
@@ -386,7 +394,17 @@ function CloudBrain() {
 
       {selected && (
         <Card className="space-y-4 p-5">
-          {isChatGPT ? (
+          {isClaude ? (
+            <ConnectClaude
+              primary={d.primary}
+              fast={d.fast}
+              others={{ planner: config.data?.models.roles.planner, executor: config.data?.models.roles.executor }}
+              onUseModels={(primary, fast) => d.set({ primary, fast })}
+              // Claude Code only answers chats: the background model stays on another model (#442)
+              onUseForChat={(primary) => d.set({ primary, fast: fastForChatsOnly })}
+              onUseForEverything={(primary, fast) => d.set({ primary, fast })}
+            />
+          ) : isChatGPT ? (
             <ChatGPTConnect />
           ) : selected.key_set ? (
             <div className="flex items-center gap-2 text-sm text-fg">
@@ -396,7 +414,6 @@ function CloudBrain() {
           ) : (
             <>
               {selected.id === 'openrouter' && <OpenRouterConnect />}
-              {selected.id === 'anthropic' && <PlanSteps title="Have a Claude Max or Team plan? Use its included API credits" markdown={CLAUDE_PLAN_STEPS} />}
               {selected.id === 'nous' && <InstructionsGuide markdown={NOUS_STEPS} />}
               <Field
                 label={selected.id === 'openrouter' ? 'Or paste an OpenRouter key' : `${selected.label} API key`}
@@ -443,13 +460,13 @@ function CloudBrain() {
             <>
               <Field label="Main model">
                 <div className="flex items-center gap-2">
-                  <ModelPicker provider={selected.id} role="primary" offerClaudeCode value={d.primary} onChange={pickMain} className="flex-1" />
+                  <ModelPicker provider={onClaudeCode ? undefined : selected.id} role="primary" offerClaudeCode value={d.primary} onChange={pickMain} className="flex-1" />
                   <ModelTest model={d.primary} role="primary" className="shrink-0" />
                 </div>
-                <ClaudeCodeNote />
+                {!isClaude && <ClaudeCodeNote />}
               </Field>
               <Field label="Background model" description="Used for memory and summaries. A cheaper model is ideal.">
-                <ModelPicker provider={selected.id} role="fast" value={d.fast} onChange={(fast) => d.set({ fast })} />
+                <ModelPicker provider={onClaudeCode ? undefined : selected.id} role="fast" value={d.fast} onChange={(fast) => d.set({ fast })} />
                 <BackgroundNote />
               </Field>
               <Field label="Memory search" description="Embeddings can stay local even with a cloud chat model.">
@@ -462,26 +479,7 @@ function CloudBrain() {
           )}
         </Card>
       )}
-      {selected?.key_set && <DraftCheckup />}
-    </div>
-  )
-}
-
-/** Steps for using a plan, folded away until asked for. */
-function PlanSteps({ title, markdown }: { title: string; markdown: string }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="rounded-xl border border-border bg-surface/60 px-3.5 py-2.5">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        className="flex w-full items-center justify-between gap-2 text-left text-sm font-medium text-fg"
-      >
-        {title}
-        <span className="shrink-0 text-xs font-normal text-accent-text">{open ? 'Hide steps' : 'Show steps'}</span>
-      </button>
-      {open && <InstructionsGuide markdown={markdown} className="mt-3" />}
+      {(selected?.key_set || onClaudeCode) && <DraftCheckup />}
     </div>
   )
 }

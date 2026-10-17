@@ -259,7 +259,7 @@ accept or loosen a rule.
   a deterministic pre-filter (never, don't, do not, must not, always ask, ask me first, without asking...; "don't ask
   me" and "stop asking" never count); then tools whose names or descriptions share a word with the message; then one
   short `fast`-role prompt that returns `{"keys": [...], "rule": "never"|"ask"}`, parsed tolerantly. When every fast
-  model refuses the job (Claude Code only answers chats, ADR 0022), the chat's own model or else the primary model
+  model refuses the job (Claude Code only answers chats, ADR 0022, unless it does everything, ADR 0032), the chat's own model or else the primary model
   answers it, as part of the reply (#311). Claude Code answers it only within the reply's 20 s wait; a slower Claude
   Code check is stopped and makes no card. Keys must be
   tool names or app ids among those candidates (checked in code). The level is decided in code from the words
@@ -332,7 +332,7 @@ accept or loosen a rule.
     before it said anything falls back the same way, once per reply. The chat keeps its model, so it is used again as
     soon as it works. Every reply that the default answered says so.
   - Helpers the chat starts (subagents, section 10) use the chat's model where they would use the primary model
-    (`subagents.role: primary`), except Claude Code, which only answers chats. Background work after a reply (titles,
+    (`subagents.role: primary`), except Claude Code, which only answers chats unless it does everything (ADR 0032). Background work after a reply (titles,
     memory, rule checks, summaries) and tasks keep their own role models.
   - Incognito chats keep a model the same way.
 - `POST /api/sessions/{id}/trust` `{upto?: message id}` → `{ok, was, trusted, untrusted, writer}`: "I've checked it,
@@ -473,7 +473,9 @@ accept or loosen a rule.
   `week` (from Monday) and `month`, on the computer's own clock:
   `CostPeriod = {key, label, since, cost_usd, calls, tokens, paid_calls, unpriced_calls, plan_calls, plan_tokens,
   local_calls, local_tokens, by_model: [{model, billing, calls, prompt_tokens, completion_tokens, cost_usd, unpriced_calls}],
-  by_role: [{role, calls, prompt_tokens, completion_tokens, cost_usd, unpriced_calls, plan_calls, local_calls}]}`.
+  by_role: [{role, calls, prompt_tokens, completion_tokens, cost_usd, unpriced_calls, plan_calls, local_calls}],
+  claude_code_by_role: [{role, calls, prompt_tokens, completion_tokens}]}`. `claude_code_by_role` counts only
+  `claude-code/*` calls, by the role that made them (`other` when none was recorded), most tokens first (#444).
   `billing` is `local` (free), `plan` (Claude Code and ChatGPT plan models: on the user's plan, never in dollars) or
   `paid` (priced per token from LiteLLM's bundled price list; `cost_usd: null` and `unpriced_calls` when the price
   isn't known). A role row's `cost_usd` is `null` when none of its calls had a price.
@@ -567,15 +569,20 @@ accept or loosen a rule.
   engine's `SENTIENT_DEBUG_BATTERY` environment variable fakes the reading: `ac` (plugged in), `battery` (on battery,
   level unknown) or a percent from 0 to 100 (on battery at that level).
   A stream holds the model until its last chunk; cancelling (Stop everything) frees it.
-- `GET /api/models/claude-code` → `{enabled, installed, version, detail, models, roles}`: Claude through the user's own
+- `GET /api/models/claude-code` → `{enabled, installed, version, detail, models, fast_model, everywhere, roles,
+  max_concurrent, running, waiting}`: Claude through the user's own
   Claude Code (experimental, ADR 0022). `enabled` is `models.experimental_claude_code` (default false). `installed`
   means a `claude` program is on PATH; `version` is its `claude --version` line, asked only while `enabled` (null
   otherwise or when it doesn't answer). `detail` is a plain sentence for Settings. `models` are the model names to
-  offer (`CLAUDE_CODE_MODELS` in `config/schema.py`: `claude-code/sonnet`, `claude-code/opus`). `roles` are the roles
-  that may use them with this configuration, today the ones that answer chats (`["primary", "voice", "vision"]`).
-  `claude_code.accepting_roles(config)` decides it in one place, for this report, the refusals, the check-up and
-  `PUT /api/models/roles`. The window offers Claude Code
-  only for these and warns when another role uses it, its own model or the main model it falls back to (#442). It never calls a model
+  offer (`CLAUDE_CODE_MODELS` in `config/schema.py`: `claude-code/sonnet`, `claude-code/opus`). `everywhere` is true
+  when Claude Code does everything (`models.claude_code_everywhere` with `enabled`, ADR 0032). `roles` are the roles
+  that may use them with this configuration: the ones that answer chats (`["primary", "voice", "vision"]`), or every
+  role but `embedding` when `everywhere`. `claude_code.accepting_roles(config)` decides it in one place, for this
+  report, the refusals, the check-up and `PUT /api/models/roles`. The window offers Claude Code
+  only for these and warns when another role uses it, its own model or the main model it falls back to (#442), and
+  asks for this report again whenever either switch changes. `max_concurrent` is
+  `models.claude_code_max_concurrent`; `running` and `waiting` count Claude Code processes running now and calls
+  queued for one. It never calls a model
   and never reads Claude's login; `POST /api/models/test` with a `claude-code/` model is the only dry run. `enabled`
   is the saved setting, so a window that has just flipped the switch asks again until it matches.
 - `POST /api/models/checkup` `{roles?: {role: model | null}}` → streams NDJSON while it checks each role's model,
@@ -677,10 +684,29 @@ accept or loosen a rule.
   model in Settings > Models.") and the `executor` role ("...Pick an executor model..."). It is a `ModelRefused`
   (a `ProviderError`); when every model of a role refused, that sentence is the error as is, so a task that fails
   this way has it as its `error` (instead of "Sorry, the AI model is unavailable right now...") and a task route
-  answers `503` with it as `detail`. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
-  and vision, with that role's refusal and a `use_model` action for a chat model in use that isn't Claude Code, the
+  answers `503` with it as `detail`. The check-up reports a `claude-code/` model without calling it (`fail` for roles that
+  don't accept it, see `roles` above, with that role's refusal and a `use_model` action for a chat model in use that isn't Claude Code, the
   background model first, else the local model sized for this computer when it is downloaded; an empty planner or
-  executor counts when the main model is Claude Code). Stop everything kills every running Claude Code process tree.
+  executor counts when the main model is Claude Code). Stop everything kills every running Claude Code process tree and
+  drops the calls waiting for one (they fail with "Stop everything ended this before Claude Code started." and no
+  fallback model is tried).
+- **Claude Code for everything** (#444, [ADR 0032](adr/0032-claude-code-for-everything-as-an-opt-in.md)). Config
+  `models.claude_code_everywhere` (bool, default false) counts only while `models.experimental_claude_code` is on.
+  The window turns it on only after a separate warning dialog with an explicit checkbox. When on, the refusals above
+  are lifted for every role but `embedding`: work nobody waits on (tasks, subagents, proactivity, heartbeats,
+  follow-ups, dreaming, briefs, memory notes, titles, summaries, the rules-from-chat check) may use a `claude-code/`
+  model, and `complete_text`/`complete_json` jobs run as a Claude Code reply without tools, parsed with the tolerant
+  JSON reader. `fast_model` (`CLAUDE_CODE_FAST_MODEL`, `claude-code/haiku`) is what the window sets for the `fast` role when the user
+  picks Claude Code for everything. At most `models.claude_code_max_concurrent` (1 to 8, default 2) Claude Code
+  processes run at once; more wait in a queue, served by who waits (a reply someone is waiting for, then tasks, then
+  upkeep, as in the local model queue) and then first come first served. The engine log says
+  `Claude Code queued: <role> on <model> (<kind>) waits; N running, at most M at once ...` and
+  `Claude Code start: ... after waiting Xs`. When the setting goes from on to off (any config save), each role on
+  `claude-code/*` that no longer accepts it (its own model, or for an empty planner or executor the main model it
+  uses) moves to its first model that isn't Claude Code (its fallbacks, then `fallbacks.primary`, then the fast model,
+  then the primary model); a role with no other model stays and is refused as before. One `info` notification says what moved (`payload: {kind: "claude_code_roles", moved: [{role, model, to}]}`,
+  `to` null when the role stayed), titled "Claude Code is back to chats only", or "Claude Code is turned off" when
+  `experimental_claude_code` went off too. Usage is counted per call with its role (`claude_code_by_role` in the cost meter).
 - **Keychain namespaces (#302).** Every secret (API keys, integration tokens, channel bot tokens, MCP headers and
   sign-ins, the ChatGPT sign-in) is an OS keychain entry under one service per data folder. The default data folder
   (`~/.sentient`, used when `SENTIENT_HOME` is unset or points at it) uses the service `sentient`, the entries every
@@ -2306,7 +2332,7 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     without asking, or the run read outside content. One tool-free `fast`-role prompt sees only the user's own words
     (the last 1500 characters) and the action (its approval wording and arguments) and answers
     `{"match": bool, "reason": str}`, parsed tolerantly. When the fast model refuses the job, the primary model (or the
-    chat's model) answers; Claude Code answers only inside a chat reply (ADR 0022). No usable answer within 45 seconds
+    chat's model) answers; Claude Code answers only inside a chat reply (ADR 0022), or anywhere when it does everything (ADR 0032). No usable answer within 45 seconds
     (an error, a refusal, unreadable JSON) fails closed with
     `"Sentient couldn't double-check this against what you asked, so it checks with you first."`
 - A flagged call is raised to at least `send` and asks whatever the approvals mode, Allow rules, "Allow for this
