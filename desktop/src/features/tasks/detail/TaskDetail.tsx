@@ -50,7 +50,7 @@ import { isApiError } from '@/lib/api'
 import { modelShortName } from '@/lib/models'
 import type { Task, TaskSchedule } from '@/lib/types'
 import { cn, copyText, formatDateTime, relativeTime } from '@/lib/utils'
-import { taskHeadline } from '../ListView'
+import { pausingNote, taskHeadline } from '../ListView'
 import { useMissingIntegrations, useNow, useUserTimezone, type MissingIntegration } from '../hooks'
 import { KIND_META, PRIORITY_META, SOURCE_META, displayName, isScriptJob, latestRun, processingRun, scriptOf, taskKind, taskSource, waitingRun } from '../meta'
 import { KindTile, TaskStatusBadge } from '../parts'
@@ -466,6 +466,8 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
   const waiting = waitingRun(task)
   const away = useAway()
   const pausedWhileAway = away.data?.state === 'paused' && away.data.task_ids.includes(id)
+  const pausing = pausingNote(task) // paused while a run works: it stops at its next step, or finishes (#408)
+  const finishing = task.task_type === 'swarm' || !!task.original_context?.fixed_call
 
   return (
     <>
@@ -503,6 +505,21 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
           }
         >
           Sentient needs access to {missing.length === 1 ? 'this app' : 'these apps'} to carry out the plan.
+        </Alert>
+      )}
+
+      {pausing && (
+        <Alert
+          tone="neutral"
+          icon={<IconPlayerPause />}
+          title={finishing ? "This run can't be stopped part-way" : 'Pausing this task'}
+          action={
+            <Button size="xs" variant="secondary" loading={ops.isBusy('enabled', id)} onClick={() => void ops.setEnabled(id, true)}>
+              Resume
+            </Button>
+          }
+        >
+          {pausing}
         </Alert>
       )}
 

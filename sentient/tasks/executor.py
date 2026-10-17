@@ -102,6 +102,11 @@ class RunPaused(Exception):
         self.question = question
 
 
+class RunHeld(Exception):
+    """The user paused the task while this run worked: it stopped at a safe point, before a model or tool call (#408).
+    The service holds it (``TaskService._hold_run``) until the task is resumed."""
+
+
 def is_first_retry_attempt(run: dict) -> bool:
     """A run created by 'retry' that has not been resumed after a restart yet."""
     return bool(run.get("retry_of")) and not int(run.get("resume_count") or 0)
@@ -336,10 +341,13 @@ async def execute_single(
 ) -> LoopResult:
     """Run (or continue) one task run. ``answered``: the checkpoint already holds the user's answer to
     ``ask_user`` (or to a limit question), so it continues without the restart note. Raises ``RunPaused``
-    when the run asks a question or reaches one of its limits (``tasks/limits.py``)."""
+    when the run asks a question or reaches one of its limits (``tasks/limits.py``), and ``RunHeld`` when the user
+    paused the task (#408): it stops before its next model or tool call, with every finished step in its transcript."""
     app = svc.app
     assert app.agent is not None
     task_id, run_id = task["id"], run["id"]
+    if svc.holding(run_id):  # paused before it started (it waited for a free slot): no recall, no model call
+        raise RunHeld()
     state = limits.load(run, app.config)
     used, limit = state["used"], state["max"]
     started = time.monotonic()
@@ -399,6 +407,8 @@ async def execute_single(
                 ctx.extra[dry_run.KEY] = trying(svc, run)
             checkpoint = run.get("messages") if resume else None
             if isinstance(checkpoint, list) and checkpoint:
+                if svc.holding(run_id):  # paused before an approved call ran: it runs once the task is resumed
+                    raise RunHeld()
                 checkpoint = await _run_approved_call(
                     svc, task_id, run_id, ctx, checkpoint, model=task.get("model") or None
                 )
@@ -443,6 +453,7 @@ async def execute_single(
                         bool(asking.get("question")) or result.needs_ok is not None or watch.reason is not None
                     ),
                     budget=budget,
+                    interrupt=lambda: svc.holding(run_id),  # the task was paused: stop at the next safe point (#408)
                 ):
                     await alive(event)
                     await mapper.handle(event, messages)
@@ -462,7 +473,7 @@ async def execute_single(
                         if changed:
                             await svc.repo.update_run(run_id, changed)
                 await mapper.flush_thought()
-                if result.paused or result.stopped_by_budget:
+                if result.paused or result.stopped_by_budget or result.interrupted:
                     break
                 if result.from_findings:  # no answer even after asking again: the loop answered from the results
                     await svc.progress(task_id, run_id, {
@@ -508,6 +519,8 @@ async def execute_single(
     if result.handed_off:  # "Hand it to me" (#140): what the run prepared reaches the user even if it stops later
         await notify_handed_off(svc, task, result.handed_off)
         result.handed_off = []  # a run that pauses and resumes shares this result: notify each one once
+    if result.interrupted:  # the task was paused: the transcript above is where it carries on from (#408)
+        raise RunHeld()
     if result.stopped_by_rule:  # an "ask" rule stopped a run that can't pause; say which and how to change it
         raise RunFailed(result.stopped_by_rule)
     # the loop breaker: the same call kept getting the same result. A repeated error is stuck; anything else fails.
@@ -594,6 +607,8 @@ async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume:
         refusal = app.approvals.read_only_refusal(tool, await effective_risk(tool, arguments, ctx), app.registry)
         if refusal:
             raise RunFailed(refusal)
+    if svc.holding(run_id):  # paused before its one call started (#408); once it has started, it runs to the end
+        raise RunHeld()
     await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": name, "parameters": arguments})
     risk = await effective_risk(tool, arguments, ctx) if run.get("dry_run") else None
     if risk is not None and dry_run.simulates(tool, risk, outgoing=sends_out(tool, risk, arguments, ctx)):
