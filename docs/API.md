@@ -804,7 +804,7 @@ Routes:
 chat creates (`create_task_from_prompt`) takes that chat's scope.
 `deliver_to` is where the task's notifications go besides the app (see "Where results go" below).
 `notepad` is the notes a recurring task's runs keep for the next run (see "Recurring tasks remember" below); `null` when empty.
-`setup` is a routine's setup checklist (see "Setup checklist" below); `null` for other tasks and for routines that
+`setup` is a routine's setup checklist (see "Setup checklist" below); `null` for other tasks (a routine made one-off loses it) and for routines that
 have not been planned or approved since #161.
 `error` holds the last planning/run failure message (v2 `task.error`).
 Each run embeds its most recent 200 progress updates; the full log is at the `/events` endpoint.
@@ -1007,7 +1007,8 @@ schedule and its time zone are the task's own `schedule`; the app shows them in 
 if_missing: "skip|notify|retry", confirmed_at: "...|null"}`
 - `source`, what it reads: the first web address in the request, plan or check script (`page`); else the app whose
   event starts a triggered task (`app`, an integration or MCP server id, `label` its name); else a folder named in the
-  request (`folder`, like `C:\Users\maya\Downloads`); else the first connected app the plan reads; else `none`.
+  request (`folder`, like `C:\Users\maya\Downloads`; for a file it may write, like `...\digest.txt`, the folder it is
+  in); else the first connected app the plan reads; else `none`.
 - `output`, what the user gets: the plan's last step, else the description (at most 300 characters).
 - `approval`, what it may do without asking: `plan` (default) goes ahead with what the approved plan does, as before;
   `ask` holds every call that sends, posts, buys, deletes or runs something (effective risk `send` or `exec`, not
@@ -1026,7 +1027,9 @@ filled-in answers apply.
 **A missing source.** Before a routine's run starts (not a resume, an answered question or a Retry that continues a
 transcript), and before each check of a check script, code looks at its source: a page must answer (`GET`, 15 s, a
 status below 400; addresses Sentient never opens itself, like this computer, aren't checked), an app must be
-connected (an event from that same app that started the run counts), a folder must exist. When it isn't there:
+connected (an event from that same app that started the run counts), a folder must exist. A page's redirects are
+followed by hand, at most 5, and every address on the way must pass the same rules (one that doesn't isn't checked).
+When it isn't there:
 - The run ends `skipped` (a check script's check is a `skipped` entry in `script.checks`, and the script doesn't run),
   with `error` `Skipped: <reason>.` (also its one `info` update), and the routine waits for its next time (`active`).
 - `skip`: nothing more. `notify`: a notification `kind: "task"`, title `Skipped: <name>`, message `'<name>' didn't
@@ -3475,7 +3478,7 @@ What each source gives (past):
 | `messages` (assistant replies in channel chats) | "Replied to you on Telegram" |
 | `messages` (role `event`, `name` `trusted`, ADR 0029) | `approvals` item `trust:<id>`: "You trusted the chat "X" again", `why` "It had read content from Gmail. You said you checked it (in Sentient \| with /trust on Telegram), so sending from it stops asking just because of what it read. New outside content asks again." |
 | `channel_deliveries` (section 14) | "Sent to Telegram: Your Daily Brief" or "Couldn't send to Telegram: ..." (`status: "failed"`, `detail` says why); `why` names the chat and why it went there ("To your chat "Maya Rao". The task sends its updates there"); `ref` opens the task, chat or notification it came from |
-| `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked. A try run (#142): "Tried X", `why` "You chose Try it first, ..." A skipped run (#161): "Skipped X: what it reads wasn't there" (`status: "stopped"`, `detail` the reason); the `source_missing` notification is not listed again |
+| `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked. A try run (#142): "Tried X", `why` "You chose Try it first, ..." A skipped run (#161): "Skipped X: what it reads wasn't there" (`status: "stopped"`, `detail` the reason), and its own retry has `why` "It tried again because what it reads wasn't there last time"; the `source_missing` notification is not listed again |
 | `file_snapshots` (#142) | "A command changed 2 files", "Code changed 1 file", "Wrote over notes.txt", "Put back 2 files"; `kind` `tasks` when a task run did it, else `chat`; `app` `terminal`, `code` or `files`; `detail` the command or script and the file names; `undo` Restore while the copies are kept and not put back yet; `status: "restored"` after |
 | `tasks.script.checks` | "Checked X: nothing new (3 checks)", "X changed. You were told" |
 | `notifications` | questions and approvals from tasks (with the answer), plans waiting, suggestions, routines paused, backup and budget notices. Not shown again: `run_completed`, `run_failed`, `dry_run_finished` and `script_alert` (the run or check is shown), `brief` (the run), `skill` (the skills log) and dream notices (the dream) |
