@@ -11,11 +11,12 @@ permissions:
 
 jobs:
   claim:
-    # Issues only (a PR comment also fires issue_comment), and only comments that mention a command.
+    # Issues only (a PR comment also fires issue_comment), and only comments that are exactly a command (allowing a
+    # trailing space or line break), so other comments never queue here and can't push a waiting command out.
     if: >-
       github.event.issue.pull_request == null &&
-      (contains(github.event.comment.body, '/assign') || contains(github.event.comment.body, '/unassign'))
-    # Per job, so only real commands queue here and other comments can't cancel a waiting one.
+      contains(fromJSON('["/assign", "/assign ", "/assign\n", "/assign\r\n", "/unassign", "/unassign ", "/unassign\n", "/unassign\r\n"]'), github.event.comment.body)
+    # Per job, so only runs that pass the condition above share the queue.
     concurrency:
       group: claim-${{ github.event.issue.number }}
     runs-on: ubuntu-latest
