@@ -378,6 +378,36 @@ async def test_planner_watch_default_uses_user_chat(make_app, role, stored):
     assert task["script"]["condition"] == stored
 
 
+@pytest.mark.parametrize("message", [
+    "Change it to check every 30 minutes",
+    "Change the time to every 30 minutes",
+    "Thanks for everything",
+    "Anything else you need from me?",
+])
+async def test_planner_watch_default_ignores_edits_and_unrelated_chat(make_app, message):
+    watch = {**PLAN_SCRIPT, "script": {"code": PAGE_CODE, "condition": "changed", "then": "notify"}}
+    app = await make_app(FakeProvider(json_replies=[watch]))
+    task_id = await _script_task(
+        app, condition="noteworthy", code=PAGE_CODE,
+        original_prompt="Watch this page for new events: https://example.org/events",
+    )
+    await app.tasks.chat(task_id, message)
+    await app.tasks.drain()
+    assert (await app.tasks.get(task_id))["script"]["condition"] == "noteworthy"
+
+
+async def test_planner_watch_default_uses_newest_change_preference(make_app):
+    watch = {**PLAN_SCRIPT, "script": {"code": PAGE_CODE, "condition": "changed", "then": "notify"}}
+    app = await make_app(FakeProvider(json_replies=[watch]))
+    task_id = await _script_task(
+        app, condition="changed", code=PAGE_CODE,
+        original_prompt="Watch this page for any change at all: https://example.org/events",
+    )
+    await app.tasks.chat(task_id, "Only important changes please")
+    await app.tasks.drain()
+    assert (await app.tasks.get(task_id))["script"]["condition"] == "noteworthy"
+
+
 FETCH = "from sentient_tools import tools, result\npage = tools.web_fetch(url='https://example.org')\n"
 
 
