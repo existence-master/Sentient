@@ -64,7 +64,7 @@ import { NotepadCard } from './NotepadCard'
 import { Clarifications } from './Clarifications'
 import { RunQuestion } from './RunQuestion'
 import { PlanSection } from './PlanSection'
-import { RunHistory, RunResult } from './RunHistory'
+import { RunHistory, RunResult, skippedReason } from './RunHistory'
 import { SetupChecklist, hasChecklist } from './SetupChecklist'
 import { FilterRulesView, ScheduleEditor } from './ScheduleEditor'
 import { SwarmSection } from './SwarmSection'
@@ -606,7 +606,7 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
             <RunResult result={last.result} memorySources={last.memory_sources} sources={last.sources} />
           ) : last.error ? (
             <Alert tone={last.status === 'cancelled' ? 'neutral' : last.status === 'skipped' ? 'warning' : 'danger'} icon={<IconAlertCircle />} title={last.status === 'skipped' ? 'Skipped: what it reads wasn’t there' : undefined}>
-              {last.error}
+              {last.status === 'skipped' ? skippedReason(last.error) : last.error}
             </Alert>
           ) : (
             <p className="text-sm text-fg-subtle">No result recorded for this run.</p>

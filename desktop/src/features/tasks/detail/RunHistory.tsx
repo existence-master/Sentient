@@ -260,12 +260,18 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
 }
 
 // ---------------------------------------------------------------------------- skipped (#161)
+/** The reason a skipped run gives, without its "Skipped:" lead: "The page example.com couldn't be reached." */
+export function skippedReason(error: string | null | undefined): string {
+  const why = (error ?? '').replace(/^Skipped: /, '')
+  return why.charAt(0).toUpperCase() + why.slice(1)
+}
+
 /** A routine's run that didn't start because what it reads wasn't there; the engine's note says why and when it
  * tries again (set to try again later). */
 function SkippedNote({ run }: { run: Run }) {
   return (
     <Alert tone="warning" icon={<IconPlayerSkipForward />} title="Skipped: what it reads wasn’t there">
-      {(run.error ?? '').replace(/^Skipped: /, '')}
+      {skippedReason(run.error)}
     </Alert>
   )
 }
