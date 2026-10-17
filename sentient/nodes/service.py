@@ -176,7 +176,7 @@ class NodeService(Service):
         self._uploads: dict[str, tuple[Path, str, str, float]] = {}  # id -> (path, node_id, mime, created)
         self._lan_lock = asyncio.Lock()
         self.lan: LanListener | None = None
-        self.lan_host = "0.0.0.0"  # tests bind loopback
+        self.lan_host = "0.0.0.0" if self.cfg.lan_bind_all else "127.0.0.1"  # tests bind loopback explicitly
         # authenticates the LAN app's internal hop into the voice socket; never leaves the process
         self.lan_secret = secrets.token_urlsafe(32)
         self._schema_ready = False
@@ -234,13 +234,26 @@ class NodeService(Service):
         async with self._lan_lock:
             lan = self.lan
             if want_lan:
-                if lan is None or not lan.running or lan.port != cfg.lan_port or lan.mdns_wanted != cfg.mdns_enabled:
+                host = "0.0.0.0" if cfg.lan_bind_all else "127.0.0.1"
+                if (
+                    lan is None
+                    or not lan.running
+                    or lan.port != cfg.lan_port
+                    or lan.mdns_wanted != cfg.mdns_enabled
+                    or self.lan_host != host
+                ):
                     if lan is not None:
                         await lan.stop()
                     from sentient.nodes.lan import LanListener
 
                     self.lan = LanListener(self)
+                    self.lan_host = host
                     await self.lan.start(cfg.lan_port, mdns=cfg.mdns_enabled, host=self.lan_host)
+                    if host == "0.0.0.0":
+                        log.warning(
+                            "nodes: LAN listener bound to ALL interfaces (nodes.lan_bind_all); "
+                            "any host on the network can reach it and pairing is required"
+                        )
             elif lan is not None:
                 await lan.stop()
                 self.lan = None
@@ -258,6 +271,7 @@ class NodeService(Service):
             "web_urls": lan.web_urls() if running and lan else [],
             "fingerprint": lan.fingerprint if lan else None,
             "mdns": bool(lan and lan.mdns),
+            "bind_all": bool(cfg.lan_bind_all),
             "error": lan.error if lan else None,
         }
 
