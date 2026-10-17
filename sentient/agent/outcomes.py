@@ -50,6 +50,7 @@ _CLAIMS: dict[str, re.Pattern] = {
     "home": re.compile(r"\b(turned|switched|set|done|ran)\b", re.I),
 }
 _CLAIM_ANY = re.compile(r"\b(done|completed|finished|success(?:fully)?|sent|saved|created|updated)\b", re.I)
+_BROWSER_CLICK_CLAIM = re.compile(r"\b(?:clicked|was clicked)\b", re.I)
 
 # an MCP tool's kind from its name (servers declare nothing like it)
 _NAME_KINDS: list[tuple[str, re.Pattern, re.Pattern]] = [
@@ -291,6 +292,24 @@ def model_note(check: dict | None) -> str:
 def claimed(text: str, kind: str | None) -> bool:
     """True when a final answer says the action happened ("I've sent the email")."""
     return bool((_CLAIMS.get(kind or "") or _CLAIM_ANY).search(text or ""))
+
+
+def unmade_browser_click_note(text: str, calls: list[dict]) -> str:
+    """A short correction when a reply says it clicked although this turn did not.
+
+    Small local models occasionally state that a browser click happened without making
+    the call at all, or after the user declined its approval.  This is deliberately
+    narrow: it only corrects the completed form of ``click`` and only looks at calls
+    recorded by the loop, never at text supplied by a page or the user.
+    """
+    if not _BROWSER_CLICK_CLAIM.search(text or ""):
+        return ""
+    clicks = [call for call in calls if call.get("name") == "browser_click"]
+    if clicks and clicks[-1].get("ok"):
+        return ""
+    if clicks and clicks[-1].get("declined"):
+        return "I didn't click it: you declined."
+    return "I couldn't click it." if clicks else "I haven't clicked anything yet."
 
 
 def _settled(failed: dict, later: list[dict]) -> bool:

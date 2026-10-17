@@ -386,6 +386,8 @@ class LoopResult:
     handed_off: list[dict] = field(default_factory=list)
     # the outcome checks of the calls that ran (#165, ``sentient.agent.outcomes``), in order; written by code only
     checks: list[dict] = field(default_factory=list)
+    # browser clicks attempted in this run, recorded by code so a final reply cannot invent one (#402)
+    browser_clicks: list[dict] = field(default_factory=list)
 
 
 def _hosts(raw: Any) -> set[str]:
@@ -900,6 +902,9 @@ class Agent:
                     result.from_findings = True
                     log.info("%s: the model gave no answer after its tool calls; answering from the results", source)
                     yield TextDelta(text=text_acc, **ev)
+                if note := outcomes.unmade_browser_click_note(text_acc, result.browser_clicks):
+                    text_acc = f"{text_acc.rstrip()}\n\nCorrection: {note}"
+                    yield TextDelta(text=f"\n\nCorrection: {note}", **ev)
                 result.text = text_acc
                 result.messages = messages
                 return
@@ -1434,6 +1439,12 @@ class Agent:
         if ran and p.host:
             ctx.visited.add(p.host)
         err = _error_text(res)
+        if tc.name == "browser_click":
+            result.browser_clicks.append({
+                "name": tc.name,
+                "declined": declined,
+                "ok": ran and not is_error and not err and outcomes.result_problem(res) is None,
+            })
         if ran and p.tool is not None and not ctx.untrusted:
             if brings_untrusted(p.tool):
                 ctx.untrusted = untrusted_source(p.tool, self.registry)
