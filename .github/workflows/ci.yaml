@@ -55,7 +55,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:warnings -n auto --timeout=300 --durations=30 \
-            --reruns 1 --reruns-delay 2 -rR 2>&1 | tee pytest-output.txt
+            --reruns 1 --reruns-delay 2 -rR --rerun-show-tracebacks 2>&1 | tee pytest-output.txt
       - name: Report tests that needed a rerun
         if: always()
         shell: bash
@@ -69,7 +69,8 @@ jobs:
             echo "### Tests that needed a rerun on ${{ matrix.os }}"
             echo
             echo "These failed once and were run again. Each one is flaky: open an issue with the \`flaky\` label"
-            echo "(see docs/DEVELOPING.md, Flaky tests) unless one already exists."
+            echo "(see docs/DEVELOPING.md, Flaky tests) unless one already exists. The first failure's traceback is in"
+            echo "the Test step's log, under \"rerun test summary info\"."
             echo
             sed 's/^/- `/; s/$/`/' <<<"$reruns"
           } >> "$GITHUB_STEP_SUMMARY"
