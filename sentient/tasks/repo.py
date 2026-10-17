@@ -13,13 +13,13 @@ from sentient.tasks.delivery import from_stored
 
 TASK_JSON_FIELDS = {
     "schedule", "plan", "chat_history", "clarifying_questions", "swarm_details", "original_context", "script",
-    "deliver_to",
+    "deliver_to", "setup",
 }
 TASK_COLUMNS = {
     "name", "description", "status", "priority", "task_type", "schedule", "plan", "original_prompt",
     "source", "enabled", "assignee", "model", "chat_history", "clarifying_questions", "swarm_details",
     "original_context", "script", "error", "next_execution_at", "last_execution_at", "created_at", "updated_at",
-    "browser_profile", "deliver_to", "notepad", "keep_running", "memory_scope",
+    "browser_profile", "deliver_to", "notepad", "keep_running", "memory_scope", "setup",
 }
 TASK_BOOL_FIELDS = {"enabled", "keep_running"}
 RUN_JSON_FIELDS = {
@@ -29,7 +29,7 @@ RUN_JSON_FIELDS = {
 RUN_COLUMNS = {
     "status", "plan", "trigger_data", "messages", "result", "error", "resume_count", "retry_of",
     "pending_question", "limits", "last_activity_at", "started_at", "finished_at", "created_at", "memory_sources",
-    "sources", "dry_run", "would_do", "checks",
+    "sources", "dry_run", "would_do", "checks", "retry_at",
 }
 # Columns added after the first stub schema; ensured on start for older databases.
 # SQL condition: a real run, not a try run (#142). Try runs never hold a task busy or count as its last result.
@@ -230,6 +230,20 @@ class TaskRepo:
         )
         return (cur.rowcount or 0) > 0
 
+    async def retries_due(self, now: str) -> list[dict]:
+        """Runs skipped for a missing source whose time to try again has come (#161)."""
+        rows = await self.store.fetchall(
+            "SELECT * FROM task_runs WHERE retry_at IS NOT NULL AND retry_at <= ? ORDER BY retry_at, rowid", (now,)
+        )
+        return [self._decode_run(r) for r in rows]
+
+    async def claim_retry(self, run_id: str) -> bool:
+        """Take a skipped run's retry, once: False when it was already taken (or dropped)."""
+        cur = await self.store.execute(
+            "UPDATE task_runs SET retry_at = NULL WHERE id = ? AND retry_at IS NOT NULL", (run_id,)
+        )
+        return (cur.rowcount or 0) > 0
+
     async def pause_run(self, run_id: str, question: dict) -> bool:
         """Compare-and-set a processing run to ``waiting_for_user`` with its question. False if it changed meanwhile."""
         cur = await self.store.execute(
@@ -342,6 +356,8 @@ class TaskRepo:
             "would_do": (run.get("would_do") or []) if run.get("dry_run") else [],
             # what code found the run's calls really did (#165): each failure that still stands has its ``message``
             "checks": run.get("checks") or [],
+            # skipped because its source was missing, and set to try again then (#161)
+            "retry_at": run.get("retry_at"),
         }
 
     @staticmethod
@@ -369,6 +385,7 @@ class TaskRepo:
             "notepad": task.get("notepad") or None,
             "original_context": task.get("original_context") or {"source": "manual_creation"},
             "script": task.get("script") if task.get("task_type") == "script" else None,
+            "setup": task.get("setup") if isinstance(task.get("setup"), dict) else None,  # routines (#161)
             "error": task.get("error"),
             "next_execution_at": task.get("next_execution_at"),
             "last_execution_at": task.get("last_execution_at"),

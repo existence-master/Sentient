@@ -13,6 +13,7 @@ import {
   IconLink,
   IconMail,
   IconMapPin,
+  IconPlayerSkipForward,
   IconPlayerStop,
   IconRepeat,
   IconUsers,
@@ -226,7 +227,8 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
                 <TriggerEventCard source={task.schedule?.type === 'triggered' ? task.schedule.source : undefined} data={run.trigger_event_data} tz={tz} />
               )}
               {!run.dry_run && !!run.checks?.length && <OutcomeChecks checks={run.checks} />}
-              {run.error && !(run.status === 'completed_with_errors' && failedChecks(run.checks).length) && (
+              {run.status === 'skipped' && <SkippedNote run={run} />}
+              {run.error && run.status !== 'skipped' && !(run.status === 'completed_with_errors' && failedChecks(run.checks).length) && (
                 <Alert tone={run.status === 'cancelled' ? 'neutral' : 'danger'} icon={<IconAlertCircle />} title={run.status === 'cancelled' ? 'This run was stopped' : 'This run failed'} action={retryable ? retryButton : undefined}>
                   {run.error}
                 </Alert>
@@ -254,6 +256,17 @@ function RunCard({ task, run, number, tz, defaultOpen, onCancel, cancelling }: {
         )}
       </AnimatePresence>
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------- skipped (#161)
+/** A routine's run that didn't start because what it reads wasn't there; the engine's note says why and when it
+ * tries again (set to try again later). */
+function SkippedNote({ run }: { run: Run }) {
+  return (
+    <Alert tone="warning" icon={<IconPlayerSkipForward />} title="Skipped: what it reads wasn’t there">
+      {(run.error ?? '').replace(/^Skipped: /, '')}
+    </Alert>
   )
 }
 

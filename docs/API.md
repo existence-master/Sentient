@@ -782,7 +782,7 @@ Routes:
             | {"type": "recurring", "frequency": "interval", "interval_minutes": 60, "timezone": "..."}
             | {"type": "triggered", "source": "gmail|gcalendar|webhook|...", "event": "new_email|new_event|<hook id>|...", "filter": {}, "timezone": "..."},
   "script": {"code": "...", "condition": "alert|changed|noteworthy|every_run", "then": "notify|run", "last_result": null, "last_run_at": "...|null", "last_error": "...|null",
-             "checks": [{"at": "...", "outcome": "baseline|nothing_new|changed|minor|alert|quiet|reported|failed", "note?": "...", "count?": 3, "last_at?": "..."}]} | null,
+             "checks": [{"at": "...", "outcome": "baseline|nothing_new|changed|minor|alert|quiet|reported|failed|skipped", "note?": "...", "count?": 3, "last_at?": "..."}]} | null,
   "plan": [{"tool": "gmail", "description": "Fetch unread emails from the last 7 days"}],
   "runs": [Run], "chat_history": [{"role": "user|assistant", "content": "...", "timestamp": "..."}],
   "clarifying_questions": [{"question_id": "q1", "text": "...", "answer": null}],
@@ -792,6 +792,7 @@ Routes:
   "enabled": true, "keep_running": false, "model": null, "browser_profile": "x-posting|null", "memory_scope": "personal",
   "deliver_to": "default" | "desktop" | [{"channel": "telegram|discord|whatsapp", "chat_id": "..."}],
   "notepad": "...|null",
+  "setup": Setup | null,
   "original_context": {"source": "manual_creation|chat|proactive|trigger", "...": "..."},
   "error": "...|null",
   "next_execution_at": "...|null", "last_execution_at": "...|null", "created_at": "...", "updated_at": "..."
@@ -803,6 +804,8 @@ Routes:
 chat creates (`create_task_from_prompt`) takes that chat's scope.
 `deliver_to` is where the task's notifications go besides the app (see "Where results go" below).
 `notepad` is the notes a recurring task's runs keep for the next run (see "Recurring tasks remember" below); `null` when empty.
+`setup` is a routine's setup checklist (see "Setup checklist" below); `null` for other tasks and for routines that
+have not been planned or approved since #161.
 `error` holds the last planning/run failure message (v2 `task.error`).
 Each run embeds its most recent 200 progress updates; the full log is at the `/events` endpoint.
 `interval` schedules (every `interval_minutes`, minimum 5; `frequency: "hourly"` is normalized to 60) are additive. The
@@ -818,7 +821,7 @@ task-creation prompt sets it for requests like "every morning"; a window the req
 
 **Run**
 ```json
-{"run_id": "hex", "status": "processing|waiting_for_user|completed|completed_with_errors|error|cancelled", "created_at": "...", "execution_start_time": "...", "finished_at": "...",
+{"run_id": "hex", "status": "processing|waiting_for_user|completed|completed_with_errors|error|cancelled|skipped", "created_at": "...", "execution_start_time": "...", "finished_at": "...",
  "plan": [...], "trigger_event_data": {}|null, "progress_updates": [ProgressUpdate],
  "result": {"summary": "markdown", "links_created": [{"url": "", "description": ""}], "links_found": [...], "files_created": [{"filename": "", "description": ""}], "tools_used": ["gmail"]},
  "error": null, "retry_of": "run id this run retries|null",
@@ -829,8 +832,12 @@ task-creation prompt sets it for requests like "every morning"; a window the req
  "sources": [AnswerSource],
  "dry_run": false,
  "would_do": [TryRunAction],
- "checks": [OutcomeCheck]}
+ "checks": [OutcomeCheck],
+ "retry_at": "...|null"}
 ```
+`skipped` (#161): a routine's run that didn't start because what it reads wasn't there; `error` says why ("Skipped:
+the page example.com/events couldn't be reached.") and `retry_at` is when it is tried again (the "try again later"
+choice), else `null` (see "Setup checklist" below).
 `dry_run` is true for a try run (see "Try it first" below); `would_do` lists what it noted, `[]` for other runs.
 `pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question", "Limits on a run"
 and "Stuck runs" below). `kind` says why it waits; `reason` is set for `stuck` only. An `approval` question also has
@@ -874,7 +881,8 @@ A run that called no tool and answers nothing still fails. Chat replies (`done.c
 - `GET /api/tasks/{id}` → `Task`
 - `POST /api/tasks` `{prompt, is_swarm?: bool, assignee?: "ai", model?, browser_profile?, memory_scope?}` → `Task` (status `planning`; refinement + planning continue in the background and arrive as `task.updated`)
 - `POST /api/tasks/preview` `{prompt}` → `{name, description, priority, schedule}` (v2 generate-plan)
-- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile, memory_scope, deliver_to, notepad, keep_running}` → `Task`
+- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile, memory_scope, deliver_to, notepad, keep_running, setup}` → `Task`
+  (`setup`: the routine's checklist answers, see "Setup checklist" below; 400 for a one-off task or a value it can't take)
   (`memory_scope`: the memories its runs recall and save to, section 7 "Memory scopes"; `null` or `""` is personal, 400
   for `always`)
   (`keep_running: true`: never paused while the user is away, see "Routines pause while you are away")
@@ -927,6 +935,7 @@ Behaviour notes:
   (`{"status": "failed"}`) as well as item fields (`name`, `body.status`).
 - Task notification `payload.event` values: `approval_needed`, `clarification_needed`, `planning_failed`, `run_completed`,
   `run_failed` (with `run_id`), `disabled`, `script_alert` (with `result`), `script_failed`, `script_recovered`,
+  `source_missing` (with `reason`, `if_missing` and, for a run, `run_id`; see "Setup checklist"),
   `question` (with `run_id`, `question`, `options`; a stuck run adds `stuck: true` and `reason`; later
   `status: "answered"|"cancelled"` and `answer`), `caught_up` (with `reason`, `ran`, `skipped`; see "Missed runs"),
   `away_check` and `away_paused` (see "Routines pause while you are away").
@@ -983,6 +992,52 @@ approval). The run's own `ask_user` question still asks. A one-call task (`fixed
   scheduling, and it is not the task's last result (change requests, recurring tasks' memory of earlier runs, the
   self-improvement reviewer and `task.run_finished` all skip it). Its own question, cancel, retry (a try run again)
   and resume after a restart work as for any run.
+- A routine's try run looks at its source first, like a real run (see "Setup checklist"). When it is missing, the try
+  run fails at once with `The page example.com/events couldn't be reached, so a real run would skip that run and tell
+  you. Nothing was sent, changed or run.` (or "skip that run quietly", "skip that run and try again a little later"),
+  and schedules nothing. A routine set to ask first (`setup.approval: "ask"`) notes its sends with `asks: true`.
+
+### Setup checklist (#161)
+A routine (a `recurring` or `triggered` task run by its plan or a check script; not a swarm or a one-call task like
+the Daily Brief) has a short checklist the user confirms. It is filled in by code, never a model, when the plan is
+ready (and when a task becomes a routine, or is approved without one), so the user mostly just confirms it. The
+schedule and its time zone are the task's own `schedule`; the app shows them in the checklist and saves them with it.
+
+**Setup** `{source: {kind: "page|app|folder|none", target, label}, output, approval: "plan|ask", acts: ["Gmail"],
+if_missing: "skip|notify|retry", confirmed_at: "...|null"}`
+- `source`, what it reads: the first web address in the request, plan or check script (`page`); else the app whose
+  event starts a triggered task (`app`, an integration or MCP server id, `label` its name); else a folder named in the
+  request (`folder`, like `C:\Users\maya\Downloads`); else the first connected app the plan reads; else `none`.
+- `output`, what the user gets: the plan's last step, else the description (at most 300 characters).
+- `approval`, what it may do without asking: `plan` (default) goes ahead with what the approved plan does, as before;
+  `ask` holds every call that sends, posts, buys, deletes or runs something (effective risk `send` or `exec`, not
+  `internal`) and asks first, like an Ask rule (section 2), with the question `This task wants to use <tool> (...). You
+  set this task to ask you first. OK to go ahead?` and the usual answers. `Allow for this task` lets later runs go
+  ahead. A lasting rule the user set (Allow, Never...) still wins. `acts` lists the plan's apps that can do such
+  things, for the checklist to name.
+- `if_missing`, what happens when the source isn't there: `notify` (default), `skip` or `retry`.
+- `confirmed_at`: when the user confirmed it; `null` until then. Replanning (a change request, Rerun) fills it in again,
+  keeping `approval` and `if_missing`, and it waits for a confirm again. A changed plan updates `acts`.
+
+`PATCH {setup: {source?, output?, approval?, if_missing?, confirm?: true}}` merges the answers; `confirm: true` sets
+`confirmed_at`. A page must be an `http(s)` address, an app a known app id. Approving does not require a confirm: the
+filled-in answers apply.
+
+**A missing source.** Before a routine's run starts (not a resume, an answered question or a Retry that continues a
+transcript), and before each check of a check script, code looks at its source: a page must answer (`GET`, 15 s, a
+status below 400; addresses Sentient never opens itself, like this computer, aren't checked), an app must be
+connected (an event from that same app that started the run counts), a folder must exist. When it isn't there:
+- The run ends `skipped` (a check script's check is a `skipped` entry in `script.checks`, and the script doesn't run),
+  with `error` `Skipped: <reason>.` (also its one `info` update), and the routine waits for its next time (`active`).
+- `skip`: nothing more. `notify`: a notification `kind: "task"`, title `Skipped: <name>`, message `'<name>' didn't
+  run. <Reason>.`, `payload: {event: "source_missing", reason, if_missing, run_id?}` (also to paired chats as a task
+  result).
+- `retry`: `retry_at` is `tasks.source_retry_minutes` (default 15) from now and `error` adds `Trying again at 08:15
+  (try 1 of 3).`. The scheduler then starts a new run with `retry_of` (and the same trigger data), which looks again and
+  opens with `Trying again now: what it reads wasn't there last time.`. After `tasks.source_retries` (default 3) retries
+  in a row the run says `It tried again 3 times, so it waits for its next run.` and the `source_missing` notification
+  is sent. A retry is dropped when the task is paused by then, or (scheduled routines) when a newer run came first. A
+  check script checks again early instead (`next_execution_at` moves up, never later than it was).
 
 ### Checking the outcome (#165)
 Code, never a model, checks what a call that should change something really did, right after it runs
@@ -2688,7 +2743,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 - Delivery (chats with `deliver: true`, from `notification.new`; a task's `deliver_to` can keep its notifications on
   the desktop or send them only to chosen chats instead, section 4 "Where results go"): task results and failures
   (`payload.event` in `run_completed`, `run_failed`, `planning_failed`, `clarification_needed`, `disabled`,
-  `script_alert`, `script_failed`, `script_recovered`; a completed run adds its result summary), questions from running tasks (`payload.event = "question"`, with `channels.deliver_task_results`; each
+  `script_alert`, `script_failed`, `script_recovered`, `source_missing`; a completed run adds its result summary), questions from running tasks (`payload.event = "question"`, with `channels.deliver_task_results`; each
   option is a quick-reply button, callback `tq:<option index>:<run_id>:<request tag>`, that answers through
   `app.tasks.answer_question`), plans awaiting approval (**Approve plan** / **Decline** → `app.tasks.approve/decline`), pending proactive
   suggestions (**Approve** / **Dismiss** → same as `POST /api/proactivity/suggestions/{id}`), and notifications with
@@ -2921,7 +2976,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 - `checks` is the job's recent history, oldest first, at most 30 entries: `baseline` (first result of a comparing
   job), `nothing_new`, `changed` (acted; `note` is the judge's sentence for `noteworthy`), `minor` (changed, the judge
   said not worth telling; `note` says what changed), `alert` (`note` is its message), `quiet` (no alert, or an
-  `every_run` check that printed nothing), `reported`, `failed` (`note` is the error). A `nothing_new` or `quiet` check
+  `every_run` check that printed nothing), `reported`, `failed` (`note` is the error), `skipped` (what it reads wasn't
+  there, so the script didn't run; `note` says why, section 4 "Setup checklist"). A `nothing_new` or `quiet` check
   right after one with the same outcome folds into it: `count` goes up and `last_at` is that check's time. Changing the
   code or the kind of check resets `last_result`; changing only the condition keeps `checks`. The app shows it under
   Runs.
@@ -3419,7 +3475,7 @@ What each source gives (past):
 | `messages` (assistant replies in channel chats) | "Replied to you on Telegram" |
 | `messages` (role `event`, `name` `trusted`, ADR 0029) | `approvals` item `trust:<id>`: "You trusted the chat "X" again", `why` "It had read content from Gmail. You said you checked it (in Sentient \| with /trust on Telegram), so sending from it stops asking just because of what it read. New outside content asks again." |
 | `channel_deliveries` (section 14) | "Sent to Telegram: Your Daily Brief" or "Couldn't send to Telegram: ..." (`status: "failed"`, `detail` says why); `why` names the chat and why it went there ("To your chat "Maya Rao". The task sends its updates there"); `ref` opens the task, chat or notification it came from |
-| `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked. A try run (#142): "Tried X", `why` "You chose Try it first, ..." |
+| `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked. A try run (#142): "Tried X", `why` "You chose Try it first, ..." A skipped run (#161): "Skipped X: what it reads wasn't there" (`status: "stopped"`, `detail` the reason); the `source_missing` notification is not listed again |
 | `file_snapshots` (#142) | "A command changed 2 files", "Code changed 1 file", "Wrote over notes.txt", "Put back 2 files"; `kind` `tasks` when a task run did it, else `chat`; `app` `terminal`, `code` or `files`; `detail` the command or script and the file names; `undo` Restore while the copies are kept and not put back yet; `status: "restored"` after |
 | `tasks.script.checks` | "Checked X: nothing new (3 checks)", "X changed. You were told" |
 | `notifications` | questions and approvals from tasks (with the answer), plans waiting, suggestions, routines paused, backup and budget notices. Not shown again: `run_completed`, `run_failed`, `dry_run_finished` and `script_alert` (the run or check is shown), `brief` (the run), `skill` (the skills log) and dream notices (the dream) |

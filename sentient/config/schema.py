@@ -572,6 +572,14 @@ class TasksConfig(BaseModel):
         "when Sentient is back if it is less than this many hours late. Later ones are skipped and you're told. "
         "A task never runs more than once to catch up. 0 always skips.",
     )
+    source_retry_minutes: int = Field(
+        15, ge=1, le=1440, description="When a routine is set to try again later and the page, app or folder it reads "
+        "isn't there, it tries again after this many minutes.",
+    )
+    source_retries: int = Field(
+        3, ge=1, le=10, description="How many times a routine set to try again later tries before it tells you the "
+        "page, app or folder it reads is still missing.",
+    )
     away_pause_days: int = Field(
         7, ge=0, le=365, description="Pause recurring tasks and briefs after you haven't used Sentient (the app or a "
         "chat) for this many days. Tasks set to keep running are never paused. 0 never pauses for this.",
