@@ -68,6 +68,8 @@ export const LABELS: Record<string, FieldLabel> = {
   'models.battery_max_wait_s': { label: 'Upkeep never waits longer than', unit: 's' },
   // models (#148)
   'models.local_only': { label: 'Local only' },
+  'models.claude_code_max_concurrent': { label: 'Claude Code runs at once' },
+  'models.claude_code_everywhere': { label: 'Use my Claude Code for everything' },
   'models.monthly_budget_usd': { label: 'Monthly budget', unit: 'USD' },
   'models.budget_at_limit': { label: 'When the budget is used up', options: { ask: 'Ask', stop: 'Stop' } },
   // tasks

@@ -130,6 +130,7 @@ class _Gate:
     def __init__(self) -> None:
         self.running = 0
         self.limit = 2
+        self.held = False  # Stop everything is under way: nothing that waits may start (``hold``)
         self._waiters: list[tuple[int, int, asyncio.Future, str]] = []
         self._seq = itertools.count()
 
@@ -140,7 +141,7 @@ class _Gate:
     async def acquire(self, limit: int, label: str) -> float:
         """Wait for a free place; returns how long it waited, in seconds."""
         self.limit = max(1, int(limit))
-        if self.running < self.limit and not self.waiting:
+        if not self.held and self.running < self.limit and not self.waiting:
             self.running += 1
             log.info("Claude Code start: %s (%d of at most %d running)", label, self.running, self.limit)
             return 0.0
@@ -171,7 +172,7 @@ class _Gate:
 
     def _dispatch(self) -> None:
         self._waiters = [w for w in self._waiters if not w[2].done()]
-        while self._waiters and self.running < self.limit:
+        while not self.held and self._waiters and self.running < self.limit:
             entry = min(self._waiters, key=lambda w: (w[0], w[1]))
             self._waiters.remove(entry)
             self.running += 1
@@ -258,6 +259,12 @@ def _finish(tree: ProcessTree | None, workdir: Path) -> None:
     remove_folder(workdir)
 
 
+def hold() -> None:
+    """Stop everything has begun: a place freed while it cancels work goes to nobody, so no waiting call starts
+    Claude Code in the middle of the stop. ``kill_all`` drops the waiting calls and lifts this."""
+    _gate.held = True
+
+
 def kill_all() -> int:
     """Stop everything: kill every running Claude Code process and what it started, and drop the calls waiting for a
     place so none of them starts afterwards. Returns how many were running."""
@@ -269,6 +276,7 @@ def kill_all() -> int:
         _live.discard(tree)
         with contextlib.suppress(Exception):
             tree.kill()
+    _gate.held = False
     return len(trees)
 
 

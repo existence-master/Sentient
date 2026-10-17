@@ -163,7 +163,7 @@ export function ClaudeCodePanel({
         ))}
 
       {way === 'everything' && everywhere && (
-        <SchemaForm section="models" include={['models.claude_code_max_concurrent']} />
+        <SchemaForm section="models" title="How many at once" include={['models.claude_code_max_concurrent']} />
       )}
 
       <ClaudeCodeEverywhereDialog open={asking} onOpenChange={setAsking} onConfirm={turnOnEverything} maxConcurrent={maxConcurrent} />

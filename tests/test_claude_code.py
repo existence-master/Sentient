@@ -880,3 +880,23 @@ async def test_checkup_passes_background_roles_when_it_does_everything(everywher
     assert by_role["fast"]["status"] == "pass"
     assert by_role["embedding"]["status"] == "fail"
     assert fake_claude.runs() == []
+
+
+async def test_a_place_freed_during_stop_everything_goes_to_nobody(monkeypatch):
+    """Cancelling a running reply frees its place while Stop everything is still going: a waiting call must not
+    take it and start Claude Code after the stop."""
+    gate = claude_code._Gate()
+    monkeypatch.setattr(claude_code, "_gate", gate)
+    await gate.acquire(1, "a reply")
+    waiter = asyncio.create_task(gate.acquire(1, "a chat title"))
+    await asyncio.sleep(0.01)
+    assert gate.waiting == 1
+    claude_code.hold()
+    gate.release()  # the reply was cancelled
+    await asyncio.sleep(0.01)
+    assert not waiter.done() and gate.running == 0
+    claude_code.kill_all()
+    with pytest.raises(ProviderError, match="Stop everything"):
+        await waiter
+    assert not gate.held and gate.waiting == 0
+    assert await gate.acquire(1, "the next chat") == 0.0  # after the stop, new work starts as usual

@@ -210,7 +210,7 @@ class SentientApp:
         """One notification saying which roles left Claude Code and which still need a model."""
         try:
             task = asyncio.get_running_loop().create_task(
-                self.notify("info", claude_code.leftover_note(moved), title="Claude Code answers only your chats again",
+                self.notify("info", claude_code.leftover_note(moved), title="Claude Code is back to chats only",
                             payload={"kind": "claude_code_roles", "moved": moved})
             )
         except RuntimeError:  # no running loop (a command-line change): the log above says it
@@ -256,18 +256,22 @@ class SentientApp:
             self.stop_generation += 1
             self.stop_dropped = self.agent.drop_queued() if self.agent is not None else {}
             cancelled = 0
-            if self.agent is not None:
-                cancelled += await self.agent.halt()
-            for svc in self.services:
-                try:
-                    cancelled += await svc.halt()
+            claude_code.hold()  # a Claude Code call waiting its turn never starts during the stop (#444)
+            try:
+                if self.agent is not None:
+                    cancelled += await self.agent.halt()
+                for svc in self.services:
+                    try:
+                        cancelled += await svc.halt()
+                    except Exception:
+                        log.exception("service %s failed to halt", svc.name)
+                try:  # an import from ChatGPT, Claude or OpenClaw stops too; what it saved stays for review
+                    cancelled += await self.memory_imports.halt()
                 except Exception:
-                    log.exception("service %s failed to halt", svc.name)
-            try:  # an import from ChatGPT, Claude or OpenClaw stops too; what it saved stays for review
-                cancelled += await self.memory_imports.halt()
-            except Exception:
-                log.exception("stopping the memory import failed")
-            claude_code.kill_all()  # a Claude Code reply left running by anything above (ADR 0022)
+                    log.exception("stopping the memory import failed")
+            finally:
+                # a Claude Code reply left running by anything above (ADR 0022), and every call still waiting
+                claude_code.kill_all()
             if changed:  # devices hear about it after the work is cancelled, never before
                 await self._tell_devices()
             return {**self.stop_state, "cancelled": cancelled}
