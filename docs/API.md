@@ -345,7 +345,7 @@ accept or loosen a rule.
   (content `{event, was, via, upto}`) and publishes `session.updated` `{untrusted: ""}`. Without `upto` it covers
   everything stored. 404 unknown chat, 422 an `upto` that isn't a message of this chat. No tool can do this.
 - `DELETE /api/sessions/{id}` → `{ok}` (helpers the chat started are cancelled first; text selected in another app
-  and attached to it is deleted with it, see "Files" below; publishes `session.deleted`)
+  and screen captures attached to it are deleted with it, see "Files" below; publishes `session.deleted`)
 - `GET /api/sessions/{id}/messages?limit=500` → raw transcript rows, oldest first (404 when the chat doesn't exist, e.g. a
   closed incognito chat):
   ```json
@@ -448,9 +448,9 @@ accept or loosen a rule.
   as having read outside content from `"another app"` (section 10, ADR 0018). Later turns see `(Attached earlier:
   ...)`, so the ask window attaches it again with every message. Selection files are listed by `GET /api/files`,
   removed with `DELETE /api/files/{name}` and included in full backups, and they go with their chat (#332): deleting a
-  chat (`DELETE /api/sessions/{id}`, or an incognito chat closed or swept) deletes the `selections/` files its messages
-  had attached, unless another chat still has one attached (never kept for an incognito chat). At start the engine
-  removes `selections/` files no message has that are over an hour old (a chat deleted before #332, or a question
+  chat (`DELETE /api/sessions/{id}`, or an incognito chat closed or swept) deletes the `selections/` and `screens/` files its
+  messages had attached, unless another chat still has one attached (never kept for an incognito chat). At start the
+  engine removes `selections/` and `screens/` files no message has that are over an hour old (a chat deleted before #332, or a question
   never sent). On Windows the shell then takes the copy out of clipboard history (Win+V): after the capture, and
   after Replace selection pastes an answer, its helper deletes the history entries added since then that hold exactly
   that text (`Windows.ApplicationModel.DataTransfer.Clipboard.DeleteItemFromHistory`). Copy, which the user asks for,
