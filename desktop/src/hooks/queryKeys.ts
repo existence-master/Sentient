@@ -16,6 +16,8 @@ export const qk = {
   sessions: ['sessions'] as const,
   /** Kept outside `sessions` so invalidating the list doesn't refetch transcripts mid-stream. */
   messages: (sessionId: string) => ['messages', sessionId] as const,
+  /** every chat's transcript (prefix of `messages`) */
+  allMessages: ['messages'] as const,
   sessionSearch: (q: string) => ['session-search', q] as const,
   ruleProposals: (sessionId: string) => ['rule-proposals', sessionId] as const,
 
@@ -67,6 +69,7 @@ export const qk = {
     personas: ['memories', 'personas'] as const,
     review: ['memories', 'review'] as const,
     scopes: ['memories', 'scopes'] as const,
+    forgetPreview: (source: string) => ['memories', 'forget-preview', source] as const,
     dreams: ['memories', 'dreams'] as const
   },
   userModel: ['user-model'] as const,

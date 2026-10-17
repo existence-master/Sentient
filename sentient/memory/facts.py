@@ -36,7 +36,7 @@ from typing import Any
 
 from sentient.config.schema import SentientConfig
 from sentient.llm.provider import LLMProvider
-from sentient.memory import prompts
+from sentient.memory import origins, prompts
 from sentient.memory import review as reviews
 from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import EpisodicMemory
@@ -873,6 +873,11 @@ class FactMemory:
         """Delete a fact, with the copies in other languages the tidy-up merged into it (#353)."""
         await self.ensure_schema()
         row = await self.store.fetchone("SELECT content FROM facts WHERE id = ?", (fid,))
+        await self.store.execute(
+            "DELETE FROM fact_sources WHERE fact_id = ?"
+            " OR fact_id IN (SELECT id FROM facts WHERE merged_into = ? AND status = 'merged')",
+            (fid, fid),
+        )
         await self.store.execute("DELETE FROM facts WHERE merged_into = ? AND status = 'merged'", (fid,))
         cur = await self.store.execute("DELETE FROM facts WHERE id = ?", (fid,))
         await self.vec.delete(fid)
@@ -881,14 +886,108 @@ class FactMemory:
             self.publish("DELETE", fid, row["content"] if row else None)
         return deleted
 
+    # ------------------------------------------------------------------ sources (#153)
+    async def link_sources(self, fid: int, sources: list[str], *, merged_from: int | None = None) -> None:
+        """Record that fact ``fid`` was also learned from ``sources`` (its own ``source`` is never linked twice).
+        ``merged_from``: the links come with fact ``merged_from`` merged into it, and :meth:`unmerge` takes exactly
+        those away again. A source learned for ``fid`` itself is never one a merge brought, even if a merge had."""
+        await self.ensure_schema()
+        row = await self.store.fetchone("SELECT source FROM facts WHERE id = ?", (fid,))
+        if row is None:
+            return
+        ts = now_iso()
+        for src in dict.fromkeys(s for s in sources if s and s != row["source"]):
+            if merged_from is None:
+                await self.store.execute(
+                    "INSERT INTO fact_sources(fact_id, source, linked_at) VALUES(?,?,?)"
+                    " ON CONFLICT(fact_id, source) DO UPDATE SET merged_from = NULL",
+                    (fid, src, ts),
+                )
+            else:  # a link it already had stays its own
+                await self.store.execute(
+                    "INSERT OR IGNORE INTO fact_sources(fact_id, source, linked_at, merged_from) VALUES(?,?,?,?)",
+                    (fid, src, ts, merged_from),
+                )
+
+    async def _linked(self, fid: int) -> list[str]:
+        rows = await self.store.fetchall(
+            "SELECT source FROM fact_sources WHERE fact_id = ? ORDER BY rowid", (fid,)
+        )
+        return [str(r["source"]) for r in rows]
+
+    async def sources_of(self, fid: int) -> list[str]:
+        """Every source of fact ``fid``: its own first, then the others it was learned from, then those of copies
+        the tidy-up merged into it (#353). Empty when it doesn't exist."""
+        await self.ensure_schema()
+        row = await self.store.fetchone("SELECT source FROM facts WHERE id = ?", (fid,))
+        if row is None:
+            return []
+        out = [str(row["source"]), *await self._linked(fid)]
+        merged = await self.store.fetchall(
+            "SELECT id, source FROM facts WHERE merged_into = ? AND status = 'merged' ORDER BY id", (fid,)
+        )
+        for m in merged:
+            out += [str(m["source"]), *await self._linked(int(m["id"]))]
+        return list(dict.fromkeys(out))
+
+    async def _from_source(self, source: str) -> list[int]:
+        await self.ensure_schema()
+        rows = await self.store.fetchall(
+            "SELECT id FROM facts WHERE source = ? UNION SELECT fact_id AS id FROM fact_sources WHERE source = ?"
+            " ORDER BY id",
+            (source, source),
+        )
+        return [int(r["id"]) for r in rows]
+
+    async def source_counts(self, source: str, doomed: list[int] | None = None) -> dict[str, int]:
+        """What forgetting ``source`` would do: ``memories`` deleted (no other source backs them) and ``shared``
+        kept because another source still does. Copies merged into another memory are counted with it. The ids that
+        would be deleted are added to ``doomed``."""
+        deleted = shared = 0
+        for fid in await self._from_source(source):
+            row = await self.store.fetchone("SELECT status FROM facts WHERE id = ?", (fid,))
+            if row is None or row["status"] == "merged":
+                continue
+            if [s for s in await self.sources_of(fid) if s != source]:
+                shared += 1
+            else:
+                deleted += 1
+                if doomed is not None:
+                    doomed.append(fid)
+        return {"memories": deleted, "shared": shared}
+
+    async def purge_source(self, source: str, gone: list[int] | None = None) -> dict[str, int]:
+        """Forget what ``source`` taught: a fact only it backs is deleted with its vector and merged copies; a fact
+        another source backs too loses this source and keeps the others. ``{deleted, unlinked}``; the deleted ids are
+        added to ``gone``."""
+        deleted = unlinked = 0
+        for fid in await self._from_source(source):
+            row = await self.store.fetchone("SELECT source, status FROM facts WHERE id = ?", (fid,))
+            if row is None:  # gone with the fact it was merged into
+                continue
+            merged = row["status"] == "merged"
+            others = [s for s in (await self._linked(fid) if merged else await self.sources_of(fid)) if s != source]
+            if merged and row["source"] != source:
+                others.insert(0, str(row["source"]))
+            if not others:
+                deleted += 0 if merged else 1
+                await self.forget(fid)
+                if gone is not None:
+                    gone.append(fid)
+                continue
+            await self.store.execute("DELETE FROM fact_sources WHERE fact_id = ? AND source = ?", (fid, source))
+            if row["source"] == source:  # its next source becomes its own
+                await self.store.execute("UPDATE facts SET source = ? WHERE id = ?", (others[0], fid))
+                await self.store.execute("DELETE FROM fact_sources WHERE fact_id = ? AND source = ?", (fid, others[0]))
+            unlinked += 0 if merged else 1
+        return {"deleted": deleted, "unlinked": unlinked}
+
     async def forget_source(self, source: str) -> int:
-        """v2 delete_memory_by_source."""
-        rows = await self.store.fetchall("SELECT id FROM facts WHERE source = ?", (source,))
-        for r in rows:
-            await self.forget(int(r["id"]))
-        if rows:
-            self.publish("DELETE", None, None, source=source, count=len(rows))
-        return len(rows)
+        """v2 delete_memory_by_source: forget what ``source`` taught (:meth:`purge_source`); the number deleted."""
+        done = await self.purge_source(source)
+        if done["deleted"] or done["unlinked"]:
+            self.publish("DELETE", None, None, source=source, count=done["deleted"], unlinked=done["unlinked"])
+        return done["deleted"]
 
     async def set_scope(self, fid: int, scope: str) -> dict:
         """Move a memory to another scope (#155). KeyError when it doesn't exist, ValueError for an empty scope."""
@@ -1012,16 +1111,29 @@ class FactMemory:
         if review is not None and own_words and reviews.grounded(fact, own_words, user):
             log.info("kept from the user's own words although the chat read outside content: %r", fact)
             review = None
+        # held because the chat read outside content (decided before an instruction note can replace the reason)
+        outside = review is not None and review.get("reason") != reviews.INSTRUCTION
         if source == "conversation" and reviews.instruction_shaped(fact):
             log.info("held for review as an instruction: %r", fact)
             if review is None:
                 review = reviews.instruction_note(reviews.best_snippet(own_words or "", fact) or fact, session_id)
             else:  # held for outside content already: it keeps that source, and says it is an instruction too
                 review = {**review, "reason": reviews.INSTRUCTION}
+        others: list[str] = []
+        if source == origins.CONVERSATION and session_id:
+            # a chat in a messaging app or on a device is that app's (#153), and also the apps and folders it read
+            try:
+                first, read = await origins.of_session(self.store, session_id)
+                source, *others = origins.sources_for(fact, first, read, held=outside, user_name=user)
+            except Exception as exc:
+                log.debug("sources of chat %s unknown: %s", session_id, exc)
         if review is not None:
             result = await self._hold(fact, source=source, use_llm=use_llm, review=review, scope=scope)
         else:
             result = await self._remember(fact, source=source, use_llm=use_llm, scope=scope)
+        if result.get("id") is not None and result["action"] in {"ADD", "UPDATE", "SKIP"}:
+            # learned here too: forgetting one of its sources keeps it while another still backs it (#153)
+            await self.link_sources(int(result["id"]), [source, *others])
         if result["action"] == "ADD":
             result["scope"] = scope
         if notify and result["action"] in {"ADD", "UPDATE", "DELETE"}:
@@ -1573,6 +1685,7 @@ class FactMemory:
             f"SELECT id FROM facts WHERE content = ? COLLATE NOCASE AND {ACTIVE} AND {in_scope}", (text, *scope_params)
         )
         if same is not None:
+            await self.link_sources(int(same["id"]), await self.sources_of(fid))  # #153
             await self.forget(fid)
             self.publish("DELETE", fid, row["content"], reason="approved", merged_into=int(same["id"]))
             return await self.get_fact(int(same["id"]))
@@ -1701,8 +1814,10 @@ class FactMemory:
                 (keep_id, *ids[1:]),
             )
         for i in ids[1:]:
-            if i in rows and await self.forget(i):
-                self.publish("DELETE", i, rows[i]["content"], reason="merged", merged_into=keep_id)
+            if i in rows:
+                await self.link_sources(keep_id, await self.sources_of(i))  # it backs the kept one now (#153)
+                if await self.forget(i):
+                    self.publish("DELETE", i, rows[i]["content"], reason="merged", merged_into=keep_id)
         return await self.get_fact(keep_id)
 
     async def supersede(self, keep_id: int, drop_id: int) -> bool:
@@ -1728,6 +1843,8 @@ class FactMemory:
         if drop is None or keep is None or keep_id == drop_id:
             return False
         indexed = self.vec.ready or await self.vec.exists()
+        # its sources (and those of copies merged into it before) back the kept one now (#153)
+        await self.link_sources(keep_id, await self.sources_of(drop_id), merged_from=drop_id)
         db = self.store.db
         try:  # the row and its vector change together (one commit)
             await db.execute(
@@ -1763,6 +1880,8 @@ class FactMemory:
             )
             await db.execute(f"DELETE FROM {self.vec.name} WHERE rowid = ?", (fid,))
             await db.execute(f"INSERT INTO {self.vec.name}(rowid, embedding) VALUES(?, ?)", (fid, pack(vec)))
+            # the sources its merge gave the other memory go back with it (#153), and nothing else
+            await db.execute("DELETE FROM fact_sources WHERE merged_from = ?", (fid,))
             await db.commit()
         except BaseException:
             await db.rollback()

@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     visited_hosts   TEXT,                         -- JSON list of web hosts this chat loaded (ADR 0018)
     incognito       INTEGER NOT NULL DEFAULT 0,   -- 1: nothing is learned from it and it is deleted when closed (#154)
     model           TEXT,                         -- the model picked for this chat; NULL follows the default (#312)
-    memory_scope    TEXT                          -- the memories this chat uses (#155); NULL: its app's, else personal
+    memory_scope    TEXT,                         -- the memories this chat uses (#155); NULL: its app's, else personal
+    node_id         TEXT                          -- the paired device it was started on (#153); NULL: none
 );
 
 CREATE TABLE IF NOT EXISTS messages (

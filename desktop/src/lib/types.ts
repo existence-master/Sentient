@@ -113,6 +113,29 @@ export interface OkResponse {
   ok: boolean
 }
 
+/** §7 "Also forget what Sentient learned from it" (#153): how much a source taught, before and after forgetting it.
+ *  ``memories`` are deleted; ``shared`` memories another source also backs stay, without this one. */
+export interface ForgetCounts {
+  source: string
+  memories: number
+  shared: number
+  chats: number
+  messages: number
+  summaries: number
+  /** what its tools returned in chats, replaced by a short note */
+  results: number
+  /** emails or other items proactivity kept from it */
+  items: number
+  /** insights about the user inferred only from what goes */
+  insights: number
+  item_noun: 'emails' | 'items'
+}
+
+/** A disconnect or removal with ``?forget=true`` carries what was forgotten. */
+export interface Forgotten {
+  forgotten?: ForgetCounts
+}
+
 // ---------------------------------------------------------------------------- config (sentient/config/schema.py)
 export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high'
 
@@ -1110,6 +1133,8 @@ export interface DomainEventMap {
   'notification.deleted': { id: string | null }
   'integration.updated': Integration
   'memory.updated': MemoryUpdatedData
+  /** "Also forget what Sentient learned from it" ran for a source (#153). */
+  'memory.forgotten': { id: string; source: string; label: string; counts: Omit<ForgetCounts, 'source'>; at: string }
   'skill.updated': { name: string; state: SkillState }
   /** A server's tools wait for review, or the user answered (#146). */
   'mcp.review': { server: string; reason?: 'new' | 'changed'; tools?: string[]; needed: boolean }
