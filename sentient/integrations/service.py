@@ -102,9 +102,6 @@ class IntegrationManager(Service):
     async def start(self) -> None:
         _base._CURRENT_MANAGER = self
         store = self.app.store
-        await store.ensure_column("integrations", "status", "TEXT")
-        await store.ensure_column("integrations", "error", "TEXT")
-        await store.db.commit()
         self._load_plugins()
         for row in await store.fetchall("SELECT * FROM integrations"):
             self._state[row["id"]] = self._row_to_state(dict(row))

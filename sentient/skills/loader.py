@@ -205,7 +205,6 @@ class SkillLibrary:
         self.store = store  # set by the evolution service; used for skill_stats
         self._skills: dict[str, Skill] = {}
         self._available: set[str] | None = None
-        self._stats_ready = False
 
     # ------------------------------------------------------------------ layout
     @property
@@ -439,31 +438,10 @@ class SkillLibrary:
         }
 
     # ------------------------------------------------------------------ stats (skill_stats table)
-    async def _ensure_stats(self, store: Any) -> None:
-        if self._stats_ready:
-            return
-        await store.ensure_column("skill_stats", "created_at", "TEXT")
-        # usage outcomes recorded by self-evolution (skill repair) so the curator can prefer reliable skills
-        await store.ensure_column("skill_stats", "success_count", "INTEGER NOT NULL DEFAULT 0")
-        await store.ensure_column("skill_stats", "failure_count", "INTEGER NOT NULL DEFAULT 0")
-        await store.ensure_column("skill_stats", "last_failure_at", "TEXT")
-        # edit protection (#164): the SKILL.md as Sentient last wrote it (or as first seen), so a hand edit shows up
-        # as a different hash and reset can put the original back; and the active hash a proposal was drafted from
-        await store.ensure_column("skill_stats", "origin_hash", "TEXT")
-        await store.ensure_column("skill_stats", "origin_text", "TEXT")
-        await store.ensure_column("skill_stats", "proposal_base_hash", "TEXT")
-        # the last run of the skill's own checks (#386, ``sentient.skills.checks``), as JSON: the active skill's, and
-        # its pending proposal's
-        await store.ensure_column("skill_stats", "check_report", "TEXT")
-        await store.ensure_column("skill_stats", "pending_check_report", "TEXT")
-        await store.db.commit()
-        self._stats_ready = True
-
     async def stats(self, store: Any = None) -> dict[str, dict]:
         store = store or self.store
         if store is None:
             return {}
-        await self._ensure_stats(store)
         rows = await store.fetchall("SELECT * FROM skill_stats")
         return {r["name"]: dict(r) for r in rows}
 
@@ -472,7 +450,6 @@ class SkillLibrary:
         store = store or self.store
         if store is None:
             return
-        await self._ensure_stats(store)
         existing = await self.stats(store)
         on_disk: dict[str, str] = {}
         for s in self.list_archived():
@@ -509,7 +486,6 @@ class SkillLibrary:
         store = store or self.store
         if store is None:
             return
-        await self._ensure_stats(store)
         ts = (when or datetime.now(UTC)).isoformat()
         await store.execute(
             "INSERT INTO skill_stats(name, use_count, view_count, last_used_at, state, created_at) VALUES(?, 1, ?, ?, 'active', ?)"
@@ -527,7 +503,6 @@ class SkillLibrary:
         store = store or self.store
         if store is None:
             return
-        await self._ensure_stats(store)
         name = name.strip().lower()
         ts = (when or datetime.now(UTC)).isoformat()
         await store.execute(
@@ -555,7 +530,6 @@ class SkillLibrary:
         store = store or self.store
         if store is None:
             return
-        await self._ensure_stats(store)
         await store.execute(
             "INSERT INTO skill_stats(name, state, created_at) VALUES(?,?,?)"
             " ON CONFLICT(name) DO UPDATE SET state = excluded.state",
@@ -566,7 +540,6 @@ class SkillLibrary:
         store = store or self.store
         if store is None:
             return
-        await self._ensure_stats(store)
         await store.execute(
             "INSERT INTO skill_stats(name, patch_count, state, created_at) VALUES(?, 1, ?, ?)"
             " ON CONFLICT(name) DO UPDATE SET patch_count = patch_count + 1,"
@@ -585,7 +558,6 @@ class SkillLibrary:
         store = store or self.store
         if store is None:
             return
-        await self._ensure_stats(store)
         column = "pending_check_report" if pending else "check_report"
         await store.execute(
             f"INSERT INTO skill_stats(name, state, created_at, {column}) VALUES(?, 'pending_review', ?, ?)"
@@ -616,7 +588,6 @@ class SkillLibrary:
             if not f.exists():
                 return
             text = f.read_text(encoding="utf-8", errors="replace")
-        await self._ensure_stats(store)
         await store.execute(
             "INSERT INTO skill_stats(name, state, created_at, origin_hash, origin_text) VALUES(?, 'active', ?, ?, ?)"
             " ON CONFLICT(name) DO UPDATE SET origin_hash = excluded.origin_hash, origin_text = excluded.origin_text",
@@ -633,7 +604,6 @@ class SkillLibrary:
         if store is None or not f.exists():
             return {"user_edited": False, "can_reset": False, "protected": False}
         text = f.read_text(encoding="utf-8", errors="replace")
-        await self._ensure_stats(store)
         row = await store.fetchone("SELECT origin_hash, origin_text FROM skill_stats WHERE name = ?", (name,))
         if row is None or not row["origin_hash"]:
             await self.record_origin(name, store, text=text)  # first sight: this is the baseline
