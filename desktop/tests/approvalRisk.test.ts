@@ -3,7 +3,7 @@
 // Run with `npm test` (no Electron needed).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { approvalCardReason, approvalRisk, engineWording, resolveWording } from '../src/features/chat/approvalRisk.ts'
+import { approvalCardReason, approvalRisk, engineWording, resolveWording, waitingSmallPrint } from '../src/features/chat/approvalRisk.ts'
 
 const email = (name: string, body: string, reason = 'mcp_mailer: Send an email to one address') => ({
   risk: 'send' as const,
@@ -350,4 +350,19 @@ test('a free Subscribe click shows "Signs up" once, a delete click keeps its own
   const remove = { ...click('Deletes'), reason: 'Click "Delete account"' }
   assert.equal(resolveWording(remove).label, 'Deletes')
   assert.equal(approvalCardReason(remove.reason, resolveWording(remove).label), 'Click "Delete account"')
+})
+
+// A waiting card with no reason of its own (every browser click since #404 and #412) used to read
+// "Clicked using browser_click": past tense before anything happened, and a developer name.
+test('a waiting approval card never says what already happened or names the tool', () => {
+  // the action line already says what will happen: no small print under it
+  assert.equal(waitingSmallPrint('Click “Subscribe”', 'Would click'), null)
+  assert.equal(waitingSmallPrint('Type “hello” and submit', 'Would type'), null)
+  // no action line: the tool's plain wording, about what would happen
+  assert.equal(waitingSmallPrint(null, 'Would write file'), 'Would write file')
+  assert.equal(waitingSmallPrint(undefined, 'Would send a notification'), 'Would send a notification')
+  assert.equal(waitingSmallPrint('', 'Would use Gmail: send email'), 'Would use Gmail: send email')
+  // nothing to say: no line at all
+  assert.equal(waitingSmallPrint(null, null), null)
+  assert.equal(waitingSmallPrint('  ', '  '), null)
 })

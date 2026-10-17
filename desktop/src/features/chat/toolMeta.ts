@@ -74,7 +74,7 @@ const KNOWN: Record<string, ToolMeta> = {
   terminal_run: { running: 'Running a command', done: 'Ran a command', icon: IconTerminal2, would: 'Would run a command' },
   delegate_task: { running: 'Asking a helper', done: 'Asked a helper', icon: IconUserBolt, would: 'Would ask a helper' },
   delegate_tasks: { running: 'Asking helpers', done: 'Asked helpers', icon: IconUsersGroup, would: 'Would ask helpers' },
-  browser_open: { running: 'Opening a page', done: 'Opened a page', icon: IconWorldWww },
+  browser_open: { running: 'Opening a page', done: 'Opened a page', icon: IconWorldWww, would: 'Would open a page' },
   browser_snapshot: { running: 'Reading the page', done: 'Read the page', icon: IconListDetails },
   browser_click: { running: 'Clicking', done: 'Clicked', icon: IconPointer, would: 'Would click' },
   browser_type: { running: 'Typing', done: 'Typed', icon: IconKeyboard, would: 'Would type' },
@@ -88,12 +88,12 @@ const KNOWN: Record<string, ToolMeta> = {
   browser_screenshot: { running: 'Taking a screenshot', done: 'Took a screenshot', icon: IconScreenshot },
   browser_close: { running: 'Closing the browser', done: 'Closed the browser', icon: IconWorld },
   device_list: { running: 'Checking your devices', done: 'Checked your devices', icon: IconDevices },
-  device_take_photo: { running: 'Taking a photo', done: 'Took a photo', icon: IconCamera },
-  device_capture_screen: { running: 'Looking at the screen', done: 'Looked at the screen', icon: IconScreenshot },
-  device_get_location: { running: 'Finding your location', done: 'Found your location', icon: IconMapPin },
-  device_notify: { running: 'Sending a notification', done: 'Sent a notification', icon: IconBellRinging },
-  device_display: { running: 'Showing it on your device', done: 'Showed it on your device', icon: IconDevices },
-  device_speak: { running: 'Speaking on your device', done: 'Spoke on your device', icon: IconSpeakerphone }
+  device_take_photo: { running: 'Taking a photo', done: 'Took a photo', icon: IconCamera, would: 'Would take a photo' },
+  device_capture_screen: { running: 'Looking at the screen', done: 'Looked at the screen', icon: IconScreenshot, would: 'Would look at the screen' },
+  device_get_location: { running: 'Finding your location', done: 'Found your location', icon: IconMapPin, would: 'Would find your location' },
+  device_notify: { running: 'Sending a notification', done: 'Sent a notification', icon: IconBellRinging, would: 'Would send a notification' },
+  device_display: { running: 'Showing it on your device', done: 'Showed it on your device', icon: IconDevices, would: 'Would show it on your device' },
+  device_speak: { running: 'Speaking on your device', done: 'Spoke on your device', icon: IconSpeakerphone, would: 'Would speak on your device' }
 }
 
 const PREFIX: Array<[RegExp, Icon]> = [
@@ -134,6 +134,12 @@ export function wouldLabel(name: string): string {
   const meta = toolMeta(name)
   if (meta.would) return meta.would
   return `Would use ${meta.done}`
+}
+
+/** What a waiting approval says the call would do, in plain words; null for a known tool without such wording
+ * (its past-tense label would read "Would use Checked the date and time"). */
+export function askingLabel(name: string): string | null {
+  return KNOWN[name] && !KNOWN[name].would ? null : wouldLabel(name)
 }
 
 export function toolMeta(name: string): ToolMeta {
