@@ -38,7 +38,7 @@ export function AttachmentChip({ a, className }: { a: AttachmentView; className?
 export const UserMessage = memo(function UserMessage({ message, onRestore }: { message: UserMessageView; onRestore?: (text: string) => void }) {
   const [copied, setCopied] = useState(false)
   return (
-    <div className={cn('group/user flex flex-col items-end gap-1.5', message.pending && 'opacity-80')}>
+    <div data-message-id={message.id} className={cn('group/user flex flex-col items-end gap-1.5 rounded-xl transition-shadow', message.pending && 'opacity-80')}>
       {message.attachments.length > 0 && (
         <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">
           {message.attachments.map((a) => (

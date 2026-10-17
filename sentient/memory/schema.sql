@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS fact_sources (
     source     TEXT NOT NULL,
     linked_at  TEXT NOT NULL,
     merged_from INTEGER,                  -- the fact whose merge brought this link (#353): undoing that merge removes it
+    ref        TEXT,                      -- JSON: exactly where this source said it (#152), as facts.source_ref
     PRIMARY KEY (fact_id, source)
 );
 CREATE INDEX IF NOT EXISTS idx_fact_sources_source ON fact_sources(source);

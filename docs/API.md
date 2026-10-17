@@ -1594,7 +1594,7 @@ offered to proactive look-ups.
 
 ## 7. Memory
 
-**Memory** `{id: int, content, topics: string[], source, memory_type: "long-term|short-term", created_at, updated_at, expires_at, previous_content: string|null, status: "active"|"pending", review: ReviewNote|null, scope}` (`previous_content` is the text before the last UPDATE; `review` says where a held memory came from; `scope`: where it is kept, below)
+**Memory** `{id: int, content, topics: string[], source, memory_type: "long-term|short-term", created_at, updated_at, expires_at, previous_content: string|null, status: "active"|"pending", review: ReviewNote|null, scope, confidence, state, superseded_by, ref: SourceRef|null, sources?: [SourceLink]}` (`previous_content` is the text before the last UPDATE; `review` says where a held memory came from; `scope`: where it is kept, below; `confidence`, `state`, `ref` and `sources`: "Source links, confidence and state" below)
 
 **ReviewNote** `{from, snippet: string|null, session_id: string|null, title?, dated?, export?}`: `from` names the source
 in plain words ("Gmail", "Hermes", "ChatGPT", "resume.pdf", "a proactive check"), `snippet` is the text it came from
@@ -1605,7 +1605,9 @@ conversation, note or file it was in, such as "10K training plan" or "Saved memo
 Topics are the v2 set: Personal Identity, Interests & Lifestyle, Work & Learning, Health & Wellbeing,
 Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
 
-- `GET /api/memories?topic=&q=&source=&scope=&limit=&offset=` → `[Memory]` newest first (`scope`: one scope only), expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
+- `GET /api/memories?topic=&q=&source=&scope=&state=&limit=&offset=` → `[Memory]` with `sources`, newest first
+  (`scope`: one scope only; `state`: `current`, `disputed`, `superseded` or `all`, default current and disputed;
+  `source` also finds memories that source said again), expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
 - `GET /api/memories/topics` → `[{name, description, count}]`
 - `GET /api/memories/graph` → `{nodes: [{id, label, title, content, topics, memory_type, source, created_at}], links: [{source, target, value}]}` (`label` = content truncated to 25 chars, `title` = full content, as in v2; a link means cosine similarity ≥ `memory.graph_link_similarity`, `value` is that similarity)
 - `POST /api/memories` `{content, source?, scope?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending", scope?}` (`scope` defaults to `personal`; runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. Facts that name someone else are never offered to the model, so it can't update, skip or delete them, and the
@@ -1618,11 +1620,41 @@ result carries `previous` as any update does. Looser cases are marked `changes_v
 correction is never `SKIP`. An UPDATE the model picks for something unrelated about the same person, with no
 attribute and no word of what it says in common ("a piano recital in July" for "starts school in July"), is added instead)
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)
+- `GET /api/memories/{id}` → `Memory` with `sources`, and `superseded_by_content` (the words that replaced it) when
+  superseded. 404 if missing.
 - `PATCH /api/memories/{id}` `{scope}` → `Memory`: moves it to another scope (below). 400 empty `scope`, 404 if missing.
-- `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
+  `{state: "disputed"|"current"}` → `Memory`: the user says it isn't right (kept, out of every prompt) or is (current,
+  `confidence` 1.0; a superseded memory comes back). 400 another state.
+- `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing), with everything derived from it (below)
 - `DELETE /api/memories/source/{source}` → `{deleted, unlinked}`: forgets the memories learned from `source`. A memory
   another source backs too is not deleted: it loses this source and keeps the others (`unlinked`), see "Sources and
   forgetting" below.
+**Source links, confidence and state (#152).**
+
+- A memory points at exactly where it was said: `ref` (its own source) and `sources`, every source in the order they
+  came, `{source, ref, at, own}`. A **SourceRef** is `{kind: "message", session_id, message_id?, quote?}` for a chat (the
+  user's message that says it; just the chat when no single message does), `{kind: "email"|"app", app, id?, title, url?, session_id, quote}` for what a chat read
+  in an app, `{kind: "note", folder_id, path, title, url?, session_id, quote}` for a note, `{kind: "file", file,
+  quote}` for an imported file; `quote` is the sentence that says it. Older memories may have none.
+- `confidence` (0..1) starts from the source: 1.0 what the user typed in Memory or edited, 0.9 what they said in a
+  chat (or onboarding), 0.8 their notes, 0.7 files, imports and tasks, 0.6 what an app said and anything held for
+  review. Each new source that says it again adds 0.1, approving it from review makes it at least 0.9, and saying it is
+  right makes it 1.0.
+- `state`: `current`, `disputed` (the user said it isn't right) or `superseded` (`superseded_by`: the nightly tidy-up
+  found a newer memory that contradicts it). Only current memories are recalled into chats, tasks, proactivity, the
+  user model, USER.md and MEMORY.md (a memory that becomes disputed or superseded also leaves those two files); dedup
+  still sees disputed ones, so saying one again in a chat makes it current.
+  A superseded memory stays as history (out of recall, not listed unless `state` asks for it).
+- Deleting a memory (`DELETE /api/memories/{id}`, the `memory_forget` tool, discarding one from review, resetting a
+  scope, forgetting a source) also removes everything derived from it: its vector, merged copies and source links, its
+  earlier wording, chat summaries made of the message it came from that repeat it (with their vectors), the nightly
+  journal's lines about it, the user model's evidence from it (an inferred insight with nothing else behind it goes),
+  the memory chips on replies and task runs that had it in mind, its USER.md bullet and the MEMORY.md lines that repeat
+  it. The chats themselves stay. The tidy-up's own merges and contradictions don't count as deletes.
+- Migration 0015 gives memories saved before #153 from a messaging app or a device chat their real source (found from
+  the review note of a held memory, the `memory_remember` call that saved it, or the one message in such a chat, up to
+  30 minutes before it, that says it), so forgetting that app covers them too.
+
 - `GET /api/memories/forget-preview?source=` → **ForgetCounts**: what "Also forget what Sentient learned from it" would
   delete for `source`, before the user disconnects it. Nothing changes. 400 for a source that can't be disconnected.
 
@@ -1787,7 +1819,7 @@ facts of that source too. Engine: `sentient.memory.review` (`for_context(ctx)`, 
 
 Engine notes: recall used by the system prompt and `memory_recall` is hybrid (same ranking as `q` above) and
 counts each recalled fact (`facts.recall_count`, `last_recalled_at`; dreaming promotes often-recalled short-term
-facts). Bulk and consolidation changes publish `memory.updated` with `reason` (`merged` | `contradicted` |
+facts). Saying a memory isn't right or is publishes UPDATE with `state` and `reason: "disputed"|"confirmed"` (#152). Bulk and consolidation changes publish `memory.updated` with `reason` (`merged` | `contradicted` (the older one is superseded, #152) |
 `promoted` | `expired`) and, for merges/contradictions, `merged_into` / `superseded_by`.
 
 ---

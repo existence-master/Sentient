@@ -2140,6 +2140,43 @@ export interface Memory {
   review?: ReviewNote | null
   /** Where it is kept (#155): "personal" (default), "work", "always" (every chat) or a project's name. */
   scope?: string
+  /** #152: how sure Sentient is (0..1), from where it came and how often it was learned again. */
+  confidence?: number
+  /** #152: only `current` memories go into chats and tasks. */
+  state?: MemoryState
+  /** The memory that replaced it (state `superseded`). */
+  superseded_by?: number | null
+  /** Its words, on `GET /api/memories/{id}` of a superseded memory. */
+  superseded_by_content?: string | null
+  /** Exactly where its own source said it. */
+  ref?: MemorySourceRef | null
+  /** Every source, its own first (#152). */
+  sources?: MemorySourceLink[]
+}
+
+export type MemoryState = 'current' | 'disputed' | 'superseded'
+
+/** Exactly where a source said a memory (#152): a chat message, an email or app result, a note, a file. */
+export interface MemorySourceRef {
+  kind?: 'message' | 'email' | 'app' | 'note' | 'file' | string
+  session_id?: string
+  message_id?: string
+  quote?: string | null
+  title?: string
+  url?: string
+  id?: string
+  app?: string
+  path?: string
+  folder_id?: string
+  file?: string
+}
+
+export interface MemorySourceLink {
+  source: string
+  ref: MemorySourceRef | null
+  at: string
+  /** its own source (the first one) */
+  own: boolean
 }
 
 /** One memory scope (#155) from `GET /api/memories/scopes`. */
@@ -2207,6 +2244,8 @@ export interface MemoryQuery {
   q?: string
   source?: string
   scope?: string
+  /** None: current and disputed; `all` adds superseded ones (#152). */
+  state?: MemoryState | 'all'
   limit?: number
   offset?: number
 }

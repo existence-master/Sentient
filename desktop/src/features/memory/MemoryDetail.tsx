@@ -1,12 +1,13 @@
-import { IconCalendar, IconCheck, IconClock, IconHistory, IconHourglassHigh, IconPencil, IconTrash, IconX } from '@tabler/icons-react'
+import { IconCalendar, IconCheck, IconClock, IconGauge, IconHistory, IconHourglassHigh, IconMoodConfuzed, IconPencil, IconReplace, IconRoute, IconTrash, IconX } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 import { Alert, Button, ConfirmDialog, Select, Sheet, Textarea } from '@/components/ui'
 import { useMemoryScopes } from '@/hooks/memory'
 import { useHotkey } from '@/hooks/useHotkey'
 import { formatDateTime } from '@/lib/utils'
-import { ExpiryBadge, ScopeIcon, scopeLabel, SourceChip, TopicPill } from './bits'
+import { ExpiryBadge, ScopeIcon, scopeLabel, TopicPill } from './bits'
 import { useNow, useOptimisticMemoryActions } from './hooks'
 import { countdown, expiresInMs, recentRelative, sourceMeta, type MemoryWithHistory } from './meta'
+import { Confidence, SourceLinks } from './SourceLinks'
 
 export function MemoryDetail({
   memory,
@@ -19,7 +20,7 @@ export function MemoryDetail({
   onOpenChange: (open: boolean) => void
   onForgetSource: (source: string) => void
 }) {
-  const { update, remove, move } = useOptimisticMemoryActions()
+  const { update, remove, move, setState } = useOptimisticMemoryActions()
   const scopes = useMemoryScopes()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -91,6 +92,24 @@ export function MemoryDetail({
             <ExpiryBadge memory={memory} now={now} />
           </div>
 
+          {memory.state === 'disputed' && (
+            <Alert tone="warning" icon={<IconMoodConfuzed />} title="You said this isn't right">
+              Sentient keeps it here but leaves it out of chats and tasks. Edit it, forget it, or{' '}
+              <button type="button" className="font-medium underline underline-offset-2" onClick={() => setState.mutate({ id: memory.id, state: 'current' })}>
+                say it's right after all
+              </button>
+              .
+            </Alert>
+          )}
+          {memory.state === 'superseded' && (
+            <Alert tone="info" icon={<IconReplace />} title="Replaced by a newer memory">
+              {memory.superseded_by_content ? `Now: "${memory.superseded_by_content}". ` : ''}Sentient keeps this one as history and doesn't use it.{' '}
+              <button type="button" className="font-medium underline underline-offset-2" onClick={() => setState.mutate({ id: memory.id, state: 'current' })}>
+                It's still true
+              </button>
+            </Alert>
+          )}
+
           {memory.previous_content && memory.previous_content !== memory.content && (
             <div className="rounded-xl border border-border bg-sunken/60 p-3.5">
               <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-fg-muted">
@@ -100,15 +119,25 @@ export function MemoryDetail({
             </div>
           )}
 
+          <section aria-label="Where it came from" className="space-y-2">
+            <h3 className="flex items-center gap-1.5 text-xs font-medium text-fg-muted">
+              <IconRoute size={13} /> Where it came from
+            </h3>
+            <SourceLinks memory={memory} onForgetSource={onForgetSource} />
+          </section>
+
           <dl className="divide-y divide-border rounded-xl border border-border bg-surface text-sm">
-            <Row icon={<src.icon size={14} />} label="Source">
-              <div className="flex items-center justify-between gap-2">
-                <SourceChip source={memory.source} className="text-sm text-fg" />
-                <button type="button" onClick={() => onForgetSource(memory.source)} className="text-xs text-fg-subtle underline-offset-2 hover:text-danger hover:underline">
-                  Forget all from this source
+            <Row icon={<IconGauge size={14} />} label="How sure">
+              <Confidence memory={memory} />
+              {memory.state !== 'disputed' && memory.state !== 'superseded' && (
+                <button
+                  type="button"
+                  onClick={() => setState.mutate({ id: memory.id, state: 'disputed' })}
+                  className="mt-1.5 text-xs text-fg-subtle underline-offset-2 hover:text-warning hover:underline"
+                >
+                  This isn't right
                 </button>
-              </div>
-              <div className="text-xs text-fg-subtle">{src.description}</div>
+              )}
             </Row>
             <Row icon={<ScopeIcon scope={memory.scope} size={14} />} label="Used in">
               <Select

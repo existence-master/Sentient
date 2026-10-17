@@ -404,8 +404,8 @@ async def known_addresses(store: Any, items: Iterable[str]) -> set[str]:
             continue
         try:
             rows = await store.fetchall(
-                "SELECT content FROM facts WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?)"
-                " AND lower(content) LIKE ? LIMIT 20",
+                "SELECT content FROM facts WHERE status = 'active' AND state = 'current'"
+                " AND (expires_at IS NULL OR expires_at > ?) AND lower(content) LIKE ? LIMIT 20",
                 (now_iso(), f"%{item.lower()}%"),
             )
         except Exception as exc:  # no memory table (bare tests): nothing is known
