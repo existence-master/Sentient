@@ -25,6 +25,7 @@ have to actually see it work.
 
   ```bash
   export SENTIENT_HOME="$PWD/.test-homes/issue-123"     # a new, empty folder (ignored by git), never ~/.sentient
+  unset SENTIENT_KEYCHAIN_NAMESPACE                       # an inherited override would win over the test home
   export SENTIENT_GATEWAY_TOKEN="$(.venv/Scripts/python.exe -c 'import secrets; print(secrets.token_urlsafe(24))')"
   .venv/Scripts/python.exe -m sentient serve --port 8791   # macOS/Linux: .venv/bin/python
   curl -H "Authorization: Bearer $SENTIENT_GATEWAY_TOKEN" http://127.0.0.1:8791/api/config
@@ -67,14 +68,18 @@ the results mean nothing. So only one agent talks to the local model at a time.
   address at a closed port (`api_base` of `models.providers.ollama` and `ollama_chat`, for example
   `http://127.0.0.1:9`).
 - If it exists, someone else is using the model: check again every 30 seconds. Write your name in it, delete it
-  as soon as your run ends, and never hold it for more than about 15 minutes at a time.
+  as soon as your run ends (also when the run fails), and never hold it for more than about 15 minutes at a time.
 
 ```bash
 LOCK="$(git rev-parse --path-format=absolute --git-common-dir)/../.ollama.lock"
-until (set -o noclobber; echo "issue-123 $(date -u +%FT%TZ)" > "$LOCK") 2>/dev/null; do sleep 30; done
+ME="issue-123 $$ $(date -u +%FT%TZ)"
+until (set -o noclobber; echo "$ME" > "$LOCK") 2>/dev/null; do sleep 30; done
+trap '[ "$(cat "$LOCK" 2>/dev/null)" = "$ME" ] && rm -f "$LOCK"' EXIT   # only ever removes our own lock
 # ... the real model run ...
-rm -f "$LOCK"
 ```
+
+- Only delete a lock you hold. If one is much older than 15 minutes, check that whoever it names has really
+  stopped (no engine of theirs running, no model loaded in `ollama ps`) before removing it, or ask the person.
 
 Don't pull, delete or reconfigure models, or change the Ollama service's settings, without asking the person.
 
@@ -88,12 +93,13 @@ it exists, delete it when done).
 
 Every `SENTIENT_HOME` other than the default `~/.sentient` has its own keychain namespace (`sentient-<hash>`, see
 [docs/DEVELOPING.md](DEVELOPING.md#test-homes-and-the-keychain)), so a test home can't read, overwrite or delete
-the person's real keys and sign-ins. Never set `SENTIENT_KEYCHAIN_NAMESPACE=default` unless the person asked you
-to, and remove any test entries you created.
+the person's real keys and sign-ins. `SENTIENT_KEYCHAIN_NAMESPACE` overrides that choice, so make sure it is not
+set (`unset SENTIENT_KEYCHAIN_NAMESPACE`) before you start a test engine. Never set it to `default` unless the
+person asked you to, and remove any test entries you created.
 
 ### Seeded test homes
 
-The seed scripts and `smoke.mjs` pause every task in the home and turn off messaging apps and deliveries. Keep it
+A full seed run and `smoke.mjs` pause every task in the home and turn off messaging apps and deliveries. Keep it
 that way: don't pass `--keep-live` unless the test needs it, and if you seed a home some other way, pause its
 tasks and turn off its channel deliveries yourself. A demo must never run a task or message anyone.
 
