@@ -287,6 +287,18 @@ class TaskRepo:
         )
         return (cur.rowcount or 0) > 0
 
+    async def held_runs(self, task_id: str, note: str) -> list[dict]:
+        """A task's runs that ended ``cancelled`` with ``note`` and are still its latest work (#304): not carried on
+        by a retry yet, and with no other run started after them (a Run now since then replaced them)."""
+        rows = await self.store.fetchall(
+            "SELECT * FROM task_runs r WHERE r.task_id = ? AND r.status = 'cancelled' AND r.error = ?"
+            " AND NOT EXISTS (SELECT 1 FROM task_runs n WHERE n.task_id = r.task_id AND (n.retry_of = r.id"
+            " OR (n.rowid > r.rowid AND NOT (n.status = 'cancelled' AND n.error = ?))))"
+            " ORDER BY r.created_at, r.rowid",
+            (task_id, note, note),
+        )
+        return [self._decode_run(r) for r in rows]
+
     async def waiting_runs(self, task_id: str | None = None, *, real: bool = False) -> list[dict]:
         """Runs waiting for an answer; ``real`` leaves out try runs (#142)."""
         sql = "SELECT * FROM task_runs WHERE status = 'waiting_for_user'" + (f" AND {REAL_RUN}" if real else "")

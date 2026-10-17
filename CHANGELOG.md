@@ -444,6 +444,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **A paused task stays paused when Sentient restarts.** Before, a task you paused while it was working carried on
+  by itself the next time Sentient started, and one still being planned was planned. Now it waits: the task shows
+  "Paused before it finished. Resume the task to continue.", and nothing runs for it. An approval it was waiting on
+  is withdrawn the same way. When you resume the task, it carries on from where it stopped instead of starting
+  over, and asks for the approval again if it still needs it (#304).
 - **Approval cards no longer show Sentient's notes to itself.** When the browser (or another built-in app) asked
   before clicking, the card's small print showed the instructions written for the model, cut off mid-word ("browser:
   Click the element with this ref ..."). It now shows a short plain label when there is one, like "Purchase" or
