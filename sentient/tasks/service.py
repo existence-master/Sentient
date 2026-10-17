@@ -214,7 +214,6 @@ class TaskService(Service):
     async def start(self) -> None:
         cfg = self.app.config.tasks
         self._sem = asyncio.Semaphore(cfg.max_concurrent_runs)
-        await self.repo.ensure_schema()
         from sentient.tasks.tools import TasksPlugin
 
         if not any(p.id == TasksPlugin.id for p in self.app.registry.plugins()):

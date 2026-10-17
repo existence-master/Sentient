@@ -1,4 +1,4 @@
-"""Idempotent creation of the memory package's own tables and columns.
+"""Idempotent creation of the memory package's own tables (columns added later come from sentient/store/migrations).
 
 ``sentient/store/db.py`` only loads the schemas listed in ``PACKAGE_SCHEMAS``; memory
 creates its tables itself (lazily, once per store) so it works whether or not core
@@ -29,13 +29,6 @@ async def ensure_memory_schema(store: Store) -> None:
         if getattr(store, "_memory_schema_ready", False):
             return
         await store.db.executescript(_SQL.read_text(encoding="utf-8"))
-        await store.ensure_column("facts", "recall_count", "INTEGER NOT NULL DEFAULT 0")
-        await store.ensure_column("facts", "last_recalled_at", "TEXT")
-        await store.ensure_column("user_insights", "review", "TEXT")
-        # a memory the nightly tidy-up merged into another one, kept for undo (#353)
-        await store.ensure_column("facts", "merged_into", "INTEGER")
-        await store.ensure_column("facts", "merged_at", "TEXT")
-        await store.ensure_column("facts", "merged_by", "TEXT")
         await store.db.commit()
         if await store.get_meta("facts_fts_built") != "1":
             try:
